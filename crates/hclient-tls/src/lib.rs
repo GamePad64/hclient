@@ -397,13 +397,35 @@ pub trait TlsConnect: TlsIdentity {
     /// `FuturesIo`/`TokioIo` — `connect` itself knows nothing about the
     /// transport) and returns the encrypted stream along with whatever
     /// negotiated parameters the implementation can honestly report.
-    fn connect<S>(
-        &self,
-        io: S,
-        req: TlsRequest<'_>,
-    ) -> impl Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>>
+    /// **An associated type, not an RPITIT**, for the reason
+    /// `hclient_rt::TcpConnect::Connecting` gives at length: a consumer
+    /// that must prove its own future `Send` has to be able to *name*
+    /// this one, and `impl Future` has no name.
+    ///
+    /// **And a named type rather than a boxed one, which is what makes
+    /// this seam different from `TcpConnect`'s.** The handshake's future
+    /// is `Send` exactly when `S` is, so a box would have to pick one
+    /// answer for every `S` — and the two available answers are both
+    /// wrong. `+ Send` on the box excludes an IO that cannot cross a
+    /// thread, and `hclient-rt-embassy`'s can not, which would take that
+    /// runtime out of `Native` altogether since `Native` requires a
+    /// `TlsConnect`. Leaving it off makes every TLS handshake `!Send` for
+    /// everybody. A concrete type derives the answer from `S` instead of
+    /// choosing it, which is the only one of the three that is true.
+    ///
+    /// The cost lands on the implementor: an `async fn` body has no name,
+    /// so a backend that awaits anything writes its handshake as a type
+    /// with a `poll` rather than as an `async fn`. Both shipped ones do,
+    /// and their synchronous preparation moved into `connect` where it
+    /// belongs anyway.
+    type Handshake<'a, S>: Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
 
     /// What a transport built on this implementation should advertise in
     /// [`Capabilities::tls_config`](hclient_core::Capabilities::tls_config).
@@ -562,17 +584,27 @@ impl TlsConnect for NoTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
 
-    async fn connect<S>(&self, _io: S, req: TlsRequest<'_>) -> Result<(NoStream, TlsInfo), Error>
+    /// [`std::future::Ready`], because this refuses without awaiting
+    /// anything — the one backend for which no `poll` had to be written.
+    /// It ignores `S` entirely, which is why it stays a `TlsConnect` for
+    /// a runtime whose IO cannot cross a thread.
+    type Handshake<'a, S>
+        = std::future::Ready<Result<(NoStream, TlsInfo), Error>>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, _io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        Err(Error::new(
+        std::future::ready(Err(Error::new(
             ErrorKind::Tls,
             std::io::Error::other(format!(
                 "this client was built without TLS support (NoTls); cannot secure a connection to {}",
                 req.server_name
             )),
-        ))
+        )))
     }
 
     fn tls_support(&self) -> TlsSupport {
@@ -701,16 +733,21 @@ mod tests {
         where
             S: Read + Write + Unpin;
 
-        fn connect<S>(
-            &self,
-            io: S,
-            req: TlsRequest<'_>,
-        ) -> impl Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>>
+        // `Ready`, so the fixture's `Send` follows from `S`'s exactly as
+        // a real backend's does — a fixture that fixed the answer would
+        // be the one place the seam's property could not be exercised.
+        type Handshake<'a, S>
+            = std::future::Ready<Result<(Self::Stream<S>, TlsInfo), Error>>
         where
-            S: Read + Write + Unpin,
+            Self: 'a,
+            S: Read + Write + Unpin + 'a;
+
+        fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+        where
+            S: Read + Write + Unpin + 'a,
         {
             let alpn = req.alpn.first().map(|proto| proto.to_vec());
-            async move {
+            std::future::ready({
                 Ok((
                     PassThrough(io),
                     TlsInfo {
@@ -721,7 +758,7 @@ mod tests {
                         early_data_accepted: None,
                     },
                 ))
-            }
+            })
         }
     }
 

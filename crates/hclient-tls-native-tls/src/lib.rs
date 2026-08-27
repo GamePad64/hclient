@@ -129,88 +129,110 @@ impl TlsConnect for NativeTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
 
-    async fn connect<S>(
-        &self,
-        io: S,
-        req: TlsRequest<'_>,
-    ) -> Result<(Self::Stream<S>, TlsInfo), Error>
+    /// **A box, and deliberately not a `Send` one — this backend cannot
+    /// offer a handshake that crosses a thread, and the reason is a third
+    /// party's.** `TlsConnect::Handshake` is an associated type so a
+    /// consumer can name it; `hclient-tls-rustls` writes a concrete type
+    /// whose `Send` follows from `S`. That is possible there because its
+    /// handshake is this workspace's own poll loop. Here the handshake is
+    /// `async_native_tls::TlsConnector::connect`, a `pub async fn`
+    /// (async-native-tls 0.6.0, `lib.rs:189`), so its future has no name
+    /// and the only way to hold it is behind a `dyn`. A `dyn` has to
+    /// decide `Send` once, and deciding it `true` would need `S: Send`,
+    /// which this signature cannot state.
+    ///
+    /// **What that costs is written down where a caller will meet it**:
+    /// `hclient::Client` over this backend has no `Send` request future,
+    /// so a request through it cannot be `tokio::spawn`ed. Reach for
+    /// `hclient-tls-rustls` where that matters — the same sentence this
+    /// module's doc already makes about ALPN, and for the same kind of
+    /// reason: what the wrapper does not expose, this crate cannot invent.
+    type Handshake<'a, S>
+        = std::pin::Pin<Box<dyn Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>> + 'a>>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        if req.ech.is_some() {
-            // Refused, not ignored. ECH (RFC 9849) requires the TLS stack to
-            // encrypt the ClientHello against a config from an HTTPS/SVCB
-            // record; no platform stack behind `native-tls` exposes that
-            // knob. Connecting anyway would leak the SNI the caller asked to
-            // protect — the one case where best-effort is worse than an
-            // error.
-            return Err(Error::new(
-                ErrorKind::Tls,
-                std::io::Error::other(
-                    "native-tls cannot perform ECH: no platform stack exposes ClientHello encryption",
-                ),
-            ));
-        }
+        Box::pin(async move {
+            if req.ech.is_some() {
+                // Refused, not ignored. ECH (RFC 9849) requires the TLS stack to
+                // encrypt the ClientHello against a config from an HTTPS/SVCB
+                // record; no platform stack behind `native-tls` exposes that
+                // knob. Connecting anyway would leak the SNI the caller asked to
+                // protect — the one case where best-effort is worse than an
+                // error.
+                return Err(Error::new(
+                    ErrorKind::Tls,
+                    std::io::Error::other(
+                        "native-tls cannot perform ECH: no platform stack exposes ClientHello encryption",
+                    ),
+                ));
+            }
 
-        let mut connector = async_native_tls::TlsConnector::new();
-        if let Some(id) = self.identity.clone() {
-            connector = connector.identity(id);
-        }
-        for root in self.roots.iter().cloned() {
-            connector = connector.add_root_certificate(root);
-        }
-        if !req.alpn.is_empty() {
-            let protocols: Vec<&str> = req
-                .alpn
-                .iter()
-                .map(|p| std::str::from_utf8(p).map_err(|e| Error::new(ErrorKind::Tls, e)))
-                .collect::<Result<_, _>>()?;
-            connector = connector.request_alpns(&protocols);
-        }
+            let mut connector = async_native_tls::TlsConnector::new();
+            if let Some(id) = self.identity.clone() {
+                connector = connector.identity(id);
+            }
+            for root in self.roots.iter().cloned() {
+                connector = connector.add_root_certificate(root);
+            }
+            if !req.alpn.is_empty() {
+                let protocols: Vec<&str> = req
+                    .alpn
+                    .iter()
+                    .map(|p| std::str::from_utf8(p).map_err(|e| Error::new(ErrorKind::Tls, e)))
+                    .collect::<Result<_, _>>()?;
+                connector = connector.request_alpns(&protocols);
+            }
 
-        let stream = connector
-            .connect(req.server_name, HyperIo::new(io))
-            .await
-            .map_err(|e| Error::new(ErrorKind::Tls, e))?;
+            let stream = connector
+                .connect(req.server_name, HyperIo::new(io))
+                .await
+                .map_err(|e| Error::new(ErrorKind::Tls, e))?;
 
-        let info = TlsInfo {
-            // `None`, always — and this is a limitation of the wrapper, not
-            // of the platform. `native_tls::TlsStream` does expose
-            // `negotiated_alpn()`, but `async_native_tls::TlsStream` does
-            // not re-export it and gives no access to the inner stream
-            // (`get_ref` returns the transport underneath the TLS, not the
-            // TLS stream itself). Checked against async-native-tls 0.6.0's
-            // `tls_stream.rs`, whose entire inherent surface is `get_ref`,
-            // `get_mut`, `buffered_read_size`, `peer_certificate` and
-            // `tls_server_end_point`.
-            //
-            // The consequence is concrete and must not be papered over: a
-            // caller cannot learn from this backend whether h2 was
-            // negotiated, so ALPN-driven protocol selection does not work
-            // over it. `alpn` is still SENT — `request_alpns` above — so the
-            // server sees the offer; only the answer is unreadable here.
-            // Use `hclient-tls-rustls` where the negotiated protocol
-            // matters.
-            alpn: None,
-            // The leaf only, and as a one-element `Vec` rather than `None`:
-            // there IS a certificate, the chain is what is missing. Telling
-            // those apart is why this field is a `Vec` inside an `Option`.
-            peer_certificates: stream
-                .peer_certificate()
-                .ok()
-                .flatten()
-                .and_then(|c| c.to_der().ok())
-                .map(|der| vec![der]),
-            // `native-tls` reports neither. `None` means "this backend
-            // cannot tell you", which a caller must not read as "TLS 1.2".
-            protocol_version: None,
-            cipher_suite: None,
-            // Nothing offered, so nothing to report — and this backend
-            // could not report it in any case, for the same reason it
-            // cannot report `alpn` above.
-            early_data_accepted: None,
-        };
+            let info = TlsInfo {
+                // `None`, always — and this is a limitation of the wrapper, not
+                // of the platform. `native_tls::TlsStream` does expose
+                // `negotiated_alpn()`, but `async_native_tls::TlsStream` does
+                // not re-export it and gives no access to the inner stream
+                // (`get_ref` returns the transport underneath the TLS, not the
+                // TLS stream itself). Checked against async-native-tls 0.6.0's
+                // `tls_stream.rs`, whose entire inherent surface is `get_ref`,
+                // `get_mut`, `buffered_read_size`, `peer_certificate` and
+                // `tls_server_end_point`.
+                //
+                // The consequence is concrete and must not be papered over: a
+                // caller cannot learn from this backend whether h2 was
+                // negotiated, so ALPN-driven protocol selection does not work
+                // over it. `alpn` is still SENT — `request_alpns` above — so the
+                // server sees the offer; only the answer is unreadable here.
+                // Use `hclient-tls-rustls` where the negotiated protocol
+                // matters.
+                alpn: None,
+                // The leaf only, and as a one-element `Vec` rather than `None`:
+                // there IS a certificate, the chain is what is missing. Telling
+                // those apart is why this field is a `Vec` inside an `Option`.
+                peer_certificates: stream
+                    .peer_certificate()
+                    .ok()
+                    .flatten()
+                    .and_then(|c| c.to_der().ok())
+                    .map(|der| vec![der]),
+                // `native-tls` reports neither. `None` means "this backend
+                // cannot tell you", which a caller must not read as "TLS 1.2".
+                protocol_version: None,
+                cipher_suite: None,
+                // Nothing offered, so nothing to report — and this backend
+                // could not report it in any case, for the same reason it
+                // cannot report `alpn` above.
+                early_data_accepted: None,
+            };
 
-        Ok((FuturesIo::new(stream), info))
+            Ok((FuturesIo::new(stream), info))
+        })
     }
 }

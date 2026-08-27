@@ -605,9 +605,7 @@ impl hyper::rt::Write for NeverStream {
 impl hclient_rt::TcpConnect for NeverConnects {
     type Stream = NeverStream;
     type Connecting<'a>
-        = std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + Send + 'a>,
-    >
+        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + 'a>>
     where
         Self: 'a;
 
@@ -720,15 +718,23 @@ impl hclient_tls::TlsConnect for CertTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
 
-    async fn connect<S>(
-        &self,
-        _: S,
-        _: hclient_tls::TlsRequest<'_>,
-    ) -> Result<(Self::Stream<S>, hclient_tls::TlsInfo), hclient_core::Error>
+    type Handshake<'a, S>
+        = std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<(Self::Stream<S>, hclient_tls::TlsInfo), hclient_core::Error>,
+                > + 'a,
+        >,
+    >
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, _: S, _: hclient_tls::TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        unreachable!("this stub never connects")
+        Box::pin(async move { unreachable!("this stub never connects") })
     }
 }
 
@@ -756,15 +762,22 @@ impl hclient_tls::TlsConnect for NoOpTls {
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
     /// One stub, one configuration, one identity — drawn once rather than
     /// per call, which is what `TlsConnect::config_id` requires.
-    async fn connect<S>(
-        &self,
-        io: S,
-        _req: hclient_tls::TlsRequest<'_>,
-    ) -> Result<(S, hclient_tls::TlsInfo), hclient_core::Error>
+    type Handshake<'a, S>
+        = std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(S, hclient_tls::TlsInfo), hclient_core::Error>>
+                + 'a,
+        >,
+    >
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, io: S, _req: hclient_tls::TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        Ok((io, hclient_tls::TlsInfo::default()))
+        Box::pin(async move { Ok((io, hclient_tls::TlsInfo::default())) })
     }
 }
 
@@ -821,9 +834,7 @@ struct LoggingNeverConnects {
 impl hclient_rt::TcpConnect for LoggingNeverConnects {
     type Stream = NeverStream;
     type Connecting<'a>
-        = std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + Send + 'a>,
-    >
+        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + 'a>>
     where
         Self: 'a;
 

@@ -22,7 +22,6 @@ pub use stream::TlsStream;
 use hclient_core::{Error, ErrorKind};
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::collections::HashMap;
-use std::future::poll_fn;
 #[cfg(feature = "quic")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
@@ -292,58 +291,38 @@ impl TlsConnect for Rustls {
         true
     }
 
-    async fn connect<S>(&self, io: S, req: TlsRequest<'_>) -> Result<(TlsStream<S>, TlsInfo), Error>
+    /// A named type rather than an `async fn`'s opaque one, so that
+    /// `Handshaking<S>: Send` follows from `S: Send` instead of being
+    /// fixed here — the trait's own doc says why that is the only true
+    /// answer of the three available.
+    type Handshake<'a, S>
+        = Handshaking<S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    /// Everything that can fail without awaiting happens **here**, not in
+    /// the future: the ECH refusal, the server name and the
+    /// `ClientConnection`. That is not a rearrangement for its own sake —
+    /// it is what leaves the future with one job, the poll loop, which is
+    /// what makes writing it as a type rather than an `async fn` a
+    /// dozen lines instead of a state machine.
+    fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
         if req.ech.is_some() {
-            return Err(ech_refused());
+            return Handshaking::failed(ech_refused());
         }
-        let name = rustls_pki_types::ServerName::try_from(req.server_name)
-            .map_err(|e| Error::new(ErrorKind::Tls, e))?
-            .to_owned();
-        let conn = rustls::ClientConnection::new(self.config_for(req.alpn), name)
-            .map_err(|e| Error::new(ErrorKind::Tls, e))?;
-        let mut stream = TlsStream::new(io, conn);
-
-        // Drive the handshake to completion before handing the stream back up.
-        poll_fn(|cx| {
-            let (io, conn) = stream.parts_mut();
-            loop {
-                std::task::ready!(stream::flush_outgoing(io, conn, cx))
-                    .map_err(|e| Error::new(ErrorKind::Tls, e))?;
-                if !conn.is_handshaking() {
-                    return Poll::Ready(Ok::<(), Error>(()));
-                }
-                let more = std::task::ready!(stream::pump_incoming(io, conn, cx))
-                    .map_err(|e| Error::new(ErrorKind::Tls, e))?;
-                if !more {
-                    return Poll::Ready(Err(Error::new(
-                        ErrorKind::Tls,
-                        std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
-                    )));
-                }
-            }
-        })
-        .await?;
-
-        let c = stream.conn();
-        let info = TlsInfo {
-            alpn: c.alpn_protocol().map(|a| a.to_vec()),
-            peer_certificates: c
-                .peer_certificates()
-                .map(|cs| cs.iter().map(|d| d.as_ref().to_vec()).collect()),
-            protocol_version: c.protocol_version().and_then(normalize_protocol_version),
-            cipher_suite: c
-                .negotiated_cipher_suite()
-                .and_then(|s| normalize_cipher_suite(s.suite())),
-            // Reserved, not implemented — this backend never offers early
-            // data, so there is nothing to report as accepted or refused.
-            // `None`, not `Some(false)`: see `TlsInfo::early_data_accepted`
-            // on why the two are different answers.
-            early_data_accepted: None,
+        let name = match rustls_pki_types::ServerName::try_from(req.server_name) {
+            Ok(n) => n.to_owned(),
+            Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
         };
-        Ok((stream, info))
+        let conn = match rustls::ClientConnection::new(self.config_for(req.alpn), name) {
+            Ok(c) => c,
+            Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
+        };
+        Handshaking::driving(TlsStream::new(io, conn))
     }
 }
 
@@ -425,5 +404,128 @@ mod tests {
             normalize_cipher_suite(rustls::CipherSuite::Unknown(0x9999)),
             None
         );
+    }
+}
+
+/// [`Rustls`]'s handshake, as a type.
+///
+/// # Why this is not an `async fn`
+///
+/// `TlsConnect::Handshake` is an associated type so that a consumer can
+/// **name** it — `hclient-native`, so that it can prove its own future
+/// `Send`, so that `hclient::Client`'s can be. An `async fn` body has no
+/// name, so the alternative would be a box, and a box has to decide
+/// `Send` once for every `S`. Here the honest answer varies with `S`: a
+/// handshake over a socket that can cross a thread can, and one over
+/// `hclient-rt-embassy`'s cannot. A concrete type **derives** that
+/// instead of choosing it — `Handshaking<S>` is `Send` exactly when `S`
+/// is, by ordinary auto-trait inference and with nothing declared.
+///
+/// # What it holds
+///
+/// One of two states, because everything fallible that does not await
+/// already happened in [`Rustls::connect`]: either an error waiting to be
+/// returned on the first poll, or the stream whose handshake is being
+/// driven. There is no third state and no `Done`: `poll` is not called
+/// again after it returns `Ready`, which is the `Future` contract, and a
+/// state to enforce it would be a state nothing can reach.
+#[derive(Debug)]
+pub struct Handshaking<S> {
+    state: Handshaking2<S>,
+}
+
+/// The two states, and the size difference between them is deliberate.
+///
+/// `Driving` is ~1056 bytes against `Failed`'s 24, because it holds a
+/// `rustls::ClientConnection`. Clippy asks for the large one to be boxed
+/// and that would be a regression rather than a fix: the `async fn` this
+/// replaced held the identical `TlsStream<S>` in its own opaque state, so
+/// the size is unchanged and boxing would add one allocation per
+/// handshake that the previous code did not make. What changed is only
+/// that the type has a name, which is why the lint can see it at all.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "measured: 1056 vs 24 bytes, and the same size the async fn's opaque state already was — boxing would add an allocation rather than remove one"
+)]
+#[derive(Debug)]
+enum Handshaking2<S> {
+    Failed(Option<Error>),
+    Driving(TlsStream<S>),
+}
+
+impl<S> Handshaking<S> {
+    fn failed(e: Error) -> Self {
+        Self {
+            state: Handshaking2::Failed(Some(e)),
+        }
+    }
+
+    fn driving(s: TlsStream<S>) -> Self {
+        Self {
+            state: Handshaking2::Driving(s),
+        }
+    }
+}
+
+impl<S> Future for Handshaking<S>
+where
+    S: hyper::rt::Read + hyper::rt::Write + Unpin,
+{
+    type Output = Result<(TlsStream<S>, TlsInfo), Error>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        // `TlsStream<S>` is `Unpin` when `S` is, and `S: Unpin` is on this
+        // impl — so a plain `get_mut` rather than a projection, and no
+        // `unsafe` (this crate forbids it).
+        let me = self.get_mut();
+        let stream = match &mut me.state {
+            Handshaking2::Failed(e) => {
+                return Poll::Ready(Err(e
+                    .take()
+                    .expect("a Future is not polled after it returns Ready")));
+            }
+            Handshaking2::Driving(s) => s,
+        };
+
+        // Drive the handshake to completion before handing the stream up.
+        loop {
+            let (io, conn) = stream.parts_mut();
+            std::task::ready!(stream::flush_outgoing(io, conn, cx))
+                .map_err(|e| Error::new(ErrorKind::Tls, e))?;
+            if !conn.is_handshaking() {
+                break;
+            }
+            let more = std::task::ready!(stream::pump_incoming(io, conn, cx))
+                .map_err(|e| Error::new(ErrorKind::Tls, e))?;
+            if !more {
+                return Poll::Ready(Err(Error::new(
+                    ErrorKind::Tls,
+                    std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
+                )));
+            }
+        }
+
+        let c = stream.conn();
+        let info = TlsInfo {
+            alpn: c.alpn_protocol().map(|a| a.to_vec()),
+            peer_certificates: c
+                .peer_certificates()
+                .map(|cs| cs.iter().map(|d| d.as_ref().to_vec()).collect()),
+            protocol_version: c.protocol_version().and_then(normalize_protocol_version),
+            cipher_suite: c
+                .negotiated_cipher_suite()
+                .and_then(|s| normalize_cipher_suite(s.suite())),
+            // Reserved, not implemented — this backend never offers early
+            // data, so there is nothing to report as accepted or refused.
+            // `None`, not `Some(false)`: see `TlsInfo::early_data_accepted`
+            // on why the two are different answers.
+            early_data_accepted: None,
+        };
+        let Handshaking2::Driving(stream) =
+            std::mem::replace(&mut me.state, Handshaking2::Failed(None))
+        else {
+            unreachable!("the match above already established this arm")
+        };
+        Poll::Ready(Ok((stream, info)))
     }
 }

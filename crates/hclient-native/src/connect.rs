@@ -2901,17 +2901,25 @@ mod tests {
         where
             S: Read + Write + Unpin;
 
-        async fn connect<S>(&self, io: S, req: TlsRequest<'_>) -> Result<(S, TlsInfo), Error>
+        type Handshake<'a, S>
+            = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(S, TlsInfo), Error>> + 'a>>
         where
-            S: Read + Write + Unpin,
+            Self: 'a,
+            S: Read + Write + Unpin + 'a;
+
+        fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+        where
+            S: Read + Write + Unpin + 'a,
         {
-            Ok((
-                io,
-                TlsInfo {
-                    alpn: req.alpn.first().map(|p| p.to_vec()),
-                    ..Default::default()
-                },
-            ))
+            Box::pin(async move {
+                Ok((
+                    io,
+                    TlsInfo {
+                        alpn: req.alpn.first().map(|p| p.to_vec()),
+                        ..Default::default()
+                    },
+                ))
+            })
         }
     }
 

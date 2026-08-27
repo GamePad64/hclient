@@ -284,21 +284,27 @@ impl TlsConnect for FakeTls {
         true
     }
 
-    async fn connect<S>(
-        &self,
-        io: S,
-        _req: TlsRequest<'_>,
-    ) -> Result<(S, TlsInfo), hclient_core::Error>
+    type Handshake<'a, S>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(S, TlsInfo), hclient_core::Error>> + 'a>,
+    >
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, io: S, _req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        Ok((
-            io,
-            TlsInfo {
-                alpn: Some(b"h2".to_vec()),
-                ..Default::default()
-            },
-        ))
+        Box::pin(async move {
+            Ok((
+                io,
+                TlsInfo {
+                    alpn: Some(b"h2".to_vec()),
+                    ..Default::default()
+                },
+            ))
+        })
     }
 }
 
@@ -426,9 +432,7 @@ impl TcpConnect for HoldsTasks {
     type Stream = <Tokio as TcpConnect>::Stream;
     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
     type Connecting<'a>
-        = std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,
-    >
+        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + 'a>>
     where
         Self: 'a;
 
@@ -940,30 +944,36 @@ impl TlsConnect for SlowTls {
         true
     }
 
-    async fn connect<S>(
-        &self,
-        io: S,
-        _req: TlsRequest<'_>,
-    ) -> Result<(S, TlsInfo), hclient_core::Error>
+    type Handshake<'a, S>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(S, TlsInfo), hclient_core::Error>> + 'a>,
+    >
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, io: S, _req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        let nth = self.handshakes.fetch_add(1, Ordering::SeqCst);
-        if nth == 0 {
-            tokio::time::sleep(FIRST_TLS).await;
-            return Err(hclient_core::Error::new(
-                hclient_core::ErrorKind::Connect,
-                std::io::Error::other("the first handshake fails, slowly"),
-            ));
-        }
-        tokio::time::sleep(LATER_TLS).await;
-        Ok((
-            io,
-            TlsInfo {
-                alpn: Some(b"h2".to_vec()),
-                ..Default::default()
-            },
-        ))
+        Box::pin(async move {
+            let nth = self.handshakes.fetch_add(1, Ordering::SeqCst);
+            if nth == 0 {
+                tokio::time::sleep(FIRST_TLS).await;
+                return Err(hclient_core::Error::new(
+                    hclient_core::ErrorKind::Connect,
+                    std::io::Error::other("the first handshake fails, slowly"),
+                ));
+            }
+            tokio::time::sleep(LATER_TLS).await;
+            Ok((
+                io,
+                TlsInfo {
+                    alpn: Some(b"h2".to_vec()),
+                    ..Default::default()
+                },
+            ))
+        })
     }
 }
 

@@ -146,22 +146,32 @@ impl TlsConnect for SlowTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
 
-    async fn connect<S>(
-        &self,
-        stream: S,
-        _req: TlsRequest<'_>,
-    ) -> Result<(Self::Stream<S>, TlsInfo), hclient_core::Error>
+    type Handshake<'a, S>
+        = std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<(Self::Stream<S>, TlsInfo), hclient_core::Error>,
+                > + 'a,
+        >,
+    >
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, stream: S, _req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        tokio::time::sleep(self.0).await;
-        Ok((
-            stream,
-            TlsInfo {
-                alpn: Some(b"http/1.1".to_vec()),
-                ..TlsInfo::default()
-            },
-        ))
+        Box::pin(async move {
+            tokio::time::sleep(self.0).await;
+            Ok((
+                stream,
+                TlsInfo {
+                    alpn: Some(b"http/1.1".to_vec()),
+                    ..TlsInfo::default()
+                },
+            ))
+        })
     }
 
     /// So that `Native` believes the ALPN above — without it the

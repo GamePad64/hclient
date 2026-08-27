@@ -473,21 +473,27 @@ impl TlsConnect for FakeTls {
         true
     }
 
-    async fn connect<S>(
-        &self,
-        io: S,
-        _req: TlsRequest<'_>,
-    ) -> Result<(S, TlsInfo), hclient_core::Error>
+    type Handshake<'a, S>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(S, TlsInfo), hclient_core::Error>> + 'a>,
+    >
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+        Self: 'a,
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+    fn connect<'a, S>(&'a self, io: S, _req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        Ok((
-            io,
-            TlsInfo {
-                alpn: Some(b"h2".to_vec()),
-                ..Default::default()
-            },
-        ))
+        Box::pin(async move {
+            Ok((
+                io,
+                TlsInfo {
+                    alpn: Some(b"h2".to_vec()),
+                    ..Default::default()
+                },
+            ))
+        })
     }
 }
 

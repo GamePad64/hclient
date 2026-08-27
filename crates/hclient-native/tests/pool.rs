@@ -627,9 +627,7 @@ impl hclient_rt::Timer for LateEof {
 impl hclient_rt::TcpConnect for LateEof {
     type Stream = HideFirstEof<<Tokio as hclient_rt::TcpConnect>::Stream>;
     type Connecting<'a>
-        = std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,
-    >
+        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + 'a>>
     where
         Self: 'a;
 
@@ -864,21 +862,35 @@ mod alpn_guard {
             = S
         where
             S: hyper::rt::Read + hyper::rt::Write + Unpin;
-        async fn connect<S>(
-            &self,
-            io: S,
-            _req: hclient_tls::TlsRequest<'_>,
-        ) -> Result<(S, hclient_tls::TlsInfo), hclient_core::Error>
+        type Handshake<'a, S>
+            = std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(S, hclient_tls::TlsInfo), hclient_core::Error>,
+                    > + 'a,
+            >,
+        >
         where
-            S: hyper::rt::Read + hyper::rt::Write + Unpin,
+            Self: 'a,
+            S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+
+        fn connect<'a, S>(
+            &'a self,
+            io: S,
+            _req: hclient_tls::TlsRequest<'a>,
+        ) -> Self::Handshake<'a, S>
+        where
+            S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
         {
-            Ok((
-                io,
-                hclient_tls::TlsInfo {
-                    alpn: Some(self.0.to_vec()),
-                    ..Default::default()
-                },
-            ))
+            Box::pin(async move {
+                Ok((
+                    io,
+                    hclient_tls::TlsInfo {
+                        alpn: Some(self.0.to_vec()),
+                        ..Default::default()
+                    },
+                ))
+            })
         }
     }
 
