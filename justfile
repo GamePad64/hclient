@@ -1042,6 +1042,31 @@ graph-proxy-cost:
       "hclient-proxy with 'system' has no dynamic-store reader on macOS" \
       -- -p hclient-proxy --features system --target aarch64-apple-darwin
 
+# `system-proxy` is in `hclient`'s `default`, and the only thing that makes
+# that affordable is the question mark in `hclient-native?/system-proxy`:
+# the weak form enables the feature where the native transport is already
+# in the graph and pulls nothing where it is not. Drop the `?` and every
+# build that takes this crate's defaults acquires tokio, rustls and the
+# system resolver — the floor `default-transport` was reversed out of
+# `default` for, arriving by the back door.
+#
+# Measured while writing: 51 crates for a default `hclient`, none of them
+# from the native stack.
+
+# the default feature set pulls no transport
+graph-default-has-no-transport:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/tree-guard.sh absent '^(hclient-native|tokio|hyper|rustls|quinn) ' \
+      "a default build of hclient pulls in the native stack — almost certainly the '?' lost from 'hclient-native?/system-proxy' in [features], which turns a weak dependency feature into one that drags the whole transport in" \
+      -- -p hclient
+    # The other direction, which no `absent` check can see: with a
+    # transport in the graph the feature must actually reach it, or the
+    # default would be a default that does nothing.
+    ./scripts/tree-guard.sh present '^hclient-proxy ' \
+      "hclient with 'default-transport' has no proxy crate, so 'system-proxy' reached nothing" \
+      -- -p hclient --features default-transport
+
 # icu_properties_data alone is 1.9 MB of vendored source; that is the entire
 # measurable benefit of the feature. The usual cause of a failure is some
 # crate depending on hclient-proto WITH default features, unioning idn back
@@ -1150,7 +1175,7 @@ features:
         --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-proxy-cost graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
 
 # ── the whole pipeline ──────────────────────────────────────────────────
 

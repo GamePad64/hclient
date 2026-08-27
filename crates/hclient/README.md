@@ -122,8 +122,33 @@ which is a worse answer than proxying what we can. A machine with a PAC
 script and a static proxy beside it gets the static one — WinINET's own
 fallback, not an invention of ours.
 
-Proxying explicitly needs the `proxy` feature; reading the machine comes
-with `default-transport`.
+**Two ways to turn it off**, answering different questions.
+
+At build time, `system-proxy` is a default feature — a *positive* one, so
+dropping it is the ordinary contract:
+
+```toml
+hclient = { version = "0.1", default-features = false, features = ["default-transport"] }
+```
+
+A feature that turned proxying *off* would have been the wrong shape:
+Cargo unifies features, so one crate in a dependency tree could have
+taken it away from every other. This way round, the crate that wants it
+off says so about its own build — and note that unification still means a
+different crate asking for hclient's defaults turns it back on for the
+graph, which is Cargo's contract rather than this crate's choice.
+
+At run time, build the client over the seam that reads nothing:
+
+```rust
+let client = hclient::Client::builder(hclient::default_transport()?).build()?;
+```
+
+`system-proxy` sits in `default` and `default-transport` does not, which
+is only expressible because the feature reaches the transport *weakly*
+(`hclient-native?/system-proxy`): a build with no native transport — the
+browser, WASI, or your own — is untouched by it and pays nothing.
+Proxying explicitly needs the `proxy` feature.
 
 ## Related crates
 

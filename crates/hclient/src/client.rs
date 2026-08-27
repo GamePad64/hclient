@@ -1744,8 +1744,24 @@ impl Client {
         // wants to *see* what was dropped reads `SystemProxies::detect()`
         // and installs it themselves, which is what
         // `Native::system_proxy` is for.
-        let (transport, _dropped) = transport
-            .system_proxies_from_lossy(&hclient_native::proxy::system::SystemProxies::detect());
+        //
+        // **Two ways out, and they answer different questions.** At
+        // build time, `default-features = false` drops the
+        // `system-proxy` feature and this block with it — a positive
+        // feature turned off, which is the shape a *negative* one could
+        // not have had: Cargo unifies features, so a switch that turned
+        // proxying off would have been unified too, and one crate in a
+        // dependency tree could take it from every other. At run time,
+        // `Client::builder(default_transport()?)` builds the same client
+        // over the same stack and reads nothing, because that seam
+        // deliberately does not. `tests/proxy_default.rs` pins the second
+        // so that it cannot quietly stop working.
+        #[cfg(feature = "system-proxy")]
+        let transport = {
+            let (t, _dropped) = transport
+                .system_proxies_from_lossy(&hclient_native::proxy::system::SystemProxies::detect());
+            t
+        };
         Self::builder(transport)
             .build()
             .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))

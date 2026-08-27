@@ -38,7 +38,14 @@ all-features = true
 # wants `Client` over a transport of their own choosing: `Native<Smol,
 # NativeTls, Hickory>` should not carry tokio, rustls and the system
 # resolver because something else in the graph was careless.
-default = ["idn", "public-suffix"]
+# **`system-proxy` is in here and `default-transport` is not**, which is
+# only expressible because of the weak-dependency syntax below: the
+# feature is *positive* — it adds honouring the machine's proxy — and a
+# consumer turns it off with `default-features = false`, which is the
+# contract everybody already knows. A feature that turned proxying *off*
+# would have been the wrong shape: Cargo unifies features, so one crate
+# in a dependency tree could have taken it away from every other.
+default = ["idn", "public-suffix", "system-proxy"]
 # Internationalised domain names, forwarded to `hclient-proto`, where the
 # conversion lives (`uri::parse`) so that every backend gets the same
 # behaviour without going through this facade. ON by default: it is what
@@ -83,7 +90,12 @@ default-transport = [
     "dep:hclient-tls-rustls",
     "dep:hclient-dns-system",
     "dep:hclient-fetch",
-    "hclient-native/system-proxy",
+    # The proxy *types*, which cost no dependency (`hclient-native`'s own
+    # `proxy` feature has no `dep:` line) and which `DefaultTransport`
+    # names: the alias says `HttpConnect` whether or not a proxy is
+    # configured, so it has to resolve in every build that has a default
+    # transport at all.
+    "hclient-native/proxy",
 ]
 # HTTP/2 and HTTP/3 for `Client::new()`, and the pair is deliberately two
 # features per protocol rather than one.
@@ -111,13 +123,22 @@ default-transport = [
 # the feature configures is the transport `Client::new` builds, so a build
 # that has no such transport has nothing for this to switch on.
 proxy = ["default-transport", "hclient-native/proxy"]
-# The machine's own proxy settings — `DefaultTransport::system_proxy`.
-# Implies `proxy` because it is the same machinery with a different source
-# for the values, and it adds `hclient-system-proxy`, which carries `url`
-# and the ICU tables on Windows and macOS. That cost is the reason the
-# reader is a crate rather than a module, and the reason this is a feature
-# of its own rather than part of `proxy`.
-system-proxy = ["proxy", "hclient-native/system-proxy"]
+# Honour the machine's own proxy settings in `Client::new` — on by
+# default, and off with `default-features = false`.
+#
+# **`hclient-native?/system-proxy`, with the question mark**, and that is
+# what lets this sit in `default` at all. The weak form enables the
+# feature only where `hclient-native` is *already* in the graph, so a
+# build without `default-transport` — the browser, WASI, or somebody
+# bringing their own transport — is untouched by it. The plain form would
+# have pulled `hclient-native` in, and with it tokio, rustls and the
+# system resolver, into every graph that took this crate's defaults;
+# that is the floor this workspace reversed `default-transport` out of
+# `default` for, and it is the whole reason the question mark is here.
+#
+# What it costs where it does apply: nothing on Linux, where the
+# environment needs no crate, four crates on Windows and six on macOS.
+system-proxy = ["hclient-native?/system-proxy"]
 http2 = ["default-transport", "hclient-native/http2"]
 http3 = [
     "default-transport",

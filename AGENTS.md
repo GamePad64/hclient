@@ -2875,8 +2875,8 @@ of it without naming `hclient-native` — with `hclient::default_transport()`
 as the piece that was missing, since a proxy is configured **on the
 transport** and there was no way to get one from the facade.
 
-**`Client::new()` reads them, and that is the good-citizen half.** No
-feature to switch on beyond `default-transport`, and no call: a
+**`Client::new()` reads them, and that is the good-citizen half.** It is
+the `system-proxy` feature, **in `default`**, and no call: a
 convenience constructor that ignored `HTTPS_PROXY` would be the one
 program on the machine that does, and a port from curl or reqwest — both
 of which honour it by default — would silently start going direct.
@@ -2884,6 +2884,28 @@ of which honour it by default — would silently start going direct.
 seam for configuring a transport and `unix_socket` refuses when a proxy
 is configured: a chain that failed on machines with an `HTTP_PROXY` and
 not on others is worse than an explicit line.
+
+**The feature is positive and sits in `default`, which took the weak
+form to be affordable.** `system-proxy = ["hclient-native?/system-proxy"]`
+— with the question mark — reaches the transport only where the transport
+is already in the graph, so a build without `default-transport` pays
+nothing and a consumer turns the behaviour off with
+`default-features = false`. The plain form would have pulled
+`hclient-native` in, and tokio, rustls and the system resolver with it,
+into every graph that took this crate's defaults: the floor
+`default-transport` was reversed out of `default` for, arriving by the
+back door. `just graph-default-has-no-transport` asserts both directions
+and was checked by deleting the `?` and watching it fail.
+
+**A feature that turned proxying off was the shape considered first and
+it is the wrong one.** Cargo unifies features, so a negative switch is
+unified too: one crate in a dependency tree could take proxying away from
+every other, silently. A positive default that a consumer drops with
+`default-features = false` puts the decision with the build that wants
+it, which is the contract everybody already knows. The runtime lever —
+`Client::builder(default_transport()?)`, which reads nothing — answers
+the other question, and is pinned by `tests/proxy_default.rs` rather than
+described.
 
 That split needed a second translation rather than a second policy.
 `http_proxies` **refuses** a configuration this client cannot express in
