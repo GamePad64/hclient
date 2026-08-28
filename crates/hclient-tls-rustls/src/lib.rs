@@ -13,6 +13,8 @@
 //! the crate at all (`E0453`).
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "dangerous-insecure")]
+mod insecure;
 #[cfg(feature = "quic")]
 mod quic;
 mod stream;
@@ -83,6 +85,61 @@ impl Rustls {
             #[cfg(feature = "quic")]
             quic: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// **Accepts any certificate from any server** — `curl -k`, `curl
+    /// --insecure`, and behind this crate's `dangerous-insecure` feature.
+    ///
+    /// # What it is for, and what it is not for
+    ///
+    /// Reaching a host whose certificate this machine cannot verify and
+    /// whose identity the caller is establishing some other way: a
+    /// development server with a self-signed certificate, a device on a
+    /// local network with a certificate for a name that is not in DNS, a
+    /// staging environment behind an internal CA nobody installed. In
+    /// every one of those the caller already knows what they are talking
+    /// to.
+    ///
+    /// It is **not** a way to make a stubborn certificate error go away in
+    /// production. A connection made this way is confidential and
+    /// integrity-protected against somebody watching, and offers nothing
+    /// at all against somebody *interposing*: an active attacker presents
+    /// their own certificate and is believed, which is precisely the
+    /// attack verification exists to stop.
+    ///
+    /// # What stays on
+    ///
+    /// Signature verification. The handshake still proves the peer holds
+    /// the key for the certificate it sent; what is gone is the question
+    /// of whose certificate that is — the chain, the expiry and the name.
+    /// See `insecure::AcceptAnyServer` for why that split is the one to
+    /// make.
+    ///
+    /// # It cannot share a connection with a verifying client
+    ///
+    /// This is an ordinary constructor, so it draws a fresh
+    /// [`TlsConfigId`] like every other, and that identity is part of
+    /// `hclient-native`'s pool key. A `Client` built this way therefore
+    /// cannot be handed a pooled connection that was established under
+    /// verification, or the reverse — which matters because the reverse is
+    /// the dangerous direction and is the one a shared pool would
+    /// otherwise allow.
+    #[cfg(feature = "dangerous-insecure")]
+    pub fn danger_accept_invalid_certs() -> Self {
+        // The provider the config will use, so the signature checks that
+        // remain are the ones this build actually ships.
+        let provider = rustls::crypto::CryptoProvider::get_default().map_or_else(
+            || std::sync::Arc::new(rustls::crypto::ring::default_provider()),
+            std::sync::Arc::clone,
+        );
+        let verifier = std::sync::Arc::new(insecure::AcceptAnyServer::new(provider.clone()));
+        let cfg = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("the default provider supports the default protocol versions")
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth();
+        Self::from_config(std::sync::Arc::new(cfg))
     }
 
     #[cfg(feature = "webpki-roots")]

@@ -60,6 +60,10 @@ use std::fmt::Debug;
 pub struct NativeTls {
     identity: Option<native_tls::Identity>,
     roots: Vec<native_tls::Certificate>,
+    /// See [`NativeTls::danger_accept_invalid_certs`]. Not behind a
+    /// `#[cfg]`, so the struct has one layout in every build; only the
+    /// constructor that can set it is gated.
+    insecure: bool,
     /// See [`TlsConfigId`]. Redrawn by every builder method below that
     /// changes a trust decision, which is what keeps it honest under
     /// `Clone`: cloning copies a configuration, so the copy is genuinely
@@ -79,6 +83,7 @@ impl Default for NativeTls {
         Self {
             identity: None,
             roots: Vec::new(),
+            insecure: false,
             config_id: TlsConfigId::new_unique(),
         }
     }
@@ -106,6 +111,46 @@ impl NativeTls {
     /// A client certificate, for mutual TLS.
     pub fn identity(mut self, identity: native_tls::Identity) -> Self {
         self.identity = Some(identity);
+        self.config_id = TlsConfigId::new_unique();
+        self
+    }
+
+    /// **Accepts any certificate from any server** — `curl -k`, behind this
+    /// crate's `dangerous-insecure` feature.
+    ///
+    /// Same purpose and same warning as
+    /// `hclient_tls_rustls::Rustls::danger_accept_invalid_certs`: for a
+    /// host whose identity the caller establishes some other way, never
+    /// for making a certificate error go away in production. The
+    /// connection stays confidential against an observer and offers
+    /// nothing against an active attacker, who presents their own
+    /// certificate and is believed.
+    ///
+    /// # What is turned off is broader here than under rustls
+    ///
+    /// This sets `native_tls`'s `danger_accept_invalid_certs` **and**
+    /// `danger_accept_invalid_hostnames`, because whether the first
+    /// subsumes the second is a fact about the platform rather than about
+    /// the setting. Measured in `native-tls` 0.2.18: the OpenSSL backend
+    /// implements the certificate flag as `set_verify(NONE)`, which drops
+    /// the name check with everything else, while SChannel and
+    /// Security.framework forward the two independently. A development
+    /// certificate is routinely for a name the caller is not using, so
+    /// setting only the first would make this method mean different
+    /// things on Linux and on Windows. What it does
+    /// **not** do is the finer split the rustls backend makes: there,
+    /// signature verification stays on and only the chain, the expiry and
+    /// the name are skipped. `native-tls` exposes no seam for that — the
+    /// platform stacks behind it verify as one operation — so this is the
+    /// coarser of the two, and it is worth knowing which backend a build
+    /// is on before relying on the difference.
+    ///
+    /// Like every other builder method here it redraws the
+    /// [`TlsConfigId`], so a connection established under verification
+    /// cannot be handed to a client built this way, or the reverse.
+    #[cfg(feature = "dangerous-insecure")]
+    pub fn danger_accept_invalid_certs(mut self) -> Self {
+        self.insecure = true;
         self.config_id = TlsConfigId::new_unique();
         self
     }
@@ -181,6 +226,10 @@ impl TlsConnect for NativeTls {
         }
         for root in self.roots.iter().cloned() {
             builder.add_root_certificate(root);
+        }
+        if self.insecure {
+            builder.danger_accept_invalid_certs(true);
+            builder.danger_accept_invalid_hostnames(true);
         }
         let protocols: Vec<&str> = match req
             .alpn

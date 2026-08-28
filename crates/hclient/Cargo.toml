@@ -146,6 +146,18 @@ http3 = [
     "hclient-rt-tokio/udp",
     "hclient-tls-rustls/quic",
 ]
+# `curl -k` reached through the facade, so a caller who wants it does not
+# have to name `hclient-tls-rustls` and build its own transport. The `?`
+# is the same weak form `system-proxy` uses: it reaches the TLS backend
+# only where that backend is already in the graph, so a build without
+# `default-transport` pays nothing for the name existing here.
+#
+# It is deliberately NOT in `default`. Cargo unifies features, so a
+# default would be a floor: one careless crate in a dependency tree would
+# put a verification-skipping code path into every other crate's binary,
+# and the party who wanted it verified is not the party who decides. That
+# is the argument this workspace applied to `default-transport` itself.
+dangerous-insecure = ["hclient-tls-rustls?/dangerous-insecure"]
 default-http2 = ["http2"]
 default-http3 = ["http3"]
 # `Collected::json`. Off by default: measured on a real wasm32-unknown-unknown

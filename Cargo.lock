@@ -1456,9 +1456,12 @@ dependencies = [
  "futures-io",
  "hclient-core",
  "hclient-rt",
+ "hclient-rt-tokio",
  "hclient-tls",
  "hyper",
  "native-tls",
+ "rcgen",
+ "tokio",
 ]
 
 [[package]]

@@ -14,6 +14,17 @@ repository.workspace = true
 all-features = true
 
 [features]
+# Certificate verification, switchable off — `Rustls::danger_accept_invalid_certs`.
+#
+# **A feature rather than always-present, and the argument is not the
+# floor one.** Cargo unifies features, so this being on somewhere makes
+# the constructor *available* everywhere in that graph — but a constructor
+# is not a behaviour: nothing calls it by accident, and a build that never
+# names it is unchanged. What the feature buys is the other direction:
+# a deployment that must be able to say "this binary contains no path that
+# skips verification" can say it, and `cargo tree -e features` is the
+# evidence. That is worth a flag; being hard to reach by accident is not.
+dangerous-insecure = []
 default = []
 platform-verifier = ["dep:rustls-platform-verifier"]
 # HTTP/3's TLS, behind a feature and off by default: it pulls
