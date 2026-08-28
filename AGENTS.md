@@ -1510,6 +1510,16 @@ make, producing a silently wrong request. A scheme followed by `//` is a
 named refusal now, while `https:x` stays an ordinary header, so the
 refusal is exactly as wide as the mistake.
 
+**What it costs, which the research had listed as unmeasured.** The
+default build — both TLS backends, tokio, the system resolver, four
+decompressors, cookies, JSON, digest auth — is **144 crates and 5.2 MiB
+stripped** on the ordinary release profile, against a two-backend probe
+with no argument parsing at 3.30 MiB. Ubuntu's curl is 334 KB **plus 33
+shared libraries**, so the honest comparison is one file against
+thirty-four rather than 5.2 MiB against 334 KB. Nothing here is tuned:
+`opt-level = "z"`, LTO and `panic = "abort"` are untried, and the number
+is the default profile's.
+
 **And it found a gap in the library it is written on**, recorded here
 because the route to finding it generalises: `--http 2` had been wired to
 a header nothing reads. `Capabilities` report the floor, so this file
