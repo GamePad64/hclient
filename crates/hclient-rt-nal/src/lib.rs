@@ -111,6 +111,22 @@ pub mod reexport {
 /// adapt!(Wrong, LocalStack);
 /// ```
 ///
+/// # Visibility is the caller's, and it has to be
+///
+/// `adapt!(MyRuntime, Stack)` generates a private adapter and
+/// `adapt!(pub MyRuntime, Stack)` a public one. The two must not disagree
+/// with the stack's own: a `pub` adapter over a private stack is
+/// `E0446: private type in public interface`, because the stack's type is
+/// in the adapter's field and in the `Connection<'static>` its `Stream`
+/// names. That is inherent rather than a macro limitation — an adapter
+/// visible where its stack is not could not be constructed by anyone who
+/// can see it.
+///
+/// Defaulting to private is Rust's own default, and it is what this
+/// crate's first doc example accidentally proved was needed: written with
+/// a private `MyStack`, it did not compile until the macro stopped
+/// forcing `pub`.
+///
 /// `TcpOpts` are **not** applied: `embedded-nal-async` exposes no socket
 /// options at all, so `APPLIES` stays at `TcpOptsSupport::NONE` and a
 /// caller who set one gets the named `Unsupported` the seam already
@@ -118,14 +134,14 @@ pub mod reexport {
 /// rule for every capability constant.
 #[macro_export]
 macro_rules! adapt {
-    ($name:ident, $stack:ty) => {
+    ($vis:vis $name:ident, $stack:ty) => {
         // The one place this crate declares the bound, and it is
         // amendment C15's subject exactly: an implementor naming the auto
         // traits of its **own** future. The macro puts that declaration at
         // the concrete stack, where it is inferred rather than proven —
         // and a stack that cannot keep it fails here, which is the
         // `compile_fail` fence above.
-        $crate::__adapt_impl!($name, $stack, + ::core::marker::Send); // send-bound-exception: amendment-C15
+        $crate::__adapt_impl!($vis $name, $stack, + ::core::marker::Send); // send-bound-exception: amendment-C15
     };
 }
 
@@ -144,16 +160,16 @@ macro_rules! adapt {
 /// one thread whatever `T` is.
 #[macro_export]
 macro_rules! adapt_local {
-    ($name:ident, $stack:ty) => {
-        $crate::__adapt_impl!($name, $stack,);
+    ($vis:vis $name:ident, $stack:ty) => {
+        $crate::__adapt_impl!($vis $name, $stack,);
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __adapt_impl {
-    ($name:ident, $stack:ty, $($send:tt)*) => {
-        pub struct $name(pub &'static $stack);
+    ($vis:vis $name:ident, $stack:ty, $($send:tt)*) => {
+        $vis struct $name($vis &'static $stack);
 
         impl $crate::reexport::hclient_rt::TcpConnect for $name {
             type Stream = $crate::NalIo<

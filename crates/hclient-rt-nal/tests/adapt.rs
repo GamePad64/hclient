@@ -171,3 +171,55 @@ fn the_local_stack_is_a_real_runtime_too() {
     let io = futures_executor::block_on(rt.connect(addr(), &TcpOpts::default()));
     assert!(io.is_ok(), "adapt_local! must produce a working runtime");
 }
+
+// Both visibilities compile, which is what makes the parameter real rather
+// than accepted-and-ignored: a `pub` adapter over a `pub` stack, and a
+// private one over a private stack — the shape the crate's own first doc
+// example needs, and which forcing `pub` used to reject with
+// `E0446: private type in public interface`.
+mod visibility {
+    struct PrivateStack(#[allow(dead_code, reason = "only its type matters")] std::rc::Rc<()>);
+    #[allow(dead_code, reason = "declared to be adapted, never connected")]
+    struct PrivateConn;
+    impl embedded_io_async::ErrorType for PrivateConn {
+        type Error = embedded_io_async::ErrorKind;
+    }
+    impl embedded_io_async::Read for PrivateConn {
+        async fn read(&mut self, _b: &mut [u8]) -> Result<usize, Self::Error> {
+            Ok(0)
+        }
+    }
+    impl embedded_io_async::Write for PrivateConn {
+        async fn write(&mut self, b: &[u8]) -> Result<usize, Self::Error> {
+            Ok(b.len())
+        }
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    impl embedded_nal_async::TcpConnect for PrivateStack {
+        type Error = embedded_io_async::ErrorKind;
+        type Connection<'a>
+            = PrivateConn
+        where
+            Self: 'a;
+        async fn connect<'a>(
+            &'a self,
+            _r: core::net::SocketAddr,
+        ) -> Result<Self::Connection<'a>, Self::Error> {
+            Ok(PrivateConn)
+        }
+    }
+
+    // Private stack, private adapter — the default.
+    hclient_rt_nal::adapt_local!(PrivateRt, PrivateStack);
+    // And the public form, over this file's public double.
+    hclient_rt_nal::adapt!(pub PublicRt, crate::support::SendStack);
+
+    #[test]
+    fn both_visibilities_expand() {
+        fn is_connect<T: hclient_rt::TcpConnect>() {}
+        is_connect::<PrivateRt>();
+        is_connect::<PublicRt>();
+    }
+}
