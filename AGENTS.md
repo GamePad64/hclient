@@ -1468,6 +1468,57 @@ first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### The mock was built for this workspace's tests and not for anybody else's
+
+`hclient-mock` is used by 35 files here and had **no test of its own and
+no doc example**. Asked whether it is good for a library user writing unit
+tests, the only honest way to answer was to write one from outside the
+workspace — the same instrument that found `require_version` missing. It
+took three failed compiles, and the fourth still could not make the
+commonest assertion there is.
+
+**Five walls.** `push_response` took `&'static str`, so a body built at
+run time did not compile. `MockTransport` was not `Clone`, and
+`Client::builder` takes its transport by value, so a test had to hand the
+mock over and reach back through `transport_as`. **The request body was
+not recorded at all** — only its `size_hint` — so *"my code posted the
+right JSON"* could not be written. There was no way to ask whether a
+scripted response went unused. And there was no example of any of it.
+
+All five are closed. What is worth carrying forward is **why the obvious
+fix to the third one is wrong.** Recording a `Rewindable` body by calling
+its factory broke `hclient`'s
+`a_rewindable_body_is_replayed_from_the_snapshot_taken_before_the_first_attempt`
+inside a minute: that test counts factory calls to pin *one snapshot per
+hop, not one per attempt* — a claim about the **client** — and the mock
+had become a second caller. Purity is not the question; the contract makes
+the *result* the same and says nothing about a caller counting calls. So
+the factory is handed to the test as a factory and `snapshot()` is the
+opt-in, where the extra call is the test's own choice. This crate's own
+doc, applied to itself: *a faithful model of a backend, not something that
+masks the defect under test.*
+
+`RecordedBody` therefore has four cases rather than an `Option<Bytes>` —
+"no body", "a body this mock will not read for you" and "a body nothing
+can read twice" are different facts, and a streaming body is
+`NotRecorded` rather than `Empty` because a silent empty would pass a test
+that an honest refusal fails. It is `PartialEq` and deliberately not
+`Eq`: a closure cannot keep reflexivity.
+
+**Request matching is refused with a reason**, not omitted: the flows this
+double exists for — a redirect chain, a `425` replay, a retry — are
+**ordered**, and a matcher would let a test pass while the code made its
+requests in the wrong order.
+
+**The pattern across three findings this week is now clear enough to
+state.** `require_version` was unreachable from the builder while the file
+testing it built requests by hand; `hclient-mock` was comfortable for
+tests written beside it and awkward for tests written against it; and the
+CLI's backend refusal could not fail in the configuration CI runs. In each
+case the workspace's own tests were the wrong instrument, because they
+share the author's knowledge of where the doors are. **Writing a consumer
+is a different measurement from writing a test.**
+
 ### A CLI, and the mutation that survived is what it is for
 
 `crates/hclient-cli`, binary `hc` — httpie's request-item grammar,
