@@ -3884,14 +3884,31 @@ where `http3` switches `tests/send_future.rs` off. `just test-no-default`
 runs this crate's suite under `--features http2`, which is where it is
 checked now — 282 tests.
 
-**What is left, measured rather than listed from memory:**
+**What is left, re-measured on 2026-08-28 from outside the workspace —
+and three of the four rows this table used to carry were stale.** They
+were each written truthfully and then fixed by C15 and C16 without the
+table being re-read, which is this file's own rule about a claim being as
+perishable as the thing it describes, met once more.
 
-| `dyn` with no auto trait | what it costs | why it stays |
+| what | measured | |
 |---|---|---|
-| `erased::BoxExchange` | `Client::execute`'s future | bounding it is the bound that excludes `hclient-rt-embassy` — deliberate, amendment C14's own paragraph |
-| `http3::arm`'s three boxes | `Native::execute` under `http3` | the blanket impl would have to prove `StagedConnect::connect`'s RPITIT `Send`, and behind it `Resolve` — the DoH decision |
-| `hclient-tower`'s `type Future` | the tower `Service` | needs return type notation, `E0658` on 1.98 — and its other half is paid now |
-| ~~`hclient-fetch`'s WebSocket `Closure`s~~ | — | **closed**: `Arc<Mutex<..>>` and the existing `SingleThreaded`, see below |
+| `Client`, its request future, `Response`, `ClientBody`, `Collected`, `Error` | **all `Send`** | asserted from a scratch crate depending on `hclient` by path |
+| `Native::execute`, plain | **`Send`** | |
+| `Native::execute` **with the `http3` arm installed** | **`Send`** | the bounds live on the opt-in `Native::http3`, amendment C15 — the row that used to say the blanket impl could not prove them |
+| `hclient-tower`'s `Service::call` future | **`Send`** | its `type Future` has declared `Send` since C16; the row saying it needs return type notation outlived the fix |
+| a transport whose resolver is `hclient-dns-doh::Doh` | **`!Send`** | `dyn Stream<Item = Result<SvcbEndpoint, Error>>` boxed plain, named by the compiler |
+| `hclient-fetch` | `!Send` under `+atomics` by nature | a JS `WebSocket` belongs to the realm that made it |
+
+**So DoH is the one left, and the repair now exists where it did not.**
+The recorded reason — *DoH resolves through a generic `C: Transport`
+whose `execute` is an RPITIT, so its streams cannot be declared `Send`* —
+was true when it was written and stopped being true when `SendTransport`
+landed: `execute_send` hands back `BoxSendExchange`, a **named** type. A
+`Doh<C>` built on `C: SendTransport` could name its streams and infer the
+property, at the cost of narrowing the bound. That narrowing looks worse
+than it is — the case it excludes is a `Send` outer transport resolving
+through a `!Send` inner one, which nobody assembles — but it is a public
+narrowing and has not been made. Measured, not done.
 
 Everything else that grep finds is a trait object whose trait already
 declares `Send` (quinn's `AsyncTimer`, `AsyncUdpSocket`, rustls'
