@@ -237,3 +237,90 @@ the caller the `Blocker` trait is for — they pass their own
 `block_on` and never call `new()` — so the cost falls on the convenience
 constructor rather than on the facade, which is where a convenience's
 costs belong.
+
+## Parked, and what the design conversation settled before it was
+
+The facade was built to the shape above — `Blocker`, `Client<B>`,
+`RequestBuilder`, `Response`, seven tests green including a live socket —
+and is **parked rather than merged**, at the owner's call. What follows is
+the part worth more than the code: what was measured, so that the next
+attempt does not re-derive it.
+
+### The surface is three methods, and that is a measurement
+
+Across the whole of `hclient`'s request/response API there are exactly
+**three** `async fn`: `RequestBuilder::send`, `Response::chunk` and
+`Response::collect`. Every builder method, every header accessor, and the
+entire `Collected` type are already synchronous.
+
+Two consequences follow directly. `Collected` is handed back **unwrapped**,
+because wrapping a type that never awaited anything would be a second name
+for one type — where this facade has no wrapper is where the split is
+honest. And the facade cannot drift into a second implementation, because
+there are only three places it could.
+
+### Why the convenience constructor is tokio, measured rather than assumed
+
+The reason first given — *it costs no new dependency* — is true and is not
+what decides it. Measured:
+
+| | tokio (`current_thread`) | smol (bare `block_on` + `async-io`) |
+|---|---|---|
+| crates | **87** | 106 |
+| `tokio` in the graph | yes | **yes anyway** — via `hyper`, unconditionally |
+| `tokio`'s features | `default,libc,mio,net,rt,socket2,sync,time` | `default,sync` — the inert leaf |
+| threads for one blocking call | **1** | **2** |
+| reuses `DefaultTransport` | yes | no |
+
+**smol does not remove `tokio` from the graph**, because `hyper` depends on
+it unconditionally — a fact this workspace already records and which was
+re-confirmed here. What smol removes is the *reactor*: the crate stays and
+the feature set shrinks.
+
+**And it pays a thread for that.** `async-io` starts its own reactor on a
+thread of its own, which is exactly what lets it work under a bare
+`block_on` — and is a second thread in a synchronous program that asked for
+no asynchrony at all. A `current_thread` tokio runtime drives IO on the
+calling thread inside `block_on`.
+
+**The third reason is this design's own rule one level up.**
+`DefaultTransport` is `Native<Tokio, Rustls, SystemDns<Tokio>>`, so a smol
+default would have to be assembled here out of four crates — a **second
+statement of what a default client is**.
+
+**The honest counter-argument for smol**, which the choice does not
+dissolve: with smol the blocker is a **ZST**, so the facade owns no runtime,
+`Client` is trivially `Clone` and `Send`, and the lifetime question below
+mostly evaporates. An `Arc<B>` answers the same question without the second
+assembly.
+
+**What the choice does not decide** is anybody's reach: `Blocker` makes
+this a fact about the zero-configuration path alone, and
+`Client::with(my_blocker, my_client)` is available whatever the default is.
+Which is why the fourth option is coherent and was named: **no `new()` at
+all**, no optional dependency, no runtime imposed — at the price that the
+caller arriving from `ureq` does not get what they came for.
+
+### Three open decisions, with their leanings
+
+1. **The lifetime on `Response`.** As built it borrows the blocker from
+   the client, so a response cannot outlive the client — zero cost, and a
+   function that builds a client locally cannot return a response.
+   `B: Clone` is the obvious alternative and fails immediately, because
+   `tokio::runtime::Runtime` is not `Clone`. **`Arc<B>` inside `Client`**
+   is the lean: one allocation per client, `Client: Clone` becomes
+   unconditional, and it matches the owned `reqwest::blocking::Response` a
+   porting caller expects.
+2. **How much to forward.** As built: nine methods plus a `map` escape
+   hatch taking `FnOnce(hclient::RequestBuilder) -> hclient::RequestBuilder`.
+   `map` is the guarantee — a method added to `hclient` is reachable here
+   the day it lands, so the forwarded list can never be the reason a
+   request cannot be expressed. The lean is to forward **all thirteen** and
+   keep `map` as the guarantee rather than as the route.
+3. **How a blocking caller builds a *configured* client**, which the
+   original design did not consider and is sharper than 2. `Client::new()`
+   takes no settings, and building a configured async client needs an
+   ambient runtime because `default_transport()` does. A
+   `blocking::ClientBuilder` would duplicate the surface, against this
+   design's whole rule; the lean is a closure applied **inside** the
+   runtime the facade has already entered.
