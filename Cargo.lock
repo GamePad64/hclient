@@ -1577,6 +1577,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hclient-winhttp"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "bytes",
+ "hclient-core",
+ "hclient-proto",
+ "http",
+ "http-body",
+ "thiserror",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "heapless"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

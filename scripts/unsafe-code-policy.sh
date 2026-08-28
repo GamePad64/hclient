@@ -20,7 +20,7 @@
 # is what the ALLOWED map below is for.
 set -uo pipefail
 
-EXEMPT="hclient-fetch hclient-dns-system hclient-idn hclient-urlsession hclient-proxy hclient-tls-native-tls"   # amendments C7, C8, C9, C11, C13 and C17
+EXEMPT="hclient-fetch hclient-dns-system hclient-idn hclient-urlsession hclient-proxy hclient-tls-native-tls hclient-winhttp"   # amendments C7, C8, C9, C11, C13, C17 and C18
 
 # The one file each amendment excuses, and the token it must be cited by.
 # A directory is never enough: "a marker that excuses a directory excuses
@@ -36,7 +36,8 @@ crates/hclient-idn/src/icu/windows.rs:amendment-C9
 crates/hclient-urlsession/src/delegate.rs:amendment-C11
 crates/hclient-urlsession/src/session.rs:amendment-C11
 crates/hclient-proxy/src/system/read.rs:amendment-C13
-crates/hclient-tls-native-tls/src/stream.rs:amendment-C17"
+crates/hclient-tls-native-tls/src/stream.rs:amendment-C17
+crates/hclient-winhttp/src/sys.rs:amendment-C18"
 fail=0
 
 # A renamed or deleted excused file must fail this check, not quietly stop

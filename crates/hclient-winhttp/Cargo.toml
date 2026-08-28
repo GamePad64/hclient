@@ -1,0 +1,66 @@
+[package]
+name         = "hclient-winhttp"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+description  = "Windows WinHTTP transport for hclient"
+keywords     = ["hclient", "transport", "winhttp", "windows", "proxy"]
+categories   = ["web-programming::http-client", "os::windows-apis"]
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+default-target = "x86_64-pc-windows-msvc"
+
+[dependencies]
+hclient-core  = { workspace = true }
+hclient-proto = { workspace = true }
+http          = { workspace = true }
+http-body     = { workspace = true }
+bytes         = { workspace = true }
+thiserror     = { workspace = true }
+
+# `windows-sys` and nothing else, target-gated so a Linux or wasm build of
+# the workspace resolves none of it — `hclient-dns-system` and
+# `hclient-idn` already depend on this exact version, so a Windows build of
+# the workspace gains no crate by adding this one.
+#
+# Raw FFI rather than the safe `windows` crate, for the reason
+# `hclient-idn` gives about the same choice: `windows-sys` emits a
+# `raw-dylib` import through `windows-link`, so there is no build script
+# and no import library to find. The safe wrappers this crate would want
+# from `windows` do not exist for WinHTTP anyway — its async model is a
+# status callback and a `dwContext`, which no binding generator makes
+# safe.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Networking_WinHttp",
+] }
+
+# The tests here assert the shape of the seam rather than a round trip —
+# see `tests/shape.rs` — so they need the traits and nothing to drive a
+# future with.
+[dev-dependencies]
+hclient-core = { workspace = true }
+bytes = { workspace = true }
+http-body = { workspace = true }
+
+# NOT `[lints] workspace = true`, for the reason `hclient-urlsession`'s
+# manifest gives: the workspace sets `unsafe_code = "forbid"`, and `forbid`
+# cannot be relaxed from inside a crate (E0453). This crate is an **FFI
+# boundary** — every `unsafe` in `src/sys.rs` is a WinHTTP call with the
+# signature `windows-sys` declares, or an obligation WinHTTP's async
+# contract states. The compiler lint is not the control here;
+# `scripts/unsafe-code-policy.sh` is, and it is stricter: a marker on every
+# such line, naming the amendment, in a file listed by name. Amendment C18.
+#
+# Opting out of the workspace table also drops
+# `missing_debug_implementations` and `unexpected_cfgs`, restated below
+# rather than lost silently.
+[lints.rust]
+unsafe_code                   = "allow"
+missing_debug_implementations = "warn"
+unexpected_cfgs               = { level = "warn", check-cfg = [] }

@@ -274,6 +274,46 @@ public where the wrapper's was not — a limitation this crate documented as
 concrete for two verticals and which turned out to be the wrapper's.
 Measured: the graph fell from 66 crates to 32.
 
+**C18 — WinHTTP's asynchronous model is C callbacks and a lent
+buffer**, in `hclient-winhttp/src/sys.rs` and nowhere else in the crate.
+`session.rs`, `body.rs` and `lib.rs` have none at all, which is the check
+the file naming exists to make possible — the split `hclient-dns-system`
+already draws between `sys/` and its parsers.
+
+Three obligations WinHTTP places on a caller, none of which Rust can
+express, and each made structural rather than disciplinary where it
+could be:
+
+**The read buffer belongs to WinHTTP between `WinHttpReadData` and
+`READ_COMPLETE`.** So while it is lent there is no `Box` — the buffer is
+an enum, `Home(Box<[u8]>)` or `Loaned { ptr, len }`, and the hand-off is
+`Box::into_raw` with `Box::from_raw` on the completion. Safe code above
+this file cannot read bytes WinHTTP is still writing, because the value
+it would read through does not exist.
+
+**The context is a `usize` the callback is handed back.** It is
+`Arc::into_raw` of the shared state, installed with
+`WinHttpSetOption(WINHTTP_OPTION_CONTEXT_VALUE)` **immediately after
+`WinHttpOpenRequest`** rather than passed to `WinHttpSendRequest`, so
+every failure path afterwards still reaches `HANDLE_CLOSING` with a
+reference to release. That is the second obligation: `HANDLE_CLOSING` is
+the last callback a handle ever receives, and it is where the `Arc` is
+reclaimed — and a still-lent buffer with it, so the design leaks nothing
+whether or not a cancelled read reports an error first.
+
+**The request body pointer must outlive the send.** It is a `Bytes` held
+in the shared state until `SENDREQUEST_COMPLETE`: heap-stable and
+immutable, which is the whole of what that needs. Headers avoid the
+question entirely — `WinHttpAddRequestHeaders` is synchronous and copies,
+so `WinHttpSendRequest` is passed a null header pointer.
+
+**What is not verified.** No line of this crate has been run: there is no
+Windows machine here, so the three obligations above are read from
+WinHTTP's documentation rather than observed. They are stated at the
+sites that depend on them for exactly that reason. `cargo check --target
+x86_64-pc-windows-msvc --all-targets` is the whole of what this
+workspace can say about it today.
+
 ## One that is neither
 
 **C6 — a `#[non_exhaustive]` type can only be checked for completeness
