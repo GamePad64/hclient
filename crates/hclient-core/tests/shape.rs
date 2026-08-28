@@ -455,10 +455,10 @@ fn a_non_send_hook_reaches_a_bodys_poll_frame_and_the_transport_still_implements
             let this = self.get_mut();
             if !this.told {
                 this.told = true;
-                this.hooks.on(Event::Closed(Closed {
-                    id: ConnectionId::UNWATCHED,
-                    reason: CloseReason::Ended,
-                }));
+                this.hooks.on(Event::Closed(Closed::new(
+                    ConnectionId::UNWATCHED,
+                    CloseReason::Ended,
+                )));
             }
             Poll::Ready(None)
         }

@@ -295,15 +295,12 @@ impl Resolve for Hinting {
 
     fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
         Box::pin({
-            futures_util::stream::once(std::future::ready(Ok(SvcbEndpoint {
-                priority: 1,
-                target: "example.invalid".to_string(),
-                alpn: Vec::new(),
-                port: Some(self.0),
-                ipv4hint: vec![Ipv4Addr::LOCALHOST],
-                ipv6hint: Vec::new(),
-                ech_config_list: None,
-            })))
+            futures_util::stream::once(std::future::ready(Ok(SvcbEndpoint::new(
+                1,
+                "example.invalid".to_string(),
+            )
+            .port(Some(self.0))
+            .ipv4hint(vec![Ipv4Addr::LOCALHOST]))))
         })
     }
 }

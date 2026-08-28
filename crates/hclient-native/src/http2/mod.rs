@@ -1490,18 +1490,16 @@ where
                 // carrying no error, which is exactly the seam's *"nothing
                 // went wrong — there is simply no second request to be had
                 // on it"*.
-                this.hooks.on(Event::Closed(Closed {
-                    id: this.id,
-                    reason: CloseReason::Ended,
-                }));
+                this.hooks
+                    .on(Event::Closed(Closed::new(this.id, CloseReason::Ended)));
                 Poll::Ready(())
             }
             Poll::Ready(Err(e)) => {
                 let error = from_h2_error(e, ErrorKind::Connect);
-                this.hooks.on(Event::Closed(Closed {
-                    id: this.id,
-                    reason: CloseReason::Failed(&error),
-                }));
+                this.hooks.on(Event::Closed(Closed::new(
+                    this.id,
+                    CloseReason::Failed(&error),
+                )));
                 Poll::Ready(())
             }
             // The connection is alive, so the keep-alive gets its turn.
@@ -1517,10 +1515,10 @@ where
                     Lapsed::NoPong => Error::new(ErrorKind::Connect, PingNotAnswered),
                     Lapsed::Broken(e) => from_h2_error(e, ErrorKind::Connect),
                 };
-                this.hooks.on(Event::Closed(Closed {
-                    id: this.id,
-                    reason: CloseReason::Failed(&error),
-                }));
+                this.hooks.on(Event::Closed(Closed::new(
+                    this.id,
+                    CloseReason::Failed(&error),
+                )));
                 // Dropping the driver drops the connection, which is what
                 // ends it: there is no `GOAWAY` to send to a peer that has
                 // stopped answering.

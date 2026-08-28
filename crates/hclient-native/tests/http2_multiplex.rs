@@ -294,15 +294,7 @@ impl TlsConnect for FakeTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        std::future::ready({
-            Ok((
-                io,
-                TlsInfo {
-                    alpn: Some(b"h2".to_vec()),
-                    ..Default::default()
-                },
-            ))
-        })
+        std::future::ready(Ok((io, TlsInfo::default().alpn(Some(b"h2".to_vec())))))
     }
 }
 
@@ -1737,12 +1729,6 @@ impl<S: Unpin> std::future::Future for SlowHandshake<S> {
             )));
         }
         let io = self.io.take().expect("polled after Ready");
-        std::task::Poll::Ready(Ok((
-            io,
-            TlsInfo {
-                alpn: Some(b"h2".to_vec()),
-                ..Default::default()
-            },
-        )))
+        std::task::Poll::Ready(Ok((io, TlsInfo::default().alpn(Some(b"h2".to_vec())))))
     }
 }

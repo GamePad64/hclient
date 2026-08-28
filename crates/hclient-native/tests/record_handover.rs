@@ -74,10 +74,7 @@ fn get(uri: String) -> http::Request<RequestBody> {
 /// A ServiceMode record that moves a connection: the origin's service is
 /// at `port`, and it speaks HTTP/1.1.
 fn record_at(port: u16) -> SvcbEndpoint {
-    SvcbEndpoint {
-        port: Some(port),
-        ..service_record(1, &[b"http/1.1"])
-    }
+    service_record(1, &[b"http/1.1"]).port(Some(port))
 }
 
 /// An empty trust store: for the arms where nothing is meant to complete a

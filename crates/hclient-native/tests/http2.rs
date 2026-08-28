@@ -258,10 +258,7 @@ impl TlsConnect for FakeTls {
                 .push(req.alpn.iter().map(|p| p.to_vec()).collect());
             Ok((
                 io,
-                TlsInfo {
-                    alpn: self.negotiated.map(|p| p.to_vec()),
-                    ..Default::default()
-                },
+                TlsInfo::default().alpn(self.negotiated.map(|p| p.to_vec())),
             ))
         })
     }

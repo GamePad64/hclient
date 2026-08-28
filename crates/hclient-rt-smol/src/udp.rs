@@ -219,16 +219,13 @@ impl UdpDatagrams for SmolUdpSocket {
             match attempt {
                 Ok(n) => {
                     for (dst, src) in meta.iter_mut().zip(theirs.iter().take(n)) {
-                        *dst = RecvMeta {
-                            addr: src.addr,
-                            len: src.len,
-                            stride: src.stride,
-                            // `quinn-udp` leaves this `None` when the
-                            // platform did not report the bits, and it must
-                            // stay `None` here — see `RecvMeta::ecn`.
-                            ecn: src.ecn.map(from_quinn),
-                            dst_ip: src.dst_ip,
-                        };
+                        // `ecn` stays `None` where `quinn-udp` left it —
+                        // the platform did not report the bits, and
+                        // `RecvMeta::ecn` says why that must not be filled
+                        // in.
+                        *dst = RecvMeta::new(src.addr, src.len, src.stride)
+                            .ecn(src.ecn.map(from_quinn))
+                            .dst_ip(src.dst_ip);
                     }
                     return Poll::Ready(Ok(n));
                 }

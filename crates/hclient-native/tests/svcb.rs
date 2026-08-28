@@ -303,15 +303,7 @@ impl Resolve for FakeDns {
 /// A ServiceMode record (priority 1) with nothing set — each test adds the
 /// one parameter it is about.
 fn service_record() -> SvcbEndpoint {
-    SvcbEndpoint {
-        priority: 1,
-        target: ORIGIN.to_string(),
-        alpn: Vec::new(),
-        port: None,
-        ipv4hint: Vec::new(),
-        ipv6hint: Vec::new(),
-        ech_config_list: None,
-    }
+    SvcbEndpoint::new(1, ORIGIN.to_string())
 }
 
 // --- the client ---------------------------------------------------------
@@ -422,10 +414,7 @@ fn origin_uri() -> String {
 #[tokio::test]
 async fn the_port_from_the_record_is_where_the_connection_goes() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(service_record().port(Some(peer.port())));
 
     request(&transport(dns), &origin_uri()).await;
 
@@ -450,10 +439,7 @@ async fn the_port_from_the_record_is_where_the_connection_goes() {
 async fn a_resolver_that_says_it_cannot_ask_is_not_asked() {
     let peer = Peer::start();
     let dns = FakeDns::with_loopback()
-        .serving(SvcbEndpoint {
-            port: Some(peer.port()),
-            ..service_record()
-        })
+        .serving(service_record().port(Some(peer.port())))
         .but_cannot_ask();
 
     request(&transport(dns), &origin_uri()).await;
@@ -473,10 +459,7 @@ async fn a_resolver_that_says_it_cannot_ask_is_not_asked() {
 async fn a_record_is_not_applied_to_a_uri_that_named_its_own_port() {
     let peer = Peer::start();
     let elsewhere = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(elsewhere.port()),
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(service_record().port(Some(elsewhere.port())));
 
     // The URI names the peer's port itself. If the record were consulted,
     // the connection would go to `elsewhere` instead.
@@ -506,11 +489,11 @@ async fn a_record_is_not_applied_to_a_uri_that_named_its_own_port() {
 #[tokio::test]
 async fn the_address_hints_reach_happy_eyeballs() {
     let peer = Peer::start();
-    let dns = FakeDns::default().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        ipv4hint: vec![Ipv4Addr::LOCALHOST],
-        ..service_record()
-    });
+    let dns = FakeDns::default().serving(
+        service_record()
+            .port(Some(peer.port()))
+            .ipv4hint(vec![Ipv4Addr::LOCALHOST]),
+    );
 
     request(&transport(dns), &origin_uri()).await;
 
@@ -537,14 +520,14 @@ async fn the_address_hints_reach_happy_eyeballs() {
 #[tokio::test]
 async fn an_ech_publishing_origin_is_still_reachable() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        // Opaque on purpose: the decision must not depend on this parsing,
-        // because an origin that published a malformed config is as
-        // reachable as one that published a good one.
-        ech_config_list: Some(Bytes::from_static(&[0x00, 0x41, 0xfe, 0x0d])),
-        ..service_record()
-    });
+    // The ECH config is opaque on purpose: the decision must not depend on
+    // parsing it, because an origin that published a malformed config is as
+    // reachable as one that published a good one.
+    let dns = FakeDns::with_loopback().serving(
+        service_record()
+            .port(Some(peer.port()))
+            .ech_config_list(Some(Bytes::from_static(&[0x00, 0x41, 0xfe, 0x0d]))),
+    );
 
     request(&transport(dns), &origin_uri()).await;
 
@@ -569,11 +552,11 @@ async fn an_ech_publishing_origin_is_still_reachable() {
 #[tokio::test]
 async fn the_name_a_record_asked_to_protect_goes_out_in_the_clear() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        ech_config_list: Some(Bytes::from_static(&[0x00, 0x41, 0xfe, 0x0d])),
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(
+        service_record()
+            .port(Some(peer.port()))
+            .ech_config_list(Some(Bytes::from_static(&[0x00, 0x41, 0xfe, 0x0d]))),
+    );
 
     request(&transport(dns), &origin_uri()).await;
 
@@ -601,11 +584,11 @@ async fn the_name_a_record_asked_to_protect_goes_out_in_the_clear() {
 #[tokio::test]
 async fn the_record_narrows_the_alpn_offer() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        alpn: vec![b"http/1.1".to_vec()],
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(
+        service_record()
+            .port(Some(peer.port()))
+            .alpn(vec![b"http/1.1".to_vec()]),
+    );
 
     request(&transport(dns), &origin_uri()).await;
 
@@ -636,11 +619,11 @@ async fn the_record_narrows_the_alpn_offer() {
 #[tokio::test]
 async fn forbidding_http1_withdraws_it_from_the_alpn_offer() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        alpn: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(
+        service_record()
+            .port(Some(peer.port()))
+            .alpn(vec![b"h2".to_vec(), b"http/1.1".to_vec()]),
+    );
     let t = transport(dns)
         .http1(false)
         .expect("h2 is compiled in and on by default");
@@ -665,11 +648,11 @@ async fn forbidding_http1_withdraws_it_from_the_alpn_offer() {
 #[tokio::test]
 async fn a_record_that_advertises_h2_leaves_it_in_the_offer() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        alpn: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(
+        service_record()
+            .port(Some(peer.port()))
+            .alpn(vec![b"h2".to_vec(), b"http/1.1".to_vec()]),
+    );
 
     request(&transport(dns), &origin_uri()).await;
 
@@ -687,11 +670,11 @@ async fn a_record_that_advertises_h2_leaves_it_in_the_offer() {
 #[tokio::test]
 async fn h3_in_a_record_is_never_offered_on_the_tcp_path() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        alpn: vec![b"h3".to_vec(), b"h2".to_vec()],
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(
+        service_record()
+            .port(Some(peer.port()))
+            .alpn(vec![b"h3".to_vec(), b"h2".to_vec()]),
+    );
 
     request(&transport(dns), &origin_uri()).await;
 
@@ -718,15 +701,12 @@ async fn h3_in_a_record_is_never_offered_on_the_tcp_path() {
 async fn an_aliasmode_record_does_not_outrank_the_service_it_precedes() {
     let peer = Peer::start();
     let dns = FakeDns::with_loopback()
-        .serving(SvcbEndpoint {
-            priority: 0,
-            target: "alias.example".to_string(),
-            ..service_record()
-        })
-        .serving(SvcbEndpoint {
-            port: Some(peer.port()),
-            ..service_record()
-        });
+        .serving(
+            service_record()
+                .priority(0)
+                .target("alias.example".to_string()),
+        )
+        .serving(service_record().port(Some(peer.port())));
 
     request(&transport(dns), &origin_uri()).await;
 
@@ -748,10 +728,7 @@ async fn an_aliasmode_record_does_not_outrank_the_service_it_precedes() {
 #[tokio::test]
 async fn a_failed_discovery_is_not_repeated_by_the_next_request() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(service_record().port(Some(peer.port())));
     let t = transport(dns);
 
     request(&t, &origin_uri()).await;
@@ -778,10 +755,7 @@ async fn a_failed_discovery_is_not_repeated_by_the_next_request() {
 #[tokio::test]
 async fn the_negative_cache_expires() {
     let peer = Peer::start();
-    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
-        port: Some(peer.port()),
-        ..service_record()
-    });
+    let dns = FakeDns::with_loopback().serving(service_record().port(Some(peer.port())));
     let rt = Skewed::new();
     let t = Native::new(rt.clone(), Rustls::with_webpki_roots(), dns);
 

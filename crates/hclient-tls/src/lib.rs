@@ -163,6 +163,7 @@ pub struct TlsRequest<'a> {
 /// `RedirectSupport::None`/`Transparent` in `hclient-core` and
 /// `supports_svcb()`/the empty stream in `hclient-dns`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TlsInfo {
     /// The negotiated ALPN protocol for this connection — a single item,
     /// the result of negotiation, not the whole proposed list from
@@ -227,6 +228,57 @@ pub struct TlsInfo {
     /// rejection path nobody here has, `425 Too Early`, RFC 8470); it must
     /// not be forced into this one.
     pub early_data_accepted: Option<bool>,
+}
+
+impl TlsInfo {
+    /// Nothing reported, which is the honest starting point: every field
+    /// is what a backend *may* be able to say, and `hclient-tls-native-tls`
+    /// cannot say two of them at all.
+    ///
+    /// Chained setters rather than a literal, because this type is
+    /// `#[non_exhaustive]` and built by TLS backends outside this
+    /// workspace — the attribute protects the reader from a new field, and
+    /// the setters keep the writer able to produce the value at all.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The protocol the peer selected through ALPN.
+    #[must_use]
+    pub fn alpn(mut self, alpn: Option<Vec<u8>>) -> Self {
+        self.alpn = alpn;
+        self
+    }
+
+    /// The peer's certificate chain, DER-encoded, leaf first.
+    #[must_use]
+    pub fn peer_certificates(mut self, certs: Option<Vec<Vec<u8>>>) -> Self {
+        self.peer_certificates = certs;
+        self
+    }
+
+    /// The negotiated protocol version, where the backend exposes one.
+    #[must_use]
+    pub fn protocol_version(mut self, version: Option<String>) -> Self {
+        self.protocol_version = version;
+        self
+    }
+
+    /// The negotiated cipher suite, where the backend exposes one.
+    #[must_use]
+    pub fn cipher_suite(mut self, suite: Option<String>) -> Self {
+        self.cipher_suite = suite;
+        self
+    }
+
+    /// Whether the server accepted early data. `None` where none was
+    /// offered, which is a different fact from `Some(false)`.
+    #[must_use]
+    pub fn early_data_accepted(mut self, accepted: Option<bool>) -> Self {
+        self.early_data_accepted = accepted;
+        self
+    }
 }
 
 /// Which trust configuration a [`TlsConnect`] applies, as a value that can

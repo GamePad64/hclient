@@ -459,13 +459,14 @@ impl<H: Hooks> Transport for WasiHttp<H> {
         // saying the exchange did not succeed, and a `Head` beside it
         // would tell a caller counting heads that it did.
         if began.is_some() {
-            self.hooks.on(Event::Head(Head {
-                id: ConnectionId::UNWATCHED,
-                uri: &parts.uri,
-                status: out.status(),
-                version: None,
-                elapsed: hooks::since(began),
-            }));
+            // `version` unset: `wasi:http@0.3.0` reports no protocol, and
+            // `Capabilities::version_reported` says so.
+            self.hooks.on(Event::Head(Head::new(
+                ConnectionId::UNWATCHED,
+                &parts.uri,
+                out.status(),
+                hooks::since(began),
+            )));
         }
         Ok(out)
     }

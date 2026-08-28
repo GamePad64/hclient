@@ -890,10 +890,7 @@ mod alpn_guard {
             std::future::ready({
                 Ok((
                     io,
-                    hclient_tls::TlsInfo {
-                        alpn: Some(self.0.to_vec()),
-                        ..Default::default()
-                    },
+                    hclient_tls::TlsInfo::default().alpn(Some(self.0.to_vec())),
                 ))
             })
         }

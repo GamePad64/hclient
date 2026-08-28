@@ -183,18 +183,10 @@ fn is_empty_answer(e: &NetError) -> bool {
 /// parameter this client cannot act on is not made visible just because it
 /// was on the wire.
 fn to_endpoint(svcb: &SVCB) -> SvcbEndpoint {
-    let mut out = SvcbEndpoint {
-        priority: svcb.svc_priority,
-        // Trailing dot included: that is the name as the server sent it,
-        // and normalising it here would make the caller's own comparison
-        // against a `Uri` host quietly disagree with the wire.
-        target: svcb.target_name.to_string(),
-        alpn: Vec::new(),
-        port: None,
-        ipv4hint: Vec::new(),
-        ipv6hint: Vec::new(),
-        ech_config_list: None,
-    };
+    // The trailing dot on the target is included: that is the name as the
+    // server sent it, and normalising it here would make the caller's own
+    // comparison against a `Uri` host quietly disagree with the wire.
+    let mut out = SvcbEndpoint::new(svcb.svc_priority, svcb.target_name.to_string());
     for (_, value) in &svcb.svc_params {
         match value {
             SvcParamValue::Alpn(alpn) => {
@@ -332,15 +324,7 @@ mod tests {
     /// only that its own field was filled but that no OTHER field was — which
     /// is what catches a mapping that puts the right value in the wrong home.
     fn bare() -> SvcbEndpoint {
-        SvcbEndpoint {
-            priority: 1,
-            target: "example.com.".to_owned(),
-            alpn: Vec::new(),
-            port: None,
-            ipv4hint: Vec::new(),
-            ipv6hint: Vec::new(),
-            ech_config_list: None,
-        }
+        SvcbEndpoint::new(1, "example.com.".to_owned())
     }
 
     /// One parameter in, exactly one field out — and every other field left
@@ -360,48 +344,36 @@ mod tests {
         // list rather than preserving it cannot match by luck. The order is
         // the server's preference, and h3-before-h2 is the whole point.
         SvcParamValue::Alpn(Alpn(vec!["h3".to_owned(), "http/1.1".to_owned(), "h2".to_owned()])),
-        SvcbEndpoint {
-            alpn: vec![b"h3".to_vec(), b"http/1.1".to_vec(), b"h2".to_vec()],
-            ..bare()
-        },
+        bare().alpn(vec![b"h3".to_vec(), b"http/1.1".to_vec(), b"h2".to_vec()]),
     )]
-    #[case::port(SvcParamValue::Port(8443), SvcbEndpoint { port: Some(8443), ..bare() })]
+    #[case::port(SvcParamValue::Port(8443), bare().port(Some(8443)))]
     #[case::port_zero_is_a_port_that_was_sent_not_an_absence(
         SvcParamValue::Port(0),
-        SvcbEndpoint { port: Some(0), ..bare() },
+        bare().port(Some(0)),
     )]
     #[case::ipv4hint_keeps_every_address_in_order(
         SvcParamValue::Ipv4Hint(IpHint(vec![
             A(Ipv4Addr::new(192, 0, 2, 1)),
             A(Ipv4Addr::new(198, 51, 100, 2)),
         ])),
-        SvcbEndpoint {
-            ipv4hint: vec![Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(198, 51, 100, 2)],
-            ..bare()
-        },
+        bare().ipv4hint(vec![Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(198, 51, 100, 2)]),
     )]
     #[case::ipv6hint_keeps_every_address_in_order(
         SvcParamValue::Ipv6Hint(IpHint(vec![
             AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
             AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2)),
         ])),
-        SvcbEndpoint {
-            ipv6hint: vec![
+        bare().ipv6hint(vec![
                 Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
                 Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2),
-            ],
-            ..bare()
-        },
+            ]),
     )]
     #[case::ech_passes_through_byte_for_byte(
         // Leading and trailing zero bytes: this is an opaque blob handed
         // straight to rustls, and anything that trimmed or truncated it
         // would produce a config that fails only at handshake time.
         SvcParamValue::EchConfigList(EchConfigList(vec![0x00, 0x45, 0xFE, 0x00, 0x00])),
-        SvcbEndpoint {
-            ech_config_list: Some(bytes::Bytes::from_static(&[0x00, 0x45, 0xFE, 0x00, 0x00])),
-            ..bare()
-        },
+        bare().ech_config_list(Some(bytes::Bytes::from_static(&[0x00, 0x45, 0xFE, 0x00, 0x00]))),
     )]
     #[case::no_default_alpn_has_no_field_and_disturbs_none(SvcParamValue::NoDefaultAlpn, bare())]
     #[case::mandatory_has_no_field_and_disturbs_none(

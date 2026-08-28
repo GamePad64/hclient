@@ -182,13 +182,7 @@ impl TlsConnect for SlowTls {
     {
         Box::pin(async move {
             tokio::time::sleep(self.0).await;
-            Ok((
-                stream,
-                TlsInfo {
-                    alpn: Some(b"http/1.1".to_vec()),
-                    ..TlsInfo::default()
-                },
-            ))
+            Ok((stream, TlsInfo::default().alpn(Some(b"http/1.1".to_vec()))))
         })
     }
 

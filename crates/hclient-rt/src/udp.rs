@@ -162,6 +162,7 @@ pub trait UdpDatagrams {
 
 /// One send: a destination, and between one and many datagrams.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Datagrams<'a> {
     pub destination: SocketAddr,
     /// The source address to send from. Needed when the socket is bound to
@@ -186,6 +187,7 @@ pub struct Datagrams<'a> {
 
 /// What one [`UdpDatagrams::poll_recv`] slot received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RecvMeta {
     pub addr: SocketAddr,
     /// Bytes written into the corresponding buffer.
@@ -205,6 +207,78 @@ pub struct RecvMeta {
     /// The destination address encoded in the datagram, where the platform
     /// reports it.
     pub dst_ip: Option<IpAddr>,
+}
+
+impl<'a> Datagrams<'a> {
+    /// A transmission. `destination` and `contents` are what a datagram
+    /// cannot be without; the other three are what a sender may not have
+    /// or may not want, so they are setters — which is also what keeps a
+    /// sixth of them from being a breaking change.
+    #[must_use]
+    pub fn new(destination: SocketAddr, contents: &'a [u8]) -> Self {
+        Self {
+            destination,
+            src_ip: None,
+            ecn: None,
+            segment_size: None,
+            contents,
+        }
+    }
+
+    /// The source address to send from, on a socket bound to more than one.
+    #[must_use]
+    pub fn src_ip(mut self, src_ip: Option<IpAddr>) -> Self {
+        self.src_ip = src_ip;
+        self
+    }
+
+    /// The ECN codepoint to set.
+    #[must_use]
+    pub fn ecn(mut self, ecn: Option<EcnCodepoint>) -> Self {
+        self.ecn = ecn;
+        self
+    }
+
+    /// Generic segmentation offload: split `contents` into segments of
+    /// this size. `None` sends one datagram.
+    #[must_use]
+    pub fn segment_size(mut self, segment_size: Option<usize>) -> Self {
+        self.segment_size = segment_size;
+        self
+    }
+}
+
+impl RecvMeta {
+    /// What a receive reports. The three required fields are the ones a
+    /// caller cannot proceed without — where it came from, how much
+    /// arrived, and how it is divided; `ecn` and `dst_ip` are what a
+    /// platform may not tell the runtime.
+    #[must_use]
+    pub fn new(addr: SocketAddr, len: usize, stride: usize) -> Self {
+        Self {
+            addr,
+            len,
+            stride,
+            ecn: None,
+            dst_ip: None,
+        }
+    }
+
+    /// The ECN codepoint the kernel reported. `None` means it did not,
+    /// which is the understating direction this seam requires — see
+    /// `ecn_is_really_on`.
+    #[must_use]
+    pub fn ecn(mut self, ecn: Option<EcnCodepoint>) -> Self {
+        self.ecn = ecn;
+        self
+    }
+
+    /// The local address the datagram arrived on.
+    #[must_use]
+    pub fn dst_ip(mut self, dst_ip: Option<IpAddr>) -> Self {
+        self.dst_ip = dst_ip;
+        self
+    }
 }
 
 impl Default for RecvMeta {

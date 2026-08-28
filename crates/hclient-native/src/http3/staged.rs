@@ -421,23 +421,20 @@ where
         // for.
         let id = ConnState::id(state.as_ref());
         match &made {
-            Some(m) => self.hooks.on(Event::Connected(Connected {
-                id,
-                uri: &uri,
-                remote: Some(m.remote),
-                version: http::Version::HTTP_3,
-                timing: ConnectTiming {
-                    dns: m.dns,
-                    tcp: m.handshake,
-                    tls: None,
-                    total: crate::http3::since::<R>(&self.rt, began),
-                },
-            })),
-            None => self.hooks.on(Event::Reused(Reused {
-                id,
-                uri: &uri,
-                version: http::Version::HTTP_3,
-            })),
+            Some(m) => self.hooks.on(Event::Connected(
+                Connected::new(id, &uri, http::Version::HTTP_3)
+                    .remote(Some(m.remote))
+                    .timing(
+                        ConnectTiming::new()
+                            .dns(m.dns)
+                            .tcp(m.handshake)
+                            .tls(None)
+                            .total(crate::http3::since::<R>(&self.rt, began)),
+                    ),
+            )),
+            None => self
+                .hooks
+                .on(Event::Reused(Reused::new(id, &uri, http::Version::HTTP_3))),
         }
 
         Ok(Staged {

@@ -25,15 +25,9 @@ fn drain(stream: impl Stream<Item = Result<SvcbEndpoint, Error>>) -> Vec<SvcbEnd
 }
 
 fn endpoint(target: &str) -> SvcbEndpoint {
-    SvcbEndpoint {
-        priority: 1,
-        target: target.to_owned(),
-        alpn: vec![b"h3".to_vec()],
-        port: Some(443),
-        ipv4hint: vec![],
-        ipv6hint: vec![],
-        ech_config_list: None,
-    }
+    SvcbEndpoint::new(1, target.to_owned())
+        .alpn(vec![b"h3".to_vec()])
+        .port(Some(443))
 }
 
 fn no_addresses() -> impl Stream<Item = Result<ResolvedAddr, Error>> {

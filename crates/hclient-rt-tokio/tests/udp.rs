@@ -67,13 +67,12 @@ async fn the_socket_refuses_a_gso_batch_it_cannot_send() {
     let too_many = caps.max_send_segments + 1;
     let payload = vec![0u8; seg * too_many];
     let err = s
-        .try_send(&Datagrams {
-            destination: s.local_addr().unwrap(),
-            src_ip: None,
-            ecn: None,
-            segment_size: Some(seg),
-            contents: &payload,
-        })
+        .try_send(
+            &Datagrams::new(s.local_addr().unwrap(), &payload)
+                .src_ip(None)
+                .ecn(None)
+                .segment_size(Some(seg)),
+        )
         .expect_err("one more segment than this socket declared");
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     assert!(err.to_string().contains("gso"), "{err}");
@@ -81,13 +80,12 @@ async fn the_socket_refuses_a_gso_batch_it_cannot_send() {
     // And exactly at the limit is fine, so the check is a limit and not a
     // blanket refusal of GSO.
     let ok = vec![0u8; seg * caps.max_send_segments];
-    let r = s.try_send(&Datagrams {
-        destination: s.local_addr().unwrap(),
-        src_ip: None,
-        ecn: None,
-        segment_size: Some(seg),
-        contents: &ok,
-    });
+    let r = s.try_send(
+        &Datagrams::new(s.local_addr().unwrap(), &ok)
+            .src_ip(None)
+            .ecn(None)
+            .segment_size(Some(seg)),
+    );
     assert!(
         r.is_ok() || r.as_ref().unwrap_err().kind() == std::io::ErrorKind::WouldBlock,
         "at the declared limit the socket must attempt the send: {r:?}"
@@ -130,13 +128,10 @@ async fn ecn_claim_matches_reality(
 ) {
     send(
         a,
-        &Datagrams {
-            destination: loopback_of(b.local_addr().unwrap()),
-            src_ip: None,
-            ecn: Some(EcnCodepoint::Ect0),
-            segment_size: None,
-            contents: b"ecn",
-        },
+        &Datagrams::new(loopback_of(b.local_addr().unwrap()), b"ecn")
+            .src_ip(None)
+            .ecn(Some(EcnCodepoint::Ect0))
+            .segment_size(None),
     )
     .await
     .expect("a three-byte datagram to loopback");
@@ -281,17 +276,14 @@ async fn a_dual_stack_socket_reports_ecn_for_v4_mapped_traffic_exactly_when_it_c
     let a = bind();
     send(
         &a,
-        &Datagrams {
-            // v4 loopback, arriving on the dual-stack socket as
-            // v4-mapped. Addressed explicitly rather than through
-            // `b.local_addr()`, which is the unspecified address — see
-            // `loopback_of`.
-            destination: SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
-            src_ip: None,
-            ecn: Some(EcnCodepoint::Ect0),
-            segment_size: None,
-            contents: b"mapped",
-        },
+        // v4 loopback, arriving on the dual-stack socket as v4-mapped.
+        // Addressed explicitly rather than through `b.local_addr()`, which
+        // is the unspecified address — see `loopback_of`.
+        &Datagrams::new(
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+            b"mapped",
+        )
+        .ecn(Some(EcnCodepoint::Ect0)),
     )
     .await
     .expect("a datagram to v4 loopback");
@@ -345,13 +337,10 @@ async fn a_plain_datagram_round_trips_with_no_offload_asked_for() {
     let b = bind();
     send(
         &a,
-        &Datagrams {
-            destination: b.local_addr().unwrap(),
-            src_ip: None,
-            ecn: None,
-            segment_size: None,
-            contents: b"plain",
-        },
+        &Datagrams::new(b.local_addr().unwrap(), b"plain")
+            .src_ip(None)
+            .ecn(None)
+            .segment_size(None),
     )
     .await
     .expect("send");

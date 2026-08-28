@@ -211,6 +211,7 @@ pub enum Event<'a> {
 /// them there is no `Connected` to have carried it. Neither of them can
 /// emit this event at all.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Informational<'a> {
     pub id: ConnectionId,
     /// `1xx`. Which one is the whole of what distinguishes a `100` from a
@@ -295,6 +296,7 @@ impl Display for ConnectionId {
 
 /// A connection was established.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Connected<'a> {
     pub id: ConnectionId,
     /// The URI whose request paid for this connection, as the transport
@@ -338,6 +340,7 @@ pub struct Connected<'a> {
 /// clock its timeouts and its pool deadlines use, so a test under
 /// `tokio::time::pause()` sees one consistent story rather than two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ConnectTiming {
     /// From the start of the connect to the moment the first address
     /// could be tried.
@@ -367,6 +370,7 @@ pub struct ConnectTiming {
 /// otherwise get at: two requests to one origin either cost one
 /// connection or two, and only the transport knows which happened.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Reused<'a> {
     /// The id this connection was given when it was made — so the
     /// [`Connected`] it belongs to is findable.
@@ -380,6 +384,7 @@ pub struct Reused<'a> {
 
 /// The response head arrived.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Head<'a> {
     pub id: ConnectionId,
     pub uri: &'a http::Uri,
@@ -430,6 +435,7 @@ pub struct Head<'a> {
 
 /// A connection ended.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Closed<'a> {
     pub id: ConnectionId,
     pub reason: CloseReason<'a>,
@@ -456,6 +462,165 @@ pub enum CloseReason<'a> {
     Stale,
     /// It failed, and here is the failure.
     Failed(&'a Error),
+}
+
+// ── constructors ────────────────────────────────────────────────────────
+//
+// Every type above is `#[non_exhaustive]` **and** built by a transport,
+// which is the combination that needs both halves. The attribute stops an
+// out-of-tree `Hooks` impl breaking on a new field; the constructors stop
+// it locking an out-of-tree *transport* out of producing the value at all.
+// A backend is a user of this library, and the attribute alone would have
+// served one of its two roles at the expense of the other.
+//
+// The split is the same everywhere: what a value cannot be without goes in
+// `new`, and what a backend may not know goes in a setter. So a new field
+// that a backend may not know is additive; one it must supply is a break,
+// and no attribute has ever protected against that.
+
+impl<'a> Informational<'a> {
+    /// Every field is required: an interim response without a status or a
+    /// header map is not one.
+    #[must_use]
+    pub fn new(id: ConnectionId, status: http::StatusCode, headers: &'a http::HeaderMap) -> Self {
+        Self {
+            id,
+            status,
+            headers,
+        }
+    }
+}
+
+impl<'a> Connected<'a> {
+    /// A connection that was opened. `remote` and `timing` are what a
+    /// backend may not have — a Unix socket has no peer address, and an
+    /// ambient host reports no phases — so they are setters.
+    #[must_use]
+    pub fn new(id: ConnectionId, uri: &'a http::Uri, version: http::Version) -> Self {
+        Self {
+            id,
+            uri,
+            remote: None,
+            version,
+            timing: ConnectTiming::new(),
+        }
+    }
+
+    /// The peer's address, where there is one. `None` is not a gap to be
+    /// filled with `0.0.0.0:0`: a Unix socket genuinely has no address, and
+    /// a fabricated one is a wrong answer where the absence is a missing
+    /// one.
+    #[must_use]
+    pub fn remote(mut self, remote: Option<SocketAddr>) -> Self {
+        self.remote = remote;
+        self
+    }
+
+    /// How long each phase took.
+    #[must_use]
+    pub fn timing(mut self, timing: ConnectTiming) -> Self {
+        self.timing = timing;
+        self
+    }
+}
+
+impl<'a> Reused<'a> {
+    /// Every field is required: a reused connection has an identity, a
+    /// target and a negotiated version, or it is not one.
+    #[must_use]
+    pub fn new(id: ConnectionId, uri: &'a http::Uri, version: http::Version) -> Self {
+        Self { id, uri, version }
+    }
+}
+
+impl<'a> Head<'a> {
+    /// `version` is deliberately not here: it is `Option` because a
+    /// backend that does not learn the protocol must say so rather than
+    /// answer `HTTP/1.1`, and a required parameter would invite exactly
+    /// that. [`Head::version`] is the setter, and
+    /// `Capabilities::version_reported` is the biconditional it answers.
+    #[must_use]
+    pub fn new(
+        id: ConnectionId,
+        uri: &'a http::Uri,
+        status: http::StatusCode,
+        elapsed: Duration,
+    ) -> Self {
+        Self {
+            id,
+            uri,
+            status,
+            version: None,
+            elapsed,
+        }
+    }
+
+    /// The protocol this response arrived over. Set it exactly when
+    /// `Capabilities::version_reported` is `true`.
+    #[must_use]
+    pub fn version(mut self, version: Option<http::Version>) -> Self {
+        self.version = version;
+        self
+    }
+}
+
+impl<'a> Closed<'a> {
+    /// Both fields are required: a close names the connection and says
+    /// why.
+    #[must_use]
+    pub fn new(id: ConnectionId, reason: CloseReason<'a>) -> Self {
+        Self { id, reason }
+    }
+}
+
+impl ConnectTiming {
+    /// All phases zero, which is what a backend that measures none
+    /// reports.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            dns: Duration::ZERO,
+            tcp: Duration::ZERO,
+            tls: None,
+            total: Duration::ZERO,
+        }
+    }
+
+    /// Time spent resolving.
+    #[must_use]
+    pub fn dns(mut self, dns: Duration) -> Self {
+        self.dns = dns;
+        self
+    }
+
+    /// Time spent on the TCP connect.
+    #[must_use]
+    pub fn tcp(mut self, tcp: Duration) -> Self {
+        self.tcp = tcp;
+        self
+    }
+
+    /// Time spent on the TLS handshake, or `None` where there was none.
+    #[must_use]
+    pub fn tls(mut self, tls: Option<Duration>) -> Self {
+        self.tls = tls;
+        self
+    }
+
+    /// The whole connect, which is **not** the sum of the phases above: a
+    /// connector that races two families spends wall-clock time no single
+    /// phase accounts for.
+    #[must_use]
+    pub fn total(mut self, total: Duration) -> Self {
+        self.total = total;
+        self
+    }
+}
+
+impl Default for ConnectTiming {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

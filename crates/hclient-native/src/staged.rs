@@ -456,11 +456,11 @@ where
                 continue;
             };
             let id = est.id();
-            self.hooks.on(Event::Reused(Reused {
+            self.hooks.on(Event::Reused(Reused::new(
                 id,
-                uri: &uri,
-                version: spoken_version(Some(protocol)),
-            }));
+                &uri,
+                spoken_version(Some(protocol)),
+            )));
             let checkin = self.checkin_for(&key, now);
             return Ok(self.hold(est, checkin, req, uri, id, began, timeouts));
         }
@@ -501,18 +501,17 @@ where
         );
         let id = connection_id::<H>();
         if let Some(attempted) = attempted {
-            self.hooks.on(Event::Connected(Connected {
-                id,
-                uri: &uri,
-                remote: attempted.remote,
-                version: spoken_version(protocol),
-                timing: ConnectTiming {
-                    dns: attempted.dns,
-                    tcp: attempted.tcp,
-                    tls: attempted.tls,
-                    total: connect_took,
-                },
-            }));
+            self.hooks.on(Event::Connected(
+                Connected::new(id, &uri, spoken_version(protocol))
+                    .remote(attempted.remote)
+                    .timing(
+                        ConnectTiming::new()
+                            .dns(attempted.dns)
+                            .tcp(attempted.tcp)
+                            .tls(attempted.tls)
+                            .total(connect_took),
+                    ),
+            ));
         }
         // Before the handshake, exactly as in `run`: a demand this
         // connection cannot meet costs a TCP connection and a TLS handshake

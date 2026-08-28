@@ -212,11 +212,7 @@ fn install_1xx<H>(
             g.open();
         }
         hooks.on(Event::Informational(
-            hclient_core::unversioned::Informational {
-                id,
-                status: resp.status(),
-                headers: resp.headers(),
-            },
+            hclient_core::unversioned::Informational::new(id, resp.status(), resp.headers()),
         ));
     });
 }
@@ -2560,17 +2556,15 @@ where
         uri: &http::Uri,
         began: Option<R::Instant>,
     ) {
-        self.hooks.on(Event::Head(Head {
-            id,
-            uri,
-            status: resp.status(),
-            // `Some`, because this transport read it: off the status line
-            // on HTTP/1, off ALPN with the `http2` feature. That is the
-            // same claim `capabilities()` makes with `version_reported:
-            // true`, and `Head::version`'s doc says the two must agree.
-            version: Some(resp.version()),
-            elapsed: since::<R>(&self.rt, began),
-        }));
+        // `version` is `Some`, because this transport read it: off the
+        // status line on HTTP/1, off ALPN with the `http2` feature. That
+        // is the same claim `capabilities()` makes with
+        // `version_reported: true`, and `Head::version`'s doc says the two
+        // must agree.
+        self.hooks.on(Event::Head(
+            Head::new(id, uri, resp.status(), since::<R>(&self.rt, began))
+                .version(Some(resp.version())),
+        ));
     }
 
     /// Whether this transport shares HTTP/2 connections — the spawner is
@@ -2709,10 +2703,8 @@ where
             // it while it sat idle, which is why this loop is walking
             // past it. A connection the pool itself drops for age never
             // reaches this function, and that hole is deliberate.
-            self.hooks.on(Event::Closed(Closed {
-                id: est.id(),
-                reason: CloseReason::Stale,
-            }));
+            self.hooks
+                .on(Event::Closed(Closed::new(est.id(), CloseReason::Stale)));
         }
     }
 }
@@ -3179,11 +3171,11 @@ where
             // connection's own, assigned when it was made, so a caller
             // can find the `Connected` this refers back to.
             let id = est.id();
-            self.hooks.on(Event::Reused(Reused {
+            self.hooks.on(Event::Reused(Reused::new(
                 id,
-                uri: &uri,
-                version: spoken_version(Some(protocol)),
-            }));
+                &uri,
+                spoken_version(Some(protocol)),
+            )));
             let checkin = self.checkin_for(&key, now);
             // Nobody waiting for a connect should wait for this exchange:
             // what they are waiting for is a connection to exist, and one
@@ -3341,18 +3333,17 @@ where
         // the same function `handshake_for` branches on, so this cannot
         // claim HTTP/2 for a connection that got an HTTP/1 handshake.
         if let Some(attempted) = attempted {
-            self.hooks.on(Event::Connected(Connected {
-                id,
-                uri: &uri,
-                remote: attempted.remote,
-                version: spoken_version(protocol),
-                timing: ConnectTiming {
-                    dns: attempted.dns,
-                    tcp: attempted.tcp,
-                    tls: attempted.tls,
-                    total: connect_took,
-                },
-            }));
+            self.hooks.on(Event::Connected(
+                Connected::new(id, &uri, spoken_version(protocol))
+                    .remote(attempted.remote)
+                    .timing(
+                        ConnectTiming::new()
+                            .dns(attempted.dns)
+                            .tcp(attempted.tcp)
+                            .tls(attempted.tls)
+                            .total(connect_took),
+                    ),
+            ));
         }
 
         // **The refusal, and its position is the guarantee.** This is the

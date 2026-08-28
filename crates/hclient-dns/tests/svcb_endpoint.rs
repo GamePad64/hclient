@@ -64,15 +64,7 @@ fn served(records: Vec<SvcbEndpoint>) -> Vec<SvcbEndpoint> {
 }
 
 fn endpoint(target: &str) -> SvcbEndpoint {
-    SvcbEndpoint {
-        priority: 1,
-        target: target.to_owned(),
-        alpn: vec![],
-        port: None,
-        ipv4hint: vec![],
-        ipv6hint: vec![],
-        ech_config_list: None,
-    }
+    SvcbEndpoint::new(1, target.to_owned())
 }
 
 /// A real ECHConfigList is a length-prefixed binary structure: it contains

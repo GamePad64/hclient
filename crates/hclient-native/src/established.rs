@@ -296,11 +296,9 @@ where
             // closure borrows for exactly this call, which is why HTTP/2
             // needs none of the `Send + Sync + 'static` HTTP/1 does.
             let report = |status, headers: &http::HeaderMap| {
-                hooks.on(Event::Informational(Informational {
-                    id,
-                    status,
-                    headers,
-                }));
+                hooks.on(Event::Informational(Informational::new(
+                    id, status, headers,
+                )));
             };
             let on_1xx = how.watch_1xx.map(|_| &report);
             crate::http2::exchange(*e, req, checkin, on_1xx)
@@ -325,11 +323,9 @@ where
             // it did — a capability lying, which is the defect class this
             // workspace hunts.
             let report = |status, headers: &http::HeaderMap| {
-                hooks.on(Event::Informational(Informational {
-                    id,
-                    status,
-                    headers,
-                }));
+                hooks.on(Event::Informational(Informational::new(
+                    id, status, headers,
+                )));
             };
             let on_1xx = how.watch_1xx.map(|_| &report);
             crate::http2::exchange_shared(s, req, on_1xx)

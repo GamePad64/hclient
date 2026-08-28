@@ -375,7 +375,7 @@ where
         let Some(id) = self.open.take() else {
             return;
         };
-        self.hooks.on(Event::Closed(Closed { id, reason }));
+        self.hooks.on(Event::Closed(Closed::new(id, reason)));
     }
 
     /// The one and only check-in. Called when `incoming` has reported a
@@ -652,10 +652,7 @@ where
         // handed out a connection that was already gone, which is the
         // fact that explains the fresh connect the caller is about to
         // pay for.
-        hooks.on(Event::Closed(Closed {
-            id,
-            reason: CloseReason::Stale,
-        }));
+        hooks.on(Event::Closed(Closed::new(id, CloseReason::Stale)));
         return Err(Failed::NotSent {
             error: Error::new(ErrorKind::Connect, ConnectionWentAwayBeforeTheRequest),
             request: Box::new(req),
@@ -690,18 +687,12 @@ where
                 match Pin::new(&mut conn).poll(cx) {
                     Poll::Ready(Ok(())) => {
                         conn_done = true;
-                        hooks.on(Event::Closed(Closed {
-                            id,
-                            reason: CloseReason::Ended,
-                        }));
+                        hooks.on(Event::Closed(Closed::new(id, CloseReason::Ended)));
                     }
                     Poll::Ready(Err(e)) => {
                         conn_done = true;
                         let e = from_hyper_error(e, ErrorKind::Connect);
-                        hooks.on(Event::Closed(Closed {
-                            id,
-                            reason: CloseReason::Failed(&e),
-                        }));
+                        hooks.on(Event::Closed(Closed::new(id, CloseReason::Failed(&e))));
                         // Not a verdict, a cause. Whether this is `Sent`
                         // or `NotSent` is hyper's to say and is asked in
                         // [`claim_back`]; what travels out here is the

@@ -90,6 +90,7 @@ pub struct ResolvedAddr {
 /// Built in from day one: pinning the resolver to `SocketAddr` would close
 /// off ECH and h3 discovery permanently, short of a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SvcbEndpoint {
     pub priority: u16,
     pub target: String,
@@ -98,6 +99,81 @@ pub struct SvcbEndpoint {
     pub ipv4hint: Vec<Ipv4Addr>,
     pub ipv6hint: Vec<Ipv6Addr>,
     pub ech_config_list: Option<Bytes>,
+}
+
+impl SvcbEndpoint {
+    /// The two fields an HTTPS record cannot be without: RFC 9460's
+    /// `SvcPriority` and `TargetName`. Everything else is a SvcParam,
+    /// which is by definition optional — and a resolver that learns to
+    /// parse a new one should not break every consumer, which is what the
+    /// setters are for.
+    #[must_use]
+    pub fn new(priority: u16, target: String) -> Self {
+        Self {
+            priority,
+            target,
+            alpn: Vec::new(),
+            port: None,
+            ipv4hint: Vec::new(),
+            ipv6hint: Vec::new(),
+            ech_config_list: None,
+        }
+    }
+
+    /// RFC 9460's `SvcPriority`. A setter as well as a `new` parameter,
+    /// because a caller deriving one record from another overrides it —
+    /// which is what `..base` used to express and what these replace.
+    #[must_use]
+    pub fn priority(mut self, priority: u16) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// RFC 9460's `TargetName`, as the server sent it — trailing dot
+    /// included, since normalising here would make a caller's comparison
+    /// against a `Uri` host quietly disagree with the wire.
+    #[must_use]
+    pub fn target(mut self, target: String) -> Self {
+        self.target = target;
+        self
+    }
+
+    /// The `alpn` SvcParam — the protocols the origin says it speaks.
+    #[must_use]
+    pub fn alpn(mut self, alpn: Vec<Vec<u8>>) -> Self {
+        self.alpn = alpn;
+        self
+    }
+
+    /// The `port` SvcParam.
+    #[must_use]
+    pub fn port(mut self, port: Option<u16>) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// The `ipv4hint` SvcParam.
+    #[must_use]
+    pub fn ipv4hint(mut self, hints: Vec<Ipv4Addr>) -> Self {
+        self.ipv4hint = hints;
+        self
+    }
+
+    /// The `ipv6hint` SvcParam.
+    #[must_use]
+    pub fn ipv6hint(mut self, hints: Vec<Ipv6Addr>) -> Self {
+        self.ipv6hint = hints;
+        self
+    }
+
+    /// The `ech` SvcParam, carried verbatim. A connector passes it on only
+    /// to a TLS backend that says it applies one — see
+    /// `TlsConnect::applies_ech`, and the measurement behind that gate.
+    #[must_use]
+    pub fn ech_config_list(mut self, ech: Option<Bytes>) -> Self {
+        self.ech_config_list = ech;
+        self
+    }
 }
 
 /// A stream that immediately says "nothing here."

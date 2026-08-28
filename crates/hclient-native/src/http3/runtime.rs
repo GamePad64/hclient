@@ -310,13 +310,10 @@ where
     }
 
     fn try_send(&self, transmit: &quinn::udp::Transmit) -> io::Result<()> {
-        let d = hclient_rt::Datagrams {
-            destination: transmit.destination,
-            src_ip: transmit.src_ip,
-            ecn: transmit.ecn.map(from_quinn_ecn),
-            segment_size: transmit.segment_size,
-            contents: transmit.contents,
-        };
+        let d = hclient_rt::Datagrams::new(transmit.destination, transmit.contents)
+            .src_ip(transmit.src_ip)
+            .ecn(transmit.ecn.map(from_quinn_ecn))
+            .segment_size(transmit.segment_size);
         // The guard, not decoration: a socket handed a GSO batch larger
         // than it declared refuses by name rather than putting one
         // oversized datagram on the wire. quinn reads
@@ -335,6 +332,8 @@ where
         let mut ours = vec![hclient_rt::RecvMeta::default(); meta.len()];
         let n = std::task::ready!(self.inner.poll_recv(cx, bufs, &mut ours))?;
         for (dst, src) in meta.iter_mut().zip(ours.iter().take(n)) {
+            // quinn's own `RecvMeta`, not ours: it is a foreign struct with
+            // no constructor, so this stays a literal.
             *dst = quinn::udp::RecvMeta {
                 addr: src.addr,
                 len: src.len,

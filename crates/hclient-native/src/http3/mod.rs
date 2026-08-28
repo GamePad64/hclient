@@ -957,17 +957,14 @@ where
         uri: &http::Uri,
         began: Option<R::Instant>,
     ) {
-        self.hooks.on(Event::Head(Head {
-            id,
-            uri,
-            status: resp.status(),
-            // `Some`, because this transport knows: it speaks HTTP/3 and
-            // refuses every other demand. That is the same claim
-            // `capabilities()` makes with `version_reported: true`, and
-            // `Head::version`'s doc says the two must agree.
-            version: Some(resp.version()),
-            elapsed: since::<R>(&self.rt, began),
-        }));
+        // `version` is `Some`, because this transport knows: it speaks
+        // HTTP/3 and refuses every other demand. That is the same claim
+        // `capabilities()` makes with `version_reported: true`, and
+        // `Head::version`'s doc says the two must agree.
+        self.hooks.on(Event::Head(
+            Head::new(id, uri, resp.status(), since::<R>(&self.rt, began))
+                .version(Some(resp.version())),
+        ));
     }
 
     async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, Error> {

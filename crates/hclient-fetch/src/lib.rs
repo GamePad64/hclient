@@ -762,13 +762,17 @@ impl<H: Hooks> Fetch<H> {
     ) {
         let Ok(out) = out else { return };
         if let Some((began, uri)) = watched {
-            self.hooks.on(Event::Head(Head {
-                id: ConnectionId::UNWATCHED,
+            // `version` is left unset, which is the whole of what
+            // `Capabilities::version_reported == false` means here: the
+            // browser does not tell us which protocol it used, and
+            // answering `HTTP/1.1` would be a wrong answer where the
+            // absence is a missing one.
+            self.hooks.on(Event::Head(Head::new(
+                ConnectionId::UNWATCHED,
                 uri,
-                status: out.status(),
-                version: None,
-                elapsed: hooks::since(Some(*began)),
-            }));
+                out.status(),
+                hooks::since(Some(*began)),
+            )));
         }
     }
 }

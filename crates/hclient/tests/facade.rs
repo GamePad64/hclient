@@ -415,10 +415,10 @@ fn a_hook_can_be_written_against_the_facade_alone() {
     let counts = Counts::default();
     hclient::hooks::Hooks::on(
         &counts,
-        hclient::hooks::Event::Closed(hclient::hooks::Closed {
-            id: hclient::hooks::ConnectionId::UNWATCHED,
-            reason: hclient::hooks::CloseReason::Ended,
-        }),
+        hclient::hooks::Event::Closed(hclient::hooks::Closed::new(
+            hclient::hooks::ConnectionId::UNWATCHED,
+            hclient::hooks::CloseReason::Ended,
+        )),
     );
     assert_eq!(counts.closed.get(), 1);
 

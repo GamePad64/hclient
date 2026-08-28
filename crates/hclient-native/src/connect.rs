@@ -2447,15 +2447,14 @@ mod tests {
         let origin = v4(1);
         let dns = SvcbResolve {
             v4: vec![origin],
-            records: vec![hclient_dns::SvcbEndpoint {
-                priority: 1,
-                target: "example.invalid".to_string(),
-                alpn: Vec::new(),
-                port: None,
-                ipv4hint: vec![hint],
-                ipv6hint: Vec::new(),
-                ech_config_list: None,
-            }],
+            records: vec![
+                hclient_dns::SvcbEndpoint::new(1, "example.invalid".to_string())
+                    .alpn(Vec::new())
+                    .port(None)
+                    .ipv4hint(vec![hint])
+                    .ipv6hint(Vec::new())
+                    .ech_config_list(None),
+            ],
         };
         // Every attempt fails, so the discovered race and the plain one
         // both run to `Exhausted` — which is the case this is about.
@@ -2502,15 +2501,14 @@ mod tests {
         let origin = v4(1);
         let dns = SvcbResolve {
             v4: vec![origin],
-            records: vec![hclient_dns::SvcbEndpoint {
-                priority: 1,
-                target: "example.invalid".to_string(),
-                alpn: Vec::new(),
-                port: None,
-                ipv4hint: Vec::new(),
-                ipv6hint: Vec::new(),
-                ech_config_list: None,
-            }],
+            records: vec![
+                hclient_dns::SvcbEndpoint::new(1, "example.invalid".to_string())
+                    .alpn(Vec::new())
+                    .port(None)
+                    .ipv4hint(Vec::new())
+                    .ipv6hint(Vec::new())
+                    .ech_config_list(None),
+            ],
         };
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
@@ -2701,15 +2699,14 @@ mod tests {
     fn the_record_and_the_addresses_are_asked_at_once() {
         let dns = WatchedResolve::new(
             vec![v4(1)],
-            vec![hclient_dns::SvcbEndpoint {
-                priority: 1,
-                target: "example.invalid".to_string(),
-                alpn: Vec::new(),
-                port: Some(8443),
-                ipv4hint: Vec::new(),
-                ipv6hint: Vec::new(),
-                ech_config_list: None,
-            }],
+            vec![
+                hclient_dns::SvcbEndpoint::new(1, "example.invalid".to_string())
+                    .alpn(Vec::new())
+                    .port(Some(8443))
+                    .ipv4hint(Vec::new())
+                    .ipv6hint(Vec::new())
+                    .ech_config_list(None),
+            ],
         );
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
@@ -2761,15 +2758,14 @@ mod tests {
         let origin = v4(1);
         let dns = WatchedResolve::new(
             vec![origin],
-            vec![hclient_dns::SvcbEndpoint {
-                priority: 1,
-                target: "example.invalid".to_string(),
-                alpn: Vec::new(),
-                port: None,
-                ipv4hint: vec![hint],
-                ipv6hint: Vec::new(),
-                ech_config_list: None,
-            }],
+            vec![
+                hclient_dns::SvcbEndpoint::new(1, "example.invalid".to_string())
+                    .alpn(Vec::new())
+                    .port(None)
+                    .ipv4hint(vec![hint])
+                    .ipv6hint(Vec::new())
+                    .ech_config_list(None),
+            ],
         );
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
@@ -2988,10 +2984,7 @@ mod tests {
             std::future::ready({
                 Ok((
                     io,
-                    TlsInfo {
-                        alpn: req.alpn.first().map(|p| p.to_vec()),
-                        ..Default::default()
-                    },
+                    TlsInfo::default().alpn(req.alpn.first().map(|p| p.to_vec())),
                 ))
             })
         }

@@ -158,15 +158,8 @@ impl Resolve for FakeDns {
 /// addresses stay each member's own business.
 pub fn service_record(priority: u16, alpn: &[&[u8]]) -> SvcbEndpoint {
     assert_ne!(priority, 0, "priority 0 is AliasMode; use `alias_record`");
-    SvcbEndpoint {
-        priority,
-        target: "both-stacks.test".to_string(),
-        alpn: alpn.iter().map(|a| a.to_vec()).collect(),
-        port: None,
-        ipv4hint: Vec::new(),
-        ipv6hint: Vec::new(),
-        ech_config_list: None,
-    }
+    SvcbEndpoint::new(priority, "both-stacks.test".to_string())
+        .alpn(alpn.iter().map(|a| a.to_vec()).collect())
 }
 
 /// An AliasMode record, as `hclient-dns-system`'s parser emits one:
@@ -177,13 +170,5 @@ pub fn service_record(priority: u16, alpn: &[&[u8]]) -> SvcbEndpoint {
 /// why a selection that ranked without skipping these would choose the one
 /// record whose ALPN list is empty, every time.
 pub fn alias_record() -> SvcbEndpoint {
-    SvcbEndpoint {
-        priority: 0,
-        target: "alias-target.test".to_string(),
-        alpn: Vec::new(),
-        port: None,
-        ipv4hint: Vec::new(),
-        ipv6hint: Vec::new(),
-        ech_config_list: None,
-    }
+    SvcbEndpoint::new(0, "alias-target.test".to_string())
 }

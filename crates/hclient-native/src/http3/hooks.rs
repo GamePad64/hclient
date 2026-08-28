@@ -153,10 +153,7 @@ impl ConnState {
         if self.told.swap(true, Ordering::SeqCst) {
             return;
         }
-        hooks.on(Event::Closed(Closed {
-            id: self.id,
-            reason,
-        }));
+        hooks.on(Event::Closed(Closed::new(self.id, reason)));
     }
 }
 

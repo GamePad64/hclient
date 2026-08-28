@@ -128,13 +128,10 @@ fn loopback_of(addr: SocketAddr) -> SocketAddr {
 async fn ecn_claim_matches_reality<S: UdpDatagrams>(a: &S, b: &S) {
     send(
         a,
-        &Datagrams {
-            destination: loopback_of(b.local_addr().unwrap()),
-            src_ip: None,
-            ecn: Some(EcnCodepoint::Ect0),
-            segment_size: None,
-            contents: b"ecn",
-        },
+        &Datagrams::new(loopback_of(b.local_addr().unwrap()), b"ecn")
+            .src_ip(None)
+            .ecn(Some(EcnCodepoint::Ect0))
+            .segment_size(None),
     )
     .await
     .expect("a three-byte datagram to loopback");
@@ -184,13 +181,10 @@ async fn a_declared_gso_batch_really_goes_out<S: UdpDatagrams>(a: &S, b: &S) {
     let payload: Vec<u8> = (0..SEG * segments).map(|i| (i % 251) as u8).collect();
     send(
         a,
-        &Datagrams {
-            destination: loopback_of(b.local_addr().unwrap()),
-            src_ip: None,
-            ecn: None,
-            segment_size: Some(SEG),
-            contents: &payload,
-        },
+        &Datagrams::new(loopback_of(b.local_addr().unwrap()), &payload)
+            .src_ip(None)
+            .ecn(None)
+            .segment_size(Some(SEG)),
     )
     .await
     .expect("a GSO batch no larger than the socket declared");
@@ -235,13 +229,12 @@ fn the_declared_limit_is_a_limit_and_not_a_ban<S: UdpDatagrams>(s: &S) {
     let too_many = caps.max_send_segments + 1;
     let payload = vec![0u8; seg * too_many];
     let err = s
-        .try_send(&Datagrams {
-            destination: loopback_of(s.local_addr().unwrap()),
-            src_ip: None,
-            ecn: None,
-            segment_size: Some(seg),
-            contents: &payload,
-        })
+        .try_send(
+            &Datagrams::new(loopback_of(s.local_addr().unwrap()), &payload)
+                .src_ip(None)
+                .ecn(None)
+                .segment_size(Some(seg)),
+        )
         .expect_err("one more segment than this socket declared");
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     assert!(err.to_string().contains("gso"), "{err}");
@@ -275,13 +268,10 @@ async fn exercise_udp<R: UdpBind>(rt: R, label: &str) {
     // caller that asked for nothing.
     send(
         &a,
-        &Datagrams {
-            destination: loopback_of(b.local_addr().unwrap()),
-            src_ip: None,
-            ecn: None,
-            segment_size: None,
-            contents: b"plain",
-        },
+        &Datagrams::new(loopback_of(b.local_addr().unwrap()), b"plain")
+            .src_ip(None)
+            .ecn(None)
+            .segment_size(None),
     )
     .await
     .expect("send");

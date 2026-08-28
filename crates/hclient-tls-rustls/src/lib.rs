@@ -564,21 +564,21 @@ where
         }
 
         let c = stream.conn();
-        let info = TlsInfo {
-            alpn: c.alpn_protocol().map(|a| a.to_vec()),
-            peer_certificates: c
-                .peer_certificates()
-                .map(|cs| cs.iter().map(|d| d.as_ref().to_vec()).collect()),
-            protocol_version: c.protocol_version().and_then(normalize_protocol_version),
-            cipher_suite: c
-                .negotiated_cipher_suite()
-                .and_then(|s| normalize_cipher_suite(s.suite())),
-            // Reserved, not implemented — this backend never offers early
-            // data, so there is nothing to report as accepted or refused.
-            // `None`, not `Some(false)`: see `TlsInfo::early_data_accepted`
-            // on why the two are different answers.
-            early_data_accepted: None,
-        };
+        // `early_data_accepted` is left unset: this backend never offers
+        // early data, so there is nothing to report as accepted or
+        // refused — see the field's own doc on why the two are different
+        // answers.
+        let info = TlsInfo::new()
+            .alpn(c.alpn_protocol().map(|a| a.to_vec()))
+            .peer_certificates(
+                c.peer_certificates()
+                    .map(|cs| cs.iter().map(|d| d.as_ref().to_vec()).collect()),
+            )
+            .protocol_version(c.protocol_version().and_then(normalize_protocol_version))
+            .cipher_suite(
+                c.negotiated_cipher_suite()
+                    .and_then(|s| normalize_cipher_suite(s.suite())),
+            );
         let Handshaking2::Driving(stream) =
             std::mem::replace(&mut me.state, Handshaking2::Failed(None))
         else {

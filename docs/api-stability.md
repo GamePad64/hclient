@@ -91,7 +91,7 @@ And the arm in `hclient-fetch`'s suite was found by `just check-targets`
 rather than by the workspace run, because that crate builds for a target
 the host run does not — the blind spot that job exists for, working.
 
-### 3. The report structs an out-of-tree backend has to build
+### 3. The report structs an out-of-tree backend has to build — **done**
 
 `Connected`, `Head`, `TlsInfo`, `RecvMeta`, `Datagrams`, `SvcbEndpoint` —
 five to seven public fields each, no constructor, no attribute. A backend
@@ -105,7 +105,28 @@ is the likelier next change.
 
 The fix is `#[non_exhaustive]` plus `::new(required…)` and setters for the
 rest. It is the same work as item 1 with the writer on the other side of
-the seam.
+the seam, and it is done — for **nine** types rather than the six this
+section first counted: the five hook payloads (`Connected`, `Reused`,
+`Head`, `Closed`, `Informational`), `ConnectTiming` under them, `TlsInfo`,
+the two UDP types and `SvcbEndpoint`.
+
+**The split is the same everywhere: what a value cannot be without goes in
+`new`, and what a backend may not know goes in a setter.** So `Head::new`
+takes four parameters and `version` is a setter, because a backend that
+does not learn the protocol must say so rather than answer `HTTP/1.1`, and
+a required parameter would invite exactly that. `Connected::remote` is a
+setter for the same reason — a Unix socket has no peer address, and a
+fabricated `0.0.0.0:0` is a wrong answer where the absence is a missing
+one.
+
+Two things the conversion taught. **A functional update from a base value
+is what `..base` expressed and setters replace**, which is why the
+required fields have setters too — `service_record().port(Some(p))` is
+that expression, and without those two it does not compile. And a
+converter that rewrites `Type { .. }` must not match `-> Type {`: a
+function signature followed by its body looks exactly like a struct
+literal, and one that does not check also rewrote quinn's own `RecvMeta`,
+which has no constructor at all.
 
 ### 3a. `bon` was weighed for the constructors above, and measured out
 

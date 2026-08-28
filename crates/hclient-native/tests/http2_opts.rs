@@ -79,15 +79,7 @@ impl TlsConnect for FakeTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        std::future::ready({
-            Ok((
-                io,
-                TlsInfo {
-                    alpn: Some(b"h2".to_vec()),
-                    ..Default::default()
-                },
-            ))
-        })
+        std::future::ready(Ok((io, TlsInfo::default().alpn(Some(b"h2".to_vec())))))
     }
 }
 

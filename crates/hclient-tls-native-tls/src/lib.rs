@@ -300,24 +300,22 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let stream = std::task::ready!(std::pin::Pin::new(&mut self.0).poll(cx))?;
-        let info = TlsInfo {
+        // Two fields are left unset and that is the honest report:
+        // `native-tls` exposes neither a protocol version nor a cipher
+        // suite, and `None` means *this backend cannot tell you*, which a
+        // caller must not read as "TLS 1.2". Nothing is offered as early
+        // data either.
+        let info = TlsInfo::new()
             // Readable at last: `negotiated_alpn` is
             // `native_tls::TlsStream`'s, and this crate owns one now. The
             // paragraph this replaces called the absence a limitation of
             // the wrapper rather than of the platform, and it was right.
-            alpn: stream.negotiated_alpn(),
+            .alpn(stream.negotiated_alpn())
             // The leaf only, and as a one-element `Vec` rather than
             // `None`: there IS a certificate, the chain is what is
             // missing. Telling those apart is why this field is a `Vec`
             // inside an `Option`.
-            peer_certificates: stream.peer_certificate_der().map(|der| vec![der]),
-            // `native-tls` reports neither. `None` means "this backend
-            // cannot tell you", which a caller must not read as "TLS 1.2".
-            protocol_version: None,
-            cipher_suite: None,
-            // Nothing offered, so nothing to report.
-            early_data_accepted: None,
-        };
+            .peer_certificates(stream.peer_certificate_der().map(|der| vec![der]));
         std::task::Poll::Ready(Ok((FuturesIo::new(stream), info)))
     }
 }
