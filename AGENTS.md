@@ -1557,8 +1557,13 @@ the answer for everybody:
   rather than hiding it, which this workspace has now fixed four times in
   its own code and would here be importing on purpose;
 - **boxed `+ Send`** — needs to prove an RPITIT `Send` for a generic
-  implementor, which is return type notation: unstable, and measured in
-  this repository to **ICE** across a crate boundary;
+  implementor, which is return type notation: **it works, and it is
+  unstable**. Measured on 2026-08-28 against `embedded-nal-async` 0.9.0
+  itself on 1.100.0-nightly: `S: TcpConnect<connect(..): Send>` compiles,
+  `Box::pin(s.connect(addr))` goes into a `Send` box, `Read::read(..):
+  Send` does the same, and a whole `OurTcpConnect for Adapter<S>` with a
+  `Send` `Connecting<'a>` builds. So this blocker is the one RTN actually
+  removes — see the note below on why that does not make it worth taking;
 - **named** — needs `type Connecting<'a> = impl Future`, also unstable.
 
 **And this is coherent on their side rather than a defect.** NAL is
@@ -1570,6 +1575,25 @@ a client that also serves threaded hosts, and it is why
 `embassy_net::tcp::TcpSocket` directly: the socket is concrete, so its
 `!Send`-ness is a measured fact about one type rather than a property
 lost for all of them.
+
+**Taking RTN from nightly for this one crate was asked and the answer is
+no, on arithmetic rather than on policy.** It removes the third of three
+blockers. `no_std` still stands — every one of those eight stacks is a
+`no_std` device and `http` 1.5.0 still refuses — so the adapter would
+compile only against the std shims, where a caller has `std::net` and
+reaches for tokio. The half-close still stands. So the trade is: pin a
+published crate to nightly, which makes every consumer nightly, to fix a
+third of a problem for nobody who can use the result.
+
+The policy cost is real too and points the same way. `rust-toolchain.toml`
+says `channel = "stable"`, and this file refuses even an **MSRV job** on
+the grounds that a pinned version is a promise that goes stale while
+looking maintained — a nightly pin is that argument at its maximum, since
+the pin breaks on a schedule somebody else sets.
+
+And nothing is lost by waiting: if RTN stabilises the question becomes a
+stable one again, and by then `http`'s `no_std` status may have moved too.
+What needed capturing was the measurement, not the crate.
 
 It also means blocker three does not lift with blocker one. A half-close
 is a method upstream could add; this needs either return type notation to
@@ -4273,11 +4297,21 @@ consumers in this workspace stop compiling, and both are the same shape:
   was introduced to remove.
 - `crates/hclient-tower/tests/round_trip.rs` returns `impl Transport`, and
   an opaque type does **not** leak an RPITIT bound, so it has to be
-  restated there too — and restating it **ICEs**:
-  `DefId(.. Transport::execute::{anon_assoc#0}) does not have a "type_of"`,
-  `rustc_metadata/src/rmeta/decoder/cstore_impl.rs:231`, on
-  1.100.0-nightly (f7d782a3b, 2026-08-19). So today the shape a library
-  consumer most needs is not merely unstable, it does not compile at all.
+  restated there too — and **it cannot be**, because an opaque type has no
+  name to hang a bound on. Re-measured on 2026-08-28 with a minimal
+  two-crate reproduction: a `fn make() -> impl Seam` gives its caller a
+  clean `E0277` and no way to say what would fix it; only the *producer*
+  writing `-> impl Seam<go(..): Send>` does, and that is a foreign crate's
+  signature. **RTN does not travel through `impl Trait`**, which is the
+  durable statement.
+
+  The sentence here used to say that restating it *ICEs*, with the
+  `DefId(.. Transport::execute::{anon_assoc#0}) does not have a "type_of"`
+  from 1.100.0-nightly (f7d782a3b, 2026-08-19). That was seen, in this
+  workspace's real code, and it does **not** reproduce minimally on the
+  same nightly — so it is one manifestation rather than the rule, and the
+  rule above is what a reader should act on. A crash observed once is
+  weaker evidence than a limitation reproduced on demand.
 
 So the answer to *can we fix all of it* is: **yes for a concrete
 transport, and the generic case pays what the seam would have paid.**
