@@ -107,6 +107,48 @@ The fix is `#[non_exhaustive]` plus `::new(required…)` and setters for the
 rest. It is the same work as item 1 with the writer on the other side of
 the seam.
 
+### 3a. `bon` was weighed for the constructors above, and measured out
+
+A builder macro is the obvious way to write item 3, and `bon` is the
+obvious crate — 52.6M downloads, one direct dependency, a `no_std` mode,
+released three days before this was written. Three measurements decided
+against it, in rising order of weight.
+
+**It cannot express `TcpOptsSupport` at all.** `TcpConnect::APPLIES` is an
+associated **constant** computed with `cfg!`, and a builder call chain is
+not a constant expression — measured, `E0015: cannot call non-const
+associated function`. The `const fn` setters that type now carries are the
+only shape that works there, whatever else is decided.
+
+**It would make `TcpOpts` worse.** Every field is optional and `Default`
+is meaningful, so there is no required-field checking to gain, and
+`TcpOpts::builder().nodelay(true).build()` is longer than
+`TcpOpts::default().nodelay(true)` by exactly the `.build()`.
+
+**It costs eight crates in the one that everything inherits.**
+`hclient-core` goes from 13 to 21 — `bon`, `bon-macros`, `darling`,
+`darling_core`, `darling_macro`, `ident_case`, `prettyplease`, `strsim`.
+
+And the rule this workspace already applies to dependencies settles it.
+`md-5` and `sha2` were taken at nine crates because *a hash is two hundred
+lines whose defects are silent*; `url` was dropped and RFC 3986 resolution
+hand-written because the tables cost more than the code; `proxy_cfg` was
+refused at 28 crates. The line is **whether a wrong hand-written answer is
+silent**, and a missing setter is a compile error — the loudest failure
+available.
+
+**The sharpest point is that it does not serve the goal.** A builder buys
+ergonomics and code volume; it does not buy stability. Adding an
+*optional* field is additive under either shape, and adding a *required*
+one breaks callers under either — bon's typestate demands it exactly as a
+`new()` signature does. This document exists to stop the surface moving,
+and `bon` does not move that.
+
+Worth reconsidering if `hclient-core` ever drops its `no_std` aspiration
+*and* the report structs grow past a handful of fields, which is the
+configuration where thirty hand-written setters stop being cheaper than
+eight crates.
+
 ### 4. `RequestBody` and `RetryKind` are matched by every backend
 
 Neither is `#[non_exhaustive]`. A fifth `RequestBody` — a file-backed
