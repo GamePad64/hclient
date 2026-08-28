@@ -26,7 +26,9 @@
 //! silent direct connection is the one failure a caller cannot diagnose
 //! from the outside. On an Apple platform `hclient-urlsession` is the
 //! answer: `URLSession` runs the script itself, in the OS, which is one
-//! of the three reasons that backend exists.
+//! of the three reasons that backend exists — and it reports that it is
+//! doing so, through [`SystemProxies::detect_platform`] and
+//! [`SystemProxies::names_a_proxy`], which are here for that caller.
 //!
 //! **It does not decide anything.** No pattern is matched here, no
 //! request is routed here, and nothing is applied. A caller who wants the
@@ -248,7 +250,43 @@ impl SystemProxies {
     /// from here, and a `Result` would have offered a distinction its
     /// caller could not act on.
     pub fn detect() -> Self {
-        let raw = read::read();
+        Self::from_raw(read::read())
+    }
+
+    /// The **platform's own** settings, with the environment left out.
+    ///
+    /// [`detect`](Self::detect) reads the environment first and falls
+    /// through to the platform only where it named nothing, because that
+    /// is what every other client on the machine does. This does the
+    /// opposite of that courtesy on purpose, and it exists for exactly
+    /// one kind of caller: a transport that **is** the operating system's
+    /// own stack, and therefore honours the operating system's own
+    /// settings and not a variable in this process's environment.
+    ///
+    /// `hclient-urlsession` is that caller. `URLSession` takes its
+    /// proxies from the system configuration; nothing in Apple's
+    /// documentation or in this workspace's reading says it consults
+    /// `HTTP_PROXY`, and a `Capabilities::proxy` computed from
+    /// [`detect`](Self::detect) would therefore report `true` on a
+    /// machine whose only proxy is an environment variable that transport
+    /// ignores. That is a capability that lies, which is the one failure
+    /// this workspace treats as worse than a missing feature.
+    ///
+    /// **It is the understating answer of the two, in both readings.** If
+    /// `URLSession` honours only the system configuration this is exact;
+    /// if it also honoured the environment, this would miss a proxy
+    /// rather than invent one. The environment-first order can only ever
+    /// over-claim here, and this can only ever under-claim.
+    ///
+    /// On a target with no platform store — anything but Windows and
+    /// Apple — this is always empty, because the environment *was* the
+    /// whole of the answer there and it is the half deliberately not
+    /// read.
+    pub fn detect_platform() -> Self {
+        Self::from_raw(read::platform())
+    }
+
+    fn from_raw(raw: read::Raw) -> Self {
         let mut out = Self::from_parts(raw.proxies, raw.bypass, raw.exclude_simple);
         out.pac = raw.pac.map(String::into_boxed_str);
         out
@@ -328,8 +366,65 @@ impl SystemProxies {
 
     /// No proxy at all, however that came about — nothing configured, or
     /// a `*` bypass that takes everything direct.
+    ///
+    /// **A PAC script alone reads as empty here**, and that is right for
+    /// what this answers: *is there anything in these settings that this
+    /// client can install?* — and a script is not, because nothing here
+    /// runs one. It is the wrong question for *is this machine proxied*,
+    /// which is [`names_a_proxy`](Self::names_a_proxy), and the two
+    /// separate on exactly that case.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty() || self.bypass_everything
+    }
+
+    /// Whether these settings put a proxy in front of anything at all.
+    ///
+    /// This is the question a **capability report** asks, and it is not
+    /// [`is_empty`](Self::is_empty) negated. `is_empty` answers *is there
+    /// something here this client can install*; this answers *does the
+    /// machine route through a proxy*, which is what a caller wants to
+    /// know from a transport that hands the routing to the OS — see
+    /// `hclient-urlsession`, whose `Capabilities::proxy` is this value
+    /// over [`detect_platform`](Self::detect_platform).
+    ///
+    /// The rule, and each clause is a decision:
+    ///
+    /// - **A `*` bypass answers `false` first.** It is the machine saying
+    ///   *no proxy for anything*, and it says so about the script as well
+    ///   as about the static entries — which is the under-claiming
+    ///   reading of a corner (`*` beside a PAC script) that no
+    ///   documentation settles.
+    /// - **A PAC script answers `true`.** It decides per request, so the
+    ///   honest answer is *unknown*, and a `bool` has no room for one. The
+    ///   collapse is towards `true` because the reader is a diagnostic
+    ///   asking *am I behind a proxy* and the machine's owner routed its
+    ///   traffic through a script: reporting `false` there is the
+    ///   *silently direct* answer that
+    ///   [`SystemProxyRefused::PacScript`] exists to refuse to give one
+    ///   layer down. A script that returns `DIRECT` for every URL makes
+    ///   this an over-claim, and that is the one over-claim in here.
+    /// - **Any entry answers `true`**, whatever its protocol. A SOCKS
+    ///   proxy is one this crate's own [`http_proxies`] refuses to
+    ///   install, and the OS installs it perfectly well — so a value read
+    ///   off *what this client could do with them* would be wrong for the
+    ///   transport that does not need this client to do anything.
+    ///
+    /// # What it cannot see
+    ///
+    /// **WPAD auto-discovery.** macOS spells it `ProxyAutoDiscoveryEnable`
+    /// and Windows keeps it in a binary blob under
+    /// `DefaultConnectionSettings`; neither is read by this module, which
+    /// reads `ProxyAutoConfigURLString` and `AutoConfigURL` — a script the
+    /// machine *names*. A machine that discovers its script instead is
+    /// proxied and answers `false` here. It is stated rather than fixed
+    /// because a discovered script has no URL to report, so honouring it
+    /// needs an answer this type does not have a shape for; it is the
+    /// under-claiming direction, which is the one to be wrong in.
+    pub fn names_a_proxy(&self) -> bool {
+        if self.bypass_everything {
+            return false;
+        }
+        self.pac.is_some() || !self.entries.is_empty()
     }
 
     /// The translation, split from the reading so that every rule in it
@@ -576,6 +671,126 @@ mod tests {
         let sys = cfg(&[], &[], false);
         assert!(sys.is_empty());
         assert!(sys.entries().is_empty());
+    }
+
+    fn cfg_pac(proxies: &[(&str, &str)], bypass: &[&str], pac: &str) -> SystemProxies {
+        let mut sys = cfg(proxies, bypass, false);
+        sys.pac = Some(pac.into());
+        sys
+    }
+
+    #[test]
+    fn a_static_proxy_is_a_proxy_the_machine_names() {
+        assert!(cfg(&[("http", "p:8080")], &[], false).names_a_proxy());
+    }
+
+    #[test]
+    fn a_machine_with_nothing_configured_names_none() {
+        assert!(!cfg(&[], &[], false).names_a_proxy());
+    }
+
+    #[test]
+    fn a_proxy_for_a_protocol_this_is_not_about_names_none() {
+        // An `ftp` proxy lands in `ignored`, not in `entries` — so the
+        // report must not read it as *this machine is proxied*, which is
+        // a claim about HTTP.
+        let sys = cfg(&[("ftp", "ftp-proxy:2121")], &[], false);
+        assert!(!sys.ignored().is_empty());
+        assert!(!sys.names_a_proxy());
+    }
+
+    #[test]
+    fn a_pac_script_alone_names_a_proxy_and_offers_nothing_to_install() {
+        // The case that separates the two questions, and the reason
+        // `names_a_proxy` is not `is_empty` negated: there is nothing
+        // here for `http_proxies` to install, and the machine is
+        // nevertheless routed through a proxy by whoever runs the script.
+        let sys = cfg_pac(&[], &[], "http://wpad/proxy.pac");
+        assert!(sys.is_empty());
+        assert!(sys.names_a_proxy());
+    }
+
+    #[test]
+    fn a_star_bypass_answers_no_even_beside_a_pac_script() {
+        // `*` is the machine saying *no proxy for anything*, and it is
+        // read as saying it about the script too — the under-claiming
+        // reading of a corner nothing documents.
+        assert!(!cfg_pac(&[("http", "p:8080")], &["*"], "http://wpad/p.pac").names_a_proxy());
+        assert!(!cfg(&[("http", "p:8080")], &["*"], false).names_a_proxy());
+    }
+
+    #[test]
+    fn a_socks_proxy_this_client_cannot_install_still_names_a_proxy() {
+        // The direction that says this is read off the *machine* rather
+        // than off what this crate could do with it: `http_proxies`
+        // refuses a SOCKS entry, and the OS installs it perfectly well.
+        let sys = cfg(&[("socks5", "s:1080")], &[], false);
+        assert!(http_proxies(&sys).is_err());
+        assert!(sys.names_a_proxy());
+    }
+
+    /// The environment is read by [`SystemProxies::detect`] and must not
+    /// reach [`SystemProxies::detect_platform`], which is the whole of
+    /// why the second exists.
+    ///
+    /// A **child process**, because `std::env::set_var` is `unsafe` in
+    /// edition 2024 and this workspace forbids `unsafe` — the same wall
+    /// `system::testing` records. What it compares is this process's own
+    /// platform answer against the child's, so the assertion holds on a
+    /// machine that really is proxied as well as on one that is not:
+    /// nothing here assumes anything about the host.
+    #[test]
+    fn the_environment_does_not_reach_the_platform_read() {
+        const MARKER: &str = "HCLIENT_PROXY_ENV_ISOLATION_CHILD";
+        const EXPECT: &str = "HCLIENT_PROXY_ENV_ISOLATION_EXPECT";
+
+        if let Ok(expected) = std::env::var(EXPECT) {
+            // The child. It was given an `HTTPS_PROXY` its parent did not
+            // have.
+            assert!(
+                SystemProxies::detect().names_a_proxy(),
+                "`detect` did not read the `HTTPS_PROXY` this process was started with"
+            );
+            assert_eq!(
+                format!("{:?}", SystemProxies::detect_platform()),
+                expected,
+                "`detect_platform` changed when an `HTTPS_PROXY` was put in the environment"
+            );
+            return;
+        }
+
+        let expected = format!("{:?}", SystemProxies::detect_platform());
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let out = std::process::Command::new(exe)
+            // The **libtest** name, which is the module path without
+            // the crate segment. Hardcoded, and a rename that forgets it
+            // does not go quiet: the child then runs nothing, and the
+            // control below is what says so.
+            .args([
+                "system::tests::the_environment_does_not_reach_the_platform_read",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env(EXPECT, &expected)
+            .env("HTTPS_PROXY", "http://env-only.invalid:8080")
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .output()
+            .expect("re-running this test binary");
+        assert!(
+            out.status.success(),
+            "the child arm failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        // The control: a child that ran no test at all would also exit
+        // zero, which is this workspace's recurring defect.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("1 passed"),
+            "the child exited zero without running the test\n{stdout}"
+        );
     }
 
     #[test]

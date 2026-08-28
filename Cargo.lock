@@ -1697,6 +1697,7 @@ dependencies = [
  "futures-executor",
  "hclient",
  "hclient-core",
+ "hclient-proxy",
  "http",
  "http-body",
  "http-body-util",

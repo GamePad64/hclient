@@ -42,6 +42,30 @@
 //! The configuration is `ephemeral`, which is Apple's own name for a
 //! session that persists nothing, plus an explicit `nil` for the cookie
 //! storage. Both are asserted rather than assumed: see `tests/live.rs`.
+//!
+//! # What it does take, and says so
+//!
+//! The proxy configuration, which is one of the three reasons above — and
+//! [`Capabilities::proxy`](hclient_core::Capabilities::proxy) reports it,
+//! read from the machine at construction rather than left at `false`.
+//! Left at `false` it was a **capability that lies**: a caller asking
+//! *will my requests go through a proxy* got `no` from a transport that
+//! hands every request to a stack which proxies them.
+//!
+//! What is read is the **platform's own settings** —
+//! `hclient_proxy::system::SystemProxies::detect_platform`, which skips
+//! the `HTTP_PROXY`/`HTTPS_PROXY` variables that `detect` reads first.
+//! `URLSession` takes its proxies from the system configuration, so a
+//! value off `detect` would report `true` on a machine whose only proxy
+//! is a variable this transport ignores. The platform read can only
+//! under-claim, which is the direction to be wrong in.
+//!
+//! `true` says the machine names a proxy this transport hands to the OS.
+//! It does not say that any one request goes through it — the exceptions
+//! list decides that, and on a machine configured with a PAC script a
+//! JavaScript program does, which `URLSession` runs and nothing in this
+//! workspace can read. That is the same reading `hclient-native` gives
+//! the field, where a proxy carrying a bypass list still reports `true`.
 #![cfg(target_vendor = "apple")]
 
 mod body;

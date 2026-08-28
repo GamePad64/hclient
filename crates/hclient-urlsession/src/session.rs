@@ -75,7 +75,13 @@ impl UrlSession {
         };
         Self {
             session,
-            caps: capabilities(),
+            // Read **once**, at construction, which makes the report a
+            // snapshot: a machine whose proxy is switched on afterwards
+            // is not re-read, exactly as `Native::system_proxy`'s list is
+            // not. See `capabilities` for what the value means.
+            caps: capabilities(
+                hclient_proxy::system::SystemProxies::detect_platform().names_a_proxy(),
+            ),
         }
     }
 }
@@ -90,8 +96,43 @@ impl Default for UrlSession {
 /// shape every backend here uses: a field added later arrives as the
 /// conservative default rather than as a compile error somebody silences
 /// by copying its neighbour.
-fn capabilities() -> Capabilities {
+fn capabilities(proxied: bool) -> Capabilities {
     let mut c = Capabilities::default();
+    // **The OS proxies, so this transport does**, and reporting `false`
+    // while the machine routes every request through a proxy was a
+    // capability that lies — the one class of defect this workspace
+    // treats as worse than a missing feature, because a caller can act on
+    // a capability where a silent downgrade only disappoints them.
+    //
+    // The value is a parameter rather than a read taken here, so that the
+    // half of this that cannot run on the machine this workspace is
+    // developed on holds no decision: every rule behind it is
+    // `hclient_proxy::system::SystemProxies::names_a_proxy`, which is
+    // tested on any host, over `detect_platform`, which is tested to
+    // ignore the environment. That is `hclient-dns-system`'s split
+    // between `sys` and its parsers, applied here.
+    //
+    // **Why the platform settings and not `detect`.** `detect` reads
+    // `HTTPS_PROXY` first, as curl and reqwest do; `URLSession` takes its
+    // proxies from the system configuration and no account of it says it
+    // reads the environment. So a value off `detect` would report `true`
+    // on a machine whose only proxy is a variable this transport ignores.
+    // The platform read is the understating one of the two in either
+    // reading: exact if `URLSession` honours the system configuration
+    // alone, and short of the truth rather than ahead of it if it turned
+    // out to honour more.
+    //
+    // **What `true` claims, and what it cannot.** It says the machine
+    // names a proxy that this transport hands to the OS — not that any
+    // particular request goes through it, which the exceptions list and,
+    // for a PAC machine, a JavaScript program decide per request. That is
+    // the same reading `hclient-native` gives the field, where a proxy
+    // list with a bypass that matches everything still reports `true`.
+    // A PAC script therefore reads as `true` here and the script may
+    // answer `DIRECT` for every URL; the alternative is to report a
+    // proxied machine as direct, which is the failure a caller cannot
+    // diagnose from the outside.
+    c.proxy = proxied;
     // The delegate refuses every redirect, so a `3xx` is an ordinary
     // response and `Client` decides — see `delegate.rs`. This is the one
     // capability where this backend is stronger than `hclient-fetch`,
@@ -261,5 +302,23 @@ fn resolve_body(body: RequestBody) -> Result<Option<bytes::Bytes>, Error> {
         hclient_core::Reduced::Empty => Ok(None),
         hclient_core::Reduced::Bytes(b) => Ok(Some(b)),
         hclient_core::Reduced::Streaming(_) => refuse("a streaming one"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capabilities;
+
+    /// The pair, because either half alone passes for a transport that
+    /// hardcodes the other: a `capabilities` ignoring its argument
+    /// satisfies exactly one of these two lines.
+    ///
+    /// It runs only on a Mac — this whole crate is `#![cfg(target_vendor
+    /// = "apple")]` — which is why the *reading* it consumes lives in
+    /// `hclient-proxy` and is tested on any host.
+    #[test]
+    fn the_proxy_report_is_the_answer_it_was_given() {
+        assert!(capabilities(true).proxy);
+        assert!(!capabilities(false).proxy);
     }
 }

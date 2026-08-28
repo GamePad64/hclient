@@ -28,6 +28,24 @@ thiserror    = { workspace = true }
 objc2 = "0.6"
 block2 = "0.6"
 
+# For **one bool**: `Capabilities::proxy`. `URLSession` applies the
+# machine's proxy configuration itself, so this transport has to be able
+# to say whether one is in force — and the only alternative to reading it
+# here was a second reader of the same dynamic-store dictionary, which is
+# the *two statements of one contract and the newer one rots* shape this
+# workspace refuses elsewhere. Not optional and not behind a feature: a
+# capability that is honest only when a flag is set is a capability that
+# lies in the default build, which is the defect being closed.
+#
+# Measured on `aarch64-apple-darwin`, `cargo tree -e normal`, unique
+# crates: **19 -> 30**. Four of the eleven are the platform bindings that
+# do the reading (`core-foundation`, `core-foundation-sys`,
+# `system-configuration`, `system-configuration-sys`); the rest are that
+# crate's own sans-io HTTP-proxy half, which this never calls. No `url`
+# and no ICU tables on either side, which is what `just graph-proxy-cost`
+# asserts.
+hclient-proxy = { path = "../hclient-proxy", version = "0.1.0-alpha.1", features = ["system"] }
+
 [target.'cfg(target_vendor = "apple")'.dependencies.objc2-foundation]
 version = "0.3"
 default-features = false

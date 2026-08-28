@@ -340,3 +340,29 @@ fn the_clients_redirect_policy_is_what_follows_the_hop() {
         "and the client followed the Location itself: {second}"
     );
 }
+
+/// `Capabilities::proxy` says what the **machine** says, because
+/// `URLSession` applies the machine's proxy configuration and this
+/// transport does not.
+///
+/// A biconditional rather than a value, for `Head::version` and
+/// `Capabilities::version_reported`'s reason one crate over: the claim is
+/// an agreement between two places, and pinning either to a constant
+/// would pin it to whatever the machine running the suite happens to
+/// have.
+///
+/// **What it discriminates is stated rather than assumed.** On a machine
+/// with no proxy configured — which is what a CI runner is — both sides
+/// are `false` and a transport hardcoding `false` passes. It fails on a
+/// proxied machine, and the mutation that *is* killed everywhere is the
+/// pair in `session.rs`'s own unit test, which asks `capabilities` both
+/// questions directly.
+#[test]
+fn the_proxy_capability_agrees_with_the_machines_own_settings() {
+    let sys = hclient_proxy::system::SystemProxies::detect_platform();
+    assert_eq!(
+        UrlSession::new().capabilities().proxy,
+        sys.names_a_proxy(),
+        "the transport and the machine disagree about whether a proxy is in force: {sys:?}"
+    );
+}

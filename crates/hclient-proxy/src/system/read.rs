@@ -106,7 +106,7 @@ fn from_pairs(vars: impl Iterator<Item = (String, String)>) -> Raw {
 // --- Windows ------------------------------------------------------------
 
 #[cfg(windows)]
-fn platform() -> Raw {
+pub(super) fn platform() -> Raw {
     // `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
     // which is where WinINET keeps what the Internet Options dialog
     // writes and where every other client on the machine reads it. Asked
@@ -186,7 +186,7 @@ fn from_wininet(
 // --- macOS --------------------------------------------------------------
 
 #[cfg(target_vendor = "apple")]
-fn platform() -> Raw {
+pub(super) fn platform() -> Raw {
     use core_foundation::array::CFArray;
     use core_foundation::base::{CFType, TCFType};
     use core_foundation::dictionary::CFDictionary;
@@ -285,7 +285,7 @@ fn platform() -> Raw {
 }
 
 #[cfg(not(any(windows, target_vendor = "apple")))]
-fn platform() -> Raw {
+pub(super) fn platform() -> Raw {
     // No platform store to ask. The environment is the whole of it, which
     // is the same answer curl gives on these targets — and it has already
     // been read by the time this is called.

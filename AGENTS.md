@@ -3861,11 +3861,57 @@ from *silently direct* into a named refusal pointing at
 `hclient-urlsession`, which runs the script in the OS. The engine was
 never what closed that defect.
 
-**One thing knowable and not done**: `hclient-urlsession` still reports
-`Capabilities::proxy == false` while the OS applies a proxy underneath
-it. The reader exists now, so the honest value is computable — what is
-missing is that `SystemProxies::detect` reads the environment first, and
-`URLSession` does not honour the environment, so the two would disagree.
+**That last thing was recorded as knowable and not done, and the
+obstacle recorded for it was the whole of the fix.**
+`hclient-urlsession` reported `Capabilities::proxy == false` while the OS
+applied a proxy underneath it — a capability that lies, the class this
+file treats as worse than a silent downgrade because a caller can act on
+a capability. What stood in the way was that `SystemProxies::detect`
+reads the environment first, as curl and reqwest do, and `URLSession`
+takes its proxies from the system configuration instead. So the addition
+is `SystemProxies::detect_platform()`, which reads the platform store and
+skips the environment, and the value is
+`detect_platform().names_a_proxy()`.
+
+**The order is not a preference, it is the only one that cannot
+over-claim.** An environment-first read reports `true` on a machine whose
+only proxy is a variable this transport ignores; the platform-only read is
+exact if `URLSession` honours the system configuration alone and short of
+the truth rather than ahead of it if it honours more. Which of those two
+is the case is not settled by anything Apple publishes — DTS's own answer
+is *"NSURLSession takes care of proxies for you"* and no more — so the
+design is built to be right under either.
+
+**`names_a_proxy` is not `is_empty` negated, and a PAC script is what
+separates them.** `is_empty` answers *is there anything here this client
+can install*, and a script is not, because nothing here runs one;
+`names_a_proxy` answers *does the machine route through a proxy*, and a
+script does. The collapse of an unknowable answer onto a `bool` is
+towards `true` for the reason `SystemProxyRefused::PacScript` exists:
+reporting a PAC machine as unproxied is the *silently direct* answer. A
+`*` bypass is checked first and answers `false` even beside a script,
+which is the under-claiming reading of a corner nothing documents. A
+SOCKS entry answers `true` although `http_proxies` refuses to install one
+— the report is read off the machine, not off what this client could do
+with it.
+
+**What it still cannot see is WPAD auto-discovery**, which macOS spells
+`ProxyAutoDiscoveryEnable` and Windows keeps in a binary blob: this module
+reads a script the machine *names*, and a discovered one has no URL to
+report, so honouring it needs an answer `SystemProxies` has no shape for.
+Stated rather than fixed, and it is the under-claiming direction.
+
+The split is `hclient-dns-system`'s: every rule is
+`hclient-proxy`'s and is tested on this workspace's own Linux hosts, the
+`URLSession` side is one expression, and the environment-exclusion is
+pinned by a test that re-runs the test binary as a **child process** with
+an `HTTPS_PROXY` in its environment — `std::env::set_var` being `unsafe`
+in edition 2024 — and compares the child's `detect_platform` against the
+parent's, so it asserts nothing about the host it runs on. The cost is
+measured: `hclient-urlsession` goes from **19 crates to 30** on
+`aarch64-apple-darwin`, four of them the platform bindings that do the
+reading and none of them `url` or ICU, which `just graph-proxy-cost`
+asserts in both directions.
 
 ### Proxies: an HTTP one and SOCKS5, behind one seam
 

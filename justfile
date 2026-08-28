@@ -1287,6 +1287,17 @@ graph-proxy-cost:
     ./scripts/tree-guard.sh present '^system-configuration ' \
       "hclient-proxy with 'system' has no dynamic-store reader on macOS" \
       -- -p hclient-proxy --features system --target aarch64-apple-darwin
+    # And the backend that reads them for its own capability report.
+    # `URLSession` applies the machine's proxy configuration itself, so
+    # `Capabilities::proxy` there is a read of the dynamic store rather
+    # than a constant — and a build with no reader in it could only
+    # report `false`, which is the capability that lies this closed.
+    ./scripts/tree-guard.sh present '^system-configuration ' \
+      "hclient-urlsession has no dynamic-store reader on macOS — its Capabilities::proxy would be a hardcoded false while the OS proxies underneath it" \
+      -- -p hclient-urlsession --target aarch64-apple-darwin
+    ./scripts/tree-guard.sh absent '^(url|idna|idna_adapter|icu_)' \
+      "hclient-urlsession pulls in url or the ICU tables — it takes hclient-proxy for one bool, and the whole reason that reader is written here rather than taken from a crate is that reading a proxy setting must not cost a Unicode table" \
+      -- -p hclient-urlsession --target aarch64-apple-darwin
 
 # `system-proxy` is in `hclient`'s `default`, and the only thing that makes
 # that affordable is the question mark in `hclient-native?/system-proxy`:
