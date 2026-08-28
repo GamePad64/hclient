@@ -166,7 +166,7 @@ pub use wire::{DohError, MAX_RESPONSE_BYTES};
 
 use futures_util::StreamExt;
 use futures_util::stream;
-use hclient_core::unversioned::Transport;
+use hclient_core::unversioned::SendTransport;
 use hclient_core::{Error, ErrorKind, RequestBody, Timeouts};
 use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
 use http::Uri;
@@ -214,6 +214,23 @@ const DEFAULT_TIMEOUTS: Timeouts = Timeouts {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoFallback;
 
+/// The stream every `Resolve` here hands back, `Send` and short enough to
+/// stay on one line.
+///
+/// **The one-line part is the reason it exists.** `cargo fmt` reflows the
+/// written-out form and carries the `send-bound-exception` marker off the
+/// end with it, so the invariant check reports an unexcused bound and the
+/// two gates cannot pass together — a defect `AGENTS.md` records three
+/// times from the other side. A short alias is the workspace's own
+/// remedy, and the four use sites write `SendAddrStream<'a>`.
+type SendAddrStream<'a> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
+
+/// The same, for the record stream. Separate rather than generic because
+/// a generic alias over the item type reflows again at the use site.
+type SendSvcbStream<'a> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
+
 impl Resolve for NoFallback {
     type Svcb<'a>
         = hclient_dns::NoSvcb
@@ -225,7 +242,7 @@ impl Resolve for NoFallback {
     }
 
     type Ipv4<'a>
-        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        = SendAddrStream<'a>
     where
         Self: 'a;
 
@@ -233,7 +250,7 @@ impl Resolve for NoFallback {
         Box::pin(stream::empty())
     }
     type Ipv6<'a>
-        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        = SendAddrStream<'a>
     where
         Self: 'a;
 
@@ -465,7 +482,7 @@ fn check_confidential(uri: &Uri, host: Option<IpAddr>) -> Result<(), EndpointErr
 
 impl<C, F> Doh<C, F>
 where
-    C: Transport,
+    C: SendTransport,
     C::Error: Send + Sync, // send-bound-exception: amendment-C1
     <C::Body as http_body::Body>::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
     F: Resolve,
@@ -491,9 +508,17 @@ where
         );
         req.extensions_mut().insert(self.timeouts);
 
+        // `execute_send` rather than `execute`, and that one word is the
+        // whole of why this resolver's streams can be `Send`.
+        // `Transport::execute` returns `impl Future`, which has no name —
+        // so a stream built over it cannot be declared to cross a thread,
+        // and boxing it as a bare `dyn Stream` **removes** the property
+        // rather than hiding it. `SendTransport::execute_send` hands back
+        // `BoxSendExchange`, a named type, and everything downstream of it
+        // is nameable in turn.
         let response = self
             .client
-            .execute(req)
+            .execute_send(req)
             .await
             .map_err(|e| DohError::Transport(self.client.to_error(e)))?;
 
@@ -598,15 +623,29 @@ where
     }
 }
 
+/// The bounds beyond `Resolve`'s own are what make this resolver's streams
+/// `Send`, and they are on the **impl** rather than on the trait — an impl
+/// may carry bounds the trait does not, which is `SendTransport`'s whole
+/// shape one layer down.
+///
+/// What they exclude, measured rather than guessed: a `Doh` over a
+/// transport that cannot cross a thread, or with a fallback resolver that
+/// cannot. Neither is a combination anybody assembles — a browser does its
+/// own resolving and none of the four resolvers here is `!Send` — and the
+/// alternative was to keep every `Doh` user's transport `!Send`, which is
+/// what this cost for four verticals.
 impl<C, F> Resolve for Doh<C, F>
 where
-    C: Transport,
-    C::Error: Send + Sync, // send-bound-exception: amendment-C1
+    C: SendTransport + Sync, // send-bound-exception: amendment-C16
+    C::Error: Send + Sync,   // send-bound-exception: amendment-C1
+    C::Body: Send,           // send-bound-exception: amendment-C16
     <C::Body as http_body::Body>::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
-    F: Resolve,
+    F: Resolve + Sync,         // send-bound-exception: amendment-C16
+    for<'a> F::Ipv4<'a>: Send, // send-bound-exception: amendment-C16
+    for<'a> F::Ipv6<'a>: Send, // send-bound-exception: amendment-C16
 {
     type Ipv4<'a>
-        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        = SendAddrStream<'a>
     where
         Self: 'a;
 
@@ -618,7 +657,7 @@ where
     }
 
     type Ipv6<'a>
-        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        = SendAddrStream<'a>
     where
         Self: 'a;
 
@@ -646,7 +685,7 @@ where
     }
 
     type Svcb<'a>
-        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + 'a>>
+        = SendSvcbStream<'a>
     where
         Self: 'a;
 
