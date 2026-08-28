@@ -596,6 +596,148 @@ test-autobahn: autobahn-parser-selftest
 # had it, the job did not, and it only ever reports more.
 
 # the feature-off builds, which --all-features can never exercise
+# **The first five minutes, from outside.** `cargo add hclient` resolves and
+# then the front page's own first line does not compile, because
+# `Client::new()` is behind `default-transport` and that feature is
+# deliberately not a default. What a reader used to get for that was
+# `error[E0599]: no associated function or constant named `new``, naming no
+# feature at all — rustc's *"found an item that was configured out"* note is
+# emitted for path resolution, so `hclient::default_transport()` announces
+# its own gate and an inherent `fn` in a `#[cfg]`-ed-out `impl` block does
+# not.
+#
+# Both halves are checked, and from a crate outside this workspace rather
+# than from a test beside the code, because a test written here shares the
+# author's knowledge of where the doors are.
+
+# `Client::new()` without the feature must name the feature, not the name
+first-five-minutes:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    root="$(pwd)"
+    [ -d "$root/crates/hclient" ] || { echo "::error::crates/hclient is missing — this check must run, not skip"; exit 1; }
+    # The third arm below needs it, and a skipped arm is the defect this
+    # file records against `test-wasi` and `check-targets` alike.
+    rustup target list --installed | grep -qx wasm32-wasip2 || {
+      echo "::error::wasm32-wasip2 is not installed — \`rustup target add wasm32-wasip2\`. The WASI half of this check would silently not run."
+      exit 1
+    }
+    dir="$(mktemp -d)"
+    trap 'rm -rf "$dir"' EXIT
+    mkdir -p "$dir/src"
+    # A path dependency rather than the registry: the question is what this
+    # working tree does, and a published version would answer for a
+    # different commit. `[workspace]` keeps it out of this one's.
+    cat > "$dir/Cargo.toml" <<EOF
+    [package]
+    name = "first-five-minutes"
+    version = "0.0.0"
+    edition = "2024"
+
+    [workspace]
+
+    [dependencies]
+    hclient = { path = "$root/crates/hclient" }
+    EOF
+    sed -i 's/^    //' "$dir/Cargo.toml"
+    # The crate's front page, copied rather than paraphrased.
+    cat > "$dir/src/lib.rs" <<'EOF'
+    pub async fn f() -> Result<(), hclient::Error> {
+        let client = hclient::Client::new()?;
+        let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+        let _ = text;
+        Ok(())
+    }
+    EOF
+    sed -i 's/^    //' "$dir/src/lib.rs"
+
+    # ── direction 1: it must fail, and for the RIGHT reason ──────────────
+    log="$dir/off.log"
+    if (cd "$dir" && cargo build --color never) > "$log" 2>&1; then
+      echo "::error::the front page compiled without \`default-transport\` — either the feature moved into \`default\` (see AGENTS.md on why a default here is a floor) or this fixture stopped exercising \`Client::new\`"
+      exit 1
+    fi
+    if ! grep -q 'error\[E0277\]' "$log" \
+       || ! grep -q 'needs the `default-transport` feature' "$log" \
+       || ! grep -q 'cargo add hclient --features default-transport' "$log"; then
+      echo "::error::it failed, but not with the refusal that names the feature — full output follows"
+      cat "$log"
+      exit 1
+    fi
+
+    # ── direction 2: rustc's own note, which is why there is one stub ────
+    #
+    # `default_transport()` is a free function, so path resolution reports
+    # its `#[cfg]` unprompted. If that ever stops being true, the asymmetry
+    # this recipe's header states is wrong and the missing half is owed.
+    cat > "$dir/src/lib.rs" <<'EOF'
+    pub fn g() -> Result<(), hclient::Error> {
+        let _ = hclient::default_transport()?;
+        Ok(())
+    }
+    EOF
+    sed -i 's/^    //' "$dir/src/lib.rs"
+    log="$dir/free.log"
+    if (cd "$dir" && cargo build --color never) > "$log" 2>&1; then
+      echo "::error::\`default_transport()\` compiled without the feature"
+      exit 1
+    fi
+    if ! grep -q 'found an item that was configured out' "$log" \
+       || ! grep -q 'default-transport' "$log"; then
+      echo "::error::rustc no longer names the gate for a configured-out free function — \`default_transport\` now owes the same stub \`Client::new\` carries; output follows"
+      cat "$log"
+      exit 1
+    fi
+
+    # ── direction 3: on WASI the same refusal must NOT name the feature ──
+    #
+    # `wasm32-wasip2` reaches this stub with `default-transport` already on,
+    # because `hclient` does not depend on `hclient-wasi` and there is no
+    # branch to resolve. Telling that caller to add a feature they have is
+    # the one wrong answer a single message would have given, so the
+    # headline forks and both halves are checked.
+    cat > "$dir/src/lib.rs" <<'EOF'
+    pub async fn f() -> Result<(), hclient::Error> {
+        let client = hclient::Client::new()?;
+        let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+        let _ = text;
+        Ok(())
+    }
+    EOF
+    sed -i 's/^    //' "$dir/src/lib.rs"
+    sed -i 's|^hclient = .*|hclient = { path = "'"$root"'/crates/hclient", features = ["default-transport"] }|' "$dir/Cargo.toml"
+    log="$dir/wasi.log"
+    if (cd "$dir" && cargo build --target wasm32-wasip2 --color never) > "$log" 2>&1; then
+      echo "::error::\`Client::new()\` compiled for wasm32-wasip2 — there is no default transport there, so either one was added or this fixture stopped exercising it"
+      exit 1
+    fi
+    if ! grep -q 'no default transport to build on `wasm32-wasip2`' "$log" \
+       || grep -q 'cargo add hclient --features default-transport' "$log"; then
+      echo "::error::the WASI refusal is missing or is telling the caller to add a feature that is already on — full output follows"
+      cat "$log"
+      exit 1
+    fi
+
+    # ── the control: with the feature, the same source builds ────────────
+    #
+    # Without this the recipe is green for a refusal that has nothing to do
+    # with the feature — a broken crate refuses everything.
+    cat > "$dir/src/lib.rs" <<'EOF'
+    pub async fn f() -> Result<(), hclient::Error> {
+        let client = hclient::Client::new()?;
+        let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+        let _ = text;
+        Ok(())
+    }
+    EOF
+    sed -i 's/^    //' "$dir/src/lib.rs"
+    sed -i 's|^hclient = .*|hclient = { path = "'"$root"'/crates/hclient", features = ["default-transport"] }|' "$dir/Cargo.toml"
+    if ! (cd "$dir" && cargo build --color never); then
+      echo "::error::the front page does NOT compile with \`default-transport\` — the two lines a reader copies are wrong"
+      exit 1
+    fi
+    echo "OK: without the feature the refusal names it; with the feature the front page compiles"
+
 test-no-default:
     #!/usr/bin/env bash
     # `-e`, and it is load-bearing: the four clippy lines at the end are

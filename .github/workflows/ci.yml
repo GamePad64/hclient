@@ -244,6 +244,9 @@ jobs:
         with:
           channel: stable
           components: clippy
+          # `first-five-minutes` asks what a WASI caller is told, which is a
+          # different sentence from what a native caller is told.
+          targets: wasm32-wasip2
           bins: cargo-nextest,just
       - name: url is gone, with the feature either way
         shell: bash
@@ -254,6 +257,9 @@ jobs:
       - name: the feature-off path is compiled and run, not merely declared
         shell: bash
         run: just test-no-default
+      - name: without the transport feature the front page names it, with it the front page compiles
+        shell: bash
+        run: just first-five-minutes
 
   # The whole claim of `hclient-idn` is that the platform's ICU answers
   # what the bundled `idna` crate answers.

@@ -1913,6 +1913,104 @@ impl Default for Client {
     }
 }
 
+// **The third branch, where `Client::new` does not exist — and what a
+// reader got for that named nothing.** Measured from a fresh crate outside
+// this workspace, on the two lines this crate's front page opens with:
+// `cargo add hclient` resolves, and `Client::new()` is `error[E0599]: no
+// associated function or constant named `new` found for struct `Client``,
+// with no mention of a feature anywhere in it.
+//
+// **The free function beside it needs nothing like this, and that is the
+// measurement that decided the shape of the fix.** `hclient::
+// default_transport()` under the same build is `error[E0425]` carrying
+// rustc's own *"found an item that was configured out"* note, which points
+// at the `#[cfg]` line and underlines `feature = "default-transport"`. That
+// note is emitted for **path** resolution and not for associated-item
+// lookup, so a free function announces its own gate and an inherent `fn`
+// in a `#[cfg]`-ed-out `impl` block does not. Hence one stub, here, rather
+// than a pair.
+//
+// So on this branch the item **exists**, with a where-clause nothing can
+// satisfy and the message on the trait it names. The lifetime is
+// load-bearing rather than decoration: a where-clause predicate carrying
+// no generic parameter is checked at the *definition* site, so the obvious
+// `where Self: DefaultTransportFeature` refuses to compile this crate at
+// all — measured, `error[E0277]` on the `where` line itself. `'g` gives the
+// predicate a parameter, which defers it to the call site, and the caller
+// never writes it.
+#[cfg(not(any(
+    // The native `Client::new` above.
+    all(feature = "default-transport", not(target_family = "wasm")),
+    // The browser one. Both conditions are repeated rather than named once,
+    // for the reason the gate on the native block gives: the branch a
+    // reader is standing in should say what it excludes.
+    all(
+        feature = "default-transport",
+        target_family = "wasm",
+        target_os = "unknown"
+    )
+)))]
+pub(crate) mod without_a_default_transport {
+    /// The unsatisfiable bound behind [`Client::new`]'s refusal, and the
+    /// carrier of the message a reader sees. Never implemented, for any
+    /// type, in any build.
+    ///
+    /// [`Client::new`]: super::Client::new
+    // **Two headlines, because there are two reasons to be standing here
+    // and only one of them is the feature.** Within this module the pair is
+    // exhaustive and mutually exclusive: the module compiles only where
+    // neither positive gate holds, so either the feature is off (any
+    // target), or it is on and the target is `wasm` and not the browser —
+    // which is `wasm32-wasip2`, where turning the feature on changes
+    // nothing. Telling a WASI caller to add a feature they already have is
+    // the shape of advice that costs an afternoon.
+    #[cfg_attr(
+        not(feature = "default-transport"),
+        diagnostic::on_unimplemented(
+            message = "`Client::new()` needs the `default-transport` feature of the `hclient` crate",
+            label = "this build of `hclient` has no default transport",
+            note = "add it: `cargo add hclient --features default-transport`",
+            note = "it is deliberately not a default: Cargo unifies features across a dependency graph, so a default here would be a floor, putting tokio, rustls and the system resolver into every build that contains this crate",
+            note = "or name a transport, as every target may: `hclient::Client::builder(transport).build()?`"
+        )
+    )]
+    #[cfg_attr(
+        all(
+            feature = "default-transport",
+            target_family = "wasm",
+            not(target_os = "unknown")
+        ),
+        diagnostic::on_unimplemented(
+            message = "`Client::new()` has no default transport to build on `wasm32-wasip2`",
+            label = "`default-transport` is enabled and does not reach this target",
+            note = "`hclient` deliberately does not depend on `hclient-wasi`, so the WASI transport is named rather than defaulted: `hclient::Client::builder(hclient_wasi::WasiHttp::new()).build()?`",
+            note = "adding the `default-transport` feature does not help here — it is already on"
+        )
+    )]
+    pub trait DefaultTransportFeature<'g> {}
+
+    impl super::Client {
+        /// Not available in this build — see [`DefaultTransportFeature`].
+        ///
+        /// The two real constructors are gated on `default-transport`, and
+        /// this stands in their place so that calling one says which
+        /// feature is missing instead of which name is.
+        ///
+        /// # Errors
+        ///
+        /// None reachable: the bound is unsatisfiable, so no call to this
+        /// compiles. The `Result` is the native signature's, because that
+        /// is the one the front page's `?` is written against — a caller
+        /// who reaches this has one error rather than two.
+        pub fn new<'g>() -> Result<Self, hclient_core::Error>
+        where
+            Self: DefaultTransportFeature<'g>,
+        {
+            unreachable!("`Client::new` has an unsatisfiable bound; no call to it compiles")
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("exceeded redirect limit of {0}")]
 struct TooMany(u8);

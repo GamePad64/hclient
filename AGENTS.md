@@ -4717,6 +4717,58 @@ declaration had the identical gap for the identical reason — it keyed on
 now use one pair of conditions, negations of each other, so the arms are
 exhaustive and non-overlapping by construction.
 
+### The flag is paid in text, and the text was the only thing paying
+
+The paragraph above ends *"the cost is paid in text"*, and being a user
+showed the text is not where the cost lands. Measured from a fresh crate
+outside this workspace, on the two lines the crate's own front page opens
+with: `cargo add hclient` resolves, and `Client::new()` is `error[E0599]:
+no associated function or constant named "new" found for struct "Client"`
+— **no part of which mentions a feature**. A reader who skipped one line
+of prose gets a message that reads as *this crate does not have that
+function*.
+
+**The free function beside it needs nothing at all, and that asymmetry is
+what decided the shape of the fix.** `hclient::default_transport()` under
+the same build is `error[E0425]` carrying rustc's own *"found an item that
+was configured out"* note, which points at the `#[cfg]` line and underlines
+`feature = "default-transport"`. That note is emitted for **path**
+resolution and not for associated-item lookup — so a free function
+announces its own gate and an inherent `fn` in a `#[cfg]`-ed-out `impl`
+block does not. One stub, not a pair.
+
+**So on the branch where there is no default transport, `Client::new`
+exists** — with a where-clause nothing can satisfy and the message on the
+trait it names, through `#[diagnostic::on_unimplemented]`. The obvious
+spelling of that does not compile: a where-clause predicate carrying no
+generic parameter is checked at the **definition** site, so
+`where Self: DefaultTransportFeature` refuses to build this crate at all,
+`error[E0277]` on the `where` line. A lifetime parameter the caller never
+writes is what defers the predicate to the call site.
+
+**The headline forks, because there are two reasons to be standing there
+and only one of them is the feature.** `wasm32-wasip2` reaches the same
+stub with `default-transport` **already on** — `hclient` does not depend on
+`hclient-wasi`, so there is no branch to resolve — and telling that caller
+to add a feature they have is the one wrong answer a single message would
+have given. Within the stub's own gate the pair is exhaustive and mutually
+exclusive by construction, which is the shape `DefaultClock`'s arms were
+repaired into one section up.
+
+`just first-five-minutes` is the check, in the `no-default` job, and it is
+the reader's own instrument rather than a test written beside the code: a
+crate outside this workspace, with a path dependency, built four ways. Each
+arm was broken on purpose and watched — deleting the stub returns the
+`E0599`, giving WASI the feature message trips the third arm, renaming
+`default_transport` trips the second — and the control is the same source
+compiling with the feature on, without which the recipe would be green for
+a crate that refuses everything.
+
+**What is not fixed is the first line of the error, and it cannot be.**
+`Client::new()` still fails to compile; what changed is that the failure
+names the flag and the command. Nothing here widens the default feature
+set, for the reason the section above measures.
+
 ### The workspace was `http-ng`, and the prefix is what decided its replacement
 
 Three objections killed the old name, and they are independent of each
@@ -4978,8 +5030,9 @@ resolves to
 not one with explicitly chosen roots). On `wasm32-unknown-unknown` it resolves
 to `hclient_fetch::Fetch`, and `Client::new()` there returns `Self` rather than
 a `Result`, because fetch's constructor cannot fail. Without the feature, or on
-`wasm32-wasip2` (`target_os = "wasi"`), the type doesn't exist at all — an
-ordinary compile error, not a silently weaker transport; on wasip2/wasip1 there's deliberately no branch that reuses the
+`wasm32-wasip2` (`target_os = "wasi"`), the type doesn't exist at all — a
+compile error, not a silently weaker transport, and since the section above
+one that names which of the two reasons it is; on wasip2/wasip1 there's deliberately no branch that reuses the
 already-built `hclient_wasi::WasiHttp` through this mechanism — `hclient`
 doesn't depend on `hclient-wasi` (an invariant recorded in
 `hclient-wasi/Cargo.toml`), and adding that dependency here would mean a path

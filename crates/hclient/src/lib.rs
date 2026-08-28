@@ -1,9 +1,16 @@
 //! Cross-platform async HTTP client.
 //!
-//! ```toml
-//! # `default-transport` is not a default, deliberately — see below.
-//! hclient = { version = "0.1.0-alpha.1", features = ["default-transport"] }
+//! ```text
+//! cargo add hclient --features default-transport
 //! ```
+//!
+//! **The flag is not optional and it is not a default** — see below for
+//! why. Without it `Client::new()` refuses to compile, naming the feature
+//! and the command, and this page's own first line is what a reader
+//! copies, so the two lines are together deliberately. The version is not written here: one was, `0.1.0-alpha.1`,
+//! and it was still on the rendered page for `0.1.0-alpha.2` — a version in
+//! prose goes stale on the release after it is written, and this one had
+//! already been taken out of both READMEs and left here.
 //!
 //! ```no_run
 //! # async fn f() -> Result<(), hclient::Error> {
@@ -133,6 +140,24 @@ pub mod sse;
 mod stages;
 
 pub use client::{Client, ClientBuilder};
+
+// The bound that carries `Client::new`'s refusal when there is no default
+// transport to build one from. It is re-exported because a `pub fn`'s
+// where-clause may not name a trait the outside world cannot reach — a
+// `private_bounds` warning, and this workspace's builds carry none — and
+// hidden because nobody implements it and nobody names it: it exists to be
+// printed. The gate is `client.rs`'s, negated there and repeated here for
+// the same reason both halves of the positive gate are repeated.
+#[cfg(not(any(
+    all(feature = "default-transport", not(target_family = "wasm")),
+    all(
+        feature = "default-transport",
+        target_family = "wasm",
+        target_os = "unknown"
+    )
+)))]
+#[doc(hidden)]
+pub use client::without_a_default_transport::DefaultTransportFeature;
 
 // ---- the doors ----
 //
@@ -438,13 +463,18 @@ pub use response::{Collected, Response};
 ///
 /// # What resolves under which feature — measured, not assumed
 ///
-/// - Without the `default-transport` feature (the crate's default,
-///   `default = []`): the type doesn't exist at all. `Client::new()`, or
-///   naming `hclient::DefaultTransport`, is an ordinary compile
-///   error ("cannot find type", "no function or associated item"), not a
-///   silent fallback to something weaker. The same decision the TLS
-///   backends make about trust anchors: a build without a verifier fails
-///   to compile rather than silently trusting everything.
+/// - Without the `default-transport` feature (which is not in `default`,
+///   deliberately — see the crate doc): the type doesn't exist at all.
+///   Naming `hclient::DefaultTransport` is "cannot find type", and
+///   `Client::new()` is a refusal that names the feature and the command
+///   to add it — `client.rs`'s `without_a_default_transport`, which exists
+///   because rustc's own *"found an item that was configured out"* note is
+///   emitted for path resolution and not for associated-item lookup, so
+///   `default_transport()` announces its gate and an inherent `fn` in a
+///   `#[cfg]`-ed-out `impl` block did not. Either way a compile error and
+///   not a silent fallback to something weaker: the same decision the TLS
+///   backends make about trust anchors, where a build without a verifier
+///   fails to compile rather than silently trusting everything.
 /// - With the `default-transport` feature on any NON-wasm target
 ///   (linux/macos/windows — the only branch below,
 ///   `not(target_family = "wasm")`): `Native<Tokio, Rustls,
@@ -463,8 +493,10 @@ pub use response::{Collected, Response};
 ///   doc comment in `client.rs`).
 /// - With the `default-transport` feature on `wasm32-wasip2`/
 ///   `wasm32-wasip1` (`target_os = "wasi"`): there's still no branch below
-///   — the type doesn't exist, the same honest compile error as without
-///   the feature at all. The WASI transport (`hclient_wasi::WasiHttp`)
+///   — the type doesn't exist, and `Client::new()` takes the same refusal
+///   as without the feature at all, whose third note is written for
+///   exactly this case: enabling the feature does not help here. The WASI
+///   transport (`hclient_wasi::WasiHttp`)
 ///   already exists and can be used directly via
 ///   `Client::builder(hclient_wasi::WasiHttp::new())` — but NOT through
 ///   this mechanism: `hclient` deliberately doesn't depend on
