@@ -24,6 +24,47 @@
 //! C16). What has been constant is the `Mutex`: this mock implements
 //! `SendTransport`, and it can only do that because nothing in it is
 //! behind a `RefCell`.
+//!
+//! # Writing a test with it
+//!
+//! ```
+//! use hclient_mock::MockTransport;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let mock = MockTransport::new();
+//! mock.push_response(http::Response::builder().status(200).body(r#"{"id":7}"#)?);
+//!
+//! // `Clone` shares the queue and the log, so the handle stays usable
+//! // after the client has taken one.
+//! let client = hclient::Client::builder(mock.clone()).build()?;
+//!
+//! # futures_executor::block_on(async {
+//! let body = client.post("https://api.test/users")
+//!     .json(&serde_json::json!({ "name": "alice" }))
+//!     .send().await?
+//!     .collect().await?;
+//! assert_eq!(body.status(), 200);
+//!
+//! // What the code under test actually sent.
+//! let seen = mock.requests();
+//! assert_eq!(seen.len(), 1);
+//! assert_eq!(seen[0].uri.path(), "/users");
+//! assert_eq!(seen[0].body.text(), Some(r#"{"name":"alice"}"#));
+//!
+//! // And that it made no request you did not script.
+//! assert_eq!(mock.queued(), 0);
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! # })?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Responses come back in the order they were pushed, whatever was asked
+//! for. That is deliberate rather than a missing feature: the flows this
+//! mock exists to test — a redirect chain, a `425` replay, a retry — are
+//! **ordered**, and a matcher would let a test pass while the code made
+//! its requests in the wrong order. Matching on the request is a different
+//! product; assert on `requests()` instead.
 #![forbid(unsafe_code)]
 
 use bytes::Bytes;
@@ -61,6 +102,151 @@ pub struct RecordedRequest {
     pub extensions: http::Extensions,
     pub retry_kind: RetryKind,
     pub body_size_hint: Option<u64>,
+    /// The bytes the request carried.
+    ///
+    /// **The single most useful thing a test asks a mock**, and it was
+    /// absent for four verticals: this struct recorded a `size_hint` and
+    /// dropped the body, so *"my code posted the right JSON"* — the
+    /// commonest assertion anybody makes against a double — could not be
+    /// written at all. Everything the workspace's own tests needed was
+    /// about redirects, retries and capability gates, none of which reads
+    /// a body, so nothing here noticed.
+    pub body: RecordedBody,
+}
+
+/// A request body as the mock saw it.
+///
+/// Four cases and not an `Option<Bytes>`, because *"there was no body"*,
+/// *"a body this mock will not read for you"* and *"a body nothing can
+/// read twice"* are different facts, and a test asserting on the first
+/// must not silently pass on the others.
+/// `Debug` is hand-written for the same reason `RequestBody`'s is: a
+/// closure has none, and a body's debug output should say what shape it is
+/// rather than how many bytes are behind a pointer.
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum RecordedBody {
+    /// [`RequestBody::Empty`] — nothing was sent.
+    Empty,
+    /// The bytes, from a [`RequestBody::Full`].
+    Bytes(Bytes),
+    /// A [`RequestBody::Rewindable`], handed over as its factory rather
+    /// than as bytes — **so that the extra call is the test's choice and
+    /// not the mock's.**
+    ///
+    /// The obvious implementation calls the factory here and records the
+    /// bytes. It is wrong, and a test in this workspace said so within a
+    /// minute: `too_early.rs`'s
+    /// `a_rewindable_body_is_replayed_from_the_snapshot_taken_before_the_first_attempt`
+    /// counts factory calls to pin *one snapshot per hop, not one per
+    /// attempt* — a claim about the **client** — and a mock that called
+    /// the factory to fill a field made that count 2. Purity is not the
+    /// question: the contract makes the *result* the same and says nothing
+    /// about a caller counting calls. A real backend calls the factory
+    /// because it sends the body; a mock that calls it is simply an extra
+    /// caller of the thing under test, which is what this crate's own doc
+    /// means by *a faithful model of a backend, not something that masks
+    /// the defect under test*.
+    ///
+    /// [`RecordedBody::snapshot`] is the opt-in.
+    Rewindable(hclient_core::RewindFactory),
+    /// A [`RequestBody::Streaming`], which the mock **deliberately does
+    /// not drain**.
+    ///
+    /// Draining it would consume the caller's stream and would hang
+    /// outright on an endless one — and a test that sends a streaming body
+    /// is usually testing the streaming rather than asserting on the
+    /// bytes. So this is an honest refusal rather than an empty value: a
+    /// test comparing against `Bytes(..)` fails here and says why, where a
+    /// silent `Empty` would have passed.
+    NotRecorded,
+}
+
+impl std::fmt::Debug for RecordedBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("Empty"),
+            Self::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
+            Self::Rewindable(_) => f.write_str("Rewindable(..)"),
+            Self::NotRecorded => f.write_str("NotRecorded"),
+        }
+    }
+}
+
+/// Compared by value, and **[`RecordedBody::Rewindable`] is equal to
+/// nothing, including itself.**
+///
+/// So this is `PartialEq` and deliberately not `Eq`: reflexivity is what
+/// `Eq` promises and a closure cannot keep it. Asserting on a rewindable
+/// body goes through [`RecordedBody::snapshot`], which is the call that
+/// says the test accepted the cost.
+impl PartialEq for RecordedBody {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Empty, Self::Empty) | (Self::NotRecorded, Self::NotRecorded) => true,
+            (Self::Bytes(a), Self::Bytes(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl RecordedBody {
+    /// The bytes, or `None` where there were none to read **without
+    /// calling something**.
+    ///
+    /// Deliberately not a `Deref` or an `unwrap_or_default`: collapsing
+    /// the absent cases into empty bytes is the confusion the variants
+    /// exist to prevent.
+    pub fn bytes(&self) -> Option<&Bytes> {
+        match self {
+            Self::Bytes(b) => Some(b),
+            Self::Empty | Self::Rewindable(_) | Self::NotRecorded => None,
+        }
+    }
+
+    /// The body as UTF-8, for the ordinary case of a JSON or form payload.
+    ///
+    /// `RequestBuilder::json` and `::form` both produce a
+    /// [`RequestBody::Full`], so this answers for the two bodies a test
+    /// most often wants to check.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Bytes(b) => std::str::from_utf8(b).ok(),
+            Self::Empty => Some(""),
+            Self::Rewindable(_) | Self::NotRecorded => None,
+        }
+    }
+
+    /// Calls a [`Self::Rewindable`]'s factory once and returns what it
+    /// produced.
+    ///
+    /// **This is one more call than the code under test made**, which is
+    /// why it is a method rather than something the mock did on its own —
+    /// see that variant. Use it when the body is what the test is about;
+    /// do not use it in a test that counts factory calls.
+    pub fn snapshot(&self) -> Option<Bytes> {
+        match self {
+            Self::Bytes(b) => Some(b.clone()),
+            Self::Empty => Some(Bytes::new()),
+            Self::Rewindable(f) => match f() {
+                RequestBody::Full(b) => Some(b),
+                RequestBody::Empty => Some(Bytes::new()),
+                RequestBody::Rewindable(_) | RequestBody::Streaming(_) => None,
+            },
+            Self::NotRecorded => None,
+        }
+    }
+}
+
+/// Record what can be recorded **without calling anything**, which is the
+/// whole rule — see [`RecordedBody::Rewindable`].
+fn record_body(body: &RequestBody) -> RecordedBody {
+    match body {
+        RequestBody::Empty => RecordedBody::Empty,
+        RequestBody::Full(b) => RecordedBody::Bytes(b.clone()),
+        RequestBody::Rewindable(f) => RecordedBody::Rewindable(Arc::clone(f)),
+        RequestBody::Streaming(_) => RecordedBody::NotRecorded,
+    }
 }
 
 /// A mock body frame: data, trailers, or a break with an error. Exists so
@@ -102,11 +288,42 @@ enum MockFrame {
 /// transport error into `Other`.
 type Queued = Result<http::Response<VecDeque<MockFrame>>, Error>;
 
-#[derive(Debug)]
+/// A transport that answers from a queue and records what it was asked.
+///
+/// **`Clone` shares the queue and the log**, which is the shape a test
+/// needs and the reason it is `Arc` inside: `Client::builder` takes its
+/// transport by value, so without a shared clone a test has to hand the
+/// mock over and then reach back through
+/// `Client::transport_as::<MockTransport>()` to say what it wanted. That
+/// downcast still works and is what a test does when it did not keep a
+/// handle; keeping one is now the ordinary way.
+///
+/// ```
+/// # use hclient_mock::MockTransport;
+/// let mock = MockTransport::new();
+/// let other = mock.clone();
+/// other.push_response(http::Response::builder().status(204).body("").unwrap());
+/// // The clone's queue is this one's.
+/// assert_eq!(mock.queued(), 1);
+/// ```
+#[derive(Debug, Clone)]
 pub struct MockTransport {
+    shared: std::sync::Arc<Shared>,
+    /// Outside the `Arc` deliberately, and it is the one field a clone
+    /// does not share. [`MockTransport::with_capabilities`] is a builder
+    /// method: it takes `self` by value, so it is called on the handle
+    /// before any clone exists, and every clone made afterwards carries
+    /// the value. Inside the `Arc` it would need either a lock —
+    /// `Transport::capabilities` returns a `&Capabilities` and cannot hold
+    /// one — or an `Arc::get_mut` that panics on a mock somebody had
+    /// already cloned.
+    caps: Capabilities,
+}
+
+#[derive(Debug, Default)]
+struct Shared {
     queue: Mutex<VecDeque<Queued>>,
     seen: Mutex<Vec<RecordedRequest>>,
-    caps: Capabilities,
 }
 
 /// Returned instead of a response when the mock's queue is empty.
@@ -122,10 +339,19 @@ pub struct QueueEmpty;
 impl MockTransport {
     pub fn new() -> Self {
         Self {
-            queue: Mutex::new(VecDeque::new()),
-            seen: Mutex::new(Vec::new()),
+            shared: std::sync::Arc::default(),
             caps: Capabilities::default(),
         }
+    }
+
+    /// How many responses are still queued.
+    ///
+    /// A test that asserts this is `0` at the end has checked that its
+    /// code made every request it set up for — which a `requests().len()`
+    /// assertion does not, since an extra queued response is invisible to
+    /// it.
+    pub fn queued(&self) -> usize {
+        self.shared.queue.lock().expect("mock lock poisoned").len()
     }
 
     pub fn with_capabilities(mut self, caps: Capabilities) -> Self {
@@ -135,11 +361,20 @@ impl MockTransport {
 
     /// Queues a response made of a single frame — the common case when a
     /// test doesn't care about chunk boundaries.
-    pub fn push_response(&self, resp: http::Response<&'static str>) {
+    /// The body is anything that becomes [`Bytes`] — `&'static str`,
+    /// `String`, `Vec<u8>`, `Bytes`.
+    ///
+    /// It was `&'static str` for four verticals, which is fine for a
+    /// literal written in the test and refuses the ordinary case of a
+    /// payload built at run time: `serde_json::to_string(&value)` yields a
+    /// `String`, and a test author's first attempt therefore did not
+    /// compile. `impl Into<Bytes>` costs nothing and accepts both.
+    pub fn push_response(&self, resp: http::Response<impl Into<Bytes>>) {
         let (parts, body) = resp.into_parts();
         let mut frames = VecDeque::new();
-        frames.push_back(MockFrame::Data(Bytes::from_static(body.as_bytes())));
-        self.queue
+        frames.push_back(MockFrame::Data(body.into()));
+        self.shared
+            .queue
             .lock()
             .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
@@ -161,7 +396,8 @@ impl MockTransport {
     pub fn push_response_bytes(&self, resp: http::Response<Vec<Bytes>>) {
         let (parts, body) = resp.into_parts();
         let frames: VecDeque<MockFrame> = body.into_iter().map(MockFrame::Data).collect();
-        self.queue
+        self.shared
+            .queue
             .lock()
             .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
@@ -177,7 +413,8 @@ impl MockTransport {
             .into_iter()
             .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
             .collect();
-        self.queue
+        self.shared
+            .queue
             .lock()
             .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
@@ -198,7 +435,8 @@ impl MockTransport {
             .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
             .collect();
         frames.push_back(MockFrame::Trailers(trailers));
-        self.queue
+        self.shared
+            .queue
             .lock()
             .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
@@ -231,7 +469,8 @@ impl MockTransport {
                 .into_iter()
                 .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes()))),
         );
-        self.queue
+        self.shared
+            .queue
             .lock()
             .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
@@ -251,7 +490,8 @@ impl MockTransport {
             .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
             .collect();
         frames.push_back(MockFrame::RepeatingError(err));
-        self.queue
+        self.shared
+            .queue
             .lock()
             .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
@@ -280,7 +520,8 @@ impl MockTransport {
             .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
             .collect();
         frames.push_back(MockFrame::Error(err));
-        self.queue
+        self.shared
+            .queue
             .lock()
             .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
@@ -296,14 +537,15 @@ impl MockTransport {
     /// `Other` anyway, correctly. Here the caller sets the category, so
     /// "did it reach the consumer" becomes an observable property.
     pub fn push_transport_error(&self, err: Error) {
-        self.queue
+        self.shared
+            .queue
             .lock()
             .expect("mock lock poisoned")
             .push_back(Err(err));
     }
 
     pub fn requests(&self) -> Vec<RecordedRequest> {
-        self.seen.lock().expect("mock lock poisoned").clone()
+        self.shared.seen.lock().expect("mock lock poisoned").clone()
     }
 }
 
@@ -326,7 +568,9 @@ impl Transport for MockTransport {
         // before it's dropped along with the rest of `parts`.
         let retry_kind = body.retry_kind();
         let body_size_hint = body.size_hint();
-        self.seen
+        let recorded = record_body(&body);
+        self.shared
+            .seen
             .lock()
             .expect("mock lock poisoned")
             .push(RecordedRequest {
@@ -336,8 +580,15 @@ impl Transport for MockTransport {
                 extensions: parts.extensions,
                 retry_kind,
                 body_size_hint,
+                body: recorded,
             });
-        match self.queue.lock().expect("mock lock poisoned").pop_front() {
+        match self
+            .shared
+            .queue
+            .lock()
+            .expect("mock lock poisoned")
+            .pop_front()
+        {
             Some(Ok(r)) => {
                 let (p, frames) = r.into_parts();
                 Ok(http::Response::from_parts(p, MockBody { frames }))

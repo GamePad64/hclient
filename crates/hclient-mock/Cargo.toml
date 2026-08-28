@@ -35,3 +35,18 @@ workspace = true
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+# For the crate doc's example alone, and **path-only, with no `version`**,
+# which is not a slip. `hclient` depends on this crate behind its
+# `test-util` feature, so a version-carrying dev-dependency the other way
+# is a cycle: cargo allows it inside a workspace and refuses it at package
+# time, because a dev-dependency with a version has to resolve from the
+# registry and `hclient` cannot be there until this crate is. Path-only
+# makes cargo strip it from the published manifest. Two other crates here
+# carry the same line for the same reason and `just package-build` is what
+# found it — every other dependency in this file being `workspace = true`
+# invites a tidy-up that would put the defect straight back.
+hclient    = { path = "../hclient" }
+http       = { workspace = true }
+serde_json = "1"
+
+http-body-util = { workspace = true }
