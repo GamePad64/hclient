@@ -1227,6 +1227,55 @@ graph-idn-backend:
 # keep the targeted checks they already have.
 
 # every feature combination compiles (58 of them)
+# every crate built the way a reader would build it: on its own
+check-each-crate:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # `just features` cannot see what this sees, and the reason is
+    # structural rather than a matter of coverage: it passes
+    # `--no-dev-deps`, so a dev-dependency missing a feature is invisible
+    # to it, and it never builds test targets. This builds each member
+    # ALONE with its own dev-dependencies and all of its targets, which is
+    # what `cargo check -p <crate>` does for whoever downloads the crate.
+    #
+    # The defect it exists for: `hclient-native`'s h3 two-runtime test
+    # needed `hclient-rt-smol/udp` and its own manifest did not ask for
+    # it. The file compiled under `--workspace` because another member
+    # turned the feature on and Cargo unifies features across a graph, so
+    # the workspace run was green over a crate that did not build on its
+    # own. Same shape as the two doctest examples in `CLAUDE.md`, and as
+    # the three backends that owed `SendTransport` — the third time this
+    # workspace has been green over something a reader could not build.
+    #
+    # Excluded, each because its code is for a target this host is not:
+    # the two wasm backends, Apple, Windows, and embassy. `just
+    # check-targets` is what covers those, and it covers them by naming
+    # the target rather than by skipping the crate.
+    skip="hclient-wasi hclient-fetch hclient-urlsession hclient-winhttp hclient-rt-embassy"
+    # No `set -e`: one crate failing must not hide the next, which is the
+    # same argument `check-targets` makes one recipe over.
+    failed=()
+    n=0
+    for c in $(cargo metadata --no-deps --format-version 1 \
+                 | python3 -c "import json,sys;print(' '.join(p['name'] for p in json.load(sys.stdin)['packages']))"); do
+      case " $skip " in *" $c "*) continue;; esac
+      n=$((n+1))
+      cargo check -p "$c" --all-features --all-targets --color never || failed+=("$c")
+    done
+    # Fails closed on the loop not running at all: a `cargo metadata` that
+    # returns nothing would otherwise report success over zero crates,
+    # which is this repository's recurring defect rather than a new one.
+    if [ "$n" -lt 20 ]; then
+      echo "::error::checked only $n crates — the member list did not resolve; a green run over nothing is the defect this recipe exists for"
+      exit 1
+    fi
+    if [ ${#failed[@]} -ne 0 ]; then
+      echo "::error::${#failed[@]} of $n crates do not build on their own:"
+      for f in "${failed[@]}"; do echo "  cargo check -p $f --all-features --all-targets"; done
+      exit 1
+    fi
+    echo "each-crate check: $n crates build standalone"
+
 features:
     #!/usr/bin/env bash
     set -euo pipefail

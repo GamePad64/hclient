@@ -357,6 +357,45 @@ rather than `--all-targets` on wasm, because its dev-dependencies
 build there at all. The `browser` job reaches that crate's wasm tests
 through `wasm-pack`, which builds the ones that can.
 
+### `each-crate-check`
+
+The other axis of the same question. `cross-target-check` asks whether a
+crate builds for a **target** the host run skips; this asks whether it
+builds **on its own** — `cargo check -p <crate> --all-features
+--all-targets`, once per member, with that member's own dev-dependencies
+and its own test targets, which is how anybody who downloads one builds
+it.
+
+**`features` cannot answer it, and that is structural rather than a matter
+of coverage.** `cargo hack --each-feature --no-dev-deps` is blind to a
+dev-dependency by construction, and it builds no test targets. So the
+defect this job exists for was invisible to the gate that looks closest to
+it: `hclient-native`'s `tests/h3_two_runtimes.rs` instantiates the HTTP/3
+path under `Smol`, which needs `hclient-rt-smol/udp`, and that crate's
+manifest did not ask for it. It compiled under `--workspace` because
+another member turns the feature on and Cargo unifies features across a
+graph — so the workspace run was green over a crate that did not build the
+way a reader would build it.
+
+That is the **third** sighting of one shape in this repository. The two
+doctest examples that compiled only because a neighbour enabled a feature
+are the first; the three backends owing `SendTransport` are the second,
+and `cross-target-check` above is their answer. All three are the same
+sentence: *a green `--workspace` run is a claim about the workspace, not
+about any crate in it.*
+
+Two details are load-bearing, both borrowed from the recipe above. **Not
+`set -e`**, so one failing crate does not hide the next. And it **fails
+closed on the loop not running**: fewer than twenty members checked is an
+error naming the count, because a `cargo metadata` that returned nothing
+would otherwise report success over zero crates — a check that cannot
+fail, which is the defect this file records three other times.
+
+Five crates are excluded, each because its code is for a target this host
+is not: the two wasm backends, Apple, Windows and embassy.
+`cross-target-check` covers those, and it covers them by **naming the
+target** rather than by skipping the crate.
+
 ### `fetch-must-fail-under-wasm-threads`
 
 `hclient-fetch` carries an `unsafe impl Send` that is sound only because

@@ -340,6 +340,28 @@ jobs:
       - shell: bash
         run: just check-targets
 
+  # The other axis of the same question. `cross-target-check` asks whether
+  # a crate builds for a target the host run skips; this asks whether it
+  # builds ON ITS OWN, with its own dev-dependencies and its own test
+  # targets — which is how anyone who downloads one builds it.
+  #
+  # `features` cannot answer it: `cargo hack --no-dev-deps` is blind to a
+  # dev-dependency missing a feature, and it never builds test targets. The
+  # defect it exists for was exactly that — `hclient-native`'s h3
+  # two-runtime test needed `hclient-rt-smol/udp`, its manifest did not ask
+  # for it, and the workspace run was green because another member turned
+  # the feature on and Cargo unifies.
+  each-crate-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          bins: just
+      - shell: bash
+        run: just check-each-crate
+
   fetch-must-fail-under-wasm-threads:
     runs-on: ubuntu-latest
     steps:

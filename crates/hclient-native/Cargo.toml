@@ -150,7 +150,14 @@ futures-executor    = { version = "0.3", default-features = false, features = ["
 hclient = { path = "../hclient" }
 hclient-dns-system  = { path = "../hclient-dns-system",  version = "0.1.0-alpha.1" }
 hclient-rt-tokio    = { path = "../hclient-rt-tokio",    version = "0.1.0-alpha.1", features = ["udp"] }
-hclient-rt-smol     = { path = "../hclient-rt-smol",     version = "0.1.0-alpha.1" }
+# `udp`, like its `hclient-rt-tokio` neighbour above, and for a reason
+# worth stating: `tests/h3_two_runtimes.rs` instantiates the HTTP/3 path
+# under `Smol`, which needs `UdpAdoptStd`. Without this the file compiled
+# only because another workspace member turned the feature on and Cargo
+# unifies — so `cargo check -p hclient-native --all-features --all-targets`,
+# which is how a reader builds this crate, failed while the workspace run
+# was green. Same defect as the two doctest examples `CLAUDE.md` records.
+hclient-rt-smol     = { path = "../hclient-rt-smol",     version = "0.1.0-alpha.1", features = ["udp"] }
 hclient-tls-rustls  = { path = "../hclient-tls-rustls",  version = "0.1.0-alpha.1", features = ["webpki-roots", "quic"] }
 # `tests/tls_server_name.rs` alone: a REAL TLS server on loopback, whose
 # certificate carries an IP SAN. The claim there is "the handshake
