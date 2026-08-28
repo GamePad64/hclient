@@ -11,47 +11,36 @@
 //! per call — and a boxed future, because an RPITIT's type cannot be named
 //! to declare it as an associated type.
 //!
-//! **The boxed future is `!Send`, and today that cannot be fixed here.**
-//! Erasing into `dyn Future` drops auto-traits (amendment C1), so `Send`
-//! would have to be declared on the box — and declaring it means proving
-//! the inner `execute` future is `Send`, which on stable Rust needs return
-//! type notation (`T: Transport<execute(..): Send>`). That is still
-//! unstable: rust-lang/rust#109417.
+//! **The boxed future is `Send`**, so this service goes wherever a tower
+//! service goes — `tokio::spawn`, `axum` handlers, a multithreaded
+//! executor — and the `tower-http` middleware stack, which never required
+//! `Send` of its own accord, composes as it always did.
 //!
-//! What it costs: this service cannot be `tokio::spawn`ed or handed to
-//! anything else that requires a `Send` future — `axum` handlers, most
-//! multithreaded executors. What it does NOT cost: the `tower-http`
-//! middleware stack itself, which bounds `S: Service` and never requires
-//! `Send` of its own accord, so `DecompressionLayer` and its neighbours
-//! compose here today.
+//! **This module said the opposite for two verticals, and the record of
+//! why is worth more than the fix.** It read that declaring `Send` on the
+//! box meant proving `Transport::execute`'s RPITIT `Send`, which needs
+//! return type notation — still unstable, rust-lang/rust#109417 — and
+//! concluded with *when #109417 lands, the fix is one bound in this file*.
 //!
-//! **The alternative was measured and rejected.** Requiring `+ Send` on
-//! `Transport::execute` in the core would make this a one-line change, but
-//! it is not a one-line change there: `hclient-native::execute` captures
-//! `&self`, so the bound propagates as `Sync` through the TLS, DNS and
-//! runtime seams and every backend built on them, and it contradicts the
-//! core's own rule that it declares no `Send` bounds at all — the rule that
-//! exists because this property has broken twice through type erasure.
-//! Trading a stable-Rust gap for a permanent seam constraint is the wrong
-//! way round, particularly when the gap closes on its own.
+//! Two things were wrong with that, and neither was the unstable feature.
 //!
-//! When #109417 lands, the fix is one bound in this file. Nothing in the
-//! core or in any backend has to move, which is why the wait is the right
-//! call rather than a resigned one.
-//!
-//! **That last sentence was half true when it was written, and the missing
-//! half has since been paid.** `T: Transport<execute(..): Send>` is a
-//! bound, and a bound is only worth having if something satisfies it —
-//! `hclient-native`'s future was itself `!Send` at the time, from a single
+//! **A bound is only worth having if something satisfies it.**
+//! `hclient-native`'s own future was `!Send` at the time, from a single
 //! `Box<dyn Stream<..>>` in its connector that discarded every shipped
-//! resolver's `Send`, so the promised one-line fix would have compiled and
-//! then excluded the one transport anybody would reach for. The box holds
-//! its concrete type now and the future is `Send` on the shipped stacks
-//! (`hclient-native`'s `tests/send_future.rs`), so what is left really is
-//! the one bound. Worth knowing because it is the same lesson twice: a
-//! `dyn` that declares no auto traits removes them, and a fix waiting on
-//! an external feature can also be waiting on a local one nobody
-//! measured.
+//! resolver's `Send`. The promised one-line fix would have compiled and
+//! then excluded the one transport anybody reaches for.
+//!
+//! **And RTN was never the only way to name a bound.** The seams a
+//! transport awaits carry associated futures now, and
+//! `hclient_core::unversioned::SendTransport` is a separate trait whose
+//! impl may carry bounds `Transport` does not — so `T: SendTransport` says
+//! what `T: Transport<execute(..): Send>` would have said, on stable, and
+//! excludes nobody from the seam. RTN was measured on nightly before that
+//! route was taken: it works, and across a crate boundary it ICEs.
+//!
+//! What it costs is that a transport which cannot promise `Send` cannot be
+//! adapted here. `hclient-dns-doh`-resolving transports are that case, and
+//! they keep `Transport` itself.
 //!
 //! # Bounding concurrency
 //!

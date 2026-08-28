@@ -57,7 +57,12 @@
 //! `H3_STREAM_CREATION_ERROR` unconditionally, which is RFC 9114 §6.1's
 //! rule *"unless such an extension has been negotiated"* with the
 //! exemption unreachable, because `h3` 0.0.8's client cannot announce
-//! WebTransport (§3(a)). Server-initiated bidirectional streams are this
+//! `SETTINGS_ENABLE_WEBTRANSPORT` (§3(a)) — `enable_webtransport` is on
+//! the *server* builder. Read alone that line has been mistaken for "this
+//! crate announces nothing": it announces `enable_extended_connect` and
+//! `enable_datagram`, both of which the client builder does have and
+//! `Session::connect` does set. What is missing is the WebTransport
+//! setting itself, and it is the one §6.1's exemption turns on. Server-initiated bidirectional streams are this
 //! crate's other open item and §6 records them as *reachable*; polling the
 //! driver would make them a connection error instead.
 //!

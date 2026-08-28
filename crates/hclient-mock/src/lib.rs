@@ -15,15 +15,15 @@
 //! would be `!Send` too. A test double should not be the thing that stops
 //! that property from being checked.
 //!
-//! **The level that sentence is about changed and the sentence did not,
-//! until now.** It used to say *the client's future is Send when the
-//! transport is*, and that was true when `Client` carried its transport as
-//! a type parameter. `Client` is one erased type since, and
-//! `Client::execute`'s future is `!Send` whatever is underneath it, so the
-//! property lives at the `Transport` seam and nowhere above it — which is
-//! exactly where this mock sits, so the `Mutex` still earns its place. The
-//! transport whose future that property is now checked on is
-//! `hclient-native`'s, in its `tests/send_future.rs`.
+//! **That sentence has been wrong in both directions, which is why it now
+//! says what it rests on.** It first read *the client's future is `Send`
+//! when the transport is*, true while `Client` carried its transport as a
+//! type parameter. Erasure made it false, and the correction said the
+//! property lived at the `Transport` seam and nowhere above it — true
+//! then, and false since `BoxExchange` began declaring `Send` (amendment
+//! C16). What has been constant is the `Mutex`: this mock implements
+//! `SendTransport`, and it can only do that because nothing in it is
+//! behind a `RefCell`.
 #![forbid(unsafe_code)]
 
 use bytes::Bytes;

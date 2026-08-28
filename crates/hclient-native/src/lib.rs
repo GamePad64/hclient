@@ -321,72 +321,65 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// **can** `tokio::spawn` a request; `tests/send_future.rs` pins it twice,
 /// once as a type and once by actually spawning one.
 ///
-/// **It is not declared anywhere, and that is the whole design.** Nothing
-/// on any seam says `Send`; the property is *inferred* from the concrete
-/// resolver, TLS backend and runtime a caller instantiated. A `Resolve`
-/// that hands back a `!Send` stream still works and still yields a `!Send`
-/// future — the answer is per instantiation, which is what a declaration
-/// on the seam would have taken away.
+/// **Two different properties, and they are proved differently.** At a
+/// concrete stack — `Native<Tokio, Rustls, SystemDns<Tokio>>` — `Send` is
+/// *inferred*, and nothing has to be declared: a `Resolve` handing back a
+/// `!Send` stream still works and still yields a `!Send` future. That is
+/// what `tests/send_future.rs` pins. Generic code cannot infer, so
+/// `hclient_core::unversioned::SendTransport` is *declared* for this
+/// transport, under a where-clause naming what its runtime, TLS backend
+/// and resolver promise — which is what `hclient::Client`'s own request
+/// future being `Send` rests on.
 ///
-/// **What used to remove it was one box.** `connect.rs`'s `Answers` held
-/// the resolver's stream as `Pin<Box<dyn Stream<..> + 'a>>`. The three
-/// shipped resolvers all *produce* `Send` streams — measured — and the
-/// `dyn` threw the fact away on the way past: a trait object that declares
-/// no auto traits is not neutral about them, it **removes** them from
-/// everything behind it. It is `Pin<Box<S>>` now. Same allocation, same
-/// absence of `unsafe` — the box is there for pin projection, which is
-/// what its comment always said — and the type simply is not discarded.
+/// **What used to remove the first was one box.** `connect.rs`'s `Answers`
+/// held the resolver's stream as `Pin<Box<dyn Stream<..> + 'a>>`. The
+/// shipped resolvers all *produce* `Send` streams, and the `dyn` threw the
+/// fact away on the way past: a trait object that declares no auto traits
+/// is not neutral about them, it **removes** them from everything behind
+/// it. It is `Pin<Box<S>>` now — same allocation, same absence of
+/// `unsafe`, the type simply not discarded.
 ///
-/// **Declaring `+ Send` on the `dyn` instead was the other direction, and
-/// it was built and measured before this one was believed.** It obliges
-/// the seam, and `Resolve::lookup_ipv4` returns `impl Stream`: a type that
-/// cannot be named and so cannot be bounded, still `E0658` on rustc
-/// 1.98.0. Converting the seam to `BoxStream` closes that — 71 call sites,
-/// no crate added — and costs `hclient-dns-doh` **entirely**: it resolves
-/// through a generic `C: Transport` whose RPITIT future is equally
-/// unnameable, and no consumer can supply the impl for it, because both
-/// the trait and the type are foreign to them. Following the same bound
-/// down the other seams — `TcpConnect::connect`, `connect_unix`,
-/// `Blocking::run`, `TlsConnect::connect` — reaches
-/// `hclient-rt-embassy`, whose `connect` future holds
-/// `RefCell<embassy_net::Inner>` structurally, because it is a
-/// single-threaded executor.
+/// **What blocked the second was that nothing could be named**, and the
+/// repair was not to declare `Send` in the seams. `Resolve`,
+/// `TcpConnect`, `TlsConnect` and `Blocking` carry **associated futures**,
+/// so a consumer can name them and each implementor still answers for
+/// itself. Naming is not requiring, and this workspace has three proofs of
+/// it in-tree: `hclient-rt-embassy` boxes its `Connecting` plain because
+/// `embassy_net::Stack` is `&RefCell<Inner>`; `hclient-dns-doh` boxes its
+/// streams plain because it resolves through a generic `C: Transport`; and
+/// `connect.rs`'s own `FakeRuntime` does the same because it keeps an
+/// `Rc`. All three are still what their seams say they are.
 ///
-/// Which is `scripts/no-send-or-sync-in-the-core-surface.sh`'s own sentence
-/// with a real subject: *declaring the bound in the seam forces it on
-/// backends that cannot satisfy it*. Removing the `dyn` forces it on
-/// nobody.
+/// The shape that was measured and rejected is the other one: a fixed
+/// `BoxStream` in `Resolve` *requires* `Send` and cost `hclient-dns-doh`
+/// its impl outright. `scripts/no-send-or-sync-in-the-core-surface.sh`'s
+/// own sentence is about exactly that — *declaring the bound in the seam
+/// forces it on backends that cannot satisfy it* — and neither removing a
+/// `dyn` nor naming a future does.
 ///
-/// **The `http3` arm is still `!Send`, and for the same reason one level
-/// up.** It erases through `Box<dyn BoxedStaged<'_>>` and `Staging<'a>`,
-/// neither of which declares an auto trait — a deliberate erasure, since
-/// it is what keeps `H3`'s bounds off `Native`'s `Transport` impl. `H3`
-/// itself is clean: `H3::resolve` boxes the concrete stream, and
-/// `UdpBind::bind` and `QuicTlsConnect::quic_client_config` are
-/// synchronous, so nothing there loses the property. Declaring `Send` on
-/// those two boxes obliges `http3::arm`'s **blanket** impl to prove
-/// `StagedConnect::connect`'s RPITIT future `Send` for a generic `T` —
-/// unnameable again, and behind it `Resolve`. So the QUIC arm and the DoH
-/// resolver are one decision, not two.
+/// **The `http3` arm is `Send` too**, which took the same treatment one
+/// level down: `StagedConnect` carries associated futures, so
+/// `http3::arm`'s blanket impl can name them and its three boxes declare
+/// `Send`. `H3` was always clean underneath — `H3::resolve` boxes the
+/// concrete stream, and `UdpBind::bind` and
+/// `QuicTlsConnect::quic_client_config` are synchronous.
 ///
-/// **The positive half of this is `tests/send_future.rs` and not a fence
-/// here**, because it is exactly as true as the paragraph above says and
-/// no more: a doctest cannot be gated on `not(feature = "http3")`, so a
-/// fence asserting it would be false in the configuration `just test-doc`
-/// actually runs. What stays here is the control and the refusal.
-///
-/// The control, true in every configuration, so the block below is
-/// failing for its own reason rather than because `assert_send` is
-/// vacuous:
+/// **The positive half is a fence again**, and the sentence it replaces is
+/// worth keeping: it read that a fence could not assert this, because a
+/// doctest cannot be gated on `not(feature = "http3")` and the claim was
+/// false with that feature on. The claim is true in every configuration
+/// now, so the reason has no subject and the fence is back.
 ///
 /// ```no_run
+/// # use hclient_core::unversioned::Transport;
+/// # use hclient_core::RequestBody;
 /// # use hclient_native::Native;
 /// # use hclient_dns::IpLiteralOnly;
 /// # use hclient_tls::NoTls;
 /// # use hclient_rt_tokio::Tokio;
 /// fn assert_send<T: Send>(_: T) {}
 /// let t = Native::new(Tokio, NoTls, IpLiteralOnly);
-/// assert_send(t); // the transport, which has always been `Send`
+/// assert_send(t.execute(http::Request::new(RequestBody::Empty)));
 /// ```
 ///
 /// And the refusal, which differs in one seam. A hook holding an `Rc` is

@@ -3772,6 +3772,54 @@ the next person to ask will otherwise re-derive it. `hclient-tower`'s own
 module doc says the fix is one bound when #109417 lands — true of that
 crate, and this is the rest of the bill.
 
+### A sweep for stale limitations, and what separates the two kinds
+
+Two documented "cannot"s turned out to be false in one week —
+`hclient-tls-native-tls`'s ALPN and `hclient-fetch`'s `!Send` body — and
+both had **named their own cause correctly** while nobody acted on it. So
+the rest were swept for the same shape. Six more were false and are
+fixed; four were checked and stand.
+
+**What was false**, all of it about `Send` and all of it made obsolete by
+the associated-future work rather than by upstream drift:
+`hclient-core`'s `erased` module doc (*nothing boxed here declares
+`Send`*, above four aliases that now do, and *a backend author writes
+nothing*, which is one method now); `BoxBody`'s own doc (*Not `Send`*,
+directly above the line declaring it); `hclient`'s crate doc (*what a
+request produces is not `Send`*); `hclient-mock`'s (*`Client::execute`'s
+future is `!Send` whatever is underneath it*); `hclient-tower`'s (*today
+that cannot be fixed here*, plus *when #109417 lands, the fix is one
+bound*); and `hclient-native`'s long block on why the QUIC arm could not
+be `Send`.
+
+**One of them was hiding an unrun test.** `hclient-native`'s
+`tests/send_future.rs` was gated `not(feature = "http3")`, which was
+honest when the arm was `!Send` — and left the property out of the
+workspace's own `--all-features` run once it stopped being. The gate is
+gone and the file's positive doctest fence is back, having been removed
+for the same reason.
+
+**What was checked and stands**, recorded so the next sweep does not
+re-derive it: `native-tls` really reports no protocol version and no
+cipher suite — its `Protocol` type is a setter pair, not a getter;
+`h2::client::Connection` really reports no traffic, so an h2 keep-alive
+cannot measure silence the way the WebSocket one does; every third-party
+version a doc comment cites is the version in the graph; and `h3` 0.0.8's
+client really has no `enable_webtransport` — though that line now says
+which setting it means, because the crate *does* announce
+`enable_extended_connect` and `enable_datagram` three lines away and the
+compressed phrasing read as announcing nothing.
+
+**The rule the sweep produced.** A claim about a third party goes stale
+in two ways, and only one of them is upstream's doing. Version drift is
+the obvious one and was absent here. The other is a claim about a
+**wrapper** — *this crate does not expose X* — where the layer beneath
+does, and which stays true of the wrapper for ever while the conclusion
+drawn from it quietly stops being. Both of this week's findings were that
+shape, and `negotiated_alpn` is the sharpest: the doc named the wrapper as
+the cause, correctly, in the same paragraph that called the limitation
+concrete.
+
 ### `Client`'s request future is `Send`, and RTN was never needed
 
 **`tokio::spawn(client.get(u).send())` compiles.** The route is not the

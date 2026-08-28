@@ -32,10 +32,16 @@
 //! why one was refused during the erasure even though it would have given
 //! native callers spawnable response bodies back.
 //!
-//! What a request *produces* is not `Send` — not the future, not the
-//! response body — because one body type serves every backend and the
-//! browser's holds a `dyn Stream` with no auto trait. [`Client`] itself is
-//! `Send + Sync`, which is the half that has to be.
+//! [`Client`] is `Send + Sync`, and so are both halves of a request now —
+//! the future and the response body. That took naming rather than
+//! requiring: the seams a transport awaits carry associated futures, so a
+//! consumer can name them while each implementor still answers for itself,
+//! and `SendTransport` is a separate trait whose impl may carry bounds
+//! `Transport` does not. This paragraph read *what a request produces is
+//! not `Send`* for two verticals, on the argument that one body type
+//! serves every backend and the browser's held a `dyn Stream` with no auto
+//! trait — true then, and answered by an actor in `hclient-fetch` rather
+//! than by a `#[cfg]`.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "cache")]

@@ -35,18 +35,22 @@
 //! `--features http2`, which is what checks it: the workspace run is
 //! `--all-features`, where `http3` switches this file off.
 //!
-//! **Not with `http3`.** That arm erases through `Box<dyn BoxedStaged<'_>>`
-//! and `Staging<'a>`, neither of which declares `Send`, and declaring it
-//! there obliges the *generic* blanket impl in `http3::arm` to prove
-//! `StagedConnect::connect`'s RPITIT future `Send` — which cannot be
-//! named, so cannot be bounded. That is the same wall one seam down, and
-//! closing it means converting `StagedConnect`, and behind it `TcpConnect`
-//! and `TlsConnect`, to a form whose futures can be named. Mechanical, and
-//! deliberately not done here.
+//! **With `http3` too, and this file was gated out of that configuration
+//! for two weeks after it stopped being true.** The gate read
+//! `not(feature = "http3")`, because the QUIC arm erased through
+//! `Box<dyn BoxedStaged<'_>>` and `Staging<'a>` and declaring `Send` there
+//! needed `StagedConnect::connect`'s RPITIT future named. It carries
+//! associated futures now, so the arm declares `Send` and the workspace's
+//! own `--all-features` run — which is where this file was *not* being
+//! compiled — is where it runs.
 //!
-//! **Not through `hclient::Client`.** The facade boxes the transport with
-//! no declared auto traits, so erasure takes the property away again.
-#![cfg(all(not(target_family = "wasm"), not(feature = "http3")))]
+//! **Through `hclient::Client` as well**, since `BoxExchange` declares
+//! `Send` (amendment C16). That is a different property with a different
+//! proof — `hclient/tests/client_shape.rs` — and it is why this file's
+//! subject is worth keeping separate: here the answer is *inferred* from
+//! one concrete stack, there it is *declared* and every backend has to
+//! satisfy it.
+#![cfg(not(target_family = "wasm"))]
 
 use hclient_core::unversioned::Transport;
 use hclient_dns_system::SystemDns;

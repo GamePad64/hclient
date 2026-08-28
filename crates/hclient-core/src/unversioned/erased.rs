@@ -1,34 +1,42 @@
 //! Type-erased forms of [`crate::unversioned::Transport`] and [`Timer`], so
 //! a facade can be **one concrete type** instead of two type parameters.
 //!
-//! A backend implements nothing here: [`BoxedTransport`] and [`BoxedTimer`]
-//! have blanket impls over every `Transport` and every `Timer`.
+//! A backend implements one method: [`BoxedTransport`]'s blanket impl is
+//! over every [`crate::unversioned::SendTransport`], and
+//! [`BoxedTimer`]'s over every `Timer`.
 //!
-//! # Nothing boxed here declares `Send`
+//! # Everything boxed here declares `Send`
 //!
-//! The boxed future, body, sleep and instant carry no auto trait, and that
-//! is what makes the blanket impls possible: proving
-//! `Transport::execute`'s RPITIT `Send` for a generic `T` needs return type
-//! notation, unstable as of rustc 1.98. Following the bound down to where
-//! it *can* be proven would put it on seven seam methods, which excludes a
-//! single-threaded runtime such as `hclient-rt-embassy`, whose `connect`
-//! future holds a `RefCell` and always will.
+//! The future, body, sleep and instant all carry it (amendments C14 and
+//! C16), so a facade built on these hands back a request future and a
+//! response body that cross a thread.
 //!
-//! The consequence a caller meets: **nothing a request produces is
-//! `Send`** — not the future, not the response body. One `BoxBody` serves
-//! every backend, and a browser's body holds a `dyn Stream` with no auto
-//! trait, so declaring `Send` would exclude that backend rather than weaken
-//! it.
+//! **This module said the opposite for two verticals, and the reasoning
+//! was sound at the time.** It read that declaring `Send` on the boxed
+//! future would mean proving `Transport::execute`'s RPITIT `Send` for a
+//! generic `T` — true, and unnameable — and that following the bound down
+//! to where it *could* be proven would put it on seven seam methods,
+//! excluding a single-threaded runtime such as `hclient-rt-embassy`.
 //!
-//! # Where `Send + Sync` does appear
+//! What that argument missed is the difference between **naming** a bound
+//! and **requiring** one. The seams a transport awaits — `Resolve`,
+//! `TcpConnect`, `TlsConnect`, `Blocking` — carry associated futures now,
+//! so a consumer can name them while each implementor still answers for
+//! itself; and [`crate::unversioned::SendTransport`] is a separate trait,
+//! so an impl may carry bounds `Transport` does not. `hclient-rt-embassy`
+//! is not excluded from anything: it names a plain box, and a `Native`
+//! over it is a `Transport` and not a `SendTransport`.
+//!
+//! What is still true is the shape of the cost, moved rather than removed:
+//! a backend that cannot promise `Send` loses the facade and keeps the
+//! seam. `hclient-dns-doh` is the one that pays it today.
+//!
+//! # Where `Send + Sync` also appears
 //!
 //! [`SharedTransport`] and [`SharedTimer`], which a facade writes at its
-//! own use site to hold these behind an `Arc` and cross a `tokio::spawn`.
-//! A backend that cannot satisfy the bound is **refused at the
-//! constructor** — a compile error at the line that asked — rather than
-//! taxed at the seam. `hclient-rt-embassy` is that backend: `RefCell`
-//! throughout, because embassy's executor is single-threaded, so an
-//! embedded caller uses `Transport` directly rather than a facade.
+//! own use site to hold these behind an `Arc`. A backend that cannot
+//! satisfy the bound is **refused at the constructor** — a compile error
+//! at the line that asked — rather than taxed at the seam.
 //!
 //! # The instant is erased as a question, not as a type
 //!
@@ -48,11 +56,12 @@ use std::time::Duration;
 
 /// A response body with its type erased, as an erased transport hands back.
 ///
-/// **Not `Send`**, so it cannot cross a `tokio::spawn`. One `BoxBody`
-/// serves every backend and a browser's body holds a `dyn Stream` with no
-/// auto trait, so the bound would exclude that backend rather than weaken
-/// it. A caller who needs a spawnable body reaches past the facade for the
-/// concrete transport's own body type.
+/// **`Send`** (amendment C14), so a response body crosses a
+/// `tokio::spawn`. One `BoxBody` serves every backend, and this bound is
+/// payable only because every one of them satisfies it — which stopped
+/// being a question when `hclient-fetch`'s body stopped holding a
+/// `js_sys::JsFuture`. This doc said *not `Send`* for a vertical, directly
+/// above the line that declares it.
 pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + Send>>; // send-bound-exception: amendment-C14
 
 /// An erased exchange, as [`BoxedTransport`] hands one back.
@@ -114,9 +123,15 @@ where
 
 /// [`crate::unversioned::Transport`], with the future and the body boxed.
 ///
-/// Implemented for every `Transport` whose error and body error convert
-/// into [`Error`], which is every backend in this workspace. A backend
-/// author writes nothing.
+/// Implemented for every [`crate::unversioned::SendTransport`] whose error
+/// and body error convert into [`Error`]. A backend author writes one
+/// method — `SendTransport`'s, whose body at a concrete type is
+/// `Box::pin(self.execute(req))`.
+///
+/// **It was over every `Transport` and cost nothing**, which is the trade
+/// C16 made: a facade whose request future is `Send` in exchange for one
+/// method per backend and the exclusion of a backend that cannot promise
+/// it. `hclient-dns-doh`-resolving transports are the case that pays.
 pub trait BoxedTransport {
     /// [`crate::unversioned::Transport::execute`], boxed.
     fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a>;
