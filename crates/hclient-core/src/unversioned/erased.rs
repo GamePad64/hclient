@@ -132,6 +132,24 @@ where
 /// C16 made: a facade whose request future is `Send` in exchange for one
 /// method per backend and the exclusion of a backend that cannot promise
 /// it. `hclient-dns-doh`-resolving transports are the case that pays.
+// The attribute is here as well as on `SendTransport`, and that is not a
+// duplicate: `Client::builder` bounds on THIS trait, and the blanket impl
+// below means the bound the compiler reports as unsatisfied is this one.
+// Without it the error names `SendTransport` in a `note` and offers no way
+// to act on it — measured by writing a transport from outside the
+// workspace and reading what rustc actually printed.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot back an `hclient::Client`: it is a `Transport` but not a `SendTransport`",
+    label = "this transport makes no `Send` claim",
+    note = "`Client` boxes its transport `Send + Sync`, so it asks for the one claim `Transport` deliberately does not make.",
+    note = "Implement `SendTransport` — one method, and at a concrete type its whole body is `Box::pin(self.execute(req))`, where `Send` is inferred rather than proved:",
+    note = "    impl hclient_core::unversioned::SendTransport for {Self} {{",
+    note = "        fn execute_send(&self, req: http::Request<RequestBody>)",
+    note = "            -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error>",
+    note = "        {{ Box::pin(self.execute(req)) }}",
+    note = "    }}",
+    note = "If this transport genuinely cannot cross a thread — a browser one, or a runtime whose IO is `!Send` — do not implement it. `Transport` alone still works and only `hclient::Client` is out of reach."
+)]
 pub trait BoxedTransport {
     /// [`crate::unversioned::Transport::execute`], boxed.
     fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a>;

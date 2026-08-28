@@ -226,6 +226,17 @@ pub type BoxSendExchange<'a, B, E> =
 /// asymmetry the whole design rests on. A backend that cannot make the
 /// claim does not implement this, and loses `hclient::Client` while
 /// keeping everything else.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is a `Transport` but not a `SendTransport`, so it cannot back an `hclient::Client`",
+    label = "this transport makes no `Send` claim",
+    note = "implement it — one method, and at a concrete type its whole body is `Box::pin(self.execute(req))`:",
+    note = "    impl SendTransport for {Self} {{",
+    note = "        fn execute_send(&self, req: http::Request<RequestBody>)",
+    note = "            -> BoxSendExchange<'_, Self::Body, Self::Error>",
+    note = "        {{ Box::pin(self.execute(req)) }}",
+    note = "    }}",
+    note = "`Send` is inferred there rather than proved. If this transport genuinely cannot cross a thread — a browser one, or a runtime whose IO is `!Send` — do not implement it: `Transport` alone still works, and only `hclient::Client` is out of reach."
+)]
 pub trait SendTransport: Transport {
     /// [`Transport::execute`], boxed with its `Send` named.
     fn execute_send(
