@@ -566,13 +566,22 @@ For constrained targets that *do* have `std` — static musl binaries, small
 containers, embedded Linux — see `NoTls` and `IpLiteralOnly`, and
 `crates/hclient-native/examples/minimal.rs`.
 
-**Bare-metal microcontrollers are not reachable today, and that sentence
-used to be broader than the truth.** A device with `std` — an esp-idf
-target, say — already is: `hclient-rt-embassy` implements `TcpConnect`
-over a real `embassy-net` stack, with live scenarios over a TAP device in
-CI, so `Native<Embassy, NoTls, IpLiteralOnly>` is the embedded transport
-and no separate backend is owed. What is still out is `no_std`, and the
-obstacle there is a dependency rather than a design:
+**Bare-metal microcontrollers are not reachable today. A device with
+`std` is — and the sentence that used to say so named the wrong runtime
+for it.** It read that an esp-idf target is reachable *because*
+`hclient-rt-embassy` implements `TcpConnect` over `embassy-net`, and the
+pairing is wrong in both directions. Measured: `esp-idf-svc` 0.51.0
+integrates `embassy-sync`, `embassy-time-driver` and `embassy-futures`
+and **not `embassy-net`** — it gives you ESP-IDF's own lwIP through
+`std::net`, so the runtime there is `hclient-rt-smol` or
+`hclient-rt-tokio`, which have needed nothing special all along.
+`embassy-net` is the `no_std` stack, and `no_std` is exactly what is out.
+
+So a std device is reachable, and `Native<Embassy, ..>` is not how. What
+`hclient-rt-embassy` is for is [the section on its real
+value](#the-embassy-runtime-is-the-workspaces-only-send-counterexample);
+what is still out is `no_std`, and the obstacle there is a dependency
+rather than a design:
 
 - **`http` 1.x, external.** The `compile_error!` above.
 - **`url`, ours — and now removed.** `hclient-proto` used it at exactly one
@@ -1478,6 +1487,54 @@ not the only possibility. Nineteen mutations applied, nineteen killed; the
 first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
+
+### The embassy runtime is the workspace's only `!Send` counterexample
+
+Asked whether `hclient-rt-embassy` is needed at all, and the workspace's
+own test for a crate — *does it hold a dependency a feature would
+otherwise spread* — gives the wrong answer here, because the value is not
+a dependency.
+
+**As a deployment runtime it has no configuration today, measured.** It is
+not `no_std` and cannot be: `http` 1.5.0 still carries
+`compile_error!("`std` feature currently required")`. So its
+configuration is *std plus `embassy-net`* — and `embassy-net` is the
+`no_std` stack. The only device the docs named, esp-idf, integrates
+`embassy-sync`, `embassy-time-driver` and `embassy-futures` and **not**
+`embassy-net`, handing you lwIP through `std::net` instead; the runtime
+there is smol or tokio. The one place `Native<Embassy, ..>` actually runs
+is a Linux host over a TAP device, which is this repository's CI.
+
+**As a design counterexample it is now the only one there is**, and that
+is load-bearing. Measured across the seam implementors: `hclient-rt-tokio`
+boxes three futures `Send`, `hclient-rt-smol` two, `hclient-dns-doh` two
+since this week, `hclient-tls-rustls` and `hclient-tls-native-tls` box
+none at all — and `hclient-rt-embassy` boxes exactly one, plain, because
+`embassy_net::Stack<'d>` is `&'d RefCell<Inner>` and the crate carries no
+`unsafe impl Send` anywhere.
+
+Delete it and every test stays green while three decisions quietly lose
+their subject: `TcpConnect::Connecting` could become a `Send` box,
+`SendTransport` would look like ceremony because every transport would
+satisfy it, and `Transport::execute`'s unbounded RPITIT would look like
+caution with no case. **That is `UpgradeSupport`'s deletion inverted** —
+those four variants went because the distinction had one reachable side,
+and embassy is what makes the second side reachable here.
+
+It is pinned rather than described: `tests/seam.rs` asserts that
+`Native<Embassy, ..>` **is** a `Transport` and **is not** a
+`SendTransport`, with a real negative rather than an `assert_not` that
+accepts anything.
+
+**Two things follow, and the second is the owner's.** The crate's own doc
+should lead with what it is — the `!Send` witness — rather than with
+embedded reach it does not currently deliver. And `publish = false` is now
+a live question: publishing promises a deployment configuration that
+measurement says does not exist yet, where `hclient-rt-pair-check` is
+already kept unpublished for being a harness. Against that is option
+value: if `no_std` becomes reachable — `http` growing it, or this
+workspace dropping `http` from its public API — embassy stops being a
+witness and becomes the runtime, and the crate is ready.
 
 ### Channels do not transfer to embassy, and the reason is what crosses them
 
