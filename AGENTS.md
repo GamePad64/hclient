@@ -1479,6 +1479,58 @@ first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### Channels do not transfer to embassy, and the reason is what crosses them
+
+Asked whether the repair that put `hclient-fetch` under wasm threads works
+for `hclient-rt-embassy` too. Measured rather than reasoned, and the
+answer separates into three options of which the obvious one is the worst.
+
+**The `!Send` is genuine, not a `dyn` erasing a property that was there.**
+Measured against `embassy-net` 0.9.1: **zero** `unsafe impl Send` or
+`Sync` anywhere in the crate, and `Stack<'d>` is `&'d RefCell<Inner>`. The
+plain box in `Embassy::Connecting` is plain *because* the property is
+absent — which is the opposite of `connect.rs`'s `Answers` and DoH's
+streams, where a `dyn` was throwing away a property the concrete type had.
+
+**What would have to cross is a stream, not a value, and that is the whole
+difference.** `hclient-fetch`'s actor hands over one
+`http::Response<Body>` per request and is done. What an embassy caller
+holds is `EmbassyIo`, which implements `hyper::rt::Read`/`Write` and is
+polled for the length of the exchange. So it would not be an actor, it
+would be an **IO proxy**: every `poll_read` a round trip, and — since a
+`&mut [u8]` cannot be lent across a channel — **an extra owned buffer and
+an extra copy per read**. `EmbassyIo` already carries a 2048-byte scratch
+per connection, deliberately a field because a stack local compiled to a
+`memset` per call; a proxy adds another buffer and two channels on top, in
+the resource a microcontroller has least of. And
+`#[embassy_executor::task]`'s `pool_size` is fixed at compile time, so an
+actor per connection makes the maximum number of concurrent connections a
+constant in the API.
+
+**What it would buy is a property that target cannot use.**
+`embassy_executor::Executor` runs `!Send` tasks on one core, and a
+`&RefCell` cannot be shared across executors at all — so on a dual-core
+part the net stack still lives on one core and the socket cannot leave it.
+There is nowhere to send to.
+
+**The second option is real and costs streaming.** An actor one layer up —
+at `Transport::execute` rather than at the socket — carries a *value*
+again: `http::Request<RequestBody>` in (already `Send`), the response
+**collected to `Bytes`** out. One channel per request instead of per read,
+and no IO proxy. What it gives up is streaming, which on a device is
+exactly the thing you keep when a response is bigger than RAM. It also
+needs the transport `'static`, which the `StaticCell` idiom already
+provides.
+
+**And the third is the one that answers the actual want.** Nobody wants
+`Send` on a single-core microcontroller; they want `hclient::Client` —
+redirects, the jar, the cache — and `Send` is only the gate
+`SendTransport` puts in front of it. The direct route is a client surface
+that does not ask for it: eight `Send` declarations in
+`hclient-core`'s erased module are what stand between the two, and a
+parallel facade is the cost. That is the "second surface" question,
+unchanged, and it is the one to answer rather than this one.
+
 ### Every backend is a `SendTransport` now, and the last one took a channel
 
 **Six backends, six impls**, so every one of them can back an
