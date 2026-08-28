@@ -253,6 +253,40 @@ implement `SendTransport`, prompted by a diagnostic that prints the impl —
 where under an alias it would depend on whether they happened to type
 `+ Send`, with nothing to prompt them and nothing to notice if it changed.
 
+## Erased types per seam — `BoxedResolve`, `BoxedTcpConnect`, … — and why one is enough
+
+Asked whether the `BoxedTransport` pattern should be repeated for the
+other seams, so that a `Native` could be one concrete type instead of
+`Native<R, T, D, H, P>`.
+
+**The want is real and it is already met, one level up.** `Client` erases
+its transport, so the common path never names one; `DefaultTransport` is
+the alias for the common assembly; and where a long name is genuinely
+needed — `transport_as::<Native<..>>()` — a caller writes one
+`type MyTransport = Native<..>;` in their own crate, at no cost to this
+API.
+
+**The case that would justify per-seam erasure is choosing an
+implementation at run time, and the existing erasure already covers it.**
+Measured on a scratch crate: two branches building `Native` with two
+different resolvers — `IpLiteralOnly` and `SystemDns` — are two different
+`Native` types and one `hclient::Client`, and it compiles today with no
+boxed seam anywhere. That is the same `match` `hclient-cli` uses for
+`--backend`, and a `--doh` flag would be the same shape.
+
+**What it would cost is the thing this workspace spent a week
+restoring.** A `dyn` must pick one answer about auto traits, so each seam
+would need two erased types — a `Send` one and a local one — or it would
+exclude an implementor. Ten new public types, immediately before a
+freeze, to erase what the associated types exist to keep: *naming is not
+requiring*, so each implementor answers for itself, and an erased wrapper
+answers for all of them at once.
+
+The allocation is not the argument either way: the seams already box once
+per connect, resolve, handshake and blocking call, by C15's own
+measurement. What an erased seam would add is surface and a lost
+distinction, not a heap.
+
 ## One thing that looks like a limitation and is not
 
 `TcpConnect::Stream` carries **no lifetime**, which is why an embedded
