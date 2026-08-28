@@ -1,0 +1,62 @@
+[package]
+name = "hclient-cli"
+version.workspace = true
+description = "hc: an HTTP command-line client that lets you choose the backend at runtime, and refuses one it does not have"
+keywords     = ["hclient", "http", "cli", "curl", "httpie"]
+categories   = ["command-line-utilities", "web-programming::http-client"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[[bin]]
+name = "hc"
+path = "src/main.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+# One feature per backend, and `--backend` is a *runtime* choice among the
+# ones a build has. That is the whole point of the tool, so the default
+# carries both TLS stacks rather than one: a binary with a single backend
+# turns `--backend` into a flag with one legal value, which is curl's
+# situation and the thing this exists to improve on.
+#
+# Measured before choosing the default (`.notes/cli-research.md` §1): both
+# stacks together are 100 crates and 3.30 MiB stripped, against Ubuntu's
+# curl at 334 KB plus 33 shared libraries — so the comparison is one file
+# against thirty-four, not 3.3 MiB against 334 KB.
+default = ["rustls", "native-tls"]
+rustls = ["dep:hclient-tls-rustls", "hclient-tls-rustls/dangerous-insecure"]
+native-tls = ["dep:hclient-tls-native-tls", "hclient-tls-native-tls/dangerous-insecure"]
+http2 = ["hclient-native/http2"]
+http3 = ["hclient-native/http3", "hclient-rt-tokio/udp", "hclient-tls-rustls?/quic"]
+
+[dependencies]
+# Only five crates are centralised in `[workspace.dependencies]`; the rest
+# are written by path, which is this workspace's convention and not an
+# oversight — see the neighbours.
+hclient      = { workspace = true, features = ["json", "gzip", "brotli", "deflate", "zstd", "cookies", "charset", "digest-auth"] }
+hclient-core = { workspace = true }
+hclient-native     = { path = "../hclient-native",     version = "0.1.0-alpha.1" }
+hclient-dns        = { path = "../hclient-dns",        version = "0.1.0-alpha.1" }
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.1" }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.1" }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.1", optional = true, features = ["platform-verifier"] }
+hclient-tls-native-tls = { path = "../hclient-tls-native-tls", version = "0.1.0-alpha.1", optional = true }
+
+bytes = { workspace = true }
+http  = { workspace = true }
+clap  = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anstream = "0.6"
+anstyle  = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "signal"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+
+[lints]
+workspace = true
