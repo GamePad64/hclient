@@ -58,7 +58,10 @@
 //! reads only `supports_svcb()`.
 #![forbid(unsafe_code)]
 
+mod overrides;
 pub mod svcb;
+
+pub use overrides::{Answer, Overrides};
 
 use bytes::Bytes;
 use futures_core::Stream;
