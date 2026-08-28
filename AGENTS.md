@@ -1468,6 +1468,61 @@ first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### A CLI, and the mutation that survived is what it is for
+
+`crates/hclient-cli`, binary `hc` — httpie's request-item grammar,
+curl's `--insecure` and `--resolve`, and `--backend` chosen at **runtime**.
+
+**The differentiator is real but narrower than it first reads, and the
+narrow version is the one to say.** curl supports several TLS backends
+chosen at build time; only a `MultiSSL` build honours `CURL_SSL_BACKEND`,
+the stock build on most distributions is not one, and curl's own man page
+says an unknown name *"makes curl stay with the default"*. So: curl
+**can**, in a build almost nobody has; when it cannot it **says
+nothing**; and the choice belongs to whoever packaged the binary. `hc`
+refuses a backend it has not got, by name, beside the list of what it
+carries, with its own exit code so a script can tell that from an
+unreachable server.
+
+**It works only because `Client` names no type parameters.** Both arms
+return the same `hclient::Client`, so `--backend` is an ordinary `match`.
+A generic client would have made the builder function's return type name
+a transport, and the arms build different ones — which is the erasure
+paying for itself in the first consumer written after it.
+
+**The finding is a mutation that survived.** Replacing the refusal with a
+silent fallback — the exact defect the tool exists not to have — passed
+all 30 tests, because the default build carries every backend and the
+refusing arm is unreachable under the `--all-features` run CI does. The
+repair is not another test: the decision is now a pure function of
+`(requested, available)` **taking the available list as a parameter**, so
+it is testable at any feature setting. This is the same week's third
+sighting of one shape — a check that cannot fail in the configuration CI
+runs — after the doctest fences and the crate that only built inside the
+workspace.
+
+**Two more, both found by building rather than by designing.** `--print H`
+printed the caller's headers rather than the ones actually sent, so the
+diagnostic lied about the `User-Agent` and `Content-Type` the tool itself
+causes. And the item grammar reads `https://example.com` as a header named
+`https`, because `:` is a separator — the likeliest mistake a caller can
+make, producing a silently wrong request. A scheme followed by `//` is a
+named refusal now, while `https:x` stays an ordinary header, so the
+refusal is exactly as wide as the mistake.
+
+**And it found a gap in the library it is written on**, recorded here
+because the route to finding it generalises: `--http 2` had been wired to
+a header nothing reads. `Capabilities` report the floor, so this file
+names `RequireVersion` before the head as *the* honest route to knowing
+which protocol will be used — and `RequestBuilder` had no setter for it,
+because `RequireVersion` lives in `Extensions` and only `timeouts` and
+`redirect` had one. `tests/require_version.rs` did not notice across two
+verticals: every test in it builds its request with
+`extensions_mut().insert(..)`, so testing the gate by going around the
+builder is what let the builder have no route to the gate. **A consumer
+written against the facade is a different instrument from a test written
+beside it.**
+
 ### `curl -k` and `curl --resolve`, and the two land at different seams
 
 Two of the flags a command-line client is expected to have, added as
