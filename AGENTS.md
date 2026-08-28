@@ -291,7 +291,7 @@ browser's `fetch` (vertical 3).
 | target | transport | tokio in the graph |
 |---|---|---|
 | native | `hclient-native` — TCP + HTTP/1, HTTP/2 behind the `http2` feature, TLS pluggable | yes, on the h1 path |
-| native | `hclient-h3` — QUIC + HTTP/3, its own crate, TLS through a second seam | yes |
+| native | `hclient_native::H3` — QUIC + HTTP/3, a module rather than a crate since `f4dfe48`, TLS through a second seam | yes |
 | WASI | `hclient-wasi` — `wasi:http` 0.3 | **no** |
 | browser | `hclient-fetch` — `fetch` | **no** |
 
@@ -370,8 +370,8 @@ miscount. Five is the *normal* dependency graph; `cargo publish` also has
 to satisfy **dev-dependencies that carry a version**, of which there are 32
 here, and they add three waves. `hclient-core`/`-cache`/`-cookie`/`-idn`
 are still first and the terminal backends still last, and the chokepoints
-in between are one crate wide: `hclient-tls-rustls`, then `hclient-h3`,
-then `hclient-native`.
+in between are one crate wide: `hclient-tls-rustls`, then
+`hclient-native` — two, since `hclient-h3` folded into the second.
 **Nothing follows that order by hand any more**: `cargo publish
 --workspace` is native since cargo 1.90 and computes it — measured on this
 tree, 29 packaged, 29 verified, and its ordering identical to the one
@@ -521,7 +521,7 @@ never acting on it.
 `async-native-tls` left with its dependencies.
 
 **A second TLS seam, for QUIC, and it is not a widening of the first.**
-`hclient-tls-quic`'s `QuicTlsConnect` exists because the intersection of
+`hclient-tls`'s `QuicTlsConnect` — behind its `quic` feature — exists because the intersection of
 `TlsConnect`'s four methods with `quinn_proto::crypto::Session`'s eleven is
 **empty** — QUIC wants key schedules per encryption level and CRYPTO-frame
 payloads, `TlsConnect` can only hand back a wrapped byte stream — and the
@@ -529,12 +529,23 @@ failure mode is worse than a compile error: an adapter between them
 type-checks *with an empty body*. `hclient-tls-rustls` implements it behind
 a `quic` feature; `hclient-tls-native-tls` implements nothing and using it
 for HTTP/3 is a compile error, which is honest rather than harsh, because
-`native-tls` binds no QUIC API at any level. It is a separate crate rather
-than a feature of `hclient-tls` because Cargo unifies features: a feature
-would put `quinn-proto` in the graph of every build in which any crate
-wanted h3, including `NoTls` ones. `TlsConnect` and `QuicTlsConnect` share
-`TlsIdentity`, so a connector has one configuration identity rather than
-two.
+`native-tls` binds no QUIC API at any level.
+
+**It was a separate crate for two verticals, on the argument that Cargo
+unifies features — and that was reversed in `169dbdd` after the cost was
+measured rather than assumed.** The argument is still literally true: a
+neighbour switching the feature on does put `quinn-proto` in every graph
+that has any TLS. What was wrong is that this cost had **already been
+accepted one crate over** — enabling `hclient-native/http3` puts
+`quinn-proto` and `ring` into `Native<Embassy, NoTls, IpLiteralOnly>`'s
+graph, and the commit that did that called it *dead code in the graph, not
+a broken one*. Refusing the identical cost here was the inconsistency
+rather than the caution. Who newly pays is narrower still: of the five
+crates depending on `hclient-tls`, two gain an edge, and both are only
+ever in a graph beside a transport.
+
+`TlsConnect` and `QuicTlsConnect` share `TlsIdentity`, so a connector has
+one configuration identity rather than two.
 
 `NoTls` in `hclient-tls` is the third choice: no TLS at all, for a build
 that has no room for a stack. `https://` then fails at connect with a typed
@@ -682,7 +693,7 @@ cost 404.6 ms of extra DNS time and now costs 0.8 ms.
 Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
 (W2) and `Native::new` now pools by default; **HTTP/2 landed in v0.2 (W3)**,
 behind `hclient-native`'s `http2` feature, off by default; **HTTP/3 landed
-in v0.3**, in its own crate `hclient-h3`, over QUIC. **WebSocket landed in
+in v0.3**, over QUIC — in its own crate then, and `hclient_native::H3` since `f4dfe48`. **WebSocket landed in
 v0.3 (W4)**, and in v0.4 became a crate of its own,
 `hclient-tungstenite` — and not as a method on `Transport`: it is its
 own trait pair,

@@ -4,7 +4,7 @@
 
 Memory-safe, identical on every platform, and the only backend here that
 can report the negotiated ALPN, which is what HTTP/2 negotiation needs. It
-also implements `hclient-tls-quic`'s `QuicTlsConnect` behind a `quic`
+also implements `hclient-tls`'s `QuicTlsConnect` behind a `quic`
 feature. It **refuses** a non-`None` ECH config rather than ignoring one,
 which is why a connector must ask before passing one.
 
