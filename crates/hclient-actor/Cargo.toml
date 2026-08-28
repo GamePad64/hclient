@@ -1,0 +1,37 @@
+[package]
+name = "hclient-actor"
+version.workspace = true
+description = "Run a !Send transport on its own executor and reach it through a Send one"
+keywords     = ["hclient", "transport", "embedded", "embassy", "actor"]
+categories   = ["network-programming", "asynchronous", "embedded"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Not published yet, and for the same reason as `hclient-rt-embassy`: the
+# one transport that needs this is `Native<Embassy, ..>`, and that runtime
+# has no deployment configuration until `no_std` is reachable. The
+# mechanism is not embassy-specific and is tested here on the host against
+# an ordinary `!Send` double, so it is ready the day the runtime is.
+publish = false
+
+[dependencies]
+hclient-core    = { workspace = true }
+bytes           = { workspace = true }
+http            = { workspace = true }
+http-body       = { workspace = true }
+http-body-util  = { workspace = true }
+# The one crate this adds, and it is what the boundary is made of: a
+# channel whose endpoints are `Send` whatever the transport behind them is.
+futures-channel = { version = "0.3", default-features = false, features = ["std", "sink"] }
+futures-util    = { version = "0.3", default-features = false, features = ["std", "sink"] }
+thiserror       = { workspace = true }
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+futures-util     = { version = "0.3", default-features = false, features = ["std"] }
+hclient          = { path = "../hclient" }
+
+[lints]
+workspace = true
