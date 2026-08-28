@@ -1677,6 +1677,46 @@ the correct fix twice over and is somebody else's release schedule; or
 keep a crate per stack that owns its socket, which is what exists and is
 why the reach is one stack instead of eight.
 
+### The restriction is at `Client` and the converter is above the seams, and neither can move
+
+Asked whether `Client` should simply be restricted to `Send` transports
+with a converter for embassy. **It already is, and the converter now
+exists** — `Client::builder` demands `SendTransport`, and
+`hclient-actor` manufactures that promise for a transport that cannot make
+it. What the question is really worth measuring is the sharper reading:
+if the converter exists, can the `!Send` accommodation come *out of the
+seams*?
+
+**No, and it deletes embassy rather than simplifying it.** Measured:
+declaring `TcpConnect::Connecting` as a `Send` box makes
+`hclient-rt-embassy` fail to compile at the boxing site, because the
+future holds `Stack<'d> = &'d RefCell<Inner>`. So embassy would not be a
+`TcpConnect` at all, `Native<Embassy, ..>` would not exist — and the
+converter would have **nothing to wrap**, because it operates on a
+`Transport` and the seams are below it. A boundary can manufacture a
+promise; it cannot manufacture a transport the seams refused to let
+exist.
+
+The layering that falls out is worth stating once:
+
+| layer | demands `Send` | why |
+|---|---|---|
+| `TcpConnect`, `Timer`, `Resolve`, `TlsConnect` | **no** | each implementor names its own future's auto traits (C15) — this is what lets embassy exist |
+| `Transport` | **no** | its future is an RPITIT, unnameable, so nothing could ask |
+| `SendTransport` | it **is** the demand | an impl may carry bounds the trait does not (C16) |
+| `hclient::Client` | **yes** | it boxes its transport `Send + Sync` |
+| `hclient-actor` | manufactures it | for a transport that cannot promise it |
+
+Each layer restricts exactly where it can, and the accommodation at the
+bottom is what the converter at the top has to work on.
+
+**And the converter is a crutch, which is the honest word for it.** It
+buys `Client` at the price of streaming: the response is collected before
+it crosses, so a body larger than `Limits::max_response` is an error
+rather than a stream. On a device that is the trade to think about twice.
+What it is not is a workaround for a design mistake — the seams are right,
+and buffering at a thread boundary is what a thread boundary costs.
+
 ### The embassy runtime is the workspace's only `!Send` counterexample
 
 Asked whether `hclient-rt-embassy` is needed at all, and the workspace's
