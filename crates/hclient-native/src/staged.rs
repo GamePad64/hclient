@@ -369,7 +369,7 @@ where
             .take()
             .expect("a Staged is emptied only by this method, which consumes it");
         let (parts, body) = req.into_parts();
-        let req = http::Request::from_parts(parts, body::OutgoingBody::from_request_body(body));
+        let req = http::Request::from_parts(parts, body::OutgoingBody::from_request_body(body)?);
         let via = self.via(&uri);
         let gate = self.continue_gate(&req);
         let attempt = established::exchange(

@@ -957,7 +957,8 @@ mod tests {
 
         let body = OutgoingBody::from_request_body(RequestBody::Streaming(Box::new(OneShotErr(
             Some(original.clone()),
-        ))));
+        ))))
+        .expect("a Streaming body nests nothing");
         let req = http::Request::builder()
             .method("POST")
             .uri("/")
@@ -1081,7 +1082,7 @@ mod tests {
         http::Request::builder()
             .uri("/")
             .header("host", "example.invalid")
-            .body(OutgoingBody::from_request_body(RequestBody::Empty))
+            .body(OutgoingBody::from_request_body(RequestBody::Empty).expect("Empty nests nothing"))
             .unwrap()
     }
 

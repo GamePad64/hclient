@@ -37,7 +37,7 @@
 //! note, paid rather than deferred.
 
 use bytes::Bytes;
-use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::{Error, ErrorKind, Reduced, RequestBody};
 use std::future::poll_fn;
 use std::pin::Pin;
 
@@ -81,19 +81,20 @@ enum Outgoing {
 /// unreachable in practice only because `Streaming` was refused outright one
 /// arm above.
 ///
-/// The recursion is the same shape `hclient_native::body::Inner::
-/// from_request_body` uses, including its one sharp edge: a factory that
-/// returns a `Rewindable` for ever recurses for ever. That is the factory
-/// contract being broken rather than a case to defend against, and
-/// defending against it here would mean picking a depth limit nobody can
-/// justify.
-fn flatten(body: RequestBody) -> Outgoing {
+/// The reduction is `hclient_core::RequestBody::reduce`'s now, and the
+/// paragraph this replaces was one side of a disagreement. It argued that
+/// a factory returning a `Rewindable` for ever is *"the factory contract
+/// being broken rather than a case to defend against, and defending
+/// against it here would mean picking a depth limit nobody can justify"* —
+/// while `hclient-wasi` and `hclient-winhttp` had each justified 16 and
+/// refused past it. Four backends, one question, three answers; the core
+/// gives one, and the outcomes were never equivalent, because unbounded
+/// recursion is a stack overflow and a bound is an error a caller reads.
+fn flatten(body: Reduced) -> Outgoing {
     match body {
-        RequestBody::Empty => Outgoing::Buffered(None),
-        RequestBody::Full(b) if b.is_empty() => Outgoing::Buffered(None),
-        RequestBody::Full(b) => Outgoing::Buffered(Some(b)),
-        RequestBody::Rewindable(f) => flatten(f()),
-        RequestBody::Streaming(s) => Outgoing::Streaming(s),
+        Reduced::Empty => Outgoing::Buffered(None),
+        Reduced::Bytes(b) => Outgoing::Buffered(Some(b)),
+        Reduced::Streaming(s) => Outgoing::Streaming(s),
     }
 }
 
@@ -172,7 +173,7 @@ pub(crate) fn pump(send: SendHalf, body: RequestBody) -> Pump {
 }
 
 async fn write_body(mut w: Writer, body: RequestBody) -> Result<(), Error> {
-    let stopped = match flatten(body) {
+    let stopped = match flatten(body.reduce().map_err(|e| Error::new(ErrorKind::Body, e))?) {
         Outgoing::Buffered(None) => false,
         Outgoing::Buffered(Some(b)) => crate::http3::write_after_head(w.send.send_data(b).await)?,
         Outgoing::Streaming(mut s) => write_stream(&mut w, &mut *s).await?,

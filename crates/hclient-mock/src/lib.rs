@@ -228,10 +228,14 @@ impl RecordedBody {
         match self {
             Self::Bytes(b) => Some(b.clone()),
             Self::Empty => Some(Bytes::new()),
-            Self::Rewindable(f) => match f() {
-                RequestBody::Full(b) => Some(b),
-                RequestBody::Empty => Some(Bytes::new()),
-                RequestBody::Rewindable(_) | RequestBody::Streaming(_) => None,
+            // The core's own reduction, which is also what a transport
+            // does with the body — so a snapshot is what the code under
+            // test would have sent, including through a nested factory
+            // chain, and a variant added later needs nothing here.
+            Self::Rewindable(f) => match f().reduce() {
+                Ok(hclient_core::Reduced::Bytes(b)) => Some(b),
+                Ok(hclient_core::Reduced::Empty) => Some(Bytes::new()),
+                Ok(hclient_core::Reduced::Streaming(_)) | Err(_) => None,
             },
             Self::NotRecorded => None,
         }
@@ -246,6 +250,11 @@ fn record_body(body: &RequestBody) -> RecordedBody {
         RequestBody::Full(b) => RecordedBody::Bytes(b.clone()),
         RequestBody::Rewindable(f) => RecordedBody::Rewindable(Arc::clone(f)),
         RequestBody::Streaming(_) => RecordedBody::NotRecorded,
+        // `RequestBody` is `#[non_exhaustive]`, so this arm is required —
+        // and unlike a transport's, it has an honest answer: a body kind
+        // this mock does not model is one it will not read for the test,
+        // which is exactly what `NotRecorded` says.
+        _ => RecordedBody::NotRecorded,
     }
 }
 

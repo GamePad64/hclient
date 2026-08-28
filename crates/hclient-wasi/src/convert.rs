@@ -483,19 +483,10 @@ impl Debug for Payload {
     }
 }
 
-/// Upper bound on the nesting of `RequestBody::Rewindable`, whose factory
-/// itself returns another `Rewindable`. There's no legitimate scenario for
-/// this — a factory calling another factory referring to a third one buys
-/// the caller nothing — so past this depth `resolve_payload` stops with a
-/// typed error instead of a silent `None` or unbounded recursion.
-const MAX_REWIND_DEPTH: u8 = 16;
-
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "RequestBody::Rewindable factory nested more than {MAX_REWIND_DEPTH} levels deep \
-     (each factory call returned another Rewindable instead of a terminal body)"
-)]
-pub(crate) struct RewindTooDeep;
+// The rewind bound and its error moved to `hclient_core`: this crate had
+// picked 16 and refused, and so had `hclient-winhttp`, while
+// `hclient-native` recursed without one. `RequestBody::reduce` answers it
+// once — see `MAX_REWIND_DEPTH` there.
 
 /// Unwraps `RequestBody` into what actually needs to be sent: `None` for
 /// an empty body, otherwise bytes or a stream.
@@ -516,21 +507,19 @@ pub(crate) struct RewindTooDeep;
 /// the declared capability), and `Rewindable` after the factory unwraps
 /// it.
 ///
-/// Iterative, not recursive, and bounded by `MAX_REWIND_DEPTH` — a
+/// Iterative, not recursive, and bounded by `hclient_core::MAX_REWIND_DEPTH` — a
 /// factory that itself returns `Rewindable` would unwrap forever (or
 /// until the stack overflowed) without it.
 pub(crate) fn resolve_payload(body: RequestBody) -> Result<Option<Payload>, Error> {
-    let mut body = body;
-    for _ in 0..MAX_REWIND_DEPTH {
-        match body {
-            RequestBody::Empty => return Ok(None),
-            RequestBody::Full(b) if b.is_empty() => return Ok(None),
-            RequestBody::Full(b) => return Ok(Some(Payload::Bytes(b))),
-            RequestBody::Rewindable(f) => body = f(),
-            RequestBody::Streaming(s) => return Ok(Some(Payload::Streaming(s))),
-        }
+    // The unwrapping and its depth bound are `hclient_core`'s now. This
+    // crate picked 16 and refused past it; so did `hclient-winhttp`, while
+    // `hclient-native` and its HTTP/3 pump recursed without a bound. One
+    // question, four backends, three answers — settled in one place.
+    match body.reduce().map_err(|e| Error::new(ErrorKind::Other, e))? {
+        hclient_core::Reduced::Empty => Ok(None),
+        hclient_core::Reduced::Bytes(b) => Ok(Some(Payload::Bytes(b))),
+        hclient_core::Reduced::Streaming(s) => Ok(Some(Payload::Streaming(s))),
     }
-    Err(Error::new(ErrorKind::Other, RewindTooDeep))
 }
 
 #[cfg(test)]
@@ -1177,11 +1166,11 @@ mod tests {
         let err = resolve_payload(RequestBody::rewindable(infinite)).unwrap_err();
         let too_deep = StdError::source(&err)
             .expect("Error::new always has a source")
-            .downcast_ref::<RewindTooDeep>()
+            .downcast_ref::<hclient_core::RewindTooDeep>()
             .expect("the source of a nesting-bound failure is RewindTooDeep");
         let msg = too_deep.to_string();
         assert!(
-            msg.contains(&MAX_REWIND_DEPTH.to_string()),
+            msg.contains(&hclient_core::MAX_REWIND_DEPTH.to_string()),
             "the bound that was hit must appear in the message: {msg}"
         );
         assert!(msg.contains("Rewindable"), "{msg}");

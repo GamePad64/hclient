@@ -478,16 +478,19 @@ type StreamingPart = Box<dyn Body<Data = Bytes, Error = Error> + Unpin + Send>; 
 /// states it — every call produces an equivalent body — rather than a
 /// second interpretation of it invented by this module.
 fn resolve(body: RequestBody) -> Result<Resolved, MultipartError> {
-    let mut body = body;
-    for _ in 0..MAX_REWIND_DEPTH {
-        match body {
-            RequestBody::Empty => return Ok(Resolved::Bytes(Bytes::new())),
-            RequestBody::Full(bytes) => return Ok(Resolved::Bytes(bytes)),
-            RequestBody::Rewindable(f) => body = f(),
-            RequestBody::Streaming(s) => return Ok(Resolved::Stream(s)),
-        }
+    // `hclient_core::RequestBody::reduce`, which is the same unwrapping
+    // this function used to write — the sixth copy of it in the
+    // workspace, and the bound it applies is now one number rather than
+    // three answers.
+    //
+    // One difference is kept deliberately: an `Empty` part resolves to
+    // empty **bytes** rather than to nothing, because a multipart part
+    // with no content still gets a header block and a boundary.
+    match body.reduce().map_err(|_| MultipartError::RewindTooDeep)? {
+        hclient_core::Reduced::Empty => Ok(Resolved::Bytes(Bytes::new())),
+        hclient_core::Reduced::Bytes(bytes) => Ok(Resolved::Bytes(bytes)),
+        hclient_core::Reduced::Streaming(s) => Ok(Resolved::Stream(s)),
     }
-    Err(MultipartError::RewindTooDeep)
 }
 
 /// One piece of the encoded form: a rendered header block, a buffered
@@ -615,15 +618,15 @@ mod tests {
     }
 
     /// Drains a `RequestBody` to bytes, resolving `Rewindable` the way a
-    /// transport does.
+    /// transport does — which is now one function rather than a phrase:
+    /// `hclient_core::RequestBody::reduce`.
     fn drain(body: RequestBody) -> Bytes {
-        match body {
-            RequestBody::Rewindable(f) => drain(f()),
-            RequestBody::Streaming(s) => futures_executor::block_on(s.collect())
+        match body.reduce().expect("these fixtures nest no rewind chain") {
+            hclient_core::Reduced::Streaming(s) => futures_executor::block_on(s.collect())
                 .expect("collect")
                 .to_bytes(),
-            RequestBody::Full(b) => b,
-            RequestBody::Empty => Bytes::new(),
+            hclient_core::Reduced::Bytes(b) => b,
+            hclient_core::Reduced::Empty => Bytes::new(),
         }
     }
 

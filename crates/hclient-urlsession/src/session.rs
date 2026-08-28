@@ -127,7 +127,7 @@ impl Transport for UrlSession {
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<UrlSessionBody>, Error> {
         let shared = Arc::new(Shared::default());
-        let task = self.start(&req, Arc::clone(&shared))?;
+        let task = self.start(req, Arc::clone(&shared))?;
         let cancel = Cancelling(task);
 
         // The head, and nothing before it: a task that fails to connect
@@ -178,9 +178,13 @@ impl hclient_core::unversioned::SendTransport for UrlSession {
 
 impl UrlSession {
     /// Build the `NSURLRequest` and start a data task on it.
+    /// Takes the request **by value**, because the body has to be: it
+    /// ends up inside an `NSData` either way, and
+    /// `hclient_core::RequestBody::reduce` consumes it — which is what
+    /// replaced this file's own copy of the unwrapping.
     fn start(
         &self,
-        req: &http::Request<RequestBody>,
+        req: http::Request<RequestBody>,
         shared: Arc<Shared>,
     ) -> Result<Retained<NSURLSessionTask>, Error> {
         let url = NSString::from_str(&req.uri().to_string());
@@ -199,7 +203,7 @@ impl UrlSession {
                 &NSString::from_str(name.as_str()),
             );
         }
-        match resolve_body(req.body())? {
+        match resolve_body(req.into_body())? {
             Some(bytes) => {
                 let data = NSData::with_bytes(&bytes);
                 request.setHTTPBody(Some(&data));
@@ -219,10 +223,7 @@ impl UrlSession {
 
 /// How deep a `Rewindable` factory may nest before this gives up.
 ///
-/// `hclient`'s multipart encoder uses the same bound for the same reason:
-/// a factory that hands back another `Rewindable` is legal and a chain of
-/// them is not something to follow for ever.
-const MAX_REWIND_DEPTH: u8 = 16;
+// The rewind bound moved to `hclient_core::MAX_REWIND_DEPTH`.
 
 /// The bytes to put on the request, or `None` for no body at all.
 ///
@@ -238,7 +239,7 @@ const MAX_REWIND_DEPTH: u8 = 16;
 /// usually hands back a `Full` and that is a body this backend can send —
 /// the same bounded loop `hclient`'s multipart encoder uses, and for the
 /// same reason.
-fn resolve_body(body: &RequestBody) -> Result<Option<bytes::Bytes>, Error> {
+fn resolve_body(body: RequestBody) -> Result<Option<bytes::Bytes>, Error> {
     let refuse = |what: &str| {
         Err(Error::new(
             ErrorKind::Unsupported,
@@ -248,24 +249,17 @@ fn resolve_body(body: &RequestBody) -> Result<Option<bytes::Bytes>, Error> {
             )),
         ))
     };
-    match body {
-        RequestBody::Empty => Ok(None),
-        RequestBody::Full(b) => Ok(Some(b.clone())),
-        RequestBody::Streaming(_) => refuse("a streaming one"),
-        RequestBody::Rewindable(_) => {
-            let mut current = body.rewind();
-            for _ in 0..MAX_REWIND_DEPTH {
-                match current {
-                    Some(RequestBody::Full(b)) => return Ok(Some(b)),
-                    Some(RequestBody::Empty) => return Ok(None),
-                    Some(RequestBody::Streaming(_)) => {
-                        return refuse("a rewindable one whose factory streams");
-                    }
-                    Some(r @ RequestBody::Rewindable(_)) => current = r.rewind(),
-                    None => return refuse("a rewindable one that would not rewind"),
-                }
-            }
-            refuse("a rewindable one nested past this crate's depth bound")
-        }
+    // The unwrapping and its depth bound are `hclient_core`'s — this was
+    // the seventh copy of one reduction in this workspace, and the bound
+    // it applies is one number now instead of three answers. A body that
+    // streams is still this backend's own refusal, because that is a fact
+    // about `URLSession` rather than about the body.
+    match body
+        .reduce()
+        .map_err(|e| Error::new(ErrorKind::Unsupported, UrlSessionError(e.to_string())))?
+    {
+        hclient_core::Reduced::Empty => Ok(None),
+        hclient_core::Reduced::Bytes(b) => Ok(Some(b)),
+        hclient_core::Reduced::Streaming(_) => refuse("a streaming one"),
     }
 }

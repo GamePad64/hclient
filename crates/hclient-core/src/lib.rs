@@ -35,7 +35,7 @@ mod error;
 mod host;
 pub mod unversioned;
 
-pub use body::{RequestBody, RetryKind, RewindFactory};
+pub use body::{MAX_REWIND_DEPTH, Reduced, RequestBody, RetryKind, RewindFactory, RewindTooDeep};
 pub use caps::{
     AllowEarlyData, CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport,
     RedirectSupport, RequireVersion, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,

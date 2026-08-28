@@ -152,7 +152,7 @@ impl Transport for WinHttp {
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<WinHttpBody>, Error> {
         let (parts, body) = req.into_parts();
-        let bytes = resolve_body(&body)?;
+        let bytes = resolve_body(body)?;
         let (secure, host, port, target) = split_uri(&parts.uri)?;
         let headers = header_block(&parts.headers)?;
 
@@ -339,12 +339,9 @@ fn header_block(headers: &http::HeaderMap) -> Result<String, Error> {
     Ok(out)
 }
 
-/// How deep a `Rewindable` factory may nest before this gives up.
-///
-/// The same bound `hclient-urlsession` and `hclient`'s multipart encoder
-/// use, for the same reason: a factory handing back another `Rewindable`
-/// is legal, and a chain of them is not something to follow for ever.
-const MAX_REWIND_DEPTH: u8 = 16;
+// The rewind bound moved to `hclient_core::MAX_REWIND_DEPTH`: this
+// crate and `hclient-wasi` had each picked 16, and two other backends had
+// no bound at all.
 
 /// The bytes to put on the request, or `None` for no body at all.
 ///
@@ -356,7 +353,7 @@ const MAX_REWIND_DEPTH: u8 = 16;
 ///
 /// Streaming is a real absence rather than a wall — `WinHttpWriteData`
 /// exists, and the crate doc says what taking it would cost.
-fn resolve_body(body: &RequestBody) -> Result<Option<bytes::Bytes>, Error> {
+fn resolve_body(body: RequestBody) -> Result<Option<bytes::Bytes>, Error> {
     let refuse = |what: &str| {
         Err(Error::new(
             ErrorKind::Unsupported,
@@ -366,25 +363,21 @@ fn resolve_body(body: &RequestBody) -> Result<Option<bytes::Bytes>, Error> {
             )),
         ))
     };
-    match body {
-        RequestBody::Empty => Ok(None),
-        RequestBody::Full(b) => Ok(Some(b.clone())),
-        RequestBody::Streaming(_) => refuse("a streaming one"),
-        RequestBody::Rewindable(_) => {
-            let mut current = body.rewind();
-            for _ in 0..MAX_REWIND_DEPTH {
-                match current {
-                    Some(RequestBody::Full(b)) => return Ok(Some(b)),
-                    Some(RequestBody::Empty) => return Ok(None),
-                    Some(RequestBody::Streaming(_)) => {
-                        return refuse("a rewindable one whose factory streams");
-                    }
-                    Some(r @ RequestBody::Rewindable(_)) => current = r.rewind(),
-                    None => return refuse("a rewindable one that would not rewind"),
-                }
-            }
-            refuse("a rewindable one nested past this crate's depth bound")
-        }
+    // The unwrapping and its depth bound are `hclient_core`'s. This crate
+    // had picked 16 and refused, and so had `hclient-wasi`, while
+    // `hclient-native` and its HTTP/3 pump recursed without a bound —
+    // `RequestBody::reduce` settles it once, and a body that streams is
+    // still this backend's own refusal, because that is a fact about
+    // WinHTTP rather than about the body.
+    match body.reduce().map_err(|e| {
+        Error::new(
+            ErrorKind::Unsupported,
+            WinHttpError::Unsupported(e.to_string()),
+        )
+    })? {
+        hclient_core::Reduced::Empty => Ok(None),
+        hclient_core::Reduced::Bytes(b) => Ok(Some(b)),
+        hclient_core::Reduced::Streaming(_) => refuse("a streaming one"),
     }
 }
 
@@ -488,7 +481,7 @@ mod tests {
 
     #[test]
     fn a_streaming_body_is_refused_rather_than_dropped() {
-        let e = resolve_body(&RequestBody::Streaming(Box::new(NoBytes))).unwrap_err();
+        let e = resolve_body(RequestBody::Streaming(Box::new(NoBytes))).unwrap_err();
         assert_eq!(*e.kind(), ErrorKind::Unsupported);
     }
 
@@ -501,17 +494,14 @@ mod tests {
             let b = b.clone();
             move || RequestBody::Full(b.clone())
         }));
-        assert_eq!(resolve_body(&body).unwrap(), Some(b));
+        assert_eq!(resolve_body(body).unwrap(), Some(b));
     }
 
     #[test]
     fn a_buffered_body_goes_through() {
-        assert_eq!(resolve_body(&RequestBody::Empty).unwrap(), None);
+        assert_eq!(resolve_body(RequestBody::Empty).unwrap(), None);
         let b = bytes::Bytes::from_static(b"hello");
-        assert_eq!(
-            resolve_body(&RequestBody::Full(b.clone())).unwrap(),
-            Some(b)
-        );
+        assert_eq!(resolve_body(RequestBody::Full(b.clone())).unwrap(), Some(b));
     }
 
     /// The capability set is the crate doc's claims, in the one place a

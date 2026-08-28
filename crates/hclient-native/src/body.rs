@@ -123,7 +123,7 @@
 //! the body write. Here the encoder is downstream of a body we own, so
 //! the refusal comes before the terminator rather than after the `200`.
 use bytes::Bytes;
-use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::{Error, ErrorKind, Reduced, RequestBody};
 use http::HeaderName;
 use http_body::{Body, Frame, SizeHint};
 use std::collections::HashSet;
@@ -150,16 +150,16 @@ enum Inner {
 }
 
 impl Inner {
-    fn from_request_body(body: RequestBody) -> Self {
+    /// The reduction is `hclient_core`'s, and this is what changed: the
+    /// `match` that used to be here was one of four copies, and they had
+    /// diverged on what a `Rewindable` chain that never terminates does —
+    /// two backends refused past sixteen, this one recursed for ever into
+    /// a stack overflow. `RequestBody::reduce` answers it once.
+    fn from_reduced(body: Reduced) -> Self {
         match body {
-            RequestBody::Empty => Inner::Buffered(None),
-            RequestBody::Full(b) if b.is_empty() => Inner::Buffered(None),
-            RequestBody::Full(b) => Inner::Buffered(Some(b)),
-            // The factory can legally return anything, including another
-            // `Rewindable` — the same conversion path unpacks that too,
-            // rather than a partial match that only knows about `Full`.
-            RequestBody::Rewindable(f) => Inner::from_request_body(f()),
-            RequestBody::Streaming(s) => Inner::Streaming(s),
+            Reduced::Empty => Inner::Buffered(None),
+            Reduced::Bytes(b) => Inner::Buffered(Some(b)),
+            Reduced::Streaming(s) => Inner::Streaming(s),
         }
     }
 }
@@ -326,12 +326,17 @@ impl Debug for Inner {
 }
 
 impl OutgoingBody {
-    pub(crate) fn from_request_body(body: RequestBody) -> Self {
-        Self {
-            inner: Inner::from_request_body(body),
+    /// Fallible now, and the failure is known before a byte is written:
+    /// a `Rewindable` chain deeper than `MAX_REWIND_DEPTH` is a broken
+    /// factory contract, and a typed error is what the two backends that
+    /// already bounded it produced.
+    pub(crate) fn from_request_body(body: RequestBody) -> Result<Self, Error> {
+        let reduced = body.reduce().map_err(|e| Error::new(ErrorKind::Body, e))?;
+        Ok(Self {
+            inner: Inner::from_reduced(reduced),
             declared_trailers: None,
             gate: None,
-        }
+        })
     }
 
     /// Withhold every frame until `gate` opens.
@@ -457,21 +462,24 @@ mod tests {
     fn full_body_yields_its_bytes_once() {
         let b = OutgoingBody::from_request_body(RequestBody::Full(bytes::Bytes::from_static(
             b"payload",
-        )));
+        )))
+        .expect("these fixtures nest no rewind chain");
         let collected = futures_executor::block_on(b.collect()).unwrap().to_bytes();
         assert_eq!(&collected[..], b"payload");
     }
 
     #[test]
     fn empty_body_is_end_stream_immediately() {
-        let b = OutgoingBody::from_request_body(RequestBody::Empty);
+        let b = OutgoingBody::from_request_body(RequestBody::Empty)
+            .expect("these fixtures nest no rewind chain");
         assert!(http_body::Body::is_end_stream(&b));
     }
 
     #[test]
     fn size_hint_is_exact_for_buffered_bodies() {
         let b =
-            OutgoingBody::from_request_body(RequestBody::Full(bytes::Bytes::from_static(b"1234")));
+            OutgoingBody::from_request_body(RequestBody::Full(bytes::Bytes::from_static(b"1234")))
+                .expect("these fixtures nest no rewind chain");
         assert_eq!(http_body::Body::size_hint(&b).exact(), Some(4));
     }
 
@@ -479,7 +487,8 @@ mod tests {
     /// separate silent special case: `Inner::Buffered(None)` for both.
     #[test]
     fn empty_full_body_is_end_stream_immediately() {
-        let b = OutgoingBody::from_request_body(RequestBody::Full(bytes::Bytes::new()));
+        let b = OutgoingBody::from_request_body(RequestBody::Full(bytes::Bytes::new()))
+            .expect("these fixtures nest no rewind chain");
         assert!(http_body::Body::is_end_stream(&b));
         assert_eq!(http_body::Body::size_hint(&b).exact(), Some(0));
     }
@@ -495,7 +504,8 @@ mod tests {
     fn rewindable_body_yields_the_factorys_bytes() {
         let b = OutgoingBody::from_request_body(RequestBody::rewindable(|| {
             RequestBody::Full(bytes::Bytes::from_static(b"rewound"))
-        }));
+        }))
+        .expect("these fixtures nest no rewind chain");
         let collected = futures_executor::block_on(b.collect()).unwrap().to_bytes();
         assert_eq!(&collected[..], b"rewound");
     }
@@ -513,7 +523,8 @@ mod tests {
     fn rewindable_body_may_legally_produce_a_streaming_body() {
         let b = OutgoingBody::from_request_body(RequestBody::rewindable(|| {
             RequestBody::Streaming(Box::new(OneShotStream::data(b"streamed-via-factory")))
-        }));
+        }))
+        .expect("these fixtures nest no rewind chain");
         let collected = futures_executor::block_on(b.collect()).unwrap().to_bytes();
         assert_eq!(&collected[..], b"streamed-via-factory");
     }
@@ -555,7 +566,8 @@ mod tests {
     fn streaming_body_forwards_frames_without_buffering() {
         let b = OutgoingBody::from_request_body(RequestBody::Streaming(Box::new(
             OneShotStream::data(b"streamed"),
-        )));
+        )))
+        .expect("these fixtures nest no rewind chain");
         assert!(!http_body::Body::is_end_stream(&b));
         let collected = futures_executor::block_on(b.collect()).unwrap().to_bytes();
         assert_eq!(&collected[..], b"streamed");
@@ -571,7 +583,8 @@ mod tests {
         let source = std::io::Error::other("boom");
         let b = OutgoingBody::from_request_body(RequestBody::Streaming(Box::new(
             OneShotStream::error(Error::new(ErrorKind::Body, source)),
-        )));
+        )))
+        .expect("these fixtures nest no rewind chain");
         let e = futures_executor::block_on(b.collect()).unwrap_err();
         assert_eq!(e.kind(), &ErrorKind::Body);
     }
@@ -675,7 +688,8 @@ mod tests {
 
         let body = OutgoingBody::from_request_body(RequestBody::Streaming(Box::new(
             OneShotStream::error(original.clone()),
-        )));
+        )))
+        .expect("these fixtures nest no rewind chain");
 
         let req = http::Request::builder()
             .method("POST")

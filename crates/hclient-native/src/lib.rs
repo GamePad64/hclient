@@ -3073,7 +3073,7 @@ where
         }
         let uri = parts.uri.clone();
 
-        let outgoing = body::OutgoingBody::from_request_body(body);
+        let outgoing = body::OutgoingBody::from_request_body(body)?;
         // Left exactly as it arrived — absolute URI, and no `Host:` of
         // ours. That is the one shape both protocols can be derived from,
         // and deriving is `established::exchange`'s job, from the
@@ -3679,6 +3679,7 @@ pub mod testing {
     /// to send needs (a bodyless GET).
     pub fn empty_body() -> crate::body::OutgoingBody {
         crate::body::OutgoingBody::from_request_body(hclient_core::RequestBody::Empty)
+            .expect("an Empty body follows no factory chain and cannot exceed the rewind bound")
     }
 
     /// `std::net::TcpStream` as `hyper::rt` IO for tests on a bare

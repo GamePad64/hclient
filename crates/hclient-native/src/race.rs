@@ -241,6 +241,12 @@ fn probe_body(like: &RequestBody) -> RequestBody {
         RetryKind::Free => RequestBody::Empty,
         RetryKind::ViaFactory => RequestBody::rewindable(|| RequestBody::Empty),
         RetryKind::Impossible => RequestBody::Streaming(Box::new(NoBody)),
+        // `RetryKind` is `#[non_exhaustive]`, and the safe answer for a
+        // kind this build does not know is the one that promises least:
+        // a probe that cannot be replayed, which is what
+        // `RetryKind::may_replay` returns `false` for. Understating here
+        // costs a retry; overstating would send a body twice.
+        _ => RequestBody::Streaming(Box::new(NoBody)),
     }
 }
 

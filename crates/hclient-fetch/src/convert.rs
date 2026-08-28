@@ -121,29 +121,9 @@ pub(crate) struct BadUrl(pub(crate) String);
 #[error("a `{0}` request cannot carry a body — fetch forbids a body on GET and HEAD requests")]
 pub(crate) struct BodyNotAllowedForMethod(pub(crate) http::Method);
 
-/// Upper bound on `RequestBody::Rewindable` nesting (a factory whose result
-/// is itself another `Rewindable`). No legitimate factory needs this — one
-/// factory calling through to a second, to a third, buys the caller
-/// nothing — so past this depth [`resolve_body`] stops with a typed error
-/// instead of silently giving up (an empty body) or recursing forever.
-///
-/// **The practical ceiling is `MAX_REWIND_DEPTH - 1` (15), not
-/// `MAX_REWIND_DEPTH` itself** — the constant names how many times
-/// `resolve_body`'s loop inspects a body, not how many `Rewindable` layers
-/// successfully unwrap; the last of those inspections is spent discovering
-/// the budget is exhausted rather than unwrapping another layer. Confirmed
-/// directly: a body nested 15 `Rewindable` layers deep resolves; nested 16
-/// or deeper, it hits [`RewindTooDeep`] instead. Same constant, same
-/// off-by-one, same reasoning as `hclient-wasi/src/convert.rs`'s
-/// `MAX_REWIND_DEPTH` — not a new discrepancy introduced here.
-const MAX_REWIND_DEPTH: u8 = 16;
-
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "RequestBody::Rewindable factory nested {MAX_REWIND_DEPTH} levels deep or more \
-     (each factory call returned another Rewindable instead of a terminal body)"
-)]
-pub(crate) struct RewindTooDeep;
+// The rewind bound and its error moved to `hclient_core`: this crate,
+// `hclient-wasi` and `hclient-winhttp` had each picked 16, and two other
+// backends had no bound at all.
 
 #[derive(Debug, thiserror::Error)]
 #[error("javascript error: {0}")]
@@ -387,23 +367,17 @@ impl futures_core::Stream for BodyStream {
 /// factory that always returns another `Rewindable` would otherwise unwrap
 /// forever.
 fn resolve_body(body: RequestBody) -> Result<ResolvedBody, Error> {
-    let mut body = body;
-    for _ in 0..MAX_REWIND_DEPTH {
-        match body {
-            RequestBody::Empty => return Ok(ResolvedBody::None),
-            RequestBody::Full(b) if b.is_empty() => return Ok(ResolvedBody::None),
-            RequestBody::Full(b) => {
-                return Ok(ResolvedBody::Full(js_sys::Uint8Array::from(&b[..])));
-            }
-            RequestBody::Rewindable(f) => body = f(),
-            // Carried out whole — matched, not silently dropped; the caller
-            // decides whether it can be sent (module doc comment, point 3).
-            // A `Rewindable` wrapping a `Streaming` reaches this arm through
-            // the loop above, exactly like any other terminal variant.
-            RequestBody::Streaming(b) => return Ok(ResolvedBody::Streaming(b)),
-        }
+    // The unwrapping and its depth bound are `hclient_core`'s. This crate
+    // had picked 16, and so had `hclient-wasi` and `hclient-winhttp`,
+    // while `hclient-native` and its HTTP/3 pump recursed without one —
+    // **five** copies of one reduction and three answers to one question.
+    match body.reduce().map_err(|e| Error::new(ErrorKind::Other, e))? {
+        hclient_core::Reduced::Empty => Ok(ResolvedBody::None),
+        hclient_core::Reduced::Bytes(b) => Ok(ResolvedBody::Full(js_sys::Uint8Array::from(&b[..]))),
+        // Carried out whole — the caller decides whether it can be sent
+        // (module doc comment, point 3).
+        hclient_core::Reduced::Streaming(b) => Ok(ResolvedBody::Streaming(b)),
     }
-    Err(Error::new(ErrorKind::Other, RewindTooDeep))
 }
 
 /// The URL string fetch will parse, or a typed error if `uri` isn't one

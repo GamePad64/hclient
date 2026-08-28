@@ -170,15 +170,40 @@ Worth reconsidering if `hclient-core` ever drops its `no_std` aspiration
 configuration where thirty hand-written setters stop being cheaper than
 eight crates.
 
-### 4. `RequestBody` and `RetryKind` are matched by every backend
+### 4. `RequestBody` and `RetryKind` are matched by every backend — **done, and not the way this section proposed**
 
-Neither is `#[non_exhaustive]`. A fifth `RequestBody` — a file-backed
-body, say — breaks every transport ever written against this crate. The
-same tension as `Event` and the same resolution, with one difference worth
-weighing: a backend that silently ignored a new body kind would send the
-wrong bytes, where a hook that ignored a new event merely reports less.
-That argues for keeping `RequestBody` exhaustive and accepting the break,
-and it is a decision rather than an oversight either way.
+The section framed this as a choice between marking and not, and the
+measurement dissolved it. **Seven backends wrote the same reduction** —
+`hclient-native`'s body and its HTTP/3 pump, `hclient-wasi`,
+`hclient-winhttp`, `hclient-fetch`, `hclient-urlsession` and
+`hclient::multipart` — each collapsing four variants into the two facts a
+transport has: bytes, or a stream.
+
+And the copies had **diverged on a question the type raises**. A factory
+that keeps returning another `Rewindable` is legal; four crates bounded
+the chain at 16 and refused, two recursed without a bound, one of them
+arguing in writing that *"defending against it here would mean picking a
+depth limit nobody can justify"* — while two other crates had justified 16
+already. One question, seven implementations, three answers, and the
+outcomes were never equivalent: unbounded recursion is a stack overflow,
+which nothing can catch, and a bound is an error a caller reads.
+
+So the shape is not "mark it and add `_` arms nobody can write". It is:
+
+1. `hclient_core::RequestBody::reduce` — the reduction, once, with the
+   bound settled at [`MAX_REWIND_DEPTH`] = 16 and a typed refusal.
+2. `Reduced` — `Empty`, `Bytes`, `Streaming` — **exhaustive on purpose**,
+   because a transport must handle every case and there is no third: a
+   body added later reduces to a stream like any other.
+3. `RequestBody` and `RetryKind` marked, and no backend matches either any
+   more. A fifth variant is handled in one place and breaks nobody.
+
+`RetryKind` gets `may_replay()` for the same reason — ask, do not match —
+and the answer for a kind a build does not know is *do not replay*, the
+understating direction. Its own `match` keeps no `_` arm, because
+`#[non_exhaustive]` is inert inside the defining crate: a variant added
+there is a compile error **there**, which is `Event`'s and `Capabilities`'
+shape exactly.
 
 ### 5. Runtime seams: every method is required, and that is already handled
 
