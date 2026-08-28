@@ -10,6 +10,7 @@ mod args;
 mod backend;
 mod output;
 mod run;
+mod timings;
 
 use clap::Parser;
 use std::io::{IsTerminal, Write};

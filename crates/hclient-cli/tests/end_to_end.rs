@@ -320,3 +320,95 @@ fn without_resolve_that_same_name_fails() {
         r.stderr
     );
 }
+
+/// `--write-out` against a real server, through the real binary.
+///
+/// The unit tests in `timings.rs` cover the vocabulary as a pure
+/// function; what only an end-to-end run can say is that the hooks were
+/// **installed** — a recorder that is built and never handed to the
+/// transport renders a report of zeros and passes every unit test.
+#[test]
+fn write_out_reports_a_real_exchange_and_the_hooks_were_installed() {
+    let (addr, _log) = serve(200, "text/plain", "hello");
+    let ran = hc(&[
+        &url(addr, "/x"),
+        "-w",
+        r"|%{http_code}|%{num_connects}|%{size_download}|%{url_effective}|%{remote_port}|",
+    ]);
+    assert_eq!(ran.code, 0, "stderr: {}", ran.stderr);
+
+    let report = ran.stdout.rsplit('|').nth(5).map(str::to_owned);
+    assert!(
+        ran.stdout
+            .ends_with(&format!("|200|1|5|{}|{}|", url(addr, "/x"), addr.port())),
+        "the report is appended after the body: {:?} (field: {report:?})",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout.starts_with("hello"),
+        "and the body still came first: {:?}",
+        ran.stdout
+    );
+}
+
+/// The timings are real numbers off the wire rather than zeros, which is
+/// what says the recorder reached the transport. Asserted as *some time
+/// passed and it is ordered*, never as a threshold — three timing-based
+/// assertions in this workspace have turned out to be flakes.
+#[test]
+fn the_time_milestones_are_ordered_and_not_all_zero() {
+    let (addr, _log) = serve(200, "text/plain", "hello");
+    let ran = hc(&[
+        &url(addr, "/x"),
+        "-w",
+        r"%{time_connect} %{time_starttransfer} %{time_total}",
+    ]);
+    assert_eq!(ran.code, 0, "stderr: {}", ran.stderr);
+
+    let nums: Vec<f64> = ran
+        .stdout
+        .trim_start_matches("hello")
+        .split_whitespace()
+        .map(|s| s.parse().expect("six decimal places"))
+        .collect();
+    assert_eq!(nums.len(), 3, "{:?}", ran.stdout);
+    assert!(nums[2] > 0.0, "total is real: {nums:?}");
+    assert!(
+        nums[0] <= nums[1] && nums[1] <= nums[2],
+        "milestones are on one timeline: {nums:?}"
+    );
+}
+
+/// Plain `http://` has no handshake, so `time_appconnect` is zero — and
+/// `num_connects` is `1`, which is the pair that lets a reader tell that
+/// from a pooled request.
+#[test]
+fn without_tls_appconnect_is_zero_while_a_connection_was_still_made() {
+    let (addr, _log) = serve(200, "text/plain", "");
+    let ran = hc(&[
+        &url(addr, "/x"),
+        "-w",
+        r"%{time_appconnect}/%{num_connects}",
+    ]);
+    assert_eq!(ran.code, 0, "stderr: {}", ran.stderr);
+    assert_eq!(ran.stdout, "0.000000/1");
+}
+
+/// An unknown variable is refused by name, with exit 2 — a usage mistake,
+/// which is what 2 already means in this tool.
+#[test]
+fn an_unknown_write_out_variable_is_refused_by_name() {
+    let (addr, _log) = serve(200, "text/plain", "hello");
+    let ran = hc(&[&url(addr, "/x"), "-w", "%{time_pretransfer}"]);
+    assert_eq!(ran.code, 2, "stdout: {} stderr: {}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stderr.contains("time_pretransfer"),
+        "it names what it could not do: {}",
+        ran.stderr
+    );
+    assert!(
+        ran.stderr.contains("time_total"),
+        "and lists what it can: {}",
+        ran.stderr
+    );
+}

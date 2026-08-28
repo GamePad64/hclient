@@ -341,6 +341,16 @@ pub struct Cli {
     #[arg(long)]
     pub no_color: bool,
 
+    /// Print a timing report after the response, curl's `--write-out`.
+    ///
+    /// `%{time_total}`, `%{http_code}` and eleven more; `\n` and `%%`
+    /// work as curl's do. An unknown variable is refused by name rather
+    /// than printed back as text, because a script that asked for a
+    /// timing and silently got the characters would report one that never
+    /// happened.
+    #[arg(short = 'w', long, value_name = "FORMAT")]
+    pub write_out: Option<String>,
+
     /// Print the backends this build carries, and exit.
     #[arg(short = 'V', long)]
     pub version: bool,

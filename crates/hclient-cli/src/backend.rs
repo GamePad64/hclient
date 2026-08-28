@@ -27,6 +27,14 @@ pub struct Config {
     /// `between_bytes` and deliberately no `total`, since the total is the
     /// one bound that needs a clock to race a sleep against a silent body.
     pub total: Option<std::time::Duration>,
+    /// Installed only when `--write-out` asked for timings.
+    ///
+    /// `None` is not "a recorder that discards": with no hooks the
+    /// transport carries `NoHooks`, whose `WATCHING` is `false`, so the
+    /// backend never reads a clock or takes a `ConnectionId` at all. That
+    /// is why this is an `Option` producing two shapes of transport
+    /// rather than one shape with an idle hook in it.
+    pub timings: Option<crate::timings::Recorder>,
 }
 
 /// What this build carries, in the order `--version` prints them.
@@ -161,11 +169,21 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
                     }
                 })?
             };
-            finish(
-                which,
-                cfg,
-                hclient_native::Native::new(hclient_rt_tokio::Tokio, tls, resolver(cfg)),
-            )
+            // The recorder is installed here, at a **concrete** type,
+            // and not by a shared generic helper — which was written
+            // first and could not compile. `Native<R, T, D, H, P>` carries
+            // its bounds on the declaration, so a helper generic over `R`,
+            // `T` and `D` has to restate `TcpConnect + Timer + TlsConnect
+            // + Resolve` and everything behind them. This workspace's own
+            // rule, one layer up from where it usually appears: at a
+            // concrete type the bounds are inferred, in a generic one they
+            // must be proven. The duplication is four lines against a
+            // where-clause nobody would maintain.
+            let t = hclient_native::Native::new(hclient_rt_tokio::Tokio, tls, resolver(cfg));
+            match cfg.timings.clone() {
+                Some(rec) => finish(which, cfg, t.hooks(rec)),
+                None => finish(which, cfg, t),
+            }
         }
         #[cfg(feature = "native-tls")]
         BackendName::NativeTls => {
@@ -174,11 +192,21 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
             } else {
                 hclient_tls_native_tls::NativeTls::new()
             };
-            finish(
-                which,
-                cfg,
-                hclient_native::Native::new(hclient_rt_tokio::Tokio, tls, resolver(cfg)),
-            )
+            // The recorder is installed here, at a **concrete** type,
+            // and not by a shared generic helper — which was written
+            // first and could not compile. `Native<R, T, D, H, P>` carries
+            // its bounds on the declaration, so a helper generic over `R`,
+            // `T` and `D` has to restate `TcpConnect + Timer + TlsConnect
+            // + Resolve` and everything behind them. This workspace's own
+            // rule, one layer up from where it usually appears: at a
+            // concrete type the bounds are inferred, in a generic one they
+            // must be proven. The duplication is four lines against a
+            // where-clause nobody would maintain.
+            let t = hclient_native::Native::new(hclient_rt_tokio::Tokio, tls, resolver(cfg));
+            match cfg.timings.clone() {
+                Some(rec) => finish(which, cfg, t.hooks(rec)),
+                None => finish(which, cfg, t),
+            }
         }
         // `choose` has already refused anything this build lacks, so the
         // arms above are exhaustive for every value that reaches here —

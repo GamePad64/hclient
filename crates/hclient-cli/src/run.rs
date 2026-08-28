@@ -16,6 +16,13 @@ pub enum Fail {
     Request(hclient::Error),
     /// `--check-status` and the server answered 4xx or 5xx.
     Status(http::StatusCode),
+    /// A `--write-out` format naming a variable this build does not know.
+    ///
+    /// Its own code, and **exit 2** rather than a new one: it is a
+    /// mistake in what the caller wrote, which is what 2 already means,
+    /// and it is caught after the request rather than before only because
+    /// that is when the values exist.
+    WriteOut(crate::timings::Unknown),
     Io(std::io::Error),
 }
 
@@ -27,6 +34,7 @@ impl Fail {
             Self::Request(_) => 4,
             Self::Status(s) if s.is_client_error() => 5,
             Self::Status(_) => 6,
+            Self::WriteOut(_) => 2,
             Self::Io(_) => 7,
         }
     }
@@ -37,6 +45,7 @@ impl std::fmt::Display for Fail {
         match self {
             Self::Usage(m) => write!(f, "{m}"),
             Self::Backend(r) => write!(f, "{r}"),
+            Self::WriteOut(u) => write!(f, "{u}"),
             Self::Request(e) => {
                 write!(f, "{e}")?;
                 // The chain, because this library's errors carry a typed
@@ -241,12 +250,21 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     for spec in &cli.resolve {
         resolve.push(parse_resolve(spec)?);
     }
+    // The clock starts before the client is built, because `time_total`
+    // is the caller's wall time for the whole operation and a trust-store
+    // read is part of it.
+    let started = std::time::Instant::now();
+    let recorder = cli
+        .write_out
+        .as_ref()
+        .map(|_| crate::timings::Recorder::new());
     let client = backend::build(
         cli.backend,
         &backend::Config {
             insecure: cli.insecure,
             resolve,
             total: cli.timeout.map(std::time::Duration::from_secs_f64),
+            timings: recorder.clone(),
         },
     )
     .map_err(Fail::Backend)?;
@@ -426,6 +444,10 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     let response = req.send().await.map_err(Fail::Request)?;
     let version = response.version();
     let status = response.status();
+    // The URL that **answered**, which differs from the one asked for
+    // exactly when a redirect was followed — read here because `collect`
+    // takes the response by value.
+    let url_effective = response.url().clone();
     let collected = response.collect().await.map_err(Fail::Request)?;
 
     if print.response_head {
@@ -438,6 +460,26 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
             .and_then(|v| v.to_str().ok())
             .map(ToOwned::to_owned);
         output::body(&mut out, ct.as_deref(), collected.bytes()).map_err(Fail::Io)?;
+    }
+    // `--write-out` prints **after** the body and to stdout, which is
+    // curl's placement. It is a surprise worth knowing about — a piped
+    // body gets the report appended — and matching curl is worth more
+    // than fixing it here, since every script that already handles it
+    // handles it that way.
+    if let Some(fmt) = &cli.write_out {
+        let t = recorder
+            .as_ref()
+            .map(crate::timings::Recorder::snapshot)
+            .unwrap_or_default();
+        let facts = crate::timings::Facts {
+            status: status.as_u16(),
+            version: crate::timings::version_name(version).to_owned(),
+            url: url_effective.to_string(),
+            size_download: collected.bytes().len() as u64,
+            total: started.elapsed(),
+        };
+        let rendered = crate::timings::render(fmt, &t, &facts).map_err(Fail::WriteOut)?;
+        write!(out, "{rendered}").map_err(Fail::Io)?;
     }
     out.flush().map_err(Fail::Io)?;
 
