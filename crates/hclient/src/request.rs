@@ -424,6 +424,31 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    /// Demand a protocol version, and fail rather than fall back.
+    ///
+    /// This is the route this crate's own documentation names as the
+    /// honest one — `Capabilities` report the **floor**, the value that
+    /// holds on the worst protocol the transport might negotiate, so
+    /// asking a capability whether HTTP/2 will be used gives the wrong
+    /// answer by design. The pair that answers it is a demand before the
+    /// head and [`crate::Response::version`] after it. Until now the first
+    /// half was unreachable through this builder: `RequireVersion` lives
+    /// in `Extensions`, and `timeouts` and `redirect` were the only two
+    /// keys with a setter.
+    ///
+    /// A transport that cannot select a version refuses the demand rather
+    /// than ignoring it — `Capabilities::version_select` is the gate, and
+    /// a `false` there makes this an `UnsupportedCapability` instead of a
+    /// setting that quietly does nothing.
+    ///
+    /// Stored in `Extensions`, the same channel `timeouts` uses, and read
+    /// by the transport rather than by `Client`.
+    pub fn require_version(mut self, version: http::Version) -> Self {
+        self.extensions
+            .insert(hclient_core::RequireVersion(version));
+        self
+    }
+
     /// Sends the request.
     ///
     /// The body comes back wrapped in [`crate::body::Deadline`], which carries the

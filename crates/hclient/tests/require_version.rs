@@ -233,3 +233,78 @@ fn a_client_over_a_backend_that_cannot_select_still_builds() {
          good backend for every caller who does not make one"
     );
 }
+
+/// Every test above builds its request by hand — and that is exactly why
+/// the builder had no way to make one for two verticals.
+///
+/// `RequireVersion` lives in `Extensions`, `timeouts` and `redirect` were
+/// the only two keys with a setter, and this crate's own documentation
+/// names a demand-before-the-head as **the** honest route to knowing which
+/// protocol will be used, because `Capabilities` report the floor. So the
+/// documented route was unreachable through the facade, and no test said
+/// so: the file testing it went around the builder.
+#[test]
+fn the_builder_can_make_the_demand_these_tests_had_been_making_by_hand() {
+    let m = MockTransport::new().with_capabilities(caps(true));
+    let c = Client::builder(m)
+        .build()
+        .expect("a selecting backend takes a demand");
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(ok());
+
+    let sent = futures_executor::block_on(
+        c.get("https://a/x")
+            .require_version(http::Version::HTTP_2)
+            .send(),
+    );
+    assert!(sent.is_ok(), "{:?}", sent.err());
+
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].extensions.get::<RequireVersion>().copied(),
+        Some(RequireVersion(http::Version::HTTP_2)),
+        "the demand must reach the transport, which is the only place that can honour it"
+    );
+}
+
+/// The other direction, against the same mock differing in one field: a
+/// demand made through the builder is refused by a backend that cannot
+/// select, rather than travelling as a mark nobody reads.
+///
+/// Without this, the test above would pass for a `require_version` that
+/// inserted the value into a map the gate never consults.
+#[test]
+fn a_demand_made_through_the_builder_is_gated_exactly_as_a_hand_built_one_is() {
+    let m = MockTransport::new().with_capabilities(caps(false));
+    let c = Client::builder(m)
+        .build()
+        .expect("build does not gate this");
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(ok());
+
+    let e = futures_executor::block_on(
+        c.get("https://a/x")
+            .require_version(http::Version::HTTP_2)
+            .send(),
+    )
+    .expect_err("a backend that cannot select must refuse the demand");
+    assert_eq!(*e.kind(), ErrorKind::Unsupported);
+    assert!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .is_empty(),
+        "the request must not reach a transport that cannot honour it"
+    );
+
+    // And an unmarked request through the same builder is unaffected,
+    // which is what says the refusal is about the demand rather than about
+    // the backend.
+    assert!(futures_executor::block_on(c.get("https://a/x").send()).is_ok());
+}
