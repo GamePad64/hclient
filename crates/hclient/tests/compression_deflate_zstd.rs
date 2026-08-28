@@ -136,7 +136,7 @@ fn fetch(addr: std::net::SocketAddr) -> Result<String, hclient_core::Error> {
     let c = Client::builder(transport()).build().expect("supported");
     rt().block_on(async {
         let body = c
-            .get(&format!("http://{addr}/"))
+            .get(format!("http://{addr}/"))
             .send()
             .await?
             .collect()

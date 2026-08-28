@@ -257,7 +257,7 @@ async fn a_server_that_stops_reading_the_body_still_gets_its_response_read() {
     let resp = tokio::time::timeout(
         BOUND,
         client()
-            .post(&server.url("/answer-without-reading"))
+            .post(server.url("/answer-without-reading"))
             .body(megabyte())
             .send(),
     )
@@ -293,7 +293,7 @@ async fn a_connection_that_dies_mid_request_is_still_an_error() {
 
     let result = tokio::time::timeout(
         BOUND,
-        client().post(&server.url("/die")).body(megabyte()).send(),
+        client().post(server.url("/die")).body(megabyte()).send(),
     )
     .await
     .expect("must not hang");
@@ -328,7 +328,7 @@ async fn a_connection_that_dies_mid_request_is_still_an_error() {
 async fn a_reset_that_is_not_no_error_still_fails_the_response_body() {
     let server = spawn_server();
 
-    let resp = tokio::time::timeout(BOUND, client().get(&server.url("/reset-mid-body")).send())
+    let resp = tokio::time::timeout(BOUND, client().get(server.url("/reset-mid-body")).send())
         .await
         .expect("must not hang")
         .expect("the head is complete and was sent before the reset");
@@ -365,7 +365,7 @@ async fn a_stalled_streaming_body_does_not_hide_a_response_the_server_already_se
     let resp = tokio::time::timeout(
         BOUND,
         client()
-            .post(&server.url("/answer-without-reading"))
+            .post(server.url("/answer-without-reading"))
             .body(RequestBody::Streaming(Box::new(StallsAfterOneChunk {
                 sent: false,
             })))

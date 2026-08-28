@@ -186,7 +186,7 @@ async fn get_all_within(
 ) -> Result<String, hclient_core::Error> {
     let c = client(timeouts);
     let out = tokio::time::timeout(patience, async {
-        c.get(&format!("http://{addr}/"))
+        c.get(format!("http://{addr}/"))
             .send()
             .await?
             .collect()
@@ -209,7 +209,7 @@ async fn hangs(timeouts: Timeouts, addr: SocketAddr) -> bool {
     let c = client(timeouts);
     tokio::time::timeout(PATIENCE, async {
         let _ = c
-            .get(&format!("http://{addr}/"))
+            .get(format!("http://{addr}/"))
             .send()
             .await?
             .collect()
@@ -417,7 +417,7 @@ async fn a_between_bytes_timeout_closes_the_connection_the_server_sees() {
         between_bytes: Some(BOUND),
         ..Default::default()
     });
-    let mut resp = tokio::time::timeout(PATIENCE, c.get(&format!("http://{addr}/")).send())
+    let mut resp = tokio::time::timeout(PATIENCE, c.get(format!("http://{addr}/")).send())
         .await
         .expect("the head arrives at once")
         .expect("and is a response");

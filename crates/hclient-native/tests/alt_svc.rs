@@ -175,7 +175,7 @@ async fn one_client_moves_itself_to_http_3_on_the_second_request() {
         ("h3", http::Version::HTTP_3),
         ("h3", http::Version::HTTP_3),
     ] {
-        let resp = tokio::time::timeout(BOUND, client.get(&uri(&pair)).send())
+        let resp = tokio::time::timeout(BOUND, client.get(uri(&pair)).send())
             .await
             .expect("inside the bound")
             .expect("a response");

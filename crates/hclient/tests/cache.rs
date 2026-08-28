@@ -107,7 +107,7 @@ fn a_fresh_response_is_served_from_the_store_without_a_second_request() {
         let (c, base) = client(addr);
         for _ in 0..3 {
             let text = c
-                .get(&format!("{base}/x"))
+                .get(format!("{base}/x"))
                 .send()
                 .await
                 .expect("send")
@@ -147,7 +147,7 @@ fn a_stale_entry_is_revalidated_and_a_304_serves_the_stored_body() {
         let (c, base) = client(addr);
         for _ in 0..2 {
             let text = c
-                .get(&format!("{base}/x"))
+                .get(format!("{base}/x"))
                 .send()
                 .await
                 .expect("send")
@@ -174,7 +174,7 @@ fn no_store_means_every_call_reaches_the_server() {
     rt().block_on(async move {
         let (c, base) = client(addr);
         for _ in 0..3 {
-            let _ = c.get(&format!("{base}/x")).send().await.expect("send");
+            let _ = c.get(format!("{base}/x")).send().await.expect("send");
         }
         assert_eq!(seen.lock().expect("log").len(), 3);
     });

@@ -103,7 +103,7 @@ where
         })
         .build()
         .unwrap();
-    c.get(&format!("http://{addr}/"))
+    c.get(format!("http://{addr}/"))
         .send()
         .await
         .unwrap()

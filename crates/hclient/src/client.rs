@@ -707,25 +707,36 @@ impl Client {
         Some(crate::cached::lock(self.inner.cache.as_ref()?))
     }
 
-    pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_> {
-        RequestBuilder::new(self, method, url)
+    /// The verb methods below, and this one, take `impl AsRef<str>` rather
+    /// than `&str`, which is what lets a caller holding a `url::Url` pass
+    /// it directly — `url::Url` implements `AsRef<str>`, so this crate
+    /// accepts one **without depending on `url`**, which
+    /// `hclient-proto` removed at measured cost. `&str`, `String`,
+    /// `&String` and `Cow<str>` come along for the same reason.
+    ///
+    /// It is deliberately not an `IntoUrl`-style trait of ours. Such a
+    /// trait's value is the conversions it names, and the one worth naming
+    /// here is `url::Url` — which `AsRef<str>` already reaches, at no
+    /// dependency and with nothing for a caller to learn.
+    pub fn request(&self, method: http::Method, url: impl AsRef<str>) -> RequestBuilder<'_> {
+        RequestBuilder::new(self, method, url.as_ref())
     }
-    pub fn get(&self, url: &str) -> RequestBuilder<'_> {
+    pub fn get(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::GET, url)
     }
-    pub fn post(&self, url: &str) -> RequestBuilder<'_> {
+    pub fn post(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::POST, url)
     }
-    pub fn put(&self, url: &str) -> RequestBuilder<'_> {
+    pub fn put(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::PUT, url)
     }
-    pub fn delete(&self, url: &str) -> RequestBuilder<'_> {
+    pub fn delete(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::DELETE, url)
     }
-    pub fn patch(&self, url: &str) -> RequestBuilder<'_> {
+    pub fn patch(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::PATCH, url)
     }
-    pub fn head(&self, url: &str) -> RequestBuilder<'_> {
+    pub fn head(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::HEAD, url)
     }
     /// HTTP QUERY: a **safe, idempotent** request that carries a body.
@@ -749,7 +760,7 @@ impl Client {
     /// tests in `hclient-proto`, since the correct behaviour here follows
     /// only from QUERY not being POST, and would be easy to "fix" into
     /// corruption by anyone who groups it with POST for having a body.
-    pub fn query(&self, url: &str) -> RequestBuilder<'_> {
+    pub fn query(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::QUERY, url)
     }
 
@@ -761,8 +772,8 @@ impl Client {
     /// get a [`crate::sse::ReconnectingSseStream`] instead — that call is the
     /// actual gate between the two behaviors, not this method or any
     /// option on it.
-    pub fn sse(&self, url: &str) -> crate::sse::SseBuilder<'_> {
-        crate::sse::SseBuilder::new(self, url)
+    pub fn sse(&self, url: impl AsRef<str>) -> crate::sse::SseBuilder<'_> {
+        crate::sse::SseBuilder::new(self, url.as_ref())
     }
 
     /// The stage order is fixed and correct by construction.

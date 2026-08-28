@@ -1118,7 +1118,7 @@ async fn response_trailers_reach_the_caller_and_the_frame_split_survives() {
     let again = tokio::time::timeout(
         BOUND,
         client
-            .post(&server.url("/g.S/Unary"))
+            .post(server.url("/g.S/Unary"))
             .header("te", "trailers")
             .header("content-type", "application/grpc+proto")
             .body(RequestBody::Full(Bytes::from(framed(b"ping"))))

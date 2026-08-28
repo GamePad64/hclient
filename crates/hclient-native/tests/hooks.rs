@@ -331,7 +331,7 @@ fn watched(rec: &Recorder) -> Watched {
 }
 
 async fn get_ok(client: &Client, addr: SocketAddr) {
-    let resp = tokio::time::timeout(BOUND, client.get(&format!("http://{addr}/")).send())
+    let resp = tokio::time::timeout(BOUND, client.get(format!("http://{addr}/")).send())
         .await
         .expect("must not hang")
         .expect("request must succeed");
@@ -593,7 +593,7 @@ async fn a_truncated_body_closes_the_connection_with_the_failure() {
     let rec = Recorder::default();
     let client = Client::builder(watched(&rec)).build().unwrap();
 
-    let resp = tokio::time::timeout(BOUND, client.get(&format!("http://{addr}/")).send())
+    let resp = tokio::time::timeout(BOUND, client.get(format!("http://{addr}/")).send())
         .await
         .expect("must not hang")
         .expect("the head is fine; it is the body that is not");
@@ -689,7 +689,7 @@ async fn the_three_reasons_are_not_one_reason_wearing_three_names() {
     let client = Client::builder(watched(&rec)).build().unwrap();
     get_ok(&client, ended_addr).await;
     let resp = client
-        .get(&format!("http://{failed_addr}/"))
+        .get(format!("http://{failed_addr}/"))
         .send()
         .await
         .expect("head");
@@ -881,7 +881,7 @@ async fn a_slow_hook_delays_its_own_request_and_no_other() {
     .build()
     .unwrap();
 
-    let resp = tokio::time::timeout(BOUND, client.get(&format!("http://{addr}/")).send())
+    let resp = tokio::time::timeout(BOUND, client.get(format!("http://{addr}/")).send())
         .await
         .expect("a blocking hook must not hang the request")
         .expect("request");

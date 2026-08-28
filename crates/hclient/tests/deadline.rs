@@ -251,7 +251,7 @@ fn a_body_that_dribbles_for_ever_is_cut_at_the_total_deadline() {
     let started = Instant::now();
     let (kind, elapsed) = rt().block_on(guarded("a body that dribbles for ever", async {
         let mut resp = c
-            .get(&format!("http://{addr}/"))
+            .get(format!("http://{addr}/"))
             .send()
             .await
             .expect("the head arrives promptly — this is not a stalled server");
@@ -319,7 +319,7 @@ fn a_body_that_goes_silent_for_ever_after_the_head_is_cut_at_the_total_deadline(
     let started = Instant::now();
     let (resp, err, elapsed) = rt().block_on(guarded("a body that goes silent for ever", async {
         let mut resp = c
-            .get(&format!("http://{addr}/"))
+            .get(format!("http://{addr}/"))
             .send()
             .await
             .expect("the head arrives promptly — this is not a stalled server");
@@ -394,7 +394,7 @@ fn the_body_races_what_is_left_of_the_bound_rather_than_a_second_copy_of_it() {
     let started = Instant::now();
     let (err, elapsed) = rt().block_on(guarded("a slow head then silence", async {
         let mut resp = c
-            .get(&format!("http://{addr}/"))
+            .get(format!("http://{addr}/"))
             .send()
             .await
             .expect("the head arrives, late but inside the bound");
@@ -507,7 +507,7 @@ fn a_bounded_response_body_survives_being_held_across_an_await() {
 
     let body = rt().block_on(async {
         let resp = c
-            .get(&format!("http://{addr}/"))
+            .get(format!("http://{addr}/"))
             .send()
             .await
             .expect("responds");
@@ -541,11 +541,7 @@ fn firing_drops_the_body_so_the_server_sees_the_connection_go_away() {
         .expect("supported");
 
     let resp = rt().block_on(guarded("firing drops the body", async {
-        let mut resp = c
-            .get(&format!("http://{addr}/"))
-            .send()
-            .await
-            .expect("head");
+        let mut resp = c.get(format!("http://{addr}/")).send().await.expect("head");
         while let Some(frame) = resp.chunk().await {
             if frame.is_err() {
                 break;
@@ -577,7 +573,7 @@ fn a_server_that_never_answers_is_cut_at_the_head() {
 
     let started = Instant::now();
     let err = rt().block_on(guarded("a server that never answers", async {
-        c.get(&format!("http://{addr}/")).send().await.unwrap_err()
+        c.get(format!("http://{addr}/")).send().await.unwrap_err()
     }));
     let elapsed = started.elapsed();
 
@@ -605,7 +601,7 @@ fn the_deadline_spans_redirect_hops_rather_than_restarting_on_each() {
         .build()
         .expect("supported");
 
-    let err = rt().block_on(async { c.get(&format!("http://{addr}/")).send().await.unwrap_err() });
+    let err = rt().block_on(async { c.get(format!("http://{addr}/")).send().await.unwrap_err() });
 
     assert_eq!(
         *err.kind(),
@@ -634,7 +630,7 @@ fn a_prompt_response_is_untouched_by_the_same_bound() {
         .expect("supported");
 
     let body = rt().block_on(async {
-        c.get(&format!("http://{addr}/"))
+        c.get(format!("http://{addr}/"))
             .send()
             .await
             .expect("responds")
@@ -656,7 +652,7 @@ fn a_client_with_no_total_is_not_bounded_by_the_wrapper_being_present() {
 
     let (body, total) = rt().block_on(async {
         let resp = c
-            .get(&format!("http://{addr}/"))
+            .get(format!("http://{addr}/"))
             .send()
             .await
             .expect("responds");
@@ -699,7 +695,7 @@ fn the_clock_client_new_carries_by_default_actually_fires() {
 
     let started = Instant::now();
     let err = rt().block_on(guarded("the default clock", async {
-        c.get(&format!("http://{addr}/")).send().await.unwrap_err()
+        c.get(format!("http://{addr}/")).send().await.unwrap_err()
     }));
 
     assert_eq!(

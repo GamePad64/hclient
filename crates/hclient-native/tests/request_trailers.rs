@@ -202,7 +202,7 @@ async fn exchange(
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
     let body = hclient_core::RequestBody::Streaming(Box::new(frames));
-    let mut req = c.post(&format!("http://{addr}/"));
+    let mut req = c.post(format!("http://{addr}/"));
     if let Some(d) = declare {
         req = req.header("trailer", d);
     }
@@ -524,7 +524,7 @@ mod over_http2 {
             "grpc-status",
         ))));
         let resp =
-            tokio::time::timeout(BOUND, c.post(&format!("https://{addr}/")).body(body).send())
+            tokio::time::timeout(BOUND, c.post(format!("https://{addr}/")).body(body).send())
                 .await
                 .expect("must not hang")
                 .expect("HTTP/2 needs no `Trailer:` and must not be refused one");

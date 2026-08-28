@@ -286,7 +286,7 @@ fn a_buffered_form_declares_its_length_and_parses_back_into_its_parts() {
     let (addr, seen) = serve(|_, _| OK.to_owned());
     rt().block_on(async move {
         let c = client();
-        c.post(&format!("http://127.0.0.1:{}/upload", addr.port()))
+        c.post(format!("http://127.0.0.1:{}/upload", addr.port()))
             .multipart(
                 Form::new()
                     .part(Part::text("title", "a holiday photo"))
@@ -372,7 +372,7 @@ fn a_streams_own_size_hint_decides_content_length_against_chunked() {
         let (addr, seen) = serve(|_, _| OK.to_owned());
         rt().block_on(async move {
             let c = client();
-            c.post(&format!("http://127.0.0.1:{}/upload", addr.port()))
+            c.post(format!("http://127.0.0.1:{}/upload", addr.port()))
                 .multipart(
                     Form::new().part(Part::text("a", "1")).part(
                         Part::new("f", streaming(&[b"ab", b"cd"], declared))
@@ -457,7 +457,7 @@ fn a_body_set_after_a_form_takes_its_content_type_with_it() {
     let (addr, seen) = serve(|_, _| OK.to_owned());
     rt().block_on(async move {
         let c = client();
-        c.post(&format!("http://127.0.0.1:{}/x", addr.port()))
+        c.post(format!("http://127.0.0.1:{}/x", addr.port()))
             .multipart(Form::new().part(Part::text("a", "1")))
             .form([("b", "2")])
             .send()
@@ -487,7 +487,7 @@ fn a_crlf_in_a_file_name_cannot_inject_a_part_header() {
     let (addr, seen) = serve(|_, _| OK.to_owned());
     rt().block_on(async move {
         let c = client();
-        c.post(&format!("http://127.0.0.1:{}/x", addr.port()))
+        c.post(format!("http://127.0.0.1:{}/x", addr.port()))
             .multipart(
                 Form::new()
                     .part(Part::text("f", "v").file_name("a\r\nX-Injected: 1\r\n\r\nowned.txt")),
@@ -522,7 +522,7 @@ fn a_non_ascii_file_name_round_trips_without_a_filename_star() {
     let (addr, seen) = serve(|_, _| OK.to_owned());
     rt().block_on(async move {
         let c = client();
-        c.post(&format!("http://127.0.0.1:{}/x", addr.port()))
+        c.post(format!("http://127.0.0.1:{}/x", addr.port()))
             .multipart(Form::new().part(Part::text("f", "v").file_name("naïve 日.txt")))
             .send()
             .await
@@ -557,7 +557,7 @@ fn a_buffered_form_is_replayed_across_a_307() {
     });
     rt().block_on(async move {
         let c = client();
-        c.post(&format!("http://127.0.0.1:{}/first", addr.port()))
+        c.post(format!("http://127.0.0.1:{}/first", addr.port()))
             .multipart(
                 Form::new()
                     .part(Part::text("a", "1"))
@@ -609,7 +609,7 @@ fn a_streaming_form_is_not_replayed_across_a_307() {
     });
     let status = rt().block_on(async move {
         let c = client();
-        c.post(&format!("http://127.0.0.1:{}/first", addr.port()))
+        c.post(format!("http://127.0.0.1:{}/first", addr.port()))
             .multipart(
                 Form::new()
                     .part(Part::text("a", "1"))
@@ -658,7 +658,7 @@ fn an_empty_part_in_a_chunked_form_does_not_truncate_it() {
     let (addr, seen) = serve(|_, _| OK.to_owned());
     rt().block_on(async move {
         let c = client();
-        c.post(&format!("http://127.0.0.1:{}/x", addr.port()))
+        c.post(format!("http://127.0.0.1:{}/x", addr.port()))
             .multipart(
                 Form::new()
                     .part(Part::text("before", "1"))

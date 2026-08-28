@@ -539,6 +539,13 @@ http-body-util   = { workspace = true }
 # part of `-e normal`, so this doesn't count against the consumer's graph
 # even though it's available to tests.
 serde             = { version = "1", features = ["derive"] }
+# The witness for `Client::get(impl AsRef<str>)` accepting a `url::Url`.
+# A dev-dependency and never a real one: the claim is that this crate takes
+# a `Url` *without* depending on `url`, so the crate has to be present in
+# the test and absent from the graph — which is exactly what a
+# dev-dependency is. `hclient-proto` uses it the same way, as the oracle
+# for its own RFC 3986 implementation.
+url               = "2"
 # For `examples/no_tls_no_resolver.rs`: the stub TLS and stub resolver, plus
 # a runtime and the native transport to hang them on. dev-dependencies are
 # outside `-e normal`, so the example's imports do not appear in a

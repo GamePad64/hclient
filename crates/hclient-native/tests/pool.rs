@@ -172,7 +172,7 @@ fn native() -> Native<Tokio, Rustls, SystemDns<Tokio>> {
 }
 
 async fn get_ok(client: &Client, addr: SocketAddr) {
-    let resp = tokio::time::timeout(BOUND, client.get(&format!("http://{addr}/")).send())
+    let resp = tokio::time::timeout(BOUND, client.get(format!("http://{addr}/")).send())
         .await
         .expect("must not hang")
         .expect("request must succeed");
@@ -445,14 +445,14 @@ async fn a_cancelled_exchange_does_not_return_its_connection() {
 
     let cancelled = tokio::time::timeout(
         Duration::from_millis(150),
-        client.get(&format!("http://{addr}/")).send(),
+        client.get(format!("http://{addr}/")).send(),
     )
     .await;
     assert!(cancelled.is_err(), "the request must still be in flight");
 
     let second = tokio::time::timeout(
         Duration::from_secs(10),
-        client.get(&format!("http://{addr}/")).send(),
+        client.get(format!("http://{addr}/")).send(),
     )
     .await
     .expect("must not hang");
@@ -474,7 +474,7 @@ async fn an_abandoned_response_body_does_not_return_its_connection() {
     let (addr, accepted) = counting_server(Behaviour::default());
     let client = Client::builder(native()).build().unwrap();
 
-    let resp = tokio::time::timeout(BOUND, client.get(&format!("http://{addr}/")).send())
+    let resp = tokio::time::timeout(BOUND, client.get(format!("http://{addr}/")).send())
         .await
         .expect("must not hang")
         .expect("request must succeed");

@@ -142,6 +142,16 @@ impl Rustls {
         Self::from_config(std::sync::Arc::new(cfg))
     }
 
+    /// A fixed set of roots compiled into the binary, from `webpki-roots`.
+    ///
+    /// **Behind the `webpki-roots` feature**, and there is a stand-in
+    /// constructor of the same name in a build without it, so that calling
+    /// this says which feature is missing rather than which name is.
+    ///
+    /// That stand-in — and the `WebpkiRootsFeature` trait carrying its
+    /// message — exists only when the feature is **off**, so it is named
+    /// here rather than linked: this page is rendered with the feature on,
+    /// where there is no such item to link to.
     #[cfg(feature = "webpki-roots")]
     pub fn with_webpki_roots() -> Self {
         let roots: rustls::RootCertStore = webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect();
@@ -585,5 +595,50 @@ where
             unreachable!("the match above already established this arm")
         };
         Poll::Ready(Ok((stream, info)))
+    }
+}
+
+/// The stand-in for [`Rustls::with_webpki_roots`] in a build without the
+/// `webpki-roots` feature.
+///
+/// ACT, the first consumer to port onto this workspace, reported that
+/// calling the constructor without the feature produced an error whose
+/// *suggestion* pointed at `Rustls::from_config` — a correct name, and a
+/// far bigger detour than "turn the feature on". A missing method has no
+/// way to say why it is missing, so rustc offers the nearest name it can
+/// see, and the nearest name here is the general-purpose escape hatch.
+///
+/// This is [`crate::Rustls::with_webpki_roots`] existing anyway, with an
+/// unsatisfiable bound carrying the message. Same shape as `hclient`'s
+/// `Client::new()` under a build with no `default-transport`, and for the
+/// same reason: **a name that is absent can only be guessed at, where a
+/// name that is present can explain itself.**
+///
+/// **The lifetime parameter is load-bearing and must not be tidied away.**
+/// A `where Self: Trait` predicate that mentions no generic parameter is
+/// checked where the method is *defined*, so the plain form makes this
+/// crate itself fail to compile rather than the caller. Naming a lifetime
+/// the caller never writes defers the check to the call site, which is the
+/// only place the message is any use.
+#[cfg(not(feature = "webpki-roots"))]
+#[diagnostic::on_unimplemented(
+    message = "`Rustls::with_webpki_roots()` needs the `webpki-roots` feature of `hclient-tls-rustls`",
+    label = "this build of `hclient-tls-rustls` compiled in no root certificates",
+    note = "add it: `hclient-tls-rustls = {{ version = \"..\", features = [\"webpki-roots\"] }}`",
+    note = "or use the platform's own trust store, which needs no feature and is what `Client::new()` uses: `Rustls::with_platform_verifier()`",
+    note = "`Rustls::from_config(..)` also works and is a much larger step — it asks you to build the whole `rustls::ClientConfig`"
+)]
+pub trait WebpkiRootsFeature<'g> {}
+
+#[cfg(not(feature = "webpki-roots"))]
+impl Rustls {
+    /// Not available in this build — see [`WebpkiRootsFeature`].
+    pub fn with_webpki_roots<'g>() -> Self
+    where
+        Self: WebpkiRootsFeature<'g>,
+    {
+        unreachable!(
+            "`Rustls::with_webpki_roots` has an unsatisfiable bound; no call to it compiles"
+        )
     }
 }

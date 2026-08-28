@@ -67,7 +67,7 @@ async fn run() {
     });
 
     let client = hclient::Client::new().unwrap();
-    let resp = client.get(&format!("http://{addr}/")).send().await.unwrap();
+    let resp = client.get(format!("http://{addr}/")).send().await.unwrap();
     let (_parts, body) = resp.into_parts();
 
     let collected = tokio::spawn(async move { body.collect().await })

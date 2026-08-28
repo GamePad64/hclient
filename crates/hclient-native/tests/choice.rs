@@ -341,7 +341,7 @@ async fn one_client_reaches_both_servers_depending_only_on_the_record() {
         let text = tokio::time::timeout(
             BOUND,
             client
-                .get(&format!("https://{ORIGIN}:{}/hello", pair.port))
+                .get(format!("https://{ORIGIN}:{}/hello", pair.port))
                 .send(),
         )
         .await

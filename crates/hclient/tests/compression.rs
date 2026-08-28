@@ -142,7 +142,7 @@ fn a_gzip_body_from_a_real_server_arrives_as_plaintext() {
     let c = Client::builder(transport()).build().expect("supported");
 
     let got = rt().block_on(async {
-        c.get(&format!("http://{addr}/"))
+        c.get(format!("http://{addr}/"))
             .send()
             .await
             .expect("responds")
@@ -195,7 +195,7 @@ fn a_brotli_body_from_a_real_server_arrives_as_plaintext() {
     let c = Client::builder(transport()).build().expect("supported");
 
     let got = rt().block_on(async {
-        c.get(&format!("http://{addr}/"))
+        c.get(format!("http://{addr}/"))
             .send()
             .await
             .expect("responds")
@@ -228,7 +228,7 @@ fn the_negotiation_and_the_decoding_both_survive_a_redirect() {
     let c = Client::builder(transport()).build().expect("supported");
 
     let got = rt().block_on(async {
-        c.get(&format!("http://{addr}/redirect"))
+        c.get(format!("http://{addr}/redirect"))
             .send()
             .await
             .expect("responds")
@@ -268,7 +268,7 @@ fn a_response_with_no_content_encoding_is_handed_through_untouched() {
     let c = Client::builder(transport()).build().expect("supported");
 
     let got = rt().block_on(async {
-        c.get(&format!("http://{addr}/"))
+        c.get(format!("http://{addr}/"))
             .send()
             .await
             .expect("responds")
@@ -321,7 +321,7 @@ fn a_stream_the_server_cuts_short_is_an_error_not_a_shorter_document() {
     let c = Client::builder(transport()).build().expect("supported");
 
     let err = rt().block_on(async {
-        c.get(&format!("http://{addr}/"))
+        c.get(format!("http://{addr}/"))
             .send()
             .await
             .expect("the head arrives fine")

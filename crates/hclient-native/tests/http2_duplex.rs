@@ -513,7 +513,7 @@ async fn a_response_head_arrives_while_the_request_body_is_still_going_out() {
     let (tx, body, _) = feed();
     tx.send(Bytes::from(vec![b'a'; A])).unwrap();
 
-    let resp = tokio::time::timeout(BOUND, client.post(&server.url("/duplex")).body(body).send())
+    let resp = tokio::time::timeout(BOUND, client.post(server.url("/duplex")).body(body).send())
         .await
         .expect(
             "the head is on the wire and the second chunk is not: a transport that \
@@ -589,7 +589,7 @@ async fn a_stalled_upload_does_not_stall_the_response_body() {
     let client = client();
     let (body, pulled) = repeat(FRAMES, CHUNK);
 
-    let resp = tokio::time::timeout(BOUND, client.post(&server.url("/hold")).body(body).send())
+    let resp = tokio::time::timeout(BOUND, client.post(server.url("/hold")).body(body).send())
         .await
         .expect("the head is sent before anything is read")
         .expect("request must succeed");
@@ -637,7 +637,7 @@ async fn a_connection_whose_upload_never_finished_is_not_pooled() {
     let client = client();
     let (body, _) = repeat(FRAMES, CHUNK);
 
-    let resp = tokio::time::timeout(BOUND, client.post(&server.url("/hold")).body(body).send())
+    let resp = tokio::time::timeout(BOUND, client.post(server.url("/hold")).body(body).send())
         .await
         .expect("must not hang")
         .expect("request must succeed");
@@ -649,7 +649,7 @@ async fn a_connection_whose_upload_never_finished_is_not_pooled() {
         .unwrap();
     assert_eq!(text, "answered");
 
-    let second = tokio::time::timeout(BOUND, client.get(&server.url("/other")).send())
+    let second = tokio::time::timeout(BOUND, client.get(server.url("/other")).send())
         .await
         .expect("must not hang")
         .expect("the next request must still work");
@@ -699,7 +699,7 @@ async fn a_reset_while_the_body_drives_the_pump_does_not_discard_the_response() 
     let resp = tokio::time::timeout(
         BOUND,
         client
-            .post(&server.url("/answer-then-reset"))
+            .post(server.url("/answer-then-reset"))
             .body(body)
             .send(),
     )
@@ -762,7 +762,7 @@ async fn a_body_that_ends_just_after_the_peer_stopped_reading_is_not_an_error() 
     let resp = tokio::time::timeout(
         BOUND,
         client
-            .post(&server.url("/answer-and-drop"))
+            .post(server.url("/answer-and-drop"))
             .body(body)
             .send(),
     )
@@ -822,7 +822,7 @@ async fn a_request_body_that_fails_fails_the_request_with_the_callers_own_error(
     let err = tokio::time::timeout(
         BOUND,
         client
-            .post(&server.url("/count"))
+            .post(server.url("/count"))
             .body(RequestBody::Streaming(Box::new(FailsAfterOneChunk {
                 sent: false,
             })))
@@ -866,7 +866,7 @@ async fn dropping_a_streaming_request_mid_upload_stops_pulling_and_leaves_the_po
 
     // `Box::pin`, not `tokio::pin!`: the latter gives a `Pin<&mut F>`, and
     // dropping THAT drops a borrow rather than the future.
-    let mut doomed = Box::pin(client.post(&server.url("/slow")).body(body).send());
+    let mut doomed = Box::pin(client.post(server.url("/slow")).body(body).send());
     tokio::select! {
         _ = &mut doomed => panic!("/slow answers only at the end of the body"),
         _ = tokio::time::sleep(Duration::from_millis(200)) => {}
@@ -912,7 +912,7 @@ async fn dropping_a_streaming_request_mid_upload_stops_pulling_and_leaves_the_po
     //    that is `pool.rs`'s guarantee rather than `http2.rs`'s, and the
     //    claim here is only the weaker one that nothing was left poisoned
     //    behind it.
-    let after = tokio::time::timeout(BOUND, client.get(&server.url("/after")).send())
+    let after = tokio::time::timeout(BOUND, client.get(server.url("/after")).send())
         .await
         .expect("must not hang")
         .expect("a cancelled upload must not break the next request");
@@ -942,7 +942,7 @@ async fn a_rewindable_body_whose_factory_streams_is_actually_sent() {
     let client = client();
     let body = RequestBody::rewindable(|| repeat(FRAMES, CHUNK).0);
 
-    let resp = tokio::time::timeout(BOUND, client.post(&server.url("/count")).body(body).send())
+    let resp = tokio::time::timeout(BOUND, client.post(server.url("/count")).body(body).send())
         .await
         .expect("must not hang")
         .expect("request must succeed");
@@ -973,7 +973,7 @@ async fn a_streamed_request_body_arrives_whole() {
     let client = client();
     let (body, pulled) = repeat(FRAMES, CHUNK);
 
-    let resp = tokio::time::timeout(BOUND, client.post(&server.url("/count")).body(body).send())
+    let resp = tokio::time::timeout(BOUND, client.post(server.url("/count")).body(body).send())
         .await
         .expect("must not hang")
         .expect("request must succeed");

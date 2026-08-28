@@ -646,7 +646,7 @@ async fn a_client_may_now_set_a_connect_timeout_over_h3() {
         .expect("the capability is declared, so the builder must accept the setting");
 
     let err = client
-        .get(&format!("https://{addr}/x"))
+        .get(format!("https://{addr}/x"))
         .send()
         .await
         .expect_err("nothing answers on that port");

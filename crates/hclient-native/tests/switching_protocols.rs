@@ -208,7 +208,7 @@ fn native() -> Native<Tokio, Rustls, SystemDns<Tokio>> {
 }
 
 async fn get(client: &Client, addr: SocketAddr) -> u16 {
-    let resp = tokio::time::timeout(BOUND, client.get(&format!("http://{addr}/")).send())
+    let resp = tokio::time::timeout(BOUND, client.get(format!("http://{addr}/")).send())
         .await
         .expect("must not hang")
         .expect("request must succeed");

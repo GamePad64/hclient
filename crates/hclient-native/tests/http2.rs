@@ -286,7 +286,7 @@ async fn a_live_exchange_with_an_http2_server_is_reported_as_http2() {
     let tls = FakeTls::negotiating_h2();
     let client = client(tls.clone());
 
-    let resp = tokio::time::timeout(BOUND, client.get(&server.url("/hello")).send())
+    let resp = tokio::time::timeout(BOUND, client.get(server.url("/hello")).send())
         .await
         .expect("must not hang")
         .expect("the request must succeed against an HTTP/2-only server");
@@ -376,7 +376,7 @@ async fn h2_is_offered_only_to_a_backend_that_reports_alpn() {
     let reporting = FakeTls::new(Some(b"h2"), true);
     let _ = tokio::time::timeout(
         BOUND,
-        client(reporting.clone()).get(&server.url("/a")).send(),
+        client(reporting.clone()).get(server.url("/a")).send(),
     )
     .await
     .expect("must not hang");
@@ -390,7 +390,7 @@ async fn h2_is_offered_only_to_a_backend_that_reports_alpn() {
     // not produce an h2 exchange. The value it "negotiated" is deliberately
     // the tempting one.
     let silent = FakeTls::new(Some(b"h2"), false);
-    let _ = tokio::time::timeout(BOUND, client(silent.clone()).get(&server.url("/b")).send()).await;
+    let _ = tokio::time::timeout(BOUND, client(silent.clone()).get(server.url("/b")).send()).await;
     assert_eq!(
         silent.offered(),
         vec![vec![b"http/1.1".to_vec()]],
@@ -414,7 +414,7 @@ async fn a_protocol_that_was_never_offered_is_never_spoken() {
     let server = spawn_h2_server();
     let silent = FakeTls::new(Some(b"h2"), false);
 
-    let result = tokio::time::timeout(BOUND, client(silent).get(&server.url("/c")).send()).await;
+    let result = tokio::time::timeout(BOUND, client(silent).get(server.url("/c")).send()).await;
 
     match result {
         Err(_) => panic!("must not hang"),
@@ -441,7 +441,7 @@ async fn two_requests_travel_over_one_http2_connection() {
     let client = client(FakeTls::negotiating_h2());
 
     for path in ["/one", "/two"] {
-        let resp = tokio::time::timeout(BOUND, client.get(&server.url(path)).send())
+        let resp = tokio::time::timeout(BOUND, client.get(server.url(path)).send())
             .await
             .expect("must not hang")
             .expect("request must succeed");
@@ -469,7 +469,7 @@ async fn without_a_pool_each_http2_request_gets_its_own_connection() {
     let client = Client::builder(transport).build().unwrap();
 
     for path in ["/one", "/two"] {
-        let resp = tokio::time::timeout(BOUND, client.get(&server.url(path)).send())
+        let resp = tokio::time::timeout(BOUND, client.get(server.url(path)).send())
             .await
             .expect("must not hang")
             .expect("request must succeed");
@@ -505,9 +505,9 @@ async fn dropping_one_exchange_leaves_a_concurrent_one_alone() {
 
     let cancelled = tokio::time::timeout(
         Duration::from_millis(500),
-        client.get(&server.url("/slow")).send(),
+        client.get(server.url("/slow")).send(),
     );
-    let survivor = client.get(&server.url("/fast")).send();
+    let survivor = client.get(server.url("/fast")).send();
     let (cancelled, survivor) = tokio::join!(cancelled, survivor);
 
     assert!(
@@ -551,9 +551,9 @@ async fn dropping_one_exchange_leaves_a_concurrent_one_alone_on_a_shared_connect
 
     let cancelled = tokio::time::timeout(
         Duration::from_millis(500),
-        client.get(&server.url("/slow")).send(),
+        client.get(server.url("/slow")).send(),
     );
-    let survivor = client.get(&server.url("/fast")).send();
+    let survivor = client.get(server.url("/fast")).send();
     let (cancelled, survivor) = tokio::join!(cancelled, survivor);
 
     assert!(
@@ -586,7 +586,7 @@ async fn a_request_body_reaches_the_server_over_http2() {
     let resp = tokio::time::timeout(
         BOUND,
         client
-            .post(&server.url("/upload"))
+            .post(server.url("/upload"))
             .body(hclient_core::RequestBody::Full(payload.clone().into()))
             .send(),
     )
@@ -620,7 +620,7 @@ async fn a_large_response_body_crosses_the_flow_control_window() {
     let server = spawn_h2_server();
     let client = client(FakeTls::negotiating_h2());
 
-    let resp = tokio::time::timeout(BOUND, client.get(&server.url("/big")).send())
+    let resp = tokio::time::timeout(BOUND, client.get(server.url("/big")).send())
         .await
         .expect("must not hang")
         .expect("request must succeed");
@@ -654,7 +654,7 @@ async fn connection_specific_headers_are_stripped_rather_than_sent() {
 
     let resp = tokio::time::timeout(
         BOUND,
-        client.get(&server.url("/strip")).headers(headers).send(),
+        client.get(server.url("/strip")).headers(headers).send(),
     )
     .await
     .expect("must not hang")
@@ -760,7 +760,7 @@ async fn an_unmarked_request_still_offers_h2() {
     let server = spawn_h2_server();
     let tls = FakeTls::negotiating_h2();
 
-    let resp = tokio::time::timeout(BOUND, client(tls.clone()).get(&server.url("/any")).send())
+    let resp = tokio::time::timeout(BOUND, client(tls.clone()).get(server.url("/any")).send())
         .await
         .expect("must not hang")
         .expect("no demand, no change");

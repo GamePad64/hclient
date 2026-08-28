@@ -31,6 +31,20 @@ impl<B> Debug for Response<B> {
 /// type along. The parameter itself stays, and is not decoration:
 /// [`crate::sse::SseStream::new`] takes a `Response<B>` over any body, so a
 /// caller can build one on a response their own transport produced.
+///
+/// # Testing: there is no public constructor, and that is the signpost
+///
+/// A consumer cannot build one of these, which reads as a wall. It points
+/// the other way: script the response on
+/// [`mock::MockTransport`](crate::mock::MockTransport) instead and let a
+/// real [`Client`](crate::Client) produce it. The test then exercises the
+/// redirect, cookie, decompression and retry code a live request goes
+/// through, where a hand-built `Response` would exercise a path
+/// production never takes.
+///
+/// The first consumer to port onto this crate worked around the absence
+/// before finding the mock, and reported that the missing thing was a
+/// pointer rather than a constructor. This is it.
 pub struct Response<B = crate::body::ClientBody> {
     parts: http::response::Parts,
     body: B,

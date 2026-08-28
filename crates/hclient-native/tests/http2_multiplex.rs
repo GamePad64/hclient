@@ -473,7 +473,7 @@ async fn a_spawner_that_never_runs_hangs_the_request_and_first_byte_is_what_cuts
     // A. No bound: no verdict at all.
     let hung = tokio::time::timeout(
         Duration::from_millis(500),
-        client.get(&format!("https://{}/a", server.addr)).send(),
+        client.get(format!("https://{}/a", server.addr)).send(),
     )
     .await;
     assert!(
@@ -1108,7 +1108,7 @@ async fn a_request_body_crosses_a_shared_connection_whole() {
     let resp = tokio::time::timeout(
         BOUND,
         client
-            .post(&server.url("/upload"))
+            .post(server.url("/upload"))
             .body(RequestBody::Full(payload.clone().into()))
             .send(),
     )
@@ -1178,7 +1178,7 @@ async fn a_shared_connection_carries_a_duplex_exchange() {
     let resp = tokio::time::timeout(
         BOUND,
         client
-            .post(&server.url("/duplex"))
+            .post(server.url("/duplex"))
             .body(RequestBody::Streaming(Box::new(Feed { rx })))
             .send(),
     )

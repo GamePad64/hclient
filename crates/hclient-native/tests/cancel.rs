@@ -242,7 +242,7 @@ async fn holding_the_execute_future_leaves_the_connection_open() {
 async fn dropping_a_client_send_future_closes_the_connection_too() {
     let (addr, seen, verdict) = silent_server();
     let client = Client::builder(transport()).build().expect("build");
-    let mut fut = Box::pin(client.get(&format!("http://{addr}/cancel")).send());
+    let mut fut = Box::pin(client.get(format!("http://{addr}/cancel")).send());
 
     tokio::select! {
         _ = &mut fut => panic!("the silent server must never produce a response"),

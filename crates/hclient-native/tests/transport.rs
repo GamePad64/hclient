@@ -73,7 +73,7 @@ async fn end_to_end_over_plain_tcp() {
     let addr = spawn_h1_server();
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
-    let resp = tokio::time::timeout(BOUND, c.get(&format!("http://{addr}/")).send())
+    let resp = tokio::time::timeout(BOUND, c.get(format!("http://{addr}/")).send())
         .await
         .expect("must not hang")
         .unwrap();
@@ -104,7 +104,7 @@ async fn request_line_is_origin_form_and_host_header_is_set() {
     });
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
-    let resp = tokio::time::timeout(BOUND, c.get(&format!("http://{addr}/hello")).send())
+    let resp = tokio::time::timeout(BOUND, c.get(format!("http://{addr}/hello")).send())
         .await
         .expect("must not hang")
         .unwrap();
@@ -448,7 +448,7 @@ async fn tls_handshake_failure_reports_tls_kind_through_the_client() {
     let c = Client::builder(t).build().unwrap();
     let err = tokio::time::timeout(
         BOUND,
-        c.get(&format!("https://{}:{}/", addr.ip(), addr.port()))
+        c.get(format!("https://{}:{}/", addr.ip(), addr.port()))
             .send(),
     )
     .await
@@ -482,7 +482,7 @@ async fn connect_refused_kind_survives_the_client() {
     let addr = net_fixtures::closed_port();
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
-    let err = tokio::time::timeout(BOUND, c.get(&format!("http://{addr}/")).send())
+    let err = tokio::time::timeout(BOUND, c.get(format!("http://{addr}/")).send())
         .await
         .expect("must not hang")
         .unwrap_err();
@@ -522,7 +522,7 @@ async fn streaming_request_body_error_kind_survives_the_client() {
     let body = hclient_core::RequestBody::Streaming(Box::new(OneShotErrBody(Some(
         hclient_core::Error::new(ErrorKind::Body, std::io::Error::other("stream broke")),
     ))));
-    let err = tokio::time::timeout(BOUND, c.post(&format!("http://{addr}/")).body(body).send())
+    let err = tokio::time::timeout(BOUND, c.post(format!("http://{addr}/")).body(body).send())
         .await
         .expect("must not hang")
         .unwrap_err();
@@ -1112,7 +1112,7 @@ async fn streaming_request_body_is_actually_streamed_not_buffered() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
     let body = hclient_core::RequestBody::Streaming(Box::new(TwoFrames(0)));
-    let _ = tokio::time::timeout(BOUND, c.post(&format!("http://{addr}/")).body(body).send())
+    let _ = tokio::time::timeout(BOUND, c.post(format!("http://{addr}/")).body(body).send())
         .await
         .expect("must not hang");
 
@@ -1172,7 +1172,7 @@ async fn truncated_response_body_reports_body_kind_from_the_h1_layer() {
 
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
-    let mut resp = tokio::time::timeout(BOUND, c.get(&format!("http://{addr}/")).send())
+    let mut resp = tokio::time::timeout(BOUND, c.get(format!("http://{addr}/")).send())
         .await
         .expect("must not hang")
         .unwrap();

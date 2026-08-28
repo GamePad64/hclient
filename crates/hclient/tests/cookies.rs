@@ -140,7 +140,7 @@ fn jarred() -> Client {
 }
 
 async fn get(c: &Client, addr: std::net::SocketAddr, path: &str) {
-    c.get(&format!("http://{addr}{path}"))
+    c.get(format!("http://{addr}{path}"))
         .send()
         .await
         .expect("the server answers")
@@ -294,7 +294,7 @@ fn a_caller_set_cookie_header_is_left_alone_and_the_jar_still_learns() {
 
     rt().block_on(async {
         get(&c, addr, "/set").await;
-        c.get(&format!("http://{addr}/manual"))
+        c.get(format!("http://{addr}/manual"))
             .header("Cookie", "manual=1")
             .send()
             .await

@@ -185,7 +185,7 @@ fn transport<R: TcpConnect<Stream: 'static> + Timer + Blocking + Clone>(
 /// would be watching an abandoned connection rather than an idle one.
 async fn park_one_connection(client: &Client, addr: SocketAddr) {
     let resp = client
-        .get(&format!("http://{addr}/"))
+        .get(format!("http://{addr}/"))
         .send()
         .await
         .expect("request must succeed");

@@ -47,6 +47,49 @@
 //! memory*. `Response::chunk` is the other answer, and
 //! [`ClientBuilder::response_limit`] bounds the first one.
 //!
+//! # Where the things a caller looks for actually are
+//!
+//! ACT, the first consumer to port onto this crate, hand-rolled two
+//! things that were already here: a form encoder, and a way to test
+//! without a network. **Neither was missing — both were unfindable**, and
+//! the report said so precisely: *the gap is a pointer, not a feature*.
+//! `RequestBuilder` has a long method list and the crate has 25
+//! neighbours, so a reader who does not already know a name does not meet
+//! it. This section is that pointer.
+//!
+//! | you want | it is |
+//! |---|---|
+//! | a form body | [`RequestBuilder::form`] — `application/x-www-form-urlencoded`, no feature, sets the header |
+//! | a JSON body, or to read one | [`RequestBuilder::json`] and [`Collected::json`], behind the `json` feature |
+//! | query parameters | [`RequestBuilder::query`] — **appends**, so a `?` already in your URL survives |
+//! | to test without a network | [`mock::MockTransport`], behind this crate's `test-util` feature — see below |
+//! | a `4xx`/`5xx` as an `Err` | [`Response::error_for_status`] and [`Collected::error_for_status`] |
+//! | to build a body by hand | [`RequestBody`], re-exported at this crate's root |
+//! | text in a charset that is not UTF-8 | [`Collected::text_with_charset`], behind the `charset` feature |
+//! | basic or bearer auth | [`RequestBuilder::basic_auth`], [`RequestBuilder::bearer_auth`] |
+//!
+//! ## Testing: use `hclient-mock`, not a hand-built `Response`
+//!
+//! [`Response`] cannot be constructed by a consumer, which reads as a wall
+//! and is a signpost pointing the other way. `MockTransport` scripts
+//! responses and drives a **real** `Client` over them, so a test exercises
+//! the same redirect, cookie, decompression and retry code a live request
+//! does — where a hand-built `Response` would test a path production never
+//! takes.
+//!
+//! ```no_run
+//! # fn f() -> Result<(), Box<dyn std::error::Error>> {
+//! let mock = hclient::mock::MockTransport::new();
+//! mock.push_response(http::Response::new("{\"ok\":true}"));
+//! let client = hclient::Client::builder(mock.clone()).build()?;
+//! // ... exercise the code under test with `&client` ...
+//! assert_eq!(mock.requests()[0].uri.path(), "/v1/thing");
+//! # Ok(()) }
+//! ```
+//!
+//! It also records what went out — including request **bodies**, which is
+//! how *"my code posted the right JSON"* gets asserted.
+//!
 //! # Why `default-transport` is not a default
 //!
 //! Cargo unifies features across a graph, so a default here is a
