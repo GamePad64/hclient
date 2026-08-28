@@ -19,28 +19,43 @@ cargo release publish             # the plan; uploads nothing
 cargo release publish --execute   # the release
 ```
 
-**And `just package-build` is red between releases, on purpose.** It
-builds each crate from its own tarball and verifies it *out of* that
-tarball — where the path dependencies are gone and every inter-crate
-requirement resolves **from the index**. So the moment a backend uses core
-API that is in the tree and not yet on crates.io, verification fails with
-the API missing: measured on 2026-08-28, `hclient-fetch` against
-`hclient_core::Reduced` and `hclient_core::unversioned::mark`, both added
-after `0.1.0-alpha.1` went out.
+**A stale `rmeta` will fail a release, and it fails it as a missing
+API.** On 2026-08-28 `cargo release publish` and `just package-build` both
+stopped at `hclient-fetch` with *cannot find `Reduced` in `hclient_core`*,
+plus `mark`, `since`, `SendTransport` and `BoxSendExchange` — five items
+added to `hclient-core` after `0.1.0-alpha.1` went out.
 
-That is the same refusal this document already describes for the very
-first release, one version later, and it is **benign**: nothing is
-uploaded, the verify step names the missing item, and it clears the moment
-the dependency reaches the index — which is what the wave order is for.
+**Every obvious reading of that is wrong**, and each was checked:
 
-Two readings of it are wrong and both are easy to reach. It is **not** a
-stale version requirement: `^0.1.0-alpha.1` does match `0.1.0-alpha.2` —
-a caret requirement carrying a pre-release accepts higher pre-releases of
-the same version, which is why the whole workspace builds with members at
-`alpha.2` and requirements at `alpha.1`, and why `cargo release version`
-correctly left the member manifests alone. And it is **not** a reason to
-bump again: the tree is already at a version nobody published, so the next
-release is `cargo release publish`, not `cargo release <level>`.
+- It is **not** a stale version requirement. `^0.1.0-alpha.1` matches
+  `0.1.0-alpha.2` — a caret carrying a pre-release accepts higher
+  pre-releases of the same version — which is why the workspace builds
+  with members at `alpha.2` and requirements at `alpha.1`, and why
+  `cargo release version` correctly left the member manifests alone.
+- It is **not** the registry holding only `alpha.1`. The verify build's
+  own `Cargo.lock` names `hclient-core 0.1.0-alpha.2`, and its checksum
+  matches the tarball in `target/package/tmp-registry` byte for byte.
+- It is **not** a bad tarball or a stale extraction. Both carry
+  `pub trait SendTransport` and `pub enum Reduced`; deleting
+  `target/package` and the overlay registry entirely changed nothing.
+
+**The tell is the shape of the diagnostic**: the note pointed at
+`transport.rs:14:0` — column **zero**, which is how rustc renders a span
+recovered from *metadata* rather than read from source. The compiler was
+never reading the extracted tarball; it was reusing a compiled
+`libhclient_core-*.rmeta` from the shared `target/debug/deps`, keyed by a
+version that had not changed. There were **89** of them.
+
+```
+cargo clean -p hclient-core     # then: 28 crates build from their own tarball
+```
+
+This is the trap `AGENTS.md` already records one line long — *a stale
+`rmeta` for an unchanged version makes `package-build` fail, or worse
+pass, misleadingly* — met in the failing direction, during a release, and
+it costs an hour if the first three readings are chased instead. A
+pre-release series makes it likely rather than exotic: the version number
+does not move between packagings, so the cache key does not either.
 
 **Not bare `cargo publish --workspace`, and the difference is not the
 ordering.** Both order the uploads and both wait for each crate to reach
