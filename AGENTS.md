@@ -1585,6 +1585,28 @@ reaches for tokio. The half-close still stands. So the trade is: pin a
 published crate to nightly, which makes every consumer nightly, to fix a
 third of a problem for nobody who can use the result.
 
+**And the obvious objection — *embedded is all on nightly anyway* — is a
+fair recollection of a state that has ended.** It was true for years, and
+it is measurably false now:
+
+| measured, 2026-08-28 | |
+|---|---|
+| `#![feature(..)]` in `embassy-executor` 0.10, `embassy-net` 0.9.1, `embedded-nal-async` 0.9.0, `embedded-io-async` 0.7.0, `embedded-hal-async` 1.0.0 | **none, in any of them** |
+| `embassy-executor`'s `nightly` feature | **optional**, not required — this workspace builds it with `platform-std, executor-thread` and nothing else |
+| `reqwless` 0.14.0, the incumbent client on this very seam | `rust-version = "1.91"` — **stable** |
+| this repository | `rust-toolchain.toml` says `channel = "stable"`, and `hclient-rt-embassy`'s 19 live TAP tests pass on it |
+
+The last row is the sharpest: **this workspace is itself the evidence**,
+since the embassy runtime and its live scenarios are green on stable in
+CI on every push.
+
+So the objection inverts the conclusion rather than softening it. If the
+embedded audience were on nightly, a nightly-pinned adapter would cost
+them nothing; because they are on stable, it would exclude precisely the
+people it exists for — and `reqwless` shipping at a stable MSRV means a
+competitor requiring nightly starts behind for a reason that has nothing
+to do with its merits.
+
 The policy cost is real too and points the same way. `rust-toolchain.toml`
 says `channel = "stable"`, and this file refuses even an **MSRV job** on
 the grounds that a pinned version is a promise that goes stale while
