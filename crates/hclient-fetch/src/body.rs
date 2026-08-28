@@ -413,3 +413,245 @@ impl HttpBody for Body {
         }
     }
 }
+
+/// Tests for the channel half of this file — the pump, the cancellation
+/// pair, and the frames — **run on the host**, with no browser.
+///
+/// That is the point of them being here and not in `tests/`. Every one of
+/// this crate's 13 test binaries is `#![cfg(target_arch = "wasm32")]`, so
+/// `cargo nextest run --workspace` runs **zero** tests for `hclient-fetch`
+/// and everything it asserts is guarded by `wasm-pack test --headless` —
+/// a separate CI job this workspace has recorded silently failing to
+/// compile for six merges. The channel, the pump and `poll_frame` mention
+/// nothing of JS, so there is no reason for their correctness to depend
+/// on a browser being reachable.
+///
+/// What still belongs upstairs in `tests/body.rs` is everything that does
+/// touch `fetch()`: `from_response`, the `Uint8Array` check, the
+/// `Content-Length` reading.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// A body failure to put on the channel.
+    #[derive(Debug, thiserror::Error)]
+    #[error("torn")]
+    struct Torn;
+
+    /// Polls once with a noop waker. These tests assert *how many times*
+    /// the source was polled after its reader went away, which an
+    /// executor would hide.
+    fn poll_once<F: Future>(f: Pin<&mut F>) -> Poll<F::Output> {
+        f.poll(&mut Context::from_waker(std::task::Waker::noop()))
+    }
+
+    /// A pump polled only while it is still running — polling a completed
+    /// `async fn` panics, which is a fact about driving one by hand.
+    struct Pump<F> {
+        fut: Pin<Box<F>>,
+        done: bool,
+    }
+
+    impl<F: Future<Output = ()>> Pump<F> {
+        fn new(fut: F) -> Self {
+            Self {
+                fut: Box::pin(fut),
+                done: false,
+            }
+        }
+        fn turn(&mut self) -> bool {
+            if self.done {
+                return false;
+            }
+            if poll_once(self.fut.as_mut()).is_ready() {
+                self.done = true;
+            }
+            !self.done
+        }
+        fn finished(&self) -> bool {
+            self.done
+        }
+    }
+
+    /// A stream that yields a script and counts how often it is asked.
+    struct Scripted {
+        items: Vec<Result<Bytes, Error>>,
+        polls: Rc<Cell<usize>>,
+    }
+
+    impl Stream for Scripted {
+        type Item = Result<Bytes, Error>;
+        fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.polls.set(self.polls.get() + 1);
+            if self.items.is_empty() {
+                Poll::Ready(None)
+            } else {
+                Poll::Ready(Some(self.items.remove(0)))
+            }
+        }
+    }
+
+    /// A peer that has gone quiet: it never answers, and counts the asking.
+    struct NeverAnswers {
+        polls: Rc<Cell<usize>>,
+    }
+
+    impl Stream for NeverAnswers {
+        type Item = Result<Bytes, Error>;
+        fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.polls.set(self.polls.get() + 1);
+            Poll::Pending
+        }
+    }
+
+    /// What `from_response` does, minus the browser: wire a body to a pump.
+    fn wire<S>(stream: S, hint: SizeHint) -> (Body, impl Future<Output = ()>)
+    where
+        S: Stream<Item = Result<Bytes, Error>> + 'static,
+    {
+        let (tx, rx) = mpsc::channel(0);
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        (
+            Body {
+                inner: Inner::Stream {
+                    rx,
+                    _cancel: cancel_tx,
+                    hint,
+                },
+            },
+            pump(Box::pin(stream), tx, cancel_rx),
+        )
+    }
+
+    fn frame(b: Pin<&mut Body>) -> Poll<Option<Result<Bytes, Error>>> {
+        b.poll_frame(&mut Context::from_waker(std::task::Waker::noop()))
+            .map(|o| o.map(|r| r.map(|f| f.into_data().expect("a data frame"))))
+    }
+
+    #[test]
+    fn frames_arrive_in_order_and_then_the_body_ends() {
+        let polls = Rc::new(Cell::new(0));
+        let (body, pump) = wire(
+            Scripted {
+                items: vec![
+                    Ok(Bytes::from_static(b"one")),
+                    Ok(Bytes::from_static(b"two")),
+                ],
+                polls,
+            },
+            SizeHint::default(),
+        );
+        let mut body = std::pin::pin!(body);
+        let mut pump = Pump::new(pump);
+
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            pump.turn();
+            if let Poll::Ready(Some(Ok(b))) = frame(body.as_mut()) {
+                seen.push(b);
+            }
+        }
+        assert_eq!(
+            seen,
+            [Bytes::from_static(b"one"), Bytes::from_static(b"two")]
+        );
+        assert!(matches!(frame(body.as_mut()), Poll::Ready(None)));
+        assert!(body.is_end_stream());
+    }
+
+    #[test]
+    fn an_error_is_delivered_and_is_terminal() {
+        let polls = Rc::new(Cell::new(0));
+        let (body, pump) = wire(
+            Scripted {
+                items: vec![Err(Error::new(ErrorKind::Body, Torn))],
+                polls,
+            },
+            SizeHint::default(),
+        );
+        let mut body = std::pin::pin!(body);
+        let mut pump = Pump::new(pump);
+
+        for _ in 0..4 {
+            pump.turn();
+        }
+        assert!(matches!(frame(body.as_mut()), Poll::Ready(Some(Err(_)))));
+        // Terminal: a second poll is the end, not a different answer.
+        assert!(body.is_end_stream());
+        assert!(matches!(frame(body.as_mut()), Poll::Ready(None)));
+    }
+
+    /// **First half of the cancellation pair.** A pump that is producing
+    /// learns its reader is gone at the *send*, because the channel closed.
+    #[test]
+    fn dropping_a_producing_body_stops_the_pump() {
+        let polls = Rc::new(Cell::new(0));
+        let (body, pump) = wire(
+            Scripted {
+                items: (0..64).map(|_| Ok(Bytes::from_static(b"x"))).collect(),
+                polls: polls.clone(),
+            },
+            SizeHint::default(),
+        );
+        let mut pump = Pump::new(pump);
+
+        pump.turn();
+        assert!(polls.get() >= 1, "it read at least once");
+
+        drop(body);
+        pump.turn();
+        assert!(
+            pump.finished(),
+            "the pump returned rather than draining 64 items into nowhere"
+        );
+    }
+
+    /// **Second half, and the one the `oneshot` exists for.** A pump parked
+    /// on a read a quiet peer will never answer never reaches the send, so
+    /// a closed channel cannot tell it anything. Checked by mutation: a
+    /// pump watching only the channel passes the test above and hangs
+    /// this one.
+    #[test]
+    fn dropping_a_body_whose_read_will_never_answer_still_cancels() {
+        let polls = Rc::new(Cell::new(0));
+        let (body, pump) = wire(
+            NeverAnswers {
+                polls: polls.clone(),
+            },
+            SizeHint::default(),
+        );
+        let mut pump = Pump::new(pump);
+
+        assert!(pump.turn(), "parked on the read");
+        let parked_at = polls.get();
+
+        drop(body);
+        pump.turn();
+        assert!(
+            pump.finished(),
+            "it returned even though it was parked on a read, not on a send"
+        );
+        // At most one more poll of the source, and that one is `select`'s
+        // ordering rather than a decision: it polls the stream before the
+        // cancellation, so the turn that learns of the drop has already
+        // asked once and been told `Pending`. Asserted as a bound rather
+        // than an equality, because the equality would be pinning
+        // `futures_util::select`'s internals instead of this pump's
+        // promise — which is that it *stops*.
+        assert!(
+            polls.get() <= parked_at + 1,
+            "it stopped asking: {} polls against {parked_at} when it parked",
+            polls.get()
+        );
+    }
+
+    #[test]
+    fn an_empty_body_needs_no_pump_at_all() {
+        let mut body = std::pin::pin!(Body::empty());
+        assert!(body.is_end_stream());
+        assert_eq!(body.size_hint().exact(), Some(0));
+        assert!(matches!(frame(body.as_mut()), Poll::Ready(None)));
+    }
+}

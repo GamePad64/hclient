@@ -1278,22 +1278,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hclient-actor"
-version = "0.1.0-alpha.2"
-dependencies = [
- "bytes",
- "futures-channel",
- "futures-executor",
- "futures-util",
- "hclient",
- "hclient-core",
- "http",
- "http-body",
- "http-body-util",
- "thiserror",
-]
-
-[[package]]
 name = "hclient-cli"
 version = "0.1.0-alpha.2"
 dependencies = [

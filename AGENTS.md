@@ -1677,15 +1677,25 @@ the correct fix twice over and is somebody else's release schedule; or
 keep a crate per stack that owns its socket, which is what exists and is
 why the reach is one stack instead of eight.
 
-### The restriction is at `Client` and the converter is above the seams, and neither can move
+### The restriction is at `Client`, and the converter was built and then dropped
 
 Asked whether `Client` should simply be restricted to `Send` transports
-with a converter for embassy. **It already is, and the converter now
-exists** — `Client::builder` demands `SendTransport`, and
-`hclient-actor` manufactures that promise for a transport that cannot make
-it. What the question is really worth measuring is the sharper reading:
-if the converter exists, can the `!Send` accommodation come *out of the
-seams*?
+with a converter for embassy. It already is — `Client::builder` demands
+`SendTransport` — and a converter was written, `hclient-actor`: an actor
+owning the `!Send` transport, with a `Send` handle in front of it.
+
+**It is deleted, and by this file's own test for a thing's existence.**
+Nothing depended on it, in this workspace or outside; it held no
+dependency a feature would otherwise spread, its two being
+`futures-channel` and `hclient-core`; and the one configuration it served
+is itself `publish = false`, on the measurement that `Native<Embassy, ..>`
+has no deployment today. A converter with no subject is the shape
+`UpgradeSupport`'s spare variants were deleted for.
+
+The layering below is what survives it, and it is worth keeping because
+the sharper question the converter was built to answer does not depend on
+the converter existing: **if such a boundary can manufacture the promise,
+can the `!Send` accommodation come out of the seams?**
 
 **No, and it deletes embassy rather than simplifying it.** Measured:
 declaring `TcpConnect::Connecting` as a `Send` box makes
@@ -1695,7 +1705,8 @@ future holds `Stack<'d> = &'d RefCell<Inner>`. So embassy would not be a
 converter would have **nothing to wrap**, because it operates on a
 `Transport` and the seams are below it. A boundary can manufacture a
 promise; it cannot manufacture a transport the seams refused to let
-exist.
+exist. That is why deleting the converter costs this argument nothing:
+what it establishes is a fact about the seams.
 
 The layering that falls out is worth stating once:
 
@@ -1705,10 +1716,11 @@ The layering that falls out is worth stating once:
 | `Transport` | **no** | its future is an RPITIT, unnameable, so nothing could ask |
 | `SendTransport` | it **is** the demand | an impl may carry bounds the trait does not (C16) |
 | `hclient::Client` | **yes** | it boxes its transport `Send + Sync` |
-| `hclient-actor` | manufactures it | for a transport that cannot promise it |
+| a converter above it | could manufacture it | and cannot exist without the row above the first |
 
 Each layer restricts exactly where it can, and the accommodation at the
-bottom is what the converter at the top has to work on.
+bottom is what any converter at the top would have to work on — which is
+the reason the bottom row cannot be tightened, converter or no converter.
 
 **And the converter is a crutch, which is the honest word for it.** It
 buys `Client` at the price of streaming: the response is collected before
@@ -1952,6 +1964,61 @@ CLI's backend refusal could not fail in the configuration CI runs. In each
 case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
+
+### `hclient-fetch` ran zero tests on the main gate, and the fix was not the one that was built
+
+Asked whether the browser body's channel machinery — the pump, the
+cancellation, `poll_frame` — was the same pattern as the embassy
+converter's. It is, at two granularities: `hclient-fetch` sends **frames**
+over an `mpsc` and keeps streaming, where `hclient-actor` sent **one
+collected value** over a `oneshot` and did not. So "an actor costs
+streaming" was a fact about the granularity chosen, not about actors.
+
+Measured, and the overlap was real: of `hclient-fetch/src/body.rs`'s 133
+code lines, **64 mentioned nothing of JS at all** — `pump` had already
+been written taking a `Stream` rather than anything of the browser's —
+against 69 that are `web_sys` throughout. Nothing like the 20-of-402 the
+date parsers turned out to be.
+
+**So the shared half was extracted to `hclient-core`, and then put back,
+and the round trip is the finding.** Two things happened in between.
+
+`hclient-actor` was **deleted**, which took the second consumer with it —
+and with one consumer the extraction is `futures-channel` costing +1 crate
+to `hclient`, `hclient-core` and `hclient-rt-embassy` to serve a backend
+that already had it. The workspace's own test for a boundary — *does it
+hold a dependency a feature would otherwise spread* — has no subject when
+there is nothing to spread to.
+
+The argument that replaced it was that the **tests** would move onto the
+main gate, and it was true and did not need the move.
+**`hclient-fetch` runs zero tests in `cargo nextest run --workspace`** —
+all 13 of its binaries are `#![cfg(target_arch = "wasm32")]`, so every
+property it asserts is guarded by `wasm-pack test --headless` alone, the
+job this file records silently failing to compile for six merges. But the
+crate **builds on the host** — nextest was compiling those 13 binaries and
+finding nothing to run — so a `#[cfg(test)] mod tests` inside `body.rs`
+runs on every push with no browser, and needs no crate to move anywhere.
+
+Five tests where there were none, and the cancellation pair among them:
+mutating the pump to watch only the channel kills
+`dropping_a_body_whose_read_will_never_answer_still_cancels` and leaves
+`dropping_a_producing_body_stops_the_pump` green, which is what says
+neither covers for the other.
+
+**One of them caught a real detail on the first run**, and the assertion
+was wrong rather than the code: the pump asks the dead source once more on
+its way out, because `select` polls the stream before the cancellation, so
+the turn that learns of the drop has already been told `Pending`. The test
+now bounds the extra poll instead of forbidding it — an equality there
+would have been pinning `futures_util::select`'s internals rather than
+this pump's promise, which is that it stops.
+
+**The rule this leaves behind**: *"these two crates share code" and "this
+code is untested where it runs" are different problems, and only the first
+is answered by moving it.* The extraction was the right instrument aimed
+at the wrong defect, and aiming it correctly cost one `mod tests` and no
+dependency at all.
 
 ### The first consumer reported, and the two costliest findings were things we already had
 
