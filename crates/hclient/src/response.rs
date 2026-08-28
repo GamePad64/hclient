@@ -379,9 +379,33 @@ impl Collected {
         }
         Ok(text.into_owned())
     }
-    /// Deserializes the body as JSON. Part of the interface declared for
-    /// this task (`Collected::json<T>()`), but missing from step 3 of the
-    /// brief — see the task report.
+    /// Deserializes the body as JSON.
+    ///
+    /// ```no_run
+    /// # #[derive(serde::Deserialize)] struct User { id: u64 }
+    /// # async fn f(c: &hclient::Client) -> Result<(), hclient::Error> {
+    /// let user: User = c.get("https://example.com/u/1")
+    ///     .send()
+    ///     .await?
+    ///     .collect()
+    ///     .await?
+    ///     .json()?;
+    /// # let _ = user.id;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// Takes `&self`, so the same [`Collected`] can also be read as
+    /// [`text`](Self::text) or [`bytes`](Self::bytes) — which is what a
+    /// caller wants when a body fails to parse and the raw text is the
+    /// diagnosis.
+    ///
+    /// A body that is not the JSON asked for is an
+    /// [`ErrorKind::Decode`], the same category
+    /// [`text`](Self::text) uses for bytes that are not UTF-8 — the
+    /// server answered, and what came back is the problem. A `4xx` is
+    /// **not** that: it is an ordinary answer whose body is usually JSON
+    /// of a different shape, so put [`error_for_status`](Self::error_for_status)
+    /// before this call rather than reading the failure as a parse error.
     ///
     /// Behind the `json` feature, off by default: `serde`/`serde_json`
     /// aren't needed by a consumer who only streams the body or reads it
