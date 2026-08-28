@@ -1528,12 +1528,61 @@ the shape it does precisely to avoid that: it owns the
 `embassy_net::tcp::TcpSocket` rather than a `Connection`, so `close()` is
 available and `poll_shutdown` sends the FIN and waits for it.
 
+**Blocker three is the `Send` story, and it is the hardest of the three
+because it is the one this workspace already solved on its own seams and
+cannot solve on somebody else's.**
+
+Measured: the auto trait `Send` appears **nowhere** in
+`embedded-nal-async` 0.9.0 and **nowhere** in `embedded-io-async` 0.7.0.
+The three hits a grep finds in `udp.rs` are the English verb in a doc
+comment about sending datagrams. And every method in both crates is an
+`async fn` in trait — `TcpConnect::connect`, `Dns::get_host_by_name`,
+`Read::read`, `Write::write` — so every future they produce is an RPITIT
+with no name.
+
+**The two `TcpConnect` traits are nearly the same shape and differ in
+exactly the place that decides this.** Both carry an associated
+connection type with a lifetime; ours also names the *future*
+(`type Connecting<'a>`) and theirs does not. That one difference is
+amendment C15's whole subject: naming is not requiring, so each
+implementor answers for itself and a consumer can still write the bound.
+With an RPITIT a consumer cannot write it at all.
+
+So an adapter over NAL could only box their future, and boxing decides
+the answer for everybody:
+
+- **boxed plain** — `!Send` permanently, for *every* NAL stack, including
+  the ones whose connection genuinely is `Send`: a std shim, an
+  AT-command driver behind a mutex. That is a `dyn` removing a property
+  rather than hiding it, which this workspace has now fixed four times in
+  its own code and would here be importing on purpose;
+- **boxed `+ Send`** — needs to prove an RPITIT `Send` for a generic
+  implementor, which is return type notation: unstable, and measured in
+  this repository to **ICE** across a crate boundary;
+- **named** — needs `type Connecting<'a> = impl Future`, also unstable.
+
+**And this is coherent on their side rather than a defect.** NAL is
+designed for one core and one executor, where `Send` has no subject —
+`reqwless`, the client built on it, never needs the property. The
+incompatibility is at the seam between a `no_std`-shaped abstraction and
+a client that also serves threaded hosts, and it is why
+`hclient-rt-embassy` implements *our* `TcpConnect` against
+`embassy_net::tcp::TcpSocket` directly: the socket is concrete, so its
+`!Send`-ness is a measured fact about one type rather than a property
+lost for all of them.
+
+It also means blocker three does not lift with blocker one. A half-close
+is a method upstream could add; this needs either return type notation to
+stabilise and stop ICEing, or NAL to move to associated future types,
+which breaks its trait for every implementor.
+
 So the day `no_std` becomes reachable there are three options and none is
-free: accept the false half-close, which is what a NAL-based client must
-do; ask upstream for a shutdown on `embedded-io-async`, which is the
-correct fix and is somebody else's release schedule; or keep a crate per
-stack that owns its socket, which is what exists and is why it reaches
-one stack instead of eight.
+free: accept the false half-close **and** a permanently `!Send`
+transport, which is what a NAL-based client must do; ask upstream for a
+shutdown on `embedded-io-async` and for named futures on both, which is
+the correct fix twice over and is somebody else's release schedule; or
+keep a crate per stack that owns its socket, which is what exists and is
+why the reach is one stack instead of eight.
 
 ### The embassy runtime is the workspace's only `!Send` counterexample
 
