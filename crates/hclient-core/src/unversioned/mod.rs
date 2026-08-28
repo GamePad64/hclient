@@ -17,7 +17,7 @@ mod websocket;
 
 pub use hooks::{
     CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, Informational,
-    NoHooks, Reused,
+    NoHooks, Reused, mark, since,
 };
 pub use timer::{Discard, Timer};
 pub use transport::{BoxSendExchange, SendTransport, Transport};

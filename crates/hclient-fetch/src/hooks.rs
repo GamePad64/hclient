@@ -152,7 +152,7 @@ fn now() -> f64 {
 /// the zero-cost claim and the only place this crate reads a clock for an
 /// event.
 pub(crate) fn mark<H: Hooks>() -> Option<f64> {
-    H::WATCHING.then(now)
+    hclient_core::unversioned::mark::<H, _>(now)
 }
 
 /// The other half of [`mark`]: the interval since one, or `ZERO` when
@@ -169,8 +169,7 @@ pub(crate) fn mark<H: Hooks>() -> Option<f64> {
 /// has one: `Duration::from_secs_f64` panics on a negative, and a clock
 /// this code did not install is not this code's to trust absolutely.
 pub(crate) fn since(at: Option<f64>) -> Duration {
-    match at {
-        Some(t) => Duration::from_secs_f64((now() - t).max(0.0) / 1000.0),
-        None => Duration::ZERO,
-    }
+    hclient_core::unversioned::since(at, |t| {
+        Duration::from_secs_f64((now() - t).max(0.0) / 1000.0)
+    })
 }

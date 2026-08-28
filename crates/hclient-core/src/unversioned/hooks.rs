@@ -623,6 +623,38 @@ impl Default for ConnectTiming {
     }
 }
 
+/// Read a clock, but only if a hook is watching.
+///
+/// **The gate is the point, not the line of code.** `H::WATCHING` is what
+/// keeps a `NoHooks` build from paying for a feature it does not use, and
+/// the discipline it needs is subtle enough to have produced a defect:
+/// `hclient-fetch` once carried a second `H::WATCHING` test beside this
+/// one, and a mutation that removed the *other* gate survived the whole
+/// suite — a `NoHooks` build read the clock and cloned a `Uri` on every
+/// request while the cost test still read zero. One `Option`, produced in
+/// one place, closes that; four crates each writing their own is four
+/// chances to reopen it.
+///
+/// Generic over the clock read rather than over a clock **type**, because
+/// the four callers genuinely disagree about what a clock is: a `Timer`'s
+/// `Instant` on native, `performance.now()`'s `f64` in a browser, a
+/// `std::time::Instant` under WASI. What they never disagree about is
+/// this.
+#[must_use]
+pub fn mark<H: Hooks, T>(now: impl FnOnce() -> T) -> Option<T> {
+    H::WATCHING.then(now)
+}
+
+/// How long since [`mark`], or zero where nothing was marked.
+///
+/// `Duration::ZERO` rather than an `Option`: an unwatched request has no
+/// elapsed time to report and no hook to report it to, so the absence has
+/// nowhere to travel.
+#[must_use]
+pub fn since<T>(at: Option<T>, elapsed: impl FnOnce(T) -> Duration) -> Duration {
+    at.map_or(Duration::ZERO, elapsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

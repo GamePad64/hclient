@@ -239,32 +239,20 @@ pub type NativeIo<R, T> =
 /// wrapper above chose to pass on.
 pub type NativeBody<R, T, H> = IdleTimeout<established::NativeBody<NativeIo<R, T>, H>, R>;
 
-/// A stopwatch that does not exist when nobody is watching.
+/// This crate's clock, handed to `hclient_core`'s gate.
 ///
-/// Every clock read whose only purpose is an event goes through this, and
-/// `H::WATCHING` is a `const`, so on `NoHooks` the `then` is a
-/// compile-time `false` and there is nothing left for the optimiser to
-/// remove — not a branch, not a call. `crates/hclient-native/tests/
-/// hooks_cost.rs` counts the reads from outside, on a runtime whose clock
-/// reports how often it was asked.
+/// The gate — *read a clock only where a hook is watching* — is
+/// `hclient_core::unversioned::mark`, and lives there because four crates
+/// were each writing it and one of them got it wrong in a way a mutation
+/// survived. What stays here is the only part that is this crate's: which
+/// clock.
 pub(crate) fn mark<H: Hooks, R: Timer>(rt: &R) -> Option<R::Instant> {
-    H::WATCHING.then(|| rt.now())
+    hclient_core::unversioned::mark::<H, _>(|| rt.now())
 }
 
-/// The other half of [`mark`]: the interval since one, or `ZERO` when
-/// there was no mark to measure from.
-///
-/// The `ZERO` is never reported — a build that produced `None` above has
-/// no hook to hand it to — which is why this is not an `Option<Duration>`
-/// that every call site would then have to unwrap into a lie.
-///
-/// It takes no `H`: the gate is [`mark`]'s, once, and a second `H` here
-/// would be a second place that has to agree with it.
+/// The elapsed half of the pair above.
 pub(crate) fn since<R: Timer>(rt: &R, at: Option<R::Instant>) -> Duration {
-    match at {
-        Some(t) => rt.elapsed_since(t),
-        None => Duration::ZERO,
-    }
+    hclient_core::unversioned::since(at, |t| rt.elapsed_since(t))
 }
 
 /// The id for a connection about to be made — or [`ConnectionId::UNWATCHED`]

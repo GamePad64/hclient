@@ -75,38 +75,17 @@
 
 use hclient_core::Error;
 use hclient_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks};
-use hclient_rt::Timer;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
-/// A stopwatch that does not exist when nobody is watching.
-///
-/// Every clock read whose only purpose is an event goes through this, and
-/// `H::WATCHING` is a `const`, so on `NoHooks` the `then` is a compile-time
-/// `false` and there is nothing left to remove — not a branch, not a call.
-/// `crates/hclient-h3/tests/hooks_cost.rs` counts the reads from outside,
-/// on a runtime whose clock reports how often it was asked.
-///
-/// The same two functions `hclient-native` has, written again rather than
-/// shared: they are four lines, and the alternative is a dependency from
-/// the QUIC crate on the TCP one for the sake of them.
-pub(crate) fn mark<H: Hooks, R: Timer>(rt: &R) -> Option<R::Instant> {
-    H::WATCHING.then(|| rt.now())
-}
-
-/// The other half of [`mark`]: the interval since one, or `ZERO` when there
-/// was no mark to measure from.
-///
-/// The `ZERO` is never reported — a build that produced `None` above has no
-/// hook to hand it to.
-pub(crate) fn since<R: Timer>(rt: &R, at: Option<R::Instant>) -> Duration {
-    match at {
-        Some(t) => rt.elapsed_since(t),
-        None => Duration::ZERO,
-    }
-}
+// `mark` and `since` were byte-identical copies of `crate::mark` and
+// `crate::since` — the same two functions, in the same crate, four modules
+// apart. They are `hclient_core::unversioned::{mark, since}` now, which is
+// where the `H::WATCHING` gate belongs: four crates were each writing it,
+// and a mutation that removed one of `hclient-fetch`'s two survived the
+// whole suite.
+pub(crate) use crate::{mark, since};
 
 /// A connection's identity for the observability seam, and whether its end
 /// has been told.

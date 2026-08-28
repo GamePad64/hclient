@@ -136,7 +136,7 @@ use std::time::Instant;
 /// a compile-time `false` and the closure is not merely skipped, it is not
 /// there.
 pub(crate) fn mark<H: Hooks>() -> Option<Instant> {
-    H::WATCHING.then(Instant::now)
+    hclient_core::unversioned::mark::<H, _>(Instant::now)
 }
 
 /// The other half of [`mark`]: the interval since one, or `ZERO` when
@@ -155,10 +155,7 @@ pub(crate) fn mark<H: Hooks>() -> Option<Instant> {
 /// `tests/hooks.rs`'s source check has one pattern to look for rather than
 /// two.
 pub(crate) fn since(at: Option<Instant>) -> Duration {
-    match at {
-        Some(t) => Instant::now().saturating_duration_since(t),
-        None => Duration::ZERO,
-    }
+    hclient_core::unversioned::since(at, |t| Instant::now().saturating_duration_since(t))
 }
 
 #[cfg(test)]
