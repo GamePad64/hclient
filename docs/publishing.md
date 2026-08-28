@@ -19,6 +19,29 @@ cargo release publish             # the plan; uploads nothing
 cargo release publish --execute   # the release
 ```
 
+**And `just package-build` is red between releases, on purpose.** It
+builds each crate from its own tarball and verifies it *out of* that
+tarball — where the path dependencies are gone and every inter-crate
+requirement resolves **from the index**. So the moment a backend uses core
+API that is in the tree and not yet on crates.io, verification fails with
+the API missing: measured on 2026-08-28, `hclient-fetch` against
+`hclient_core::Reduced` and `hclient_core::unversioned::mark`, both added
+after `0.1.0-alpha.1` went out.
+
+That is the same refusal this document already describes for the very
+first release, one version later, and it is **benign**: nothing is
+uploaded, the verify step names the missing item, and it clears the moment
+the dependency reaches the index — which is what the wave order is for.
+
+Two readings of it are wrong and both are easy to reach. It is **not** a
+stale version requirement: `^0.1.0-alpha.1` does match `0.1.0-alpha.2` —
+a caret requirement carrying a pre-release accepts higher pre-releases of
+the same version, which is why the whole workspace builds with members at
+`alpha.2` and requirements at `alpha.1`, and why `cargo release version`
+correctly left the member manifests alone. And it is **not** a reason to
+bump again: the tree is already at a version nobody published, so the next
+release is `cargo release publish`, not `cargo release <level>`.
+
 **Not bare `cargo publish --workspace`, and the difference is not the
 ordering.** Both order the uploads and both wait for each crate to reach
 the index before the next — that waiting is cargo's, verified in the stable
