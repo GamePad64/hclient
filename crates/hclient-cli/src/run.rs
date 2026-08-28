@@ -254,10 +254,12 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     // is the caller's wall time for the whole operation and a trust-store
     // read is part of it.
     let started = std::time::Instant::now();
-    let recorder = cli
-        .write_out
-        .as_ref()
-        .map(|_| crate::timings::Recorder::new());
+    // Installed for `-v` as well as for `-w`: verbose prints the
+    // handshake, and the handshake is only knowable through the same
+    // events. A build with neither flag still carries `NoHooks` and reads
+    // no clocks.
+    let watching = cli.write_out.is_some() || cli.verbose;
+    let recorder = watching.then(crate::timings::Recorder::new);
     let client = backend::build(
         cli.backend,
         &backend::Config {
@@ -451,6 +453,13 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     let collected = response.collect().await.map_err(Fail::Request)?;
 
     if print.response_head {
+        // curl prints the handshake above the response head, and so does
+        // this: it describes the connection the head arrived on.
+        if cli.verbose
+            && let Some(rec) = &recorder
+        {
+            output::tls_line(&mut out, &rec.snapshot()).map_err(Fail::Io)?;
+        }
         output::response_head(&mut out, version, status, collected.headers()).map_err(Fail::Io)?;
     }
     if print.response_body {

@@ -412,3 +412,24 @@ fn an_unknown_write_out_variable_is_refused_by_name() {
         ran.stderr
     );
 }
+
+/// `-v` over plaintext prints no handshake line, because there was no
+/// handshake. The positive half needs a TLS server and is pinned one
+/// crate down, in `hclient-native/tests/tls_facts.rs`, against a real
+/// rustls peer.
+#[test]
+fn verbose_over_plaintext_prints_no_ssl_line() {
+    let (addr, _log) = serve(200, "text/plain", "hello");
+    let ran = hc(&[&url(addr, "/x"), "-v"]);
+    assert_eq!(ran.code, 0, "stderr: {}", ran.stderr);
+    assert!(
+        !ran.stdout.contains("SSL connection"),
+        "nothing was negotiated: {:?}",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout.contains("200"),
+        "and the head was still printed: {:?}",
+        ran.stdout
+    );
+}

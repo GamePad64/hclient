@@ -1965,6 +1965,63 @@ case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
 
+### The handshake was described three lines above where it was thrown away
+
+Asked whether `hc` can show the TLS handshake the way `curl -v` does. It
+could not, and the reason was not the CLI's.
+
+`TlsInfo` has carried `protocol_version`, `cipher_suite`, `alpn` and
+`peer_certificates` since TLS became a seam here, and
+`hclient-tls-rustls` fills every one of them — the version normalised to
+the dotted `TLSv1.3` spelling curl prints, the suite as its IANA registry
+name. `hclient-native` receives it, binds it to a local, and **reads that
+local three lines above the line where it emits `Connected`**, to pick
+the protocol. Measured: `TlsInfo` and `tls_info` appear **zero** times in
+`hclient-core` and in `hclient`. Nothing above the transport could see
+any of it.
+
+**That is the third sighting of one shape**, after `native-tls`'s ALPN
+and `hclient-fetch`'s `!Send` body: *the limitation belongs to the
+wrapper, and the layer beneath has the thing.* Here the wrapper was our
+own transport rather than a third party's.
+
+`Connected` gains `tls_version`, `tls_cipher` and `alpn`, and **the
+freeze is what made that free**: the struct became `#[non_exhaustive]`
+during the API-stability work, so adding three fields is not a breaking
+change. They are borrowed `&'a str`/`&'a [u8]`, because `Connected<'a>`
+already had the lifetime and the `TlsInfo` outlives the emission. They
+are **strings rather than enums** — the vocabulary is the TLS registry's,
+which gains entries, and a backend that meets a version this workspace
+has never heard of should be able to say so instead of being pushed
+through an `Other` arm.
+
+One setter for all three, not three, because they come from one place: a
+backend either read the handshake's outcome or it did not, and three
+setters would let a caller set two and forget the third — which is
+exactly what `Native::hooks` dropping the `1xx` installer while keeping
+its capability already cost this workspace once.
+
+**`None` means two things and the pair separates them.** Over `http://`
+there was no handshake, and `timing.tls` is `None` too; over `https://`
+it means the backend does not describe it, which is
+`hclient-tls-native-tls`, whose own module doc says the platform stacks
+expose no getter. So `(timing.tls, tls_version)` answers *no TLS* against
+*TLS this backend will not describe*, and `hc -v` prints three different
+things accordingly — including a line saying the connection was
+encrypted and undescribed, because silence there would read as
+plaintext.
+
+`alpn` is deliberately **not** a second statement of `version`:
+`version` is what the transport will speak, decided by the same function
+that picks the handshake, where `alpn` is what the peer said. They agree
+on every connection this workspace makes, and a hook that finds them
+disagreeing has found something worth reporting.
+
+Certificates are not exposed, and the reason is a dependency rather than
+a decision: `TlsInfo::peer_certificates` is DER, and turning it into
+curl's subject/issuer/dates needs an X.509 parser. The field is there for
+whoever wants to add one.
+
 ### `hclient-fetch` ran zero tests on the main gate, and the fix was not the one that was built
 
 Asked whether the browser body's channel machinery — the pump, the

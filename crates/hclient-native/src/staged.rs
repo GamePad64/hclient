@@ -504,6 +504,18 @@ where
             self.hooks.on(Event::Connected(
                 Connected::new(id, &uri, spoken_version(protocol))
                     .remote(attempted.remote)
+                    // The handshake's own report, which this transport has
+                    // had in hand at this line since TLS became a seam and
+                    // has been discarding: `TlsInfo` carries the version,
+                    // the suite and the ALPN, and nothing above
+                    // `hclient-native` could see any of it.
+                    .tls(
+                        tls_info
+                            .as_ref()
+                            .and_then(|i| i.protocol_version.as_deref()),
+                        tls_info.as_ref().and_then(|i| i.cipher_suite.as_deref()),
+                        tls_info.as_ref().and_then(|i| i.alpn.as_deref()),
+                    )
                     .timing(
                         ConnectTiming::new()
                             .dns(attempted.dns)

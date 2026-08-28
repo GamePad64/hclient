@@ -324,6 +324,41 @@ pub struct Connected<'a> {
     /// What will be spoken on it, as negotiated — not as offered.
     pub version: http::Version,
     pub timing: ConnectTiming,
+    /// The TLS version, as the backend reports it: `"TLSv1.3"`, dotted,
+    /// which is the spelling curl prints and OpenSSL uses.
+    ///
+    /// **`None` has two meanings and they are distinguishable elsewhere.**
+    /// Over `http://` there was no handshake at all, and `timing.tls` is
+    /// `None` too. Over `https://` it means the backend does not report
+    /// it — `hclient-tls-native-tls` is the one that does not, because the
+    /// platform stacks expose no getter for it, which that crate's own
+    /// module doc says. So the pair `(timing.tls, tls_version)` separates
+    /// *no TLS* from *TLS this backend will not describe*.
+    ///
+    /// A string rather than an enum because the vocabulary is the TLS
+    /// registry's and not ours: a backend that grows a version this
+    /// workspace has never heard of should be able to say so, where an
+    /// enum would force it through an `Other` arm or a wrong variant.
+    pub tls_version: Option<&'a str>,
+    /// The negotiated cipher suite, by its IANA registry name —
+    /// `"TLS_AES_256_GCM_SHA384"`.
+    ///
+    /// `None` on the same two conditions as [`Self::tls_version`], and a
+    /// string for the same reason: the registry gains entries and this
+    /// crate is not where they should have to be enumerated.
+    pub tls_cipher: Option<&'a str>,
+    /// The protocol ALPN selected, as bytes — `b"h2"`, `b"http/1.1"`.
+    ///
+    /// Bytes rather than a string because ALPN identifiers are octet
+    /// sequences in RFC 7301 and nothing obliges a peer to send UTF-8.
+    ///
+    /// This is **not** a second statement of [`Self::version`]: `version`
+    /// is what this transport will actually speak, decided by the same
+    /// function that picks the handshake, where this is what the peer
+    /// said. They agree on every connection this workspace makes, and a
+    /// hook that finds them disagreeing has found something worth
+    /// reporting rather than a field to prefer.
+    pub alpn: Option<&'a [u8]>,
 }
 
 /// What each phase of a connect cost.
@@ -492,9 +527,10 @@ impl<'a> Informational<'a> {
 }
 
 impl<'a> Connected<'a> {
-    /// A connection that was opened. `remote` and `timing` are what a
-    /// backend may not have — a Unix socket has no peer address, and an
-    /// ambient host reports no phases — so they are setters.
+    /// A connection that was opened. `remote`, `timing` and the TLS
+    /// facts are what a backend may not have — a Unix socket has no peer
+    /// address, an ambient host reports no phases, and a plaintext
+    /// connection has no handshake — so they are setters.
     #[must_use]
     pub fn new(id: ConnectionId, uri: &'a http::Uri, version: http::Version) -> Self {
         Self {
@@ -503,6 +539,9 @@ impl<'a> Connected<'a> {
             remote: None,
             version,
             timing: ConnectTiming::new(),
+            tls_version: None,
+            tls_cipher: None,
+            alpn: None,
         }
     }
 
@@ -518,6 +557,25 @@ impl<'a> Connected<'a> {
 
     /// How long each phase took.
     #[must_use]
+    /// The TLS facts, all three at once.
+    ///
+    /// One setter rather than three, because they come from one place —
+    /// a backend either read the handshake's outcome or it did not — and
+    /// three would let a caller set two and forget the third, which is
+    /// the shape `Native::hooks` dropping the `1xx` installer while
+    /// keeping its capability already cost this workspace once.
+    pub fn tls(
+        mut self,
+        version: Option<&'a str>,
+        cipher: Option<&'a str>,
+        alpn: Option<&'a [u8]>,
+    ) -> Self {
+        self.tls_version = version;
+        self.tls_cipher = cipher;
+        self.alpn = alpn;
+        self
+    }
+
     pub fn timing(mut self, timing: ConnectTiming) -> Self {
         self.timing = timing;
         self

@@ -158,3 +158,116 @@ fn json_value(out: &mut impl Write, v: &serde_json::Value, depth: usize) -> std:
         }
     }
 }
+
+/// curl's two handshake lines, from the `Connected` event.
+///
+/// ```text
+/// * SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+/// * ALPN: server accepted http/1.1
+/// ```
+///
+/// **Nothing is printed for a plaintext connection**, which is curl's
+/// behaviour and is also the honest one: there was no handshake to
+/// describe. A backend that handshook and reports nothing prints the
+/// third form — the distinction the `Connected` event carries in
+/// `timing.tls` and which a line reading `TLS: unknown` would flatten.
+pub fn tls_line(out: &mut impl Write, t: &crate::timings::Timings) -> std::io::Result<()> {
+    if t.tls.is_none() {
+        return Ok(());
+    }
+    match (&t.tls_version, &t.tls_cipher) {
+        (Some(v), Some(c)) => writeln!(out, "{DIM}* SSL connection using {v} / {c}{DIM:#}")?,
+        (Some(v), None) => writeln!(out, "{DIM}* SSL connection using {v}{DIM:#}")?,
+        // Handshook, and the backend describes none of it — which is
+        // `hclient-tls-native-tls`, whose own module doc says the platform
+        // stacks expose no getter. Saying so beats printing nothing, since
+        // the connection *was* encrypted.
+        _ => writeln!(
+            out,
+            "{DIM}* SSL connection (this TLS backend reports no version or suite){DIM:#}"
+        )?,
+    }
+    if let Some(alpn) = &t.alpn {
+        writeln!(
+            out,
+            "{DIM}* ALPN: server accepted {}{DIM:#}",
+            String::from_utf8_lossy(alpn)
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::timings::Timings;
+    use std::time::Duration;
+
+    fn render(t: &Timings) -> String {
+        let mut buf = Vec::new();
+        tls_line(&mut buf, t).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn handshook() -> Timings {
+        Timings {
+            tls: Some(Duration::from_millis(1)),
+            tls_version: Some("TLSv1.3".into()),
+            tls_cipher: Some("TLS_AES_256_GCM_SHA384".into()),
+            alpn: Some(b"h2".to_vec()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_full_report_reads_like_curls() {
+        let out = render(&handshook());
+        assert!(
+            out.contains("SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384"),
+            "{out:?}"
+        );
+        assert!(out.contains("ALPN: server accepted h2"), "{out:?}");
+    }
+
+    /// **The line that must not appear.** A plaintext connection has no
+    /// handshake to describe, and printing one would be this tool's own
+    /// version of a capability that lies.
+    #[test]
+    fn a_plaintext_connection_prints_nothing_at_all() {
+        let t = Timings {
+            tls: None,
+            ..handshook()
+        };
+        assert_eq!(render(&t), "", "no handshake, no line");
+    }
+
+    /// A backend that handshook and describes none of it says so, rather
+    /// than printing nothing — the connection *was* encrypted, and
+    /// silence would read as plaintext.
+    #[test]
+    fn a_silent_backend_is_reported_as_silent_and_not_as_plaintext() {
+        let t = Timings {
+            tls_version: None,
+            tls_cipher: None,
+            alpn: None,
+            ..handshook()
+        };
+        let out = render(&t);
+        assert!(out.contains("SSL connection"), "{out:?}");
+        assert!(out.contains("reports no version"), "{out:?}");
+        assert!(!out.contains("ALPN"), "there was none to report: {out:?}");
+    }
+
+    /// A version with no suite still prints the version. Two backends
+    /// could differ here and the reader wants what there is.
+    #[test]
+    fn a_version_without_a_suite_still_names_the_version() {
+        let t = Timings {
+            tls_cipher: None,
+            ..handshook()
+        };
+        assert!(
+            render(&t).contains("using TLSv1.3\n") || render(&t).contains("using TLSv1.3\u{1b}")
+        );
+    }
+}
