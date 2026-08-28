@@ -308,16 +308,24 @@ Each says what it would take **here**, which of this workspace's stated rules
 it has to respect, and — where it applies — which rule forbids it outright,
 because a feature refused by a written rule is a better answer than a patch.
 
-### G1. Nothing is published
+### G1. ~~Nothing is published~~ — **closed, as a pre-release**
 
-Every crate says `0.1.0` and none is on crates.io. This is the gap a caller
-hits first and it dwarfs every row in §2: none of what follows is reachable
-by anyone who has not cloned this tree.
+`0.1.0-alpha.2` is on crates.io, all 25 publishable crates at one version.
+It was the gap that dwarfed every row in §2 — none of what follows was
+reachable by anyone who had not cloned this tree — and the ranking that put
+it above `deflate` was right for exactly as long as it stood.
 
-It is not an oversight — AGENTS.md states the position and the trigger, and
-the trigger is the owner's. It is listed first anyway because a competitive
-gap analysis that ranked `deflate` above "cannot be depended on" would be
-measuring the wrong thing.
+**What is claimed is narrower than "published", and the pre-release is the
+claim.** A caller writing `cargo add hclient` gets *nothing*: cargo will not
+select a pre-release without being asked, so the name is taken and no
+promise is made. That is the point — the week before the first upload moved
+six public surfaces, and `0.1.0` would have frozen twenty-nine of them at
+the moment they were last seen moving. `--version 0.1.0-alpha.2` is the
+incantation, and both READMEs carry it.
+
+So the gap this section should now rank first is **not** publication: it is
+G3, the one remaining row where a whole class of caller cannot use this
+library at all.
 
 ### G2. No `User-Agent`, and no client-wide default headers — **closed**
 
@@ -581,7 +589,7 @@ megabyte against a 4 KiB limit.
 are now written next to each other: one counts what arrives, the other
 times what is sent, and each is on the side its own threat is on.
 
-### G11. Interface binding, TCP keepalive detail, Unix sockets — **the socket options are closed; the Unix socket is not**
+### G11. Interface binding, TCP keepalive detail, Unix sockets — **closed**
 
 `TcpOpts` gains `bind_device`, `keepalive_interval`, `keepalive_retries`
 and `user_timeout`, with the matching `TcpOptsSupport` bools — the
