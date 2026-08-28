@@ -143,5 +143,51 @@ alternative is a documented refusal in the one place a caller reads.
    assembly that works without an ambient executor, but it means the
    blocking and async defaults differ in their runtime, which is a
    surprise worth stating loudly if it ships.
-3. **Detect the nested-executor mistake, or document it?** See above; the
-   asymmetry between the two executors is the argument against detecting.
+3. ~~**Detect the nested-executor mistake, or document it?**~~ —
+   **measured, and it is document, without it being close.** See the
+   section below.
+
+
+## The nested-executor mistake: measured, and detection is the wrong answer
+
+Calling a blocking method from inside an async task is the mistake every
+blocking facade has to have a position on. It was recorded here as a
+judgement call between detecting it and documenting it. Measured on
+2026-08-29 — a two-worker `tokio` runtime, the call made from inside
+`rt.block_on`:
+
+| what is nested | result |
+|---|---|
+| `futures_executor::block_on` on a smol-backed future | **succeeds**, 120.1 ms for a 120 ms timer |
+| `tokio::runtime::Handle::current().block_on` | **panics**, and tokio writes the message |
+| `tokio::runtime::Handle::try_current()` | `true` inside, `false` outside |
+
+**The three rows together say that detection would fire on the wrong
+case.** The one this facade could detect is row 1 — and row 1 *works*: a
+bare `block_on` inside tokio parks one worker thread and the future
+completes, because `async-io` drives its own reactor on a thread of its
+own. Refusing it would refuse something that succeeds, and the real cost
+there is a starved worker under load or a deadlock on a `current_thread`
+runtime, neither of which a `try_current()` check can tell apart from the
+healthy case.
+
+Row 2 is the case that genuinely fails, and **tokio already detects it and
+panics with a better message than this crate would write** — it names
+`block_on` and explains the thread it is on. A check of ours would arrive
+first and say less.
+
+And row 3 is the reason detection could not be general even if it were
+wanted: `try_current` is tokio's, and there is no equivalent question to
+ask of smol, of `futures_executor`, or of an executor this workspace has
+never heard of. So a detector would be a **tokio-shaped check inside a
+runtime-agnostic facade** — the exact coupling `hclient-rt` exists to
+avoid, bought for a case that works.
+
+**It also settles question 2 in the other direction from how it was
+posed.** Imposing smol on `blocking::Client::new()` was recorded as a
+surprise to be stated loudly. It is that, and it is *also* the more
+forgiving default: row 1 is a smol-backed stack surviving the nested
+mistake, where a tokio-backed one under the same bare `block_on` panics
+before it reaches the network at all. The runtime that works without an
+ambient reactor is the runtime a blocking caller has, which is what makes
+the asymmetry a reason rather than an accident.
