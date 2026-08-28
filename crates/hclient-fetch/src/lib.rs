@@ -42,7 +42,7 @@ mod websocket;
 // anything: if a caller races `execute`'s future against something else
 // (there's no `tokio::time::timeout` on wasm, but `futures::select!` or an
 // equivalent works the same way) and drops it while the fetch promise is
-// still pending, the brief's own code leaves the browser's `fetch()`
+// still pending, that shape leaves the browser's `fetch()`
 // running to completion, unseen, for nothing — the in-flight-cancellation
 // capability `AbortController` exists to provide is built, handed over,
 // and then thrown away. [`AbortOnDrop`] below closes exactly that gap:

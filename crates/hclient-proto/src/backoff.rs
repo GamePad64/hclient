@@ -401,7 +401,7 @@ mod tests {
         // at `jitter = 0.0` where equality is the *correct* answer (that's
         // in its domain) — so it's a legitimate invariant on its own, not
         // a mistake. But across its whole domain it's also exactly as
-        // vacuous as the brief's own `jitter_only_ever_reduces_the_delay`:
+        // vacuous as a `jitter_only_ever_reduces_the_delay` would be:
         // an implementation that drops `jitter` entirely produces
         // `jittered == full` for every input, which still satisfies `<=`
         // everywhere, including here. `jitter_scales_the_delay_to_an_exact_fraction`

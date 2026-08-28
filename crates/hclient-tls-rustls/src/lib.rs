@@ -152,14 +152,15 @@ impl Rustls {
         ))
     }
 
-    /// This task's brief suggested `rustls_platform_verifier::tls_config()`
-    /// — no such free function exists in `rustls-platform-verifier` 0.7
-    /// (checked against the crate's source: `src/lib.rs` exports only two
-    /// extension traits, `BuilderVerifierExt` on
-    /// `ConfigBuilder<ClientConfig, WantsVerifier>` and
-    /// `ConfigVerifierExt` on `ClientConfig` itself). The correct call is
-    /// the extension method `ClientConfig::with_platform_verifier()` from
-    /// `ConfigVerifierExt`.
+    /// The platform's own trust store, through `rustls-platform-verifier`.
+    ///
+    /// There is no `rustls_platform_verifier::tls_config()` free function
+    /// to reach for, which is the obvious guess and is worth writing down
+    /// once: 0.7 exports two extension traits and no such function —
+    /// `BuilderVerifierExt` on `ConfigBuilder<ClientConfig,
+    /// WantsVerifier>` and `ConfigVerifierExt` on `ClientConfig` itself.
+    /// The call is the extension method
+    /// `ClientConfig::with_platform_verifier()`.
     #[cfg(feature = "platform-verifier")]
     pub fn with_platform_verifier() -> Result<Self, Error> {
         use rustls_platform_verifier::ConfigVerifierExt;

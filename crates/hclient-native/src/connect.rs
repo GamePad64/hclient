@@ -483,7 +483,7 @@ where
                     // or never started (`attempts` is empty) is skipped
                     // WITHOUT calling `poll` — not just to avoid violating
                     // the `Stream` contract ("don't poll after `None`"),
-                    // but also to avoid repeating the brief's mistake in a
+                    // but also to avoid repeating the same mistake in a
                     // different spot: polling an empty `FuturesUnordered`
                     // returns `Ready(None)` IMMEDIATELY (checked by
                     // reading `futures-util` 0.3.33,
