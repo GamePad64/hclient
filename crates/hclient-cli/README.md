@@ -5,7 +5,12 @@ packaging decision** — and where a backend this build has not got is
 refused by name rather than silently replaced.
 
 ```
-cargo install hclient-cli
+# While the only releases are pre-releases, the version is required:
+# a bare `cargo install hclient-cli` resolves `*`, which does not match a
+# pre-release, and reports **"could not find `hclient-cli` in registry"** —
+# which reads as "no such crate" rather than "not a stable release yet".
+cargo install hclient-cli --version 0.1.0-alpha.2
+
 hc httpbin.org/get
 hc POST api.example.com/users name=alice admin:=true
 hc --backend native-tls https://internal.corp/    # the OS trust store

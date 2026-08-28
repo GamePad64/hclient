@@ -42,13 +42,21 @@ response body cannot cross a `tokio::spawn`, because one body type has to
 serve the browser backend too, and a caller who needs the concrete backend
 asks for it with `Client::transport_as::<T>()`.
 
-**Published as a pre-release, `0.1.0-alpha.1`, on purpose.** Six public
-types took a breaking change in the month before it, so the seams are young
-rather than settled — and a pre-release says that in the one place everyone
-looks. `cargo add` will not select it unless asked:
+**Published as a pre-release on purpose.** Six public types took a
+breaking change in the month before the first one, so the seams are young
+rather than settled — and a pre-release says that in the one place
+everyone looks.
+
+**What that does and does not do is worth stating exactly, because the
+obvious version of it is wrong.** `cargo add hclient` **does** select a
+pre-release today — measured — because there is no stable release for it
+to prefer; the moment `0.1.0` exists, `cargo add` takes that instead and
+nobody reaches a pre-release without asking. So the guard is real and it
+starts working at the first stable release, not now. What is true now is
+that the version is visible in `Cargo.toml` the moment it is added.
 
 ```
-cargo add hclient@0.1.0-alpha.1 --features default-transport
+cargo add hclient --features default-transport
 ```
 
 Add `default-http2` and `default-http3` to that list for HTTP/2 and

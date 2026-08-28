@@ -312,9 +312,17 @@ week moved six public surfaces: `Client` from generic to erased,
 of `ENOTCONN`. Publishing that as `0.1.0` would freeze twenty-nine public
 surfaces at the moment they were last seen moving.
 
-A pre-release claims the names and promises nothing: `cargo add hclient`
-will not select it without being asked, so the next week of changes costs
-`-alpha.2` rather than a major version across the family. `0.1.0` follows
+A pre-release claims the names and promises nothing, so the next week of
+changes costs `-alpha.2` rather than a major version across the family.
+
+**The guard is real and it is not yet in force, which this sentence used
+to get wrong.** It read that `cargo add hclient` will not select a
+pre-release without being asked. Measured on 2026-08-29, from a fresh
+crate against the registry: `cargo add hclient` selected
+`0.1.0-alpha.2` — because there is nothing stable for it to prefer. The
+moment `0.1.0` exists, `cargo add` takes that and a pre-release needs
+asking for. So the protection begins at the first stable release, not at
+the first publication. `0.1.0` follows
 when the seams have stopped moving on their own.
 
 The version now says itself **once**, in `[workspace.package]`, where the

@@ -7,14 +7,14 @@ browser's own `fetch` and on Apple's `URLSession`. The transport is swapped
 out, not buried under `#[cfg]`.
 
 ```
-cargo add hclient@0.1.0-alpha.1 --features default-transport
+cargo add hclient --features default-transport
 ```
 
 **HTTP/2 and HTTP/3 are two more words in the same place**, and nothing
 else changes — `Client::new()` and every line after it are identical:
 
 ```
-cargo add hclient@0.1.0-alpha.1 --features default-transport,default-http2,default-http3
+cargo add hclient --features default-transport,default-http2,default-http3
 ```
 
 `default-http3` makes the default transport route by the origin's HTTPS
@@ -22,10 +22,15 @@ record, the way a browser does: QUIC where the record advertises `h3`, TCP
 otherwise. It is off unless asked because Cargo unifies features — a
 default here would open UDP sockets for a caller who never said so.
 
-The version is explicit because this is a **pre-release**, which `cargo
-add` will not select on its own — deliberately: six public types took a
-breaking change in the month before it, so the seams are young and saying
-so is the point. `0.1.0` follows when they stop moving.
+This is a **pre-release**, deliberately: six public types took a breaking
+change in the month before the first one, so the seams are young and
+saying so is the point. `0.1.0` follows when they stop moving.
+
+Note that `cargo add` selects a pre-release **today**, because there is no
+stable release for it to prefer — measured, not assumed. The moment
+`0.1.0` exists it takes that instead, and a pre-release needs asking for.
+So the version above is not a pin you have to type; it is what you will
+find in your `Cargo.toml` afterwards.
 
 That feature is what `Client::new()` needs, and it is **not** on by default
 on purpose: Cargo unifies features across a graph, so a default here would
