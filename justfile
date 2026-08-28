@@ -327,6 +327,76 @@ test-browser BROWSER="chrome":
 # both browser suites, on both engines — CI runs one engine per matrix leg
 test-browsers: (test-browser "chrome") (test-browser "firefox")
 
+# Every target this workspace ships for, checked in one cheap command.
+#
+# **Why this exists, and why it is `check` rather than `test`.** Three
+# backends stopped satisfying `SendTransport` on the day `Client` began
+# requiring it — `hclient-fetch`, `hclient-wasi` and `hclient-urlsession` —
+# and `cargo nextest run --workspace --all-features` stayed green over all
+# three, because it builds for the host and they do not live there. CI
+# would have caught it (`browser`, `build-wasi-example`, `test
+# (macos-latest)`); nobody ran those before pushing, because each is slow,
+# needs a browser or a second machine, and none of them is one command.
+#
+# This is that one command, and it costs seconds on a warm tree: no test
+# runs, no wasm-pack, no browser, no Apple hardware. `--all-targets` is
+# load-bearing — the wasi break was in an *example*, which a plain
+# `cargo check` does not build.
+#
+# It is a cross-**check**, not a cross-build: `aarch64-apple-darwin` and
+# `x86_64-pc-windows-msvc` type-check from a Linux host without a linker,
+# which is what makes covering them affordable at all.
+check-targets:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # A missing target must fail rather than skip: a silent skip is the
+    # defect this recipe exists to remove, one level up.
+    for t in wasm32-unknown-unknown wasm32-wasip2 aarch64-apple-darwin x86_64-pc-windows-msvc; do
+      rustup target list --installed | grep -qx "$t" || {
+        echo "::error::target $t is not installed — \`rustup target add $t\`. Skipping it would return exactly the blind spot this recipe covers."
+        exit 1
+      }
+    done
+    # Deliberately NOT `set -e`, and every line is checked instead: three
+    # backends broke at once last time, and a run that stops at the first
+    # would have reported one of them and hidden two. That is the same
+    # argument `docs/ci.md` makes for nextest over `cargo test`, one level
+    # up.
+    failed=()
+    check() {
+      echo "==> $*"
+      cargo check "$@" --color never || failed+=("$*")
+    }
+    # The browser: the backend with its tests, and the facade over it —
+    # the pair that broke.
+    check -p hclient-fetch --target wasm32-unknown-unknown --all-targets
+    # `--lib` and not `--all-targets` here, and the reason is a fact about
+    # this crate's dev-dependencies rather than about wasm: `wait-timeout`
+    # and `getrandom`'s host backend are host-only and do not build for
+    # `wasm32-unknown-unknown` at all. The browser suite reaches this
+    # crate's wasm tests through `wasm-pack`, which builds the ones that
+    # can; what this line defends is the facade itself compiling there.
+    check -p hclient --target wasm32-unknown-unknown --features default-transport --lib
+    # WASI, including the example — where one of the three breaks was.
+    check -p hclient-wasi --target wasm32-wasip2 --all-targets
+    # Apple, from here. `hclient-urlsession` has no other build on this
+    # machine and its live tests need a Mac; this is what keeps its shape
+    # honest in between.
+    check -p hclient-urlsession --target aarch64-apple-darwin --all-features --all-targets
+    # Windows: `hclient-proxy`'s WinINET reader is four lines that cannot
+    # run here and must still compile.
+    check -p hclient-proxy --target x86_64-pc-windows-msvc --all-features --all-targets
+    # The WinHTTP backend, whose every line is Windows-only: no line of it
+    # has ever been run, so compiling it here is the only gate it has.
+    check -p hclient-winhttp --target x86_64-pc-windows-msvc --all-targets
+
+    if [ ${#failed[@]} -ne 0 ]; then
+      echo "::error::cross-target check failed for ${#failed[@]} of 6 invocations:"
+      for f in "${failed[@]}"; do echo "  cargo check $f"; done
+      exit 1
+    fi
+    echo "cross-target check: 6 invocations, 4 targets, all clean"
+
 # the Transport acceptance: one source, no #[cfg], three targets
 build-three-targets:
     cargo build -p hclient --example portable

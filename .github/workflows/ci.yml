@@ -319,6 +319,27 @@ jobs:
       - shell: bash
         run: just build-three-targets
 
+  # Every target this workspace ships for, type-checked from one Linux
+  # runner. It overlaps `browser`, `wasi` and `test (macos-latest)` on
+  # purpose and replaces none of them: those run the code, this only
+  # compiles it — which is why it can cover Apple and Windows here, in
+  # seconds, and why it is the one a developer can run before pushing.
+  #
+  # It exists because three backends stopped satisfying `SendTransport` on
+  # the same day and `cargo nextest run --workspace --all-features` stayed
+  # green over all three: they build for targets the host run does not.
+  cross-target-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          targets: wasm32-unknown-unknown,wasm32-wasip2,aarch64-apple-darwin,x86_64-pc-windows-msvc
+          bins: just
+      - shell: bash
+        run: just check-targets
+
   fetch-must-fail-under-wasm-threads:
     runs-on: ubuntu-latest
     steps:

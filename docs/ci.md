@@ -325,6 +325,38 @@ Builds `examples/portable.rs` for native, `wasm32-wasip2` and
 green builds alone would also be green for an example that quietly branched
 per target, which is the one thing this acceptance exists to disprove.
 
+### `cross-target-check`
+
+Every target this workspace ships for — `wasm32-unknown-unknown`,
+`wasm32-wasip2`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` —
+type-checked from one Linux runner in seconds. It **overlaps** `browser`,
+`wasi` and `test (macos-latest)` and replaces none of them: those run the
+code, this only compiles it, which is exactly why it can cover Apple and
+Windows from here.
+
+**It exists because a green workspace run means less than it looks.**
+`hclient-fetch`, `hclient-wasi` and `hclient-urlsession` all stopped
+satisfying `SendTransport` on the day `hclient::Client` began requiring
+it, and `cargo nextest run --workspace --all-features` was green over all
+three, because none of them builds for the host. The three jobs above
+would each have caught their one — after a push, on a runner, one job per
+concern. This is the same coverage as one command a developer can run
+first.
+
+Three details are load-bearing. **`--all-targets`**, because one of the
+three breaks was in an *example* and a plain `cargo check` does not build
+one. **Not `set -e`**: the recipe checks every invocation and reports all
+the failures at the end, for the reason this document already gives for
+nextest over `cargo test` — three broke at once, and a run that stopped at
+the first would have hidden two. And **a missing target is an error, not
+a skip**, which is the defect the whole recipe is about, one level up.
+
+One exception is written where it is made: `hclient` is checked `--lib`
+rather than `--all-targets` on wasm, because its dev-dependencies
+(`wait-timeout`, `getrandom`'s host backend) are host-only and do not
+build there at all. The `browser` job reaches that crate's wasm tests
+through `wasm-pack`, which builds the ones that can.
+
 ### `fetch-must-fail-under-wasm-threads`
 
 `hclient-fetch` carries an `unsafe impl Send` that is sound only because
