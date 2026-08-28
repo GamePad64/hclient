@@ -1576,6 +1576,45 @@ a client that also serves threaded hosts, and it is why
 `!Send`-ness is a measured fact about one type rather than a property
 lost for all of them.
 
+**Neither RTN nor a channel is needed for half the stacks, and that was
+measured rather than assumed.** The rule this workspace states everywhere
+— *at a concrete type `Send` is inferred, in a generic impl it must be
+proven* — is constructive here: move the impl to the concrete type and
+inference does the work. A macro is how.
+
+```rust
+hclient_rt_nal::adapt!(MyAdapter, my_stack::Stack);
+// expands to an `impl TcpConnect for MyAdapter` whose
+// `type Connecting<'a> = Pin<Box<dyn Future<..> + Send + 'a>>`
+```
+
+At the expansion site `Stack` is concrete, so `Box::pin(s.connect(addr))`
+coerces into a **`Send`** box with nothing to prove. Measured against
+`embedded-nal-async` 0.9.0 on **stable**: a stack whose connection is
+`Send` compiles, and — the control that makes it honest — a stack holding
+an `Rc` **fails**, at the boxing site, naming the future. So the macro
+does not claim `Send` for everybody; each stack answers for itself, which
+is the associated-type principle reached from the other side. A second
+macro producing a plain box is the answer for the stacks that fail, the
+same split `Transport` and `SendTransport` already are one layer down.
+
+**Where the macro fails is where channels belong, and that is
+`embassy-net`.** A `&RefCell` stack cannot be made `Send` by inference,
+so the property has to be manufactured: an actor owning the stack, and
+proxies holding channel endpoints. What crosses is bytes, so the proxy is
+`Send` whatever the stack is. Two things make it cheaper than the earlier
+reading of it — **one multiplexer task rather than one per connection**,
+which removes the compile-time `pool_size` objection, and a buffer the
+caller sizes at run time rather than a constant. `alloc` and atomics are
+required by this workspace's construction anyway, so neither is a new
+demand.
+
+So the two are complements rather than alternatives: **the macro for
+stacks that have the property, a channel actor for stacks that do not.**
+And the channel half is what would put `hclient::Client` on embassy —
+which is the thing wanted three questions before this one, `Send` having
+only ever been the gate in front of it.
+
 **Taking RTN from nightly for this one crate was asked and the answer is
 no, on arithmetic rather than on policy.** It removes the third of three
 blockers. `no_std` still stands — every one of those eight stacks is a
