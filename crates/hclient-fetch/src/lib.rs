@@ -241,129 +241,13 @@ impl<H: Hooks> Transport for Fetch<H> {
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<Body>, Error> {
-        // One gate, once — the clock read and the one allocation this
-        // feature costs come out of the same `Option`, so `H::WATCHING`
-        // is read in exactly one place and a mutation that ignores it
-        // cannot take only the half no test can see.
-        //
-        // A second `H::WATCHING` gate here **survives a mutation run**:
-        // with the `Uri` gate removed, a `NoHooks` build
-        // clones a `Uri` and calls `NoHooks::on` for every request, and
-        // `tests/hooks_cost.rs` still reads 0 — because the clock is only
-        // read from the `Some` arm of `hooks::since`, and there is no
-        // allocator to count in a browser. One `Option` closes it: the
-        // same mutation now also ungates the clock, and the cost test
-        // dies.
-        //
-        // The `Uri` has to be taken now because `to_web_request` consumes
-        // the request, and it cannot be taken back off the
-        // `web_sys::Request` afterwards — its `url()` is the browser's
-        // serialisation, not the caller's `http::Uri`, and `Head::uri`
-        // promises the URI "as the transport received it".
-        let watched = hooks::mark::<H>().map(|at| (at, req.uri().clone()));
-
-        let convert::Converted {
-            request,
-            abort,
-            streamed,
-        } = convert::to_web_request(req, &self.caps, &self.opts)?;
-        let guard = AbortOnDrop(abort);
-
-        // `fetch` lives in both `Window` and `WorkerGlobalScope` — go
-        // through `js_sys::global()`, not `web_sys::window()`, so this
-        // works in both contexts, not just a page's main thread.
-        let global = js_sys::global();
-        let fetch_fn = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("fetch"))
-            .map_err(convert::js_err)?
-            .dyn_into::<js_sys::Function>()
-            .map_err(convert::js_err)?;
-        let promise = fetch_fn
-            .call1(&global, &request)
-            .map_err(convert::js_err)?
-            .dyn_into::<js_sys::Promise>()
-            .map_err(convert::js_err)?;
-
-        let outcome = promise::SendJsFuture::new(promise).await;
-        // The promise has settled — see `AbortOnDrop::defuse`'s doc
-        // comment for why this must happen here, before anything else, on
-        // BOTH the success and the failure path.
-        guard.defuse();
-
-        let value = outcome.map_err(|e| {
-            // fetch distinguishes a network error only by `TypeError` —
-            // that's all the browser gives you, and it's recorded in
-            // `Capabilities` (no separate "resolve failed" concept exists
-            // for this backend, unlike native/wasi).
-            let base = convert::js_err(e);
-            if streamed {
-                // One cause the browser structurally cannot report, added
-                // only where it can apply: a `ReadableStream` request body
-                // needs an HTTP/2 origin, and over HTTP/1.1 Chrome produces
-                // this exact, unlabelled `TypeError` in milliseconds with
-                // nothing sent. `ErrorKind` stays `Connect` — that is still
-                // what happened, and a request that failed because the
-                // origin refused the connection reaches here identically.
-                // See `convert::StreamingBodyFetchFailed`.
-                Error::new(
-                    ErrorKind::Connect,
-                    convert::StreamingBodyFetchFailed(Error::new(ErrorKind::Connect, base)),
-                )
-            } else {
-                Error::new(ErrorKind::Connect, base)
-            }
-        })?;
-        let resp: web_sys::Response = value.dyn_into().map_err(convert::js_err)?;
-
-        let mut builder = http::Response::builder().status(resp.status());
-        let headers = resp.headers();
-        let iter = js_sys::try_iter(&headers).map_err(convert::js_err)?;
-        if let Some(iter) = iter {
-            for entry in iter {
-                let entry = entry.map_err(convert::js_err)?;
-                let pair: js_sys::Array = entry.into();
-                let (Some(k), Some(v)) = (pair.get(0).as_string(), pair.get(1).as_string()) else {
-                    continue;
-                };
-                builder = builder.header(k, v);
-            }
-        }
-        let body = Body::from_response(&resp)?;
-        let out = builder
-            .body(body)
-            .map_err(|e| Error::new(ErrorKind::Other, e))?;
-
-        // The one event this backend has. `if let Some(uri)` is the gate
-        // rather than a second read of `H::WATCHING`: the `Some` above is
-        // exactly `H::WATCHING`, and two places that have to agree is one
-        // more than is safe.
-        //
-        // `status` comes off the response this function is about to
-        // return, not from anything read separately — the same discipline
-        // `hclient-native`'s `report_head` follows.
-        //
-        // `version` is `None`, and that is the whole of what this backend
-        // has to say about the protocol: a browser will not tell a page
-        // which one it spoke, `capabilities()` says so with
-        // `version_reported: false`, and `out.version()` here is
-        // `http::response::Builder`'s default rather than an observation.
-        // Reporting that default would be indistinguishable, in a caller's
-        // log, from an HTTP/1.1 exchange this transport had watched happen
-        // — see `Head::version` in `hclient-core`, which changed shape for
-        // exactly this.
-        //
-        // Nothing is reported on the error path: no head arrived, and a
-        // `Head` for a request that got none would be the loudest
-        // available lie.
-        if let Some((began, uri)) = &watched {
-            self.hooks.on(Event::Head(Head {
-                id: ConnectionId::UNWATCHED,
-                uri,
-                status: out.status(),
-                version: None,
-                elapsed: hooks::since(Some(*began)),
-            }));
-        }
-        Ok(out)
+        // The direct path, and it is unchanged: no channel and no spawn,
+        // so a caller using this as a `Transport` pays nothing for a
+        // property only `Client` asks for.
+        let (promise, guard, streamed, watched) = self.start(req)?;
+        let out = Self::finish(promise, guard, streamed).await;
+        self.report(&out, watched.as_ref());
+        out
     }
 
     /// Identity, not the default wrapping: `Self::Error` is already
@@ -410,12 +294,66 @@ where
         &self,
         req: http::Request<RequestBody>,
     ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
-        Box::pin(<Self as Transport>::execute(self, req))
+        // **Not `Box::pin(self.execute(req))`, and that is the whole of
+        // this crate's answer to wasm threads.**
+        //
+        // `execute`'s future holds a `js_sys::Promise` across its one
+        // await. Without `+atomics` wasm-bindgen marks JS handles `Send` —
+        // there is one thread, so the claim is true — and the box above
+        // compiled. Under threads that claim disappears, correctly, and
+        // with it the ability of this backend to back an `hclient::Client`
+        // at all: the crate did not compile, which
+        // `fetch-must-fail-under-atomics` asserted for two verticals.
+        //
+        // A channel removes the cause rather than the symptom, which is
+        // the same repair `body::pump` makes one module over: the JS stays
+        // on the thread that owns it, and what crosses is a value that
+        // holds none. `Fetch::finish` needs nothing of `self`, so the task
+        // is `'static` without an `Arc` or a `Clone` bound, and `start` and
+        // the `Head` event stay on this side where `&self` already is.
+        //
+        // The cost is one `spawn_local` per request **and it is paid only
+        // by `Client`** — `Transport::execute` above is untouched, so a
+        // caller who uses this transport directly still has no channel and
+        // no spawn. The promise carries the cost, which is the shape this
+        // workspace applies to `SendTransport` itself.
+        Box::pin(async move {
+            let (promise, guard, streamed, watched) = self.start(req)?;
+            let (tx, rx) = futures_channel::oneshot::channel();
+            wasm_bindgen_futures::spawn_local(async move {
+                // Racing the send against the receiver going away is what
+                // keeps `Transport::execute`'s drop-is-cancellation
+                // contract: dropping the returned future drops `rx`, this
+                // resolves, and `guard` — the `AbortOnDrop` — is dropped
+                // with the future, which calls `AbortController::abort()`.
+                // Without the race the fetch would run to completion
+                // behind a caller who walked away, which is the one thing
+                // that contract forbids.
+                deliver(Self::finish(promise, guard, streamed), tx).await;
+            });
+            let out = rx.await.unwrap_or_else(|_| {
+                Err(Error::new(
+                    ErrorKind::Other,
+                    std::io::Error::other("the fetch task ended without answering"),
+                ))
+            });
+            self.report(&out, watched.as_ref());
+            out
+        })
     }
 }
 
 #[doc(hidden)]
 pub mod testing {
+    /// [`crate::deliver`], for `tests/deliver.rs`.
+    ///
+    /// Exported rather than tested through a real `fetch`, because what
+    /// changed when `execute_send` grew a channel is the **plumbing**, and
+    /// a network round trip would test the browser instead. The guard's
+    /// own behaviour is covered separately by `abort_guard_behavior`; this
+    /// is whether a drop still reaches it.
+    pub use crate::deliver;
+
     pub use crate::promise::SendJsFuture as SendJsFutureAlias;
     use std::future::poll_fn;
     use std::pin::Pin;
@@ -628,5 +566,209 @@ pub mod testing {
             drop(guard);
         }
         signal.aborted()
+    }
+}
+
+/// Run `work`, and stop the moment nobody is waiting for it.
+///
+/// `#[doc(hidden)] pub` rather than `pub(crate)`, because `testing`
+/// re-exports it and a `pub use` cannot widen visibility. It is not part
+/// of this crate's surface: the front page shows what a caller reaches
+/// for, and this is reachable only through the `testing` module that is
+/// itself hidden.
+///
+/// This is the whole of what a channel adds to
+/// [`SendTransport::execute_send`], and it is a named function so that it
+/// can be tested for the property it exists to keep. Dropping the future
+/// `execute_send` returned drops the receiver; `cancellation()` resolves;
+/// `work` is dropped **here**, which drops the `AbortOnDrop` inside it and
+/// calls `AbortController::abort()`.
+///
+/// Without the race the fetch would run to completion behind a caller who
+/// walked away — the one thing `Transport::execute`'s contract forbids,
+/// and a defect a spawned task makes easy to introduce because nothing
+/// about the spawn itself says the work should stop.
+#[doc(hidden)]
+pub async fn deliver<T>(
+    work: impl std::future::Future<Output = T>,
+    tx: futures_channel::oneshot::Sender<T>,
+) {
+    let mut tx = tx;
+    let settled = {
+        let cancelled = tx.cancellation();
+        futures_util::pin_mut!(work, cancelled);
+        match futures_util::future::select(work, cancelled).await {
+            futures_util::future::Either::Left((out, _)) => Some(out),
+            // Nobody is listening. `work` is dropped as this scope ends.
+            futures_util::future::Either::Right(((), _)) => None,
+        }
+    };
+    if let Some(out) = settled {
+        let _ = tx.send(out);
+    }
+}
+
+/// What `Head` needs, carried from before the request was consumed to
+/// after the response arrived. `None` where no hook is watching.
+type Watched = Option<(f64, http::Uri)>;
+
+impl<H: Hooks> Fetch<H> {
+    /// The synchronous half of an exchange: everything up to the point
+    /// where the browser has been asked and has not yet answered.
+    ///
+    /// Split out because [`SendTransport::execute_send`] runs the *other*
+    /// half on the thread that owns the JS realm and this half wherever
+    /// the caller is. Nothing here awaits, so nothing here can be
+    /// interrupted, and the split costs `execute` no behaviour.
+    fn start(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> Result<(js_sys::Promise, AbortOnDrop, bool, Watched), Error> {
+        // One gate, once — the clock read and the one allocation this
+        // feature costs come out of the same `Option`, so `H::WATCHING`
+        // is read in exactly one place and a mutation that ignores it
+        // cannot take only the half no test can see.
+        //
+        // A second `H::WATCHING` gate here **survives a mutation run**:
+        // with the `Uri` gate removed, a `NoHooks` build
+        // clones a `Uri` and calls `NoHooks::on` for every request, and
+        // `tests/hooks_cost.rs` still reads 0 — because the clock is only
+        // read from the `Some` arm of `hooks::since`, and there is no
+        // allocator to count in a browser. One `Option` closes it: the
+        // same mutation now also ungates the clock, and the cost test
+        // dies.
+        //
+        // The `Uri` has to be taken now because `to_web_request` consumes
+        // the request, and it cannot be taken back off the
+        // `web_sys::Request` afterwards — its `url()` is the browser's
+        // serialisation, not the caller's `http::Uri`, and `Head::uri`
+        // promises the URI "as the transport received it".
+        let watched = hooks::mark::<H>().map(|at| (at, req.uri().clone()));
+
+        let convert::Converted {
+            request,
+            abort,
+            streamed,
+        } = convert::to_web_request(req, &self.caps, &self.opts)?;
+        let guard = AbortOnDrop(abort);
+
+        // `fetch` lives in both `Window` and `WorkerGlobalScope` — go
+        // through `js_sys::global()`, not `web_sys::window()`, so this
+        // works in both contexts, not just a page's main thread.
+        let global = js_sys::global();
+        let fetch_fn = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("fetch"))
+            .map_err(convert::js_err)?
+            .dyn_into::<js_sys::Function>()
+            .map_err(convert::js_err)?;
+        let promise = fetch_fn
+            .call1(&global, &request)
+            .map_err(convert::js_err)?
+            .dyn_into::<js_sys::Promise>()
+            .map_err(convert::js_err)?;
+
+        Ok((promise, guard, streamed, watched))
+    }
+
+    /// The asynchronous half, which **needs nothing of `self`**.
+    ///
+    /// That is what lets `execute_send` spawn it without an `Arc` or a
+    /// `Clone` bound: a `spawn_local` task must be `'static`, and this is
+    /// the only part that has to run where the JS handles live.
+    async fn finish(
+        promise: js_sys::Promise,
+        guard: AbortOnDrop,
+        streamed: bool,
+    ) -> Result<http::Response<Body>, Error> {
+        let outcome = promise::SendJsFuture::new(promise).await;
+        // The promise has settled — see `AbortOnDrop::defuse`'s doc
+        // comment for why this must happen here, before anything else, on
+        // BOTH the success and the failure path.
+        guard.defuse();
+
+        let value = outcome.map_err(|e| {
+            // fetch distinguishes a network error only by `TypeError` —
+            // that's all the browser gives you, and it's recorded in
+            // `Capabilities` (no separate "resolve failed" concept exists
+            // for this backend, unlike native/wasi).
+            let base = convert::js_err(e);
+            if streamed {
+                // One cause the browser structurally cannot report, added
+                // only where it can apply: a `ReadableStream` request body
+                // needs an HTTP/2 origin, and over HTTP/1.1 Chrome produces
+                // this exact, unlabelled `TypeError` in milliseconds with
+                // nothing sent. `ErrorKind` stays `Connect` — that is still
+                // what happened, and a request that failed because the
+                // origin refused the connection reaches here identically.
+                // See `convert::StreamingBodyFetchFailed`.
+                Error::new(
+                    ErrorKind::Connect,
+                    convert::StreamingBodyFetchFailed(Error::new(ErrorKind::Connect, base)),
+                )
+            } else {
+                Error::new(ErrorKind::Connect, base)
+            }
+        })?;
+        let resp: web_sys::Response = value.dyn_into().map_err(convert::js_err)?;
+
+        let mut builder = http::Response::builder().status(resp.status());
+        let headers = resp.headers();
+        let iter = js_sys::try_iter(&headers).map_err(convert::js_err)?;
+        if let Some(iter) = iter {
+            for entry in iter {
+                let entry = entry.map_err(convert::js_err)?;
+                let pair: js_sys::Array = entry.into();
+                let (Some(k), Some(v)) = (pair.get(0).as_string(), pair.get(1).as_string()) else {
+                    continue;
+                };
+                builder = builder.header(k, v);
+            }
+        }
+        let body = Body::from_response(&resp)?;
+        let out = builder
+            .body(body)
+            .map_err(|e| Error::new(ErrorKind::Other, e))?;
+
+        // The one event this backend has. `if let Some(uri)` is the gate
+        // rather than a second read of `H::WATCHING`: the `Some` above is
+        // exactly `H::WATCHING`, and two places that have to agree is one
+        // more than is safe.
+        //
+        // `status` comes off the response this function is about to
+        // return, not from anything read separately — the same discipline
+        // `hclient-native`'s `report_head` follows.
+        //
+        // `version` is `None`, and that is the whole of what this backend
+        // has to say about the protocol: a browser will not tell a page
+        // which one it spoke, `capabilities()` says so with
+        // `version_reported: false`, and `out.version()` here is
+        // `http::response::Builder`'s default rather than an observation.
+        // Reporting that default would be indistinguishable, in a caller's
+        // log, from an HTTP/1.1 exchange this transport had watched happen
+        // — see `Head::version` in `hclient-core`, which changed shape for
+        // exactly this.
+        //
+        // Nothing is reported on the error path: no head arrived, and a
+        // `Head` for a request that got none would be the loudest
+        // available lie.
+        Ok(out)
+    }
+
+    /// The `Head` event, emitted by whoever holds `&self` — which is the
+    /// outer future in both paths, so a hook never crosses a thread.
+    fn report(
+        &self,
+        out: &Result<http::Response<Body>, Error>,
+        watched: Option<&(f64, http::Uri)>,
+    ) {
+        let Ok(out) = out else { return };
+        if let Some((began, uri)) = watched {
+            self.hooks.on(Event::Head(Head {
+                id: ConnectionId::UNWATCHED,
+                uri,
+                status: out.status(),
+                version: None,
+                elapsed: hooks::since(Some(*began)),
+            }));
+        }
     }
 }

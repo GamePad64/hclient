@@ -372,13 +372,13 @@ jobs:
           targets: wasm32-unknown-unknown
           components: rust-src
           bins: just
-      - name: the unsafe Send must be rejected when atomics are on
+      - name: the library must build under wasm threads, and the unsafe Send must not
         shell: bash
         env:
           # As in `fuzz-smoke`: `rust-toolchain.toml` pins stable, and
           # `-Z build-std` needs nightly.
           HCLIENT_REQUIRE_NIGHTLY: "1"
-        run: just fetch-must-fail-under-atomics
+        run: just fetch-under-wasm-threads
 
   # Text scans. No build — six checks' worth of runner setup collapsed into
   # one; a failed step is named in the UI just as a failed job was. The

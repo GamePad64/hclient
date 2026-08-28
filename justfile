@@ -409,7 +409,7 @@ build-three-targets:
 # reason, which a typo in the flag would also achieve.
 
 # the unsafe Send must be rejected when wasm atomics are on
-fetch-must-fail-under-atomics:
+fetch-under-wasm-threads:
     #!/usr/bin/env bash
     set -euo pipefail
     # `rust-toolchain.toml` pins stable and outranks the installed channel;
@@ -420,25 +420,50 @@ fetch-must-fail-under-atomics:
         echo "::error::this check needs nightly for -Z build-std — RUSTUP_TOOLCHAIN did not take effect"
         exit 1
       fi
-      echo "NOTICE: no nightly toolchain — skipping the +atomics rejection check."
+      echo "NOTICE: no nightly toolchain — skipping the wasm-threads check."
       exit 0
     fi
     [ -d crates/hclient-fetch ] || { echo "::error::crates/hclient-fetch is missing — this check must run, not skip"; exit 1; }
-    log="$(mktemp)"
-    if RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" \
-        cargo check -p hclient-fetch --tests \
-        --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort \
-        > "$log" 2>&1; then
-      echo "::error::expected a compile error under +atomics — the Send guarantee SingleThreaded<T> exists to provide is not being enforced"
+    flags="-Ctarget-feature=+atomics,+bulk-memory"
+    common="--target wasm32-unknown-unknown -Zbuild-std=std,panic_abort"
+
+    # ── direction 1: the library MUST build ──────────────────────────────
+    #
+    # It did not, for two verticals, and the recipe that lived here
+    # asserted the failure. What changed is the cause rather than the
+    # check's honesty: `SendTransport::execute_send` used to box
+    # `execute`'s future, which holds a `js_sys::Promise` across an await,
+    # and under threads wasm-bindgen correctly stops calling that `Send`.
+    # A channel moved the JS to the thread that owns it, so a browser build
+    # with wasm threads can back an `hclient::Client` again.
+    if ! RUSTFLAGS="$flags" cargo check -p hclient-fetch --lib $common; then
+      echo "::error::hclient-fetch must build under wasm threads — the channel in execute_send exists so that it can"
       exit 1
     fi
-    # It must fail for the RIGHT reason: a typo in the flag also fails.
-    if ! grep -q 'error\[E0277\]' "$log" || ! grep -q 'cannot be sent between threads safely' "$log"; then
-      echo "::error::the build under +atomics failed, but NOT with the expected Send rejection (E0277 / cannot be sent between threads safely) — full output follows"
+
+    # ── direction 2: the unsafe `Send` MUST still disappear ──────────────
+    #
+    # And this is the half the old recipe was really protecting.
+    # `promise::SingleThreaded<T>` carries this crate's one `unsafe impl
+    # Send` (amendment C7), sound only because there is one thread. Under
+    # `+atomics` that claim must stop compiling — `tests/promise.rs`'s
+    # `future_is_send_on_the_default_target` is the assertion, and it is
+    # required to FAIL here.
+    log="$(mktemp)"
+    if RUSTFLAGS="$flags" cargo check -p hclient-fetch --tests $common > "$log" 2>&1; then
+      echo "::error::expected tests/promise.rs to be rejected under +atomics — the guarantee SingleThreaded<T> exists to provide is not being enforced"
+      exit 1
+    fi
+    # It must fail for the RIGHT reason, in the RIGHT file: a typo in the
+    # flag also fails, and so would any unrelated break.
+    if ! grep -q 'error\[E0277\]' "$log" \
+       || ! grep -q 'cannot be sent between threads safely' "$log" \
+       || ! grep -q 'tests/promise.rs' "$log"; then
+      echo "::error::the tests failed under +atomics, but NOT with the expected Send rejection in tests/promise.rs — full output follows"
       cat "$log"
       exit 1
     fi
-    echo "OK: correctly rejected under +atomics with E0277 on the Send bound"
+    echo "OK: the library builds under wasm threads, and SingleThreaded's Send is correctly rejected there"
 
 # ── the external oracle ─────────────────────────────────────────────────
 
@@ -1300,4 +1325,4 @@ graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-fra
 # ── the whole pipeline ──────────────────────────────────────────────────
 
 # everything CI runs except what is bound to one OS (`macos-loopback`)
-ci: fmt-check lint invariants graph test-workspace test-doc test-sse-complexity test-no-default test-idn lint-idn test-embassy-live embassy-strict-link build-three-targets build-wasi-example test-wasi test-browsers fetch-must-fail-under-atomics test-autobahn fuzz-smoke
+ci: fmt-check lint invariants graph test-workspace test-doc test-sse-complexity test-no-default test-idn lint-idn test-embassy-live embassy-strict-link build-three-targets build-wasi-example test-wasi test-browsers fetch-under-wasm-threads test-autobahn fuzz-smoke

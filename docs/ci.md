@@ -83,7 +83,7 @@ test failed.
 repository root pins stable for *every* rustup-proxied `cargo` call in this
 directory, whatever the setup action installed. A job that installs
 `nightly` and then runs a bare `cargo` silently gets stable. The two recipes
-that need nightly — `fuzz-smoke` and `fetch-must-fail-under-atomics` — set
+that need nightly — `fuzz-smoke` and `fetch-under-wasm-threads` — set
 `RUSTUP_TOOLCHAIN` themselves, which outranks the file, and then *assert*
 what `rustc --version` reports, because an override that silently fails to
 apply is the same defect one level down. Measured: `cargo --version` → 1.97.1
@@ -396,12 +396,32 @@ is not: the two wasm backends, Apple, Windows and embassy.
 `cross-target-check` covers those, and it covers them by **naming the
 target** rather than by skipping the crate.
 
-### `fetch-must-fail-under-wasm-threads`
+### `fetch-under-wasm-threads`
 
-`hclient-fetch` carries an `unsafe impl Send` that is sound only because
-`wasm32-unknown-unknown` is single-threaded. With `-C target-feature=+atomics`
-the build must FAIL, with a specific `E0277` about `Send` — not merely fail
-for any reason, which a typo in the flag would also achieve.
+Two directions, and the job used to have only the second.
+
+**The library must build.** For two verticals it could not:
+`SendTransport::execute_send` boxed `execute`'s future, which holds a
+`js_sys::Promise` across its one await, and with `-C
+target-feature=+atomics` wasm-bindgen correctly stops calling a JS handle
+`Send`. So a browser build with wasm threads could not back an
+`hclient::Client` at all, and the recipe here asserted that failure. A
+channel moved the JS to the thread that owns it — `execute_send` spawns
+the exchange and awaits a value holding no JS — so the cause is gone and
+this half is now a positive check.
+
+**And the `unsafe impl Send` must still be rejected.** That is what the
+old recipe was really protecting: `promise::SingleThreaded<T>` carries
+this crate's one `unsafe impl Send` (amendment C7), sound only because
+there is one thread. `tests/promise.rs`'s
+`future_is_send_on_the_default_target` asserts it, and under `+atomics`
+that test is **required to fail** — with a specific `E0277` about `Send`,
+**in that file**, so that a typo in the flag or an unrelated break cannot
+be mistaken for the rejection.
+
+Neither half means anything alone: the first without the second would
+pass over an `unsafe impl` that had quietly become unconditional, and the
+second is what the job already was.
 
 ## Invariants that no build can express
 
