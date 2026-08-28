@@ -1468,6 +1468,91 @@ first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### `curl -k` and `curl --resolve`, and the two land at different seams
+
+Two of the flags a command-line client is expected to have, added as
+library capabilities rather than as anything CLI-shaped — the crate is
+the infrastructure and the flags are what a consumer needs to build.
+**They land in different places, and that is the finding rather than an
+implementation detail.**
+
+**`--resolve` is a `Resolve` that wraps another `Resolve`.**
+`hclient_dns::Overrides<D>` answers from a table where it has an entry
+and hands the question to `D` where it does not, so it composes over the
+system resolver, over DoH, over hickory, over anything — and a transport
+that never heard of it needs no arm for it. Three decisions came out of
+the seam rather than out of curl. The override is **host-wide**, where
+curl's is `host:port:addr`: `Resolve` is asked for a name and a family and
+carries no port at all, so a per-port table would be keyed on something
+this seam cannot see. The **family filter applies to the override too**,
+so Happy Eyeballs still races two families against an overridden host
+rather than one arm getting everything. And an entry with an **empty
+address list answers nothing rather than falling through**, because
+otherwise "point this host at nowhere" and "do not override this host"
+would be the same table, and the first is how a caller blocks a name.
+SVCB passes through untouched: an override is an address, and minting a
+record would put a port and an ALPN into the answer that nobody supplied.
+
+**`--insecure` is a constructor on each TLS backend, behind a
+`dangerous-insecure` feature.** A feature rather than a plain constructor
+**for auditability**: a build either contains a path that skips
+certificate verification or provably does not, and `cargo tree -f "{p}
+{f}"` answers which. It is in no `default`, for this file's own reason —
+Cargo unifies features, so a default would be a floor and one careless
+crate in a tree would put the path into every other crate's binary.
+
+**The two backends do not turn off the same amount, and that is the part
+worth knowing before relying on either.** rustls keeps **signature**
+verification: the custom verifier answers the chain, the expiry and the
+name, and delegates `verify_tls12_signature`/`verify_tls13_signature` to
+the provider's own, so the handshake still proves the peer holds the key
+for what it sent. `native-tls` has no such seam — the platform stacks
+verify as one operation — so it is the coarser of the two.
+
+**Whether `native-tls` needs the hostname flag beside the certificate one
+is a fact about the platform**, measured in 0.2.18: the OpenSSL backend
+implements the certificate flag as `set_verify(NONE)`, which drops the
+name check with everything else, while SChannel and Security.framework
+forward the two independently. Both are set, or the method would mean
+different things on Linux and on Windows — and **the test cannot show
+it**: the mutation dropping the second setter survives on this host, and
+the comment claiming otherwise was corrected rather than the test being
+strengthened past what a Linux run can honestly prove.
+
+**Neither insecure configuration can share a pooled connection with a
+verifying one.** Each constructor draws a fresh `TlsConfigId`, which is
+part of `hclient-native`'s pool key — asserted rather than assumed,
+because the dangerous direction is a connection established without
+verification being handed to a client that asked for it.
+
+### A crate was green in the workspace and did not build on its own
+
+`cargo check -p hclient-native --all-features --all-targets` failed with
+four errors on `main`, and had for as long as `tests/h3_two_runtimes.rs`
+existed: it instantiates the HTTP/3 path under `Smol`, which needs
+`hclient-rt-smol/udp`, and this crate's manifest did not ask for it —
+`hclient-rt-tokio` one line above does. It compiled because another member
+turns the feature on and **Cargo unifies features across a graph**.
+
+**This is the third sighting of one shape**, after the two doctest
+examples that compiled only because a neighbour enabled a feature and the
+three backends that owed `SendTransport`. All three are one sentence: *a
+green `--workspace` run is a claim about the workspace, not about any
+crate in it.*
+
+**`just features` could not have caught it, and that is structural.**
+`cargo hack --each-feature --no-dev-deps` is blind to a dev-dependency by
+construction and builds no test targets — so the defect was invisible to
+the gate that looks closest to it. `just check-each-crate` is therefore a
+new gate rather than a widened one: every member built alone, with its own
+dev-dependencies and its own targets, which is how anybody who downloads
+one builds it. Twenty-one crates; five are excluded because their code is
+for a target this host is not, and `check-targets` covers those by
+**naming the target** rather than by skipping the crate. Both halves were
+checked in the failing direction, the second being a loop over nothing —
+a green run over zero crates is this file's recurring defect. A sweep over
+every other member found no second case.
+
 ### A response cache landed, and it is the counterpart `owns_cache` never had
 
 `hclient::cache` — RFC 9111 freshness, validation, `Vary` and the
