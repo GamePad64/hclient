@@ -191,3 +191,49 @@ mistake, where a tokio-backed one under the same bare `block_on` panics
 before it reaches the network at all. The runtime that works without an
 ambient reactor is the runtime a blocking caller has, which is what makes
 the asymmetry a reason rather than an accident.
+
+## The fourth option, which the three questions above did not consider
+
+Questions 1 and 2 both turn on a dependency: `blocking::Client::new()`
+needs an executor that works with no ambient reactor, the design named
+smol, and smol is what a `blocking` feature would spread to every graph in
+which any crate switched it on. That is the floor argument, and it is the
+argument for a crate.
+
+**It has no subject if the facade owns a `current_thread` tokio runtime
+instead.** A blocking caller who wants `new()` at all is asking for
+`default-transport`, which is tokio — so the runtime is already in that
+graph, and entering it with `Runtime::block_on` supplies the reactor a
+bare `block_on` does not. Measured on 2026-08-29, over the real network
+through `hclient::Client`:
+
+```
+own current_thread tokio -> Ok("200 OK 559 bytes")
+  reuse 0 -> Ok(559)
+  reuse 1 -> Ok(559)
+```
+
+The reuse rows are the half worth measuring rather than assuming: a
+`current_thread` runtime drives nothing between calls, so the question was
+whether a `Client` outlives one `block_on` and can be used from the next.
+It can.
+
+**What that buys, against the smol shape:**
+
+- **no new dependency at all** — so the feature-versus-crate question
+  loses the fact it turned on, and a `blocking` feature on `hclient` costs
+  a graph that already has `default-transport` nothing;
+- **no runtime asymmetry to state loudly** — the blocking and async
+  defaults are the same runtime, where imposing smol meant explaining why
+  they differ;
+- **the nested mistake fails loudly** — tokio's own *"Cannot start a
+  runtime from within a runtime"*, which the section above establishes is
+  a better message than one of ours, where the smol shape's nested case
+  silently parks a worker.
+
+**What it costs**, and it is the honest half: a blocking caller on a
+runtime that is not tokio pays a tokio they do not use. That is exactly
+the caller the `Blocker` trait is for — they pass their own
+`block_on` and never call `new()` — so the cost falls on the convenience
+constructor rather than on the facade, which is where a convenience's
+costs belong.
