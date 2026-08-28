@@ -219,6 +219,40 @@ four coincidences. Written here so the next method follows it: *a new seam
 method arrives defaulted, and the layer above asks a constant before it
 asks the method.*
 
+## `SendTransport` earns its place, and not on the argument it looks like
+
+Asked whether the trait is needed at all, now that every backend
+implements it and the runtime seams took associated future types anyway.
+Measured by writing the alternative rather than reasoning about it: a
+`Transport` with `type Exchange<'a>` instead of `async fn execute`.
+
+**It compiles, and it is not longer.** A `Client`-capable backend is 12
+lines that way against 16 today (`async fn execute` plus a `SendTransport`
+impl), and the `Send` claim moves into a type alias where a reader sees
+it. A backend that cannot promise `Send` writes the same alias without the
+word. So the line count argues *for* removing the trait.
+
+**What decides it is who pays.** `type Exchange<'a>` cannot be filled by
+an `async fn` body — that needs `impl Trait` in associated position, which
+is unstable — so **every** backend would have to `Box::pin`. One heap
+allocation per request, for everyone: the 46 files here that use
+`Transport` directly, `examples/minimal.rs`, and every embedded caller who
+has no `Client` at all.
+
+Today `Transport::execute` is an RPITIT and allocates nothing;
+`execute_send` boxes, and only a caller who wants `hclient::Client` ever
+calls it. That is this workspace's own rule, stated at
+`hclient-fetch`'s channel and at `SendTransport`'s own doc: **the promise
+carries the cost.** Removing the trait would move the cost onto the
+audience that declined the promise, which is exactly backwards.
+
+Two smaller things fall out the same way. `async fn` is why a third-party
+transport is fifteen lines, which is what `docs/writing-a-transport.md`
+leads with. And the promise stays **explicit**: a backend author decides to
+implement `SendTransport`, prompted by a diagnostic that prints the impl —
+where under an alias it would depend on whether they happened to type
+`+ Send`, with nothing to prompt them and nothing to notice if it changed.
+
 ## One thing that looks like a limitation and is not
 
 `TcpConnect::Stream` carries **no lifetime**, which is why an embedded
