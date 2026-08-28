@@ -22,7 +22,11 @@
 //! Every expected value below was computed independently before the parser
 //! was run against it.
 
-#![cfg(feature = "cookies")]
+// Host-only: this file is the crate's one  consumer, and
+//  reaches , which does not build for
+// `wasm32-unknown-unknown`. Without this the browser suite could not
+// compile the crate's test targets at all.
+#![cfg(all(feature = "cookies", not(target_family = "wasm")))]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

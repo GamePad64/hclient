@@ -520,7 +520,6 @@ hclient-fetch = { path = "../hclient-fetch", version = "0.1.0-alpha.1", optional
 # The cookie and cache suites, moved in with their modules.
 rstest         = { workspace = true }
 assert_matches = { workspace = true }
-proptest       = { workspace = true }
 # Two independent oracles for both `date.rs` files, dev-only. `httpdate`
 # is the incumbent HTTP-date parser and answers the *format* question —
 # which strings are accepted at all — where the corpus answers the
@@ -569,6 +568,14 @@ hclient-tls        = { path = "../hclient-tls",        version = "0.1.0-alpha.1"
 # unless they are gated here too — `two_runtimes.rs` carries the matching
 # `#![cfg(not(target_family = "wasm"))]`, and the pair only works together.
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+# Host-only, and it has to be said here rather than in the plain
+# `[dev-dependencies]` block: `proptest` pulls `rusty-fork` and through it
+# `wait-timeout`, which does not build for `wasm32-unknown-unknown` at
+# all. With it unconditional, `just test-browsers` could not compile this
+# crate's test targets — a CI job red for a dependency no browser test
+# uses. `tests/cookie_dates.rs` is its only consumer and carries the
+# matching `#![cfg]`.
+proptest       = { workspace = true }
 hclient-native     = { path = "../hclient-native" }
 hclient-rt         = { path = "../hclient-rt" }
 hclient-rt-tokio   = { path = "../hclient-rt-tokio" }

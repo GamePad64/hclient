@@ -322,7 +322,15 @@ test-browser BROWSER="chrome":
       echo "$crate on {{BROWSER}}: $passed browser tests passed (minimum $min)"
     }
     run_browser_suite crates/hclient-fetch 123
-    run_browser_suite crates/hclient 6 --features default-transport,test-util
+    # `--test wasm_default` and not the whole crate, for a reason worth
+    # stating: `wasm-pack test` also compiles the crate's **doctests** for
+    # `wasm32-unknown-unknown`, and two of them cannot build there —
+    # `Client::new()?` is fallible on native and infallible in a browser,
+    # so the `?` is a compile error, and another names `tokio`. Their home
+    # is `just test-doc`, which runs them on the host where they are
+    # written to run. Naming the one file that carries
+    # `#[wasm_bindgen_test]` scopes this job to what it is for.
+    run_browser_suite crates/hclient 6 --test wasm_default --features default-transport,test-util
 
 # both browser suites, on both engines — CI runs one engine per matrix leg
 test-browsers: (test-browser "chrome") (test-browser "firefox")
