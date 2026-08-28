@@ -111,27 +111,25 @@ impl TcpConnect for Tokio {
     /// binds no stream type for it.
     const SUPPORTS_UNIX: bool = cfg!(unix);
 
-    const APPLIES: TcpOptsSupport = TcpOptsSupport {
-        bind_device: cfg!(any(
+    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL
+        .bind_device(cfg!(any(
             target_os = "android",
             target_os = "fuchsia",
             target_os = "linux"
-        )),
-        user_timeout: cfg!(any(
+        )))
+        .user_timeout(cfg!(any(
             target_os = "android",
             target_os = "fuchsia",
             target_os = "linux",
             target_os = "cygwin"
-        )),
+        )))
         // `socket2::TcpKeepalive::with_retries` does not exist on these
         // three, so neither does this claim.
-        keepalive_retries: !cfg!(any(
+        .keepalive_retries(!cfg!(any(
             target_os = "openbsd",
             target_os = "redox",
             target_os = "solaris"
-        )),
-        ..TcpOptsSupport::ALL
-    };
+        )));
 
     /// A `Send` box: everything this awaits is `tokio`'s own, and a
     /// consumer that wants to prove a `Send` future needs to be able to
@@ -376,10 +374,7 @@ mod tests {
             let _ = l.accept();
         });
 
-        let opts = TcpOpts {
-            nodelay: true,
-            ..Default::default()
-        };
+        let opts = TcpOpts::default().nodelay(true);
         let s = Tokio.connect(addr, &opts).await.expect("connect");
         // Not just "the connection succeeded" (that would pass even if
         // `build_socket` silently ignored `opts`), but that `nodelay: true`
@@ -411,10 +406,7 @@ mod tests {
             let _ = l.accept();
         });
 
-        let opts = TcpOpts {
-            keepalive: Some(Duration::from_secs(30)),
-            ..Default::default()
-        };
+        let opts = TcpOpts::default().keepalive(Some(Duration::from_secs(30)));
         let s = Tokio.connect(addr, &opts).await.expect("connect");
         let enabled = socket2::SockRef::from(s.get_ref())
             .keepalive()
@@ -450,12 +442,10 @@ mod tests {
         // The keepalive parts, together, because `set_tcp_keepalive` takes
         // them as one value and a test that set them apart would not
         // exercise the builder chain that assembles it.
-        let opts = TcpOpts {
-            keepalive: Some(Duration::from_secs(30)),
-            keepalive_interval: Some(Duration::from_secs(7)),
-            keepalive_retries: Some(4),
-            ..Default::default()
-        };
+        let opts = TcpOpts::default()
+            .keepalive(Some(Duration::from_secs(30)))
+            .keepalive_interval(Some(Duration::from_secs(7)))
+            .keepalive_retries(Some(4));
         let s = Tokio.connect(addr, &opts).await.expect("connect");
         let sock = socket2::SockRef::from(s.get_ref());
         assert!(sock.keepalive().expect("keepalive query"));
@@ -479,10 +469,7 @@ mod tests {
         let s = Tokio
             .connect(
                 addr,
-                &TcpOpts {
-                    keepalive_interval: Some(Duration::from_secs(9)),
-                    ..Default::default()
-                },
+                &TcpOpts::default().keepalive_interval(Some(Duration::from_secs(9))),
             )
             .await
             .expect("connect");
@@ -504,10 +491,7 @@ mod tests {
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         {
             const { assert!(<Tokio as TcpConnect>::APPLIES.bind_device) };
-            let opts = TcpOpts {
-                bind_device: Some("lo".to_owned()),
-                ..Default::default()
-            };
+            let opts = TcpOpts::default().bind_device(Some("lo".to_owned()));
             match Tokio.connect(addr, &opts).await {
                 Ok(s) => {
                     let got = socket2::SockRef::from(s.get_ref())
@@ -541,10 +525,7 @@ mod tests {
         ))]
         {
             const { assert!(<Tokio as TcpConnect>::APPLIES.user_timeout) };
-            let opts = TcpOpts {
-                user_timeout: Some(Duration::from_secs(20)),
-                ..Default::default()
-            };
+            let opts = TcpOpts::default().user_timeout(Some(Duration::from_secs(20)));
             opts.reject_unsupported(<Tokio as TcpConnect>::APPLIES)
                 .expect("declared, so not refused");
             Tokio.connect(addr, &opts).await.expect("connect");

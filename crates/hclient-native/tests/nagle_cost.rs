@@ -42,7 +42,7 @@
 //!   explicitly, which turns the transport's own `nodelay` back off (see
 //!   `Native::tcp_opts` — a caller's set is the whole set). The number
 //!   under investigation.
-//! - [`nodelay_on`] — the same exchange with `TcpOpts { nodelay: true }`.
+//! - [`nodelay_on`] — the same exchange with `TcpOpts::default().nodelay(true)`.
 //!   The difference between these two is the whole finding.
 //! - [`server_side_nodelay`] — `TCP_NODELAY` set on the **server's**
 //!   socket, the client left at the default. `TCP_NODELAY` and the
@@ -409,12 +409,13 @@ async fn nagle_on() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "a measurement, not a verdict — see the module doc"]
 async fn nodelay_on() {
-    let opts = TcpOpts {
-        nodelay: true,
-        ..TcpOpts::default()
-    };
+    let opts = TcpOpts::default().nodelay(true);
     let (samples, wire) = tls_arm(Some(opts), false).await;
-    report("TLS 1.3, client TcpOpts { nodelay: true }", &samples, &wire);
+    report(
+        "TLS 1.3, client TcpOpts::default().nodelay(true)",
+        &samples,
+        &wire,
+    );
 }
 
 /// The arm that says which side is holding: `TCP_NODELAY` on the server,

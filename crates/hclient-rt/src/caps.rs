@@ -42,6 +42,7 @@ pub trait Spawn<F: Future<Output = ()>> {
 /// asks for `nodelay`, and asks only where the runtime declares it applies
 /// it.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct TcpOpts {
     /// `TCP_NODELAY` — Nagle's algorithm off. See the type's own doc for
     /// why `default()` leaves it `false` and who turns it on.
@@ -103,12 +104,102 @@ pub struct TcpOpts {
     pub reuse_address: bool,
 }
 
+impl TcpOpts {
+    /// Chained setters, and they exist so this struct can grow.
+    ///
+    /// It is `#[non_exhaustive]`, so `TcpOpts { nodelay: true,
+    /// ..Default::default() }` does not compile from another crate — and
+    /// that expression was the whole argument this type's own doc used to
+    /// make **against** the attribute. Setters answer the argument rather
+    /// than losing to it: `TcpOpts::default().nodelay(true)` is one line
+    /// at the call site and costs nothing when an eleventh option arrives.
+    ///
+    /// The measurement behind that: this struct went from six fields to
+    /// ten in thirty-odd commits, and `TCP_FASTOPEN`, DSCP and `SO_MARK`
+    /// are all still unwritten. Each of those was a major version before
+    /// the attribute and is additive after it.
+    ///
+    /// The fields stay `pub` because a runtime **reads** them —
+    /// `#[non_exhaustive]` blocks construction and matching from outside,
+    /// not field access.
+    /// Set `TCP_NODELAY`.
+    #[must_use]
+    pub fn nodelay(mut self, value: bool) -> Self {
+        self.nodelay = value;
+        self
+    }
+
+    /// Set the keepalive idle time.
+    #[must_use]
+    pub fn keepalive(mut self, value: Option<Duration>) -> Self {
+        self.keepalive = value;
+        self
+    }
+
+    /// Set the interval between keepalive probes.
+    #[must_use]
+    pub fn keepalive_interval(mut self, value: Option<Duration>) -> Self {
+        self.keepalive_interval = value;
+        self
+    }
+
+    /// Set how many keepalive probes go unanswered before the kernel gives up.
+    #[must_use]
+    pub fn keepalive_retries(mut self, value: Option<u32>) -> Self {
+        self.keepalive_retries = value;
+        self
+    }
+
+    /// Set the interface to bind to.
+    #[must_use]
+    pub fn bind_device(mut self, value: Option<String>) -> Self {
+        self.bind_device = value;
+        self
+    }
+
+    /// Set `TCP_USER_TIMEOUT`.
+    #[must_use]
+    pub fn user_timeout(mut self, value: Option<Duration>) -> Self {
+        self.user_timeout = value;
+        self
+    }
+
+    /// Set the source address.
+    #[must_use]
+    pub fn local_address(mut self, value: Option<IpAddr>) -> Self {
+        self.local_address = value;
+        self
+    }
+
+    /// Set `SO_SNDBUF`.
+    #[must_use]
+    pub fn send_buffer_size(mut self, value: Option<usize>) -> Self {
+        self.send_buffer_size = value;
+        self
+    }
+
+    /// Set `SO_RCVBUF`.
+    #[must_use]
+    pub fn recv_buffer_size(mut self, value: Option<usize>) -> Self {
+        self.recv_buffer_size = value;
+        self
+    }
+
+    /// Set `SO_REUSEADDR`.
+    #[must_use]
+    pub fn reuse_address(mut self, value: bool) -> Self {
+        self.reuse_address = value;
+        self
+    }
+}
+
 /// Which of [`TcpOpts`]' six fields a runtime can actually apply.
 ///
 /// One `bool` per field of `TcpOpts`, not a count and not a bitflags crate:
 /// the error a caller gets has to name the option it asked for, and a
 /// field-per-field mirror is the only shape that can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TcpOptsSupport {
     pub nodelay: bool,
     pub keepalive: bool,
@@ -158,6 +249,89 @@ impl TcpOptsSupport {
         recv_buffer_size: false,
         reuse_address: false,
     };
+
+    /// Chained `const` setters, so a runtime states its support from
+    /// [`Self::NONE`] and this type can grow.
+    ///
+    /// `const` rather than plain, because the value a runtime writes is an
+    /// associated **constant** — `TcpConnect::APPLIES` — computed with
+    /// `cfg!`. So the ordinary shape is
+    /// `TcpOptsSupport::NONE.nodelay(true).bind_device(cfg!(target_os = "linux"))`,
+    /// which reads as the claim it is.
+    ///
+    /// Starting from `NONE` rather than from a literal is also the
+    /// understating direction, which this seam's own rule requires: an
+    /// understated claim costs a caller a named `Unsupported`, an
+    /// overstated one costs them an option silently not applied.
+    /// Claim, or disclaim, `nodelay`.
+    #[must_use]
+    pub const fn nodelay(mut self, applies: bool) -> Self {
+        self.nodelay = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `keepalive`.
+    #[must_use]
+    pub const fn keepalive(mut self, applies: bool) -> Self {
+        self.keepalive = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `keepalive_interval`.
+    #[must_use]
+    pub const fn keepalive_interval(mut self, applies: bool) -> Self {
+        self.keepalive_interval = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `keepalive_retries`.
+    #[must_use]
+    pub const fn keepalive_retries(mut self, applies: bool) -> Self {
+        self.keepalive_retries = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `bind_device`.
+    #[must_use]
+    pub const fn bind_device(mut self, applies: bool) -> Self {
+        self.bind_device = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `user_timeout`.
+    #[must_use]
+    pub const fn user_timeout(mut self, applies: bool) -> Self {
+        self.user_timeout = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `local_address`.
+    #[must_use]
+    pub const fn local_address(mut self, applies: bool) -> Self {
+        self.local_address = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `send_buffer_size`.
+    #[must_use]
+    pub const fn send_buffer_size(mut self, applies: bool) -> Self {
+        self.send_buffer_size = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `recv_buffer_size`.
+    #[must_use]
+    pub const fn recv_buffer_size(mut self, applies: bool) -> Self {
+        self.recv_buffer_size = applies;
+        self
+    }
+
+    /// Claim, or disclaim, `reuse_address`.
+    #[must_use]
+    pub const fn reuse_address(mut self, applies: bool) -> Self {
+        self.reuse_address = applies;
+        self
+    }
 }
 
 /// The caller set socket options this runtime cannot apply.

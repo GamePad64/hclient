@@ -187,6 +187,16 @@ impl Hooks for Recorder {
                     }
                 },
             },
+            // `Event` is `#[non_exhaustive]` from outside `hclient-core`, so
+            // this arm is required. It is not a loss: the compile error a
+            // new variant used to cause here is kept once, in
+            // `hooks::tests::every_event_is_accounted_for`, where the
+            // attribute does not apply — and an out-of-tree `Hooks` impl
+            // no longer breaks on a release that adds one.
+            // An event this recorder does not model is not recorded — a
+            // `Seen` value invented for it would be a fact the test never
+            // observed.
+            _ => return,
         };
         self.seen.lock().expect("recorder").push(seen);
     }

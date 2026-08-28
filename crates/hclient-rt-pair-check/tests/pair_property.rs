@@ -123,10 +123,7 @@ where
 
     // TcpConnect: real connect with an option applied, then a real
     // write/read round trip against a loopback echo listener.
-    let opts = TcpOpts {
-        nodelay: true,
-        ..Default::default()
-    };
+    let opts = TcpOpts::default().nodelay(true);
     let mut stream = rt.connect(addr, &opts).await.expect("connect");
     write_all(&mut stream, b"ping").await.expect("write");
     let mut buf = [0u8; 64];

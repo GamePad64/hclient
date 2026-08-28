@@ -141,18 +141,17 @@ fn native<const MISSING: usize>() -> Native<FakeRt<MISSING>, Rustls, SystemDns<T
 /// which is what makes "the error names this option and no other"
 /// checkable at all.
 fn every_field_set() -> TcpOpts {
-    TcpOpts {
-        nodelay: true,
-        keepalive: Some(Duration::from_secs(30)),
-        keepalive_interval: Some(Duration::from_secs(5)),
-        keepalive_retries: Some(3),
-        bind_device: Some("lo".to_owned()),
-        user_timeout: Some(Duration::from_secs(20)),
-        local_address: Some(IpAddr::from([127, 0, 0, 1])),
-        send_buffer_size: Some(4096),
-        recv_buffer_size: Some(4096),
-        reuse_address: true,
-    }
+    TcpOpts::default()
+        .nodelay(true)
+        .keepalive(Some(Duration::from_secs(30)))
+        .keepalive_interval(Some(Duration::from_secs(5)))
+        .keepalive_retries(Some(3))
+        .bind_device(Some("lo".to_owned()))
+        .user_timeout(Some(Duration::from_secs(20)))
+        .local_address(Some(IpAddr::from([127, 0, 0, 1])))
+        .send_buffer_size(Some(4096))
+        .recv_buffer_size(Some(4096))
+        .reuse_address(true)
 }
 
 /// The refusal, unwrapped down to the typed value that names the options.
@@ -185,55 +184,37 @@ fn refused_options<const MISSING: usize>(opts: TcpOpts) -> Vec<&'static str> {
 
 #[test]
 fn nodelay_is_refused_by_name() {
-    let opts = TcpOpts {
-        nodelay: true,
-        ..TcpOpts::default()
-    };
+    let opts = TcpOpts::default().nodelay(true);
     assert_eq!(refused_options::<0>(opts), ["nodelay"]);
 }
 
 #[test]
 fn keepalive_is_refused_by_name() {
-    let opts = TcpOpts {
-        keepalive: every_field_set().keepalive,
-        ..TcpOpts::default()
-    };
+    let opts = TcpOpts::default().keepalive(every_field_set().keepalive);
     assert_eq!(refused_options::<1>(opts), ["keepalive"]);
 }
 
 #[test]
 fn local_address_is_refused_by_name() {
-    let opts = TcpOpts {
-        local_address: every_field_set().local_address,
-        ..TcpOpts::default()
-    };
+    let opts = TcpOpts::default().local_address(every_field_set().local_address);
     assert_eq!(refused_options::<2>(opts), ["local_address"]);
 }
 
 #[test]
 fn send_buffer_size_is_refused_by_name() {
-    let opts = TcpOpts {
-        send_buffer_size: every_field_set().send_buffer_size,
-        ..TcpOpts::default()
-    };
+    let opts = TcpOpts::default().send_buffer_size(every_field_set().send_buffer_size);
     assert_eq!(refused_options::<3>(opts), ["send_buffer_size"]);
 }
 
 #[test]
 fn recv_buffer_size_is_refused_by_name() {
-    let opts = TcpOpts {
-        recv_buffer_size: every_field_set().recv_buffer_size,
-        ..TcpOpts::default()
-    };
+    let opts = TcpOpts::default().recv_buffer_size(every_field_set().recv_buffer_size);
     assert_eq!(refused_options::<4>(opts), ["recv_buffer_size"]);
 }
 
 #[test]
 fn reuse_address_is_refused_by_name() {
-    let opts = TcpOpts {
-        reuse_address: true,
-        ..TcpOpts::default()
-    };
+    let opts = TcpOpts::default().reuse_address(true);
     assert_eq!(refused_options::<5>(opts), ["reuse_address"]);
 }
 
@@ -244,24 +225,25 @@ fn reuse_address_is_refused_by_name() {
 /// `TCP_USER_TIMEOUT` those plus Cygwin, so the set differs per target.
 fn every_field_it_applies(a: TcpOptsSupport) -> TcpOpts {
     let all = every_field_set();
-    TcpOpts {
-        nodelay: a.nodelay && all.nodelay,
-        keepalive: a.keepalive.then_some(all.keepalive).flatten(),
-        keepalive_interval: a
-            .keepalive_interval
-            .then_some(all.keepalive_interval)
-            .flatten(),
-        keepalive_retries: a
-            .keepalive_retries
-            .then_some(all.keepalive_retries)
-            .flatten(),
-        bind_device: a.bind_device.then_some(all.bind_device).flatten(),
-        user_timeout: a.user_timeout.then_some(all.user_timeout).flatten(),
-        local_address: a.local_address.then_some(all.local_address).flatten(),
-        send_buffer_size: a.send_buffer_size.then_some(all.send_buffer_size).flatten(),
-        recv_buffer_size: a.recv_buffer_size.then_some(all.recv_buffer_size).flatten(),
-        reuse_address: a.reuse_address && all.reuse_address,
-    }
+    TcpOpts::default()
+        .nodelay(a.nodelay && all.nodelay)
+        .keepalive(a.keepalive.then_some(all.keepalive).flatten())
+        .keepalive_interval(
+            a.keepalive_interval
+                .then_some(all.keepalive_interval)
+                .flatten(),
+        )
+        .keepalive_retries(
+            a.keepalive_retries
+                .then_some(all.keepalive_retries)
+                .flatten(),
+        )
+        .bind_device(a.bind_device.then_some(all.bind_device).flatten())
+        .user_timeout(a.user_timeout.then_some(all.user_timeout).flatten())
+        .local_address(a.local_address.then_some(all.local_address).flatten())
+        .send_buffer_size(a.send_buffer_size.then_some(all.send_buffer_size).flatten())
+        .recv_buffer_size(a.recv_buffer_size.then_some(all.recv_buffer_size).flatten())
+        .reuse_address(a.reuse_address && all.reuse_address)
 }
 
 /// The control the refusals above need: a runtime refuses nothing among
@@ -366,11 +348,7 @@ fn two_unappliable_options_are_both_named() {
         Rustls::with_webpki_roots(),
         SystemDns::new(Tokio),
     )
-    .tcp_opts(TcpOpts {
-        nodelay: true,
-        reuse_address: true,
-        ..TcpOpts::default()
-    })
+    .tcp_opts(TcpOpts::default().nodelay(true).reuse_address(true))
     .expect_err("a runtime that applies nothing must refuse both");
     let io = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<std::io::Error>())
@@ -575,11 +553,8 @@ async fn tcp_opts_replaces_the_whole_set_including_the_nodelay_new_asked_for() {
     let rt = Declaring::default();
     let seen = rt.0.clone();
     let opts = asked_of(rt, &seen, |t| {
-        t.tcp_opts(TcpOpts {
-            keepalive: Some(Duration::from_secs(30)),
-            ..TcpOpts::default()
-        })
-        .expect("this runtime applies everything")
+        t.tcp_opts(TcpOpts::default().keepalive(Some(Duration::from_secs(30))))
+            .expect("this runtime applies everything")
     })
     .await;
     assert!(!opts.nodelay, "the caller's set is the whole set");
@@ -596,10 +571,7 @@ async fn tcp_opts_replaces_the_whole_set_including_the_nodelay_new_asked_for() {
 #[test]
 fn a_caller_who_asks_a_silent_runtime_for_nodelay_is_still_refused_by_name() {
     let err = Native::new(Silent::default(), NoTls, IpLiteralOnly)
-        .tcp_opts(TcpOpts {
-            nodelay: true,
-            ..TcpOpts::default()
-        })
+        .tcp_opts(TcpOpts::default().nodelay(true))
         .expect_err("a runtime that declares nothing must refuse what it was asked for");
     assert_eq!(*err.kind(), ErrorKind::Unsupported);
     let io = StdError::source(&err)

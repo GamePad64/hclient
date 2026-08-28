@@ -42,6 +42,13 @@ impl Hooks for Recorder {
             Event::Connected(e) => format!("connected id={}", e.id.get()),
             Event::Reused(_) => "reused".into(),
             Event::Closed(_) => "closed".into(),
+            // `Event` is `#[non_exhaustive]` from outside `hclient-core`, so
+            // this arm is required. It is not a loss: the compile error a
+            // new variant used to cause here is kept once, in
+            // `hooks::tests::every_event_is_accounted_for`, where the
+            // attribute does not apply — and an out-of-tree `Hooks` impl
+            // no longer breaks on a release that adds one.
+            _ => "other".into(),
         };
         self.0.lock().expect("recorder").push(line);
     }

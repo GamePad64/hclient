@@ -235,26 +235,10 @@ impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N,
     ///   asked to widen.
     /// - `reuse_address` — `SO_REUSEADDR` has no counterpart in smoltcp;
     ///   there is no bind, and no address in a `TIME_WAIT` to steal.
-    const APPLIES: TcpOptsSupport = TcpOptsSupport {
-        nodelay: true,
-        keepalive: true,
-        // smoltcp has one keepalive knob — an interval, set by
-        // `set_keep_alive` — and no separate idle time or probe count, so
-        // there is nothing here to map these two onto. Declaring them
-        // would be the understating default's opposite: a claim to apply
-        // something that has no setter.
-        keepalive_interval: false,
-        keepalive_retries: false,
-        // Both are Linux socket options and this runtime has no sockets:
-        // smoltcp *is* the stack, and there is no interface table to bind
-        // to nor a kernel retransmission timer to bound.
-        bind_device: false,
-        user_timeout: false,
-        local_address: false,
-        send_buffer_size: false,
-        recv_buffer_size: false,
-        reuse_address: false,
-    };
+    // From `NONE` up, which is the understating direction the seam
+    // requires: what is not named here is not claimed. The two smoltcp
+    // does have are the two turned on.
+    const APPLIES: TcpOptsSupport = TcpOptsSupport::NONE.nodelay(true).keepalive(true);
 
     /// **A plain box, deliberately not a `Send` one**, and this is the
     /// case the seam's associated type exists for. `embassy_net::Stack`
@@ -460,11 +444,9 @@ mod tests {
         // pair `(nodelay, keepalive)` and only that pair passes
         // `reject_unsupported`, which is what `connect` calls.
         type Rt = Embassy<1>;
-        let ok = TcpOpts {
-            nodelay: true,
-            keepalive: Some(Duration::from_secs(30)),
-            ..TcpOpts::default()
-        };
+        let ok = TcpOpts::default()
+            .nodelay(true)
+            .keepalive(Some(Duration::from_secs(30)));
         assert!(ok.reject_unsupported(<Rt as TcpConnect>::APPLIES).is_ok());
     }
 
@@ -478,32 +460,17 @@ mod tests {
         let cases: [(&str, TcpOpts); 4] = [
             (
                 "local_address",
-                TcpOpts {
-                    local_address: Some(core::net::IpAddr::from([127, 0, 0, 1])),
-                    ..TcpOpts::default()
-                },
+                TcpOpts::default().local_address(Some(core::net::IpAddr::from([127, 0, 0, 1]))),
             ),
             (
                 "send_buffer_size",
-                TcpOpts {
-                    send_buffer_size: Some(64 * 1024),
-                    ..TcpOpts::default()
-                },
+                TcpOpts::default().send_buffer_size(Some(64 * 1024)),
             ),
             (
                 "recv_buffer_size",
-                TcpOpts {
-                    recv_buffer_size: Some(64 * 1024),
-                    ..TcpOpts::default()
-                },
+                TcpOpts::default().recv_buffer_size(Some(64 * 1024)),
             ),
-            (
-                "reuse_address",
-                TcpOpts {
-                    reuse_address: true,
-                    ..TcpOpts::default()
-                },
-            ),
+            ("reuse_address", TcpOpts::default().reuse_address(true)),
         ];
         for (name, opts) in cases {
             // `let ... else`, not `expect_err`: `expect_err` takes a

@@ -398,6 +398,13 @@ fn a_hook_can_be_written_against_the_facade_alone() {
                     }
                     bump(&self.closed);
                 }
+                // `Event` is `#[non_exhaustive]` from outside `hclient-core`, so
+                // this arm is required. It is not a loss: the compile error a
+                // new variant used to cause here is kept once, in
+                // `hooks::tests::every_event_is_accounted_for`, where the
+                // attribute does not apply — and an out-of-tree `Hooks` impl
+                // no longer breaks on a release that adds one.
+                _ => {}
             }
         }
     }

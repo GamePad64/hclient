@@ -364,10 +364,7 @@ fn tcp_on_unit_runtime(
     nodelay: bool,
 ) -> Native<hclient_rt_tokio::Tokio, Tls, FakeDns> {
     Native::new(hclient_rt_tokio::Tokio, client_tls(cert), FakeDns::new())
-        .tcp_opts(hclient_rt::TcpOpts {
-            nodelay,
-            ..Default::default()
-        })
+        .tcp_opts(hclient_rt::TcpOpts::default().nodelay(nodelay))
         .expect("`Tokio` declares TcpOptsSupport::ALL")
 }
 

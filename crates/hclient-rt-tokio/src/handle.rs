@@ -464,10 +464,7 @@ mod tests {
         });
 
         let rt = TokioHandle::current().expect("inside #[tokio::test]");
-        let opts = TcpOpts {
-            nodelay: true,
-            ..Default::default()
-        };
+        let opts = TcpOpts::default().nodelay(true);
         let s = rt.connect(addr, &opts).await.expect(
             "a runtime that applies nodelay must not refuse it -- if this \
              fails with an unsupported-option error, APPLIES has drifted \

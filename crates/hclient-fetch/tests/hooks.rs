@@ -103,6 +103,13 @@ impl Hooks for Recorder {
                     version: h.version,
                 }
             }
+            // `Event` is `#[non_exhaustive]` outside `hclient-core`, so
+            // this arm is required. An event this recorder does not model
+            // is not recorded — a `Seen` value invented for it would be a
+            // fact the test never observed. The compile error a new
+            // variant used to cause here is kept once, in
+            // `hooks::tests::every_event_is_accounted_for`.
+            _ => return,
         };
         self.seen.borrow_mut().push(flat);
     }

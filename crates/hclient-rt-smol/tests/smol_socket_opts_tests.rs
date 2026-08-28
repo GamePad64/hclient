@@ -55,10 +55,7 @@ fn spawn_accepting_listener() -> std::net::SocketAddr {
 fn local_address_selects_the_connecting_source_ip() {
     let addr = spawn_accepting_listener();
     let assignable = second_loopback_is_assignable();
-    let opts = TcpOpts {
-        local_address: Some(IpAddr::V4(SECOND_LOOPBACK)),
-        ..Default::default()
-    };
+    let opts = TcpOpts::default().local_address(Some(IpAddr::V4(SECOND_LOOPBACK)));
     futures_executor::block_on(async {
         let connected = Smol.connect(addr, &opts).await;
         if assignable {
@@ -111,13 +108,7 @@ fn send_buffer_size_is_applied_before_connect() {
     let large_addr = spawn_accepting_listener();
     futures_executor::block_on(async {
         let small = Smol
-            .connect(
-                small_addr,
-                &TcpOpts {
-                    send_buffer_size: Some(4096),
-                    ..Default::default()
-                },
-            )
+            .connect(small_addr, &TcpOpts::default().send_buffer_size(Some(4096)))
             .await
             .expect("small connect");
         let small_size = socket2::SockRef::from(small.get_ref().tcp())
@@ -128,10 +119,7 @@ fn send_buffer_size_is_applied_before_connect() {
         let large = Smol
             .connect(
                 large_addr,
-                &TcpOpts {
-                    send_buffer_size: Some(requested),
-                    ..Default::default()
-                },
+                &TcpOpts::default().send_buffer_size(Some(requested)),
             )
             .await
             .expect("large connect");
@@ -153,13 +141,7 @@ fn recv_buffer_size_is_applied_before_connect() {
     let large_addr = spawn_accepting_listener();
     futures_executor::block_on(async {
         let small = Smol
-            .connect(
-                small_addr,
-                &TcpOpts {
-                    recv_buffer_size: Some(4096),
-                    ..Default::default()
-                },
-            )
+            .connect(small_addr, &TcpOpts::default().recv_buffer_size(Some(4096)))
             .await
             .expect("small connect");
         let small_size = socket2::SockRef::from(small.get_ref().tcp())
@@ -170,10 +152,7 @@ fn recv_buffer_size_is_applied_before_connect() {
         let large = Smol
             .connect(
                 large_addr,
-                &TcpOpts {
-                    recv_buffer_size: Some(requested),
-                    ..Default::default()
-                },
+                &TcpOpts::default().recv_buffer_size(Some(requested)),
             )
             .await
             .expect("large connect");
@@ -192,10 +171,7 @@ fn recv_buffer_size_is_applied_before_connect() {
 #[test]
 fn reuse_address_is_applied_before_connect() {
     let addr = spawn_accepting_listener();
-    let opts = TcpOpts {
-        reuse_address: true,
-        ..Default::default()
-    };
+    let opts = TcpOpts::default().reuse_address(true);
     futures_executor::block_on(async {
         let s = Smol.connect(addr, &opts).await.expect("connect");
         let enabled = socket2::SockRef::from(s.get_ref().tcp())

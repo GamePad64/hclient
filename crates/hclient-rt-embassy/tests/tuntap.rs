@@ -519,32 +519,17 @@ async fn refuse_opts(stack: Stack<'static>) {
     let cases: [(&str, TcpOpts); 4] = [
         (
             "local_address",
-            TcpOpts {
-                local_address: Some(std::net::IpAddr::from(CLIENT_IP)),
-                ..TcpOpts::default()
-            },
+            TcpOpts::default().local_address(Some(std::net::IpAddr::from(CLIENT_IP))),
         ),
         (
             "send_buffer_size",
-            TcpOpts {
-                send_buffer_size: Some(64 * 1024),
-                ..TcpOpts::default()
-            },
+            TcpOpts::default().send_buffer_size(Some(64 * 1024)),
         ),
         (
             "recv_buffer_size",
-            TcpOpts {
-                recv_buffer_size: Some(64 * 1024),
-                ..TcpOpts::default()
-            },
+            TcpOpts::default().recv_buffer_size(Some(64 * 1024)),
         ),
-        (
-            "reuse_address",
-            TcpOpts {
-                reuse_address: true,
-                ..TcpOpts::default()
-            },
-        ),
+        ("reuse_address", TcpOpts::default().reuse_address(true)),
     ];
 
     for (name, opts) in cases {
@@ -574,11 +559,9 @@ async fn refuse_opts(stack: Stack<'static>) {
     let io = TcpConnect::connect(
         &rt,
         addr,
-        &TcpOpts {
-            nodelay: true,
-            keepalive: Some(Duration::from_secs(30)),
-            ..TcpOpts::default()
-        },
+        &TcpOpts::default()
+            .nodelay(true)
+            .keepalive(Some(Duration::from_secs(30))),
     )
     .await
     .expect("nodelay and keepalive are the two this runtime applies");

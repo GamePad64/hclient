@@ -29,7 +29,7 @@ building the very value it exists to produce.
 
 ## Ranked by what history says will move
 
-### 1. `TcpOpts` and `TcpOptsSupport` — the highest-churn public structs
+### 1. `TcpOpts` and `TcpOptsSupport` — the highest-churn public structs — **done**
 
 **Measured**: they grew from 6 fields to 10 in the last thirty-odd
 commits, and `AGENTS.md` lists both among six types that took a
@@ -47,13 +47,22 @@ TcpOpts::default().nodelay(true).keepalive_interval(Duration::from_secs(30))
 ```
 
 One line per option at the call site, and the struct can grow for ever.
-**This is the single highest-value change in this document.**
+**This is the single highest-value change in this document**, and it is
+made: both types carry the attribute and a full set of chained setters,
+`TcpOptsSupport`'s of them `const` because a runtime writes it into an
+associated constant computed with `cfg!`.
+
+The conversion touched fifty-odd literals across ten files and every one
+became shorter. The one that did not is `tests/tcp_opts.rs`'s
+`every_field_it_applies`, which builds a value field by field from another
+— exactly the shape a literal is for, and exactly the shape that would
+have broken on the eleventh option.
 
 `TcpOptsSupport` is the same shape with a different writer — a runtime
 implementor — and takes the same treatment, because an out-of-tree runtime
 is exactly who must not be broken by a tenth option.
 
-### 2. `Event` — every new variant breaks every out-of-tree hook
+### 2. `Event` — every new variant breaks every out-of-tree hook — **done**
 
 **Measured**: 28 match sites in this workspace's own tests, and
 `Informational` was added this year, breaking `hclient-fetch`'s suite for
@@ -68,9 +77,19 @@ invented the resolution: `Capabilities` is `#[non_exhaustive]` **and**
 *inside `hclient-core`*, where the attribute does not apply. One compile
 error in one known place, and no break for anybody outside.
 
-Apply the same to `Event`: mark it, and put a single exhaustive match in
-`hclient-core`. The cost is `_` arms in the backends' own test files,
-which is where the property is currently duplicated 28 times.
+Applied: `Event` is marked, and `hooks::tests::every_event_is_accounted_for`
+in `hclient-core` is the single exhaustive match — no `_` arm, no
+assertion about behaviour, and its whole value is that it stops compiling.
+
+Five `_` arms were added, each saying where the compile error went. **One
+of them was wrong and a test caught it**: in `hclient-wasi`'s guest the
+arm landed before `Event::Head`, so it swallowed the event the harness was
+there to observe. A `_` arm shadows everything below it, and that is the
+one hazard this change carries per site.
+
+And the arm in `hclient-fetch`'s suite was found by `just check-targets`
+rather than by the workspace run, because that crate builds for a target
+the host run does not — the blind spot that job exists for, working.
 
 ### 3. The report structs an out-of-tree backend has to build
 

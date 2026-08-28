@@ -329,11 +329,11 @@ fn native() -> Native<Tokio, Rustls, IpLiteralOnly> {
 /// pins one crate over.
 fn native_with_send_buffer(bytes: usize) -> Native<Tokio, Rustls, IpLiteralOnly> {
     native()
-        .tcp_opts(hclient_rt::TcpOpts {
-            nodelay: true,
-            send_buffer_size: Some(bytes),
-            ..hclient_rt::TcpOpts::default()
-        })
+        .tcp_opts(
+            hclient_rt::TcpOpts::default()
+                .nodelay(true)
+                .send_buffer_size(Some(bytes)),
+        )
         .expect("tokio applies nodelay and send_buffer_size on every platform in this matrix")
 }
 

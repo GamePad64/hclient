@@ -937,7 +937,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             //
             // **And it is asked for only where the runtime says it
             // applies it**, which is the whole difference between this and
-            // `TcpOpts { nodelay: true }` written unconditionally.
+            // `TcpOpts::default().nodelay(true)` written unconditionally.
             // `TcpOpts::reject_unsupported` makes a set option a *refusal*
             // on a runtime that cannot apply it — deliberately, since
             // dropping a caller's option silently is worse — so asking
@@ -956,13 +956,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // direction a claim made by silence must fail in.
             //
             // A caller who *wants* the refusal still gets it, by asking:
-            // `tcp_opts(TcpOpts { nodelay: true, .. })` on a `NONE`
-            // backend fails at construction, naming `nodelay`.
+            // `tcp_opts(TcpOpts::default().nodelay(true))` on a `NONE`
+            // backend fails at connect, naming `nodelay`.
             // `tests/tcp_opts.rs` pins both halves.
-            opts: TcpOpts {
-                nodelay: <R as TcpConnect>::APPLIES.nodelay,
-                ..TcpOpts::default()
-            },
+            opts: TcpOpts::default().nodelay(<R as TcpConnect>::APPLIES.nodelay),
             caps,
             pool,
             svcb_failures: discovery::NegativeCache::default(),
@@ -2085,16 +2082,17 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// transport asked for itself.** [`Native::new`] sets `nodelay` to
     /// whatever the runtime's [`TcpConnect::APPLIES`] says it can apply —
     /// Nagle's algorithm costs the head of a TLS exchange 41 ms, measured
-    /// there — and a caller passing `TcpOpts { keepalive: Some(..),
-    /// ..Default::default() }` here turns it back off along with
-    /// everything else, because `TcpOpts::default()` is all-off. That is
+    /// there — and a caller passing
+    /// `TcpOpts::default().keepalive(Some(..))` here turns it back off
+    /// along with everything else, because `TcpOpts::default()` is
+    /// all-off. That is
     /// deliberate rather than a trap left open: these are *the* socket
     /// parameters for every attempt this transport makes, and a method
     /// that silently kept one field of its own would be a worse surprise
     /// than one that takes the caller at their word. `..transport
     /// .tcp_opts_now()` does not exist for the same reason a getter for a
     /// setting nobody set does not: the value to start from is
-    /// `TcpOpts { nodelay: true, .. }`, which is what
+    /// `TcpOpts::default().nodelay(true)`, which is what
     /// `tcp_opts_replace_the_whole_set_including_the_nodelay_new_asked_for`
     /// says on the record.
     ///

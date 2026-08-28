@@ -528,6 +528,15 @@ impl hclient_core::unversioned::Hooks for Recorder {
                 h.version,
                 h.elapsed.as_nanos()
             ),
+
+            // `Event` is `#[non_exhaustive]` outside `hclient-core`, so
+            // this arm is required. It prints rather than panicking, for
+            // the same reason the arms above do: a variant this harness
+            // does not know reaches the transcript as a word instead of
+            // killing a hook. The compile error a new variant used to
+            // cause here is kept in
+            // `hooks::tests::every_event_is_accounted_for`.
+            _ => "EVENT unknown".to_owned(),
         };
         self.0.borrow_mut().push(line);
     }

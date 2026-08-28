@@ -250,27 +250,25 @@ impl TcpConnect for Smol {
     /// The direction of the `cfg` matters: an understated `APPLIES` costs
     /// a caller a named `Unsupported` error, an overstated one costs them
     /// an option silently not applied.
-    const APPLIES: TcpOptsSupport = TcpOptsSupport {
-        bind_device: cfg!(any(
+    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL
+        .bind_device(cfg!(any(
             target_os = "android",
             target_os = "fuchsia",
             target_os = "linux"
-        )),
-        user_timeout: cfg!(any(
+        )))
+        .user_timeout(cfg!(any(
             target_os = "android",
             target_os = "fuchsia",
             target_os = "linux",
             target_os = "cygwin"
-        )),
+        )))
         // `socket2::TcpKeepalive::with_retries` does not exist on these
         // three, so neither does this claim.
-        keepalive_retries: !cfg!(any(
+        .keepalive_retries(!cfg!(any(
             target_os = "openbsd",
             target_os = "redox",
             target_os = "solaris"
-        )),
-        ..TcpOptsSupport::ALL
-    };
+        )));
 
     /// A `Send` box, like `hclient_rt_tokio::Tokio`'s and for the same reason:
     /// everything awaited here is `async-io`'s, and a consumer proving a
@@ -497,13 +495,7 @@ mod tests {
         });
         futures_executor::block_on(async {
             let s = Smol
-                .connect(
-                    addr,
-                    &TcpOpts {
-                        nodelay: true,
-                        ..Default::default()
-                    },
-                )
+                .connect(addr, &TcpOpts::default().nodelay(true))
                 .await
                 .expect("connect");
             // Not just "the connection succeeded" (that would pass even if
@@ -539,10 +531,7 @@ mod tests {
             let s = Smol
                 .connect(
                     addr,
-                    &TcpOpts {
-                        keepalive: Some(Duration::from_secs(30)),
-                        ..Default::default()
-                    },
+                    &TcpOpts::default().keepalive(Some(Duration::from_secs(30))),
                 )
                 .await
                 .expect("connect");

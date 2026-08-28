@@ -155,7 +155,25 @@ impl<H: Hooks + ?Sized> Hooks for std::rc::Rc<H> {
 /// time — so `SendRequest::poll_ready` never waits for a stream of ours.
 /// A variant no code can emit is a capability that lies; this one belongs
 /// here once a backend has a queue.
+/// **`#[non_exhaustive]`, and the compile error it removes is kept in one
+/// place rather than lost.**
+///
+/// A new variant used to be a compile error for every `match` on this
+/// enum, which is how `Informational` was caught in `hclient-fetch`'s
+/// suite. That property is worth something *inside* this workspace and is
+/// a break every release for somebody who wrote a `Hooks` impl against a
+/// published version — two audiences wanting opposite things from one
+/// enum.
+///
+/// The resolution is [`Capabilities`]' exactly: mark the type, and keep a
+/// single exhaustive match in **this** crate, where the attribute does not
+/// apply. `every_event_is_accounted_for` below is that match, so a new
+/// variant is still one compile error in one known file — and no break at
+/// all for anybody outside.
+///
+/// [`Capabilities`]: crate::Capabilities
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Event<'a> {
     /// A connection was made. See [`Connected`] for what each duration
     /// means and, more to the point, what it does not.
@@ -438,4 +456,45 @@ pub enum CloseReason<'a> {
     Stale,
     /// It failed, and here is the failure.
     Failed(&'a Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Every variant is accounted for, and adding one is a compile error
+    /// here.**
+    ///
+    /// This is the whole of what `#[non_exhaustive]` on [`Event`] gives
+    /// up, bought back in one place: the attribute stops an out-of-tree
+    /// `Hooks` impl from breaking on a new variant, and this match stops
+    /// the variant from being added without anybody noticing. Written with
+    /// no `_` arm on purpose — the attribute is inert inside the defining
+    /// crate, which is the only reason this can be here at all.
+    ///
+    /// It asserts nothing about behaviour. It does not need to: the value
+    /// is that it fails to compile, which is the same value the 28
+    /// scattered matches in the backends' test suites used to provide
+    /// between them.
+    #[test]
+    fn every_event_is_accounted_for() {
+        fn name(e: &Event<'_>) -> &'static str {
+            match e {
+                Event::Connected(_) => "connected",
+                Event::Reused(_) => "reused",
+                Event::Head(_) => "head",
+                Event::Closed(_) => "closed",
+                Event::Informational(_) => "informational",
+            }
+        }
+        // One live value, so the function is not merely compiled but
+        // reached — a `match` no test calls is checked by the compiler and
+        // by nothing else, which is enough here and cheap to improve on.
+        let err = crate::Error::new(crate::ErrorKind::Other, std::io::Error::other("x"));
+        let closed = Closed {
+            id: ConnectionId::UNWATCHED,
+            reason: CloseReason::Failed(&err),
+        };
+        assert_eq!(name(&Event::Closed(closed)), "closed");
+    }
 }

@@ -62,10 +62,7 @@ fn spawn_accepting_listener() -> std::net::SocketAddr {
 async fn local_address_selects_the_connecting_source_ip() {
     let addr = spawn_accepting_listener();
     let assignable = second_loopback_is_assignable();
-    let opts = TcpOpts {
-        local_address: Some(IpAddr::V4(SECOND_LOOPBACK)),
-        ..Default::default()
-    };
+    let opts = TcpOpts::default().local_address(Some(IpAddr::V4(SECOND_LOOPBACK)));
     let connected = Tokio.connect(addr, &opts).await;
     if assignable {
         let s = connected.expect("connect");
@@ -122,13 +119,7 @@ async fn default_local_address_is_not_127_0_0_2() {
 async fn send_buffer_size_is_applied_before_connect() {
     let small_addr = spawn_accepting_listener();
     let small = Tokio
-        .connect(
-            small_addr,
-            &TcpOpts {
-                send_buffer_size: Some(4096),
-                ..Default::default()
-            },
-        )
+        .connect(small_addr, &TcpOpts::default().send_buffer_size(Some(4096)))
         .await
         .expect("small connect");
     let small_size = socket2::SockRef::from(small.get_ref())
@@ -140,10 +131,7 @@ async fn send_buffer_size_is_applied_before_connect() {
     let large = Tokio
         .connect(
             large_addr,
-            &TcpOpts {
-                send_buffer_size: Some(requested),
-                ..Default::default()
-            },
+            &TcpOpts::default().send_buffer_size(Some(requested)),
         )
         .await
         .expect("large connect");
@@ -162,13 +150,7 @@ async fn send_buffer_size_is_applied_before_connect() {
 async fn recv_buffer_size_is_applied_before_connect() {
     let small_addr = spawn_accepting_listener();
     let small = Tokio
-        .connect(
-            small_addr,
-            &TcpOpts {
-                recv_buffer_size: Some(4096),
-                ..Default::default()
-            },
-        )
+        .connect(small_addr, &TcpOpts::default().recv_buffer_size(Some(4096)))
         .await
         .expect("small connect");
     let small_size = socket2::SockRef::from(small.get_ref())
@@ -180,10 +162,7 @@ async fn recv_buffer_size_is_applied_before_connect() {
     let large = Tokio
         .connect(
             large_addr,
-            &TcpOpts {
-                recv_buffer_size: Some(requested),
-                ..Default::default()
-            },
+            &TcpOpts::default().recv_buffer_size(Some(requested)),
         )
         .await
         .expect("large connect");
@@ -201,10 +180,7 @@ async fn recv_buffer_size_is_applied_before_connect() {
 #[tokio::test]
 async fn reuse_address_is_applied_before_connect() {
     let addr = spawn_accepting_listener();
-    let opts = TcpOpts {
-        reuse_address: true,
-        ..Default::default()
-    };
+    let opts = TcpOpts::default().reuse_address(true);
     let s = Tokio.connect(addr, &opts).await.expect("connect");
     let enabled = socket2::SockRef::from(s.get_ref())
         .reuse_address()
