@@ -35,6 +35,13 @@
 #
 # So this stays as it was, moved out of ci.yml unchanged. A scanner that is
 # honest is better than a rule that is quiet.
+#
+# The string-literal false positive above stopped being hypothetical on
+# 2026-08-28: a `#[diagnostic::on_unimplemented]` note explaining the
+# `Send + Sync` box tripped it. The resolution was to reword the note —
+# `Send` and `Sync` says the same thing and matches nothing — rather than to
+# teach the scanner about strings. A marker there would have been a lie: it
+# was not a bound, and the markers name amendments that excuse bounds.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
