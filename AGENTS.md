@@ -1479,6 +1479,51 @@ first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### Every backend is a `SendTransport` now, and the last one took a channel
+
+**Six backends, six impls**, so every one of them can back an
+`hclient::Client`: `hclient-native` (including its HTTP/3 arm),
+`hclient-fetch`, `hclient-wasi`, `hclient-urlsession`, `hclient-winhttp`
+and `hclient-mock`.
+
+**`hclient-native`'s is conditional and that is the design working, not a
+gap.** It implements `SendTransport` for every `Native` whose runtime, TLS
+backend and resolver name `Send` associated futures, and for no other — so
+`Native` over `hclient-rt-embassy` is still a `Transport` and simply not a
+`SendTransport`. Nothing is excluded from the seam; something is excluded
+from a promise. The one resolver that used to fail that test was
+`hclient-dns-doh`, fixed one section up.
+
+**`hclient-fetch` was the last, and it needed a channel.** Its
+`execute_send` boxed `execute`'s future, which holds a `js_sys::Promise`
+across its one await — fine on a single-threaded target, where
+wasm-bindgen marks JS handles `Send` truthfully, and impossible under
+`-Ctarget-feature=+atomics`, where it stops. `execute` is now three
+pieces: a synchronous `start` needing `&self`, an async `finish` needing
+**nothing** of `self` — which is what lets a `spawn_local` task be
+`'static` with no `Arc` and no `Clone` bound — and a `report` that emits
+the hook where `&self` already is. `Transport::execute` is untouched, so
+the spawn is paid for only by a caller who wants `Client`.
+
+**What a spawn puts at risk is the drop-is-cancellation contract**, since
+a spawned task does not stop because its spawner went away. `deliver`
+races the work against `Sender::cancellation` and is a named function so
+that `tests/deliver.rs` can be the pair that pins it — a `deliver`
+ignoring cancellation passes one and fails the other, checked by applying
+that mutation.
+
+**The check that guarded the old state gained a direction rather than
+being deleted.** `fetch-under-wasm-threads` now asserts the library
+**builds** under threads *and* that `SingleThreaded<T>`'s `unsafe impl
+Send` is still rejected there, `E0277` in `tests/promise.rs`. The second
+is what the old recipe was really protecting and is unchanged; the first
+would have been false the day before.
+
+**What is left `!Send` is nothing** — measured from outside on the day, and
+the one honest asterisk is that a JS `WebSocket` belongs to the realm that
+made it, so `hclient-fetch`'s `WebSocketConnect` seam declares no `Send`
+and asks for none.
+
 ### `Client` in wasm: everything but the constructor is the same source
 
 Asked whether `Client` can be used in wasm without changing code, and
