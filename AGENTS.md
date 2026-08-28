@@ -1488,6 +1488,53 @@ first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### `embedded-nal-async` is the right seam for later and blocked twice now
+
+Asked whether this workspace should implement `TcpConnect` over the
+Embedded WG's network abstraction rather than over one stack. Measured,
+and the answer is *not yet, and then yes* — with a caveat that does not
+expire when the blocker does.
+
+**The breadth argument is real, and it is the reason to want it.**
+crates.io reports **27 reverse dependencies**, and about eight of them are
+genuine stacks rather than consumers: `embassy-net` itself,
+`embassy-nina`, `es-wifi-driver`, `esp8266-at-driver`, `rak811-at-driver`,
+`nrf-modem`, `wincwifi`, `riot-wrappers` — AT-command WiFi modules, an
+nRF9160 LTE modem, RIOT OS. One adapter reaches all of them where
+`hclient-rt-embassy` reaches one. And `reqwless`, the incumbent embedded
+HTTP client, is built on exactly this seam, which is evidence about the
+niche rather than about us.
+
+**Blocker one is the same `no_std` wall, so nothing changes today.** Every
+one of those stacks is a `no_std` device, and `http` 1.5.0 still carries
+its `compile_error!`. The only NAL implementations this crate could build
+against are the std shims — `std-embedded-nal-async` and its neighbours —
+where a caller has `std::net` and would use tokio.
+
+**Blocker two is structural and outlives the first, which is the part
+worth writing down.** `embedded_io_async::Write` is `write` and `flush`
+and nothing else — read in 0.7.0 — and
+`embedded_nal_async::TcpConnect::Connection<'a>` is bounded on
+`embedded_io_async::Read + Write` and nothing more. So a NAL connection
+**cannot half-close**, by the trait's own definition, and
+`hyper::rt::Write::poll_shutdown` is how an HTTP client sends FIN while
+still reading the response.
+
+This crate has already met that and refused it. The W7 spike went through
+embassy's own `TcpClient` — its NAL implementation — forwarded
+`poll_shutdown` to `flush`, and recorded the result as *"a half-close
+hyper believes it performed and did not"*. `hclient-rt-embassy` exists in
+the shape it does precisely to avoid that: it owns the
+`embassy_net::tcp::TcpSocket` rather than a `Connection`, so `close()` is
+available and `poll_shutdown` sends the FIN and waits for it.
+
+So the day `no_std` becomes reachable there are three options and none is
+free: accept the false half-close, which is what a NAL-based client must
+do; ask upstream for a shutdown on `embedded-io-async`, which is the
+correct fix and is somebody else's release schedule; or keep a crate per
+stack that owns its socket, which is what exists and is why it reaches
+one stack instead of eight.
+
 ### The embassy runtime is the workspace's only `!Send` counterexample
 
 Asked whether `hclient-rt-embassy` is needed at all, and the workspace's
