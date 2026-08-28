@@ -3869,6 +3869,18 @@ type is `Box::pin(self.execute(req))` — `Send` inferred, not proved.
 Proof is only ever owed by generic code, which is the asymmetry the whole
 design rests on.
 
+**Three backends owed that method and did not have it for a day**, and
+the workspace was green over all three: `hclient-fetch`, `hclient-wasi`
+and `hclient-urlsession` build for targets `cargo nextest run --workspace`
+does not — `wasm32-unknown-unknown`, `wasm32-wasip2` and Apple — so
+`Client::builder(Fetch::new())` and its two siblings stopped compiling and
+nothing said so. This file already records that blind spot twice; this is
+the third, and the cheap checks that catch it are the ones already
+written: `wasm-pack test --headless --firefox`, `cargo check -p
+hclient-wasi --target wasm32-wasip2 --all-targets`, and `cargo check -p
+hclient-urlsession --target aarch64-apple-darwin --all-targets`, which is
+clean on a Linux host.
+
 **The two are not interchangeable, and which one is right depends on a
 configuration nobody here builds yet.** The adapter's `Send` is a claim
 about there being one thread, so it is stripped under `+atomics` by the

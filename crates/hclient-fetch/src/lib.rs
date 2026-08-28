@@ -32,7 +32,7 @@ mod websocket;
 // `promise::SendJsFuture` is what makes awaiting that whole exchange a
 // `Send` future in the first place.
 //
-// **One deliberate deviation from the brief's own Step 3 reference code.**
+// **One deliberate deviation from the obvious shape.**
 // That code destructures `to_web_request`'s result as
 // `let (request, _abort) = ..;` and never touches the `AbortController`
 // again — but `to_web_request`'s own doc comment
@@ -382,6 +382,35 @@ impl<H: Hooks> Transport for Fetch<H> {
 
     fn capabilities(&self) -> &Capabilities {
         &self.caps
+    }
+}
+
+/// The `Send` half of the seam, which this backend satisfies with no
+/// bound of its own.
+///
+/// **`wasm32-unknown-unknown` without atomics is one thread**, and
+/// wasm-bindgen marks its handles accordingly — `JsValue`, `js_sys::
+/// Promise` and `web_sys::Response` are all `Send` there — so
+/// `execute`'s future is `Send` by ordinary inference and this is one
+/// line of forwarding. The response body is `Send` for a different and
+/// stronger reason: `body::pump` keeps every JS handle on the thread
+/// that made it and hands `Bytes` across a channel, so nothing about
+/// that half depends on how many threads there are.
+///
+/// Under `-Ctarget-feature=+atomics` the `cfg` that strips wasm-bindgen's
+/// own `unsafe impl Send for JsValue` strips this too, and `Client` over
+/// this backend stops compiling — which is honest rather than a
+/// regression: a `fetch` exchange belongs to the realm that started it.
+impl<H> hclient_core::unversioned::SendTransport for Fetch<H>
+where
+    H: Hooks + Sync, // send-bound-exception: amendment-C16
+{
+    // send-bound-exception: amendment-C16
+    fn execute_send(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
+        Box::pin(<Self as Transport>::execute(self, req))
     }
 }
 

@@ -161,6 +161,21 @@ impl Transport for UrlSession {
     }
 }
 
+/// The `Send` half of the seam.
+///
+/// `URLSession` and its delegates are thread-safe by Apple's own contract
+/// — a session hands work to its own queue — and `execute` awaits a
+/// channel this crate owns, so the future is `Send` by inference and this
+/// is one line of forwarding.
+impl hclient_core::unversioned::SendTransport for UrlSession {
+    fn execute_send(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
+        Box::pin(<Self as Transport>::execute(self, req))
+    }
+}
+
 impl UrlSession {
     /// Build the `NSURLRequest` and start a data task on it.
     fn start(
