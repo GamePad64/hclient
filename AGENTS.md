@@ -1479,6 +1479,41 @@ first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### `Client` in wasm: everything but the constructor is the same source
+
+Asked whether `Client` can be used in wasm without changing code, and
+measured on one scratch crate rather than reasoned about. A function that
+takes `&Client`, builds a request, sends it, calls `error_for_status`,
+`collect` and `json` compiles **unchanged and with no `#[cfg]` at all** on
+`x86_64-unknown-linux-gnu`, `wasm32-unknown-unknown` and `wasm32-wasip2`.
+It does not even need the `default-transport` feature — a consumer that
+takes a `Client` from its caller names no backend.
+
+**Construction is the one place that differs, and it differs three ways:**
+
+| target | how a `Client` is made |
+|---|---|
+| native | `Client::new()?` — fallible, the OS trust store can fail |
+| `wasm32-unknown-unknown` | `Client::new()` — infallible, `Fetch::new()` cannot fail |
+| `wasm32-wasip2` | **`Client::new` does not exist**: `DefaultTransport` is undefined there, so it is `Client::builder(WasiHttp::new()).build()?` |
+
+The third is deliberate and recorded far from the other two — `hclient`
+does not depend on `hclient-wasi`, so a WASI build names its transport.
+Worth stating together, because *"there is no `?` on it — that is the only
+difference"* is true of the first two and silent about the third.
+
+So the portable shape is the ordinary one: construct at the top, where the
+entry point is target-specific anyway, and pass `&Client` down.
+`crates/hclient/examples/portable.rs` is exactly that and is built for all
+three targets on every push, so this is a CI gate rather than a claim.
+
+**One wrinkle the measurement exposed, and it is now handled.** Forgetting
+the `?` produces `Result<Native<..>, ..>` where a transport was wanted, so
+the new `on_unimplemented` note offered to implement `SendTransport` for a
+`Result` — sound advice for the wrong problem. It now says first that a
+`Result` here means a missing `?`, and why portable code meets exactly
+that.
+
 ### The mock was built for this workspace's tests and not for anybody else's
 
 `hclient-mock` is used by 35 files here and had **no test of its own and

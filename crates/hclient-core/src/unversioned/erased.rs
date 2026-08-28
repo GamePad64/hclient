@@ -141,6 +141,7 @@ where
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot back an `hclient::Client`: it is a `Transport` but not a `SendTransport`",
     label = "this transport makes no `Send` claim",
+    note = "If `{Self}` is a `Result`, this is a missing `?` rather than a missing impl: `Client::new` and `default_transport` are fallible on native and infallible in a browser, so portable code differs by exactly that one character.",
     note = "`Client` boxes its transport behind `Send` and `Sync`, so it asks for the one claim `Transport` deliberately does not make.",
     note = "Implement `SendTransport` — one method, and at a concrete type its whole body is `Box::pin(self.execute(req))`, where `Send` is inferred rather than proved:",
     note = "    impl hclient_core::unversioned::SendTransport for {Self} {{",
