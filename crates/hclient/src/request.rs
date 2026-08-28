@@ -43,10 +43,9 @@ pub struct RequestBuilder<'a> {
     digest: Option<(String, String)>,
     /// The first build error. Surfaces in `send()`: a silently swallowed
     /// invalid header is exactly the silent no-op `ClientBuilder::build` was
-    /// built against (see `check_supported` in config.rs). The brief's
-    /// `header()` code dropped an invalid pair silently (`if let (Ok(n),
-    /// Ok(v)) = .. { .. }`, no `else`) — a silent drop, and never
-    /// intended behaviour.
+    /// built against (see `check_supported` in config.rs). The shape this
+    /// refuses is `if let (Ok(n), Ok(v)) = .. { .. }` with no `else`,
+    /// which drops an invalid pair and reports nothing.
     error: Option<Error>,
 }
 

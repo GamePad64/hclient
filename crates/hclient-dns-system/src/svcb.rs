@@ -5,7 +5,7 @@
 //! decoder returns `DecodeResult` on every path and whose name
 //! decompression terminates by tracking visited offsets in a `HashSet`
 //! (`decode/domain_name.rs`, `EndlessRecursion` / `MaxRecursion`). That
-//! removes the highest-risk code this task would otherwise have
+//! removes the highest-risk code this crate would otherwise have
 //! contained: hand-rolled bounds checks over attacker-chosen bytes. What
 //! is left in this module is the part a DNS decoder correctly refuses to
 //! do — deciding, per RFC 9460, which of the decoded records a *client*

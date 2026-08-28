@@ -3573,7 +3573,7 @@ struct ConnectTimedOut(Duration);
 /// `std::future::poll_fn`, polling both arms by hand, rather than
 /// `futures_util::select!`/`select` — the same technique and the same
 /// reasoning as `connect::drive` (see its doc comment, the section on why
-/// the brief's `select_biased!` didn't fit): there are only two arms here
+/// a `select_biased!` didn't fit): there are only two arms here
 /// and each is needed exactly once, the macro gives this pair nothing that
 /// a direct `poll` doesn't.
 ///

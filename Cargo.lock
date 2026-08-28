@@ -1382,6 +1382,7 @@ dependencies = [
  "hclient",
  "hclient-core",
  "hclient-dns",
+ "hclient-mock",
  "hclient-native",
  "hclient-rt",
  "hclient-tls",

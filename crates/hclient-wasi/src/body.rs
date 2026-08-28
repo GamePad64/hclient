@@ -113,7 +113,7 @@ impl HttpBody for Body {
     /// host side, `act` (`http_body_util::StreamBody` always returns
     /// `false`), that made guests trap mid-read on HTTP/2 responses;
     /// reproducing it here would be pointless — it's the entire motivation
-    /// for this task.
+    /// here.
     ///
     /// **Branch not covered by unit tests, guarded by an integration
     /// test.** `Inner::Incoming(i) => i.is_end_stream()` — the central

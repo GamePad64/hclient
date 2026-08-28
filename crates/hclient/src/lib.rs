@@ -476,8 +476,8 @@ pub use response::{Collected, Response};
 ///   `default-transport` on wasm. An optional branch never checked by a
 ///   build is exactly the "implicitly swapping an error message for
 ///   imagined availability" that this type is specifically obligated not
-///   to do. The decision is left as a finding instead of silently
-///   following the brief: the vertical's black-box acceptance test
+///   to do. The decision is left as a finding rather than taken
+///   silently: the black-box acceptance test
 ///   (`crates/hclient/tests/two_runtimes.rs`) doesn't require this branch —
 ///   both of its tests build `Native` explicitly, the same way
 ///   `Client::builder` does. Note that the browser branch below does NOT

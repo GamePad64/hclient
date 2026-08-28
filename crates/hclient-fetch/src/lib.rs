@@ -182,11 +182,11 @@ impl<H> Fetch<H> {
     /// task of this vertical.
     ///
     /// Returns an owned `Capabilities`, not `&Capabilities` as the task
-    /// brief's illustrative skeleton has it: `Fetch::new().capabilities_for_test()`
-    /// — the brief's own test file, step 1, used verbatim in
+    /// obvious skeleton has it: `Fetch::new().capabilities_for_test()`
+    /// — used verbatim in
     /// `tests/caps.rs` — borrows from the `Fetch::new()` temporary, which
     /// is dropped at the end of that statement, so a reference-returning
-    /// signature makes every one of the brief's four tests fail to compile
+    /// signature makes all four of those tests fail to compile
     /// with E0716 regardless of how the method body is written (confirmed
     /// by compiling against the literal `&Capabilities` signature first).
     /// `Capabilities: Clone` (see `hclient-core/src/caps.rs`), and this is
@@ -206,7 +206,7 @@ impl Default for Fetch {
 
 /// Cancels the `AbortController`'s signal when dropped, unless [`defuse`]
 /// was called first — see the module doc comment's section on why the
-/// brief's own `_abort` discard doesn't honor what `convert::to_web_request`
+/// the obvious `_abort` discard doesn't honor what `convert::to_web_request`
 /// asked of a "later task."
 ///
 /// [`defuse`]: AbortOnDrop::defuse
@@ -523,7 +523,7 @@ pub mod testing {
     /// only `http`/`https` schemes, which would reject exactly the
     /// `data:` URL this crate's own brief specifies for a deterministic,
     /// no-network test. The parameter stays in the signature only because
-    /// the brief's own test (`tests/body.rs`,
+    /// the test (`tests/body.rs`,
     /// `streams_a_response_body_in_chunks`) calls
     /// `testing::fetch_body(&f, url)` verbatim — dropping it would break
     /// that call, which this task was told to keep failing-then-passing,

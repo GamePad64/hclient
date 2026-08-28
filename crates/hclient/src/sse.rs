@@ -251,7 +251,7 @@ where
 /// with the type. Keeping both would have meant two things claiming to
 /// control the same behavior with only one of them exercised by most
 /// tests — the same shape of redundancy this crate's own mutation testing
-/// on `ReconnectingSseStream` already caught once, elsewhere, this task.
+/// on `ReconnectingSseStream` already caught once elsewhere.
 #[derive(Debug, Clone, Copy)]
 pub struct SseOptions {
     pub max_event_size: usize,
@@ -297,9 +297,9 @@ pub struct SseBuilder<'a> {
     /// The first build error, same pattern and same reason as
     /// `RequestBuilder::error` (`request.rs`): a silently dropped invalid
     /// header would be exactly the kind of silent no-op this project
-    /// refuses to ship, and `RequestBuilder::header`'s own history (Task
-    /// 13) is the direct precedent — its brief's reference code dropped an
-    /// invalid pair with no `else` branch at all.
+    /// refuses to ship. [`crate::RequestBuilder::header`] is the direct
+    /// precedent, and its own doc carries the shape both refuse: an
+    /// invalid pair dropped by an `if let` with no `else` branch at all.
     error: Option<Error>,
 }
 

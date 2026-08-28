@@ -48,7 +48,7 @@ impl Backoff {
     /// or invalid input is supposed to become a typed error, never a
     /// discarded value. It's the deliberate exception here, not an
     /// oversight of that rule: this signature can't return `Result` (fixed
-    /// by the brief), and `None` is already spoken for as "stop trying" —
+    /// at first), and `None` is already spoken for as "stop trying" —
     /// so an out-of-domain `jitter` (NaN, negative, or >= 1.0, all
     /// reachable from a caller bug, e.g. feeding in the wrong float) has
     /// nowhere to be *reported* to. Mapping it onto `None` would look
@@ -125,7 +125,7 @@ const FIXED_POINT_DENOM: u128 = 1 << 32;
 /// were ever wrong would hide exactly the kind of bug this whole function
 /// exists to prevent.
 ///
-/// This is not bit-identical to the `f64` computation the brief's
+/// This is not bit-identical to the `f64` computation the obvious
 /// reference code used — 32-bit fixed point resolves to about 1 part in
 /// 4 billion, so a non-power-of-two `kept` (e.g. from `jitter = 0.999`)
 /// picks up a sub-microsecond quantization error relative to the naive

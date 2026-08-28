@@ -957,7 +957,7 @@ mod tests {
     /// (`new_user_body`/`.with()`) to the `hyper::Error` that comes back
     /// out of the connection or the request future, through
     /// `from_hyper_error`. Mutation check: reverting `from_hyper_error` to
-    /// the brief's `Error::new(fallback, e)` with no `downcast` attempt
+    /// a plain `Error::new(fallback, e)` with no `downcast` attempt
     /// turns this test red immediately — `err.kind()` would become
     /// `ErrorKind::Connect`, not `ErrorKind::Body`.
     #[test]

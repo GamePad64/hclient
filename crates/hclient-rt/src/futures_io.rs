@@ -20,7 +20,7 @@ pub struct FuturesIo<S> {
     /// The buffer is allocated and zeroed ONCE, in [`FuturesIo::new`] — not
     /// on every `poll_read`.
     ///
-    /// An earlier draft of this task kept it as `[0u8; SCRATCH]` on the
+    /// An earlier draft kept it as `[0u8; SCRATCH]` on the
     /// stack inside `poll_read`. Measured (`rustc -O --emit=asm` on an
     /// isolated reproduction of both versions outside the rest of the
     /// crate): the stack variant calls `memset` on EVERY invocation

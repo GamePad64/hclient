@@ -87,7 +87,7 @@
 //!   and obvious piece — `dns_query` is an `async fn` needing no thread
 //!   pool — and it is **not written here**: it needs embassy-net's `dns`
 //!   feature and a DNS server on the test link, which is a second piece of
-//!   harness for a question this task does not turn on.
+//!   harness for a question this crate does not turn on.
 //! - **`TcpAdoptStd`.** There is no file descriptor to adopt. The seam
 //!   already expresses that by the trait simply not being implemented.
 

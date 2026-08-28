@@ -5,9 +5,9 @@
 //! `Capabilities` declares this, so `poll_frame` never produces
 //! `Frame::trailers` — every frame this type emits is `Frame::data`.
 //!
-//! # Two failure modes, two `ErrorKind`s — a defect in this task's own brief
+//! # Two failure modes, two `ErrorKind`s
 //!
-//! The brief's reference implementation maps EVERY failure out of the
+//! The obvious implementation maps EVERY failure out of the
 //! underlying `ReadableStream` — a rejected `read()` (the browser giving up
 //! on the exchange) and a chunk that isn't the `Uint8Array` a body stream is
 //! specified to always yield (this crate's own defensive check, since
@@ -28,7 +28,7 @@
 //!
 //! Neither typed cause reuses `convert::js_err`/`convert::JsError`: this
 //! file was written while another task was actively editing `convert.rs` in
-//! the same working tree (see the task report), so rather than extract a
+//! the same working tree, so rather than extract a
 //! shared helper out of a file mid-edit by someone else, the small
 //! JS-value-to-`String` extraction below is duplicated locally. It is
 //! intentionally the same three-step fallback (`as_string` → `.message` →
@@ -122,7 +122,7 @@ use std::fmt::Debug;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 
 // ---------------------------------------------------------------------
 // Typed failure causes — see the module doc comment for why there are two,
@@ -152,19 +152,6 @@ struct StreamRead(String);
 struct NotAByteChunk;
 
 /// Best-effort human-readable text for a `JsValue` a promise rejected with.
-/// Deliberately NOT imported from `convert.rs` — see the module doc comment
-/// for why this is a local, three-line duplicate rather than a shared
-/// helper extracted from a file this task did not otherwise touch.
-fn js_message(v: &JsValue) -> String {
-    v.as_string()
-        .or_else(|| {
-            js_sys::Reflect::get(v, &JsValue::from_str("message"))
-                .ok()
-                .and_then(|m| m.as_string())
-        })
-        .unwrap_or_else(|| format!("{v:?}"))
-}
-
 /// A response body over `ReadableStream`.
 pub struct Body {
     inner: Inner,
@@ -291,7 +278,10 @@ impl Body {
                     .dyn_into::<js_sys::Uint8Array>()
                     .map(|a| Bytes::from(a.to_vec()))
                     .map_err(|_| Error::new(ErrorKind::Decode, NotAByteChunk)),
-                Err(e) => Err(Error::new(ErrorKind::Body, StreamRead(js_message(&e)))),
+                Err(e) => Err(Error::new(
+                    ErrorKind::Body,
+                    StreamRead(crate::convert::js_message(&e)),
+                )),
             });
         // Capacity zero: `futures` still guarantees one slot per sender, so
         // the pump runs exactly one chunk ahead of the caller and then

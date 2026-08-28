@@ -1,9 +1,8 @@
 //! Converts an `http::Request<RequestBody>` into a `web_sys::Request`, ready
 //! to hand to the browser's `fetch()`.
 //!
-//! Three things this file is deliberately strict about, each traceable to a
-//! defect an earlier task in this project actually shipped (see this task's
-//! own brief for the pointers):
+//! Three things this file is deliberately strict about, each of them a
+//! defect this project has actually shipped once:
 //!
 //! 1. **A header fetch will refuse to send never disappears silently.**
 //!    [`check_headers`] rejects any header in [`crate::FORBIDDEN_HEADERS`]

@@ -486,7 +486,7 @@ mod tests {
 
     /// A `Rewindable` whose factory returns `Full` must go through as a
     /// plain buffer, not as an empty body. Mutation check: reverting
-    /// `Inner::from_request_body` to the brief's partial match
+    /// `Inner::from_request_body` to the partial match
     /// (`RequestBody::Full(b) if !b.is_empty() => Some(b), _ => None`)
     /// still leaves this test green (Full is exactly the variant that
     /// match catches). It's the next test, the `streaming`-factory one,
@@ -503,7 +503,7 @@ mod tests {
     /// A `Rewindable` factory that legally returns `Streaming` (see
     /// `RequestBody::Rewindable`'s doc comment in `hclient-core`) must
     /// stay a stream — not collapse into an empty body just because "it
-    /// isn't `Full`." Mutation check: the brief's partial match
+    /// isn't `Full`." Mutation check: the partial match
     /// (`RequestBody::Full(b) if !b.is_empty() => Some(b), _ => None`)
     /// yields `Buffered(None)` on this input, so `collect()` would return
     /// empty bytes, and this test expects specific content — switching to
@@ -548,7 +548,7 @@ mod tests {
 
     /// `Streaming` is forwarded as a stream: `poll_frame` hands back a
     /// frame directly, without buffering the whole thing into memory
-    /// first. Mutation check: the brief's `RequestBody::Streaming(_) =>
+    /// first. Mutation check: a `RequestBody::Streaming(_) =>
     /// None` turns this test red immediately — `collect()` would see an
     /// empty body instead of `streamed`.
     #[test]

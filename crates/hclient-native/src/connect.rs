@@ -35,7 +35,7 @@
 //! rules is caught equally by tests through either path, not just one of
 //! them.
 //!
-//! # Why `race_connect` no longer builds the brief's `select_biased!`
+//! # Why `race_connect` no longer builds a `select_biased!`
 //!
 //! This task's draft showed `race_connect` with exactly two event sources
 //! at the moment of `HeAction::Wait`: attempts (`attempts.next()`) and the

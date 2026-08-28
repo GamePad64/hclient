@@ -109,6 +109,10 @@ smoltcp            = { version = "0.13", default-features = false, features = ["
 hclient          = { workspace = true }
 hclient-core     = { workspace = true }
 hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.1" }
+# The control in `tests/seam.rs`: a transport that *can* promise `Send`,
+# so the negative assertion beside it cannot pass vacuously. Chosen for
+# being tiny — no runtime, no TLS — since this crate is the embedded one.
+hclient-mock     = { path = "../hclient-mock", version = "0.1.0-alpha.1" }
 hclient-dns      = { path = "../hclient-dns", version = "0.1.0-alpha.1" }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.1" }
 # The scenarios collect response bodies themselves, because the embedded

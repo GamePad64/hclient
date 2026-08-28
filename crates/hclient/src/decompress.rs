@@ -7,7 +7,7 @@
 //! changes the CLIENT's type,
 //! so `struct App { http: Client }` stops compiling, and
 //! `tests/deadline_client_type.rs` plus
-//! `tests/compression_client_type.rs` (this task) pin exactly that.
+//! `tests/compression_client_type.rs` pin exactly that.
 //! Decompressing here changes only the response BODY's type, which is
 //! already generic over the transport — a `Client` is still a `Client`
 //! whether or not it decodes anything.

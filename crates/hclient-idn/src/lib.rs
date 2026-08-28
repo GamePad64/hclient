@@ -194,7 +194,7 @@
 //!   `hclient-fetch`'s graph, so it costs no new crate — and it needs no
 //!   `unsafe` at all, unlike every other platform path here.
 //!
-//!   Not implemented in this task, and one precondition is why it must
+//!   Not implemented, and one precondition is why it must
 //!   not be done casually: `URL` is a *parser*, so `ex@ample.com` comes
 //!   back as the host `ample.com` and `ex/ample.com` as `ex` — a
 //!   wrong-origin generator if an unvalidated string is handed to it.
