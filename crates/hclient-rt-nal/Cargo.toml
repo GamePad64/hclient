@@ -1,0 +1,33 @@
+[package]
+name = "hclient-rt-nal"
+version.workspace = true
+description = "hclient-rt's TcpConnect over embedded-nal-async, with Send inferred rather than proven"
+keywords     = ["hclient", "embedded", "no-std", "embedded-nal", "transport"]
+categories   = ["embedded", "network-programming", "asynchronous"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# **Not published yet, and the reason is a dependency rather than this
+# code.** The eight stacks this adapter exists to reach are `no_std`
+# devices, and `http` 1.x still carries
+# `compile_error!("`std` feature currently required")`, which every crate
+# in this workspace inherits through `hclient-core`. So today it can be
+# built and tested only against the `std` shims — which is enough to keep
+# it honest and not enough to be worth a crates.io page promising reach it
+# does not have. `hclient-rt-pair-check` is unpublished for a different
+# reason and is the precedent for the mechanism.
+publish = false
+
+[dependencies]
+hclient-rt         = { path = "../hclient-rt",   version = "0.1.0-alpha.1" }
+embedded-nal-async = "0.9"
+embedded-io-async  = "0.7"
+hyper              = { version = "1.11", default-features = false }
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

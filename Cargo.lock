@@ -1541,6 +1541,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hclient-rt-nal"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "embedded-io-async",
+ "embedded-nal-async",
+ "futures-executor",
+ "hclient-rt",
+ "hyper",
+]
+
+[[package]]
 name = "hclient-rt-pair-check"
 version = "0.1.0-alpha.2"
 dependencies = [
