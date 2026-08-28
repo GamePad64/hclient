@@ -1,5 +1,55 @@
 //! Cross-platform async HTTP client.
 //!
+//! ```toml
+//! # `default-transport` is not a default, deliberately — see below.
+//! hclient = { version = "0.1.0-alpha.1", features = ["default-transport"] }
+//! ```
+//!
+//! ```no_run
+//! # async fn f() -> Result<(), hclient::Error> {
+//! let client = hclient::Client::new()?;
+//! let text = client
+//!     .get("https://example.com")
+//!     .send()
+//!     .await?
+//!     .collect()
+//!     .await?
+//!     .text()?;
+//! # let _ = text;
+//! # Ok(()) }
+//! ```
+//!
+//! [`Client`] is `Send + Sync + Clone + 'static`, so it lives in
+//! application state and is shared across threads. **Clone it rather than
+//! wrapping it** — the clone is an `Arc` bump, and an `Arc<Client>` is a
+//! second one around the first. A request **and** the body it produces
+//! both cross a `tokio::spawn`, so nothing here needs a `LocalSet` on a
+//! multi-threaded runtime:
+//!
+//! ```no_run
+//! # async fn f(client: hclient::Client) {
+//! let c = client.clone();
+//! let handle = tokio::spawn(async move { c.get("https://example.com").send().await });
+//! # let _ = handle;
+//! # }
+//! ```
+//!
+//! **`collect()` is a step reqwest does not have**, and it is where this
+//! client asks rather than assumes: a response arrives as a stream, and
+//! `collect` is the point at which a caller says *read all of it into
+//! memory*. `Response::chunk` is the other answer, and
+//! [`ClientBuilder::response_limit`] bounds the first one.
+//!
+//! # Why `default-transport` is not a default
+//!
+//! Cargo unifies features across a graph, so a default here is a
+//! **floor**: a library that took this crate with defaults would put
+//! tokio, rustls and the system resolver into every graph that also
+//! contains a crate wanting none of them, and the party who wanted the
+//! small build is not the party who decides. Measured on a scratch
+//! workspace rather than argued. The cost is one flag read before
+//! compiling, against a graph nobody can get out of afterwards.
+//!
 //! # The `Send` rule, as it actually stands
 //!
 //! This line read *"not a single declared `Send`/`Sync` bound"* until
