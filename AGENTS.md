@@ -1953,6 +1953,82 @@ case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
 
+### The first consumer reported, and the two costliest findings were things we already had
+
+ACT ported four call sites onto `0.1.0-alpha.2` — a WIT fetch, an OAuth
+flow, an OCI blob fetch and a `wasi:http` host — and no crate in that
+workspace names `reqwest` directly any more. The report is the first
+outside measurement this project has had, and what it measured is not the
+API.
+
+**Two of its findings are one finding, and it named the finding itself:**
+*the gap is a pointer, not a feature.* It hand-rolled
+`url::form_urlencoded::Serializer` twice, six lines each, for want of a
+`.form()` — which **exists, behind no feature, in the very version it was
+porting against**, verified by extracting the published `.crate`. And it
+worked around `Response` having no public constructor before finding
+`hclient-mock`, which is the answer.
+
+That is this file's *a consumer is a different instrument from a test*
+finding arriving from the other side, and it is sharper: the earlier
+sightings were about surfaces that were genuinely awkward or genuinely
+missing, where these two were **finished, documented and unfindable**. A
+long method list on `RequestBuilder` and 25 crates in the family mean a
+reader who does not already know a name does not meet it. The repair is a
+*where things are* table on the front page and a signpost on `Response`
+turning its missing constructor into the mock rather than into a wall.
+
+**`impl AsRef<str>` is the whole of the `IntoUrl` question.** ACT asked
+for something `IntoUrl`-shaped because call sites holding a `url::Url`
+were writing `url.as_str()`. `url::Url` implements `AsRef<str>`, so
+widening the seven verb methods reaches it **with no dependency on `url`**
+— the crate `hclient-proto` removed at a measured 1.9 MB of ICU tables.
+A trait of ours would have been worth exactly the conversions it named,
+and the one worth naming is already reachable. `url` sits in
+`[dev-dependencies]` as the witness, which is the same role it plays for
+`uri.rs`'s differential corpus.
+
+**It paid out in a way nobody planned: 90 `needless_borrow` warnings**,
+each a `&format!(..)` at a call site in this workspace's own tests that no
+longer needs the borrow. A widening whose benefit shows up as ceremony
+clippy can now delete is a widening that was real.
+
+**A missing method cannot say why it is missing.**
+`Rustls::with_webpki_roots()` without its feature made rustc suggest
+`Rustls::from_config` — a correct name and a far bigger detour, because
+rustc offers the nearest name it can see and the nearest name is the
+general-purpose escape hatch. The stand-in behind
+`#[cfg(not(feature = "webpki-roots"))]` carries the message on an
+unsatisfiable bound, with the same lifetime trap `Client::new()`'s hit the
+night before: a `where Self: Trait` predicate mentioning no generic
+parameter is checked where the method is **defined**, so the plain form
+fails in this crate rather than at the caller.
+
+**What the report confirms is worth as much as what it corrects**, and it
+is listed because a design argument that is never tested from outside is
+just an argument. `build()` refusing a configuration the backend cannot
+honour read as correct on contact. A redirect predicate against an
+internally-redirecting backend being an error at `build()` is the exact
+question `.notes/` recorded as unanswerable from inside — ACT's answer is
+that a predicate never consulted would have been its worst outcome,
+because it would have believed a ceiling was enforced. `RedirectVerdict`'s
+third arm is used *because* the other two exist to be contrasted with.
+`ErrorKind` being an enum retired three of its tests that had to make real
+network requests, because a `reqwest::Error` cannot be constructed. And
+`Resolve` handing back A and AAAA as separate streams pushed a
+policy-audit record out of their resolver, where neither stream can see
+it, and into the request, where it is one event — their own code's comment
+had already said that was where it belonged.
+
+**The one thing a consumer cannot get on our side of the fence.**
+`reqwest` is still in ACT's graph under `oci-client`, which brings
+`hyper-rustls` with `aws-lc-rs` while `hclient-tls-rustls` uses `ring` —
+so rustls correctly refuses to pick a provider and ACT installs one
+explicitly. Nothing here is this workspace's defect, and it is recorded
+because it is the difference between *we migrated* and *we have one HTTP
+stack*: the lever is an OCI client that takes a transport, which is
+somebody else's crate.
+
 ### A CLI, and the mutation that survived is what it is for
 
 `crates/hclient-cli`, binary `hc` — httpie's request-item grammar,
