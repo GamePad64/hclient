@@ -137,7 +137,7 @@ the wave count is a fact about the graph rather than a guess:
 | 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-proxy`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-rustls` |
 | 4 | `hclient-native` |
 | 5 | `hclient`, `hclient-dns-doh` |
-| 6 | `hclient-rt-embassy`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
+| 6 | `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
 
 **It is six and not four, and that is two questions rather than a
 miscount.** Five is the *normal* dependency graph; `cargo publish` must

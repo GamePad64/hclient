@@ -1707,15 +1707,20 @@ It is pinned rather than described: `tests/seam.rs` asserts that
 `SendTransport`, with a real negative rather than an `assert_not` that
 accepts anything.
 
-**Two things follow, and the second is the owner's.** The crate's own doc
-should lead with what it is — the `!Send` witness — rather than with
-embedded reach it does not currently deliver. And `publish = false` is now
-a live question: publishing promises a deployment configuration that
-measurement says does not exist yet, where `hclient-rt-pair-check` is
-already kept unpublished for being a harness. Against that is option
-value: if `no_std` becomes reachable — `http` growing it, or this
-workspace dropping `http` from its public API — embassy stops being a
-witness and becomes the runtime, and the crate is ready.
+**Both things that followed are done.** The crate's own doc leads with
+what it is — the `!Send` witness — rather than with embedded reach it does
+not deliver. And it is **`publish = false`** as of the first release:
+publishing would promise a deployment configuration measurement says does
+not exist, and a published surface is one that must not move. Not
+publishing is free and reversible; un-publishing is neither.
+
+It follows `hclient-rt-pair-check`'s shape exactly, down to carrying no
+licence symlinks and no README — which is also what keeps the hand-check
+below (*two per publishable crate, plus one*) true rather than off by two.
+Flip it back the day `no_std` becomes reachable: `http` growing it, or
+this workspace dropping `http` from its public API. Nothing else changes —
+the TAP suite still runs on every push, and the seam test still pins the
+counterexample.
 
 ### Channels do not transfer to embassy, and the reason is what crosses them
 

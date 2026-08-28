@@ -9,6 +9,34 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# **Paused before the first release, and the reason is a measurement rather
+# than doubt about the code.** As a *deployment* runtime this crate has no
+# configuration today: it is not `no_std` and cannot be — `http` 1.5.0
+# still carries `compile_error!("`std` feature currently required")` — so
+# its configuration is *std plus `embassy-net`*, and `embassy-net` is the
+# stack you use when you have no `std`. The one device the docs used to
+# name, esp-idf, integrates `embassy-sync`, `embassy-time-driver` and
+# `embassy-futures` and **not** `embassy-net`; it hands you lwIP through
+# `std::net`, where the runtime is `hclient-rt-smol` or `hclient-rt-tokio`.
+# The only place `Native<Embassy, ..>` actually runs is a Linux host over a
+# TAP device, which is this repository's CI.
+#
+# Publishing would promise a configuration measurement says does not exist,
+# and a published surface is a surface that must not move. Not publishing
+# is free and reversible; un-publishing is neither.
+#
+# **What the crate is for stays exactly as it was**, and it is load-bearing:
+# it is the workspace's only `!Send` seam implementor, and `tests/seam.rs`
+# pins that. Delete it and `TcpConnect::Connecting` could quietly become a
+# `Send` box, `SendTransport` would look like ceremony, and
+# `Transport::execute`'s unbounded RPITIT would look like caution with no
+# case — see `AGENTS.md`. `hclient-rt-pair-check` is unpublished for the
+# same class of reason and `hclient-rt-nal` for a neighbouring one.
+#
+# Flip this back the day `no_std` becomes reachable: `http` growing it, or
+# this workspace dropping `http` from its public API.
+publish = false
+
 # See the root Cargo.toml: `default` is near-empty here by design.
 [package.metadata.docs.rs]
 all-features = true
