@@ -66,10 +66,70 @@ client then routes by the origin's HTTPS record the way a browser does.
 `0.1.0` follows when the seams stop moving. `AGENTS.md` says what that
 promise will cost.
 
-## The twenty-six crates, as six families
+## The seams, as a picture
 
-You name **one**: `hclient`. Eleven reach your lockfile transitively, and
-twelve are ever chosen deliberately — the rest is plumbing. What follows is
+Every arrow below is a **trait**, and every one has more than one thing
+behind it — which is what makes it a seam rather than a layer. Nothing
+here is a plugin registry: each is an ordinary Rust trait with an
+associated type or two, chosen at compile time.
+
+```mermaid
+flowchart TB
+    you["your code"] --> C
+    C["<b>hclient::Client</b><br/>redirects · cookies · cache · decompression · SSE<br/><i>names no type parameters</i>"]
+    POL["<b>RedirectPolicy</b> · <b>RetryPolicy</b> — hclient-proto<br/><b>Auth</b> / <b>AuthFlow</b> — hclient<br/><b>Hooks</b> — hclient-core"] -. "values, not type parameters" .-> C
+    C == "SendTransport" ==> TR{{"<b>Transport</b> — hclient-core"}}
+
+    TR --> AMB["hclient-fetch · hclient-wasi<br/>hclient-urlsession · hclient-winhttp<br/><i>ambient: they own no connection,<br/>so they ask for none of the seams below</i>"]
+    TR --> OTH["hclient-tower<br/>hclient-mock"]
+    TR --> NAT
+    NAT -. "hands over the upgraded stream" .-> TUN
+
+    subgraph OWN["what a transport that owns its connections asks for"]
+        direction TB
+        NAT["<b>hclient-native</b><br/>TCP · TLS · HTTP/1.1 · h2 · h3"]
+        NAT --> RT{{"<b>TcpConnect · Timer</b><br/><b>Blocking · Spawn · UdpBind</b><br/>hclient-rt"}}
+        NAT --> TLS{{"<b>TlsConnect · TlsIdentity</b><br/>hclient-tls<br/><b>QuicTlsConnect</b>, feature <i>quic</i>"}}
+        NAT --> DNS{{"<b>Resolve</b><br/>hclient-dns"}}
+        NAT --> PXY{{"<b>Handshake</b><br/>hclient-proxy"}}
+        RT --> RTI["hclient-rt-tokio<br/>hclient-rt-smol<br/>hclient-rt-embassy"]
+        TLS --> TLI["hclient-tls-rustls<br/>hclient-tls-native-tls<br/>NoTls"]
+        DNS --> DNI["hclient-dns-system<br/>hclient-dns-hickory<br/>hclient-dns-doh<br/>IpLiteralOnly"]
+        PXY --> PXI["HTTP CONNECT<br/>SOCKS5 · SOCKS4a<br/>NoProxy"]
+    end
+
+    subgraph SOCK["a seam of its own, so a backend that cannot is a compile error"]
+        direction TB
+        TUN["hclient-tungstenite<br/><i>borrows the native transport</i>"] --> WS{{"<b>WebSocketConnect</b> / <b>WebSocket</b><br/>hclient-core"}}
+        FE2["hclient-fetch<br/><i>the same crate, a second seam</i>"] --> WS
+    end
+
+    classDef cluster fill:#fafafa,stroke:#cfd8dc,color:#455a64;
+    class OWN,SOCK cluster;
+    classDef seam fill:#0d47a1,stroke:#0d47a1,color:#fff;
+    classDef box fill:#eceff1,stroke:#90a4ae,color:#111;
+    class TR,RT,TLS,DNS,PXY,WS seam;
+    class NAT,AMB,OTH,RTI,TLI,DNI,PXI,TUN,FE2,POL box;
+```
+
+**Three things the picture is claiming.** The bottom four seams are asked
+for by `hclient-native` and by nothing else — an ambient backend has no
+socket, no clock and no resolver of its own, which is why swapping in
+`hclient-fetch` costs one line and no `where` clause. `WebSocketConnect`
+is deliberately *not* a method on `Transport`: a backend that cannot do it
+is then a compile error rather than a runtime refusal, and the browser —
+where `WebSocket` is a separate global a `fetch`-shaped transport cannot
+reach — is the case that proves the shape. And the arrow into `Client`
+carries **values**, not type parameters: a policy, a jar, a hook are all
+things you hand over, so two clients differing only in their redirect
+rule are the same type — which is what lets a library write
+`fn f(c: &Client)` and nothing else.
+
+## The twenty-five published crates, as six families
+
+You name **one**: `hclient`. Most of the rest reach your lockfile
+transitively, and about a dozen are ever chosen deliberately — the
+remainder is plumbing. What follows is
 so the list reads as families rather than as thirty rows. On crates.io the
 same grouping is the keyword `hclient`, plus `transport`, `runtime`, `tls`
 or `dns` on the family members.
@@ -92,6 +152,7 @@ or `dns` on the family members.
 | `hclient-wasi` | `wasi:http` 0.3 |
 | `hclient-urlsession` | Apple's `URLSession` |
 | `hclient-tower` | any `tower::Service`, so `tower-http` middleware applies |
+| `hclient-winhttp` | Windows' own WinHTTP |
 
 **Runtimes** — what the native transport does I/O and time with
 
@@ -124,7 +185,20 @@ or `dns` on the family members.
 |---|---|
 | `hclient-tungstenite` | WebSocket framing over an upgraded byte stream |
 | `hclient-webtransport` | WebTransport sessions over an HTTP/3 connection |
+| `hclient-proxy` | HTTP `CONNECT`, SOCKS5 and SOCKS4a as sans-io handshakes, and the machine's own proxy settings |
 | `hclient-idn` | UTS 46 through the platform's own ICU where there is one |
+
+**And a binary**
+
+| crate | what it is |
+|---|---|
+| `hclient-cli` | `hc`: httpie's request grammar, curl's `--insecure` and `--resolve`, and `--backend` chosen at **run time** — refused by name when the build has not got it |
+
+Three more live in the repository and are deliberately not published:
+`hclient-rt-embassy`, whose one real deployment is this repository's own
+CI; `hclient-rt-nal`, which is blocked on `no_std`; and
+`hclient-rt-pair-check`, a test harness that must depend on two runtimes
+at once, which no shipped crate may do. Each says so in its own manifest.
 
 Each crate's own README says the thing that decides its existence: **why it
 is a separate crate.** The short version is one rule — a crate exists to
