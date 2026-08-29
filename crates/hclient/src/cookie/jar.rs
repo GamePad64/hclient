@@ -4,7 +4,15 @@
 //! the parsed header. Everything that can be decided from the header alone
 //! already was, in `parse.rs`.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+// `web_time`, not `std::time`, for the clock types. On every target but
+// `wasm32-unknown-unknown` it is a re-export of `std::time`, so this is
+// the same type with the same behaviour and no signature here changes; on
+// the browser it is the one that does not panic, which is what made a
+// cookie jar there a configuration that did not exist. `Duration` stays
+// `std`'s: it carries no clock.
+// `scripts/ast-grep/rules/no-std-wall-clock-in-the-client.yml` keeps it so.
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use http::{HeaderMap, HeaderValue, Uri};
 
