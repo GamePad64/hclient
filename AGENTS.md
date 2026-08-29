@@ -1153,13 +1153,43 @@ stores cookies itself and forbids the `Cookie` header, so a second jar
 there would store every `Set-Cookie` twice — including the ones the browser
 refused — while the header it produced was dropped on the way out.
 
-The *`now`* is `SystemTime::now()` and deliberately **not** the client's
+The *`now`* is a wall clock and deliberately **not** the client's
 `Timer`: `Timer::Instant` is `Copy + PartialOrd` with an `elapsed_since` —
 a stopwatch with no epoch — and `Expires` is a calendar date. Anchoring a
 wall clock and advancing it with `elapsed_since` would freeze outright
-under `NoClock`, whose `elapsed_since` is `Duration::ZERO` for ever. The
-cost of the choice is that `SystemTime::now()` panics on
-`wasm32-unknown-unknown`, which is written where the setter is.
+under `NoClock`, whose `elapsed_since` is `Duration::ZERO` for ever.
+
+**The clock is `web_time::SystemTime`, and the sentence that used to end
+this paragraph said the cost was a panic on `wasm32-unknown-unknown`.**
+That was true and it was worse than it read. Measured rather than
+reasoned, by running a `.wasm` carrying both calls: under node with a
+`Date.now` supplied, `web_time::SystemTime::now()` returns the host's
+clock and `std::time::SystemTime::now()` **traps** on `unreachable`
+inside `<std::time::SystemTime>::now`; under `wasmtime`, with no JS at
+all, the same trap. So a cookie jar or an HTTP cache in a browser was not
+an undesirable configuration, it was a module that died on the first hop
+that read the clock — a configuration that did not exist.
+
+Outside `wasm32-unknown-unknown`, `web_time` is literally
+`pub use std::time::*;`, so this is the same type with the same behaviour
+and not one signature moved. The graph cost is **one crate** on native,
+on the default features, and on a wasm build that has a transport — and
+**six** on a wasm build with `cookies,cache` and no transport, where
+`web-time` becomes the only parent of `js-sys` and `wasm-bindgen`. That
+last row is why the manifest's own comment had to be corrected a commit
+after it was written: a measurement taken on one configuration reads as a
+claim about all of them.
+
+**And the defect survived because no gate could see it.** The wasm build
+compiled before the change and after it; the failure was only ever at run
+time. What keeps the plain clock from coming back is
+`scripts/ast-grep/rules/no-std-wall-clock-in-the-client.yml`, which bans
+the **import** rather than the call — ast-grep resolves no imports, so a
+bare `SystemTime::now()` is safe precisely because the only `SystemTime`
+a file can have in scope is `web_time`'s. The *type* stays in public
+signatures untouched, which was the constraint. Doctests keep
+`use std::time::SystemTime;` and are right to: they build for the host,
+where the two are one type.
 
 **`425 Too Early` is replayed once, in `Client`** (RFC 8470 §5.2). 0-RTT
 has three failure paths and a transport can close only two of them — the
