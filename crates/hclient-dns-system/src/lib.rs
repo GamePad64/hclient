@@ -25,6 +25,41 @@
 //! (§2.4/§2.5 modes and root targets, §8 `mandatory` semantics), and
 //! classifying what "no records" means.
 //!
+//! # glibc: what this crate needs, measured rather than assumed
+//!
+//! **The supported minimum is glibc 2.34**, and the honest shape of that
+//! claim is a policy rather than a hard wall: `res_query` has been in
+//! glibc since `libresolv` had a version number, so nothing here *fails*
+//! on an older one. What 2.34 is, is the version from which the symbol
+//! lives in `libc.so.6` — measured on 2.43: `res_query@@GLIBC_2.34` there,
+//! and no `res_query` in `libresolv.so.2` at all. A binary built against
+//! this crate on such a host carries `res_query@GLIBC_2.34` as an
+//! undefined symbol and **does not load `libresolv` at run time**, because
+//! `--as-needed` drops a library that contributed nothing.
+//!
+//! Below 2.34 the same source links the symbol out of `libresolv.so.2`
+//! instead, so the deployment gains a run-time dependency on that library.
+//! That configuration is expected to work and **is not tested here**,
+//! which is what "supported minimum" means: it is the version this project
+//! builds and runs against, not a version below which the code is known
+//! broken.
+//!
+//! **This crate raises nobody's floor**, which is the part worth knowing
+//! before blaming it for one: on a 2.34-or-later build host the standard
+//! library already pins the binary there through
+//! `__libc_start_main@GLIBC_2.34`, measured on a probe that links no
+//! `res_query` at all. The effective floor of any glibc program is its
+//! build host's glibc, exactly as it always is.
+//!
+//! **The one requirement a packager can get wrong is at link time.**
+//! `sys/res_query.rs` puts `-lresolv` on the link line for
+//! `target_env = "gnu"`, so `libresolv.so` — the development symlink, not
+//! the runtime `.so.2` — must be installed to build, even on a glibc where
+//! the library contributes not one symbol to the result. musl gets no such
+//! flag, because Rust's self-contained musl sysroot ships no `libresolv.a`
+//! and the symbol is inside `libc.a`; the reasoning for each target is in
+//! that file, beside the `#[cfg_attr]`s that carry it.
+//!
 //! **`supports_svcb()` says what this build can do, and nothing more.** It
 //! comes from the same `#[cfg]`-selected module that supplies the lookup,
 //! so the capability and the code behind it cannot drift apart; see `sys`

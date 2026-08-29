@@ -135,9 +135,14 @@ const MAX_NAME_LEN: usize = 255;
 // rather than by convention:
 //
 // - glibc 2.34 and later export `res_query` from `libc.so.6`
-//   (`res_query@@GLIBC_2.34`) and leave `libresolv.so.2` an empty stub;
-//   before 2.34 it was in `libresolv`. Linking `resolv` is therefore
-//   correct on both — harmless on new glibc, required on old.
+//   (`res_query@@GLIBC_2.34`); before 2.34 it was in `libresolv`. Linking
+//   `resolv` is therefore correct on both — harmless on new glibc,
+//   required on old. This comment used to add *and leave `libresolv.so.2`
+//   an empty stub*, which is wrong and was read rather than measured: on
+//   glibc 2.43 that library still exports 66 functions, among them
+//   `ns_name_uncompress`, `inet_net_pton` and the `__b64_*` pair. What
+//   moved out of it is the `res_*` family, which is all this crate wanted
+//   from it, and the visible consequence is below.
 // - musl defines `res_query` as a strong symbol inside `libc.a`, and Rust's
 //   self-contained musl sysroot ships **no `libresolv.a` at all** (checked:
 //   the directory holds `libc.a` and `libunwind.a` and nothing else). A
