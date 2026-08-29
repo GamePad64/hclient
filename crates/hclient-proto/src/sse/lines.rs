@@ -1,9 +1,27 @@
-/// Splits a byte stream into lines per the WHATWG EventSource rules:
-/// exactly one leading BOM is stripped, terminators are CRLF, LF, or a lone
-/// CR. Survives a chunk break at any point, including mid-BOM and between
-/// CR and LF.
+/// Splits a byte stream into lines: exactly one leading BOM is stripped,
+/// terminators are CRLF, LF, or a lone CR. Survives a chunk break at any
+/// point, including mid-BOM and between CR and LF.
+///
+/// # It is SSE's splitter, promoted rather than copied
+///
+/// These are the WHATWG EventSource rules, and they were written here for
+/// `SseDecoder` alone. [`crate::lines`] is the public door onto this type,
+/// opened when a general line adapter was wanted for NDJSON and log
+/// tailing: the overlap was measured before it was believed, and it is the
+/// whole file — terminator set, chunk-boundary survival, byte accounting,
+/// the compaction that keeps it linear. Nothing was changed to make the
+/// second caller fit, and [`Self::take_unterminated`] is the only method
+/// added for it, which `SseDecoder` does not call.
+///
+/// **The file stays under `sse/` and the door is elsewhere**, which is a
+/// wart with a reason: `just test-sse-complexity` pins
+/// `sse::lines::tests::parsing_scales_linearly_not_quadratically` by its
+/// exact path, because it is the one test that must run on a runner of its
+/// own. Moving the module would rename that test, and a recipe that
+/// silently stops running its one test is the defect this workspace keeps
+/// finding.
 #[derive(Debug)]
-pub(crate) struct LineSplitter {
+pub struct LineSplitter {
     buf: Vec<u8>,
     /// How many bytes from the start of `buf` have already been handed out.
     ///
@@ -29,8 +47,14 @@ pub(crate) struct LineSplitter {
 
 const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
+impl Default for LineSplitter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LineSplitter {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             buf: Vec::new(),
             start: 0,
@@ -41,7 +65,7 @@ impl LineSplitter {
         }
     }
 
-    pub(crate) fn push(&mut self, chunk: &[u8]) {
+    pub fn push(&mut self, chunk: &[u8]) {
         // Compaction once per push, not once per line: linear overall.
         if self.start > 0 {
             self.buf.drain(..self.start);
@@ -87,7 +111,7 @@ impl LineSplitter {
     /// Accurate even when a CRLF is split by a chunk boundary: the LF
     /// swallowed in `push` accumulates in `carried_terminator` and is
     /// credited here to whichever line is returned first after it arrives.
-    pub(crate) fn next_line(&mut self) -> Option<(Vec<u8>, usize)> {
+    pub fn next_line(&mut self) -> Option<(Vec<u8>, usize)> {
         let hay = &self.buf[self.start..];
         let pos = hay.iter().position(|&b| b == b'\n' || b == b'\r')?;
         let term = hay[pos];
@@ -105,7 +129,7 @@ impl LineSplitter {
         Some((line, consumed))
     }
 
-    pub(crate) fn buffered_len(&self) -> usize {
+    pub fn buffered_len(&self) -> usize {
         // BOM bytes not yet resolved are physically held. Not counting
         // them would let the event size limit in the decoder be bypassed.
         // carried_terminator is the same case: an LF swallowed at a chunk
@@ -114,6 +138,35 @@ impl LineSplitter {
         (self.buf.len() - self.start)
             + if self.bom_done { 0 } else { self.bom_seen }
             + self.carried_terminator
+    }
+
+    /// The bytes held with no terminator behind them, taken at the end of
+    /// the input.
+    ///
+    /// **Only a caller that knows the stream has ended may call this**,
+    /// which is why it is not `next_line`'s business: mid-stream, an
+    /// unterminated run is a line that has not finished arriving, and
+    /// handing it over would cut a line in half at a frame boundary.
+    ///
+    /// An undecided BOM prefix is data here rather than a marker. One or
+    /// two bytes of `EF BB BF` with nothing behind them are not a BOM —
+    /// a BOM is three bytes — so at end of input they are the last thing
+    /// the sender wrote, and dropping them would be a silent loss of the
+    /// only kind this splitter can have.
+    ///
+    /// `SseDecoder` does not call this, and that is not an oversight: the
+    /// WHATWG rules dispatch an event on a blank line, so a trailing
+    /// partial event is deliberately discarded there.
+    pub fn take_unterminated(&mut self) -> Vec<u8> {
+        if !self.bom_done {
+            self.buf.extend_from_slice(&BOM[..self.bom_seen]);
+            self.bom_done = true;
+        }
+        let rest = self.buf.split_off(self.start);
+        self.buf.clear();
+        self.start = 0;
+        self.carried_terminator = 0;
+        rest
     }
 }
 
@@ -242,6 +295,55 @@ mod tests {
             collect(&[b"a\r", b"b\n"]),
             vec![b"a".to_vec(), b"b".to_vec()]
         );
+    }
+
+    /// `take_unterminated` is the general line stream's half of the
+    /// contract and SSE's non-half: at end of input a trailing run with no
+    /// terminator is the last line for one caller and a discarded partial
+    /// event for the other, so it is a separate method rather than a
+    /// change to `next_line`.
+    #[test]
+    fn an_unterminated_tail_is_taken_only_when_asked_for() {
+        let mut s = LineSplitter::new();
+        s.push(b"a\nb");
+        assert_eq!(s.next_line().map(|(l, _)| l), Some(b"a".to_vec()));
+        assert_eq!(s.next_line(), None, "`b` has no terminator behind it");
+        assert_eq!(s.take_unterminated(), b"b".to_vec());
+        assert_eq!(s.buffered_len(), 0);
+        assert_eq!(s.take_unterminated(), Vec::<u8>::new(), "and only once");
+    }
+
+    #[test]
+    fn a_terminated_stream_has_no_tail_to_take() {
+        // The case that separates "yield the tail" from "yield an empty
+        // last line": after a terminator there is nothing buffered, so a
+        // body ending in `\n` does not gain a phantom line.
+        let mut s = LineSplitter::new();
+        s.push(b"a\n");
+        assert_eq!(s.next_line().map(|(l, _)| l), Some(b"a".to_vec()));
+        assert_eq!(s.take_unterminated(), Vec::<u8>::new());
+    }
+
+    /// One or two bytes of `EF BB BF` with nothing behind them are not a
+    /// BOM, because a BOM is three bytes. `buffered_len` already counts
+    /// them, so dropping them here would make the bytes taken out of this
+    /// splitter fewer than the bytes put in — the same accounting defect
+    /// `carries_swallowed_lf_across_push_to_next_line_accounting` pins one
+    /// field over.
+    #[test]
+    fn an_undecided_bom_prefix_comes_back_as_data_at_end_of_input() {
+        let mut s = LineSplitter::new();
+        s.push(&[0xEF, 0xBB]);
+        assert_eq!(s.buffered_len(), 2);
+        assert_eq!(s.take_unterminated(), vec![0xEF, 0xBB]);
+        assert_eq!(s.buffered_len(), 0);
+    }
+
+    #[test]
+    fn a_complete_bom_is_still_stripped_and_leaves_no_tail() {
+        let mut s = LineSplitter::new();
+        s.push(&[0xEF, 0xBB, 0xBF]);
+        assert_eq!(s.take_unterminated(), Vec::<u8>::new());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use bytes::{Bytes, BytesMut};
 use hclient_core::{Error, ErrorKind};
+use hclient_proto::link::Links;
 use http_body::Body as HttpBody;
 use std::error::Error as StdError;
 use std::fmt::Debug;
@@ -151,6 +152,46 @@ impl<B> Response<B> {
     pub fn url(&self) -> &http::Uri {
         &self.url
     }
+    /// Every [`Link:`](hclient_proto::link) header, in the order the server
+    /// wrote them, with **each target resolved against [`Self::url`]**.
+    ///
+    /// ```no_run
+    /// # async fn f(c: &hclient::Client) -> Result<(), hclient::Error> {
+    /// let page = c.get("https://api.example.com/items").send().await?;
+    /// if let Some(next) = page.links().get("next") {
+    ///     let _more = c.get(next.target()).send().await?;
+    /// }
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// # Resolved, and the base is the URL that answered
+    ///
+    /// The header may write a relative reference, and the caller's next act is
+    /// to request the thing — so handing back `/items?page=2` would be handing
+    /// back a value that fails at request time, a layer away from anything
+    /// that could explain it. The base is [`Self::url`] rather than the URL
+    /// the caller typed, which is RFC 3986 §5.1.3 and matters exactly when a
+    /// redirect was followed: a `Link` on the answer is relative to where the
+    /// answer came from.
+    ///
+    /// [`hclient_proto::link::Links::parse_value`] is the same parse without
+    /// the resolution, for a caller who wants the header's own text; a target
+    /// that cannot be resolved at all is left as written rather than dropped,
+    /// which is argued at
+    /// [`resolved_against`](hclient_proto::link::Links::resolved_against).
+    ///
+    /// # Why it is on both this type and [`Collected`]
+    ///
+    /// [`Self::error_for_status`]'s reason, one method up: the two are used at
+    /// different moments. A caller streaming the body has a `Response` and
+    /// wants the next page's URL before deciding to read this one; a caller
+    /// who wrote `.collect().await?.json()?` has a `Collected` and meets
+    /// pagination only after the body is in hand. Making them go back for it
+    /// would mean keeping a response they had finished with.
+    pub fn links(&self) -> Links {
+        Links::from_headers(self.headers()).resolved_against(self.url())
+    }
+
     pub fn into_parts(self) -> (http::response::Parts, B) {
         (self.parts, self.body)
     }
@@ -197,6 +238,41 @@ where
                 }
             }
         }
+    }
+
+    /// The body as a stream of lines, without their terminators —
+    /// NDJSON, or a log being tailed.
+    ///
+    /// ```no_run
+    /// # async fn f(c: &hclient::Client) -> Result<(), hclient::Error> {
+    /// let mut lines = c.get("https://example.com/log").send().await?.lines();
+    /// while let Some(line) = lines.next().await {
+    ///     println!("{}", String::from_utf8_lossy(&line?));
+    /// }
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// A single line is bounded by [`lines::DEFAULT_MAX_LINE`]; a caller
+    /// who knows their records' size uses [`lines::LineStream::new`]
+    /// instead. [`lines::LineStream`] argues why that bound is not
+    /// [`ClientBuilder::response_limit`](crate::ClientBuilder::response_limit)'s
+    /// job, and [`hclient_proto::lines`] argues the terminator set.
+    ///
+    /// # There is no `Collected::lines`, and that is not symmetry lost
+    ///
+    /// [`Self::links`] is on both types because a header is readable at
+    /// both moments. A [`Collected`] has no stream left to adapt — the
+    /// bytes are already in memory, so `text()?.lines()` is `std`'s own
+    /// one-liner and it needs nothing from this crate. Writing a second
+    /// one here would be a second line-terminator policy in one crate,
+    /// differing from `str::lines` on a lone CR, for a case that has no
+    /// frames in it.
+    ///
+    /// [`lines::DEFAULT_MAX_LINE`]: crate::lines::DEFAULT_MAX_LINE
+    /// [`lines::LineStream`]: crate::lines::LineStream
+    /// [`lines::LineStream::new`]: crate::lines::LineStream::new
+    pub fn lines(self) -> crate::lines::LineStream<B> {
+        crate::lines::LineStream::new(self, crate::lines::DEFAULT_MAX_LINE)
     }
 
     pub async fn collect(mut self) -> Result<Collected, Error> {
@@ -317,6 +393,46 @@ impl Collected {
     pub fn url(&self) -> &http::Uri {
         &self.url
     }
+    /// Every [`Link:`](hclient_proto::link) header, in the order the server
+    /// wrote them, with **each target resolved against [`Self::url`]**.
+    ///
+    /// ```no_run
+    /// # async fn f(c: &hclient::Client) -> Result<(), hclient::Error> {
+    /// let page = c.get("https://api.example.com/items").send().await?;
+    /// if let Some(next) = page.links().get("next") {
+    ///     let _more = c.get(next.target()).send().await?;
+    /// }
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// # Resolved, and the base is the URL that answered
+    ///
+    /// The header may write a relative reference, and the caller's next act is
+    /// to request the thing — so handing back `/items?page=2` would be handing
+    /// back a value that fails at request time, a layer away from anything
+    /// that could explain it. The base is [`Self::url`] rather than the URL
+    /// the caller typed, which is RFC 3986 §5.1.3 and matters exactly when a
+    /// redirect was followed: a `Link` on the answer is relative to where the
+    /// answer came from.
+    ///
+    /// [`hclient_proto::link::Links::parse_value`] is the same parse without
+    /// the resolution, for a caller who wants the header's own text; a target
+    /// that cannot be resolved at all is left as written rather than dropped,
+    /// which is argued at
+    /// [`resolved_against`](hclient_proto::link::Links::resolved_against).
+    ///
+    /// # Why it is on both this type and [`Response`]
+    ///
+    /// [`Self::error_for_status`]'s reason, one method up: the two are used at
+    /// different moments. A caller streaming the body has a `Response` and
+    /// wants the next page's URL before deciding to read this one; a caller
+    /// who wrote `.collect().await?.json()?` has a `Collected` and meets
+    /// pagination only after the body is in hand. Making them go back for it
+    /// would mean keeping a response they had finished with.
+    pub fn links(&self) -> Links {
+        Links::from_headers(self.headers()).resolved_against(self.url())
+    }
+
     pub fn bytes(&self) -> &Bytes {
         &self.body
     }
@@ -462,49 +578,24 @@ pub enum CharsetError {
 /// without a second string to allocate.
 #[cfg(feature = "charset")]
 fn charset_param(value: &str) -> Option<&str> {
-    use winnow::ascii::space0;
-    use winnow::combinator::{alt, delimited, preceded, repeat, separated};
-    use winnow::token::{any, none_of, take_till, take_while};
+    use hclient_proto::field::{ows, quoted_string_raw, token};
+    use winnow::combinator::{alt, preceded, separated};
+    use winnow::token::take_till;
     use winnow::{ModalResult, Parser};
 
-    /// RFC 9110 §5.6.3 `OWS`.
-    fn ows(i: &mut &str) -> ModalResult<()> {
-        space0.void().parse_next(i)
-    }
-
-    /// RFC 9110 §5.6.2 `token`.
-    fn token<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
-        take_while(1.., |c: char| {
-            c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
-        })
-        .parse_next(i)
-    }
-
-    /// RFC 9110 §5.6.4 `quoted-string`, **not** unescaped — the label is
-    /// handed back as the bytes between the quotes, so this borrows.
-    ///
-    /// Nothing is lost by that here and it is the reason the wart below is
-    /// stated rather than fixed: no encoding label `encoding_rs` knows
-    /// contains a quote, so a `quoted-pair` inside one cannot name a
-    /// charset either way. It is still *consumed* correctly, so a `\"`
-    /// cannot end the parameter early and let the rest be read as further
-    /// parameters.
-    fn quoted<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
-        delimited(
-            '"',
-            repeat(0.., alt((('\\', any).void(), none_of(['"']).void())))
-                .map(|(): ()| ())
-                .take(),
-            '"',
-        )
-        .parse_next(i)
-    }
-
     /// One `parameter = token BWS "=" BWS ( token / quoted-string )`.
+    ///
+    /// The three productions under it are `hclient_proto::field`'s rather
+    /// than three more copies here — this module was one of the four this
+    /// crate had. `quoted_string_raw` is the borrowing form, and the
+    /// reason is the label: no encoding `encoding_rs` knows contains a
+    /// quote, so a `quoted-pair` inside one cannot name a charset either
+    /// way. It is still *consumed* correctly, so a `\"` cannot end the
+    /// parameter early and let the rest be read as further parameters.
     fn parameter<'a>(i: &mut &'a str) -> ModalResult<(&'a str, &'a str)> {
         let name = preceded(ows, token).parse_next(i)?;
         (ows, '=', ows).parse_next(i)?;
-        let v = alt((quoted, token)).parse_next(i)?;
+        let v = alt((quoted_string_raw, token)).parse_next(i)?;
         ows.parse_next(i)?;
         Ok((name, v))
     }

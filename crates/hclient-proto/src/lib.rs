@@ -6,8 +6,11 @@
 
 pub mod backoff;
 pub mod encode;
+pub mod field;
 pub mod happy_eyeballs;
 pub mod head;
+pub mod lines;
+pub mod link;
 pub mod redirect;
 pub mod retry;
 pub mod sse;

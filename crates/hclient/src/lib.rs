@@ -156,6 +156,7 @@ mod deadline;
 mod decompress;
 pub mod erased;
 mod limit;
+pub mod lines;
 /// Mock transport and controllable timer, re-exported from `hclient-mock`.
 ///
 /// The doubles live in their own crate because a `Transport` implementation
@@ -215,6 +216,7 @@ pub mod error {
     pub use crate::deadline::TotalTimeoutElapsed;
     pub use crate::decompress::DecodeFailed;
     pub use crate::limit::ResponseTooLarge;
+    pub use crate::lines::LineTooLong;
     pub use crate::request::{ColonInUsername, ContentTypeIsNotOursToKeep};
     #[cfg(feature = "charset")]
     pub use crate::response::CharsetError;
@@ -291,6 +293,15 @@ pub mod body {
     /// [`ClientBody`], re-exported so a caller naming the chain does not
     /// have to reach into `hclient-core` for one type.
     pub use hclient_core::unversioned::erased::BoxBody;
+}
+
+/// RFC 8288 `Link:` — the paginated-API header, parsed.
+///
+/// The parse is [`hclient_proto::link`]'s, sans-io and testable with no
+/// socket; what this crate adds is a base to resolve against, at
+/// [`Response::links`] and [`Collected::links`].
+pub mod link {
+    pub use hclient_proto::link::{Link, Links};
 }
 
 /// Following redirects: how many, and whether this one.

@@ -1,5 +1,9 @@
 mod decode;
-mod lines;
+// `pub(crate)` rather than private: `crate::lines` is the public door
+// onto `LineSplitter`, and a sibling module cannot reach into a private
+// one. See that module, and the splitter's own doc, for why the file
+// stays here.
+pub(crate) mod lines;
 
 pub use decode::{SseDecoder, SseError, SseEvent};
 pub(crate) use lines::LineSplitter;
