@@ -46,6 +46,7 @@
 mod insecure;
 #[cfg(feature = "quic")]
 mod quic;
+mod record;
 mod stream;
 
 pub use stream::TlsStream;
@@ -126,6 +127,22 @@ struct Named {
     id: TlsConfigId,
 }
 
+/// Wraps a config's client-certificate resolver so that what the server
+/// asks for is observable.
+///
+/// **Every constructor goes through this**, [`Rustls::from_config`] and
+/// [`Rustls::with_identity`] included, because the caller who builds
+/// their own config is exactly the caller doing mTLS. It costs one
+/// `ClientConfig` clone per *construction* — never per connection, which
+/// is the clone this crate caches its ALPN configs to avoid — and it
+/// cannot change a handshake, only observe one: `Recording` forwards
+/// every answer verbatim.
+fn recording(cfg: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig> {
+    let mut cfg = (*cfg).clone();
+    cfg.client_auth_cert_resolver = record::Recording::wrap(cfg.client_auth_cert_resolver.clone());
+    Arc::new(cfg)
+}
+
 impl Rustls {
     /// Registers a client identity under a name of the caller's choosing.
     ///
@@ -148,7 +165,7 @@ impl Rustls {
         map.insert(
             name.into(),
             Named {
-                config: cfg,
+                config: recording(cfg),
                 id: TlsConfigId::new_unique(),
             },
         );
@@ -159,7 +176,7 @@ impl Rustls {
     pub fn from_config(cfg: Arc<rustls::ClientConfig>) -> Self {
         Self {
             identities: Arc::new(HashMap::new()),
-            base: cfg,
+            base: recording(cfg),
             by_alpn: Arc::new(Mutex::new(HashMap::new())),
             config_id: TlsConfigId::new_unique(),
             #[cfg(feature = "quic")]
@@ -616,6 +633,14 @@ mod tests {
 #[derive(Debug)]
 pub struct Handshaking<S> {
     state: Handshaking2<S>,
+    /// Where this connection's `ClientCertRequest` lands, if the server
+    /// asks for one.
+    ///
+    /// Owned per handshake and installed around the poll, because the
+    /// resolver that writes it lives in a **shared** config — see
+    /// `record.rs`. An `Arc<Mutex<..>>` and not a `Cell`, because
+    /// `Handshaking<S>: Send` must keep following from `S`.
+    record: record::Slot,
 }
 
 /// The two states, and the size difference between them is deliberate.
@@ -641,12 +666,14 @@ impl<S> Handshaking<S> {
     fn failed(e: Error) -> Self {
         Self {
             state: Handshaking2::Failed(Some(e)),
+            record: record::Slot::default(),
         }
     }
 
     fn driving(s: TlsStream<S>) -> Self {
         Self {
             state: Handshaking2::Driving(s),
+            record: record::Slot::default(),
         }
     }
 }
@@ -662,6 +689,11 @@ where
         // impl — so a plain `get_mut` rather than a projection, and no
         // `unsafe` (this crate forbids it).
         let me = self.get_mut();
+        // Installed for the whole poll rather than around
+        // `process_new_packets` alone: `resolve` is reachable from
+        // nowhere else, and one guard per poll is one `Arc` clone where
+        // one per rustls call would be several.
+        let _recording = record::Installed::new(&me.record);
         let stream = match &mut me.state {
             Handshaking2::Failed(e) => {
                 return Poll::Ready(Err(e
@@ -704,7 +736,8 @@ where
             .cipher_suite(
                 c.negotiated_cipher_suite()
                     .and_then(|s| normalize_cipher_suite(s.suite())),
-            );
+            )
+            .client_cert_request(me.record.lock().ok().and_then(|mut r| r.take()));
         let Handshaking2::Driving(stream) =
             std::mem::replace(&mut me.state, Handshaking2::Failed(None))
         else {

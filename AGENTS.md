@@ -618,16 +618,60 @@ document had warned about exactly this shape one section earlier and the
 warning was realised inside its own implementation: **the compiler catches
 the transport and never the backend.**
 
-**The observation half is designed and deliberately not shipped.** A caller
-who wants to *choose* interactively needs to see what the server asked for
-— the DER-encoded authority names and the signature schemes — and
-`docs/mtls-design.md` §3.4 and §3.5 say how: rustls has no handshake pause,
-so an interactive choice is observe, abandon, choose, redial, not a
-callback. The `ClientCertRequest` value for it was written and then
-**removed before commit**, because it had no producer and no reader — which
-is the shape `UpgradeSupport`'s spare variants were deleted for, and
-`TlsInfo` is `#[non_exhaustive]`, so it costs nothing to land it with the
-recording resolver instead of ahead of one.
+**The observation half is built, and it landed one commit later than the
+selection half on purpose.** `ClientCertRequest` was written with the
+seam, **removed before that commit** because it had no producer and no
+reader — `UpgradeSupport`'s shape — and put back with both. A caller who
+wants to *choose* interactively needs what the server asked for, and
+rustls hands the `CertificateRequest`'s contents to a
+`ResolvesClientCert` and to nothing else: there is no getter on
+`ClientConnection` afterwards, so the only way to see them is to **be**
+the resolver.
+
+**So the record belongs to a connection and the resolver belongs to a
+config, and those are different lifetimes.** A `ClientConfig` is shared —
+cloning one is rustls' most expensive operation and this crate caches
+per-ALPN copies precisely to avoid it — so the resolver cannot own the
+slot it writes into. What it can do is write into whichever slot is
+installed *for the duration of the call*, and `resolve` is reachable only
+from inside `ClientConnection::process_new_packets`, which is a
+**synchronous call this crate makes**. A guard scopes the slot around the
+poll the way a lock scopes a critical section. That is
+`hclient-tls-native-tls`'s waker trick with the sign flipped: there it
+costs the workspace's second `unsafe`, and here it costs none, because
+rustls is sans-io and the value being scoped is an `Arc` rather than a
+borrowed `Context`.
+
+**The wrap is unconditional and cannot change a handshake.** Every
+constructor goes through it, `from_config` included — the caller who
+builds their own config is the caller doing mTLS — and `Recording`
+forwards `resolve`, `has_certs` and `only_raw_public_keys` verbatim. It
+costs one config clone per *construction*, never per connection.
+
+**`answered` is the field that earns the type.** Without it a caller
+cannot tell *403 because I sent no certificate* from *403 because I am
+not authorised*, so a picker fires on the wrong responses. It is
+discriminated by exactly one of the three tests, which is what says it is
+carrying a fact rather than decorating one; the control throughout is a
+server that does not ask, which must report `None` rather than a `Some`
+with an empty list — the `Discovered::NoRecord`/`NotConsulted`
+distinction a third time.
+
+It reaches a caller on `Connected`, by the path `tls_version`,
+`tls_cipher` and `alpn` already take, and through the same **one** setter
+for the same reason: a backend either read the handshake's outcome or it
+did not. `hc -v` is the in-tree reader — *server requested a client
+certificate, naming 2 authorities; none was sent* — printed **only when
+the server asked**, because the silent case is nearly every connection
+and a line on each of them is noise. The QUIC path reports `None`: quinn
+drives that handshake, so no slot of ours is installed, which is the
+understating direction.
+
+What is still not here is the picker itself, and `docs/mtls-design.md`
+§3.5 is why it is the caller's: rustls has no handshake pause, so an
+interactive choice is observe, abandon, choose, redial — one extra
+handshake per origin per session, and a second failed mTLS attempt in
+whatever the server counts.
 
 **And this workspace was wrong twice about rustls and about smartcards.**
 It was said here that a server sending a DN list lets rustls choose:

@@ -359,6 +359,92 @@ pub struct Connected<'a> {
     /// hook that finds them disagreeing has found something worth
     /// reporting rather than a field to prefer.
     pub alpn: Option<&'a [u8]>,
+    /// What the server asked for when it requested a client certificate,
+    /// where the backend could observe it.
+    ///
+    /// **`None` and an empty [`ClientCertRequest::authority_names`] are
+    /// different facts**, which is why this is not a bare list. `None`
+    /// means the server did not ask — or that the backend cannot see
+    /// that it did, which is `hclient-tls-native-tls`, whose stack
+    /// exposes no hook for it. An empty list inside a `Some` means the
+    /// server asked and named nobody, which RFC 8446 §4.4.2.1 makes
+    /// *send whatever certificate you have*.
+    ///
+    /// Borrowed, like the three fields above it: the `TlsInfo` this is
+    /// read out of outlives the emission.
+    pub client_cert_request: Option<&'a ClientCertRequest>,
+}
+
+/// What a server asked for when it requested a client certificate.
+///
+/// Read by whoever wants to *choose* one — a rule, or a person.
+/// `docs/mtls-design.md` §3.4 has why this leaves the handshake at all:
+/// an automatic choice is a synchronous resolver and needs none of it,
+/// where an interactive one cannot wait inside a handshake and must
+/// observe, abandon, choose and redial.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClientCertRequest {
+    /// The certificate authorities the server said it would accept:
+    /// DER-encoded distinguished names, in the order sent, **unparsed**.
+    ///
+    /// Raw for the reason a peer certificate is: turning a distinguished
+    /// name into text needs an X.509 parser, which this workspace
+    /// declined to take. A caller who wants names brings one.
+    ///
+    /// Empty means the server named nobody, which it is entitled to do.
+    pub authority_names: Vec<Vec<u8>>,
+    /// The signature schemes the server will verify, as IANA codepoints.
+    ///
+    /// Codepoints rather than an enum, and never a backend's own type:
+    /// the registry gains entries, and this seam may no more name
+    /// `rustls::SignatureScheme` than [`Connected::tls_cipher`] may be an
+    /// enum.
+    pub sigschemes: Vec<u16>,
+    /// Whether a certificate was presented in answer.
+    ///
+    /// **This closes a gap neither half closes alone.** Without it a
+    /// caller cannot tell *403 because I sent no certificate* from *403
+    /// because I am not authorised*, so a picker would fire on the wrong
+    /// responses. Hints present with `answered: false` is the exact
+    /// signal that a certificate would have been accepted and none was
+    /// sent.
+    pub answered: bool,
+}
+
+impl ClientCertRequest {
+    /// An empty record: the server asked and named nobody, and nothing
+    /// was sent.
+    ///
+    /// A builder rather than a literal, because the struct is
+    /// `#[non_exhaustive]` and a **backend outside this workspace** is
+    /// what fills it — the same pair, and the same reason, as
+    /// `hclient_tls::TlsInfo::new` one crate over.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The CAs the server said it would accept, DER, in the order sent.
+    #[must_use]
+    pub fn authority_names(mut self, names: Vec<Vec<u8>>) -> Self {
+        self.authority_names = names;
+        self
+    }
+
+    /// The signature schemes it will verify, as IANA codepoints.
+    #[must_use]
+    pub fn sigschemes(mut self, schemes: Vec<u16>) -> Self {
+        self.sigschemes = schemes;
+        self
+    }
+
+    /// Whether a certificate was presented in answer.
+    #[must_use]
+    pub fn answered(mut self, answered: bool) -> Self {
+        self.answered = answered;
+        self
+    }
 }
 
 /// What each phase of a connect cost.
@@ -541,6 +627,7 @@ impl<'a> Connected<'a> {
             timing: ConnectTiming::new(),
             tls_version: None,
             tls_cipher: None,
+            client_cert_request: None,
             alpn: None,
         }
     }
@@ -555,9 +642,7 @@ impl<'a> Connected<'a> {
         self
     }
 
-    /// How long each phase took.
-    #[must_use]
-    /// The TLS facts, all three at once.
+    /// The TLS facts, all of them at once.
     ///
     /// One setter rather than three, because they come from one place —
     /// a backend either read the handshake's outcome or it did not — and
@@ -569,10 +654,12 @@ impl<'a> Connected<'a> {
         version: Option<&'a str>,
         cipher: Option<&'a str>,
         alpn: Option<&'a [u8]>,
+        client_cert_request: Option<&'a ClientCertRequest>,
     ) -> Self {
         self.tls_version = version;
         self.tls_cipher = cipher;
         self.alpn = alpn;
+        self.client_cert_request = client_cert_request;
         self
     }
 

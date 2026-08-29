@@ -3376,6 +3376,9 @@ where
                             .and_then(|i| i.protocol_version.as_deref()),
                         tls_info.as_ref().and_then(|i| i.cipher_suite.as_deref()),
                         tls_info.as_ref().and_then(|i| i.alpn.as_deref()),
+                        tls_info
+                            .as_ref()
+                            .and_then(|i| i.client_cert_request.as_ref()),
                     )
                     .timing(
                         ConnectTiming::new()

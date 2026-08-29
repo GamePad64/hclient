@@ -223,6 +223,28 @@ pub fn tls_line(out: &mut impl Write, t: &crate::timings::Timings) -> std::io::R
             String::from_utf8_lossy(alpn)
         )?;
     }
+    // **Only when the server asked**, because the silent case is nearly
+    // every connection and a line saying so on each of them is noise
+    // rather than information. When it did ask, the interesting half is
+    // whether anything answered: a `403` over a connection that offered
+    // no certificate is a different diagnosis from a `403` over one that
+    // did, and this is the only place a reader can see which they have.
+    if let Some(asked) = &t.client_cert_request {
+        let named = match asked.authority_names.len() {
+            0 => "naming no authority".to_string(),
+            1 => "naming 1 authority".to_string(),
+            n => format!("naming {n} authorities"),
+        };
+        let sent = if asked.answered {
+            "one was sent"
+        } else {
+            "none was sent"
+        };
+        writeln!(
+            out,
+            "{DIM}* Server requested a client certificate, {named}; {sent}{DIM:#}"
+        )?;
+    }
     Ok(())
 }
 
@@ -285,6 +307,48 @@ mod tests {
         assert!(out.contains("SSL connection"), "{out:?}");
         assert!(out.contains("reports no version"), "{out:?}");
         assert!(!out.contains("ALPN"), "there was none to report: {out:?}");
+    }
+
+    /// A server that asked and got nothing is the case this line exists
+    /// for: it is what separates *not authorised* from *nothing was
+    /// offered*, and nothing else the tool prints carries it.
+    #[test]
+    fn a_client_certificate_request_that_went_unanswered_is_reported() {
+        let t = Timings {
+            client_cert_request: Some(
+                hclient::hooks::ClientCertRequest::new()
+                    .authority_names(vec![b"a".to_vec(), b"b".to_vec()]),
+            ),
+            ..handshook()
+        };
+        let out = render(&t);
+        assert!(out.contains("requested a client certificate"), "{out:?}");
+        assert!(out.contains("naming 2 authorities"), "{out:?}");
+        assert!(out.contains("none was sent"), "{out:?}");
+    }
+
+    #[test]
+    fn a_client_certificate_that_was_sent_says_so() {
+        let t = Timings {
+            client_cert_request: Some(
+                hclient::hooks::ClientCertRequest::new()
+                    .authority_names(vec![b"a".to_vec()])
+                    .answered(true),
+            ),
+            ..handshook()
+        };
+        let out = render(&t);
+        assert!(out.contains("naming 1 authority;"), "{out:?}");
+        assert!(out.contains("one was sent"), "{out:?}");
+    }
+
+    /// The control, and the reason the line is conditional: a server that
+    /// did not ask must produce no line at all, or every ordinary
+    /// `https://` request grows one.
+    #[test]
+    fn a_server_that_did_not_ask_produces_no_line() {
+        let out = render(&handshook());
+        assert!(!out.contains("client certificate"), "{out:?}");
     }
 
     /// A version with no suite still prints the version. Two backends

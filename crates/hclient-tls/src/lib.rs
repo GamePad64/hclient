@@ -28,6 +28,7 @@
 #[cfg(feature = "quic")]
 pub mod quic;
 
+use hclient_core::unversioned::ClientCertRequest;
 use hclient_core::{Error, ErrorKind, TlsSupport};
 use std::future::Future;
 
@@ -181,6 +182,22 @@ pub struct TlsInfo {
     /// the result of negotiation, not the whole proposed list from
     /// `TlsRequest::alpn`.
     pub alpn: Option<Vec<u8>>,
+    /// What the server asked for when it requested a client certificate,
+    /// or `None` where it did not ask — or where this backend cannot see
+    /// that it did.
+    ///
+    /// **Filled by a recording resolver, and absent where a backend
+    /// cannot observe.** `hclient-tls-rustls` wraps the config's
+    /// `ResolvesClientCert`; `native-tls` exposes no such hook and leaves
+    /// this `None`, which is the understating direction and
+    /// [`TlsConnect::reports_alpn`]'s rule.
+    ///
+    /// An empty [`ClientCertRequest::authority_names`] inside a `Some` is
+    /// a third state, not the second one: RFC 8446 §4.4.2.1 makes an
+    /// empty list *send whatever certificate you have*, so *did not ask*,
+    /// *asked and named nobody* and *asked and named these* are three
+    /// facts and a bare `Vec` collapses the first two.
+    pub client_cert_request: Option<ClientCertRequest>,
     /// The peer's certificate chain, DER, in leaf → root order. Backends
     /// like native-tls hand back only the leaf — in that case a
     /// single-element `Vec`, not `None`: there is a certificate, the chain
@@ -289,6 +306,13 @@ impl TlsInfo {
     #[must_use]
     pub fn early_data_accepted(mut self, accepted: Option<bool>) -> Self {
         self.early_data_accepted = accepted;
+        self
+    }
+
+    /// What the server asked for, where the backend could observe it.
+    #[must_use]
+    pub fn client_cert_request(mut self, request: Option<ClientCertRequest>) -> Self {
+        self.client_cert_request = request;
         self
     }
 }
@@ -833,6 +857,7 @@ mod tests {
                 Ok((
                     PassThrough(io),
                     TlsInfo {
+                        client_cert_request: None,
                         alpn,
                         peer_certificates: None,
                         protocol_version: Some("TLSv1.3".to_string()),

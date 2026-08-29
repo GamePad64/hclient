@@ -66,6 +66,12 @@ pub struct Timings {
     pub tls_version: Option<String>,
     pub tls_cipher: Option<String>,
     pub alpn: Option<Vec<u8>>,
+    /// What the server asked for when it requested a client certificate,
+    /// where the backend could see it.
+    ///
+    /// Owned, unlike the borrowed field it is read from: a `Timings` is
+    /// a snapshot the caller keeps after the exchange has ended.
+    pub client_cert_request: Option<hclient::hooks::ClientCertRequest>,
 }
 
 /// The [`Hooks`] impl that fills a [`Timings`].
@@ -105,6 +111,7 @@ impl Hooks for Recorder {
                     t.tls_version = c.tls_version.map(ToOwned::to_owned);
                     t.tls_cipher = c.tls_cipher.map(ToOwned::to_owned);
                     t.alpn = c.alpn.map(<[u8]>::to_vec);
+                    t.client_cert_request = c.client_cert_request.cloned();
                 }
                 t.connects += 1;
             }
@@ -292,6 +299,7 @@ mod tests {
             tls_version: Some("TLSv1.3".into()),
             tls_cipher: Some("TLS_AES_256_GCM_SHA384".into()),
             alpn: Some(b"h2".to_vec()),
+            client_cert_request: None,
         }
     }
 
