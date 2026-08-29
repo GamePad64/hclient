@@ -407,6 +407,13 @@ check-targets:
     # crates with a platform split belong in it.
     check -p hclient-rt-tokio --target x86_64-pc-windows-msvc --all-features --all-targets
     check -p hclient-rt-smol --target x86_64-pc-windows-msvc --all-features --all-targets
+    # The transport itself, on Windows, and `--lib` rather than
+    # `--all-targets` for a reason that is not about Windows: its
+    # dev-dependencies pull `ring`, whose build script needs an assembler
+    # for the target, so a test build cannot be type-checked from here at
+    # all. The library half carries the `cfg(unix)` — `unix_socket` — and
+    # that is the half this line defends.
+    check -p hclient-native --target x86_64-pc-windows-msvc --no-default-features --lib
 
     if [ ${#failed[@]} -ne 0 ]; then
       echo "::error::cross-target check failed for ${#failed[@]} of 6 invocations:"

@@ -199,7 +199,12 @@ pub struct ClientCertRequest {
 }
 
 // TlsInfo gains one field
-pub client_cert_request: Option<ClientCertRequest>,
+pub client_cert: ClientCertAsk,
+
+/// **Built as an enum and not the `Option<ClientCertRequest>` this
+/// document first proposed**, and the paragraph below is why the
+/// proposal was one state short.
+pub enum ClientCertAsk { Unobserved, NotAsked, Asked(ClientCertRequest) }
 ```
 
 **The `Option` is not decoration, and an empty `authority_names` inside
@@ -209,6 +214,18 @@ and named nobody* and *it asked and named these* are three facts, and a
 bare `Vec` collapses the first two. Third sighting of that shape in this
 workspace, after `Discovered::NoRecord`/`NotConsulted` and
 `Retry-After` absent versus unreadable.
+
+**And counting three was itself one short, which the implementation
+found.** *This backend cannot see whether the server asked* is a fourth
+fact, and the `Option` collapsed it into *the server did not ask*. Both
+sides are reachable in one program — `hclient-tls-rustls` observes by
+being the resolver, `hclient-tls-native-tls` exposes no hook for it — and
+`hc --backend` chooses between them at run time, so a caller writing §5's
+picker would see nothing on one backend and conclude that no server ever
+asks. What shipped is `ClientCertAsk`, defaulting to `Unobserved`, so a
+backend that fills nothing understates rather than answering. Only a
+backend whose recording resolver sits in **every** config it hands out
+may say `NotAsked`, because only then is an empty slot an answer.
 
 **DER, unparsed**, for `peer_certificates`' reason one field up: turning
 a distinguished name into text needs an X.509 parser, which this
@@ -313,26 +330,35 @@ worse than suspending, and it is the only thing that works on a stack
 that cannot suspend.
 
 For phase 1 to be possible the hints must be observable, which is one
-addition:
+addition — **§3.4's, and this section proposed a second spelling of it
+that did not ship**:
 
 ```rust
-// TlsInfo, filled by a recording resolver
+// what this section proposed: two fields, and one of them a bool
 pub client_auth_requested: bool,
-pub requested_authorities: Vec<Vec<u8>>,   // DER DNs, empty when the
-                                           // server sent none
+pub requested_authorities: Vec<Vec<u8>>,
+
+// what shipped: §3.4's single field, and the enum that carries the
+// distinction the bool was standing in for
+pub client_cert: ClientCertAsk,
 ```
 
-and, since `Connected` already carries `tls_version`, `tls_cipher` and
-`alpn`, one more borrowed field there so a hook can see it. native-tls
-fills neither and reports `false` — the understating direction again, and
-honest: it genuinely cannot see the request.
+Two fields would have been two chances to disagree — *requested* `false`
+beside a non-empty authority list is a state nothing forbids — where one
+value cannot contradict itself. And the `bool` cannot say *this backend
+did not watch*, which is the state §3.4 records finding.
+
+`Connected` carries it too, since it already carries `tls_version`,
+`tls_cipher` and `alpn`, so a hook can see it; native-tls reports
+`Unobserved` — the understating direction again, and honest: it
+genuinely cannot see the request.
 
 **`Option` versus empty matters here** and must not be flattened. The CA
 list is `Option<&[DistinguishedName]>` in rustls, and its own
 documentation says: *if the list is empty, the client should send
 whatever certificate it has*. So *the server named no authorities* and
 *the server did not ask for a certificate at all* are different facts,
-and only `client_auth_requested` separates them.
+and the `Asked`/`NotAsked` split is what separates them.
 
 ## 6. What is refused, and why each refusal rather than a fallback
 
@@ -375,8 +401,9 @@ setters.
 **`TlsIdentity::config_id_for` is a defaulted method**, so it breaks
 nobody.
 
-**`TlsInfo`'s two new fields** cost every backend nothing: both default to
-the understating value.
+**`TlsInfo`'s new field** — one, not the two this document proposed —
+costs every backend nothing: it defaults to the understating value,
+`ClientCertAsk::Unobserved`, which is asserted rather than described.
 
 ## 8. Deliberately not done, each with what it needs
 
@@ -400,9 +427,9 @@ the understating value.
    since a label honoured over TCP and ignored over QUIC is worse than one
    honoured nowhere. Nothing platform-specific, and it makes the
    file-based case selectable, which is the case that already works.
-2. `TlsInfo::{client_auth_requested, requested_authorities}` and the
-   `Connected` field. This is what makes phase 1 of the browser story
-   possible and costs one recording resolver.
+2. `TlsInfo::client_cert` and the `Connected` field. This is what makes
+   phase 1 of the browser story possible and costs one recording
+   resolver.
 3. `IdentitySource::WindowsStore` over `rustls-cng`, behind a feature.
    Assembly rather than authorship.
 4. macOS, then PKCS#11, then Android — in descending order of how much of
@@ -411,3 +438,7 @@ the understating value.
 Step 1 is worth doing on its own: today a caller with two client
 certificates and one `hclient::Client` has no way to choose between them
 at all.
+
+**Steps 1 and 2 are built.** What this document still describes rather
+than records is step 3 onwards, and one thing inside step 2: §3.5's
+picker is the caller's, because nothing here can pause a handshake.
