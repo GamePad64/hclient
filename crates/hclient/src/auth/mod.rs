@@ -90,6 +90,23 @@
 //! this workspace spent the erasure work recovering. Stated here rather
 //! than discovered later.
 
+#[cfg(feature = "digest-auth")]
+// **A submodule of the seam, because that is what it is**: `Digest` is one
+// scheme written on `Auth`/`AuthFlow` like any other, and it sat beside
+// them at the crate root for as long as the seam did not exist.
+//
+// **Off the front page, not out of the crate.** A caller's entry point is
+// `RequestBuilder::digest_auth`; nothing inside is theirs to name.
+// `DigestError` in particular is unobtainable — the one call site in
+// `Client::run` reads `best_challenge` with `if let Ok(..)` and drops the
+// error — so publishing its vocabulary promised a distinction a caller
+// could never observe. It stays `pub` because the only consumer outside
+// `src` is `tests/digest_vectors.rs`, which runs RFC 7616 §3.9's printed
+// answers against `answer` directly, and an integration test sees the
+// public API only. Same shape as `hclient-fetch`'s test seams.
+#[doc(hidden)]
+pub mod digest;
+
 /// The most attempts one hop's authentication may take.
 ///
 /// Digest needs two — the challenge and the answer. NTLM and Negotiate
@@ -258,18 +275,17 @@ impl AuthFlow for DigestFlow {
         let Some((method, target)) = self.seen.as_ref() else {
             return AuthStep::Done;
         };
-        let Ok(challenge) =
-            crate::digest::best_challenge(headers.get_all("www-authenticate").iter())
+        let Ok(challenge) = digest::best_challenge(headers.get_all("www-authenticate").iter())
         else {
             return AuthStep::Done;
         };
-        let value = crate::digest::answer(
+        let value = digest::answer(
             &challenge,
             &self.user,
             &self.password,
             method,
             target,
-            &crate::digest::cnonce(),
+            &digest::cnonce(),
         );
         let Ok(mut v) = http::HeaderValue::from_str(&value) else {
             return AuthStep::Done;

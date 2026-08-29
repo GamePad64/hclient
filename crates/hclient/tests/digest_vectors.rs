@@ -7,7 +7,7 @@
 //! self-consistent mistake about what digest is.
 #![cfg(feature = "digest-auth")]
 
-use hclient::digest::{Algorithm, Challenge, answer, best_challenge};
+use hclient::auth::digest::{Algorithm, Challenge, answer, best_challenge};
 
 fn hv(s: &str) -> http::HeaderValue {
     http::HeaderValue::from_str(s).expect("header value")
@@ -180,7 +180,7 @@ fn auth_int_alone_is_refused_by_name() {
     let v = hv("Digest realm=\"r\", nonce=\"n\", qop=\"auth-int\"");
     assert_eq!(
         best_challenge([&v].into_iter()),
-        Err(hclient::digest::DigestError::AuthIntUnsupported)
+        Err(hclient::auth::digest::DigestError::AuthIntUnsupported)
     );
 
     // The control: offered beside `auth`, it costs nothing.
@@ -195,7 +195,7 @@ fn auth_int_alone_is_refused_by_name() {
 /// different claims and only the second is useful at 3am.
 #[test]
 fn a_missing_required_parameter_is_named() {
-    use hclient::digest::DigestError::MissingParameter;
+    use hclient::auth::digest::DigestError::MissingParameter;
     for (v, want) in [
         ("Digest nonce=\"n\"", "realm"),
         ("Digest realm=\"r\"", "nonce"),

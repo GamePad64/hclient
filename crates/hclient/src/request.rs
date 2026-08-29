@@ -316,7 +316,7 @@ impl<'a> RequestBuilder<'a> {
     /// nonce the server chooses, so the first request goes out
     /// unauthenticated and the client answers the challenge that comes
     /// back. That costs one round trip per request and is written down as
-    /// a deliberate absence in [`crate::digest`], with what removing it
+    /// a deliberate absence in [`crate::auth::digest`], with what removing it
     /// would need.
     ///
     /// **The credentials do not cross an origin.** A redirect that changes

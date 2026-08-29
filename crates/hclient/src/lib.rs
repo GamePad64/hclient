@@ -154,18 +154,6 @@ mod config;
 pub mod cookie;
 mod deadline;
 mod decompress;
-#[cfg(feature = "digest-auth")]
-// **Off the front page, not out of the crate.** A caller's entry point is
-// `RequestBuilder::digest_auth`; nothing inside is theirs to name.
-// `DigestError` in particular is unobtainable — the one call site in
-// `Client::run` reads `best_challenge` with `if let Ok(..)` and drops the
-// error — so publishing its vocabulary promised a distinction a caller
-// could never observe. It stays `pub` because the only consumer outside
-// `src` is `tests/digest_vectors.rs`, which runs RFC 7616 §3.9's printed
-// answers against `answer` directly, and an integration test sees the
-// public API only. Same shape as `hclient-fetch`'s test seams.
-#[doc(hidden)]
-pub mod digest;
 pub mod erased;
 mod limit;
 /// Mock transport and controllable timer, re-exported from `hclient-mock`.
