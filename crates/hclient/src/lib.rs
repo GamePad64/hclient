@@ -67,6 +67,9 @@
 //! | to build a body by hand | [`RequestBody`], re-exported at this crate's root |
 //! | text in a charset that is not UTF-8 | [`Collected::text_with_charset`], behind the `charset` feature |
 //! | basic or bearer auth | [`RequestBuilder::basic_auth`], [`RequestBuilder::bearer_auth`] |
+//! | to save a cookie jar across a restart | [`cookie::CookieJar::records`] and [`cookie::CookieJar::restore`], behind `cookies` — the format is yours, so no `serde` arrives with it |
+//! | the `Link:` header a paginated API sends | [`Response::links`] and [`Collected::links`] |
+//! | a body read line by line | [`Response::lines`] — for NDJSON and log tailing |
 //!
 //! ## Testing: use `hclient-mock`, not a hand-built `Response`
 //!
@@ -238,8 +241,9 @@ pub mod caps {
 /// [`hooks::Event`].
 pub mod hooks {
     pub use hclient_core::unversioned::{
-        ClientCertAsk, ClientCertRequest, CloseReason, Closed, ConnectTiming, Connected,
-        ConnectionId, Event, Head, Hooks, Informational, NoHooks, Reused,
+        And, ClientCertAsk, ClientCertRequest, CloseReason, Closed, ConnectTiming, Connected,
+        ConnectionId, Direction, Event, Head, Hooks, HooksExt, Informational, NoHooks, Progress,
+        Reused,
     };
 }
 
