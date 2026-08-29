@@ -163,6 +163,27 @@ impl TcpConnect for Tokio {
     where
         Self: 'a;
 
+    // **Both halves are `cfg`-ed, and for one merge only the first was.**
+    // `SUPPORTS_UNIX` above is `cfg!(unix)`, so this crate already knew the
+    // answer on Windows; what was missing is the arm that says it in types.
+    // A `cfg` on an associated type alone leaves the impl incomplete
+    // (`E0046`) *and* leaves a body reaching for `tokio::net::UnixStream`,
+    // so the crate did not build for `x86_64-pc-windows-msvc` at all —
+    // caught by CI rather than by `cargo check`, because a Linux host has
+    // no reason to try. `TokioHandle` one file over had the pair right the
+    // whole time, which is what made the repair a copy.
+    #[cfg(not(unix))]
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    #[cfg(not(unix))]
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
+    #[cfg(unix)]
     fn connect_unix<'a>(&'a self, path: &std::path::Path) -> Self::ConnectingUnix<'a> {
         // Owned, because the seam's future is parameterised by `&self`'s
         // lifetime alone — the same rule `connect` follows for `opts`.

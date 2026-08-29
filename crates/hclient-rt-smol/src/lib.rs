@@ -322,11 +322,29 @@ impl TcpConnect for Smol {
     }
 
     #[cfg(unix)]
+    #[cfg(unix)]
     type ConnectingUnix<'a>
         = std::pin::Pin<Box<dyn Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>
     where
         Self: 'a;
 
+    // The non-unix arm, for the reason `hclient-rt-tokio`'s says at
+    // length: `SUPPORTS_UNIX` is `cfg!(unix)`, so this crate already
+    // answers the question — and `SmolSocket::Unix` is `#[cfg(unix)]` two
+    // hundred lines up, so without this the impl neither type-checks nor
+    // has a variant to build.
+    #[cfg(not(unix))]
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    #[cfg(not(unix))]
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
+    #[cfg(unix)]
     fn connect_unix<'a>(&'a self, path: &std::path::Path) -> Self::ConnectingUnix<'a> {
         // Owned, because the seam's future is parameterised by `&self`'s
         // lifetime alone — the same rule `connect` follows for `opts`.

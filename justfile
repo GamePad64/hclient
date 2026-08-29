@@ -397,6 +397,16 @@ check-targets:
     # The WinHTTP backend, whose every line is Windows-only: no line of it
     # has ever been run, so compiling it here is the only gate it has.
     check -p hclient-winhttp --target x86_64-pc-windows-msvc --all-targets
+    # The two runtimes, on Windows, because both carry a `cfg(unix)` split
+    # and neither was covered here. `Tokio` and `Smol` each gate an
+    # associated type on `cfg(unix)` and each has a `connect_unix` that
+    # names a Unix-only type, so a missing `#[cfg(not(unix))]` arm is an
+    # `E0046` plus two resolution failures — which is exactly what both
+    # were, found by the Windows CI job rather than by anything a
+    # developer runs. This recipe is the developer's instrument, so the
+    # crates with a platform split belong in it.
+    check -p hclient-rt-tokio --target x86_64-pc-windows-msvc --all-features --all-targets
+    check -p hclient-rt-smol --target x86_64-pc-windows-msvc --all-features --all-targets
 
     if [ ${#failed[@]} -ne 0 ]; then
       echo "::error::cross-target check failed for ${#failed[@]} of 6 invocations:"
