@@ -1,0 +1,128 @@
+id: no-std-wall-clock-in-the-client
+snapshots:
+  ? |
+    fn cache_now(&self) -> std::time::SystemTime {
+        SystemTime::UNIX_EPOCH
+    }
+  : labels:
+    - source: std::time::SystemTime
+      style: primary
+      start: 23
+      end: 44
+  ? |
+    fn f() {
+        jar.store_response(uri, headers, std::time::SystemTime::now());
+    }
+  : labels:
+    - source: std::time::SystemTime
+      style: primary
+      start: 46
+      end: 67
+  ? |
+    fn f() {
+        let now = std::time::SystemTime::now();
+    }
+  : labels:
+    - source: std::time::SystemTime
+      style: primary
+      start: 23
+      end: 44
+  ? |
+    fn f() {
+        let t = std::time::SystemTime::UNIX_EPOCH;
+    }
+  : labels:
+    - source: std::time::SystemTime
+      style: primary
+      start: 21
+      end: 42
+  ? |
+    fn f() {
+        let x = ::std::time::SystemTime::now();
+    }
+  : labels:
+    - source: ::std::time::SystemTime
+      style: primary
+      start: 21
+      end: 44
+  ? |
+    fn f(requested_at: std::time::SystemTime) {}
+  : labels:
+    - source: std::time::SystemTime
+      style: primary
+      start: 19
+      end: 40
+  ? |
+    struct S {
+        received_at: std::time::SystemTime,
+    }
+  : labels:
+    - source: std::time::SystemTime
+      style: primary
+      start: 28
+      end: 49
+  ? |
+    use ::std::time::SystemTime;
+  : labels:
+    - source: use ::std::time::SystemTime;
+      style: primary
+      start: 0
+      end: 28
+  ? |
+    use std::time::*;
+  : labels:
+    - source: use std::time::*;
+      style: primary
+      start: 0
+      end: 17
+  ? |
+    use std::time::SystemTime as StdClock;
+  : labels:
+    - source: use std::time::SystemTime as StdClock;
+      style: primary
+      start: 0
+      end: 38
+  ? |
+    use std::time::SystemTime;
+  : labels:
+    - source: use std::time::SystemTime;
+      style: primary
+      start: 0
+      end: 26
+  ? |
+    use std::time::{
+        Duration,
+        SystemTime,
+        UNIX_EPOCH,
+    };
+  : labels:
+    - source: |-
+        use std::time::{
+            Duration,
+            SystemTime,
+            UNIX_EPOCH,
+        };
+      style: primary
+      start: 0
+      end: 65
+  ? |
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+  : labels:
+    - source: use std::time::{Duration, SystemTime, UNIX_EPOCH};
+      style: primary
+      start: 0
+      end: 50
+  ? |
+    use std::time::{Duration, SystemTime};
+  : labels:
+    - source: use std::time::{Duration, SystemTime};
+      style: primary
+      start: 0
+      end: 38
+  ? |
+    use std::{collections::HashMap, time::SystemTime};
+  : labels:
+    - source: use std::{collections::HashMap, time::SystemTime};
+      style: primary
+      start: 0
+      end: 50

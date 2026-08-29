@@ -1,0 +1,141 @@
+# The corpus this rule was accepted against.
+#
+# `valid` here means "this rule says nothing", not "this is good code" — the
+# whole point of the `valid` half is that the TYPE `SystemTime` and the
+# `web_time` clock must keep working untouched, so most of what is below is
+# code this crate actually contains.
+id: no-std-wall-clock-in-the-client
+
+valid:
+  # ── the replacement, in every shape ────────────────────────────────────
+  - |
+    use web_time::SystemTime;
+  - |
+    use web_time::{Duration, SystemTime, UNIX_EPOCH};
+  - |
+    fn f() -> SystemTime {
+        SystemTime::now()
+    }
+  # A bare `SystemTime::now()` is deliberately not matched: the import ban
+  # is what decides which `SystemTime` this is, and this rule resolves no
+  # imports. See the note.
+  - |
+    fn f() {
+        let now = SystemTime::now();
+        jar.store_response(uri, headers, now);
+    }
+  - |
+    fn f() {
+        let t = web_time::SystemTime::now();
+    }
+  # ── the type, which is public API here and must survive ────────────────
+  - |
+    pub fn store(&mut self, uri: &Uri, set_cookie: &str, now: SystemTime) {}
+  - |
+    pub struct StoredResponse {
+        requested_at: SystemTime,
+        received_at: SystemTime,
+    }
+  - |
+    fn cache_now(&self) -> SystemTime {
+        SystemTime::UNIX_EPOCH
+    }
+  # ── `Duration` has no clock in it and is std's on every target ─────────
+  - |
+    use std::time::Duration;
+  - |
+    use core::time::Duration;
+  - |
+    fn f(d: std::time::Duration) {}
+  # ── other `std` modules, and a `time` that is not std's ────────────────
+  - |
+    use std::collections::HashMap;
+  - |
+    use std::sync::{Arc, Mutex};
+  # `runtime` contains the letters `time` and is not `std::time`.
+  - |
+    use std::runtime::SystemTime;
+  - |
+    use jiff::SystemTime;
+  - |
+    use hclient_core::unversioned::Timer;
+  # `Instant` is not this rule's subject — see the note for why, and for
+  # what changes the day it is.
+  - |
+    use std::time::Instant;
+  # ── comments are not code ──────────────────────────────────────────────
+  # The doctests on `CookieJar` and on the cache policy both open with
+  # exactly this line, and must go on doing so: they are run on the host.
+  - |
+    /// ```
+    /// use std::time::SystemTime;
+    /// ```
+    pub fn documented() {}
+  - |
+    fn f() {
+        // use std::time::SystemTime;
+        let _ = 1;
+    }
+  - |
+    fn f() {
+        /* std::time::SystemTime::now() */
+        let _ = 1;
+    }
+
+invalid:
+  # ── the import, every shape ────────────────────────────────────────────
+  - |
+    use std::time::SystemTime;
+  - |
+    use std::time::{Duration, SystemTime};
+  - |
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+  - |
+    use std::time::SystemTime as StdClock;
+  # A glob names nothing and brings it in anyway.
+  - |
+    use std::time::*;
+  # Nested one level up, which is the shape a tidy-up produces when a file
+  # already imports something else out of `std`.
+  - |
+    use std::{collections::HashMap, time::SystemTime};
+  # A leading `::` is a legal absolute path and would otherwise slip the
+  # anchor — found by asking, not by review.
+  - |
+    use ::std::time::SystemTime;
+  - |
+    fn f() {
+        let x = ::std::time::SystemTime::now();
+    }
+  # rustfmt wraps a long `use`; the regexes carry `(?s)` for this.
+  - |
+    use std::time::{
+        Duration,
+        SystemTime,
+        UNIX_EPOCH,
+    };
+  # ── the fully-qualified path, expression position ──────────────────────
+  - |
+    fn f() {
+        let now = std::time::SystemTime::now();
+    }
+  - |
+    fn f() {
+        jar.store_response(uri, headers, std::time::SystemTime::now());
+    }
+  # `UNIX_EPOCH` reached through std's type is the same wrong type on wasm.
+  - |
+    fn f() {
+        let t = std::time::SystemTime::UNIX_EPOCH;
+    }
+  # ── the fully-qualified path, type position ────────────────────────────
+  - |
+    fn cache_now(&self) -> std::time::SystemTime {
+        SystemTime::UNIX_EPOCH
+    }
+  - |
+    fn f(requested_at: std::time::SystemTime) {}
+  - |
+    struct S {
+        received_at: std::time::SystemTime,
+    }

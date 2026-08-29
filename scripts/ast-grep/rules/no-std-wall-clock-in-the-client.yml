@@ -1,0 +1,87 @@
+id: no-std-wall-clock-in-the-client
+language: rust
+severity: error
+files:
+  - crates/hclient/src/**/*.rs
+
+message: >-
+  `std::time::SystemTime` is named here — this crate's wall clock is
+  `web_time::SystemTime`, which is the same type everywhere except
+  `wasm32-unknown-unknown`, where `std`'s `now()` aborts
+note: >-
+  `std::time::SystemTime::now()` does not fail on `wasm32-unknown-unknown`,
+  it **panics** — measured rather than read: one `.wasm` module holding both
+  calls returns a real timestamp from `web_time::SystemTime::now()` and traps
+  on `unreachable` inside `<std::time::SystemTime>::now` for `std`'s. A
+  cookie jar and an HTTP cache both need a calendar clock — the `Timer` seam
+  is a stopwatch with no epoch and cannot supply one — so for as long as this
+  crate read `std`'s, neither was reachable in a browser at all. `web-time`
+  re-exports `std::time::*` verbatim on every other target, so nothing about
+  a native build changes.
+
+  **What is banned is naming `std`'s wall clock, not the type
+  `SystemTime`**, which is in this crate's public signatures and keeps
+  working untouched. So a bare `SystemTime::now()` is deliberately NOT
+  matched: the ban on the import is what decides which `SystemTime` a file
+  has in scope, and ast-grep resolves no imports, so it could not have been
+  decided any other way. `std::time::Duration` is left alone as arithmetic
+  with no clock in it, and `std::time::Instant` is left alone because this
+  crate names it nowhere — a ban with no site in this crate has no failing
+  direction to be checked in. Both are one alternative away in
+  `a-std-time-import` the day that changes. Scoped to `src/` because that is
+  what ships; `crates/hclient/tests/` reads `std`'s clock on purpose, on the
+  host.
+
+utils:
+  # ── the import, in every shape that puts std's `SystemTime` in scope ──
+  #
+  # Written as regexes over the `use_declaration`'s own text, which is what
+  # `no-discarded-wasi-setter-result`'s `let _` branch already does, and for
+  # the same reason: the shapes differ structurally (`scoped_identifier`,
+  # `scoped_use_list`, `use_as_clause`, `use_wildcard`, and a `use_list`
+  # nested one level up) while saying one thing about the text. `(?s)` is
+  # there because rustfmt wraps a long `use` across lines and `.` would
+  # otherwise stop at the newline.
+  #
+  # `(?:::\s*)?` is the leading-`::` absolute path — `use ::std::time::
+  # SystemTime;` is legal and slipped the anchor until the corpus was asked
+  # about it rather than reviewed.
+  #
+  # `(?:.*\W)?time\s*::` is what admits the nested form
+  # `use std::{collections::HashMap, time::SystemTime};` while refusing
+  # `use std::runtime::SystemTime`, where the `time` is inside a word and
+  # has no `\W` before it.
+  a-std-time-import:
+    kind: use_declaration
+    any:
+      # `use std::time::SystemTime;`, `use std::time::{Duration, SystemTime};`,
+      # `use std::time::SystemTime as Clock;`, `use std::{.., time::SystemTime};`
+      - regex: '(?s)^use\s+(?:::\s*)?std\s*::(?:.*\W)?time\s*::.*\bSystemTime\b'
+      # `use std::time::*;` — a glob brings `SystemTime` in without naming
+      # it, so a rule that only read names would be one `*` away from
+      # useless.
+      - regex: '(?s)^use\s+(?:::\s*)?std\s*::(?:.*\W)?time\s*::\s*\*'
+
+  # ── the fully-qualified path, in expression and in type position ──────
+  #
+  # Two kinds, not one: `std::time::SystemTime::now()` parses the prefix as
+  # a `scoped_identifier`, and `let t: std::time::SystemTime` parses it as a
+  # `scoped_type_identifier`. Matching only the first would have left every
+  # signature able to name std's clock.
+  a-fully-qualified-std-system-time:
+    any:
+      - kind: scoped_identifier
+      - kind: scoped_type_identifier
+    regex: '^(?:::\s*)?std\s*::\s*time\s*::\s*SystemTime$'
+    # Reported once. The import branch above already covers a
+    # `use std::time::SystemTime;`, whose argument is a `scoped_identifier`
+    # of exactly this text, so without this the same line is named twice.
+    not:
+      inside:
+        stopBy: end
+        kind: use_declaration
+
+rule:
+  any:
+    - matches: a-std-time-import
+    - matches: a-fully-qualified-std-system-time
