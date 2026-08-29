@@ -3561,9 +3561,14 @@ reading `Include` back would pass for a transport that hard-coded it.
 crate failed to build through six merges that were each green on
 `cargo nextest run --workspace --all-features` — which does not build for
 `wasm32-unknown-unknown`, where `just test-browsers` is its own CI job.
-`Event` not being `#[non_exhaustive]` is what turned a new variant into a
-compile error rather than silence: **the design worked and the running of
-it did not.** The cheap check that would have caught it needs no browser at
+`Event`'s exhaustiveness is what turned a new variant into a compile
+error rather than silence: **the design worked and the running of it did
+not.** *(That sentence read `Event` not being `#[non_exhaustive]` for as
+long as it has existed, and the type has since taken the attribute —
+with `every_event_is_accounted_for`, one in-crate exhaustive match, kept
+as the thing that still makes a new variant one compile error in one
+known file. The mechanism survived; the sentence naming it did not, which
+is this file's own rule met once more.)* The cheap check that would have caught it needs no browser at
 all — `cargo test -p hclient-fetch --target wasm32-unknown-unknown
 --no-run`.
 
