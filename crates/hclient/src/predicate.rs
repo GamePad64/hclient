@@ -231,3 +231,130 @@ impl Debug for RedirectPredicate {
         f.write_str("RedirectPredicate(..)")
     }
 }
+
+/// Whether a retry the policy approved may actually happen.
+///
+/// **Two verdicts, where [`RedirectVerdict`] has three**, and the
+/// difference is that the third arm there had a subject and here does
+/// not. A predicate refusing a redirect needs `Refuse` because the
+/// alternative — handing back the `3xx` — is a *success* the caller might
+/// forget to check. Declining a retry hands back what the attempt already
+/// produced: the server's own status, or the transport's own error. Both
+/// are the honest answer to the request, so there is nothing an error of
+/// ours would add and a status it could hide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryVerdict {
+    /// Send it again.
+    Retry,
+    /// Keep what this attempt produced.
+    Stop,
+}
+
+/// A retry the [`RetryPolicy`](hclient_proto::retry::RetryPolicy) has
+/// already approved, offered to the caller's predicate.
+///
+/// **Everything here is the policy's *output*, which is why the predicate
+/// is asked afterwards** — the same order and the same reason as
+/// [`ProposedRedirect`]: what a predicate wants to see is the decision
+/// that was reached, not the inputs it was reached from.
+#[derive(Debug, Clone, Copy)]
+pub struct ProposedRetry<'a> {
+    method: &'a http::Method,
+    uri: &'a http::Uri,
+    attempt: u32,
+    outcome: hclient_proto::retry::Outcome,
+    delay: std::time::Duration,
+}
+
+impl<'a> ProposedRetry<'a> {
+    pub(crate) fn new(
+        method: &'a http::Method,
+        uri: &'a http::Uri,
+        attempt: u32,
+        outcome: hclient_proto::retry::Outcome,
+        delay: std::time::Duration,
+    ) -> Self {
+        Self {
+            method,
+            uri,
+            attempt,
+            outcome,
+            delay,
+        }
+    }
+
+    /// The method of the request that would be sent again.
+    ///
+    /// **This is the field the predicate exists for.** This workspace
+    /// deliberately has no notion of method safety — `RetryKind` answers
+    /// *can this be sent again*, never *may this be repeated*, and those
+    /// are different questions that disagree on the same request: a
+    /// `POST /transfer` with a buffered body is trivially replayable and
+    /// is exactly what must not be repeated. Only the caller can answer
+    /// the second, so the client hands them the method rather than
+    /// guessing a rule.
+    #[must_use]
+    pub fn method(&self) -> &http::Method {
+        self.method
+    }
+
+    /// The target, as the hop was addressed — absolute.
+    #[must_use]
+    pub fn uri(&self) -> &http::Uri {
+        self.uri
+    }
+
+    /// Attempts already made, so the first proposed retry reports `1`.
+    #[must_use]
+    pub fn attempt(&self) -> u32 {
+        self.attempt
+    }
+
+    /// What the attempt produced — a status, or a failure the transport
+    /// says never reached a server.
+    #[must_use]
+    pub fn outcome(&self) -> hclient_proto::retry::Outcome {
+        self.outcome
+    }
+
+    /// How long the policy decided to wait, `Retry-After` included.
+    ///
+    /// Offered so a predicate can refuse a wait it finds too long for
+    /// this particular target. It cannot *change* it: a predicate that
+    /// returned a duration would be a second policy, and then two things
+    /// would decide one number.
+    #[must_use]
+    pub fn delay(&self) -> std::time::Duration {
+        self.delay
+    }
+}
+
+/// The caller's own say over each retry.
+///
+/// `Fn` rather than `FnMut`, for [`RedirectPredicate`]'s reason: it is
+/// shared by every clone of the client and every request in flight, so
+/// `FnMut` would mean a lock taken on every attempt of every request for
+/// the sake of predicates that mostly hold no state.
+#[derive(Clone)]
+pub struct RetryPredicate(
+    Arc<dyn Fn(&ProposedRetry<'_>) -> RetryVerdict + Send + Sync>, // send-bound-exception: amendment-C12
+);
+
+impl RetryPredicate {
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn(&ProposedRetry<'_>) -> RetryVerdict + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
+        Self(Arc::new(f))
+    }
+
+    pub(crate) fn ask(&self, proposed: &ProposedRetry<'_>) -> RetryVerdict {
+        (self.0)(proposed)
+    }
+}
+
+impl Debug for RetryPredicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RetryPredicate(..)")
+    }
+}

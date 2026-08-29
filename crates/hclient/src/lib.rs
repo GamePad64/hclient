@@ -476,6 +476,7 @@ pub use hclient_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RequireVer
 /// `hclient-proto`, which is the same courtesy `redirect` gets one line
 /// away and which ACT's report found missing for half a dozen names.
 pub mod retry {
+    pub use crate::predicate::{ProposedRetry, RetryPredicate, RetryVerdict};
     pub use hclient_proto::backoff::Backoff;
     pub use hclient_proto::retry::{
         Outcome, RetryPolicy, RetryStatuses, Stop, Verdict, retry_after_seconds,

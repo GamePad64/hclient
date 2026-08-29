@@ -373,6 +373,59 @@ impl ClientBuilder {
     /// field and the later call wins. Pass the same timer to both — there
     /// is no case for a client whose backoff and whose deadline disagree
     /// about what a second is.
+    /// A say over each retry the policy approved.
+    ///
+    /// [`Self::retry`] answers *how many and how long*; this answers
+    /// *may this particular one happen* — no repeat of a `POST`, none to
+    /// another host, none after a wait longer than a second.
+    ///
+    /// ```no_run
+    /// # fn f(t: hclient::mock::MockTransport) -> Result<(), Box<dyn std::error::Error>> {
+    /// use hclient::retry::{RetryPolicy, RetryStatuses, RetryVerdict};
+    ///
+    /// let c = hclient::Client::builder(t)
+    ///     .retry(hclient_rt_tokio::Tokio, RetryPolicy {
+    ///         statuses: RetryStatuses::Transient,
+    ///         ..RetryPolicy::default()
+    ///     })
+    ///     // The question this client will not answer for you.
+    ///     .retry_predicate(|r| match *r.method() {
+    ///         http::Method::GET | http::Method::HEAD | http::Method::PUT => {
+    ///             RetryVerdict::Retry
+    ///         }
+    ///         _ => RetryVerdict::Stop,
+    ///     })
+    ///     .build()?;
+    /// # let _ = c; Ok(()) }
+    /// ```
+    ///
+    /// **Asked after the policy and only about a retry it approved**,
+    /// which is [`Self::redirect_predicate`]'s order and its reason: a
+    /// predicate wants the decision, not the inputs. So a body that
+    /// cannot be replayed, a status the policy does not cover and an
+    /// exhausted attempt count never reach it — it is a narrowing and
+    /// never a widening.
+    ///
+    /// **Two verdicts, where the redirect predicate has three.** Refusing
+    /// a redirect needs an error arm because the alternative is handing
+    /// back a `3xx` that reads as success; declining a retry hands back
+    /// what the attempt produced, which is already the honest answer.
+    ///
+    /// Without [`Self::retry`] this is inert, and that is said here
+    /// rather than made impossible: a predicate is a rule about retries,
+    /// and a client with no retry policy has none to rule on.
+    #[must_use]
+    pub fn retry_predicate<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&crate::predicate::ProposedRetry<'_>) -> crate::predicate::RetryVerdict
+            + Send // send-bound-exception: amendment-C12
+            + Sync // send-bound-exception: amendment-C12
+            + 'static, // send-bound-exception: amendment-C12
+    {
+        self.config.retry_predicate = Some(crate::predicate::RetryPredicate::new(f));
+        self
+    }
+
     #[must_use]
     pub fn retry<Tm2>(mut self, timer: Tm2, policy: RetryPolicy) -> Self
     where
@@ -1267,17 +1320,13 @@ impl Client {
                             break outcome?;
                         };
 
-                        let (verdict, keep) = match &outcome {
+                        let (verdict, what) = match &outcome {
                             Ok(r) => {
                                 let (after, unreadable) = read_retry_after(r.headers());
+                                let what = Outcome::status(r.status(), after, unreadable);
                                 (
-                                    policy.decide(
-                                        Outcome::status(r.status(), after, unreadable),
-                                        attempt,
-                                        crate::sse::jitter(),
-                                        replayable,
-                                    ),
-                                    true,
+                                    policy.decide(what, attempt, crate::sse::jitter(), replayable),
+                                    what,
                                 )
                             }
                             // **`is_unsent`, not the `ErrorKind`.** The
@@ -1295,13 +1344,37 @@ impl Client {
                                     crate::sse::jitter(),
                                     replayable,
                                 ),
-                                false,
+                                Outcome::Unsent,
                             ),
                             Err(_) => break outcome?,
                         };
 
                         match verdict {
                             Verdict::After(delay) => {
+                                // **The caller's own say, and it can only
+                                // narrow.** Asked here rather than inside
+                                // the policy because what a predicate
+                                // wants is the decision the policy
+                                // reached — `redirect_predicate`'s order
+                                // one screen up, for its reason. So a
+                                // body that cannot be replayed, a status
+                                // the policy does not cover and an
+                                // exhausted attempt count never reach it.
+                                //
+                                // It is where *method safety* lives, and
+                                // the only place it can: `RetryKind`
+                                // answers "can this be sent again" and
+                                // nothing in this workspace answers "may
+                                // this be repeated", because that is a
+                                // judgement about what a request does at
+                                // a server and only its author has it.
+                                if let Some(pred) = &self.config().retry_predicate
+                                    && pred.ask(&crate::predicate::ProposedRetry::new(
+                                        &hp.method, &hp.uri, attempt, what, delay,
+                                    )) == crate::predicate::RetryVerdict::Stop
+                                {
+                                    break outcome?;
+                                }
                                 drop(outcome);
                                 self.inner.timer.sleep_boxed(delay).await;
                                 // RFC 9111 §4.2.3 again: the stored age
@@ -1311,10 +1384,7 @@ impl Client {
                                 // the response to the first try.
                                 requested_at = self.cache_now();
                             }
-                            Verdict::Stop(_) => {
-                                let _ = keep;
-                                break outcome?;
-                            }
+                            Verdict::Stop(_) => break outcome?,
                         }
                     };
 
