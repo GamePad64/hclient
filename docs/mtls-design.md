@@ -169,6 +169,100 @@ For native-tls the map is label → `TlsConnector`, each built with its own
 `identity(..)`. That is the whole of what the library allows, and it is
 enough for the seam.
 
+### 3.4 The other half of the seam: what the server asked for
+
+§3.1 carries a choice *in*. Nothing yet carries the question *out*, and
+without it §5's picker filters by nothing — it would have to show every
+installed identity, which is the degraded browser and not the one being
+designed.
+
+**Automatic selection needs none of this.** A rule — *take the identity
+issued by this CA* — is a synchronous `ResolvesClientCert` and is already
+expressible: rustls hands it `root_hint_subjects` and `sigschemes` at the
+one moment they exist. It is only **interactive** selection that needs
+the hints to leave the handshake, because nothing inside one can wait for
+a person.
+
+```rust
+// hclient-tls
+/// What the server asked for, if it asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClientCertRequest {
+    /// The CAs it said it would accept: DER-encoded distinguished names,
+    /// in the order sent, unparsed.
+    pub authority_names: Vec<Vec<u8>>,
+    /// The signature schemes it will verify, as IANA codepoints.
+    pub sigschemes: Vec<u16>,
+    /// Whether a certificate was presented in answer.
+    pub answered: bool,
+}
+
+// TlsInfo gains one field
+pub client_cert_request: Option<ClientCertRequest>,
+```
+
+**The `Option` is not decoration, and an empty `authority_names` inside
+it is a third state.** rustls' own doc says an empty list means *send
+whatever certificate you have*, so *the server did not ask*, *it asked
+and named nobody* and *it asked and named these* are three facts, and a
+bare `Vec` collapses the first two. Third sighting of that shape in this
+workspace, after `Discovered::NoRecord`/`NotConsulted` and
+`Retry-After` absent versus unreadable.
+
+**DER, unparsed**, for `peer_certificates`' reason one field up: turning
+a distinguished name into text needs an X.509 parser, which this
+workspace declined to take. A caller who wants names brings one.
+
+**`u16` codepoints rather than an enum, and never a backend's type.**
+The registry gains entries, and the seam must not name `rustls`'s
+`SignatureScheme` any more than `cipher_suite` may be an enum — the
+argument is already written beside that field.
+
+**`answered` closes a gap that neither half closes alone.** Without it a
+caller cannot tell *403 because I sent no certificate* from *403 because
+I am not authorised*, and the picker fires on the wrong responses.
+Hints present with `answered: false` is the exact signal.
+
+**Filled by a recording resolver, and absent where a backend cannot
+observe.** For rustls it is a `ResolvesClientCert` that records and
+delegates — ours, in `hclient-tls-rustls`. `native-tls` exposes no such
+hook, so it leaves the field `None`: the understating direction, and the
+same rule as `reports_alpn`.
+
+**Surfaced on `Connected`**, by the path `tls_version`, `tls_cipher` and
+`alpn` already take. Not a new event: it is a fact about a connection,
+and a second event would owe its own lifecycle argument — the one
+`Closed::Failed` out of `wasi:http`'s error codes was refused for.
+
+### 3.5 The three-step protocol, and what it costs
+
+With §3.1 and §3.4 in place, interactive selection is:
+
+```
+1. connect → the server asks → the recording resolver notes the hints
+             and returns `None` → the handshake completes with a legal
+             empty certificate, measured in `ClientAuthDetails::resolve`
+2. the hints reach the caller on `Connected`; the response is typically 403
+3. the caller shows a picker, already narrowed by the server's CAs
+4. a second connection carries the label
+```
+
+**One extra handshake per origin per session**, not per request: the
+hints and the answer are the caller's to cache by origin.
+
+**And one thing a real pause would not cost.** The connection is closed
+between observing and choosing, where OpenSSL's `WANT_X509_LOOKUP` holds
+the same one. A server that counts failed mTLS attempts as security
+events sees two. That is the price of rustls having no pause, and it is
+not recoverable by any arrangement on this side.
+
+The alternative buys the handshake back and spends picker quality: show
+every identity *before* connecting, remember per origin, and pay an
+unfiltered list once instead of a handshake once. Both are the caller's
+to choose, and the seam allows both — the label works with or without
+hints.
+
 ## 4. What each platform actually requires
 
 | | the query a caller writes | how the key signs | bridge |
@@ -197,7 +291,11 @@ and sends nothing when none match. Of those, this design gives:
 - **send nothing** — `resolve` returning `None`, measured above;
 - **remember per origin** — the caller's, keyed however they like, applied
   as a label per request;
-- **a picker** — *not* inside the handshake, because nothing here can wait.
+- **a picker** — *not* inside the handshake, because nothing here can
+  wait; §3.5's three steps instead, at one extra handshake per origin
+  per session. §3.4 is what makes the picker's filter possible at all:
+  without the hints leaving the handshake it would have to offer every
+  installed identity.
 
 The portable way to reach a human is **two phases**:
 
