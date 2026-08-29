@@ -1316,6 +1316,7 @@ dependencies = [
  "url",
  "wasm-bindgen-test",
  "web-sys",
+ "web-time",
  "winnow",
  "zstd",
 ]

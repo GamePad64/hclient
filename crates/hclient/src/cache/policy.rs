@@ -8,7 +8,17 @@
 //! every backend" a structural fact rather than a consequence of everyone
 //! happening to go through one client.
 
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+// `web_time::SystemTime`, not `std::time`'s, and this file has no choice
+// about it independently of `client.rs`: `lookup`, `storing` and
+// `revalidated` below hand these timestamps to `super::store`'s
+// `StoredResponse`, so the two must name one type. Off
+// `wasm32-unknown-unknown` that type IS `std::time::SystemTime` and nothing
+// here changes; on it, `std` has no clock and `now()` aborts, which is what
+// made an HTTP cache in a browser unreachable rather than merely
+// discouraged. `Duration` stays `std`'s — it is arithmetic, with no clock
+// in it, and `web-time` re-exports std's own on every target anyway.
+use web_time::SystemTime;
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version};

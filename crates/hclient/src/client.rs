@@ -17,7 +17,17 @@ use std::fmt::Debug;
 use std::sync::Arc;
 #[cfg(any(feature = "cookies", feature = "cache"))]
 use std::sync::Mutex;
-use std::time::SystemTime;
+// The wall clock this client reads for the jar and the cache.
+//
+// `web_time`, not `std::time`, and the difference is one target: off
+// `wasm32-unknown-unknown` this IS `std::time::SystemTime` — the crate's
+// whole body there is `pub use std::time::*;` — so no signature in this
+// crate or in the jar's changes, and no native build behaves differently.
+// On that one target `std` has no clock and `now()` aborts, where this
+// reads the browser's. `no-std-wall-clock-in-the-client` is what keeps
+// the plain import from coming back; its note says what it does and does
+// not match.
+use web_time::SystemTime;
 
 pub struct ClientBuilder {
     transport: Box<hclient_core::unversioned::erased::SharedTransport>,
@@ -259,26 +269,38 @@ impl ClientBuilder {
     /// redirect hop rather than once per operation), deciding *whether*
     /// (the capability gate above), and supplying a `now`.
     ///
-    /// **The `now` is `SystemTime::now()`, read once per operation, and
-    /// not the client's [`Timer`].** That is a deliberate difference from
-    /// the total timeout one method up, and the reason is in the two
-    /// clocks' shapes: `Timer::Instant` is `Copy + PartialOrd` with an
-    /// `elapsed_since` — a stopwatch with no epoch — while `Expires` is a
-    /// calendar date, and no amount of elapsed time names one. Anchoring a
-    /// wall clock once and advancing it with `Timer::elapsed_since` would
-    /// use the client's clock, and would freeze outright for
-    /// [`NoClock`](crate::NoClock), whose `elapsed_since` is
-    /// `Duration::ZERO` for ever: every `Expires` in the future, every
-    /// deletion ignored, silently. A clockless client can configure a jar
-    /// — nothing about cookies needs a timer — so that is not a
-    /// hypothetical.
+    /// **The `now` is `web_time::SystemTime::now()`, read once per
+    /// operation, and not the client's [`Timer`].** That is a deliberate
+    /// difference from the total timeout one method up, and the reason is
+    /// in the two clocks' shapes: `Timer::Instant` is `Copy +
+    /// PartialOrd` with an `elapsed_since` — a stopwatch with no epoch —
+    /// while `Expires` is a calendar date, and no amount of elapsed time
+    /// names one. Anchoring a wall clock once and advancing it with
+    /// `Timer::elapsed_since` would use the client's clock, and would
+    /// freeze outright for [`NoClock`](crate::NoClock), whose
+    /// `elapsed_since` is `Duration::ZERO` for ever: every `Expires` in
+    /// the future, every deletion ignored, silently. A clockless client
+    /// can configure a jar — nothing about cookies needs a timer — so
+    /// that is not a hypothetical.
     ///
-    /// One consequence worth knowing before it surprises anyone:
-    /// `SystemTime::now()` **panics on `wasm32-unknown-unknown`**, where
-    /// `std` has no clock at all. That target is also the one whose
-    /// transport is refused above, so the combination that would reach the
-    /// panic is a browser build driving some transport other than the
-    /// browser's own.
+    /// **The clock is `web-time`'s, and until it was, a cookie jar in a
+    /// browser was not a configuration that existed.**
+    /// `std::time::SystemTime::now()` does not fail on
+    /// `wasm32-unknown-unknown` — it **panics**, `std` having no clock on
+    /// that target at all — so a jar there was unreachable rather than
+    /// merely discouraged: the first request that stored or matched a
+    /// cookie aborted the module. Measured rather than recalled, in one
+    /// `.wasm` holding both calls: `std`'s traps on `unreachable` inside
+    /// `<std::time::SystemTime>::now`, `web_time`'s answers with the
+    /// host's own `Date.now()`.
+    ///
+    /// Off that target `web_time::SystemTime` **is**
+    /// `std::time::SystemTime` — the crate's whole body there is `pub use
+    /// std::time::*;` — so this is not a second clock with its own
+    /// behaviour to learn: every signature the jar exposes is the same
+    /// type it always was, and a native build resolves one extra crate
+    /// that contains a re-export. `no-std-wall-clock-in-the-client` is
+    /// what stops the plain import from coming back.
     ///
     /// **The list is the caller's**, and is erased on the way in — see
     /// [`AnyList`](crate::erased::AnyList) for why that rather than a type
@@ -324,7 +346,7 @@ impl ClientBuilder {
     /// re-derived rather than carried, exactly as the jar is), deciding
     /// *whether* (the capability gate above), and supplying a `now`.
     ///
-    /// **The `now` is `SystemTime::now()`, and not the client's
+    /// **The `now` is `web_time::SystemTime::now()`, and not the client's
     /// [`Timer`].** The argument is [`Self::cookie_jar`]'s in full and it
     /// is if anything sharper here: `Date`, `Expires` and `Age` are
     /// calendar values and RFC 9111 §4.2.3's arithmetic subtracts one from
@@ -337,12 +359,19 @@ impl ClientBuilder {
     /// for ever. A clockless client can configure a cache, so that is not
     /// hypothetical.
     ///
-    /// The clock is read **only when a cache is configured**, and that
-    /// matters for one target: `SystemTime::now()` **panics on
-    /// `wasm32-unknown-unknown`**, where `std` has no clock at all. That
-    /// target is also the one whose transport is refused above, so the
-    /// combination that would reach the panic is a browser build driving
-    /// some transport other than the browser's own.
+    /// The clock is read **only when a cache is configured**, and what
+    /// that used to be protecting against is worth keeping:
+    /// `std::time::SystemTime::now()` **panics on
+    /// `wasm32-unknown-unknown`**, where `std` has no clock at all, so
+    /// while this crate read `std`'s clock an HTTP cache in a browser was
+    /// a configuration that could not run — not refused, which is what
+    /// [`Capabilities::owns_cache`](hclient_core::Capabilities) does one
+    /// line up, but aborting on the first hop that consulted it. The
+    /// clock is `web-time`'s now and that configuration exists;
+    /// [`Self::cookie_jar`] has the measurement. The narrowing stays
+    /// anyway, because a client that never asked for a cache must not
+    /// start reading a clock — the same rule `execute` follows for
+    /// `Timer::sleep`.
     ///
     /// # What a cache changes that a jar does not
     ///
@@ -1434,9 +1463,11 @@ impl Client {
     /// with NO header, and the previous hop's — cloned in by `next_hop` —
     /// is what would otherwise remain.
     ///
-    /// **`SystemTime::now()`, read here.** Why the client's [`Timer`]
-    /// cannot supply it is on [`ClientBuilder::cookie_jar`]; the short
-    /// form is that `Timer` is a stopwatch and `Expires` is a date.
+    /// **`web_time::SystemTime::now()`, read here.** Why the client's
+    /// [`Timer`] cannot supply it, and why the clock is `web-time`'s
+    /// rather than `std`'s, are both on [`ClientBuilder::cookie_jar`];
+    /// the short forms are that `Timer` is a stopwatch and `Expires` is a
+    /// date, and that `std`'s wall clock panics in a browser.
     #[cfg(feature = "cookies")]
     fn attach_cookies(&self, hp: &mut HopParts, caller_owns_the_header: bool) {
         let Some(jar) = self.inner.cookies.as_ref() else {
@@ -1483,16 +1514,22 @@ impl Client {
     #[cfg(not(feature = "cookies"))]
     fn store_cookies(&self, _: &http::Uri, _: &http::HeaderMap) {}
 
-    /// `SystemTime::now()`, but only where something will read it.
+    /// `web_time::SystemTime::now()`, but only where something will read
+    /// it.
     ///
-    /// `SystemTime::now()` **panics on `wasm32-unknown-unknown`**, and a
-    /// client that never asked for a cache must not start requiring a
-    /// clock — the same rule `execute` follows for `Timer::sleep`, which
-    /// is constructed only on the branch that has a bound to measure. The
-    /// value handed back when there is no cache is never read by anything;
-    /// it is `UNIX_EPOCH` rather than a panic because the alternative is an
-    /// `Option` threaded through two signatures to say what the store's
-    /// absence already says.
+    /// The narrowing was written when the clock was `std`'s, whose `now()`
+    /// **panics on `wasm32-unknown-unknown`**, and it is kept now that the
+    /// clock cannot panic anywhere: a client that never asked for a cache
+    /// must not start reading a clock — the same rule `execute` follows
+    /// for `Timer::sleep`, which is constructed only on the branch that
+    /// has a bound to measure. What changed is that this is no longer the
+    /// thing standing between a browser build and a cache; see
+    /// [`ClientBuilder::cache`].
+    ///
+    /// The value handed back when there is no cache is never read by
+    /// anything; it is `UNIX_EPOCH` rather than a panic because the
+    /// alternative is an `Option` threaded through two signatures to say
+    /// what the store's absence already says.
     #[cfg(feature = "cache")]
     fn cache_now(&self) -> SystemTime {
         if self.inner.cache.is_some() {
@@ -1533,8 +1570,9 @@ impl Client {
     /// resource's validator. Exactly the `Cookie` header's rule, and for
     /// exactly the same reason.
     ///
-    /// **`SystemTime::now()`, read here.** Why the client's [`Timer`]
-    /// cannot supply it is on [`ClientBuilder::cache`].
+    /// **`web_time::SystemTime::now()`, read here.** Why the client's
+    /// [`Timer`] cannot supply it, and why it is `web-time`'s clock, are
+    /// both on [`ClientBuilder::cache`].
     #[cfg(feature = "cache")]
     fn cache_before(
         &self,

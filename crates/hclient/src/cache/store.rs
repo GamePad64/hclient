@@ -14,7 +14,12 @@
 //! and cannot serve a stale response to a request that forbade one.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
+// `web_time`, not `std::time`: on `wasm32-unknown-unknown` these two
+// timestamps come from a clock `std` does not have there, and on every
+// other target `web_time::SystemTime` IS `std::time::SystemTime`, so the
+// field types below are unchanged. `no-std-wall-clock-in-the-client`
+// keeps the plain import from coming back.
+use web_time::SystemTime;
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version};

@@ -449,6 +449,41 @@ const-hex     = { workspace = true }
 # duplicate declaration of the crate.
 getrandom     = "0.4"
 
+# The wall clock `src/client.rs` reads for the jar and the cache, and the
+# type `src/cookie/jar.rs`, `src/cache/policy.rs` and `src/cache/store.rs`
+# name in their signatures.
+#
+# **Unconditional, not per-target, and that is the cheap direction rather
+# than the lazy one.** On every target except `wasm32-unknown-unknown` this
+# crate's entire body is `pub use std::time::*;` — checked in the vendored
+# source, not inferred — so `web_time::SystemTime` IS
+# `std::time::SystemTime` there and not one signature in this crate or in
+# the jar's changed. Its `js-sys` and `wasm-bindgen` sit under
+# `[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'
+# .dependencies]` in its OWN manifest, so a native build resolves neither;
+# measured, the native graph goes 93 crates to 94, and the one crate is the
+# re-export. A `[target.'cfg(...)']` entry here would buy that single crate
+# back and cost every import site a `#[cfg]`, which is the machinery this
+# workspace removes rather than hides.
+#
+# **Not a feature either, and neither direction of one is honest.** Cargo
+# unifies features, so a feature that turned it OFF would be a floor in
+# reverse — one careless crate in a graph could take the browser's clock
+# away from every other, which is this file's own argument about
+# `system-proxy` read backwards. A feature that turned it ON would mean a
+# browser build panics unless somebody remembered a flag, and
+# `std::time::SystemTime::now()` on that target does not fail, it aborts
+# the module. The type identity is what makes the question moot: there is
+# nothing to opt out of.
+#
+# `scripts/ast-grep/rules/no-std-wall-clock-in-the-client.yml` is what
+# keeps `std::time::SystemTime` from coming back; its note says exactly
+# what it matches and what it deliberately does not.
+#
+# Plain version rather than `[workspace.dependencies]`, on `serde`'s
+# precedent above: nothing else in this workspace needs it directly.
+web-time      = "1.1.0"
+
 # Target-dependent optional dependencies for `DefaultTransport` (see
 # `default-transport` in `[features]` above and the `DefaultTransport` doc
 # comment in `src/lib.rs`). `not(target_family = "wasm")` is the same
