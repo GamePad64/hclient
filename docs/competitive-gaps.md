@@ -1,9 +1,9 @@
 # Competitive gaps: what a caller can do elsewhere, and what is refused here
 
 Written to answer one question with evidence rather than impression: **what
-would a caller who arrived from `reqwest` or `ureq` find missing here**, and
-which of those absences are decisions this workspace has already made and
-written down.
+would a caller who arrived from `reqwest`, `ureq` or `niquests` find missing
+here**, and which of those absences are decisions this workspace has already
+made and written down.
 
 The second half matters more than the first. This repository carries four
 acceptance documents whose *Deliberately not done* sections exist precisely
@@ -50,6 +50,34 @@ Versions read, all from `~/.cargo/registry/src/index.crates.io-*/`:
 | `rustls-platform-verifier` | 0.7.0 | already vendored, to settle one claim in §8 |
 | `web-sys` | 0.3.104 | already vendored |
 
+And one comparator that is not a crate:
+
+| package | version | how it got there |
+|---|---|---|
+| **`niquests`** | **3.21.1** | `uv pip install niquests` into a throwaway 3.14.4 venv, 2026-08-30 |
+| `urllib3-future` | 2.24.905 | its transport, pulled as a hard dependency |
+| `qh3` | 1.9.4 | its QUIC/HTTP-3 and TLS-1.3 stack, **also a hard dependency** on this platform |
+| `wassima` | 2.1.4 | its OS trust store |
+
+**niquests is compared because it is the closest peer by ambition, not
+because it is in Rust.** It is a Python client with the same three
+protocols in one client, the same bet that a browser-shaped feature set
+belongs inside rather than in a satellite crate, and — this is the part
+that makes it a peer rather than a curiosity — a `wasi:http` backend and a
+browser backend beside the native one. Every other comparator here answers
+a narrower question. Being in another language costs the comparison the two
+rows that are about Rust (`Send`, the crate graph) and nothing else: a
+capability is a capability.
+
+**It is also the comparator whose surface was exercised live rather than
+only read.** reqwest and ureq each contributed one execution (§1) and were
+otherwise read at a path and a line; niquests was installed, imported, and
+asked — signatures off `inspect`, values off live objects, and four claims
+off a program that ran. Where a claim below says *executed* against
+niquests, a program in that venv produced the quoted output. That is a
+higher grade of evidence than the rest of this document holds itself to,
+and §7 says what it still does not cover.
+
 **`surf` is not compared.** Its latest release is 2.3.2, published
 2021-11-01, with the last push to its repository in September 2023. A
 client that has not shipped in four years is not a comparator; it is
@@ -81,11 +109,39 @@ diffing the public surface rather than reading the changelog.
 `hclient` was this tree at `96e8b28` when the document was written, and
 the `ng` column has been kept current since — ten of the thirteen ranked
 gaps closed between then and `5dc452d`, each row updated with the change
-that closed it.
+that closed it. The niquests pass re-read every `ng` cell against
+`fabc7cb`.
+
+**That re-read is the reason to add a column even where the new column is
+mostly `Y` on both sides: it forced eleven `ng` cells and cannot be
+skimmed.** The ranked gaps in §3 were kept current because closing one is
+an event somebody writes down. The *matrix* was not, because a row nobody
+is arguing about is a row nobody re-reads. Eleven were wrong, all in the
+same direction — the client had grown past them:
+
+| row | said | is |
+|---|---|---|
+| §2.3 h2 keepalive PING | absent | `Native::h2_keep_alive`, `lib.rs:2019` |
+| §2.4 static host→address override | `seam` | `hclient_dns::Overrides<D>`, `overrides.rs:61` |
+| §2.4 TCP keepalive | one duration | interval, retries and `user_timeout` (G11) |
+| §2.5 client certs | `seam` | `Rustls::with_identity`, per request, `lib.rs:183` |
+| §2.5 disable verification | `seam` | `dangerous-insecure`, a constructor per backend |
+| §2.6 proxy from the environment | **refused as policy** | **reversed** — `system-proxy`, in `default` |
+| §2.6 system proxy (registry, SCF) | absent | `Native::system_proxy`, `lib.rs:1179` |
+| §2.7 custom redirect predicate | `ClientBuilder::redirect_predicate` | the name is gone; it is a `RedirectPolicy` trait |
+| §2.7 automatic retry | *"neither is a general retry policy"* | `ClientBuilder::retry`, `client.rs:217` |
+| §2.8 published on crates.io | `N` | `0.1.0-alpha.2`, which §3 G1 already said |
+| §2.8 a type-erased client | `N*` | `Client` names no parameters, which §3 G13 already said |
+
+The last two are the sharpest, because **the document contradicted itself
+and stayed green**: §3 recorded both as closed, at length, and the matrix
+two screens above went on saying `N`. A summary and its table drift apart
+in exactly the way this workspace's own rule about checks predicts — the
+half somebody edits stays true and the half nobody reads does not.
 
 ---
 
-## 1. The two executions that decided the shape of this document
+## 1. The executions that decided the shape of this document
 
 **reqwest 0.13.4 does not build for `wasm32-wasip2`.** Executed, not read:
 
@@ -124,6 +180,44 @@ sandbox policy, and the reason `wasi:http` exists — runs `hclient-wasi` and
 cannot run ureq. **Neither was tested against a host with sockets denied**,
 so that last sentence is an argument from the WIT rather than a measurement.
 
+**niquests reaches HTTP/3 on the third line of a plain install, and this
+workspace does not.** Executed against the venv above — three requests on one
+session, nothing configured:
+
+```
+$ python probe.py                 # niquests 3.21.1, plain install, no extras
+0 200 http_version= 20 conn_info.http_version= HttpVersion.h2
+1 200 http_version= 30 conn_info.http_version= HttpVersion.h3
+2 200 http_version= 30 conn_info.http_version= HttpVersion.h3
+tls_version: 772 cipher: TLS_AES_128_GCM_SHA256
+dest: ('8.6.112.6', 443)
+ocsp_verified: True
+```
+
+Three `*_latency` lines are elided from that output and the reason they are
+elided is itself a fact worth having: they read `0:00:00`, because the
+program printed `conn_info` after the **third** request and the third
+request reused the second's connection. Timings that are zero on a reused
+connection are the same thing `Event::Reused` says here.
+
+The first request negotiated h2 over TCP, read the origin's `Alt-Svc`, and the
+second went out over QUIC. `qh3` is in that graph because `urllib3-future`
+requires it **unconditionally** on CPython on Linux, macOS and Windows on the
+mainstream architectures — read off its `METADATA` environment marker — so the
+`http3` extra exists only for the platforms that marker excludes. Here the same
+three requests need `hclient-native`'s `http3` feature switched on, **and**
+`Native::http3()` called, **and** the caller to have reached past
+`Client::new()`, whose `DefaultTransport` is HTTP/1.1 with h2 behind a feature.
+
+Two things that comparison does **not** say, and both matter. It is not a
+protocol-support gap: this client has HTTP/3, WebTransport, and an h3-vs-h1
+chooser fed by the HTTPS record that no comparator has. And the last line of
+that output is the other half of the trade — `ocsp_verified: True` means a
+second network dependency was consulted on the way, which §4 records as
+something this workspace declines to grow. What the comparison is about is
+**defaults**, and G14 is where this client's defaults stop being merely
+different.
+
 ---
 
 ## 2. The matrix
@@ -134,157 +228,184 @@ implementing a public trait; **N** = absent; **—** = not checked.
 
 Columns: **ng** = `hclient` (all features, native), **rq** = reqwest 0.13.4,
 **uq** = ureq 3.4.0, **cu** = the `curl` 0.4.50 binding / `isahc` 2.0.1,
-**br** = the browser story (reqwest's wasm build, `gloo-net` 0.7.0).
+**nq** = niquests 3.21.1, **br** = the browser story (reqwest's wasm build,
+`gloo-net` 0.7.0).
+
+The `nq` column follows the same legend, with one addition: **Y (extra)**
+means present but behind a `pip install niquests[..]` extra, which is that
+ecosystem's word for a Cargo feature and is treated the same way the `Y*`
+of an off-by-default feature is treated in the `ng` column.
 
 ### 2.1 Request shaping
 
-| capability | ng | rq | uq | cu | br | note |
-|---|---|---|---|---|---|---|
-| query parameters | Y | Y | Y | — | Y | ng appends and never replaces (`request.rs:195`); rq's `query` takes `Serialize` |
-| urlencoded form body | Y | Y | Y | — | Y | ng hand-writes the WHATWG serialiser rather than take `form_urlencoded` |
-| JSON request body | Y | Y | Y | — | Y | ng behind `json`; serialises in the builder, so a bad value is a build error |
-| `multipart/form-data` | Y | Y | Y | Y | Y | see §2.2 for the streaming difference |
-| Basic auth | Y | Y | Y | Y | Y | ng **refuses a colon in the username** (RFC 7617 §2) where the others encode it |
-| Bearer auth | Y | Y | Y | Y | Y | |
-| Digest / NTLM / Negotiate | **Digest: Y\*** | N | N | **Y** | N | **Digest closed** — RFC 7616, `RequestBuilder::digest_auth`, MD5 / SHA-256 / SHA-512-256 and their `-sess` variants, checked against the RFC's own §3.9 vectors. The only pure-Rust client with it. NTLM and Negotiate still refused: both need the platform's GSSAPI or SSPI. The `curl` crate binds all of them: `Auth` + `Easy::http_auth` over `CURLAUTH_DIGEST`, `_DIGEST_IE`, `_GSSNEGOTIATE`, `_NTLM`, `_NTLM_WB` (`curl-0.4.50/src/easy/handler.rs:565, :1340, :3733-3790`), and **`isahc` 2.0.1 surfaces two of them in Rust** — `Authentication::digest()` and `::negotiate()` (`src/auth.rs:100, :120`), the second behind its `spnego` feature. So the `cu` column is not only the raw binding here. See §3 G12 |
-| client-wide default headers | Y | Y | Y | — | Y | closed — `ClientBuilder::{default_header, default_headers}`, applied per redirect hop, the caller's own header winning, and refused at `build()` where a backend forbids the name. See G2 |
-| a `User-Agent` at all | Y\* | Y | Y | Y | (browser's) | `ClientBuilder::user_agent` exists; **ng still sends none by default**, deliberately — a library that names itself on every request decides for its embedder, and the embedder is who has an opinion. `ureq-3.4.0/src/config.rs:546` |
-| base URL / relative URLs | Y | **N** | N | N | N | `ClientBuilder::base_url` — reqwest #988/#213 open since 2017 |
-| per-request timeout override | Y | Y | Y\* | Y | Y | `RequestBuilder::timeouts` (`request.rs:341`) |
-| a separate bound on name resolution | Y\* | N | Y | Y | n/a | closed — `Timeouts::resolve`. What it bounds is the wait for the **first address**, not a phase: Happy Eyeballs interleaves resolving with connecting, so there is no instant at which resolution finished. `false` on both ambient backends, honestly. See G11a; `ureq-3.4.0/src/config.rs:692` |
-| per-request redirect override | Y | N | — | — | N | `RequestBuilder::redirect` (`request.rs:387`) |
-| set an `http::Extensions` value from the builder | **N** | — | — | — | — | recorded as deliberate, `v03-acceptance.md:3394` — see §4 |
-| `error_for_status` | Y | Y | Y | — | Y | on both `Response` and `Collected` — the second for a caller who wants the server's error text before deciding. A `3xx` is `Ok`, because reaching one means the redirect policy already handed it back. Writing it found that `Response::url()` reported the *requested* URL rather than the answering one, undocumented and untested; it is the last hop now |
-| response text with charset from `Content-Type` | Y\* | Y | Y | Y | — | closed: `Collected::text_with_charset` behind a `charset` feature — the name rq and uq both independently chose. **A separate method, not a smarter `text()`**: Cargo unifies features, so a feature that changed what `text()` means would make a library's behaviour depend on what an unrelated crate switched on, and the difference is silent mojibake rather than an error. **`isahc` 2.0.1 is the live counter-example to the other half of the decision**: its `text-decoding` is *in `default`*, and an unknown label falls back to UTF-8 with a `tracing::warn!` (`src/text.rs:64-70`) — where ng makes it a typed error naming the label, because a warning nobody reads and mojibake handed back are the same outcome for the caller |
+| capability | ng | rq | uq | cu | nq | br | note |
+|---|---|---|---|---|---|---|---|
+| query parameters | Y | Y | Y | — | Y | Y | ng appends and never replaces (`request.rs:195`); rq's `query` takes `Serialize` |
+| urlencoded form body | Y | Y | Y | — | Y | Y | ng hand-writes the WHATWG serialiser rather than take `form_urlencoded` |
+| JSON request body | Y | Y | Y | — | Y | Y | ng behind `json`; serialises in the builder, so a bad value is a build error |
+| `multipart/form-data` | Y | Y | Y | Y | Y | Y | see §2.2 for the streaming difference |
+| Basic auth | Y | Y | Y | Y | Y | Y | ng **refuses a colon in the username** (RFC 7617 §2) where the others encode it |
+| Bearer auth | Y | Y | Y | Y | Y | Y | |
+| Digest / NTLM / Negotiate | **Digest: Y\*** | N | N | **Y** | Digest: Y | N | **Digest closed** — RFC 7616, `RequestBuilder::digest_auth`, MD5 / SHA-256 / SHA-512-256 and their `-sess` variants, checked against the RFC's own §3.9 vectors. The only pure-Rust client with it. NTLM and Negotiate still refused: both need the platform's GSSAPI or SSPI. The `curl` crate binds all of them: `Auth` + `Easy::http_auth` over `CURLAUTH_DIGEST`, `_DIGEST_IE`, `_GSSNEGOTIATE`, `_NTLM`, `_NTLM_WB` (`curl-0.4.50/src/easy/handler.rs:565, :1340, :3733-3790`), and **`isahc` 2.0.1 surfaces two of them in Rust** — `Authentication::digest()` and `::negotiate()` (`src/auth.rs:100, :120`), the second behind its `spnego` feature. So the `cu` column is not only the raw binding here. See §3 G12 |
+| client-wide default headers | Y | Y | Y | — | Y | Y | closed — `ClientBuilder::{default_header, default_headers}`, applied per redirect hop, the caller's own header winning, and refused at `build()` where a backend forbids the name. See G2 |
+| a `User-Agent` at all | Y\* | Y | Y | Y | Y | (browser's) | `ClientBuilder::user_agent` exists; **ng still sends none by default**, deliberately — a library that names itself on every request decides for its embedder, and the embedder is who has an opinion. `ureq-3.4.0/src/config.rs:546` |
+| base URL / relative URLs | Y | **N** | N | N | Y | N | `ClientBuilder::base_url` — reqwest #988/#213 open since 2017 |
+| per-request timeout override | Y | Y | Y\* | Y | Y | Y | `RequestBuilder::timeouts` (`request.rs:341`) |
+| a separate bound on name resolution | Y\* | N | Y | Y | N | n/a | closed — `Timeouts::resolve`. What it bounds is the wait for the **first address**, not a phase: Happy Eyeballs interleaves resolving with connecting, so there is no instant at which resolution finished. `false` on both ambient backends, honestly. See G11a; `ureq-3.4.0/src/config.rs:692` |
+| per-request redirect override | Y | N | — | — | Y\* | N | `RequestBuilder::redirect` (`request.rs:387`) |
+| set an `http::Extensions` value from the builder | **N** | — | — | — | n/a | — | recorded as deliberate, `v03-acceptance.md:3394` — see §4 |
+| `error_for_status` | Y | Y | Y | — | Y | Y | on both `Response` and `Collected` — the second for a caller who wants the server's error text before deciding. A `3xx` is `Ok`, because reaching one means the redirect policy already handed it back. Writing it found that `Response::url()` reported the *requested* URL rather than the answering one, undocumented and untested; it is the last hop now |
+| response text with charset from `Content-Type` | Y\* | Y | Y | Y | Y\* | — | closed: `Collected::text_with_charset` behind a `charset` feature — the name rq and uq both independently chose. **A separate method, not a smarter `text()`**: Cargo unifies features, so a feature that changed what `text()` means would make a library's behaviour depend on what an unrelated crate switched on, and the difference is silent mojibake rather than an error. **`isahc` 2.0.1 is the live counter-example to the other half of the decision**: its `text-decoding` is *in `default`*, and an unknown label falls back to UTF-8 with a `tracing::warn!` (`src/text.rs:64-70`) — where ng makes it a typed error naming the label, because a warning nobody reads and mojibake handed back are the same outcome for the caller |
 
 ### 2.2 Bodies and streaming
 
-| capability | ng | rq | uq | cu | br | note |
-|---|---|---|---|---|---|---|
-| streaming response body | Y | Y | Y | Y | Y | ng hands back an `http_body::Body`; rq adds `bytes_stream()` behind `stream` |
-| streaming request body | Y | Y | Y | Y | Y\* | |
-| **full duplex** | Y\* | — | N | — | Y\* | ng: `true` on `hclient-h3` and on h2, and the capability still reports the HTTP/1.1 **floor** — see §5 |
-| replay contract knowable before sending | **Y** | N | N | N | N | `RetryKind::{Free, ViaFactory, Impossible}`, and multipart derives it from its parts |
-| streaming multipart | Y | Y | — | Y | — | ng: any streaming part makes the whole form `Streaming`/`Impossible` |
-| response trailers reach the caller | Y | N | N | **Y** | N | ng on h2 and h3; read via `into_parts()`, not `collect()`. `isahc` 2.0.1 has a `Trailer` handle with `try_get`, `wait` and `wait_timeout` (`src/trailer.rs:26-107`) — a *blocking* read, which is the shape a curl-backed client can offer and an async one cannot |
-| request trailers | Y\* | N | N | — | N | sent on h1 and h2, and `Capabilities::request_trailers` understates the h2 path — a known mismatch, `v03-acceptance.md:3132` |
-| a response body size limit | Y | N | **Y** | Y | N | closed — `ClientBuilder::response_limit`, counting **decompressed** bytes, which is the axis a decompression bomb lives on. Unset by default, unlike ureq: a ceiling this crate chose would fail a caller's legitimate large download. **ureq defaults to 10 MB** on `read_to_string`/`read_to_vec`/`read_json` and says so where the raw reader is handed over — *"a malicious server could send gigabytes"* (`ureq-3.4.0/src/body/mod.rs:36, :215-217`). ng has none anywhere in `hclient`/`hclient-core`: grepped `max_body`/`size_limit`/`body_limit`, and the only hits are the cache's own `Limits` |
-| header size / count limits | Y | — | Y | Y | n/a | closed on both protocols — `Native::h1_opts` (`max_headers`, `max_buf_size`) and `H2Opts::max_header_list_size`. Neither is complete without the other: a transport that negotiates ALPN speaks whichever the server picked. `h1_opts` is **fallible** where `h2_opts` is not, because hyper panics below 8192 and a caller's number must not reach a `panic!` inside a connect. `ureq…/src/config.rs:586` |
-| non-destructive body read | Y | N | — | — | — | `Collected` keeps status/headers/url after `.text()` — reqwest #1542 |
+| capability | ng | rq | uq | cu | nq | br | note |
+|---|---|---|---|---|---|---|---|
+| streaming response body | Y | Y | Y | Y | Y | Y | ng hands back an `http_body::Body`; rq adds `bytes_stream()` behind `stream` |
+| streaming request body | Y | Y | Y | Y | Y | Y\* | |
+| **full duplex** | Y\* | — | N | — | — | Y\* | ng: `true` on `hclient-h3` and on h2, and the capability still reports the HTTP/1.1 **floor** — see §5 |
+| replay contract knowable before sending | **Y** | N | N | N | N | N | `RetryKind::{Free, ViaFactory, Impossible}`, and multipart derives it from its parts |
+| streaming multipart | Y | Y | — | Y | — | — | ng: any streaming part makes the whole form `Streaming`/`Impossible` |
+| response trailers reach the caller | Y | N | N | **Y** | Y | N | ng on h2 and h3; read via `into_parts()`, not `collect()`. `isahc` 2.0.1 has a `Trailer` handle with `try_get`, `wait` and `wait_timeout` (`src/trailer.rs:26-107`) — a *blocking* read, which is the shape a curl-backed client can offer and an async one cannot |
+| request trailers | Y\* | N | N | — | N | N | sent on h1 and h2, and `Capabilities::request_trailers` understates the h2 path — a known mismatch, `v03-acceptance.md:3132` |
+| a response body size limit | Y | N | **Y** | Y | N | N | closed — `ClientBuilder::response_limit`, counting **decompressed** bytes, which is the axis a decompression bomb lives on. Unset by default, unlike ureq: a ceiling this crate chose would fail a caller's legitimate large download. **ureq defaults to 10 MB** on `read_to_string`/`read_to_vec`/`read_json` and says so where the raw reader is handed over — *"a malicious server could send gigabytes"* (`ureq-3.4.0/src/body/mod.rs:36, :215-217`). ng has none anywhere in `hclient`/`hclient-core`: grepped `max_body`/`size_limit`/`body_limit`, and the only hits are the cache's own `Limits` |
+| header size / count limits | Y | — | Y | Y | — | n/a | closed on both protocols — `Native::h1_opts` (`max_headers`, `max_buf_size`) and `H2Opts::max_header_list_size`. Neither is complete without the other: a transport that negotiates ALPN speaks whichever the server picked. `h1_opts` is **fallible** where `h2_opts` is not, because hyper panics below 8192 and a caller's number must not reach a `panic!` inside a connect. `ureq…/src/config.rs:586` |
+| non-destructive body read | Y | N | — | — | Y | — | `Collected` keeps status/headers/url after `.text()` — reqwest #1542 |
 
 ### 2.3 Protocols
 
-| capability | ng | rq | uq | cu | br | note |
-|---|---|---|---|---|---|---|
-| HTTP/1.1 | Y | Y | Y | Y | (browser's) | |
-| HTTP/2 | Y\* | Y | N | Y | — | ng behind `hclient-native/http2`, off by default |
-| h2 multiplexing on by default | N | Y | — | Y | — | ng: `Native::multiplexed()`, opt-in, because it needs `R: Spawn` |
-| h2 tuning (window, frame size, keepalive PING, prior knowledge) | Y\* | Y | N | Y | N | closed for the settings frame — `Native::h2_opts`: both windows, `max_frame_size`, `max_header_list_size`. Keepalive, an adaptive window and prior knowledge are still absent, each for its own reason rather than as a batch. See G8; reqwest's eight are `reqwest-0.13.4/src/async_impl/client.rs:1563-1674` |
-| HTTP/3 | Y | Y\*\* | N | Y\* | — | **rq requires `RUSTFLAGS='--cfg reqwest_unstable'`** (`src/lib.rs:252`) **and a per-request `.version(HTTP_3)`** — the only dispatch site matches on the request's version (`async_impl/client.rs:2638`), so `http3_prior_knowledge()` does not route anything; cu depends on the libcurl build — and `isahc` 2.0.1 makes that dependence readable rather than a build-time surprise: `VersionNegotiation::http3()` exists and `info.rs:47` asks `curl_info().feature_http3()` at run time, so a caller can find out whether the linked libcurl has it |
-| WebSocket | Y | **N** | N | **N** | Y | zero matches for `websocket` in all of `reqwest-0.13.4/src/`. And **libcurl 8.21 has a WebSocket API that the Rust binding does not expose** — zero files matching `CURLWS`/`ws_send`/`ws_recv`/`websocket` in either `curl-0.4.50/src/` or `curl-sys-0.4.90/src/`, so the capability exists in the C library and not in Rust |
-| WebTransport | **Y** | N | N | N | N | `hclient-webtransport`: sessions, bidi streams, datagrams, close capsules |
-| Server-Sent Events | **Y** | **N** | N | N | Y | zero matches for `eventsource`/`text/event-stream` in `reqwest-0.13.4/src/`; ng has a decoder *and* reconnection with `Last-Event-ID` |
-| `1xx` / `103 Early Hints` observable | **Y** | N | — | — | N | `Native::watching_1xx()` + `Event::Informational` |
-| `Expect: 100-continue` | **Y** | N | **Y** | Y | N | `Native::expect_continue(after)`; **hyper's client does not do this**, so reqwest cannot. uq has it *and* a dedicated `timeout_await_100` (`src/config.rs:721`), which is the same "a wait ending in *proceeding*, not in failure" distinction this workspace argues for keeping out of `Timeouts`. **`isahc` 2.0.1 does it by default** and lets a caller turn it off (`ExpectContinue`, `src/config/mod.rs:209`) — the opposite default from ng's, where a default that waited would be a default that hangs against a server ignoring `Expect` |
-| demand a specific version and fail otherwise | **Y** | N\* | N | Y\* | N | `RequireVersion` is enforced before the head; rq's `http1_only`/`http2_prior_knowledge` are client-wide settings, not per-request demands |
+| capability | ng | rq | uq | cu | nq | br | note |
+|---|---|---|---|---|---|---|---|
+| HTTP/1.1 | Y | Y | Y | Y | Y | (browser's) | |
+| HTTP/2 | Y\* | Y | N | Y | Y | — | ng behind `hclient-native/http2`, off by default |
+| h2 multiplexing on by default | N | Y | — | Y | Y | — | ng: `Native::multiplexed()`, opt-in, because it needs `R: Spawn` |
+| h2 tuning (window, frame size, keepalive PING, prior knowledge) | Y\* | Y | N | Y | N | N | closed for the settings frame — `Native::h2_opts`: both windows, `max_frame_size`, `max_header_list_size`. **Keepalive is closed too, and not as an `H2Opts` field** — `Native::h2_keep_alive`, on the opt-in `multiplexed()` constructor, because a `SETTINGS` field is written once at handshake where a `PING` needs a driver. An adaptive window and prior knowledge remain absent, each for its own reason rather than as a batch. **nq exposes no knob and picks values anyway**, which is the opposite of this crate's rule rather than a smaller version of it: `contrib/hface/protocols/http2/_h2.py:72-80` hard-codes `INITIAL_WINDOW_SIZE: 6291456`, `HEADER_TABLE_SIZE: 65536`, `MAX_HEADER_LIST_SIZE: 262144` and `ENABLE_PUSH: 0` into the `SETTINGS` frame, and nothing in `niquests/` lets a caller move them (grepped for all three names, zero hits). `H2Opts`' every-field-`None` default exists precisely so that a caller who asked for nothing announces what `h2` chose rather than what this workspace chose; niquests announces 6 MiB to every server on the caller's behalf. Which of the two is right is a genuine argument — 6 MiB is roughly Chrome's number and 64 KiB is a bandwidth ceiling on a long fat pipe (§G8) — and it is an argument this client hands to the caller and that one does not. See G8; reqwest's eight are `reqwest-0.13.4/src/async_impl/client.rs:1563-1674` |
+| HTTP/3 | Y | Y\*\* | N | Y\* | Y | — | **rq requires `RUSTFLAGS='--cfg reqwest_unstable'`** (`src/lib.rs:252`) **and a per-request `.version(HTTP_3)`** — the only dispatch site matches on the request's version (`async_impl/client.rs:2638`), so `http3_prior_knowledge()` does not route anything; cu depends on the libcurl build — and `isahc` 2.0.1 makes that dependence readable rather than a build-time surprise: `VersionNegotiation::http3()` exists and `info.rs:47` asks `curl_info().feature_http3()` at run time, so a caller can find out whether the linked libcurl has it. **nq is the one that needs nothing at all** — see §1's execution, where the second request on a fresh install went out over QUIC |
+| WebSocket | Y | **N** | N | **N** | Y (extra) | Y | zero matches for `websocket` in all of `reqwest-0.13.4/src/`. And **libcurl 8.21 has a WebSocket API that the Rust binding does not expose** — zero files matching `CURLWS`/`ws_send`/`ws_recv`/`websocket` in either `curl-0.4.50/src/` or `curl-sys-0.4.90/src/`, so the capability exists in the C library and not in Rust. **nq has it over all three protocols and this client has it over one** — `WebSocketExtensionFromMultiplexedHTTP.supported_protocols()` answers `{h11, h2, h3}` and the h2/h3 arm writes `:protocol: websocket` with `:method: CONNECT`, i.e. RFC 8441 extended CONNECT (`contrib/webextensions/ws.py:100-104, :292`, read). Here `hclient_native::Upgrading` is an `http1::Connection` and nothing else, so a `ws://` over an h2 connection is not expressible. See G16 |
+| WebTransport | **Y** | N | N | N | N | N | `hclient-webtransport`: sessions, bidi streams, datagrams, close capsules |
+| Server-Sent Events | **Y** | **N** | N | N | Y | Y | zero matches for `eventsource`/`text/event-stream` in `reqwest-0.13.4/src/`; ng has a decoder *and* reconnection with `Last-Event-ID` |
+| `1xx` / `103 Early Hints` observable | **Y** | N | — | — | Y | N | `Native::watching_1xx()` + `Event::Informational`. nq has it too and over all three protocols — the `early_response` hook, dispatched from `sessions.py:1518` off urllib3-future's `EarlyHeadersReceived`. So this row is no longer one where the field is empty besides curl |
+| `Expect: 100-continue` | **Y** | N | **Y** | Y | N | N | `Native::expect_continue(after)`; **hyper's client does not do this**, so reqwest cannot. uq has it *and* a dedicated `timeout_await_100` (`src/config.rs:721`), which is the same "a wait ending in *proceeding*, not in failure" distinction this workspace argues for keeping out of `Timeouts`. **`isahc` 2.0.1 does it by default** and lets a caller turn it off (`ExpectContinue`, `src/config/mod.rs:209`) — the opposite default from ng's, where a default that waited would be a default that hangs against a server ignoring `Expect`. **nq is `N` and the near-miss is worth naming**: it *observes* a `100` through the same `early_response` hook that reads `103`, and it never *sends* `Expect` — grepped both packages for the header, and the one textual hit outside a header-name table is the English verb in `_base.py:666`'s *"Expect protocol handshake to be done here"*, the same trap this workspace records for `embedded-nal-async`'s three `Send`s. Observing the answer and gating the body on it are different features |
+| demand a specific version and fail otherwise | **Y** | N\* | N | Y\* | Y\* | N | `RequireVersion` is enforced before the head; rq's `http1_only`/`http2_prior_knowledge` are client-wide settings, not per-request demands |
 
 ### 2.4 Connections, sockets, resolution
 
-| capability | ng | rq | uq | cu | br | note |
-|---|---|---|---|---|---|---|
-| connection pool | Y | Y | Y | Y | (browser's) | ng: `PoolConfig { idle_timeout, max_idle_per_key }` |
-| per-request timing a caller can read | Y\* | N | N | **Y** | N | **A row this document did not have, and `isahc` 2.0.1 is why it should.** Its `Metrics` gives `name_lookup_time`, `connect_time`, `secure_connect_time`, `transfer_start_time`, `transfer_time`, `total_time` and upload/download progress and speed (`src/metrics.rs:58-142`), behind one `metrics(true)` switch. ng has `ConnectTiming` on the `Connected` hook event with `dns`/`tcp`/`tls`/`total` and `Head::elapsed` — the same four phases, but through a `Hooks` impl rather than off the response, which is `Y*` rather than `Y`: a caller who wants one request's numbers must write a hook and correlate by `ConnectionId`. Neither reqwest nor ureq has either |
-| a reaper that closes idle sockets | Y\* | Y | — | Y | — | ng: `Native::with_reaper`, opt-in, bounded on `R: Spawn` |
-| `TCP_NODELAY` | Y | Y | — | Y | N | |
-| local source address | Y | Y | — | Y | N | `TcpOpts::local_address` |
-| **bind to an interface** (`SO_BINDTODEVICE`) | Y\* | Y | — | Y | N | closed — `TcpOpts::bind_device`. `isahc` 2.0.1 has `interface(..)` taking a name, an address or `Any` (`src/config/mod.rs:393`, `src/net/interface.rs`), which is libcurl's `CURLOPT_INTERFACE` and covers both what ng splits into `bind_device` and `local_address`. Not `local_address` renamed: an address binds the *source address* and the kernel still routes by its table, where this binds the interface. Linux/Android/Fuchsia only, which is why `Tokio::APPLIES` stopped being `TcpOptsSupport::ALL`. See G11 |
-| TCP keepalive | Y\* | Y | — | Y | N | ng has `TcpOpts::keepalive` (one duration); rq has interval, retries and `TCP_USER_TIMEOUT` besides |
-| Unix domain socket transport | Y | N | N | **Y** | N | closed — `Native::unix_socket(path)`, curl's `--unix-socket` exactly. `isahc` 2.0.1 has it too and spells it as a *dialer*: `Dialer::unix_socket("/var/run/docker.sock")`, or the URI form `"unix:/path/to/my.sock".parse::<Dialer>()` (`src/net/dial.rs:41, :95`) — which is a nicer shape than a transport-wide setting for a caller who wants one request over a socket. **Not a sibling trait**, which is what this document expected: a second trait would have to produce `TcpConnect::Stream` anyway, so it is a defaulted method on that seam — `reports_alpn`'s shape. See G11 |
-| static host→address override (`--resolve`) | seam | Y | — | Y | N | rq: `resolve`/`resolve_to_addrs`; here it is a `Resolve` impl, which is more work and more general |
-| pluggable resolver | seam | Y | — | Y | N | rq: `dns_resolver`; ng: the `Resolve` trait, with three shipped backends |
-| Happy Eyeballs (RFC 8305) | Y | Y | — | Y | (browser's) | |
-| HTTPS/SVCB records consulted | **Y** | N | N | Y\* | (browser's) | asked in the same round as A/AAAA — measured, 404.6 ms → 0.8 ms |
-| Alt-Svc | **Y** | **N** | N | Y | (browser's) | with RFC 7838 `ma` as the cache lifetime. Zero matches for `alt_svc`/`alt-svc`/`AltSvc` in all of `reqwest-0.13.4/src/`, and `isahc` 2.0.1 says so about itself — its version-negotiation doc reads *"In the future, headers such as `Alt-Svc` will be used"* (`src/config/mod.rs:788`), which is a comparator naming its own absence |
-| DNS-over-HTTPS | Y | N | N | Y | N | `hclient-dns-doh`, 22 crates, no tokio/hyper/h2 |
-| choose h3 vs h1/h2 per origin | **Y** | N | N | N | (browser's) | `hclient-native`, from the HTTPS record, with a negative cache |
-| race the two stacks | **Y** | N | N | Y\* | (browser's) | off by default; `curl` has `--http3-only`/Happy-Eyeballs-for-h3 at the libcurl level |
+| capability | ng | rq | uq | cu | nq | br | note |
+|---|---|---|---|---|---|---|---|
+| connection pool | Y | Y | Y | Y | Y | (browser's) | ng: `PoolConfig { idle_timeout, max_idle_per_key }` |
+| per-request timing a caller can read | Y\* | N | N | **Y** | Y | N | **A row this document did not have, and `isahc` 2.0.1 is why it should.** Its `Metrics` gives `name_lookup_time`, `connect_time`, `secure_connect_time`, `transfer_start_time`, `transfer_time`, `total_time` and upload/download progress and speed (`src/metrics.rs:58-142`), behind one `metrics(true)` switch. ng has `ConnectTiming` on the `Connected` hook event with `dns`/`tcp`/`tls`/`total` and `Head::elapsed` — the same four phases, but through a `Hooks` impl rather than off the response, which is `Y*` rather than `Y`: a caller who wants one request's numbers must write a hook and correlate by `ConnectionId`. Neither reqwest nor ureq has either — **and nq has the shape isahc has rather than the shape this client has**, which is what makes `Y*` the honest cell here rather than pedantry. `response.conn_info` is a `ConnectionInfo` carrying `resolution_latency`, `established_latency`, `tls_handshake_latency`, `request_sent_latency`, `http_version`, `cipher`, `tls_version`, `destination_address` and **both peer and issuer certificates, parsed** (`urllib3_future/backend/_base.py:41-95`, read; and executed above). Reaching it is an attribute access on the response a caller already holds. Reaching the same four phases here means writing a `Hooks` impl and correlating by `ConnectionId`, because `Connected` is an *event about a connection* and a response is not where a connection's history lives. That is a real design difference and not obviously the wrong one — a pooled connection serves many responses, so hanging its handshake timings off one of them is a choice about which response gets them — but the caller who wants *this request's* numbers pays for it here and does not there |
+| a reaper that closes idle sockets | Y\* | Y | — | Y | Y\* | — | ng: `Native::with_reaper`, opt-in, bounded on `R: Spawn` |
+| `TCP_NODELAY` | Y | Y | — | Y | Y | N | |
+| local source address | Y | Y | — | Y | Y | N | `TcpOpts::local_address` |
+| **bind to an interface** (`SO_BINDTODEVICE`) | Y\* | Y | — | Y | seam | N | closed — `TcpOpts::bind_device`. `isahc` 2.0.1 has `interface(..)` taking a name, an address or `Any` (`src/config/mod.rs:393`, `src/net/interface.rs`), which is libcurl's `CURLOPT_INTERFACE` and covers both what ng splits into `bind_device` and `local_address`. Not `local_address` renamed: an address binds the *source address* and the kernel still routes by its table, where this binds the interface. Linux/Android/Fuchsia only, which is why `Tokio::APPLIES` stopped being `TcpOptsSupport::ALL`. See G11 |
+| TCP keepalive | Y | Y | — | Y | seam | N | **closed since this row said *one duration*** — `TcpOpts` has `keepalive`, `keepalive_interval`, `keepalive_retries` and `user_timeout`, which is rq's set exactly. Setting any of the three enables `SO_KEEPALIVE`, so a caller who sets only the interval has switched keepalive on with the OS's idle time; asserted, because it reads as a surprise otherwise. nq reaches it through urllib3's `socket_options`, i.e. by naming the constant. See G11 |
+| Unix domain socket transport | Y | N | N | **Y** | Y | N | closed — `Native::unix_socket(path)`, curl's `--unix-socket` exactly. `isahc` 2.0.1 has it too and spells it as a *dialer*: `Dialer::unix_socket("/var/run/docker.sock")`, or the URI form `"unix:/path/to/my.sock".parse::<Dialer>()` (`src/net/dial.rs:41, :95`) — which is a nicer shape than a transport-wide setting for a caller who wants one request over a socket. **Not a sibling trait**, which is what this document expected: a second trait would have to produce `TcpConnect::Stream` anyway, so it is a defaulted method on that seam — `reports_alpn`'s shape. See G11 |
+| static host→address override (`--resolve`) | Y | Y | — | Y | Y | N | **the `seam` this row used to say is closed**: `hclient_dns::Overrides<D>` (`overrides.rs:61`) answers from a table and hands the rest to `D`, so it composes over the system resolver, over DoH, over anything. Host-wide rather than curl's `host:port:addr`, because `Resolve` is asked for a name and a family and never sees a port. nq spells it as a resolver URL, `in-memory://` |
+| pluggable resolver | seam | Y | — | Y | Y | N | rq: `dns_resolver`; ng: the `Resolve` trait, with three shipped backends |
+| Happy Eyeballs (RFC 8305) | Y | Y | — | Y | Y\* | (browser's) | |
+| HTTPS/SVCB records consulted | **Y** | N | N | Y\* | Y | (browser's) | asked in the same round as A/AAAA — measured, 404.6 ms → 0.8 ms |
+| Alt-Svc | **Y** | **N** | N | Y | Y | (browser's) | with RFC 7838 `ma` as the cache lifetime. Zero matches for `alt_svc`/`alt-svc`/`AltSvc` in all of `reqwest-0.13.4/src/`, and `isahc` 2.0.1 says so about itself — its version-negotiation doc reads *"In the future, headers such as `Alt-Svc` will be used"* (`src/config/mod.rs:788`), which is a comparator naming its own absence. **nq's is the one that is reachable**, and that is G15: `session.quic_cache_layer` is a public `QuicSharedCache` with `add_domain(host)` and `exclude_domain(host)`, replaceable at construction through `Session(quic_cache_layer=..)`. Executed: `add_domain("cloudflare.com")` puts `('cloudflare.com', 443)` in the store, and `exclude_domain` writes an entry `__setitem__` then refuses to overwrite. Here `Native`'s `alt_svc` and `h3_failures` are **private fields with no accessor** — `network_changed()` clears both and is the only public entry point |
+| DNS-over-HTTPS | Y | N | N | Y | Y | N | `hclient-dns-doh`, 22 crates, no tokio/hyper/h2 — and what makes it a resolver rather than a client is that it is bootstrapped by which constructor compiles, `Doh::pinned` taking an IP literal and `Doh::bootstrapped` a name. **nq has four transports where this has one**: `ProtocolResolver` names `doh`, `dot`, `doq`, `dou`, plus `in-memory`, `null` and `custom` (`contrib/resolver/protocols.py:38-59`, read), reached as a URL — `Session(resolver="doh+cloudflare://")` — and a resolver may carry host patterns, so different names take different resolvers. Executed: `ResolverDescription.from_url` accepts `doh+google://`, `dot+google://`, `doq://`, `dou://`, `system://`, `in-memory://` and `null://` and answers the matching `ProtocolResolver`. DoT and DoQ are an open question here rather than a refusal — see §4.1 |
+| choose h3 vs h1/h2 per origin | **Y** | N | N | N | Y | (browser's) | `hclient-native`, from the HTTPS record — the *fast* tier, at resolution time — with a negative cache. nq chooses from the `Alt-Svc` cache alone, i.e. the slow tier: a first request to an unknown origin is never h3 unless the caller seeded the domain |
+| race the two stacks | **Y** | N | N | Y\* | N | (browser's) | off by default; `curl` has `--http3-only`/Happy-Eyeballs-for-h3 at the libcurl level |
 
 ### 2.5 TLS
 
-| capability | ng | rq | uq | cu | br | note |
-|---|---|---|---|---|---|---|
-| rustls backend | Y | Y | Y | — | n/a | |
-| platform TLS backend | Y | Y | Y | Y | n/a | `hclient-tls-native-tls` |
-| system trust store | Y | Y | Y | Y | n/a | `Rustls::with_platform_verifier` |
-| add a root, use only supplied roots, client certs, min version, disable verification | seam | Y | Y | Y | n/a | **`Rustls::from_config(Arc<rustls::ClientConfig>)`** (`hclient-tls-rustls/src/lib.rs:53`) makes every one of these expressible, at the cost of writing rustls directly instead of a named setter |
-| ALPN reported back | Y | Y | — | Y | n/a | `TlsConnect::reports_alpn`, and h2 is only offered over a backend that answers `true` |
-| 0-RTT / early data | **Y** | N | N | Y\* | n/a | admitted per request by `AllowEarlyData` and by nothing else |
-| ECH | N\* | N | N | Y\* | n/a | refused deliberately: no backend here applies one, so the record's `ech_config_list` is gated behind `TlsConnect::applies_ech` |
-| JA3/JA4 fingerprint control | **N** | N | N | N | n/a | refused by name in the design spec §9 — see §4 |
+| capability | ng | rq | uq | cu | nq | br | note |
+|---|---|---|---|---|---|---|---|
+| rustls backend | Y | Y | Y | — | Y (extra) | n/a | |
+| platform TLS backend | Y | Y | Y | Y | N | n/a | `hclient-tls-native-tls` |
+| system trust store | Y | Y | Y | Y | Y | n/a | `Rustls::with_platform_verifier` |
+| add a root, use only supplied roots, client certs, min version, disable verification | Y\*/seam | Y | Y | Y | Y | n/a | **`Rustls::from_config(Arc<rustls::ClientConfig>)`** (`lib.rs:53`) makes every one expressible, at the cost of writing rustls directly instead of a named setter — and **two of the five have stopped being only that**, which this row said for three verticals. Client certificates are `Rustls::with_identity(name, cfg)` plus `ClientIdentity` in the request's extensions, chosen **per request** and isolated by the pool key. Turning verification off is a constructor on each backend behind a `dangerous-insecure` feature — a feature rather than a plain method for auditability, since `cargo tree -f "{p} {f}"` then answers whether a build contains the path at all. nq does all five |
+| ALPN reported back | Y | Y | — | Y | Y | n/a | `TlsConnect::reports_alpn`, and h2 is only offered over a backend that answers `true` |
+| 0-RTT / early data | **Y** | N | N | Y\* | — | n/a | admitted per request by `AllowEarlyData` and by nothing else |
+| ECH | N\* | N | N | Y\* | Y (extra) | n/a | refused deliberately: no backend here applies one, so the record's `ech_config_list` is gated behind `TlsConnect::applies_ech`. **nq is the live counter-example and it built the same gate** — read: the `echconfig` (SvcParamKey 5) comes off the HTTPS record in `contrib/resolver/utils.py:242`, travels as `ech_config_list`, and is applied by `util/ssl_.py`'s `if ech_config_list and hasattr(context, "set_ech_configs")`. Verified that the guard is real: `hasattr(ssl.SSLContext, 'set_ech_configs')` is `False` on CPython 3.14, so a plain install carries the record to a backend that silently cannot use it and only `[rtls]`/`[utls]` applies one. That `hasattr` is `applies_ech` duck-typed — the same design, with the last link connected, and the reason the last link is not connected here is one crate below the seam |
+| JA3/JA4 fingerprint control | **N** | N | N | N | Y (extra) | n/a | refused by name in the design spec §9 — see §4, where the refusal now has a shape it did not have. **nq is the first comparator that can do it**, and its route is the one §4's second reason rules out for rustls rather than the one it rules out for us: a *second TLS stack*. `TLSConfiguration(backend="utls")` selects BoringSSL, and `urllib3-future`'s `contrib/anytls` resolves `rtls` (rustls + AWS-LC) → `utls` (BoringSSL) → stdlib `ssl` at import, so the fingerprint follows the backend rather than being configured on one |
 
 ### 2.6 Proxies
 
-| capability | ng | rq | uq | cu | br | note |
-|---|---|---|---|---|---|---|
-| HTTP `CONNECT` tunnel | Y | Y | Y | Y | (browser's) | |
-| absolute-form for `http://` | Y | Y | — | Y | — | |
-| SOCKS5 | Y | Y\* | Y\* | Y | — | rq behind `socks`; uq behind `socks-proxy` |
-| SOCKS4/4a | Y | Y | — | Y | — | closed — one type, since 4a is signalled inside a SOCKS4 request rather than negotiated. The hostname form always, so nothing is resolved locally. `isahc` 2.0.1 takes all four as proxy URI schemes — `socks4`, `socks4a`, `socks5`, `socks5h` (`src/config/mod.rs:471-474`) — which is libcurl's spelling and makes the remote-DNS choice a scheme rather than a decision. See G7 |
-| SOCKS remote DNS | **Y, always** | Y\* | — | Y | — | ng sends `ATYP=0x03 DOMAINNAME` unconditionally (`hclient-native/src/proxy.rs:534`, doc at `:425` — *"a name, never an…"*), so the leak is not reachable. rq picks from the **scheme**: `socks4`/`socks5` → `DnsResolve::Local`, `socks4a`/`socks5h` → `DnsResolve::Proxy` (`src/connect.rs:540-541`), so a `socks5://` URL leaks DNS by default |
-| read the proxy from the environment | **N** | Y | Y\* | Y | n/a | **refused as policy** — see §4 |
-| `NO_PROXY` matching | Y\* | Y | — | Y | n/a | ng: `Proxy::bypass([..])` takes a list the caller wrote; it does not read `NO_PROXY`, and has **no CIDR** deliberately, where `hyper-util` 0.1.20's matcher does |
-| a per-request/per-URL proxy rule | Y\* | Y | — | Y | n/a | closed for the per-scheme rule — an ordered list, `Proxy::only_for` and first-match-wins. No closure, and one proxy *protocol* per transport: erasing `P` would erase the IO with it. See G7 |
-| PAC | **N** | N | N | N | (browser's) | nobody in Rust has this |
-| system proxy (Windows registry, macOS SCF) | **N** | Y\* | Y\* | Y | (browser's) | rq behind `system-proxy`; uq behind `win-system-proxy` (Windows only) |
-| proxy for QUIC (MASQUE / `CONNECT-UDP`) | N | N | N | — | n/a | refused: a different protocol against a different server |
+| capability | ng | rq | uq | cu | nq | br | note |
+|---|---|---|---|---|---|---|---|
+| HTTP `CONNECT` tunnel | Y | Y | Y | Y | Y | (browser's) | |
+| absolute-form for `http://` | Y | Y | — | Y | — | — | |
+| SOCKS5 | Y | Y\* | Y\* | Y | Y (extra) | — | rq behind `socks`; uq behind `socks-proxy` |
+| SOCKS4/4a | Y | Y | — | Y | Y (extra) | — | closed — one type, since 4a is signalled inside a SOCKS4 request rather than negotiated. The hostname form always, so nothing is resolved locally. `isahc` 2.0.1 takes all four as proxy URI schemes — `socks4`, `socks4a`, `socks5`, `socks5h` (`src/config/mod.rs:471-474`) — which is libcurl's spelling and makes the remote-DNS choice a scheme rather than a decision. See G7 |
+| SOCKS remote DNS | **Y, always** | Y\* | — | Y | Y\* | — | ng sends `ATYP=0x03 DOMAINNAME` unconditionally (`hclient-native/src/proxy.rs:534`, doc at `:425` — *"a name, never an…"*), so the leak is not reachable. rq picks from the **scheme**: `socks4`/`socks5` → `DnsResolve::Local`, `socks4a`/`socks5h` → `DnsResolve::Proxy` (`src/connect.rs:540-541`), so a `socks5://` URL leaks DNS by default. **nq inherits the same scheme-driven choice** — `socks4`/`socks5` resolve locally, `socks4a`/`socks5h` at the proxy (`contrib/socks.py:10-13`) — with its own module recommending the `h`/`a` forms, i.e. a documented default that is the wrong one. That is three of four comparators leaking by default and one that structurally cannot |
+| read the proxy from the environment | **Y** | Y | Y\* | Y | Y | n/a | **this row said *refused as policy* and the refusal has been reversed**, which is the most consequential of the eleven stale cells in §0. `hclient-proxy`'s `system` feature reads `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`, `hclient`'s `system-proxy` feature is **in `default`**, and `Client::new()` therefore honours them — because a convenience constructor that ignored `HTTPS_PROXY` would be the one program on the machine that does. The rule survives one level down: `default_transport()` reads nothing, so the seam for *configuring* a transport stays free of ambient state, and the feature is spelled `hclient-native?/system-proxy` with the question mark, so a build without a transport pays no crate. `just graph-default-has-no-transport` asserts both directions |
+| `NO_PROXY` matching | Y\* | Y | — | Y | Y | n/a | ng: `Proxy::bypass([..])` takes a list the caller wrote; it does not read `NO_PROXY`, and has **no CIDR** deliberately, where `hyper-util` 0.1.20's matcher does |
+| a per-request/per-URL proxy rule | Y\* | Y | — | Y | Y | n/a | closed for the per-scheme rule — an ordered list, `Proxy::only_for` and first-match-wins. No closure, and one proxy *protocol* per transport: erasing `P` would erase the IO with it. See G7 |
+| PAC | **N\*** | N | N | N | N | (browser's) | nobody in Rust has this, and nobody in the comparison runs one: curl does not, reqwest does not (grepped, zero hits), and nq does not. Here the engine was **written, measured and withdrawn** — `viperjs` ran a real PAC file in 2 crates and 1,563 KiB — because the feature had no consumer and the script arrives from the network by WPAD. What stayed is the half that was missing: `SystemProxies::pac()` reports the URL, so a PAC machine is a named refusal pointing at `hclient-urlsession` instead of going *silently direct* |
+| system proxy (Windows registry, macOS SCF) | **Y** | Y\* | Y\* | Y | Y\* | (browser's) | also closed since this row was written — `Native::system_proxy()` (`lib.rs:1179`), over `windows-registry` and `system-configuration`, both of which expose safe APIs. Nothing on Linux, +4 crates on Windows, +6 on macOS, against `proxy_cfg`'s 28 with `url` and ICU among them. Everything ambiguous is a **named refusal** rather than a quiet narrowing — a PAC script, a SOCKS proxy beside an HTTP one, a bypass pattern the matcher cannot state exactly. rq behind `system-proxy`; uq behind `win-system-proxy` (Windows only); nq gets it from `urllib.request.getproxies()`, which reads the registry on Windows and SystemConfiguration on macOS |
+| proxy for QUIC (MASQUE / `CONNECT-UDP`) | N | N | N | — | N | n/a | refused: a different protocol against a different server |
 
 ### 2.7 Stateful client behaviour
 
-| capability | ng | rq | uq | cu | br | note |
-|---|---|---|---|---|---|---|
-| redirect limit | Y | Y | Y | Y | (browser's) | |
-| distinguish "do not follow" from "follow zero hops" | **Y** | Y | — | N | N | `RedirectPolicy::None` vs `Limited(0)` |
-| **custom redirect predicate** | Y | Y | — | N | N | closed — `ClientBuilder::redirect_predicate`, asked **after** the policy about a hop it already approved, so it is handed the resolved target and the origin answer that drives credential stripping. Three verdicts where `reqwest-0.13.4/src/redirect.rs:102` also has three. See G9 |
-| strip `Authorization` across origins | Y | Y | — | Y\* | (browser's) | ng also strips `AllowEarlyData` there |
-| cookie jar | Y\* | Y\* | Y\* | Y | (browser's) | |
-| **public-suffix rules in the jar** | **Y** | **N** | **N** | **Y\*, and a third answer** | (browser's) | the sharpest row in the table — see §5. ng compiles a list in (+77 KiB, measured). **Neither reqwest nor ureq rejects anything by default**, and both land there through `cookie_store` 0.22: reqwest's `Jar` is `#[derive(Default)] RwLock<cookie_store::CookieStore>` (`src/cookie.rs:30-31`) and `CookieStore`'s `Default`/`new()` leave `public_suffix_list: None` (`cookie_store-0.22.1/src/cookie_store.rs:40-48, :463, :467-473`); ureq builds its jar with `CookieStore::from_cookies(empty, true)` (`src/cookies.rs:177-180`), which sets the same `None` (`:460-464`), and takes `cookie_store` with `default-features = false` besides (`Cargo.toml:152-156`). Zero hits for `public_suffix` in `reqwest-0.13.4/src/`. `publicsuffix` 2.3.0 ships **no list at all**, only `LIST_URL` (`src/lib.rs:29`), so even a caller who wants one must fetch and refresh it. **`isahc` 2.0.1 does exactly that, and it is the third answer to this question rather than a fourth vote for one of the two above.** Behind its `psl` feature (not in `default`) it carries *both* a compiled-in list, through the `psl` crate, *and* a copy downloaded from `publicsuffix::LIST_URL` on a 24-hour TTL, refreshed on a background thread and falling back to the compiled-in one when the network fails (`src/cookies/psl.rs:33-137`). Its module doc gives the argument against this workspace's choice in as many words: *"HTTP clients tend to be used in a much different way and are often embedded into long-lived software without frequent (or any) updates, [so] it is better for us to download a fresh copy from the Internet every once in a while"* — and then answers itself, *"a stale list is better than no list at all"*. ng reaches the same end differently: the list is a seam (`CookieJar<P>`), and since G6 a caller can hand a fresher one through `Client`, so what isahc does by default is here a decision the caller makes and pays for |
-| **a pluggable cookie store** | Y | Y | — | Y\* | n/a | closed: `ClientBuilder::cookie_jar` takes `CookieJar<P>` for any list and erases it into `AnyList` — see §G6's entry and spec amendment C12. `reqwest…client.rs:1213` takes any `CookieStore`, which is a different seam: theirs is the storage, ours is the public suffix list, and this crate's jar *is* the storage |
-| RFC 9111 response cache | **Y** | N | N | N | (browser's) | `hclient`'s `cache` feature: freshness, validation, `Vary`, both sides' directives |
-| **a pluggable cache store** | Y | n/a | n/a | n/a | n/a | closed: `ClientBuilder::cache` takes `HttpCache<S>` for any store and erases it into `AnyStore`, so a disk-backed or shared store reaches `Client`. Erased rather than parameterised because `S` on the cache is `S` on the public `ClientBody` alias, and because both crates are optional dependencies — a defaulted parameter needs a default type that would not exist |
-| gzip | Y\* | Y\* | Y\* | Y | (browser's) | |
-| brotli | Y\* | Y\* | Y\* | Y | (browser's) | |
-| deflate | Y\* | Y\* | N | Y | (browser's) | **both wire formats under one token** — RFC 9110 §8.4.1.2's zlib and the raw stream its own Note records, chosen from the first two bytes rather than after a failure. No new crate: `flate2` was already here for `gzip` |
-| zstd | Y\* | Y\* | N | Y | (browser's) | `ruzstd`, a decoder-first pure-Rust crate. The window is capped at RFC 8878 §3.1.1.1.2's recommended 8 MB — `ruzstd`'s own default is 100 MB — and the frame's XXH64 content checksum is compared, which `ruzstd` reads and never checks |
-| request-body compression | **N** | N | N | Y | N | refused in the design spec §9 |
-| automatic retry | Y\* | N | Y\* | N | n/a | ng retries a `NotSent` pooled write and replays a `425` once; neither is a general retry policy |
+| capability | ng | rq | uq | cu | nq | br | note |
+|---|---|---|---|---|---|---|---|
+| redirect limit | Y | Y | Y | Y | Y | (browser's) | |
+| distinguish "do not follow" from "follow zero hops" | **Y** | Y | — | N | Y | N | `RedirectPolicy::None` vs `Limited(0)` |
+| **custom redirect predicate** | Y | Y | — | N | N | N | closed — **and the name in this cell no longer exists**, which is the sixth of §0's eleven. `RedirectPolicy` and `RedirectPredicate` were two things for one job; there is one trait now, `fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict`, with `Forbid`, `Limit`, `SameOriginOnly`, `HttpsOnly`, `FromFn`, `All` and `.and(..)`, set by `ClientBuilder::redirect`. The predicate is still asked about a hop the mechanism resolved, so it is handed the resolved target and the origin answer that drives credential stripping. Three verdicts where `reqwest-0.13.4/src/redirect.rs:102` also has three. nq has the requests inheritance — `allow_redirects` is a boolean and `max_redirects` a count, with no hook between them. See G9 |
+| strip `Authorization` across origins | Y | Y | — | Y\* | Y | (browser's) | ng also strips `AllowEarlyData` there |
+| cookie jar | Y\* | Y\* | Y\* | Y | Y | (browser's) | |
+| **public-suffix rules in the jar** | **Y** | **N** | **N** | **Y\*, and a third answer** | **N** | (browser's) | the sharpest row in the table — see §5. ng compiles a list in (+77 KiB, measured). **Neither reqwest nor ureq rejects anything by default**, and both land there through `cookie_store` 0.22: reqwest's `Jar` is `#[derive(Default)] RwLock<cookie_store::CookieStore>` (`src/cookie.rs:30-31`) and `CookieStore`'s `Default`/`new()` leave `public_suffix_list: None` (`cookie_store-0.22.1/src/cookie_store.rs:40-48, :463, :467-473`); ureq builds its jar with `CookieStore::from_cookies(empty, true)` (`src/cookies.rs:177-180`), which sets the same `None` (`:460-464`), and takes `cookie_store` with `default-features = false` besides (`Cargo.toml:152-156`). Zero hits for `public_suffix` in `reqwest-0.13.4/src/`. `publicsuffix` 2.3.0 ships **no list at all**, only `LIST_URL` (`src/lib.rs:29`), so even a caller who wants one must fetch and refresh it. **`isahc` 2.0.1 does exactly that, and it is the third answer to this question rather than a fourth vote for one of the two above.** Behind its `psl` feature (not in `default`) it carries *both* a compiled-in list, through the `psl` crate, *and* a copy downloaded from `publicsuffix::LIST_URL` on a 24-hour TTL, refreshed on a background thread and falling back to the compiled-in one when the network fails (`src/cookies/psl.rs:33-137`). Its module doc gives the argument against this workspace's choice in as many words: *"HTTP clients tend to be used in a much different way and are often embedded into long-lived software without frequent (or any) updates, [so] it is better for us to download a fresh copy from the Internet every once in a while"* — and then answers itself, *"a stale list is better than no list at all"*. ng reaches the same end differently: the list is a seam (`CookieJar<P>`), and since G6 a caller can hand a fresher one through `Client`, so what isahc does by default is here a decision the caller makes and pays for. **nq is a fourth vote for `N` and the only one that was *executed* rather than read**: its jar is `http.cookiejar.CookieJar` under a `CookiePolicyLocalhostBypass`, and Python's `DefaultCookiePolicy` has no public suffix list at all (checked: no attribute of it names one). Run against `shop.example.co.uk`, `set_ok_domain` for a cookie scoped to `.co.uk` answers **`True`**; the controls separate, since `.com` from `a.b.com` answers `False` — the stdlib's two-dot Netscape heuristic, which `co.uk` walks straight past. Four clients, four different routes to the same hole |
+| **a pluggable cookie store** | Y | Y | — | Y\* | Y | n/a | closed: `ClientBuilder::cookie_jar` takes `CookieJar<P>` for any list and erases it into `AnyList` — see §G6's entry and spec amendment C12. `reqwest…client.rs:1213` takes any `CookieStore`, which is a different seam: theirs is the storage, ours is the public suffix list, and this crate's jar *is* the storage |
+| RFC 9111 response cache | **Y** | N | N | N | N | (browser's) | `hclient`'s `cache` feature: freshness, validation, `Vary`, both sides' directives |
+| **a pluggable cache store** | Y | n/a | n/a | n/a | n/a | n/a | closed: `ClientBuilder::cache` takes `HttpCache<S>` for any store and erases it into `AnyStore`, so a disk-backed or shared store reaches `Client`. Erased rather than parameterised because `S` on the cache is `S` on the public `ClientBody` alias, and because both crates are optional dependencies — a defaulted parameter needs a default type that would not exist |
+| gzip | Y\* | Y\* | Y\* | Y | Y | (browser's) | |
+| brotli | Y\* | Y\* | Y\* | Y | Y (extra) | (browser's) | |
+| deflate | Y\* | Y\* | N | Y | Y | (browser's) | **both wire formats under one token** — RFC 9110 §8.4.1.2's zlib and the raw stream its own Note records, chosen from the first two bytes rather than after a failure. No new crate: `flate2` was already here for `gzip` |
+| zstd | Y\* | Y\* | N | Y | Y (extra) | (browser's) | `ruzstd`, a decoder-first pure-Rust crate. The window is capped at RFC 8878 §3.1.1.1.2's recommended 8 MB — `ruzstd`'s own default is 100 MB — and the frame's XXH64 content checksum is compared, which `ruzstd` reads and never checks |
+| request-body compression | **N** | N | N | Y | N | N | refused in the design spec §9 |
+| automatic retry | **Y** | N | Y\* | N | Y | n/a | this cell said *"neither is a general retry policy"* and there is one: `ClientBuilder::retry(timer, policy)` (`client.rs:217`) over a `RetryPolicy` trait in `hclient-proto`, with `Standard`, `SafeMethodsOnly`, `Never`, `RetryAll`, `RetryFromFn` and `.and(..)`. **The signature takes a clock because the alternative hangs** — without `default-transport`, `DefaultClock` is `NoClock`, whose `Sleep` is `std::future::Pending`, so the version that used the client's own timer compiled everywhere and waited for ever at the first backoff. nq's is urllib3's `Retry`, whose `allowed_methods` defaults to the same safe-and-idempotent set `SafeMethodsOnly` names, with `status_forcelist`, `backoff_jitter` and `respect_retry_after_header`; it is off by default (`retries=0`) as this one is. **What it cannot have is the distinction this one is built on**: a policy above the transport cannot tell a request that never left from one a server acted on, and `Error::is_unsent()` is a claim a transport makes at a site where it knows |
 
 ### 2.8 Targets, runtimes, shape
 
-| capability | ng | rq | uq | cu | br |
-|---|---|---|---|---|---|
-| native async | Y | Y | N | Y (isahc) | n/a |
-| **blocking API** | **N** | Y\* | Y | Y | n/a |
-| runs on a single-threaded / `!Send` executor | **Y** | N | n/a | N | n/a |
-| tokio-free build | Y\* | N | Y | Y | Y |
-| browser (`wasm32-unknown-unknown`) | Y | Y\* | N | N | Y |
-| WASI (`wasm32-wasip2`) | Y | **N** (executed) | Y (executed) | N | n/a |
-| Apple `URLSession` | **Y** | N | N | N | n/a |
-| embassy / `embedded-nal`-shaped runtime | Y\* | N | N | N | n/a |
-| `no_std` | N | N | N | N | N |
-| published on crates.io | **N** | Y | Y | Y | Y |
-| a type-erased client (`Box<dyn …>`) | N\* | Y | Y | Y | Y |
+| capability | ng | rq | uq | cu | nq | br |
+|---|---|---|---|---|---|---|
+| native async | Y | Y | N | Y (isahc) | Y | n/a |
+| **blocking API** | **N** | Y\* | Y | Y | Y | n/a |
+| runs on a single-threaded / `!Send` executor | **Y** | N | n/a | N | n/a | n/a |
+| tokio-free build | Y\* | N | Y | Y | n/a | Y |
+| browser (`wasm32-unknown-unknown`) | Y | Y\* | N | N | Y\* | Y |
+| WASI (`wasm32-wasip2`) | Y | **N** (executed) | Y (executed) | N | Y\* | n/a |
+| Apple `URLSession` | **Y** | N | N | N | N | n/a |
+| embassy / `embedded-nal`-shaped runtime | Y\* | N | N | N | N | n/a |
+| `no_std` | N | N | N | N | n/a | N |
+| published on crates.io | **Y\*** | Y | Y | Y | Y | Y |
+| a type-erased client (`Box<dyn …>`) | **Y** | Y | Y | Y | n/a | Y |
+
+Three cells in that table need their footnote, and one of them was wrong for
+as long as this document has existed. **`published on crates.io` and
+`a type-erased client` both said `N` while §3 G1 and §3 G13 recorded them
+closed, at length, two screens below** — `0.1.0-alpha.2` is on crates.io and
+`hclient::Client` names no type parameters. A summary contradicting its own
+table is the failure mode this document is otherwise built to avoid, and it
+is recorded rather than quietly repaired.
+
+**nq's two wasm cells are `Y*` for opposite reasons and neither target is
+ours.** Its browser story is Pyodide — `wasm32-unknown-emscripten`, an
+interpreter compiled to wasm, where `Response.conn_info` is documented as
+unset — not `wasm32-unknown-unknown`, where a Rust `fetch` backend runs. Its
+WASI story is the closer one and it is genuinely close: `niquests/extensions/
+wasi/_capabilities.py` probes for `wasi:http` **0.2 and 0.3** bindings *and*
+for `wasi:sockets`, and falls back between them — so it covers both the route
+`hclient-wasi` takes and the route ureq takes, in one package, chosen at
+import. Nothing here was executed under a WASI host, so this is `read` and
+not `executed`; what can be said is that the WIT-level design question this
+document opened in §1 — host HTTP against guest sockets — is one somebody
+else has answered by taking both.
 
 ### 2.9 Observability
 
-| capability | ng | rq | uq | cu | br |
-|---|---|---|---|---|---|
-| connection-level events (`Connected`/`Reused`/`Closed`) | **Y** | N | — | Y (`CURLINFO_*`) | N |
-| response-head event | Y | N | — | Y | N |
-| `1xx` event | **Y** | N | — | — | N |
-| per-phase connect timings (dns / tcp / tls) | **Y** | N | — | Y | N |
-| upload/download progress callback | N | N | — | Y | N |
-| a capability an over-claiming backend cannot fake | **Y** | n/a | n/a | n/a | n/a |
-| middleware / interception | Y\* | N | **Y** | — | N |
+| capability | ng | rq | uq | cu | nq | br |
+|---|---|---|---|---|---|---|
+| connection-level events (`Connected`/`Reused`/`Closed`) | **Y** | N | — | Y (`CURLINFO_*`) | Y\* | N |
+| response-head event | Y | N | — | Y | Y | N |
+| `1xx` event | **Y** | N | — | — | Y | N |
+| per-phase connect timings (dns / tcp / tls) | **Y** | N | — | Y | Y | N |
+| upload/download progress callback | N | N | — | Y | Y\* | N |
+| a capability an over-claiming backend cannot fake | **Y** | n/a | n/a | n/a | N | n/a |
+| middleware / interception | Y\* | N | **Y** | — | Y | N |
 
 On the last row: ureq ships `Middleware` in the crate
 (`src/middleware.rs:16`, bounded `Send + Sync + 'static`); reqwest does not
@@ -298,6 +419,34 @@ to be told its capabilities as an argument, *"because a `Service` has none,
 and this adapter must not invent them"* — the capability rule applied to a
 foreign ecosystem. The costs are an `Arc`, an uncached `poll_ready` per
 call, and a boxed future that is `!Send` until return type notation lands.
+nq's `LifeCycleHook`/`AsyncLifeCycleHook` is the same idea with the events
+named on the type — `pre_request`, `pre_send`, `early_response`, `response`,
+`on_upload` — and it is what its rate limiters are built on
+(`LeakyBucketLimiter`, `TokenBucketLimiter`), which is a shape nothing here
+ships and nothing here forbids: it is `tower`'s territory through
+`hclient-tower`, unwritten rather than refused.
+
+**The one row where the `nq` column is the weaker one is the one this whole
+project is about.** *A capability an over-claiming backend cannot fake* is
+`N` for niquests in the strong sense — not that it lies, but that there is
+no place where it could be caught. Its backends are chosen at import by
+`hasattr` probes (`hasattr(context, "set_ech_configs")` decides ECH,
+`_HAS_NATIVE_SOCKET_SUPPORT` decides the WASI route), which is duck typing
+doing the work `Capabilities` does here — and duck typing answers *does this
+object have that method*, never *and will it honour the setting*. The ECH
+row in §2.5 is that difference made concrete: a plain install carries a
+`ech_config_list` to a backend that cannot use it and says nothing, where
+this workspace's version of the same omission is a `TlsConnect::applies_ech`
+that defaults to the understating value and a connector that does not fill
+the field. Both end with no ECH; only one of them can be asked about it.
+
+**`upload/download progress` is `Y*` for nq and `N` here, and the asymmetry
+inside that cell is the interesting half.** Its `on_upload` hook fires per
+transmitted block and `PreparedRequest.upload_progress` carries percentage,
+content length and completion — but there is no matching *download* callback,
+because a streamed response is already a loop the caller writes. That is
+exactly the shape a progress feature would take here too: the download half
+is `poll_frame`, and the upload half has no event at all. See G17.
 
 ---
 
@@ -307,6 +456,15 @@ Ranked by how often an ordinary caller meets them, not by how hard they are.
 Each says what it would take **here**, which of this workspace's stated rules
 it has to respect, and — where it applies — which rule forbids it outright,
 because a feature refused by a written rule is a better answer than a patch.
+
+**The numbering is chronological and the ranking is not**, which is worth
+one sentence because eleven of the seventeen are now closed and a reader
+skimming for what is live will otherwise read G1 as the top of a list. The
+order the entries were *written* in is G1..G13 from the first reading and
+G14..G17 from the niquests one; the order that matters today is **G14, G15,
+G16, G17**, then G3, which is refused, and G1, which is the owner's. G14 is
+first because it is the only one whose absence costs a caller a hang rather
+than a feature.
 
 ### G1. ~~Nothing is published~~ — **closed, as a pre-release**
 
@@ -323,9 +481,11 @@ six public surfaces, and `0.1.0` would have frozen twenty-nine of them at
 the moment they were last seen moving. `--version 0.1.0-alpha.2` is the
 incantation, and both READMEs carry it.
 
-So the gap this section should now rank first is **not** publication: it is
-G3, the one remaining row where a whole class of caller cannot use this
-library at all.
+So the gap this section should rank first is **not** publication. This
+paragraph then said it was G3 — the blocking API, refused by the problem
+statement — and a refusal is not a ranking either. It is **G14**: the
+default timeout, which is the only entry on this list that is neither
+closed nor refused nor somebody else's call.
 
 ### G2. No `User-Agent`, and no client-wide default headers — **closed**
 
@@ -829,6 +989,189 @@ wants a `tower::Service`.
 
 ---
 
+### G14. There is no default timeout anywhere, and that is not written down as a decision
+
+**Measured, at `fabc7cb`.** `hclient_core::Timeouts` derives `Default`
+(`caps.rs:333`), so `resolve`, `connect`, `first_byte` and `between_bytes`
+are all `None`; `hclient::Config` derives `Default` (`config.rs:24`), so
+`total` is `None`. Nothing in the workspace sets any of the five. A caller
+who writes the two lines this project's front page opens with gets a client
+that **can wait for ever**, on a resolver that hangs, a connect that never
+answers, a head that never arrives, or a body that stops mid-stream.
+
+niquests is the sharp contrast because it made the opposite choice
+explicitly and by method: `READ_DEFAULT_TIMEOUT = 30` for `GET`, `HEAD` and
+`OPTIONS` and `WRITE_DEFAULT_TIMEOUT = 120` for `DELETE`, `PUT`, `PATCH` and
+`POST` (`niquests/_constant.py`, read), each named in the signature of the
+verb it applies to. The split is an argument rather than a number: a read is
+a thing you retry and an upload is a thing you do not want cut in half.
+
+**This is the one row in the document where the absence is not obviously
+defensible**, and the reason to rank it first is that every other gap here
+costs a caller a feature while this one costs them a hang. The two
+arguments *for* the current state are real and neither is quite enough:
+
+- **A library that picks a number picks it for its embedder**, which is the
+  same argument that keeps `User-Agent` unset (G2) and is the right shape.
+  But a `User-Agent` left unset costs nothing, and a timeout left unset
+  costs the caller the one failure mode they cannot recover from without
+  restarting the process. The two are not the same kind of default.
+- **`Timeouts` is in `hclient-core` and is read by transports out of the
+  request's extensions**, so a default there would be a default for
+  `wasi:http` and `fetch` too — and both of those already collapse the
+  model differently (`fetch` into one `AbortController`, `wasi:http` into
+  three fields with nothing for resolution). A default that cannot be
+  honoured is the *capability that lies* defect one layer down.
+
+**The second argument is the one that says where a default belongs, and
+it points at exactly one field.** It is not `Timeouts` — `TimeoutSupport`
+has a bool per field and a transport that cannot honour one makes `build()`
+refuse, so a default there is a default that some backend rejects. It is
+`Config::total`, which `check_supported` deliberately does **not** gate,
+and the comment beside it says why: *"no transport enforces a whole-
+operation bound … so there is no capability to check it against. What it
+needs instead — a clock — is guaranteed by the client's type"*
+(`config.rs:335-340`, read). `total` is the one bound this client enforces
+entirely by itself, in `Deadline`, needing nothing from any backend — and
+since `Client::new()` exists only where `DefaultTransport` does, the clock
+it needs is present by construction at exactly the constructor where a
+default would go.
+
+So the shape is narrow: a `total` on `Client::new()` **alone** — not on
+`ClientBuilder`, not on `Timeouts`, not on any transport — which leaves
+`Client::builder(t).build()` untouched for the caller who is configuring
+deliberately, and leaves the seam free of a number nobody at that layer
+could have chosen. That is `system-proxy`'s resolution one field over: the
+convenience constructor behaves the way a program on a machine is expected
+to behave, and the seam stays ambient-free.
+
+What is **not** proposed is a number. Picking one is the owner's, and the
+comparators do not agree: niquests 30/120 by method; ureq nine separable
+bounds and — read, because it was worth checking rather than assuming from
+the count — `timeout_global` *"Defaults to `None`"* like the other eight,
+so ureq is in the same position this client is; reqwest none; curl none.
+**So the majority is on this client's side and the majority is not the
+argument** — niquests is one client out of five and it is the one whose
+default a caller cannot be surprised by, because it is printed in the
+signature of every verb. What this entry
+asserts is only that the current state is an *accident* rather than a
+decision — grep finds no sentence anywhere in this workspace saying "no
+default timeout, and here is why" — and this project's own standard is that
+an absence with a reason is a decision and an absence without one is a gap.
+
+### G15. The Alt-Svc cache and the HTTP/3 failure memory cannot be seeded, excluded or replaced
+
+`Native`'s `alt_svc: AltSvcCache` and `h3_failures: H3Failures` are
+**private fields with no accessor** (`hclient-native/src/lib.rs:516, :524`,
+read). Both types are `pub` and both carry `note`, so the machinery is
+public and the instance is not; `Native::network_changed()` is the only
+public entry point and it *clears*. So a caller cannot say *this origin
+speaks h3, do not spend a round trip finding out*, cannot say *never try
+h3 here*, and cannot hand in a cache shared between transports or
+persisted across a run.
+
+niquests has all three, and it is one attribute: `session.quic_cache_layer`
+is a `QuicSharedCache` with `add_domain(host, port=None)` and
+`exclude_domain(..)`, and `Session(quic_cache_layer=..)` replaces it
+wholesale. Executed — `add_domain("cloudflare.com")` leaves
+`{('cloudflare.com', 443): ('cloudflare.com', 443)}` in the store, and
+`__setitem__` consults an exclusion store before writing, so an excluded
+domain can never be learned either (`niquests/structures.py:263-296`, read
+and run). Its bound is 12,288 entries.
+
+**Two of the three are cheap and the third is the one to think about.**
+Seeding and excluding are a pair of methods on `Native` forwarding to the
+`note`/`suppressed` that already exist. Replacing the cache is not: it
+would put a type parameter or a `dyn` on `Native` for a value that is
+consulted on the connect path, and this workspace has a written position on
+what a `dyn` declaring no auto traits costs. The seeding half is also the
+half with a real use — a caller who *knows* their origin speaks h3 pays one
+h2 round trip per process today for a fact they could have stated.
+
+**The scope rule is the thing not to lose.** `network_changed()` exists
+because RFC 7838 §2.2 conditions its own SHOULD on network state being
+knowable, and it is not knowable to a `Transport`. A seeded entry is a
+different fact from a learned one — the caller asserted it, and a network
+change does not make the caller wrong — so a seed that `network_changed()`
+clears and a seed that survives are two features, and shipping the wrong
+one silently is how a laptop that moved networks keeps dialling UDP into a
+wall. niquests does not answer this; its cache has no notion of a network
+change at all.
+
+### G16. WebSocket is HTTP/1 only
+
+`hclient_native::Upgrading` holds an `http1::Connection`
+(`upgrade.rs:139-145`, read) and nothing else, so `hclient-tungstenite`
+frames a socket that was upgraded by a `101`. RFC 8441's extended CONNECT —
+`:protocol: websocket` on an h2 or h3 stream — is not expressible, and on
+h3 the workspace has the parts: `hclient-webtransport` already sends an
+extended CONNECT over `hclient-h3`, which is the same mechanism with a
+different `:protocol` value.
+
+niquests does all three from one call
+(`contrib/webextensions/ws.py:100-104`, `:292`, read): the h2/h3 arm sets
+`:protocol` and `:method: CONNECT` where the h1 arm sends the `Upgrade`
+head, and `Response.extension` is the same object either way.
+
+**What this costs is a multiplexing property, not a feature.** A WebSocket
+over h1 owns its TCP connection for its whole life; over h2 or h3 it is one
+stream beside ordinary requests. A caller holding a socket open to an
+origin they are also making requests of pays a second connection here and
+does not there — and on h3 that is a second QUIC handshake, which is the
+expensive kind.
+
+**The blocker is which seam it lands on rather than the framing.** The
+`WebSocketConnect`/`WebSocket` pair is protocol-agnostic already — that is
+what let the browser implement it unchanged — and `Tungstenite` borrows a
+`Native` because it needs the *upgraded byte stream*, which is an h1 idea.
+An h2 arm would borrow a stream pair instead, and `hclient-h3`'s
+WebTransport work is the evidence that the h3 arm is reachable; what
+neither has is a place for `tungstenite`'s framing to sit that is not the
+h1 upgrade. That is a design question, not a missing method.
+
+### G17. Six pieces of ordinary furniture, and the sixth is a type
+
+The class G6 and G10 belonged to, found the same way: by reading a peer's
+surface rather than by using this one. Each is small, each is genuinely
+absent at `fabc7cb`, and they are ranked together because none of them is
+worth a section of its own.
+
+| what | nq's spelling | here |
+|---|---|---|
+| **`.netrc`** | automatic; `~/.netrc`, `~/_netrc`, `$NETRC` (`utils.py:196-207`) | nothing — grepped the workspace, the only hit is this document |
+| **`Link:` header** | `response.links['next']['url']` (`models.py:1577`) | nothing on `Response`; a parser is being written in `hclient-proto` in the working tree as this is filed, which is not the same thing until something on `Response` reads it |
+| **a `lines()` adapter over a body** | `iter_lines()`, sync and async | nothing; `hclient_proto::sse` has a line decoder and it is SSE's, not a body's |
+| **certificate fingerprint pinning** | `verify="sha256_<hex>"` (`adapters.py:571-573`) | nothing; expressible through `Rustls::from_config` with a custom verifier, which is the *seam* answer and a long way from one string |
+| **upload progress** | the `on_upload` hook plus `PreparedRequest.upload_progress` | no event exists; `Event` has `Connected`, `Reused`, `Closed`, `Head` and `Informational`, all of which are about a connection or a head |
+
+**The one that is a type rather than a method is `local_address`.** It is
+`Option<IpAddr>` (`hclient-rt/src/caps.rs:101`) where niquests'
+`source_address` is `tuple[str, int]` — an address *and a port*. Binding a
+source port is what a caller behind a firewall rule keyed on one needs, and
+it is not reachable through `TcpOpts` at any price, because the field
+cannot carry it. The escape hatch is the usual one and it is a large one:
+`TcpConnect` is a public trait, so a caller who needs a source port writes
+a runtime. That is the difference between a seam and a setter, and it is
+the wrong side of it for a two-line change.
+Widening it to `SocketAddr` is a breaking change to a public struct that is
+deliberately not `#[non_exhaustive]`, which is exactly the class of change
+this workspace has been spending freely and stops being able to spend at
+`0.1.0`. So this one is cheap *now* and expensive later, which is the only
+reason it is on a ranked list at all.
+
+**Two of the six have a rule that would refuse them and four do not.**
+`.netrc` is *reading the environment*, and §4 records that as policy
+belonging to whoever builds the transport — except that the rule was
+reversed for proxies this week, and the reversal's argument (a
+convenience constructor that ignores what every other program on the
+machine honours is the odd one out) transfers verbatim. Fingerprint
+pinning is a verification decision, and this workspace has a written
+position that the way to reach one is `from_config`. `Link:`, `iter_lines`,
+upload progress and the source port are absences with nothing written
+against them.
+
+---
+
 ## 4. What is refused, and by which rule
 
 These are **not** gaps. Each is a decision already recorded, with the rule
@@ -840,10 +1183,10 @@ this document could fail.
 | ~~`deflate` and `zstd` decoding~~ | **reversed, and the row is kept because the reversal is the interesting part.** The `deflate` rule — *a client must not advertise a coding it may guess wrong about* — assumed the guess had to be made after a failure, as curl's is; it is answered from the first two bytes, which is a rule with no window. The `zstd` rule was *a third dependency for a coding no server sends unasked*, and the answer is that both premises were checked rather than argued: `deflate` costs **no** crate at all, and `zstd` costs two | `hclient/src/decompress.rs` |
 | `compress`/`x-compress` | RFC 9110 §8.4.1.1's LZW: no decoder here, so it is never advertised and never matched | `hclient/src/decompress.rs` |
 | request-body compression | server support is inconsistent; a clean manual path instead | design spec §9 |
-| reading `HTTP_PROXY`/`NO_PROXY` from the environment | reading the environment is *policy* and belongs to whoever builds the transport; a list the caller wrote is not policy | AGENTS.md, proxy section |
+| ~~reading `HTTP_PROXY`/`NO_PROXY` from the environment~~ | **reversed, and kept for the same reason the `deflate` row is.** The rule — *reading the environment is policy and belongs to whoever builds the transport* — was true of the seam and wrong about the audience: it left `Client::new()` as the one program on the machine that ignores `HTTPS_PROXY`. The resolution keeps both halves rather than picking one — the *constructor* reads (`system-proxy`, in `default`), the *transport seam* (`default_transport()`) still reads nothing — and the shape that made it affordable is `hclient-native?/system-proxy`, the weak form, so a build with no transport pays no crate | AGENTS.md, proxy section |
 | a proxy for QUIC | `CONNECT-UDP` (RFC 9298) is a different protocol against a different server, not this feature with a wider bound |
 | a blocking API | out of scope by the problem statement | design spec §9 |
-| JA3/JA4/Akamai fingerprint control | rustls closed it *not planned*; `http::HeaderMap` lowercases names, so browser header casing is unreproducible anyway | design spec §9 |
+| JA3/JA4/Akamai fingerprint control | rustls closed it *not planned*; `http::HeaderMap` lowercases names, so browser header casing is unreproducible anyway. **The first half is now an open question rather than a closed one**, because niquests answered it without asking rustls: it ships a *second TLS stack* (`utls`, BoringSSL) selected at import, so the fingerprint is a property of the backend. That route is open here too — `TlsConnect` is a seam and a third backend beside `hclient-tls-rustls` and `hclient-tls-native-tls` would need no change above it. The second half is unchanged and is the harder one: header **order and casing** are as much of a fingerprint as the ClientHello, and `http::HeaderMap` gives up both, which is the same foreign-type constraint that keeps this workspace on `std` | design spec §9 |
 | `no_std` / bare metal | `http` 1.x carries `compile_error!` for it; not this project's to reverse | AGENTS.md |
 | `Ping`/`Pong` as WebSocket message variants | a browser has neither `send(ping)` nor `onping`; the variant would have no honest right-hand side | `hclient-core/src/unversioned/websocket.rs:35` |
 | permessage-deflate, subprotocol checking | left open; the browser negotiates extensions itself and exposes no control | same file, `:46` |
@@ -855,6 +1198,77 @@ this document could fail.
 | h2 multiplexing by default | without `Spawn` nobody drives a shared connection but the in-flight futures |
 | more than one session per WebTransport connection — **no longer refused** | built; the recorded blocker (`PoolKey`) turned out not to be the true one | AGENTS.md |
 | WebTransport `GOAWAY` | a measured impossibility in `h3` 0.0.8: two `GOAWAY`s saying opposite things look identical to a client | AGENTS.md |
+
+---
+
+### 4.1 Three things niquests has that are neither gaps nor refusals
+
+The classification this document uses has two boxes and the niquests
+comparison needed a third. A **gap** is something to do; a **refusal** is
+something decided against with a rule. These three are neither: each is a
+capability whose price is a dependency or a provider this workspace has
+already declined **for a reason written down somewhere else**, so the
+decision exists but was never made about *this* feature. Naming them as
+gaps would be wrong and leaving them out would be a comparison that only
+lists what is convenient.
+
+**Post-quantum key exchange — a cost not paid, and the bill is already
+itemised.** niquests offers X25519MLKEM768 on its QUIC path by default;
+read in `qh3` 1.9.4, whose `quic/configuration.py:123` says *"By default
+only X25519MLKEM768 + X25519 key shares are offered"*, with the exchange
+implemented in `tls.py`. Here it is not a decision about post-quantum at
+all — it is a fact about the crypto provider. Measured in rustls 0.23.43:
+`src/crypto/aws_lc_rs/` exports `X25519MLKEM768`, `SECP256R1MLKEM768`,
+`MLKEM768` and `MLKEM1024`; `src/crypto/ring/kx.rs` declares exactly three
+groups, `X25519`, `SECP256R1` and `SECP384R1`, and **zero** hits for
+`MLKEM` anywhere under `src/crypto/ring/`. So reaching it means adding
+`aws-lc-rs`, and the reason not to is written in this workspace already —
+in `hclient-tls-rustls`'s ECH refusal, which names the identical blocker
+for the identical reason: *"Honouring ECH begins with adding `aws-lc-rs`: a
+C toolchain in the build, on every target this crate claims."* One provider
+swap buys ECH and post-quantum together, and costs a C toolchain on the
+wasm and embedded targets this seam exists to reach. That is the trade;
+it has not been taken and it has not been refused either.
+
+**Revocation checking — a decision, and the industry moved under the
+question.** niquests verifies OCSP by default and reports it on every
+response (`ocsp_verified: True` in §1's execution), with a
+`RevocationConfiguration(strategy=PREFER_OCSP|PREFER_CRL|CHECK_ALL)` to
+change it. Listing OCSP as something this client lacks would be wrong, and
+the evidence is not an opinion here: Let's Encrypt removed OCSP URLs from
+its certificates on **7 May 2025** and turned off its responders on
+**6 August 2025**, citing privacy — *"CAs immediately become aware of which
+website is being visited from that visitor's particular IP address"* — and
+naming CRLs as the replacement; Chromium's own CRLSets page states that
+*"Online (i.e. OCSP and CRL) checks are not generally performed by
+Chrome."* Both fetched rather than recalled. niquests itself is the
+strongest witness: its `3.15.0` release added CRL *because* of Let's
+Encrypt's withdrawal, so the comparator's own history is the argument for
+not copying its default. What this leaves open is not OCSP but **revocation
+at all**, and the honest statement of where that stands here is narrow:
+nothing in this workspace performs any revocation check of its own —
+grepped, zero hits for `with_crls` or `CertRevocationList` — while rustls
+0.23 offers `WebPkiServerVerifier::with_crls` and a platform verifier
+delegates to an OS that may do its own. CRL and Certificate Transparency
+are being designed separately and are out of this document's scope; the
+row that would have been *"OCSP: N"* is deleted rather than answered.
+
+**DNS over TLS and DNS over QUIC — an open question, and this is what it
+would cost.** niquests names four transports on one seam
+(`ProtocolResolver`: `doh`, `dot`, `doq`, `dou`), reached as a URL and
+selectable per host pattern. Here `Resolve` is the same seam and carries
+three implementations, none of which is DoT or DoQ. Two things are worth
+knowing before anyone rules on it. The **codec is already shared** — SVCB
+and wire-format parsing moved up into `hclient-dns` behind a `codec`
+feature precisely so an `IpLiteralOnly` build carries no decoder — so a
+fourth backend reuses the half that took the work. And the **bootstrap
+question they raise is the one `hclient-dns-doh` already answered**:
+`Doh::pinned` takes an IP literal and refuses a name, `Doh::bootstrapped`
+takes a name and refuses a literal, and failing closed is visible in the
+type. What a DoQ backend adds that DoH did not is a QUIC endpoint on the
+resolver's side of a client that already has one for HTTP/3 — which is
+either a reason it is nearly free or a reason it drags `quinn` into every
+graph that resolves a name, and nobody has measured which.
 
 ---
 
@@ -920,22 +1334,34 @@ is that a capability reports the **floor**, and `Native::http3` is where
 that rule bites hardest: five of six disagreeing fields take the weaker
 value and the rest make the call **refuse, naming the field**.
 
-**Per-request timeouts, four of them, with distinct meanings.**
+**Per-request timeouts, five of them, with distinct meanings** — this
+paragraph said *four* and was written before G11a landed. `resolve` /
 `connect` / `first_byte` / `between_bytes` in `Timeouts` plus `total` on the
 client, settable per request (`RequestBuilder::timeouts`), and each measured
 against a server that misbehaves in exactly that way
 (`crates/hclient-native/tests/timeouts.rs`, `crates/hclient/tests/deadline.rs`).
 reqwest has `timeout`, `read_timeout`, `connect_timeout` and
 `pool_idle_timeout` on the **client** and one `timeout` per request.
+niquests has **three** and they are urllib3's — `Timeout(total, connect,
+read)`, where `read` is a per-socket-operation bound rather than a bound on
+the exchange, which its own quickstart says in as many words: *"A scalar
+`timeout` applies to socket connection and read operations; it is not a
+wall-clock limit on the entire response download."* So `total` there means
+something narrower than `total` here.
+
+**And the count is the wrong axis, which G14 is about**: five separable
+bounds all defaulting to `None` is a worse answer for the caller who wrote
+two lines than three bounds with a number on them.
 
 **ureq beats this on count and it is worth conceding rather than dressing
 up**: nine distinct bounds — `timeout_global`, `timeout_per_call`,
 `timeout_resolve`, `timeout_connect`, `timeout_send_request`,
 `timeout_await_100`, `timeout_send_body`, `timeout_recv_response`,
-`timeout_recv_body` (`src/config.rs:669-745`). The three this client does
-not have are `resolve`, `send_request` and `send_body`, and the first of
-those is the one a caller notices, since a slow resolver currently spends
-`connect`'s budget without being separable from it. Blocking IO is what
+`timeout_recv_body` (`src/config.rs:669-745`). **The three this paragraph
+listed as missing are two**: `resolve` landed with G11a, and what remains is
+`send_request` and `send_body` — neither of which is the one a caller
+notices, which was the argument for ranking `resolve` first and is now
+spent. Blocking IO is what
 makes nine cheap there and four expensive here — each bound here has to be
 a race or a body wrapper carrying a `Timer::Sleep`, and the `Expect` work
 showed what a fifth costs (a wrapper around
@@ -1071,6 +1497,71 @@ do this. The claim has one honest qualifier: `Client::execute` requires
 transport with an honestly `!Send` error is representable at the seam and
 cannot be used with `Client`.
 
+### 5.1 Against niquests specifically, because it is the one that has most of the rest
+
+Six of the rows above are answered by niquests and are not claims against
+it: it has HTTP/3, SSE, WebSocket, a resolver seam, per-phase timings and a
+`wasi:http` backend. So the reverse column against the *closest* peer is
+shorter than the general one and is worth stating separately rather than
+letting the long list imply more than it should.
+
+**A capability model, and it is the one thing on this list that is
+structural rather than a feature.** §2.9 has the argument; the short form is
+that niquests decides what a backend can do with `hasattr`, so the question
+*will this setting be honoured* has no place to be asked. The ECH row is the
+demonstration and it is not hypothetical: on a plain install a record's
+`ech_config_list` is fetched, carried and dropped, silently, because the
+active TLS backend has no `set_ech_configs`. Here the identical omission is
+a defaulted-`false` constant that a connector reads before it fills the
+field. Both do nothing; only one can say so.
+
+**WebTransport, `Expect: 100-continue`, request trailers, an RFC 9111
+cache, a response body size limit, and public-suffix rules in the jar.**
+Each was checked against the installed package rather than assumed: zero
+hits for `webtransport`/`masque`/`connect-udp`; no `Expect` emission; a
+`trailers` attribute on the response and none on the request; no
+`Cache-Control` freshness logic anywhere in `niquests/`; no body ceiling
+(`enforce_content_length` is a `Content-Length` agreement check, not a
+limit); and the executed cookie probe in §2.7.
+
+**A retry that knows whether the request left.** niquests' retry is
+urllib3's `Retry`, which is a good one — the same safe-method default this
+workspace arrived at independently — and it sits above the transport, so
+*never sent* and *sent and the server acted on it* are the same event to
+it. `Error::is_unsent()` is a claim made at the site that knows, and it is
+the difference between a retry that is safe by construction and one that is
+safe by convention. This is the row where being in Rust is irrelevant and
+being *below* the transport is the whole thing.
+
+**A pluggable cache store, and a cache at all.** niquests has neither, which
+is unusual for a client this complete and is probably the same reason as
+here-before-v0.4: a cache needs a store, a store needs a lifetime, and
+nobody wants to pick one for somebody else.
+
+**One `Transport` seam that five backends implement, with the same source
+compiling for three targets.** This is the row where niquests is the closest
+of any comparator and still different in kind. It genuinely has three
+backends — native, Pyodide, WASI — and its WASI half probes for
+`wasi:http` 0.2, `wasi:http` 0.3 *and* `wasi:sockets`, which is more ground
+than `hclient-wasi` covers. But they are selected by `sys.platform` and
+import-time probes inside one package, not by a trait a third party can
+implement: there is a `BaseAdapter` a caller can subclass and mount, and it
+is an *adapter over urllib3*, not a seam the client is written against. The
+practical difference is the one §5 opened with — `crates/hclient/examples/
+portable.rs` compiles unchanged for three targets and a CI job fails if that
+stops being true, and the equivalent question does not arise in a language
+where the same source always compiles.
+
+**What niquests has that nothing here does, said plainly, because a reverse
+column that only flatters is not evidence.** Its HTTP/3 needs no flag and
+no call (§1). Its Alt-Svc memory is seedable (G15). Its WebSocket runs on
+all three protocols (G16). Its timings come off the response rather than
+through a hook (§2.4). It has a second TLS stack for fingerprint control
+(§2.5), four DNS transports (§2.4), `.netrc`, `Link:`, `iter_lines`,
+fingerprint pinning and upload progress (G17) — and a default timeout
+(G14). That is a longer list than this document has had to write about any
+comparator, and it is the reason the column was added.
+
 ---
 
 ## 6. Against the project's own goal
@@ -1138,6 +1629,17 @@ Happy Eyeballs interleaves resolution with connecting on purpose, so
 bound is time-to-first-address rather than a phase boundary. The furniture
 is on; what remains is either somebody else's decision or a design
 question.
+
+**And then a second reader arrived and the shape changed again, which is
+the finding's own point being made about itself.** G14 through G17 came out
+of reading niquests, and they are the same class as G2, G5 and G10 — cheap,
+invisible from inside, found only by looking at what somebody else thought
+worth having. The paragraph above says *the furniture is on*; four more
+pieces of it turned out to be missing the moment a fifth comparator was
+opened, and one of them (G14) is not furniture at all. So the sentence to
+keep is not *the furniture is on* but the one this section already makes:
+**this document cannot be written twice by the same reader**, and the
+evidence for that is now two readings apart rather than one.
 
 **Four of the seven changed a rule rather than adding a feature**, which
 is the return a fresh reader buys that a test suite cannot. G5 established
@@ -1237,6 +1739,30 @@ sets `Accept-Encoding` keeps it exactly (`grpc-yardstick.md` row 20).
   fail.
 - **No security review was attempted.** G10 is named as a gap, not as a
   finding.
+- **niquests was executed but never against a misbehaving server.** Every
+  `nq` cell rests on reading the installed package, on `inspect` against
+  live objects, or — for the four claims marked *executed* — on running it
+  against a real origin or a real object. What was **not** done is what
+  makes the `ng` column trustworthy: no fixture, no server that answers
+  wrongly on purpose, no mutation. So a row saying niquests *has* a feature
+  means the code path exists and, where marked, ran; it does not mean the
+  feature is correct. The `full duplex`, `streaming multipart`,
+  `absolute-form`, `0-RTT` and `header size limits` cells are `—` for that
+  reason rather than `N`.
+- **Only two of niquests' three TLS backends were exercised, and the two
+  that matter most were not.** The venv resolved to stdlib `ssl`
+  (`urllib3_future.contrib.anytls.BACKEND == 'ssl'`, executed), so every
+  claim about `rtls` (rustls + AWS-LC) and `utls` (BoringSSL) — the ECH
+  application, the fingerprint control, the post-quantum path on the *TCP*
+  side — is read from the dispatch code and from the extras table, not run.
+  The QUIC path's post-quantum default is read in `qh3`, which *was*
+  installed and did serve the HTTP/3 requests in §1.
+- **niquests' docs and its source disagreed nowhere, and that was checked
+  rather than assumed.** Every claim below that cites a doc page was also
+  found in the installed package, which is the discipline §0 states for
+  Rust comparators applied to a Python one. The one place the docs say more
+  than the code could be made to show is the index page's `DNSSEC!` bullet,
+  for which no mechanism was located in either — so no row claims it.
 
 ---
 
@@ -1293,12 +1819,14 @@ correction, not the section.
 
 ---
 
-## 9. The summary, in four sentences
+## 9. The summary, in five sentences
 
-The strongest thing this client lacks against its comparators is **being
-published**; after that, the ordinary ergonomics a second real consumer
-would have found — a `User-Agent`, default headers, a response body size
-limit, a store the caller can supply.
+The strongest thing this client lacks against its comparators is **a
+default timeout** — G14, and the sentence that used to stand here said
+*being published*, which stopped being true at `0.1.0-alpha.2`; after that,
+the ordinary ergonomics a fresh reader finds and a test suite cannot, which
+this document has now produced twice over from two different comparators
+and has no reason to think it has stopped producing.
 
 The strongest thing it has and they do not is **one `Transport` seam that
 five backends implement and three targets compile the same source against,
@@ -1309,12 +1837,26 @@ quarantine of the same name — and its `Transport` is a byte stream bounded
 `Send + Sync + 'static`, which no ambient backend and no single-threaded one
 can implement.
 
-The most surprising single fact found while writing this is that **neither
-reqwest's nor ureq's default cookie jar applies public-suffix rules**, so
-this workspace's compiled-in list is not a nicety but the only such check
-among the clients compared.
+The most surprising single fact found while writing this is that **no
+comparator's default cookie jar applies public-suffix rules** — reqwest's
+and ureq's by reading `cookie_store`, niquests' by *running* it, where a
+cookie scoped to `.co.uk` set by `shop.example.co.uk` is accepted — so this
+workspace's compiled-in list is not a nicety but the only such check among
+four clients that otherwise agree about almost everything.
+
+The closest peer is **niquests**, and it is close enough that the
+interesting differences are all about *where a decision lives*: it reaches
+HTTP/3 with no flag and this one needs a feature and a constructor, it
+seeds its Alt-Svc memory through a public attribute and this one keeps
+that memory private, it decides what a backend can do with `hasattr` and
+this one refuses at `build()` — and only the last of those three is a
+difference this document would defend.
 
 And the sentence this document would most like a reader to take away is the
-one it had to correct about itself: an earlier draft asserted ureq installed
-that list, on plausibility alone, and reading `src/cookies.rs:172-180` is
-what stopped it becoming a claim.
+one it had to correct about itself, twice. An earlier draft asserted ureq
+installed that list, on plausibility alone, and reading
+`src/cookies.rs:172-180` is what stopped it becoming a claim. Then the
+matrix went on saying `N` for *published* and *type-erased client* while §3
+said `closed` two screens below, for as long as nobody re-read a row they
+were not arguing about — which is this workspace's rule about checks,
+turned on the document that keeps stating it.
