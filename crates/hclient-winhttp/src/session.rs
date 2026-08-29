@@ -295,8 +295,20 @@ fn split_uri(uri: &http::Uri) -> Result<(bool, String, u16, String), Error> {
     let Some(host) = uri.host() else {
         return refuse(format!("`{uri}` has no host for WinHttpConnect to name"));
     };
-    // `Uri::host` keeps the brackets off an IPv6 literal, which is what
-    // `WinHttpConnect` wants — it takes a host, not an authority.
+    // **`Uri::host` keeps the brackets ON an IPv6 literal**, and this
+    // comment said the opposite for as long as it has existed — measured:
+    // `"http://[::1]:8080/".parse::<Uri>().host()` is `Some("[::1]")`.
+    // `WinHttpConnect` takes a host and not an authority, so the brackets
+    // are RFC 3986 §3.2.2's URI syntax and must not reach it; with them,
+    // every request to an IPv6 literal names a server that does not exist.
+    //
+    // Caught by this module's own unit test, which asserted the intended
+    // behaviour and could not run anywhere but Windows — where, until this
+    // week, the workspace did not compile at all.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
     let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
     let target = uri
         .path_and_query()

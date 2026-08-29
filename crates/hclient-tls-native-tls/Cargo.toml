@@ -33,18 +33,34 @@ native-tls       = { version = "0.2", features = ["alpn"] }
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 
-# For `tests/insecure.rs` only, and the server side of it runs on
-# `native-tls` itself rather than on rustls: this crate's whole reason to
-# exist is the platform stack, so a fixture built on the other backend
-# would be testing the pair rather than this one. `rcgen` mints the
-# self-signed certificate the test needs a client to refuse.
+# For `tests/insecure.rs` only. **The server side runs on rustls, and it
+# ran on `native-tls` until the two other platforms' CI jobs said what
+# that cost.** The argument for the old fixture was that this crate exists
+# for the platform stack, so a peer built on the other backend tests the
+# pair — but the *client* is the subject and a peer is a peer, and
+# `native_tls::Identity::from_pkcs8` is an OpenSSL-shaped constructor:
+# SChannel answers `ASN1 bad tag value met` for the same PEM pair and
+# Security.framework answers `Unknown format in import` (-25257).
+#
+# So the fixture would not start on Windows or macOS — the two platforms
+# where this test's own long comment says the distinction it pins is
+# visible, since only the OpenSSL backend collapses the hostname flag into
+# the certificate one. A test that runs nowhere but the host that cannot
+# discriminate is the worst of both.
+#
+# `rcgen` mints the self-signed certificate the test needs a client to
+# refuse; `ring` and no `aws-lc-rs`, matching `hclient-tls-rustls`, so a
+# workspace build resolves one provider.
 #
 # These reach no published graph — a dev-dependency is stripped from the
 # packaged manifest's normal section — and carry a `version` so that a
 # downloaded `.crate` can still run its own tests, which is the reason
 # `docs/publishing.md` gives for the three extra publish waves.
 rcgen            = "0.14"
-tokio            = { version = "1", features = ["macros", "net", "rt", "time"] }
+rustls           = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pki-types = "1.15"
+tokio-rustls     = { version = "0.26", default-features = false, features = ["ring"] }
+tokio            = { version = "1", features = ["macros", "net", "rt", "time", "io-util"] }
 hclient-rt       = { path = "../hclient-rt",       version = "0.1.0-alpha.1" }
 hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.1" }
 

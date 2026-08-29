@@ -19,36 +19,51 @@ use std::time::Duration;
 
 const OP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A self-signed TLS server on `native-tls` itself. The client side is
-/// what this crate ships, so building the server on the other backend
-/// would put rustls in the loop and test the pair.
+/// A self-signed TLS server, on **rustls**.
+///
+/// The peer is not the subject — this crate's client is — and building
+/// the peer here on `native-tls` cost the test its two most valuable
+/// platforms: `Identity::from_pkcs8` is an OpenSSL-shaped constructor
+/// that SChannel and Security.framework both refuse. The manifest carries
+/// the measurement.
 fn spawn_tls_server() -> SocketAddr {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let identity = native_tls::Identity::from_pkcs8(
-        cert.cert.pem().as_bytes(),
-        cert.signing_key.serialize_pem().as_bytes(),
-    )
-    .unwrap();
-    let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
+    let cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.cert.der().to_vec().into()],
+            rustls_pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into()),
+        )
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(cfg));
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
     std::thread::spawn(move || {
-        // Blocking, in its own thread: the handshake is all this fixture
-        // owes, and a client that completed one has proved the point.
-        for tcp in listener.incoming().flatten() {
-            let acceptor = acceptor.clone();
-            std::thread::spawn(move || {
-                // A refused handshake is an expected outcome here — it is
-                // what the control arm produces — so the error is dropped
-                // rather than unwrapped.
-                if let Ok(mut tls) = acceptor.accept(tcp) {
-                    use std::io::Read as _;
-                    let mut sink = [0u8; 64];
-                    let _ = tls.read(&mut sink);
-                }
-            });
-        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    continue;
+                };
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    // A refused handshake is an expected outcome here — it
+                    // is what the control arm produces — so the error is
+                    // dropped rather than unwrapped.
+                    if let Ok(mut tls) = acceptor.accept(tcp).await {
+                        use tokio::io::AsyncReadExt as _;
+                        let mut sink = [0u8; 64];
+                        let _ = tls.read(&mut sink).await;
+                    }
+                });
+            }
+        });
     });
     addr
 }

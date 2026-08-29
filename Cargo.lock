@@ -1666,7 +1666,10 @@ dependencies = [
  "hyper",
  "native-tls",
  "rcgen",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
