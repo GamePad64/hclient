@@ -56,6 +56,40 @@
 //! error: a flow that never says [`AuthStep::Done`] would otherwise be an
 //! infinite exchange against a server that keeps challenging.
 
+//! # What does not need a scheme, and the one thing this cannot do
+//!
+//! **Basic does not.** [`crate::RequestBuilder::basic_auth`] sets one
+//! header and there is no challenge to answer; wrapping that in an `Arc`
+//! and a per-hop flow would buy nothing. What the seam *does* make
+//! expressible, and was not before, is Basic that waits to be
+//! challenged — curl's `--anyauth` — which matters because sending it
+//! pre-emptively hands the password to whatever is at that URL. Fifteen
+//! lines here, and not shipped, because shipping it would be
+//! speculation.
+//!
+//! **OAuth 2 does not either, and the ecosystem has already settled
+//! that.** The token exchange belongs to `oauth2` (11,633,197 downloads a
+//! month), `yup-oauth2` (4,774,159) or `openidconnect` (3,870,380);
+//! sending the result is [`crate::RequestBuilder::bearer_auth`]. There is
+//! no `reqwest-oauth2` on crates.io, and the reason is not that it is
+//! impossible — it is that nobody needs one.
+//!
+//! **What this seam cannot do is refresh a token from inside a flow.**
+//! [`AuthFlow::on_response`] is synchronous, so a flow cannot await an
+//! HTTP request of its own on a `401`. httpx supports that
+//! (`async_auth_flow`), so the want is real; here it would cost a boxed
+//! future in the seam — auto traits lost, amendment C1's tax — paid by
+//! every caller, for a case the practical pattern avoids: both `oauth2`
+//! and `yup-oauth2` hand out a token with an expiry and are refreshed
+//! **by that expiry before the request**, not in reaction to the answer.
+//! `yup-oauth2::Authenticator::token()` is awaited by the caller and its
+//! result passed in.
+//!
+//! So the cost of the absence is one loop in a caller's code, and the
+//! cost of the presence would be `Client::execute`'s future — a property
+//! this workspace spent the erasure work recovering. Stated here rather
+//! than discovered later.
+
 /// The most attempts one hop's authentication may take.
 ///
 /// Digest needs two — the challenge and the answer. NTLM and Negotiate
