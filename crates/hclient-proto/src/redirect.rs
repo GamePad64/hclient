@@ -9,43 +9,390 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
     http::header::PROXY_AUTHORIZATION,
 ];
 
-/// Whether, and how far, to follow a redirect chain.
-///
-/// Two different intents, kept apart deliberately: [`Self::None`] returns
-/// the 3xx to the caller, [`Self::Limited`] follows and errors on
-/// exceeding. `reqwest` draws the same line as `Policy::none()` versus
-/// `Policy::limited(0)`.
-///
-/// A `struct { limit: u8 }` cannot express the first intent: a consumer's
-/// `follow_redirects: false` forwards the 302 upward, where `limit: 0`
-/// turns that answer into an error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RedirectPolicy {
-    /// Do not follow. A 3xx reaches the caller as an ordinary response, its
-    /// `Location` header intact, for the caller to inspect or forward.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Allow {
+    /// Keep the method a 301, 302 or 303 would otherwise rewrite to `GET`.
     ///
-    /// This is what `wasi-fetch`'s `redirect_limit(0)` did
-    /// (`request.rs:135`: `if redirect_limit > 0 && status.is_redirection()`
-    /// skips the whole redirect branch), and what the live consumer
-    /// `act/components/http-client` means by `follow_redirects: false`. It
-    /// was inexpressible here until this type became an enum.
-    None,
-    /// Follow up to this many hops; exceeding it is `TooManyRedirects`.
+    /// curl's `--post301`/`--post302`/`--post303`. **Which** method
+    /// results is not a policy's to say — RFC 9110 §15.4's table has one
+    /// home, in [`decide`] — so this only says *do not rewrite*.
+    pub preserve_method: bool,
+    /// Let `Authorization` and other credentials survive a hop that
+    /// crosses an origin.
     ///
-    /// `Limited(0)` therefore means "follow zero hops" — the first 3xx with
-    /// a `Location` is an error. That is deliberately NOT the same as
-    /// [`RedirectPolicy::None`], and the distinction is the entire reason
-    /// this is an enum: folding the two into a single `limit: 0` put a
-    /// discontinuity inside one field, where `0` returned the response and
-    /// `1` errored on exceeding. `reqwest` keeps them apart the same way,
-    /// as `Policy::none()` and `Policy::limited(0)`.
-    Limited(u8),
+    /// curl's `--location-trusted`, and the sharpest edge in any redirect
+    /// implementation: this is how a bearer token reaches a redirect's
+    /// target. Granted per hop rather than per client, so a policy can
+    /// trust one destination without trusting every future one.
+    pub keep_credentials: bool,
 }
 
-impl Default for RedirectPolicy {
-    /// Ten hops, matching what the struct form defaulted to.
+impl Allow {
+    /// Both grants, for a policy that wants curl's `--location-trusted`
+    /// and `--post30x` together. Named rather than spelled out, because a
+    /// struct literal of two `true`s reads as a default and is the
+    /// opposite of one.
+    #[must_use]
+    pub const fn everything() -> Self {
+        Self {
+            preserve_method: true,
+            keep_credentials: true,
+        }
+    }
+
+    /// Field-wise `AND`: a grant survives only if both policies gave it.
+    #[must_use]
+    pub const fn and(self, other: Self) -> Self {
+        Self {
+            preserve_method: self.preserve_method && other.preserve_method,
+            keep_credentials: self.keep_credentials && other.keep_credentials,
+        }
+    }
+}
+
+/// What a policy says about one hop.
+///
+/// The three arms are ordered `Follow < Stop < Refuse`, and combining two
+/// verdicts takes the **more conservative**: any `Refuse` wins, then any
+/// `Stop`, and two `Follow`s meet their [`Allow`]s. That is the one rule
+/// a reader has to learn about composition, and it holds for every field
+/// of every policy.
+///
+/// **`Stop` and `Refuse` are the distinction the old `RedirectPolicy`
+/// enum existed for.** `Stop` hands the `3xx` back as an ordinary
+/// response, `Location` intact — what `Forbid` meant.
+/// `Refuse` is an error — what `Limited(0)` meant. Folding them would put
+/// a discontinuity inside one value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedirectVerdict {
+    /// Follow it, granting these relaxations and no others.
+    Follow(Allow),
+    /// Do not follow. The `3xx` is the caller's answer.
+    Stop,
+    /// Do not follow, and make it an error naming this reason.
+    ///
+    /// A `&'static str` rather than a `String` so the verdict stays
+    /// `Copy`, which is what lets the lattice operations be `const` and
+    /// allocation-free. A policy needing a computed message can carry it
+    /// in its own state and return a borrow of a leaked literal, or use
+    /// [`RedirectVerdict::Stop`] and let the caller read the `3xx`.
+    Refuse(&'static str),
+}
+
+impl RedirectVerdict {
+    /// Follow with no relaxations — the common answer, spelled once.
+    #[must_use]
+    pub const fn follow() -> Self {
+        Self::Follow(Allow {
+            preserve_method: false,
+            keep_credentials: false,
+        })
+    }
+
+    /// The more conservative of two verdicts.
+    ///
+    /// Order is unobservable, which is what separates this from a
+    /// middleware chain: composing policies is a meet on a lattice, not
+    /// function composition.
+    #[must_use]
+    pub const fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Refuse(r), _) => Self::Refuse(r),
+            (_, Self::Refuse(r)) => Self::Refuse(r),
+            (Self::Stop, _) | (_, Self::Stop) => Self::Stop,
+            (Self::Follow(a), Self::Follow(b)) => Self::Follow(a.and(b)),
+        }
+    }
+}
+
+/// A hop [`decide`] has worked out and is about to take, offered to the
+/// policy.
+///
+/// **Everything here is `decide`'s *output*, never its input**, which is
+/// what keeps a policy from computing any of it a second time: a policy
+/// refusing cross-origin hops and the client stripping `Authorization`
+/// read the same `cross_origin`, so they cannot disagree about what an
+/// origin is.
+#[derive(Debug, Clone, Copy)]
+pub struct ProposedRedirect<'a> {
+    from: &'a Uri,
+    to: &'a Uri,
+    status: StatusCode,
+    method: &'a Method,
+    cross_origin: bool,
+    hops: u8,
+    previous: &'a [Uri],
+}
+
+impl<'a> ProposedRedirect<'a> {
+    /// Builds one.
+    ///
+    /// **Public because policies are written by callers**, and a seam
+    /// whose implementations live outside this workspace needs a way to
+    /// drive them in a unit test. The alternative is what `Response` was
+    /// found to be: a type with no constructor, which reads as a wall and
+    /// sends people to a network they did not need.
+    ///
+    /// `decide` is the only thing that builds one in anger, and what it
+    /// passes is its own output — see the type's own doc for why nothing
+    /// here should be recomputed by a policy.
+    #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "seven facts about one hop, each named"
+    )]
+    pub fn new(
+        from: &'a Uri,
+        to: &'a Uri,
+        status: StatusCode,
+        method: &'a Method,
+        cross_origin: bool,
+        hops: u8,
+        previous: &'a [Uri],
+    ) -> Self {
+        Self {
+            from,
+            to,
+            status,
+            method,
+            cross_origin,
+            hops,
+            previous,
+        }
+    }
+
+    /// The URI that answered with the `3xx`.
+    #[must_use]
+    pub fn from(&self) -> &'a Uri {
+        self.from
+    }
+    /// Where the hop would go — absolute, with a relative `Location`
+    /// already resolved against [`Self::from`].
+    #[must_use]
+    pub fn to(&self) -> &'a Uri {
+        self.to
+    }
+    /// The `3xx` that proposed it.
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+    /// The method the hop would carry **before** any rewrite this
+    /// policy's [`Allow::preserve_method`] might prevent.
+    #[must_use]
+    pub fn method(&self) -> &'a Method {
+        self.method
+    }
+    /// Whether the hop crosses an origin — scheme, host or port.
+    ///
+    /// Computed once, here, and handed over rather than recomputed.
+    #[must_use]
+    pub fn cross_origin(&self) -> bool {
+        self.cross_origin
+    }
+    /// Hops already taken, so the first proposal reports `0`.
+    #[must_use]
+    pub fn hops(&self) -> u8 {
+        self.hops
+    }
+    /// Every URI already visited in this chain, oldest first — for a
+    /// policy that detects loops.
+    #[must_use]
+    pub fn previous(&self) -> &'a [Uri] {
+        self.previous
+    }
+}
+
+/// Whether to follow a redirect, and what to relax if so.
+///
+/// **One method, and everything else is mechanism.** Resolving a relative
+/// `Location`, the RFC 9110 §15.4 method table, deciding what an origin
+/// is — those stay in [`decide`], because a client that let them be
+/// overridden would be letting a policy move the target, and getting them
+/// wrong is an open redirect rather than a surprise.
+///
+/// Compose with [`and`](RedirectPolicyExt::and); the combined policy answers
+/// with the more conservative of the two verdicts.
+pub trait RedirectPolicy: core::fmt::Debug {
+    /// Whether to take this hop.
+    ///
+    /// Defaulted to *yes, with nothing relaxed*, so an implementation
+    /// states only what it has an opinion about.
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        let _ = hop;
+        RedirectVerdict::follow()
+    }
+}
+
+/// A reference is a policy, so `&Limit::new(10)` composes like the value.
+impl<T: RedirectPolicy + ?Sized> RedirectPolicy for &T {
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        (**self).follow(hop)
+    }
+}
+
+/// So is a `Box`, which is what makes [`All`]'s elements ordinary
+/// policies rather than a special case.
+impl<T: RedirectPolicy + ?Sized> RedirectPolicy for std::boxed::Box<T> {
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        (**self).follow(hop)
+    }
+}
+
+/// And an `Arc` — the shape a client stores one in, so the stored form is
+/// usable everywhere the trait is rather than needing a `&*` at each site.
+impl<T: RedirectPolicy + ?Sized> RedirectPolicy for std::sync::Arc<T> {
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        (**self).follow(hop)
+    }
+}
+
+/// [`and`](RedirectPolicyExt::and), kept off the trait so the trait stays
+/// object-safe.
+pub trait RedirectPolicyExt: RedirectPolicy + Sized {
+    /// Both policies must agree; the more conservative answer wins.
+    #[must_use]
+    fn and<B: RedirectPolicy>(self, other: B) -> And<Self, B> {
+        And(self, other)
+    }
+}
+
+impl<T: RedirectPolicy + Sized> RedirectPolicyExt for T {}
+
+/// Two policies, both of which must permit. See [`RedirectPolicyExt::and`].
+#[derive(Debug, Clone, Copy)]
+pub struct And<A, B>(pub A, pub B);
+
+impl<A: RedirectPolicy, B: RedirectPolicy> RedirectPolicy for And<A, B> {
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        let first = self.0.follow(hop);
+        // Short-circuits at the top of the lattice and nowhere else: a
+        // `Refuse` cannot be raised further, where a `Stop` can.
+        if let RedirectVerdict::Refuse(_) = first {
+            return first;
+        }
+        first.and(self.1.follow(hop))
+    }
+}
+
+/// Never follow. The `3xx` is handed back as an ordinary response.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Forbid;
+
+impl RedirectPolicy for Forbid {
+    fn follow(&self, _: &ProposedRedirect<'_>) -> RedirectVerdict {
+        RedirectVerdict::Stop
+    }
+}
+
+/// Follow at most `n` hops; the next one is an error.
+///
+/// `Limit::new(0)` refuses the first redirect, which is deliberately not
+/// [`Forbid`]: one is an error, the other is an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limit(pub u8);
+
+impl Limit {
+    #[must_use]
+    pub const fn new(n: u8) -> Self {
+        Self(n)
+    }
+}
+
+impl Default for Limit {
+    /// Ten, which is what this crate has always defaulted to.
     fn default() -> Self {
-        Self::Limited(10)
+        Self(10)
+    }
+}
+
+impl RedirectPolicy for Limit {
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        if hop.hops() >= self.0 {
+            RedirectVerdict::Refuse("redirect limit reached")
+        } else {
+            RedirectVerdict::follow()
+        }
+    }
+}
+
+/// Refuse any hop that leaves the origin — scheme, host or port.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SameOriginOnly;
+
+impl RedirectPolicy for SameOriginOnly {
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        if hop.cross_origin() {
+            RedirectVerdict::Refuse("redirect leaves the origin")
+        } else {
+            RedirectVerdict::follow()
+        }
+    }
+}
+
+/// Refuse a hop that downgrades `https` to anything else.
+///
+/// curl's `--proto-redir`, and it needs no method of its own: the scheme
+/// is on the proposal, so this is an ordinary policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HttpsOnly;
+
+impl RedirectPolicy for HttpsOnly {
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        if hop.from().scheme_str() == Some("https") && hop.to().scheme_str() != Some("https") {
+            RedirectVerdict::Refuse("redirect downgrades https")
+        } else {
+            RedirectVerdict::follow()
+        }
+    }
+}
+
+/// Every policy in a list must permit, for a chain built at run time.
+///
+/// [`and`](RedirectPolicyExt::and) composes at the type level and costs
+/// nothing; this is for the case that cannot — a list read from a config
+/// file, where the length is not known when the code is written. Same
+/// reason `hclient-native` keeps its proxies in a `Vec` rather than a
+/// tuple.
+///
+/// An empty list permits everything, which is what a meet over nothing
+/// means and is worth knowing before reading one out of a file.
+#[derive(Debug, Default)]
+pub struct All(pub Vec<Box<dyn RedirectPolicy + Send + Sync>>); // send-bound-exception: amendment-C12
+
+impl RedirectPolicy for All {
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        let mut verdict = RedirectVerdict::follow();
+        for policy in &self.0 {
+            verdict = verdict.and(policy.follow(hop));
+            if let RedirectVerdict::Refuse(_) = verdict {
+                return verdict;
+            }
+        }
+        verdict
+    }
+}
+
+/// A closure as a policy — what the separate redirect predicate used to
+/// be, now one implementation among the rest.
+#[derive(Clone, Copy)]
+pub struct FromFn<F>(pub F);
+
+/// A closure has no `Debug`, and [`RedirectPolicy`] requires one so that a
+/// client can print the policy it holds. Same trade the separate redirect
+/// predicate already made.
+impl<F> core::fmt::Debug for FromFn<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FromFn(..)")
+    }
+}
+
+impl<F> RedirectPolicy for FromFn<F>
+where
+    F: Fn(&ProposedRedirect<'_>) -> RedirectVerdict,
+{
+    fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+        (self.0)(hop)
     }
 }
 
@@ -70,7 +417,16 @@ pub enum RedirectAction {
     /// Not a redirect, or a redirect with no `Location` — return the response as-is.
     Stop,
     Follow(Follow),
-    TooManyRedirects,
+    /// A policy refused, naming why — a limit, an origin, a caller's own
+    /// rule. One variant where there used to be `TooManyRedirects` alone,
+    /// because with a policy trait "too many" is one refusal among
+    /// several and the reason is what a caller needs. `to` is carried
+    /// because the refusal is about a resolved target, and an error that
+    /// named only a reason would leave a caller unable to say which hop.
+    Refused {
+        why: &'static str,
+        to: Uri,
+    },
     InvalidLocation,
 }
 
@@ -92,39 +448,21 @@ fn port_of(uri: &Uri) -> Option<u16> {
 }
 
 pub fn decide(
-    policy: &RedirectPolicy,
+    policy: &dyn RedirectPolicy,
     hops: u8,
     current: &Uri,
     method: &Method,
     status: StatusCode,
     location: Option<&[u8]>,
+    previous: &[Uri],
 ) -> RedirectAction {
-    // IMPORTANT: not `status.is_redirection()`. 300 Multiple Choices
-    // requires user choice, 304 Not Modified is the response to a
-    // conditional request, 305 Use Proxy hasn't been followed since 2014,
-    // 306 is reserved.
     if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
         return RedirectAction::Stop;
     }
     let Some(location) = location else {
         return RedirectAction::Stop;
     };
-    let limit = match policy {
-        // "Do not follow" is a `Stop`, not an error: the 3xx is the caller's
-        // answer, not a failure to reach one.
-        RedirectPolicy::None => return RedirectAction::Stop,
-        RedirectPolicy::Limited(n) => *n,
-    };
-    if hops >= limit {
-        return RedirectAction::TooManyRedirects;
-    }
 
-    // Validate as a header value: rejects C0 control bytes and DEL, i.e.
-    // closes CR/LF injection through Location. But NOT via `to_str()` —
-    // that also rejects any byte >= 0x80, and raw non-ASCII (a
-    // non-percent-encoded path, an IDN host) is formally invalid yet shows
-    // up in practice; reqwest, through tower_http, follows it
-    // (`str::from_utf8` on the raw bytes, with no ASCII restriction).
     let Ok(header) = HeaderValue::from_bytes(location) else {
         return RedirectAction::InvalidLocation;
     };
@@ -155,11 +493,37 @@ pub fn decide(
     // 303 is always GET (except HEAD). Browsers and reqwest downgrade
     // 301/302 with POST to GET; diverging from 303 here would be
     // inconsistent.
-    let downgrade = match status.as_u16() {
-        303 => *method != Method::HEAD,
-        301 | 302 => *method == Method::POST,
-        _ => false,
+    // **The policy is asked here and nowhere else**, with everything
+    // above already worked out — which is what lets it hold a rule rather
+    // than a copy of the mechanism. Asking after the `Location` is
+    // resolved rather than before costs one changed error in one corner:
+    // a malformed `Location` on the hop that would have exceeded a limit
+    // now reports `InvalidLocation` rather than the limit. No hop goes
+    // anywhere different, and resolving a reference we will not follow is
+    // a parse with no IO.
+    let proposal = ProposedRedirect {
+        from: current,
+        to: &uri,
+        status,
+        method,
+        cross_origin,
+        hops,
+        previous,
     };
+    let allow = match policy.follow(&proposal) {
+        RedirectVerdict::Follow(allow) => allow,
+        RedirectVerdict::Stop => return RedirectAction::Stop,
+        RedirectVerdict::Refuse(why) => return RedirectAction::Refused { why, to: uri },
+    };
+
+    // RFC 9110 §15.4's table, and it stays here: a policy says *do not
+    // rewrite*, never *rewrite to this*.
+    let downgrade = !allow.preserve_method
+        && match status.as_u16() {
+            303 => *method != Method::HEAD,
+            301 | 302 => *method == Method::POST,
+            _ => false,
+        };
     let new_method = if downgrade {
         Method::GET
     } else {
@@ -169,7 +533,7 @@ pub fn decide(
     RedirectAction::Follow(Follow {
         uri,
         method: new_method,
-        strip_sensitive: cross_origin,
+        strip_sensitive: cross_origin && !allow.keep_credentials,
         drop_body: downgrade,
     })
 }
@@ -179,15 +543,29 @@ mod tests {
     use super::*;
     use http::{Method, StatusCode, Uri};
 
-    fn p() -> RedirectPolicy {
-        RedirectPolicy::Limited(10)
+    /// The old six-argument shape, so the existing corpus reads
+    /// unchanged: `previous` is only for a policy that detects loops, and
+    /// none of these has one.
+    fn d6(
+        policy: &dyn RedirectPolicy,
+        hops: u8,
+        current: &Uri,
+        method: &Method,
+        status: StatusCode,
+        location: Option<&[u8]>,
+    ) -> RedirectAction {
+        decide(policy, hops, current, method, status, location, &[])
+    }
+
+    fn p() -> Limit {
+        Limit::new(10)
     }
     fn u(s: &str) -> Uri {
         s.parse().unwrap()
     }
 
     fn go(status: u16, from: &str, to: &str, m: Method) -> RedirectAction {
-        decide(
+        d6(
             &p(),
             0,
             &u(from),
@@ -289,7 +667,7 @@ mod tests {
 
     #[test]
     fn missing_location_stops() {
-        let r = decide(
+        let r = d6(
             &p(),
             0,
             &u("https://a/"),
@@ -302,15 +680,15 @@ mod tests {
 
     #[test]
     fn limit_is_enforced() {
-        let r = decide(
-            &RedirectPolicy::Limited(2),
+        let r = d6(
+            &Limit::new(2),
             2,
             &u("https://a/"),
             &Method::GET,
             StatusCode::FOUND,
             Some(b"https://a/x"),
         );
-        assert!(matches!(r, RedirectAction::TooManyRedirects));
+        assert!(matches!(r, RedirectAction::Refused { .. }));
     }
 
     /// `None` is the whole reason this type is an enum, and until this test
@@ -325,8 +703,8 @@ mod tests {
     /// for the wrong reason.
     #[test]
     fn none_stops_without_following_and_does_not_report_too_many() {
-        let r = decide(
-            &RedirectPolicy::None,
+        let r = d6(
+            &Forbid,
             0,
             &u("https://a/"),
             &Method::GET,
@@ -345,8 +723,8 @@ mod tests {
     /// satisfied by the other's code path.
     #[test]
     fn limited_zero_errors_where_none_would_stop() {
-        let r = decide(
-            &RedirectPolicy::Limited(0),
+        let r = d6(
+            &Limit::new(0),
             0,
             &u("https://a/"),
             &Method::GET,
@@ -354,7 +732,7 @@ mod tests {
             Some(b"https://a/x"),
         );
         assert!(
-            matches!(r, RedirectAction::TooManyRedirects),
+            matches!(r, RedirectAction::Refused { .. }),
             "`Limited(0)` must error where `None` stops: {r:?}"
         );
     }
@@ -372,7 +750,7 @@ mod tests {
     #[test]
     fn query_survives_301_and_302_with_its_body() {
         for status in [301u16, 302] {
-            let r = decide(
+            let r = d6(
                 &p(),
                 0,
                 &u("https://a/search"),
@@ -403,7 +781,7 @@ mod tests {
     /// reason.
     #[test]
     fn query_is_still_downgraded_by_303_like_every_other_method() {
-        let r = decide(
+        let r = d6(
             &p(),
             0,
             &u("https://a/search"),
@@ -420,7 +798,7 @@ mod tests {
 
     #[test]
     fn garbage_location_is_reported() {
-        let r = decide(
+        let r = d6(
             &p(),
             0,
             &u("https://a/"),
@@ -642,7 +1020,7 @@ mod tests {
 
     #[test]
     fn bare_cr_in_location_is_rejected() {
-        let r = decide(
+        let r = d6(
             &p(),
             0,
             &u("https://a/"),
@@ -655,7 +1033,7 @@ mod tests {
 
     #[test]
     fn bare_lf_in_location_is_rejected() {
-        let r = decide(
+        let r = d6(
             &p(),
             0,
             &u("https://a/"),
@@ -668,7 +1046,7 @@ mod tests {
 
     #[test]
     fn crlf_header_injection_is_rejected() {
-        let r = decide(
+        let r = d6(
             &p(),
             0,
             &u("https://a/"),

@@ -114,7 +114,7 @@
 //! where a bound is allowed is **an opt-in call that takes a value from
 //! the caller and puts it behind the facade's `Arc`** — and the types that
 //! hold such a value, like [`erased::AnyStore`] or
-//! [`predicate::RedirectPredicate`]. [`Client::builder`],
+//! [`redirect::SharedRedirectPolicy`]. [`Client::builder`],
 //! [`ClientBuilder::total_timeout`] and [`sse::SseBuilder::with_timer`]
 //! are the shape.
 //!
@@ -307,8 +307,11 @@ pub mod body {
 
 /// Following redirects: how many, and whether this one.
 pub mod redirect {
-    pub use crate::predicate::{ProposedRedirect, RedirectPredicate, RedirectVerdict};
-    pub use hclient_proto::redirect::RedirectPolicy;
+    pub use crate::config::SharedRedirectPolicy;
+    pub use hclient_proto::redirect::{
+        All, Allow, And, Forbid, FromFn, HttpsOnly, Limit, ProposedRedirect, RedirectPolicy,
+        RedirectPolicyExt, RedirectVerdict, SameOriginOnly,
+    };
 }
 
 /// Reaching origins through a proxy, behind the `proxy` feature.

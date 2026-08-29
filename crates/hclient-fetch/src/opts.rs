@@ -36,7 +36,7 @@
 //! and the asymmetry between the two is stated where each of them is.
 //!
 //! `redirect: "error"` is a third thing — *fail rather than follow* — and
-//! it is `RedirectPolicy::None` with the answer thrown away, which no
+//! it is `hclient::redirect::Forbid` with the answer thrown away, which no
 //! caller has asked for.
 
 use web_sys::{ReferrerPolicy, RequestCache, RequestCredentials, RequestMode};

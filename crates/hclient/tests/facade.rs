@@ -14,7 +14,11 @@ use std::sync::Arc;
 #[test]
 fn public_api_types_are_reachable_from_the_facade() {
     // `Config.redirect` has this type.
-    let _p: hclient::redirect::RedirectPolicy = hclient::redirect::RedirectPolicy::default();
+    // The trait, its default implementation, and one ready-made — all
+    // reachable through the facade without naming `hclient-proto`.
+    let _p: hclient::redirect::Limit = hclient::redirect::Limit::default();
+    fn takes_a_policy(_: &dyn hclient::redirect::RedirectPolicy) {}
+    takes_a_policy(&hclient::redirect::Forbid);
     // `check_supported` takes this and returns that.
     let caps: hclient::caps::Capabilities = hclient::caps::Capabilities::default();
     let cfg = hclient::Config::default();

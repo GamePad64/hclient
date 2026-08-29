@@ -19,7 +19,7 @@ fn answering(status: u16) -> Client {
     Client::builder(t)
         // So a `3xx` reaches the caller rather than being followed, which
         // is the state the `3xx` assertion below is about.
-        .redirect(hclient::redirect::RedirectPolicy::None)
+        .redirect(hclient::redirect::Forbid)
         .build()
         .expect("build")
 }
@@ -31,7 +31,7 @@ fn answering(status: u16) -> Client {
 ///
 /// `3xx` being `Ok` is a decision rather than an omission: reaching one
 /// means the redirect policy already decided to hand it back, and
-/// `RedirectPolicy::None`'s own doc says a `3xx` is the caller's answer
+/// `hclient::redirect::Forbid`'s own doc says a `3xx` is the caller's answer
 /// rather than a failure to reach one. Erroring here would overrule that
 /// from two layers up.
 #[test]

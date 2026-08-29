@@ -11,6 +11,7 @@ use hclient::Client;
 use hclient::error::RedirectRefused;
 use hclient::mock::MockTransport;
 use hclient::redirect::RedirectVerdict;
+use hclient::redirect::{FromFn, Limit, RedirectPolicyExt as _};
 use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};
 
@@ -46,7 +47,11 @@ fn go(c: &Client) -> Result<hclient::Collected, hclient_core::Error> {
 fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
     // Follow: two requests, the second hop's body is the answer.
     let c = Client::builder(hop_to("https://a.test/two"))
-        .redirect_predicate(|_| RedirectVerdict::Follow)
+        .redirect(
+            Limit::new(10).and(FromFn(|_: &hclient::redirect::ProposedRedirect<'_>| {
+                RedirectVerdict::follow()
+            })),
+        )
         .build()
         .expect("build");
     assert_eq!(go(&c).expect("follows").text().unwrap(), "arrived");
@@ -60,7 +65,11 @@ fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
 
     // Stop: one request, and the 3xx is the caller's answer.
     let c = Client::builder(hop_to("https://a.test/two"))
-        .redirect_predicate(|_| RedirectVerdict::Stop)
+        .redirect(
+            Limit::new(10).and(FromFn(|_: &hclient::redirect::ProposedRedirect<'_>| {
+                RedirectVerdict::Stop
+            })),
+        )
         .build()
         .expect("build");
     let got = go(&c).expect("a 3xx is an answer, not a failure");
@@ -81,7 +90,11 @@ fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
 
     // Refuse: one request, and a typed error naming the hop.
     let c = Client::builder(hop_to("https://a.test/two"))
-        .redirect_predicate(|_| RedirectVerdict::Refuse)
+        .redirect(
+            Limit::new(10).and(FromFn(|_: &hclient::redirect::ProposedRedirect<'_>| {
+                RedirectVerdict::Refuse("refused by the test")
+            })),
+        )
         .build()
         .expect("build");
     let err = go(&c).expect_err("a refusal is a failure to reach an answer");
@@ -120,15 +133,17 @@ fn the_hop_carries_the_resolved_target_and_the_origin_answer() {
     // A relative Location, and a same-origin one: both halves are wrong
     // in a different way if the hop were built from the raw header.
     let c = Client::builder(hop_to("/two"))
-        .redirect_predicate(move |hop| {
-            rec.lock().unwrap().push(Asked {
-                to: hop.to().to_string(),
-                cross_origin: hop.cross_origin(),
-                hops: hop.hops(),
-                status: hop.status().as_u16(),
-            });
-            RedirectVerdict::Follow
-        })
+        .redirect(Limit::new(10).and(FromFn(
+            move |hop: &hclient::redirect::ProposedRedirect<'_>| {
+                rec.lock().unwrap().push(Asked {
+                    to: hop.to().to_string(),
+                    cross_origin: hop.cross_origin(),
+                    hops: hop.hops(),
+                    status: hop.status().as_u16(),
+                });
+                RedirectVerdict::follow()
+            },
+        )))
         .build()
         .expect("build");
     assert_eq!(go(&c).expect("follows").text().unwrap(), "arrived");
@@ -156,10 +171,12 @@ fn a_hop_to_another_host_reports_the_origin_change() {
     let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
     let rec = Arc::clone(&seen);
     let c = Client::builder(hop_to("https://b.test/two"))
-        .redirect_predicate(move |hop| {
-            rec.lock().unwrap().push(hop.cross_origin());
-            RedirectVerdict::Follow
-        })
+        .redirect(Limit::new(10).and(FromFn(
+            move |hop: &hclient::redirect::ProposedRedirect<'_>| {
+                rec.lock().unwrap().push(hop.cross_origin());
+                RedirectVerdict::follow()
+            },
+        )))
         .build()
         .expect("build");
     assert_eq!(go(&c).expect("follows").text().unwrap(), "arrived");
@@ -171,10 +188,12 @@ fn a_hop_to_another_host_reports_the_origin_change() {
     let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
     let rec = Arc::clone(&seen);
     let c = Client::builder(hop_to("https://a.test:443/two"))
-        .redirect_predicate(move |hop| {
-            rec.lock().unwrap().push(hop.cross_origin());
-            RedirectVerdict::Follow
-        })
+        .redirect(Limit::new(10).and(FromFn(
+            move |hop: &hclient::redirect::ProposedRedirect<'_>| {
+                rec.lock().unwrap().push(hop.cross_origin());
+                RedirectVerdict::follow()
+            },
+        )))
         .build()
         .expect("build");
     assert_eq!(go(&c).expect("follows").text().unwrap(), "arrived");
@@ -205,16 +224,18 @@ fn every_hop_is_asked_and_the_answers_are_independent() {
     let asked = Arc::new(Mutex::new(Vec::<String>::new()));
     let rec = Arc::clone(&asked);
     let c = Client::builder(t)
-        .redirect_predicate(move |hop| {
-            rec.lock().unwrap().push(hop.to().path().to_owned());
-            // The second hop is refused, so the answers are visibly not
-            // one answer reused.
-            if hop.to().path() == "/three" {
-                RedirectVerdict::Refuse
-            } else {
-                RedirectVerdict::Follow
-            }
-        })
+        .redirect(Limit::new(10).and(FromFn(
+            move |hop: &hclient::redirect::ProposedRedirect<'_>| {
+                rec.lock().unwrap().push(hop.to().path().to_owned());
+                // The second hop is refused, so the answers are visibly not
+                // one answer reused.
+                if hop.to().path() == "/three" {
+                    RedirectVerdict::Refuse("refused by the test")
+                } else {
+                    RedirectVerdict::follow()
+                }
+            },
+        )))
         .build()
         .expect("build");
     let err = go(&c).expect_err("the second hop is refused");
@@ -247,10 +268,12 @@ fn a_response_the_policy_would_not_follow_is_never_asked_about() {
         let asked = Arc::new(Mutex::new(0usize));
         let rec = Arc::clone(&asked);
         let c = Client::builder(t)
-            .redirect_predicate(move |_| {
-                *rec.lock().unwrap() += 1;
-                RedirectVerdict::Refuse
-            })
+            .redirect(Limit::new(10).and(FromFn(
+                move |_: &hclient::redirect::ProposedRedirect<'_>| {
+                    *rec.lock().unwrap() += 1;
+                    RedirectVerdict::Refuse("refused by the test")
+                },
+            )))
             .build()
             .expect("build");
         assert_eq!(
@@ -268,53 +291,105 @@ fn a_response_the_policy_would_not_follow_is_never_asked_about() {
     }
 }
 
-/// **The policy is asked first**, so a predicate cannot resurrect a hop
-/// the policy refused — `RedirectPolicy::None` with a `Follow`-answering
-/// predicate still stops.
+/// **A `Stop` is not overruled by a `Follow`, and the other policy is
+/// still asked.** Both halves matter: the first is the meet — the more
+/// conservative answer wins — and the second is where the chain does
+/// *not* short-circuit, because a policy that has not been asked yet
+/// might say `Refuse`, which is stronger than `Stop`.
 #[test]
-fn the_policy_decides_before_the_predicate_and_cannot_be_overruled() {
+fn a_stop_is_not_overruled_and_the_rest_of_the_chain_is_still_asked() {
     let asked = Arc::new(Mutex::new(0usize));
     let rec = Arc::clone(&asked);
     let c = Client::builder(hop_to("https://a.test/two"))
-        .redirect(hclient::redirect::RedirectPolicy::None)
-        .redirect_predicate(move |_| {
-            *rec.lock().unwrap() += 1;
-            RedirectVerdict::Follow
-        })
+        .redirect(hclient::redirect::Forbid.and(FromFn(
+            move |_: &hclient::redirect::ProposedRedirect<'_>| {
+                *rec.lock().unwrap() += 1;
+                RedirectVerdict::follow()
+            },
+        )))
         .build()
         .expect("build");
-    assert_eq!(go(&c).expect("stops").status(), 302);
+
+    assert_eq!(
+        go(&c).expect("stops").status(),
+        302,
+        "the 3xx is the answer"
+    );
     assert_eq!(
         c.transport_as::<MockTransport>()
             .expect("the mock")
             .requests()
             .len(),
-        1
+        1,
+        "and the hop was not taken"
     );
-    assert_eq!(*asked.lock().unwrap(), 0, "the policy had already said no");
+    assert_eq!(
+        *asked.lock().unwrap(),
+        1,
+        "the second policy was asked, because it could have said Refuse"
+    );
+}
+
+/// **A `Refuse` does short-circuit**, and this is the pair that says the
+/// rule is *stop at the top of the lattice* rather than *stop at the
+/// first refusal of any kind*. Nothing can raise a `Refuse`, so asking
+/// further could only cost.
+#[test]
+fn a_refuse_short_circuits_and_the_rest_of_the_chain_is_not_asked() {
+    let asked = Arc::new(Mutex::new(0usize));
+    let rec = Arc::clone(&asked);
+    let c = Client::builder(hop_to("https://a.test/two"))
+        .redirect(Limit::new(0).and(FromFn(
+            move |_: &hclient::redirect::ProposedRedirect<'_>| {
+                *rec.lock().unwrap() += 1;
+                RedirectVerdict::follow()
+            },
+        )))
+        .build()
+        .expect("build");
+
+    let err = go(&c).expect_err("a limit of zero is an error, not an answer");
+    assert!(err.is_redirect(), "{err}");
+    assert_eq!(
+        *asked.lock().unwrap(),
+        0,
+        "nothing was asked after the refusal"
+    );
 }
 
 /// **A predicate against a transport that follows redirects itself is
 /// refused at `build()`**, naming its own setting rather than
 /// `redirect_policy`.
 #[test]
-fn a_predicate_against_an_internally_redirecting_backend_is_refused() {
+fn a_policy_against_an_internally_redirecting_backend_is_refused() {
     let mut caps = hclient::caps::Capabilities::default();
     caps.redirects = hclient_core::RedirectSupport::Internal;
     let err = Client::builder(MockTransport::new().with_capabilities(caps))
-        .redirect_predicate(|_| RedirectVerdict::Follow)
+        .redirect(
+            Limit::new(10).and(FromFn(|_: &hclient::redirect::ProposedRedirect<'_>| {
+                RedirectVerdict::follow()
+            })),
+        )
         .build()
         .expect_err("the browser has already followed by the time we see anything");
+    // **One name where there were two.** The separate
+    // `redirect_predicate` refusal existed so that a caller who wrote a
+    // predicate was not told the *policy* was the problem. With one
+    // setter there is one thing to name, and the concern has no subject.
     assert_eq!(
-        err.what, "redirect_predicate",
-        "a caller who wrote a predicate must not be told the policy was the problem: {err}"
+        err.what, "redirect_policy",
+        "the refusal names the setting the caller actually wrote: {err}"
     );
 
     // The control: the same builder against a transport that follows
     // nothing itself builds.
     assert!(
         Client::builder(MockTransport::new())
-            .redirect_predicate(|_| RedirectVerdict::Follow)
+            .redirect(
+                Limit::new(10).and(FromFn(|_: &hclient::redirect::ProposedRedirect<'_>| {
+                    RedirectVerdict::follow()
+                }))
+            )
             .build()
             .is_ok()
     );
@@ -326,7 +401,11 @@ fn a_predicate_against_an_internally_redirecting_backend_is_refused() {
 fn a_client_with_a_predicate_still_crosses_a_spawn() {
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
     let c = Client::builder(MockTransport::new())
-        .redirect_predicate(|_| RedirectVerdict::Follow)
+        .redirect(
+            Limit::new(10).and(FromFn(|_: &hclient::redirect::ProposedRedirect<'_>| {
+                RedirectVerdict::follow()
+            })),
+        )
         .build()
         .expect("build");
     assert_send_sync(&c);
@@ -363,7 +442,11 @@ fn a_ring_between_two_allowed_hosts_is_visible_in_the_chain() {
     // Control: a predicate that sees only the count follows until the
     // policy's own limit stops it.
     let counting = Client::builder(ring())
-        .redirect_predicate(|_| RedirectVerdict::Follow)
+        .redirect(
+            Limit::new(10).and(FromFn(|_: &hclient::redirect::ProposedRedirect<'_>| {
+                RedirectVerdict::follow()
+            })),
+        )
         .build()
         .unwrap();
     let err = go(&counting).expect_err("the policy's hop limit ends it");
@@ -373,14 +456,16 @@ fn a_ring_between_two_allowed_hosts_is_visible_in_the_chain() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let record = Arc::clone(&seen);
     let ringed = Client::builder(ring())
-        .redirect_predicate(move |hop| {
-            record.lock().unwrap().push(hop.previous().len());
-            if hop.previous().contains(hop.to()) {
-                RedirectVerdict::Refuse
-            } else {
-                RedirectVerdict::Follow
-            }
-        })
+        .redirect(Limit::new(10).and(FromFn(
+            move |hop: &hclient::redirect::ProposedRedirect<'_>| {
+                record.lock().unwrap().push(hop.previous().len());
+                if hop.previous().contains(hop.to()) {
+                    RedirectVerdict::Refuse("refused by the test")
+                } else {
+                    RedirectVerdict::follow()
+                }
+            },
+        )))
         .build()
         .unwrap();
 
@@ -407,13 +492,15 @@ fn the_hop_count_is_one_less_than_the_chain() {
     let pairs = Arc::new(Mutex::new(Vec::new()));
     let record = Arc::clone(&pairs);
     let client = Client::builder(hop_to("https://b.test/two"))
-        .redirect_predicate(move |hop| {
-            record
-                .lock()
-                .unwrap()
-                .push((hop.hops(), hop.previous().len()));
-            RedirectVerdict::Follow
-        })
+        .redirect(Limit::new(10).and(FromFn(
+            move |hop: &hclient::redirect::ProposedRedirect<'_>| {
+                record
+                    .lock()
+                    .unwrap()
+                    .push((hop.hops(), hop.previous().len()));
+                RedirectVerdict::follow()
+            },
+        )))
         .build()
         .unwrap();
 

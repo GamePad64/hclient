@@ -111,7 +111,7 @@ fn capabilities_passed_through_the_adapter_still_gate_the_builder() {
     let t = ServiceTransport::new(svc, caps);
 
     let err = Client::builder(t)
-        .redirect(hclient::redirect::RedirectPolicy::Limited(3))
+        .redirect(hclient::redirect::Limit::new(3))
         .build()
         .expect_err("a policy against an Internal backend must be refused");
     assert!(

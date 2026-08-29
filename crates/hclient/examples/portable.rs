@@ -42,7 +42,7 @@
 //! reported rather than smoothed over — see `docs/porting-wasi-fetch.md`
 //! for the full list:
 //!
-//! 1. `follow_redirects: false` becomes `RedirectPolicy::Limited(0)`,
+//! 1. `follow_redirects: false` becomes `hclient::redirect::Limit::new(0)`,
 //!    which makes a 3xx an `ErrorKind::Redirect` here, where `wasi-fetch`
 //!    handed the 3xx response back to the caller.
 //! 2. Against a backend that follows redirects internally (the browser
@@ -56,7 +56,6 @@
 //! `fetch` against `MockTransport`.
 
 use bytes::Bytes;
-use hclient::redirect::RedirectPolicy;
 use hclient::{Client, RequestBody, Timeouts};
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -240,17 +239,23 @@ where
     // per-request builder. Before `RequestBuilder::redirect` existed, the
     // only way to say this through `hclient` was one `Client` per request.
     //
-    // `false` maps to `RedirectPolicy::None`, NOT to `Limited(0)`. The
+    // `false` maps to `hclient::redirect::Forbid`, NOT to `Limited(0)`. The
     // consumer forwards the 3xx upward — status and `Location` become its
     // output — and `wasi-fetch`, which it migrates from, did the same:
     // `redirect_limit(0)` there skipped the redirect branch entirely rather
-    // than failing. `Limited(0)` would turn that answer into an error, which
-    // is the mistake a mechanical migration makes, and the reason
-    // `RedirectPolicy` is an enum rather than a count.
-    let redirect = if args.follow_redirects {
-        RedirectPolicy::Limited(10)
+    // than failing. `Limit::new(0)` would turn that answer into an error,
+    // which is the mistake a mechanical migration makes, and the reason
+    // `Forbid` and `Limit` are two types rather than one count.
+    //
+    // **The `Arc` is what a trait costs an `if`/`else` where an enum cost
+    // nothing.** Two policies are two types now, so a branch choosing
+    // between them has to erase. One allocation per client, and in
+    // exchange the branch could just as well have been
+    // `Limit::new(10).and(SameOriginOnly)` on one side.
+    let redirect: hclient::redirect::SharedRedirectPolicy = if args.follow_redirects {
+        std::sync::Arc::new(hclient::redirect::Limit::new(10))
     } else {
-        RedirectPolicy::None
+        std::sync::Arc::new(hclient::redirect::Forbid)
     };
 
     let mut builder = client

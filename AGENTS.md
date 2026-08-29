@@ -1965,6 +1965,98 @@ case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
 
+### The redirect policy is a trait now, and the predicate stopped being a second concept
+
+`RedirectPolicy` was a `Copy` enum in `hclient-proto` and
+`RedirectPredicate` was a boxed closure in `hclient` — two things for one
+job, the second existing only because the first could not hold a closure.
+Both are gone; there is one trait with **one method**:
+
+```rust
+fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict
+```
+
+`Forbid`, `Limit::new(n)`, `SameOriginOnly`, `HttpsOnly`, `FromFn`, `All`,
+and `.and(..)` to compose. One setter where there were two, and one
+`check_supported` branch where there were two.
+
+**The line between policy and mechanism was drawn by measurement, not by
+taste.** `decide` does seven things and only one was ever policy — the hop
+limit. The rest is RFC: which statuses redirect, whether a `Location`
+parses, RFC 3986 §5.2 resolution, what an origin is, RFC 9110 §15.4's
+method table. The rule that separates them is *two correct clients could
+disagree about it*, and it was checked against curl 8.18: there is a flag
+for **every** step this rule calls policy — `--max-redirs`, `--post301/2/3`,
+`--location-trusted`, `--proto-redir` — and **none** for any step it calls
+mechanism. No client exposes a way to resolve a `Location` differently,
+because doing it differently is an open redirect rather than a preference.
+
+**So two more things became policy, and they are exactly curl's two.**
+`Allow { preserve_method, keep_credentials }` — the 301/302/303 rewrite to
+`GET`, and whether credentials survive a cross-origin hop. Granted **per
+hop**, which is more than curl's three flags give: a policy can trust one
+destination without trusting every future one, and can answer differently
+per status without needing a parameter.
+
+**`Allow` carries booleans and never a request, and that is the invariant
+the type lives under.** A verdict carrying the rewritten request was
+proposed and refused for two reasons. Composition: two policies answering
+`Follow(req_a)` and `Follow(req_b)` have no defined meet, where two
+`Allow`s meet field-wise. And escape: handing over the request hands over
+the `uri`, which is the open-redirect surface the mechanism exists to
+keep closed. **The rule is written beside the type — `Allow` may only ever
+gain fields that switch a protection off.**
+
+**One rule for all composition: the more conservative answer wins.**
+`Follow < Stop < Refuse`, two `Follow`s meet their `Allow`s, and the chain
+short-circuits at `Refuse` and **not** at `Stop` — because nothing can
+raise a `Refuse`, where a later policy can raise a `Stop`. A pair of tests
+pins exactly that: a `Stop` still asks the rest of the chain, a `Refuse`
+does not.
+
+**Order is unobservable, which is what separates this from middleware.**
+Middleware composes as function composition and can rewrite; policies
+compose as a meet on a lattice and can only narrow. That distinction is
+why redirect-following is not expressible as a `tower` layer here and is
+not exposed as one anywhere else either — OkHttp keeps
+`RetryAndFollowUp` in its fixed chain, between the two user positions,
+which is where `Client::run` already sits.
+
+**The limit moved from a separate method into `follow`**, because the hop
+count is already on the proposal. An `AtomicU8` inside the policy was
+proposed and cannot work: the policy lives inside `Client`'s `Arc`, shared
+by every clone and every request in flight, so the counter would be
+per-client — `Limit::new(10)` would allow ten redirects for the life of
+the program. `hops` is a local in `run`, per operation, which is where
+per-request state belongs. **The policy holds the rule, the client holds
+the state** — the same rule that already keeps a policy from recomputing
+what an origin is.
+
+**Four costs, each real.** Two policies are two types, so an `if`/`else`
+choosing between them needs an `Arc` where an enum needed nothing —
+`examples/portable.rs` shows it. The visited-URI list is now always
+collected, where it used to be gated on a predicate being installed,
+because one trait cannot be asked whether it reads history — a `Vec<Uri>`
+bounded by a `u8` against as many round trips. The limit is consulted
+*after* the `Location` is resolved rather than before, so a malformed
+`Location` on the hop that would have exceeded it now reports
+`InvalidLocation` rather than the limit; no hop goes anywhere different.
+And "follow with no limit" became expressible by accident — the default
+policy is still `Limit::new(10)`, so only a caller who *replaces* it is
+exposed, and `hops: u8` is the structural backstop.
+
+**A gap surfaced on contact, and it is ACT's finding one type over.**
+`ProposedRedirect` had no public constructor, so a caller could not unit-
+test their own policy — the wall `Response` was found to be. It has one
+now.
+
+**And the error got better rather than worse.** `TooMany(u8)` said one
+thing and could not say the others; `RedirectRefused` carries the policy's
+own reason plus the client's hop count, so *"refused a 302 to X after 10
+hops: redirect limit reached"* covers a limit, an origin rule and a
+caller's own closure with one shape. The number is the client's fact, not
+the policy's, which is why a `&'static str` verdict loses nothing.
+
 ### A retry that is safe by construction, and the one gap the ecosystem measures
 
 The competitive analysis in this workspace lists gaps against other

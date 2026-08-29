@@ -27,7 +27,7 @@
 #[cfg(not(target_family = "wasm"))]
 fn main() {
     use hclient::Client;
-    use hclient::redirect::RedirectPolicy;
+
     use hclient_core::{ErrorKind, TlsSupport, unversioned::Transport};
     use hclient_dns::IpLiteralOnly;
     use hclient_native::Native;
@@ -76,7 +76,7 @@ fn main() {
     // — so a policy is honoured here and would be refused only by a backend
     // that follows them internally, like the browser's `fetch`.
     let with_policy = Client::builder(Native::new(hclient_rt_smol::Smol, NoTls, IpLiteralOnly))
-        .redirect(RedirectPolicy::None)
+        .redirect(hclient::redirect::Forbid)
         .build();
     assert!(
         with_policy.is_ok(),

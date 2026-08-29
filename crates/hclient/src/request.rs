@@ -391,7 +391,7 @@ impl<'a> RequestBuilder<'a> {
     /// `hclient` was a fresh `Client` per request — the very cost
     /// `RequestBuilder::timeouts` already exists to avoid (reqwest #2641).
     ///
-    /// **The consumer's other branch is [`RedirectPolicy::None`], not
+    /// **The consumer's other branch is [`Forbid`](hclient_proto::redirect::Forbid), not
     /// `Limited(0)`.** `Limited(0)` means "follow up to zero hops", so the
     /// first 301/302/303/307/308 carrying a `Location` becomes
     /// `ErrorKind::Redirect`. `None` returns that response to the caller
@@ -419,8 +419,17 @@ impl<'a> RequestBuilder<'a> {
     /// reads a `RedirectPolicy`.
     ///
     /// [`ClientBuilder::redirect`]: crate::ClientBuilder::redirect
-    pub fn redirect(mut self, policy: RedirectPolicy) -> Self {
-        self.extensions.insert(policy);
+    pub fn redirect<P>(mut self, policy: P) -> Self
+    where
+        P: RedirectPolicy + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
+        // The stored type is the shared one, not `P`: `effective_redirect`
+        // looks for exactly `SharedRedirectPolicy`, and an extension keyed
+        // on the caller's concrete type would be invisible to it — a
+        // setting silently ignored, which is the defect `Capabilities`
+        // exists to refuse one layer up.
+        let shared: crate::config::SharedRedirectPolicy = std::sync::Arc::new(policy);
+        self.extensions.insert(shared);
         self
     }
 

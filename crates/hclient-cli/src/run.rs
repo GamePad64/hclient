@@ -387,9 +387,7 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
         });
     }
     if cli.follow {
-        req = req.redirect(hclient::redirect::RedirectPolicy::Limited(
-            cli.max_redirects,
-        ));
+        req = req.redirect(hclient::redirect::Limit::new(cli.max_redirects));
     }
 
     let mut out = anstream::AutoStream::new(std::io::stdout().lock(), colour);

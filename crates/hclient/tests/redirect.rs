@@ -9,7 +9,6 @@
 #![cfg(feature = "test-util")]
 
 use hclient::mock::MockTransport;
-use hclient::redirect::RedirectPolicy;
 use hclient::{Client, RequestBody};
 use std::pin::Pin;
 use std::task::Context;
@@ -118,7 +117,7 @@ fn enforces_the_hop_limit() {
     }
 
     let c = Client::builder(m)
-        .redirect(RedirectPolicy::Limited(2))
+        .redirect(hclient::redirect::Limit::new(2))
         .build()
         .unwrap();
     let req = http::Request::builder()
@@ -147,7 +146,7 @@ fn redirect_limit_of_zero_sends_only_the_original_request() {
     m.push_response(redirect_to("https://a/loop"));
 
     let c = Client::builder(m)
-        .redirect(RedirectPolicy::Limited(0))
+        .redirect(hclient::redirect::Limit::new(0))
         .build()
         .unwrap();
     let req = http::Request::builder()
@@ -469,12 +468,12 @@ fn a_per_request_redirect_policy_overrides_the_clients() {
     }
 
     let c = Client::builder(m)
-        .redirect(RedirectPolicy::Limited(4))
+        .redirect(hclient::redirect::Limit::new(4))
         .build()
         .unwrap();
     let err = futures_executor::block_on(
         c.get("https://a/x")
-            .redirect(RedirectPolicy::Limited(1))
+            .redirect(hclient::redirect::Limit::new(1))
             .send(),
     )
     .unwrap_err();
@@ -502,12 +501,12 @@ fn a_per_request_limit_of_zero_stops_a_client_configured_to_follow() {
     m.push_response(redirect_to("https://a/loop"));
 
     let c = Client::builder(m)
-        .redirect(RedirectPolicy::Limited(10))
+        .redirect(hclient::redirect::Limit::new(10))
         .build()
         .unwrap();
     let err = futures_executor::block_on(
         c.get("https://a/x")
-            .redirect(RedirectPolicy::Limited(0))
+            .redirect(hclient::redirect::Limit::new(0))
             .send(),
     )
     .unwrap_err();
@@ -534,7 +533,7 @@ fn without_a_per_request_policy_the_clients_limit_still_applies() {
     }
 
     let c = Client::builder(m)
-        .redirect(RedirectPolicy::Limited(2))
+        .redirect(hclient::redirect::Limit::new(2))
         .build()
         .unwrap();
     let err = futures_executor::block_on(c.get("https://a/x").send()).unwrap_err();
@@ -568,7 +567,7 @@ fn internal_mock() -> MockTransport {
 #[test]
 fn a_client_level_policy_against_an_internal_backend_fails_at_build() {
     let err = Client::builder(internal_mock())
-        .redirect(RedirectPolicy::Limited(0))
+        .redirect(hclient::redirect::Limit::new(0))
         .build()
         .unwrap_err();
     assert_eq!(err.what, "redirect_policy");
@@ -586,7 +585,7 @@ fn a_per_request_policy_against_an_internal_backend_fails_at_send() {
     let c = Client::builder(m).build().unwrap();
     let err = futures_executor::block_on(
         c.get("https://a/x")
-            .redirect(RedirectPolicy::Limited(0))
+            .redirect(hclient::redirect::Limit::new(0))
             .send(),
     )
     .unwrap_err();

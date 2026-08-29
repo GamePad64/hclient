@@ -23,7 +23,6 @@
 
 use hclient::error::Phase;
 use hclient::error::TotalTimeoutElapsed;
-use hclient::redirect::RedirectPolicy;
 use hclient::{Client, ErrorKind};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
@@ -596,7 +595,7 @@ fn the_deadline_spans_redirect_hops_rather_than_restarting_on_each() {
     let per_hop = Duration::from_millis(120);
     let (addr, hops) = redirect_chain_server(per_hop);
     let c = Client::builder(transport())
-        .redirect(RedirectPolicy::Limited(10))
+        .redirect(hclient::redirect::Limit::new(10))
         .total_timeout(Tokio, TOTAL)
         .build()
         .expect("supported");

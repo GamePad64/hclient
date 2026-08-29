@@ -88,65 +88,11 @@ impl ClientBuilder {
     /// `Capabilities` — same shape as `timeouts` below.
     ///
     /// [`RequestBuilder::redirect`]: crate::RequestBuilder::redirect
-    pub fn redirect(mut self, policy: RedirectPolicy) -> Self {
-        self.config.redirect = Some(policy);
-        self
-    }
-    /// A say over each redirect hop, beyond how many there may be.
-    ///
-    /// `RedirectPolicy` answers *how many* and this answers *whether this
-    /// one* — the rule a counter cannot express: no hop to a private
-    /// address, none to a different host, none away from `https`. The
-    /// closure is handed the hop **as it would go out** — the resolved
-    /// target, the possibly-downgraded method, and whether credentials are
-    /// about to be stripped — and answers with a
-    /// [`RedirectVerdict`](crate::predicate::RedirectVerdict).
-    ///
-    /// ```no_run
-    /// # use hclient::{Client};
-    /// # use hclient::redirect::RedirectVerdict;
-    /// # use hclient_core::unversioned::erased::BoxedTransport;
-    /// # fn f(t: impl BoxedTransport + Send + Sync + 'static)
-    /// # -> Result<(), hclient::error::UnsupportedCapability> {
-    /// let client = Client::builder(t)
-    ///     .redirect_predicate(|hop| match hop.to().scheme_str() {
-    ///         Some("https") => RedirectVerdict::Follow,
-    ///         // A downgrade to plaintext is refused rather than handed
-    ///         // back, so a caller who never checks the status still
-    ///         // cannot be walked off TLS.
-    ///         _ => RedirectVerdict::Refuse,
-    ///     })
-    ///     .build()?;
-    /// # let _ = client; Ok(()) }
-    /// ```
-    ///
-    /// It is consulted **after** the policy, only about hops the policy
-    /// already approved, and never for a `3xx` that was not going to be
-    /// followed anyway — so switching it on cannot make a chain longer.
-    /// [`crate::predicate::ProposedRedirect`] has what it sees and
-    /// [`crate::predicate::RedirectPredicate`] the `Send + Sync` this asks of it.
-    ///
-    /// **Against a transport that follows redirects itself this is an
-    /// error at [`build`](Self::build)** — `hclient-fetch`, where the
-    /// browser has walked the chain before anything is handed back. A
-    /// predicate that was never asked would be the worst way for this
-    /// particular setting to fail, since what people write here are
-    /// refusals.
-    ///
-    /// **There is deliberately no per-request form**, unlike
-    /// [`Self::redirect`]: a per-request setting travels in
-    /// `http::Extensions`, and `AllowEarlyData` is the type that made
-    /// "may an extension cross an origin" a live question with a real
-    /// answer. A predicate is a rule about where *this client* may be
-    /// sent, which is a property of the client.
-    pub fn redirect_predicate<F>(mut self, f: F) -> Self
+    pub fn redirect<P>(mut self, policy: P) -> Self
     where
-        F: Fn(&crate::predicate::ProposedRedirect<'_>) -> crate::predicate::RedirectVerdict
-            + Send // send-bound-exception: amendment-C12
-            + Sync // send-bound-exception: amendment-C12
-            + 'static, // send-bound-exception: amendment-C12
+        P: RedirectPolicy + Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
-        self.config.redirect_predicate = Some(crate::predicate::RedirectPredicate::new(f));
+        self.config.redirect = Some(std::sync::Arc::new(policy));
         self
     }
     /// Default timeouts for every request from this client.
@@ -400,7 +346,7 @@ impl ClientBuilder {
     /// ```
     ///
     /// **Asked after the policy and only about a retry it approved**,
-    /// which is [`Self::redirect_predicate`]'s order and its reason: a
+    /// which is the redirect policy's order and its reason: a
     /// predicate wants the decision, not the inputs. So a body that
     /// cannot be replayed, a status the policy does not cover and an
     /// exhausted attempt count never reach it — it is a narrowing and
@@ -1109,7 +1055,7 @@ impl Client {
         // honour: fetch's `redirect: "follow"` default isn't overridable
         // through `hclient-fetch`, so it can be told neither "stop" nor a
         // limit. The branch that consumer actually takes is
-        // `RedirectPolicy::None` — "do not follow, hand me the 3xx" — which
+        // `Forbid` — "do not follow, hand me the 3xx" — which
         // `decide` answers with `Stop` before any hop counting.
         //
         // Unlike the timeouts, the merged value is NOT written back into
@@ -1126,7 +1072,13 @@ impl Client {
             self.inner.backend,
         )
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
-        let redirect = redirect.unwrap_or_default();
+        // The client's own default when nobody set a policy, and it is a
+        // **concrete** one rather than a trait default: `Limit::new(10)`
+        // is what this crate has always followed, and a trait whose
+        // `follow` defaulted to ten would be a limit no implementor could
+        // opt out of.
+        let redirect: crate::config::SharedRedirectPolicy = redirect
+            .unwrap_or_else(|| std::sync::Arc::new(hclient_proto::redirect::Limit::default()));
 
         // The third of the three, and the only one with nothing to merge:
         // `RequireVersion` is per request by design (see
@@ -1181,11 +1133,15 @@ impl Client {
         let mut hops: u8 = 0;
         // Only when something will read it: the chain costs a `Uri` clone
         // per hop, and a client with no predicate has nobody to hand it to.
-        let mut visited: Vec<http::Uri> = if self.config().redirect_predicate.is_some() {
-            vec![hp.uri.clone()]
-        } else {
-            Vec::new()
-        };
+        // **Always collected now, where it used to be gated on a predicate
+        // being installed.** With one trait there is no way to ask whether
+        // the policy reads the history — that question was a second method,
+        // and a second method is what this change removed. The cost is a
+        // `Vec<Uri>` bounded by the hop count, which is a `u8`: at most ten
+        // cheap clones on an ordinary chain, against as many network round
+        // trips. Measured against a method on the trait and judged not
+        // worth it.
+        let mut visited: Vec<http::Uri> = vec![hp.uri.clone()];
 
         loop {
             // Cookies are attached PER HOP, not once for the operation,
@@ -1535,25 +1491,33 @@ impl Client {
                 .get(http::header::LOCATION)
                 .map(|v| v.as_bytes());
             let action = decide(
-                &redirect,
+                &*redirect,
                 hops,
                 &hp.uri,
                 &hp.method,
                 resp.status(),
                 location,
+                &visited,
             );
 
             match action {
                 RedirectAction::Stop => return Ok((resp, hp.uri)),
-                RedirectAction::TooManyRedirects => {
-                    // Only `Limited` can reach here: `decide` turns `None`
-                    // into `Stop` before any counting, because "do not
-                    // follow" means the 3xx IS the answer.
-                    let limit = match redirect {
-                        RedirectPolicy::Limited(n) => n,
-                        RedirectPolicy::None => 0,
-                    };
-                    return Err(Error::new(ErrorKind::Redirect, TooMany(limit)));
+                // **One arm where there were two.** A policy that refuses
+                // names its own reason, so "the limit" and "a caller's own
+                // rule" stopped needing separate handling here — and the
+                // message is the policy's rather than this function's
+                // reconstruction of which policy was in force, which is
+                // what the old arm had to do by matching the enum back.
+                RedirectAction::Refused { why, to } => {
+                    return Err(Error::new(
+                        ErrorKind::Redirect,
+                        crate::predicate::RedirectRefused {
+                            to,
+                            status: resp.status(),
+                            why,
+                            after_hops: hops,
+                        },
+                    ));
                 }
                 RedirectAction::InvalidLocation => {
                     return Err(Error::new(ErrorKind::Redirect, BadLocation));
@@ -1577,34 +1541,8 @@ impl Client {
                     // predicate refusing cross-origin hops and the client
                     // removing credentials cannot disagree about what an
                     // origin is.
-                    if let Some(pred) = &self.config().redirect_predicate {
-                        let hop = crate::predicate::ProposedRedirect::new(
-                            &hp.uri,
-                            &f.uri,
-                            resp.status(),
-                            &f.method,
-                            f.strip_sensitive,
-                            hops,
-                            &visited,
-                        );
-                        match pred.ask(&hop) {
-                            crate::predicate::RedirectVerdict::Follow => {}
-                            crate::predicate::RedirectVerdict::Stop => return Ok((resp, hp.uri)),
-                            crate::predicate::RedirectVerdict::Refuse => {
-                                return Err(Error::new(
-                                    ErrorKind::Redirect,
-                                    crate::predicate::RedirectRefused {
-                                        to: f.uri.clone(),
-                                        status: resp.status(),
-                                    },
-                                ));
-                            }
-                        }
-                    }
                     hops += 1;
-                    if !visited.is_empty() {
-                        visited.push(f.uri.clone());
-                    }
+                    visited.push(f.uri.clone());
                     let Some((next_hp, next_body)) = next_hop(&hp, replay, &f) else {
                         return Ok((resp, hp.uri));
                     };
@@ -2297,10 +2235,6 @@ pub(crate) mod without_a_default_transport {
         }
     }
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("exceeded redirect limit of {0}")]
-struct TooMany(u8);
 
 #[derive(Debug, thiserror::Error)]
 #[error("Location header is not a resolvable URI")]

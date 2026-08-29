@@ -344,7 +344,7 @@ fn follow_redirects_true_takes_the_hop() {
     );
 }
 
-/// `follow_redirects: false` → `RedirectPolicy::None`, and the port is now
+/// `follow_redirects: false` → `hclient::redirect::Forbid`, and the port is now
 /// behaviour-for-behaviour with the original.
 ///
 /// This is the test that had to change when `RedirectPolicy` became an enum,
@@ -355,7 +355,7 @@ fn follow_redirects_true_takes_the_hop() {
 /// `wasi-fetch` with `redirect_limit == 0` short-circuits on
 /// `if redirect_limit > 0 && status.is_redirection()` (`request.rs:135`) and
 /// returns the 3xx **as an ordinary response**, so the component forwards
-/// status 302 and the `Location` header to its caller. `RedirectPolicy::None`
+/// status 302 and the `Location` header to its caller. `hclient::redirect::Forbid`
 /// now does the same: `decide` returns `Stop` before any hop counting, and
 /// the response reaches the caller intact.
 ///
@@ -418,7 +418,7 @@ fn limited_zero_still_errors_and_is_not_the_same_as_none() {
     );
 
     let c = Client::builder(m)
-        .redirect(hclient::redirect::RedirectPolicy::Limited(0))
+        .redirect(hclient::redirect::Limit::new(0))
         .build()
         .unwrap();
     let err = futures_executor::block_on(c.get("https://a/first").send())

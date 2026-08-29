@@ -6,6 +6,17 @@ use hclient_core::{
 };
 use hclient_proto::redirect::RedirectPolicy;
 
+/// A redirect policy as the client stores it.
+///
+/// `Arc<dyn ..>` rather than a type parameter, so `Client` keeps naming
+/// none — and so a composed `Limit::new(10).and(SameOriginOnly)` is boxed
+/// **once**, at `build()`, rather than costing anything per hop.
+///
+/// `Send + Sync` is amendment C12's shape: a value the caller owns
+/// reaching `Client` by erasure, bound where they hand it over and
+/// nowhere else.
+pub type SharedRedirectPolicy = std::sync::Arc<dyn RedirectPolicy + Send + Sync>; // send-bound-exception: amendment-C12
+
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct Config {
@@ -36,13 +47,6 @@ pub struct Config {
     /// the caller wrote on the request is a decision about that request,
     /// and a default is a decision about the client.
     pub default_headers: http::HeaderMap,
-    /// A caller's own say over each redirect hop, or `None` for none.
-    ///
-    /// Consulted **after** `redirect::decide` and only about a hop it
-    /// already approved, which is why it is here and not a variant of
-    /// [`RedirectPolicy`] — see `crate::predicate` for that argument and
-    /// for the `Send + Sync` bound it costs.
-    pub redirect_predicate: Option<crate::predicate::RedirectPredicate>,
     /// When to send a hop again, or `None` for never — the default.
     ///
     /// `None` rather than `Some(RetryPolicy::default())` because the
@@ -64,13 +68,13 @@ pub struct Config {
     /// caller can answer. Without one there is nowhere to answer it.
     pub retry_predicate: Option<crate::predicate::RetryPredicate>,
     /// `Option::None` here is "the caller never asked for a redirect
-    /// policy" — distinct from `Some(RedirectPolicy::None)`, which is the
+    /// policy" — distinct from `Some(Forbid)`, which is the
     /// caller explicitly asking not to follow and to be handed the 3xx.
     /// The distinction is load-bearing: the first is accepted by every
     /// backend, the second is refused by one that follows redirects
     /// internally, because it cannot be honoured there.
     ///
-    /// A third thing again is `Some(RedirectPolicy::Limited(0))` — follow
+    /// A third thing again is `Some(Limit::new(0))` — follow
     /// zero hops, so the first 3xx is `ErrorKind::Redirect`.
     ///
     /// An `Option` rather than a bare `RedirectPolicy` because
@@ -84,7 +88,7 @@ pub struct Config {
     /// Every read site takes `unwrap_or_default()`, so an unconfigured
     /// client still follows up to `RedirectPolicy::default()`'s ten hops —
     /// this field's type changed, no behavior did.
-    pub redirect: Option<RedirectPolicy>,
+    pub redirect: Option<SharedRedirectPolicy>,
     pub base_url: Option<http::Uri>,
     /// A bound on the **whole operation**, measured with the clock the
     /// client carries as its second type parameter.
@@ -272,9 +276,15 @@ pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts
 /// a use for it, and the facade's export list is already over-wide.
 pub(crate) fn effective_redirect(
     req: &http::Extensions,
-    client: &Option<RedirectPolicy>,
-) -> Option<RedirectPolicy> {
-    req.get::<RedirectPolicy>().copied().or(*client)
+    client: &Option<SharedRedirectPolicy>,
+) -> Option<SharedRedirectPolicy> {
+    // `.cloned()` where this was `.copied()`: the per-request override is
+    // an `Arc` now, so the clone is a refcount bump rather than a `u8`
+    // copy. One allocation-free bump per hop, against a policy that can
+    // hold a closure and a chain.
+    req.get::<SharedRedirectPolicy>()
+        .cloned()
+        .or_else(|| client.clone())
 }
 
 /// Called from `ClientBuilder::build()`. Not a single silent no-op.
@@ -372,11 +382,9 @@ pub fn check_supported(
         // Refused under its own name, because a caller who wrote
         // `redirect_predicate` should not be told `redirect_policy` was
         // the problem.
-        redirect_predicate,
         cookies,
         cache,
     } = cfg;
-    check_redirect_predicate_supported(redirect_predicate, caps, backend)?;
     check_default_headers_supported(default_headers, caps, backend)?;
     check_timeouts_supported(timeouts, caps, backend)?;
     check_redirect_supported(redirect, caps, backend)?;
@@ -509,7 +517,7 @@ pub(crate) fn check_cookies_supported(
 /// `Config`, and the `hclient` facade already exports more plumbing than
 /// it should.
 pub(crate) fn check_redirect_supported(
-    redirect: &Option<RedirectPolicy>,
+    redirect: &Option<SharedRedirectPolicy>,
     caps: &Capabilities,
     backend: &'static str,
 ) -> Result<(), UnsupportedCapability> {
@@ -649,27 +657,6 @@ fn check_default_headers_supported(
                 backend,
             });
         }
-    }
-    Ok(())
-}
-
-/// A redirect predicate against a transport that follows redirects itself
-/// is an error, for `check_redirect_supported`'s reason exactly: under
-/// [`RedirectSupport::Internal`] the chain is already walked by the time
-/// anything is handed back, so the predicate would never be asked and a
-/// caller's rule about where this client may be sent would silently not
-/// apply. That is the worst direction for this particular setting to fail
-/// in — the settings people write here are the ones that refuse a hop.
-pub(crate) fn check_redirect_predicate_supported(
-    predicate: &Option<crate::predicate::RedirectPredicate>,
-    caps: &Capabilities,
-    backend: &'static str,
-) -> Result<(), UnsupportedCapability> {
-    if predicate.is_some() && caps.redirects == RedirectSupport::Internal {
-        return Err(UnsupportedCapability {
-            what: "redirect_predicate",
-            backend,
-        });
     }
     Ok(())
 }
@@ -906,7 +893,7 @@ mod tests {
     #[test]
     fn configured_redirect_policy_against_an_internal_backend_is_an_error() {
         let cfg = Config {
-            redirect: Some(RedirectPolicy::Limited(5)),
+            redirect: Some(std::sync::Arc::new(hclient_proto::redirect::Limit::new(5))),
             ..Default::default()
         };
         let err = check_supported(
@@ -967,7 +954,7 @@ mod tests {
     #[test]
     fn configured_redirect_policy_against_a_transparent_backend_is_fine() {
         let cfg = Config {
-            redirect: Some(RedirectPolicy::Limited(5)),
+            redirect: Some(std::sync::Arc::new(hclient_proto::redirect::Limit::new(5))),
             ..Default::default()
         };
         assert!(
@@ -987,34 +974,67 @@ mod tests {
     /// directions are checked here, and the client-only case below.
     #[test]
     fn request_redirect_policy_replaces_the_clients() {
-        let client = Some(RedirectPolicy::Limited(3));
+        use hclient_proto::redirect::Limit;
+
+        // **Compared by behaviour, not by value.** The policy is an
+        // `Arc<dyn ..>` now, so there is no `PartialEq` to assert on —
+        // and asking the returned policy what it does is the better
+        // assertion anyway: it would fail for a merge that returned the
+        // right *type* configured wrongly.
+        fn probe(hops: u8) -> hclient_proto::redirect::ProposedRedirect<'static> {
+            static FROM: std::sync::LazyLock<http::Uri> =
+                std::sync::LazyLock::new(|| "https://a/".parse().unwrap());
+            static TO: std::sync::LazyLock<http::Uri> =
+                std::sync::LazyLock::new(|| "https://a/next".parse().unwrap());
+            hclient_proto::redirect::ProposedRedirect::new(
+                &FROM,
+                &TO,
+                http::StatusCode::FOUND,
+                &http::Method::GET,
+                false,
+                hops,
+                &[],
+            )
+        }
+
+        fn limit_in_force(p: &SharedRedirectPolicy) -> u8 {
+            (0u8..=20)
+                .find(|&h| {
+                    matches!(
+                        p.follow(&probe(h)),
+                        hclient_proto::redirect::RedirectVerdict::Refuse(_)
+                    )
+                })
+                .expect("some hop count is refused")
+        }
+
+        let client: Option<SharedRedirectPolicy> = Some(std::sync::Arc::new(Limit::new(3)));
         let mut ext = http::Extensions::new();
-        ext.insert(RedirectPolicy::Limited(7));
+        let on_request: SharedRedirectPolicy = std::sync::Arc::new(Limit::new(7));
+        ext.insert(on_request);
+
         assert_eq!(
-            effective_redirect(&ext, &client),
-            Some(RedirectPolicy::Limited(7)),
+            limit_in_force(&effective_redirect(&ext, &client).unwrap()),
+            7,
             "the request's policy wins"
         );
         assert_eq!(
-            effective_redirect(&http::Extensions::new(), &client),
-            Some(RedirectPolicy::Limited(3)),
+            limit_in_force(&effective_redirect(&http::Extensions::new(), &client).unwrap()),
+            3,
             "with nothing on the request, the client's stands"
         );
-        assert_eq!(
-            effective_redirect(&http::Extensions::new(), &None),
-            None,
-            "neither side configured anything, and that stays distinguishable"
+        assert!(
+            effective_redirect(&http::Extensions::new(), &None).is_none(),
+            "and with neither, nobody asked"
         );
     }
 
-    /// A per-request policy against an `Internal` backend must be rejected
-    /// on the same footing as a client-level one — checking only the
-    /// client's `Config` would leave this path silently unchecked, which is
-    /// the exact defect the whole module exists against.
     #[test]
     fn a_request_only_redirect_policy_is_still_checked_against_internal() {
         let mut ext = http::Extensions::new();
-        ext.insert(RedirectPolicy::Limited(0));
+        ext.insert::<SharedRedirectPolicy>(std::sync::Arc::new(
+            hclient_proto::redirect::Limit::new(0),
+        ));
         let merged = effective_redirect(&ext, &None);
         let err = check_redirect_supported(
             &merged,
