@@ -155,6 +155,7 @@ async fn scripted_client(
     let (stream, _info) = bounded(tls.connect(
         scripted,
         TlsRequest {
+            identity: None,
             server_name: "localhost",
             alpn: &[],
             ech: None,
@@ -376,6 +377,7 @@ async fn abrupt_rst_close_without_close_notify_is_reported_as_a_real_error() {
     let (mut stream, _info) = bounded(tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: "localhost",
             alpn: &[],
             ech: None,

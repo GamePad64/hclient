@@ -100,6 +100,17 @@ pub struct QuicTlsRequest<'a> {
     ///
     /// [`TlsRequest::early_data`]: crate::TlsRequest::early_data
     pub early_data: bool,
+    /// The client identity the caller named, mirroring
+    /// [`TlsRequest::identity`](crate::TlsRequest::identity).
+    ///
+    /// **This field is here because omitting it would not be a compile
+    /// error.** `QuicTlsRequest` is a separate type from `TlsRequest` by
+    /// a deliberate decision, so a client-certificate seam that reached
+    /// only the TCP path would present an identity over HTTP/1 and HTTP/2
+    /// and silently omit it over HTTP/3 — one request, answered
+    /// differently depending on which protocol the pool happened to
+    /// offer, and nothing would fail to build.
+    pub identity: Option<&'a str>,
 }
 
 /// A TLS backend that can drive a QUIC handshake.

@@ -90,7 +90,7 @@ impl QuicTlsConnect for Rustls {
                 ),
             ));
         }
-        let cfg = self.quic_config_for(req.alpn, req.early_data);
+        let cfg = self.quic_config_for(req.alpn, req.early_data, req.identity);
         let quic = quinn_proto::crypto::rustls::QuicClientConfig::try_from(cfg)
             .map_err(|e| Error::new(ErrorKind::Tls, e))?;
         Ok(Arc::new(quic))
@@ -110,7 +110,33 @@ impl QuicTlsConnect for Rustls {
 }
 
 impl Rustls {
-    fn quic_config_for(&self, alpn: &[&[u8]], early_data: bool) -> Arc<rustls::ClientConfig> {
+    fn quic_config_for(
+        &self,
+        alpn: &[&[u8]],
+        early_data: bool,
+        identity: Option<&str>,
+    ) -> Arc<rustls::ClientConfig> {
+        // **The QUIC half of the client-identity seam, and it is where
+        // this implementation nearly repeated the mistake its own design
+        // document warns about.** Adding `identity` to `QuicTlsRequest`
+        // made the *transport* fail to compile; a backend that took the
+        // field and ignored it fails nothing at all, and the result is a
+        // certificate presented over TCP and silently omitted over QUIC.
+        //
+        // Uncached, for `config_for`'s reason one file over: the cache
+        // exists for a path taken on every connection, and a named
+        // identity is asked for.
+        if let Some(name) = identity {
+            let Some(cfg) = self.config_for_identity(name) else {
+                return self.quic_config_for(alpn, early_data, None);
+            };
+            let state = self.quic.get_or_init(QuicState::default);
+            let mut cfg = (*cfg).clone();
+            cfg.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
+            cfg.resumption = rustls::client::Resumption::store(state.store());
+            cfg.enable_early_data = early_data;
+            return Arc::new(cfg);
+        }
         let key: Vec<Vec<u8>> = alpn.iter().map(|a| a.to_vec()).collect();
         let state = self.quic.get_or_init(QuicState::default);
         let mut cache = state.configs.lock().expect("quic config cache poisoned");

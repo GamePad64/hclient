@@ -48,6 +48,7 @@ async fn completes_handshake_and_echoes() {
     let (mut stream, info) = bounded(tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: "localhost",
             alpn: &[b"http/1.1"],
             ech: None,
@@ -93,6 +94,7 @@ async fn rejects_an_untrusted_certificate() {
     let err = bounded(tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: "localhost",
             alpn: &[],
             ech: None,

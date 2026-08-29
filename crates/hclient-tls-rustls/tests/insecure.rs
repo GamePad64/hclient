@@ -49,6 +49,7 @@ async fn handshake(tls: &Rustls, addr: std::net::SocketAddr) -> Result<(), hclie
     bounded(tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: "localhost",
             alpn: &[b"http/1.1"],
             ech: None,
@@ -96,6 +97,7 @@ async fn the_negotiated_alpn_still_comes_back() {
     let (_stream, info) = bounded(tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: "localhost",
             alpn: &[b"http/1.1"],
             ech: None,

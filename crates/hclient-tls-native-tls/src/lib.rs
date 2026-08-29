@@ -4,9 +4,17 @@
 //!
 //! Why both exist: rustls is the default because it is memory-safe and
 //! reproducible across platforms, but an organisation whose trust decisions
-//! live in the OS store — enterprise roots pushed by policy, smartcard
-//! client certs, a FIPS-validated provider — needs the platform stack, and
-//! that is a deployment fact no library can argue with.
+//! live in the OS store — enterprise roots pushed by policy, a
+//! FIPS-validated provider — needs the platform stack, and that is a
+//! deployment fact no library can argue with.
+//!
+//! **Smartcards were on that list and are not reachable through this
+//! backend**, measured rather than assumed: [`native_tls::Identity`] has
+//! two constructors, `from_pkcs12(der, password)` and `from_pkcs8(pem,
+//! key)`, and both take **bytes**. A key the OS holds and will not export
+//! is therefore as far out of reach here as it is through rustls. Reaching
+//! one needs a backend bound to the keystore itself — `rustls-cng` on
+//! Windows — which this workspace does not have.
 //!
 //! **`TlsInfo::alpn` is reported, and for two verticals this paragraph
 //! said it could not be.** It read that the negotiated answer was
@@ -174,9 +182,15 @@ impl TlsIdentity for NativeTls {
     /// `hclient-tls-rustls` does by default. Its module doc is a list of
     /// what it cannot say back — the protocol version and the cipher
     /// suite, the ALPN having since been recovered — and this
-    /// is the other direction: `identity()` is the whole point of reaching
-    /// for the platform's stack, since a smartcard or an OS-held key is
-    /// exactly what a caller cannot hand to rustls as bytes.
+    /// is the other direction: this backend can present a client
+    /// certificate, and says so by asking whether one was configured
+    /// rather than by remembering a flag.
+    ///
+    /// It is **not** the reason to reach for the platform's stack, which
+    /// this doc claimed for four verticals: `native_tls::Identity` is
+    /// built from PKCS#12 or PKCS#8 **bytes**, so an OS-held key that
+    /// cannot be exported is out of reach here exactly as it is through
+    /// rustls — and a key that *can* be exported is bytes either way.
     fn presents_client_certs(&self) -> bool {
         self.identity.is_some()
     }

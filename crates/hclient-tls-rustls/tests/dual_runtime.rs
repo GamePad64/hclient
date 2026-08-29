@@ -36,6 +36,7 @@ async fn handshake_and_echo<R: TcpConnect>(rt: R, addr: SocketAddr, ca_der: Vec<
         .connect(
             tcp,
             TlsRequest {
+                identity: None,
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,

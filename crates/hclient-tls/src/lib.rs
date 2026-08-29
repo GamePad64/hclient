@@ -100,6 +100,18 @@ pub struct TlsRequest<'a> {
     /// here than an error. A new `TlsConnect` implementation that does not
     /// honour this field owes the same refusal.
     pub ech: Option<&'a [u8]>,
+    /// The client identity the caller named, or `None` for this
+    /// backend's default.
+    ///
+    /// A **label the caller invented**, never a certificate and never a
+    /// store query: what it resolves to is the backend's business, and
+    /// that is the only thing that can be the same on Windows, macOS,
+    /// PKCS#11 and Android at once. See `docs/mtls-design.md` §3.1.
+    ///
+    /// A backend that does not know the name must refuse rather than
+    /// connect with its default — silently substituting an identity is
+    /// how one tenant's certificate reaches another's server.
+    pub identity: Option<&'a str>,
     /// TLS 1.3 early data (0-RTT): `Some(n)` asks the backend to offer it
     /// and to accept up to `n` bytes of application data in the first
     /// flight, `None` asks for none. **Reserved, not implemented** — no
@@ -391,6 +403,24 @@ pub trait TlsIdentity {
     /// not a field to be wrong about by silence — so every implementation
     /// answers, and adding one is a compile error until it does.
     fn config_id(&self) -> TlsConfigId;
+
+    /// The identity the caller named, or `None` — this backend has none
+    /// by that name.
+    ///
+    /// **Defaulted to refusing every name**, which is the understating
+    /// direction and `reports_alpn`'s rule: a backend that knows nothing
+    /// about labels says so, and the layer above turns that into an error
+    /// naming the label. Connecting with the default identity instead is
+    /// how one tenant's certificate reaches another tenant's server.
+    ///
+    /// The returned id is what isolates connections: it is already a
+    /// component of `hclient-native`'s pool key, so two labels resolving
+    /// to two ids cannot share a connection by construction rather than
+    /// by a check.
+    fn config_id_for(&self, name: &str) -> Option<TlsConfigId> {
+        let _ = name;
+        None
+    }
 
     /// Whether this connector presents a **client certificate** when a
     /// server asks for one.
@@ -827,6 +857,7 @@ mod tests {
         let http11 = b"http/1.1".to_vec();
         let alpn = [h2.as_slice(), http11.as_slice()];
         let req = TlsRequest {
+            identity: None,
             server_name: "example.com",
             alpn: &alpn,
             ech: None,

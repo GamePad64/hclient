@@ -11,6 +11,35 @@
 //! `#[allow(unsafe_code)]` next to the `unsafe` block itself — the
 //! compiler would stay silent; `forbid` cannot be overridden from inside
 //! the crate at all (`E0453`).
+//!
+//! # A client certificate, and two routes to one
+//!
+//! Both plain constructors here say `with_no_client_auth()`, so mTLS is
+//! asked for explicitly. There are two ways to ask, and which one is
+//! right turns on whether the certificate is a property of the
+//! **backend** or of the **request**.
+//!
+//! [`Rustls::from_config`] takes a `rustls::ClientConfig` the caller
+//! built with `.with_client_auth_cert(chain, key)`, and every connection
+//! this backend makes presents it. That is the whole of mTLS for a
+//! client with one identity, which is most of them.
+//!
+//! [`Rustls::with_identity`] registers a config under a **name**, and a
+//! request carrying [`hclient_core::ClientIdentity`] selects it. That is
+//! for a client that holds several — a tenant per certificate, a
+//! smartcard beside a software key — where the choice cannot be made at
+//! construction because it is not the same for every request.
+//!
+//! Two things hold for both routes and are worth knowing before assuming
+//! otherwise. [`TlsIdentity::presents_client_certs`] asks the **config**
+//! rather than remembering a constructor flag, so a `from_config` caller
+//! is reported correctly by `Capabilities::client_certs` — and by the
+//! HTTP/3 path, which clones this same config. And each config draws its
+//! own [`TlsConfigId`], which is part of `hclient-native`'s pool key, so
+//! two different certificates cannot share a connection: the isolation
+//! is by construction rather than by a check, which matters because the
+//! failure mode is presenting one tenant's certificate on another's
+//! behalf.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "dangerous-insecure")]
@@ -54,6 +83,20 @@ type AlpnCache = Arc<Mutex<HashMap<Vec<Vec<u8>>, Arc<rustls::ClientConfig>>>>;
 #[derive(Debug, Clone)]
 pub struct Rustls {
     base: Arc<rustls::ClientConfig>,
+    /// Named client identities, each its own config and its own
+    /// [`TlsConfigId`].
+    ///
+    /// **The id is what isolates connections**: it is a component of
+    /// `hclient-native`'s pool key, so two labels cannot share a
+    /// connection by construction rather than by a check — which matters
+    /// because the failure mode is presenting one tenant's certificate on
+    /// another's behalf.
+    ///
+    /// An `Arc<HashMap>` rather than a `Mutex`: identities are registered
+    /// at construction and never after, so there is nothing to lock. That
+    /// is deliberate — a registry that could change under a live pool
+    /// would let a label mean two things at two moments.
+    identities: Arc<HashMap<Box<str>, Named>>,
     /// ALPN is set on connect, and `ClientConfig` stores it internally —
     /// so the config is cached per ALPN set. Without the cache, every
     /// request would rebuild the config from scratch, and that's the
@@ -76,9 +119,46 @@ pub struct Rustls {
     quic: Arc<OnceLock<quic::QuicState>>,
 }
 
+/// One named identity: its config and the id that keys its connections.
+#[derive(Debug, Clone)]
+struct Named {
+    config: Arc<rustls::ClientConfig>,
+    id: TlsConfigId,
+}
+
 impl Rustls {
+    /// Registers a client identity under a name of the caller's choosing.
+    ///
+    /// The `ClientConfig` is theirs to build — `with_client_auth_cert`
+    /// for a certificate in hand, or a `ResolvesClientCert` of their own
+    /// over a platform store. **This crate takes no position on where the
+    /// certificate comes from**, because no representation of one is
+    /// shared by Windows, macOS, PKCS#11 and Android; see
+    /// `docs/mtls-design.md`.
+    ///
+    /// A fresh [`TlsConfigId`] is drawn per identity, which is what keeps
+    /// two of them off one connection.
+    #[must_use]
+    pub fn with_identity(
+        mut self,
+        name: impl Into<Box<str>>,
+        cfg: Arc<rustls::ClientConfig>,
+    ) -> Self {
+        let mut map = HashMap::clone(&self.identities);
+        map.insert(
+            name.into(),
+            Named {
+                config: cfg,
+                id: TlsConfigId::new_unique(),
+            },
+        );
+        self.identities = Arc::new(map);
+        self
+    }
+
     pub fn from_config(cfg: Arc<rustls::ClientConfig>) -> Self {
         Self {
+            identities: Arc::new(HashMap::new()),
             base: cfg,
             by_alpn: Arc::new(Mutex::new(HashMap::new())),
             config_id: TlsConfigId::new_unique(),
@@ -179,7 +259,34 @@ impl Rustls {
         Ok(Self::from_config(Arc::new(cfg)))
     }
 
-    fn config_for(&self, alpn: &[&[u8]]) -> Arc<rustls::ClientConfig> {
+    /// The config registered under a name.
+    pub(crate) fn config_for_identity(&self, name: &str) -> Option<Arc<rustls::ClientConfig>> {
+        self.identities.get(name).map(|n| n.config.clone())
+    }
+
+    fn config_for(&self, alpn: &[&[u8]], identity: Option<&str>) -> Arc<rustls::ClientConfig> {
+        // **A named identity is not cached per ALPN**, and that is a
+        // decision rather than an omission: the ALPN cache exists because
+        // cloning a `ClientConfig` is rustls' most expensive operation on
+        // a path taken for every connection, where a named identity is
+        // taken by a caller who asked for one. Caching the cross product
+        // would multiply the entries by the identities to save a clone on
+        // a rarer path.
+        //
+        // A name this backend has not got cannot arrive here: the
+        // transport resolved it through `config_id_for` before opening a
+        // socket, and refused there.
+        if let Some(name) = identity {
+            let Some(named) = self.config_for_identity(name) else {
+                return self.base.clone();
+            };
+            if alpn.is_empty() {
+                return named;
+            }
+            let mut cfg = (*named).clone();
+            cfg.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
+            return Arc::new(cfg);
+        }
         if alpn.is_empty() {
             return self.base.clone();
         }
@@ -341,6 +448,14 @@ impl TlsIdentity for Rustls {
     /// this same `base`, so the cert resolver it carries is this one.
     fn presents_client_certs(&self) -> bool {
         self.base.client_auth_cert_resolver.has_certs()
+            || self
+                .identities
+                .values()
+                .any(|n| n.config.client_auth_cert_resolver.has_certs())
+    }
+
+    fn config_id_for(&self, name: &str) -> Option<TlsConfigId> {
+        self.identities.get(name).map(|n| n.id)
     }
 }
 
@@ -386,10 +501,11 @@ impl TlsConnect for Rustls {
             Ok(n) => n.to_owned(),
             Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
         };
-        let conn = match rustls::ClientConnection::new(self.config_for(req.alpn), name) {
-            Ok(c) => c,
-            Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
-        };
+        let conn =
+            match rustls::ClientConnection::new(self.config_for(req.alpn, req.identity), name) {
+                Ok(c) => c,
+                Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
+            };
         Handshaking::driving(TlsStream::new(io, conn))
     }
 }

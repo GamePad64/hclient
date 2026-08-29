@@ -97,6 +97,7 @@ use hclient_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use hclient_tls::TlsConfigId;
 use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
 use hooks::{ConnState, Watch, mark, since};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::poll_fn;
@@ -123,6 +124,15 @@ struct PoolKey {
     port: u16,
     tls: TlsConfigId,
     early_data: bool,
+    /// The client identity this connection presents, by the caller's own
+    /// name for it.
+    ///
+    /// **`tls` alone would isolate connections correctly** — a named
+    /// identity resolves to a distinct `TlsConfigId` — so this field is
+    /// not what keeps two tenants apart. It is here because `dial` needs
+    /// the *name* to hand to `QuicTlsRequest`, and the key is what `dial`
+    /// is given.
+    identity: Option<Cow<'static, str>>,
 }
 
 type SendRequest = h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>;
@@ -752,6 +762,13 @@ where
             alpn: &[ALPN_H3],
             ech: None,
             early_data: key.early_data,
+            // **The field that would not have been a compile error.**
+            // `QuicTlsRequest` is a separate type from `TlsRequest`, so a
+            // client-certificate seam reaching only the TCP path would
+            // present an identity over HTTP/1 and HTTP/2 and silently omit
+            // it here — one request answered differently depending on
+            // which protocol the pool happened to offer.
+            identity: key.identity.as_deref(),
         })?;
         let endpoint = self.endpoint(addr)?;
         let mut cfg = quinn::ClientConfig::new(crypto);

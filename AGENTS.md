@@ -482,8 +482,20 @@ be right.
 every platform. `hclient-tls-native-tls` uses the platform's own stack —
 SChannel, Security.framework, OpenSSL — and exists for deployments whose
 trust decisions live in the OS store: enterprise roots pushed by policy,
-smartcard client certificates, a FIPS-validated provider. That is a fact
-about an environment, not a preference. It reports less back, and its own
+a FIPS-validated provider. That is a fact about an environment, not a
+preference.
+
+**Smartcards were on that list for four verticals and are not reachable
+through this backend**, which was measured while building the mTLS seam
+rather than assumed. `native_tls::Identity` has exactly two constructors
+— `from_pkcs12(der, password)` and `from_pkcs8(pem, key)` — and both take
+**bytes**, so a key the OS holds and will not export is as unreachable
+here as it is through rustls. What the platform stack genuinely buys is
+the trust *store* and the provider, which is the rest of the list; a
+non-exportable client key needs a backend that can reach the keystore
+itself (`rustls-cng` on Windows), and this workspace has none. The claim
+was the *wrapper* shape one field over: the platform holds such keys, and
+the crate binding the platform does not hand them over. It reports less back, and its own
 module doc says exactly what: no protocol version and no cipher suite.
 **The ALPN is no longer on that list**, and the story of why is the
 section below.
@@ -518,8 +530,8 @@ owns.
 
 **What it bought is two things, and the second was not the point.**
 `Client` works over the platform stack again — which is the whole reason
-this crate exists, since an organisation with MDM roots or a smartcard
-cannot use rustls. And `reports_alpn` is `true`:
+this crate exists, since an organisation with MDM roots cannot use
+rustls. And `reports_alpn` is `true`:
 `native_tls::TlsStream::negotiated_alpn` is public, and only the wrapper's
 absence of a re-export had hidden it. This crate's own doc called that
 limitation concrete for two verticals while naming its cause correctly and
@@ -554,6 +566,80 @@ ever in a graph beside a transport.
 
 `TlsConnect` and `QuicTlsConnect` share `TlsIdentity`, so a connector has
 one configuration identity rather than two.
+
+### A client certificate is chosen by a name, and the name is the only portable thing
+
+mTLS with **one** identity has always worked: `Rustls::from_config` takes a
+`rustls::ClientConfig` built with `.with_client_auth_cert(chain, key)`, and
+every connection presents it. What did not exist is choosing **per
+request** — a tenant per certificate, a smartcard beside a software key —
+and that is now `hclient_core::ClientIdentity` in the request's extensions,
+`TlsRequest::identity` on the seam, and `Rustls::with_identity(name, cfg)`
+on the backend.
+
+**What travels is a label the caller invented, and that is the whole
+design.** Not a certificate — a key in a smartcard cannot be handed over as
+bytes. Not a store query — `CERT_FIND_SUBJECT_STR` means nothing to
+PKCS#11, and a `SecIdentityRef` means nothing to Windows. A name is the
+only value that means the same thing on Windows, macOS, PKCS#11 and
+Android at once, because it means nothing on any of them until a backend
+resolves it. `docs/mtls-design.md` §3.1.
+
+**The seam is `TlsIdentity::config_id_for(name) -> Option<TlsConfigId>`,
+defaulted to `None`** — `reports_alpn`'s and `applies_ech`'s shape, a
+constant defaulted to the understating value, read by the layer above to
+decide whether to *ask*. A backend that never heard of labels refuses every
+name, and `hclient-native` turns that into an error naming the label
+**before it opens a socket**. The alternative — connecting with the default
+identity — is how one tenant's certificate reaches another tenant's server,
+which is the *silently ignored setting* defect where the setting is a
+credential.
+
+**Isolation is by construction rather than by a check**, and it cost one
+expression: `TlsConfigId` was already a component of `hclient-native`'s
+pool key, so resolving the label into that key is the whole of it —
+`Security::Tls(identity_id.unwrap_or_else(|| self.tls.config_id()))`. Two
+labels to one origin therefore cannot share a connection. That is the
+load-bearing property and it is mutation-verified: dropping the
+`unwrap_or_else` back to the connector's own id fails exactly
+`two_identities_to_one_origin_cannot_share_a_connection` and nothing else.
+The control is the same label twice, which must share one.
+
+**The label is `Cow<'static, str>` rather than an `Arc<str>`**, because it
+is almost always a literal: `Cow::Borrowed` costs nothing where
+`Arc::from(&str)` allocates on every request. A computed label pays a
+`String` clone per hop, bounded by the redirect limit and a few bytes wide.
+
+**The QUIC half was written by the compiler and one line was not.**
+`QuicTlsRequest` carries the same field, and threading it through
+`hclient-h3` was mechanical — except that `quic_config_for` accepted the
+identity and ignored it, which the type checker cannot see. The design
+document had warned about exactly this shape one section earlier and the
+warning was realised inside its own implementation: **the compiler catches
+the transport and never the backend.**
+
+**The observation half is designed and deliberately not shipped.** A caller
+who wants to *choose* interactively needs to see what the server asked for
+— the DER-encoded authority names and the signature schemes — and
+`docs/mtls-design.md` §3.4 and §3.5 say how: rustls has no handshake pause,
+so an interactive choice is observe, abandon, choose, redial, not a
+callback. The `ClientCertRequest` value for it was written and then
+**removed before commit**, because it had no producer and no reader — which
+is the shape `UpgradeSupport`'s spare variants were deleted for, and
+`TlsInfo` is `#[non_exhaustive]`, so it costs nothing to land it with the
+recording resolver instead of ahead of one.
+
+**And this workspace was wrong twice about rustls and about smartcards.**
+It was said here that a server sending a DN list lets rustls choose:
+`SingleCertAndKey::resolve` takes `_root_hint_subjects` and `_sigschemes`
+and **discards both by name**, so rustls ships no resolver that chooses at
+all — nothing in this workspace narrows a certificate set, and the DN list
+is a thing to hand a caller rather than a thing anything acts on. The
+smartcard claim is corrected where it was made: `native_tls::Identity`
+builds from PKCS#12 or PKCS#8 **bytes** only, so the platform backend
+cannot reach an OS-held key either. Reaching one needs a backend bound to
+the keystore — `rustls-cng` on Windows — and that is the next step rather
+than a thing already there.
 
 `NoTls` in `hclient-tls` is the third choice: no TLS at all, for a build
 that has no room for a stack. `https://` then fails at connect with a typed

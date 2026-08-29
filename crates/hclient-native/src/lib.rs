@@ -2284,7 +2284,21 @@ where
     /// fresh connection it is whatever ALPN selects, several round trips
     /// from now. So this returns the parts, and [`KeyParts::key`] finishes
     /// the key once there is an answer.
-    fn key_parts(&self, uri: &http::Uri) -> Result<KeyParts, Error> {
+    /// `identity` is the resolved [`TlsConfigId`] of a named client
+    /// identity, where the request asked for one.
+    ///
+    /// **It goes into the key, and that is the isolation.** Two labels
+    /// resolve to two ids, so they cannot share a connection — by
+    /// construction rather than by a check, which matters because the
+    /// failure mode is presenting one tenant's certificate on another
+    /// tenant's behalf and no error would report it. Written as
+    /// `let _ = identity_id;` first and caught immediately by the test
+    /// that exists for exactly this.
+    fn key_parts(
+        &self,
+        uri: &http::Uri,
+        identity: Option<hclient_tls::TlsConfigId>,
+    ) -> Result<KeyParts, Error> {
         let host = connect::host(uri)?;
         let use_tls = connect::wants_tls(uri)?;
         let port = connect::port(uri, use_tls);
@@ -2292,7 +2306,7 @@ where
             // The identity of the trust configuration, asked of the TLS
             // backend rather than inferred from its type — see
             // `hclient_tls::TlsConfigId`.
-            Security::Tls(self.tls.config_id())
+            Security::Tls(identity.unwrap_or_else(|| self.tls.config_id()))
         } else {
             Security::Plaintext
         };
@@ -3048,7 +3062,33 @@ where
         // same `connect::wants_tls`/`connect::host` checks
         // `connect::connect` runs, and fails with the same typed errors, so
         // everything downstream may still assume they passed.
-        let parts_of_key = self.key_parts(&parts.uri)?;
+        // **The client identity, read here and resolved before any
+        // socket.** A label rather than a certificate, because no
+        // representation of a certificate is shared by Windows, macOS,
+        // PKCS#11 and Android — see `docs/mtls-design.md`.
+        //
+        // A name this backend does not know is a **refusal naming it**,
+        // never a connection with the default identity: substituting one
+        // silently is how one tenant's certificate reaches another
+        // tenant's server.
+        let identity = parts
+            .extensions
+            .get::<hclient_core::ClientIdentity>()
+            .map(|i| i.0.clone());
+        let identity_id = match identity.as_deref() {
+            None => None,
+            Some(id) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, id) {
+                Some(cfg) => Some(cfg),
+                None => {
+                    return Err(Error::new(
+                        ErrorKind::Tls,
+                        UnknownClientIdentity(id.to_string()),
+                    ));
+                }
+            },
+        };
+        let identity = identity.as_deref();
+        let parts_of_key = self.key_parts(&parts.uri, identity_id)?;
         // A transport that has forbidden HTTP/1.1 cannot serve `http://`:
         // plaintext carries no ALPN, and the only route to HTTP/2 there is
         // prior knowledge (RFC 9113 §3.4), which this transport does not
@@ -3270,6 +3310,7 @@ where
             &uri,
             &self.opts,
             alpn,
+            identity,
             &self.svcb_failures,
             now,
             // Whatever `prepare` found, or `NotConsulted` for a request
@@ -3874,3 +3915,12 @@ where
         ))
     }
 }
+
+/// A request named a client identity this TLS backend has not got.
+///
+/// A refusal rather than a fallback: connecting with the default identity
+/// is how one tenant's certificate reaches another tenant's server, and
+/// nothing at the call site would show it happened.
+#[derive(Debug, thiserror::Error)]
+#[error("no client identity named `{0}` in this TLS backend")]
+pub(crate) struct UnknownClientIdentity(pub(crate) String);

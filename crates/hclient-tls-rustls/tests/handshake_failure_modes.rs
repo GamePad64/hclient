@@ -33,6 +33,7 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
         tls.connect(
             tcp,
             TlsRequest {
+                identity: None,
                 server_name: "not-localhost.invalid", // trusted CA, wrong hostname
                 alpn: &[],
                 ech: None,
@@ -134,6 +135,7 @@ where
         tls.connect(
             tcp,
             TlsRequest {
+                identity: None,
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,

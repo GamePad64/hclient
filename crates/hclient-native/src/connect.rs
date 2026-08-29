@@ -946,6 +946,9 @@ async fn through_proxy<R, L, P, H>(
     port: u16,
     opts: &TcpOpts,
     alpn: &[&[u8]],
+    // The client identity the caller named, threaded beside `alpn`
+    // because it travels the same path and reaches the same `TlsRequest`.
+    identity: Option<&str>,
     began: Option<R::Instant>,
 ) -> Result<
     (
@@ -1014,6 +1017,7 @@ where
     let req = TlsRequest {
         server_name: hclient_core::bare_host(host),
         alpn,
+        identity,
         // No record was consulted, so there is nothing to apply — see this
         // function's doc comment.
         ech: None,
@@ -1042,6 +1046,9 @@ async fn finish_unix<R, L, H>(
     host: &str,
     use_tls: bool,
     alpn: &[&[u8]],
+    // The client identity the caller named, threaded beside `alpn`
+    // because it travels the same path and reaches the same `TlsRequest`.
+    identity: Option<&str>,
     began: Option<R::Instant>,
 ) -> Result<
     (
@@ -1080,6 +1087,7 @@ where
     let req = TlsRequest {
         server_name: hclient_core::bare_host(host),
         alpn,
+        identity,
         ech: None,
         early_data: None,
     };
@@ -1100,6 +1108,9 @@ pub(crate) async fn connect<R, D, L, P, H>(
     uri: &Uri,
     opts: &TcpOpts,
     alpn: &[&[u8]],
+    // The client identity the caller named, threaded beside `alpn`
+    // because it travels the same path and reaches the same `TlsRequest`.
+    identity: Option<&str>,
     discovery_cache: &NegativeCache,
     now: Duration,
     prefetched: Prefetched,
@@ -1149,7 +1160,7 @@ where
             .connect_unix(path)
             .await
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
-        return finish_unix::<R, L, H>(rt, tls, stream, host, use_tls, alpn, began).await;
+        return finish_unix::<R, L, H>(rt, tls, stream, host, use_tls, alpn, identity, began).await;
     }
 
     // The list is walked here rather than by the caller, and the bypass
@@ -1158,7 +1169,7 @@ where
     // proxied path with the proxy removed.
     if let Some(proxy) = crate::proxy::Proxy::choose(proxies, use_tls, host, port) {
         return through_proxy::<R, L, P, H>(
-            rt, dns, tls, proxy, host, use_tls, port, opts, alpn, began,
+            rt, dns, tls, proxy, host, use_tls, port, opts, alpn, identity, began,
         )
         .await;
     }
@@ -1213,6 +1224,7 @@ where
         port,
         opts,
         alpn,
+        identity,
         &mut v6,
         &mut v4,
         endpoint.as_ref(),
@@ -1235,6 +1247,7 @@ where
                 port,
                 opts,
                 alpn,
+                identity,
                 &mut v6,
                 &mut v4,
                 None,
@@ -1412,6 +1425,9 @@ async fn attempt<R, L, H, S6, S4>(
     port: u16,
     opts: &TcpOpts,
     alpn: &[&[u8]],
+    // The client identity the caller named, threaded beside `alpn`
+    // because it travels the same path and reaches the same `TlsRequest`.
+    identity: Option<&str>,
     v6: &mut Answers<S6>,
     v4: &mut Answers<S4>,
     endpoint: Option<&Endpoint>,
@@ -1476,6 +1492,7 @@ where
             // authority syntax and keep their brackets.
             server_name: hclient_core::bare_host(host),
             alpn: restricted.as_deref().unwrap_or(alpn),
+            identity,
             // The whole of the ECH decision, and the reason it is a
             // question rather than an assignment: see the module doc.
             // `applies_ech()` is `false` for every backend here today, so
@@ -2481,6 +2498,7 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            None,
             &cache,
             Duration::ZERO,
             Prefetched::NotConsulted,
@@ -2532,6 +2550,7 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            None,
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
@@ -2730,6 +2749,7 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            None,
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
@@ -2789,6 +2809,7 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            None,
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
@@ -2937,6 +2958,7 @@ mod tests {
                     &uri,
                     &opts,
                     &[],
+                    None,
                     &cache,
                     Duration::ZERO,
                     Prefetched::NotConsulted,
@@ -3044,6 +3066,7 @@ mod tests {
                 &uri,
                 &TcpOpts::default(),
                 &[],
+                None,
                 &NegativeCache::default(),
                 Duration::ZERO,
                 Prefetched::NotConsulted,
@@ -3079,6 +3102,7 @@ mod tests {
                 &uri,
                 &TcpOpts::default(),
                 &[],
+                None,
                 &NegativeCache::default(),
                 Duration::ZERO,
                 Prefetched::NotConsulted,
@@ -3110,6 +3134,7 @@ mod tests {
                 &uri,
                 &TcpOpts::default(),
                 &alpn,
+                None,
                 &NegativeCache::default(),
                 Duration::ZERO,
                 Prefetched::NotConsulted,
@@ -3136,6 +3161,7 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            None,
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
@@ -3169,6 +3195,7 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            None,
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
@@ -3196,6 +3223,7 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            None,
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,

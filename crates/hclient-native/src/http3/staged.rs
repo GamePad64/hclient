@@ -71,6 +71,7 @@ use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hoo
 use hclient_core::unversioned::{ConnectTiming, Connected, Event, Hooks, Reused, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody, Timeouts, check_version};
 use hclient_tls::quic::QuicTlsConnect;
+use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
@@ -257,6 +258,10 @@ pub(crate) struct Admitted {
     pub(crate) port: u16,
     pub(crate) wants_early: bool,
     pub(crate) timeouts: Timeouts,
+    /// The client identity, read from the request and already resolved:
+    /// the name for `QuicTlsRequest`, and the id for the pool key.
+    pub(crate) identity: Option<Cow<'static, str>>,
+    pub(crate) identity_id: Option<hclient_tls::TlsConfigId>,
 }
 
 impl<R, T, D, H> H3<R, T, D, H>
@@ -302,6 +307,27 @@ where
         let port = uri.port_u16().unwrap_or(443);
 
         let wants_early = crate::http3::early::admits_early_data(req);
+        // **Read and resolved before the key is built.** A name this
+        // backend has not got is a refusal, never a dial with the default
+        // identity — see `hclient-native`'s TCP path, which does the same
+        // one screen over, and `docs/mtls-design.md` for why both paths
+        // must.
+        let identity = req
+            .extensions()
+            .get::<hclient_core::ClientIdentity>()
+            .map(|i| i.0.clone());
+        let identity_id = match identity.as_deref() {
+            None => None,
+            Some(name) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, name) {
+                Some(cfg) => Some(cfg),
+                None => {
+                    return Err(crate::Error::new(
+                        hclient_core::ErrorKind::Tls,
+                        crate::UnknownClientIdentity(name.to_owned()),
+                    ));
+                }
+            },
+        };
         if req
             .extensions()
             .get::<hclient_core::AllowEarlyData>()
@@ -320,6 +346,8 @@ where
             host,
             port,
             wants_early,
+            identity,
+            identity_id,
             timeouts: req
                 .extensions()
                 .get::<Timeouts>()
@@ -356,6 +384,8 @@ where
             port,
             wants_early,
             timeouts,
+            identity,
+            identity_id,
         } = match self.admit(&req) {
             Ok(a) => a,
             Err(e) => return Err((e, req)),
@@ -384,11 +414,15 @@ where
         let connect = async {
             let addr = self.resolve(&host, port).await?;
             let dns = crate::http3::since::<R>(&self.rt, began);
+            // The identity is resolved before the key is built, so a
+            // name this backend has not got refuses here rather than
+            // dialling with the default one.
             let key = PoolKey {
                 host,
                 port,
-                tls: self.tls.config_id(),
+                tls: identity_id.unwrap_or_else(|| self.tls.config_id()),
                 early_data: wants_early,
+                identity: identity.clone(),
             };
             self.checkout(&key, addr, dns).await
         };

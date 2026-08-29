@@ -431,7 +431,26 @@ where
             .get::<Timeouts>()
             .copied()
             .unwrap_or_default();
-        let parts_of_key = match self.key_parts(req.uri()) {
+        // Read and resolved here for the reason `Native::run` does the
+        // same one file over: a name this backend has not got is a
+        // refusal, never a connection with the default identity.
+        let named = req.extensions().get::<hclient_core::ClientIdentity>();
+        let identity_id = match named {
+            None => None,
+            Some(id) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, id.name()) {
+                Some(cfg) => Some(cfg),
+                None => {
+                    let e = Error::new(
+                        hclient_core::ErrorKind::Tls,
+                        crate::UnknownClientIdentity(id.name().to_owned()),
+                    );
+                    return Err((e, req));
+                }
+            },
+        };
+        let identity = named.map(hclient_core::ClientIdentity::name);
+
+        let parts_of_key = match self.key_parts(req.uri(), identity_id) {
             Ok(p) => p,
             Err(e) => return Err((e, req)),
         };
@@ -484,6 +503,7 @@ where
             &uri,
             &self.opts,
             alpn,
+            identity,
             &self.svcb_failures,
             now,
             discovery::Prefetched::NotConsulted,

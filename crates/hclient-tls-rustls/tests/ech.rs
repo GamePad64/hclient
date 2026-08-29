@@ -80,6 +80,7 @@ async fn connect_with(ech: Option<&[u8]>, addr: SocketAddr) -> Result<(), hclien
     tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: SERVER_NAME,
             alpn: &[b"h2"],
             ech,

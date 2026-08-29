@@ -144,6 +144,7 @@ async fn fetch_body(addr: SocketAddr, ca_der: Vec<u8>) -> Result<Vec<u8>, String
     let (stream, _info) = bounded(tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: "localhost",
             alpn: &[],
             ech: None,
@@ -291,6 +292,7 @@ async fn close_notify_and_a_bare_fin_are_observably_different_at_the_stream_leve
         let (mut stream, _info): (TlsStream<_>, _) = bounded(tls.connect(
             tcp,
             TlsRequest {
+                identity: None,
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,

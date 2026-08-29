@@ -55,6 +55,7 @@ fn native_tls_implements_the_seam() {
 fn ech_is_refused_before_the_transport_is_touched() {
     let tls = NativeTls::new();
     let req = TlsRequest {
+        identity: None,
         server_name: "example.com",
         alpn: &[b"h2"],
         ech: Some(&[1, 2, 3]),
@@ -78,6 +79,7 @@ fn ech_is_refused_before_the_transport_is_touched() {
 fn without_ech_the_handshake_actually_starts() {
     let tls = NativeTls::new();
     let req = TlsRequest {
+        identity: None,
         server_name: "example.com",
         alpn: &[b"h2"],
         ech: None,

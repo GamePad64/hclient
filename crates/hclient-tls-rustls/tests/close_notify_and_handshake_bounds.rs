@@ -98,6 +98,7 @@ async fn close_notify_without_a_raw_tcp_close_resolves_as_clean_eof_not_a_hang()
         .connect(
             tcp,
             TlsRequest {
+                identity: None,
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,
@@ -162,6 +163,7 @@ async fn handshake_against_a_silent_peer_has_no_internal_bound_by_design() {
         tls.connect(
             tcp,
             TlsRequest {
+                identity: None,
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,

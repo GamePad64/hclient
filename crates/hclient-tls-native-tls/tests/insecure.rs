@@ -67,6 +67,7 @@ async fn handshake(tls: &NativeTls, addr: SocketAddr) -> Result<(), hclient_core
     bounded(tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: "localhost",
             alpn: &[],
             ech: None,
@@ -123,6 +124,7 @@ async fn the_wrong_name_is_accepted_too() {
     bounded(tls.connect(
         tcp,
         TlsRequest {
+            identity: None,
             server_name: "not-the-name-on-the-certificate.invalid",
             alpn: &[],
             ech: None,

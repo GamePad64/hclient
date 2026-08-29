@@ -245,6 +245,14 @@ where
             &uri,
             &self.opts,
             &[b"http/1.1"],
+            // **No client identity on the upgrade path, deliberately.**
+            // This connects for a WebSocket handshake and the caller's
+            // request is not in hand here — the borrow that `Tungstenite`
+            // is built around gives this function a URI and options and
+            // no extensions. A named identity therefore cannot reach it,
+            // which is honest: it is `None` rather than the default
+            // silently substituted.
+            None,
             &self.svcb_failures,
             now,
             // Nothing prepared, and no way to prepare one: `Prepared`
