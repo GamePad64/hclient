@@ -15,6 +15,7 @@ hc httpbin.org/get
 hc POST api.example.com/users name=alice admin:=true
 hc --backend native-tls https://internal.corp/    # the OS trust store
 hc --sse https://example.com/events               # Server-Sent Events
+hc --ws  wss://example.com/socket                 # stdin in, messages out
 ```
 
 ## Why this exists
@@ -76,11 +77,13 @@ The method is optional: `hc example.com` is a GET, and
   **Off by default**, as in curl and httpie: without it a `3xx` is the
   answer and is printed as one.
 
-## `--sse`: Server-Sent Events
+## Streaming: `--sse` and `--ws`
 
-It reads a URL as something that goes on rather than as one exchange, so
-it prints until the stream ends and takes a narrower set of flags than a
+Both read a URL as something that goes on rather than as one exchange, so
+both print until it ends and both take a narrower set of flags than a
 request does — see below.
+
+### `--sse`
 
 ```
 hc --sse https://example.com/events        # data lines, one per message
@@ -101,26 +104,52 @@ back in **SSE's own syntax**, `event:`/`id:`/`data:`, `: ` for a comment
 and `retry:` for a retry, so the output can be diffed against the bytes
 that arrived. `-b` forces the pipe's form.
 
-### What it refuses
+### `--ws`
 
-It is opened through a seam narrower than an ordinary request —
-`Client::sse` carries a URL and headers and nothing else — so a flag whose
-effect has nowhere to travel is **refused by name** (exit 2) rather than
-accepted and dropped.
+```
+printf 'hello\n' | hc --ws wss://example.com/socket
+```
 
-| refused with `--sse` | because |
+Each line of stdin goes out as a Text message and each message that comes
+back is printed. A pipe gets the message alone — a binary one as bytes —
+and a terminal, or `-v`, gets a transcript with `<` and `>` marking the
+direction.
+
+It ends three ways: the peer closes; stdin reaches EOF, which sends a
+`Close` and waits for the answer; or Ctrl-C, where the first one closes
+politely and the second stops waiting. There is no ping/pong bound, so a
+peer that vanishes without a `FIN` leaves the session waiting — Ctrl-C is
+what ends it.
+
+`--ws` needs the `websocket` feature, which is in the default set. A build
+without it refuses `--ws` by name, with the same exit code as a refused
+`--backend`, and `hc --version` does not list `ws` among its protocols.
+
+### What both refuse
+
+Both are opened through a seam narrower than an ordinary request —
+`Client::sse` carries a URL and headers and nothing else, and a WebSocket
+handshake is a URI and headers with the method fixed by RFC 6455 — so a
+flag whose effect has nowhere to travel is **refused by name** (exit 2)
+rather than accepted and dropped.
+
+| refused with `--sse` and `--ws` | because |
 |---|---|
 | `--print`, `--headers` | they name parts of one exchange; a stream is not one |
 | any non-header request item, `--raw-body`, `-f`, `-j` | the opening request carries no body |
 | `-a`/`--auth`, `--digest` | Basic needs an encoder this binary has not got and Digest a `401` round trip; `--bearer` is carried, being one header |
-| `--http` | there is nowhere to put a version demand |
-| `--check-status` | a non-200 already fails the stream, so the flag could never fire |
+| `--http` | there is nowhere to put a version demand, and a WebSocket upgrade is HTTP/1.1 by construction |
+| `--check-status` | a non-200 already fails an SSE stream, and a non-101 already fails a handshake |
 | `-w`/`--write-out` | it reports one finished exchange, after its body |
+
+| refused with one of them | because |
+|---|---|
+| `--follow` with `--ws` | a `3xx` where a `101` was expected is a failed handshake |
+| `--timeout` with `--ws` | a WebSocket outlives the exchange that opened it |
 | `--timeout` with `--sse-reconnect` | the two together cut and reopen for ever, which is a loop rather than a bound |
 
-`--backend`, `-k`, `--resolve` and `--bearer` mean the same in both modes,
-and `--follow` is honoured — the builder has no redirect setter, but a
-`Client` does, so the effect has somewhere else to travel.
+`--backend`, `-k`, `--resolve` and `--bearer` mean the same in all three
+modes.
 
 ## Exit codes
 
@@ -131,17 +160,22 @@ unreachable server.
 |---|---|
 | 0 | the request completed |
 | 2 | the command line is wrong |
-| 3 | the named backend is not in this build |
+| 3 | the named backend, or `--ws`, is not in this build |
 | 4 | the request failed |
 | 5 / 6 | `--check-status` and a 4xx / 5xx |
 | 7 | an I/O failure |
 
 ## Build-time features
 
-`default = ["rustls", "native-tls"]` — both, so `--backend` has more than
-one legal value; that is the whole point. `http2` and `http3` add the
-protocols. A build with `--no-default-features` and no backend feature
-says so rather than failing at the first request.
+`default = ["rustls", "native-tls", "websocket"]` — both TLS stacks, so
+`--backend` has more than one legal value; that is the whole point. And
+`websocket`, so `--ws` has an answer: it is a feature at all only because
+it is the one capability here that costs a whole crate
+(`hclient-tungstenite`, and `tungstenite` under it), and a build that
+wants `hc` without RFC 6455 framing must be able to say so. `http2` and
+`http3` add the protocols. A build with `--no-default-features` and no
+backend feature says so rather than failing at the first request, and one
+without `websocket` refuses `--ws` the same way.
 
 There is no `sse` feature: `hclient::sse` is unconditional in `hclient`,
 so `--sse` is in every build and a feature would only be a way to switch

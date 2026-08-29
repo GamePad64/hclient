@@ -17,6 +17,23 @@ pub enum Fail {
     Request(hclient::Error),
     /// `--check-status` and the server answered 4xx or 5xx.
     Status(http::StatusCode),
+    #[allow(
+        dead_code,
+        reason = "constructed only in a build without the `websocket` feature — the same \
+                  shape as `backend::finish`, which is dead in a build with no backend"
+    )]
+    /// A capability this build was not compiled with, named.
+    ///
+    /// **Exit 3, the same code as a refused `--backend`**, because it is
+    /// the same fact: the caller asked for something this binary has not
+    /// got. A script has to be able to tell that from an unreachable
+    /// server, which is the whole reason `--backend` refuses rather than
+    /// falling back, and `--ws` in a build without the `websocket`
+    /// feature is that refusal one capability over.
+    NotBuilt {
+        flag: &'static str,
+        feature: &'static str,
+    },
     /// A `--write-out` format naming a variable this build does not know.
     ///
     /// Its own code, and **exit 2** rather than a new one: it is a
@@ -31,7 +48,7 @@ impl Fail {
     pub fn code(&self) -> i32 {
         match self {
             Self::Usage(_) => 2,
-            Self::Backend(_) => 3,
+            Self::Backend(_) | Self::NotBuilt { .. } => 3,
             Self::Request(_) => 4,
             Self::Status(s) if s.is_client_error() => 5,
             Self::Status(_) => 6,
@@ -46,6 +63,13 @@ impl std::fmt::Display for Fail {
         match self {
             Self::Usage(m) => write!(f, "{m}"),
             Self::Backend(r) => write!(f, "{r}"),
+            Self::NotBuilt { flag, feature } => write!(
+                f,
+                "this build of hc has no `{flag}`: it was built without the `{feature}` \
+                 feature. Rebuild with `--features {feature}`, which is in the default set.\n\n\
+                 A capability is refused by name rather than silently doing nothing, which \
+                 is the same promise `--backend` makes."
+            ),
             Self::WriteOut(u) => write!(f, "{u}"),
             Self::Request(e) => {
                 write!(f, "{e}")?;
@@ -91,18 +115,33 @@ fn is_method(s: &str) -> bool {
 /// make `hc http://localhost:8080` and `hc localhost:8080` behave
 /// differently from every other client on the machine, and the second is
 /// how a developer reaches their own server.
-fn normalise_url(raw: &str) -> String {
+fn normalise_url(raw: &str, mode: Mode) -> Result<String, Fail> {
+    // `ws://` and `wss://` are RFC 6455's schemes and the connector reads
+    // them; nothing else here can. Falling through would produce
+    // `http://wss://host`, which is a request to a host named `wss` —
+    // the same class of silently-wrong outcome the item grammar's
+    // `LooksLikeAUrl` refusal exists for, and refused the same way.
+    if raw.starts_with("ws://") || raw.starts_with("wss://") {
+        return if mode == Mode::WebSocket {
+            Ok(raw.to_owned())
+        } else {
+            Err(Fail::Usage(format!(
+                "`{raw}` is a WebSocket URL. Add `--ws` to open one, or write the same \
+                 origin as `http://`/`https://` for an ordinary request."
+            )))
+        };
+    }
     if raw.starts_with("http://") || raw.starts_with("https://") {
-        return raw.to_owned();
+        return Ok(raw.to_owned());
     }
     if let Some(rest) = raw.strip_prefix(':') {
         // `:8080/path` and `:/path`.
         let rest = rest
             .strip_prefix('/')
             .map_or_else(|| format!("localhost:{rest}"), |p| format!("localhost/{p}"));
-        return format!("http://{rest}");
+        return Ok(format!("http://{rest}"));
     }
-    format!("http://{raw}")
+    Ok(format!("http://{raw}"))
 }
 
 struct Parsed {
@@ -111,7 +150,7 @@ struct Parsed {
     items: Vec<Item>,
 }
 
-fn split_positionals(cli: &Cli) -> Result<Parsed, Fail> {
+fn split_positionals(cli: &Cli, mode: Mode) -> Result<Parsed, Fail> {
     let mut all = Vec::with_capacity(cli.rest.len() + 1);
     all.push(cli.first.clone());
     all.extend(cli.rest.iter().cloned());
@@ -141,7 +180,7 @@ fn split_positionals(cli: &Cli) -> Result<Parsed, Fail> {
     }
     Ok(Parsed {
         method,
-        url: normalise_url(&url),
+        url: normalise_url(&url, mode)?,
         items,
     })
 }
@@ -255,10 +294,11 @@ fn print_selection(cli: &Cli, is_tty: bool) -> Result<Print, Fail> {
 }
 
 pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Result<(), Fail> {
-    // The mode first, because it decides which flags can be honoured at
-    // all.
+    // The mode first, because it decides how the URL is read (`ws://` is
+    // a URL under `--ws` and a named refusal everywhere else) and which
+    // flags can be honoured at all.
     let mode = mode::select(&cli).map_err(Fail::Usage)?;
-    let parsed = split_positionals(&cli)?;
+    let parsed = split_positionals(&cli, mode)?;
     // Before anything is built or connected: a combination this tool
     // cannot honour is a mistake in what the caller wrote, and finding it
     // after a socket has been opened would report it as a failure of the
@@ -278,12 +318,13 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     // events. A build with neither flag still carries `NoHooks` and reads
     // no clocks.
     //
-    // **Never under `--sse`**, and that is not an omission. The handshake
-    // line is printed above a *response head*, and a stream has none to
-    // print it above — it owns the response it was opened with and
-    // exposes neither its status nor its headers. `-w`, the recorder's
-    // other reader, is refused there. So there is nothing left to read a
-    // clock for.
+    // **Never in a streaming mode**, and that is not an omission. The
+    // handshake line is printed above a *response head*, and neither
+    // `--sse` nor `--ws` has one to print it above — the SSE stream owns
+    // the response it was opened with and exposes neither its status nor
+    // its headers, and a WebSocket after the `101` carries frames. `-w`,
+    // the recorder's other reader, is refused in both. So there is
+    // nothing left to read a clock for.
     let watching = !mode.is_streaming() && (cli.write_out.is_some() || cli.verbose);
     let recorder = watching.then(crate::timings::Recorder::new);
     let config = backend::Config {
@@ -296,10 +337,10 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
         timings: recorder.clone(),
     };
 
-    // The streaming mode takes over here. It is opened from the header
-    // set the request path computes, and reaches none of the body work
-    // below — `refuse_unusable` has already said so, by name, for every
-    // flag that would have led there.
+    // The two streaming modes take over here. Both are opened from the
+    // header set the request path computes, and neither reaches any of
+    // the body work below — `refuse_unusable` has already said so, by
+    // name, for every flag that would have led there.
     match mode {
         Mode::Request => {}
         Mode::Sse { reconnect } => {
@@ -311,6 +352,17 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
                 &effective_headers(&header_items(&parsed.items)),
                 cli.bearer.as_deref(),
                 reconnect,
+                mode::verbosity(&cli, is_tty),
+                &mut out,
+            )
+            .await;
+        }
+        Mode::WebSocket => {
+            let mut out = anstream::AutoStream::new(std::io::stdout().lock(), colour);
+            return websocket_mode(
+                &cli,
+                &parsed,
+                &config,
                 mode::verbosity(&cli, is_tty),
                 &mut out,
             )
@@ -490,7 +542,13 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     if print.request_body
         && let Some(b) = &request_body_preview
     {
-        output::body(&mut out, Some("application/json"), b).map_err(Fail::Io)?;
+        output::body(
+            &mut out,
+            &mut std::io::stdout(),
+            Some("application/json"),
+            b,
+        )
+        .map_err(Fail::Io)?;
         writeln!(out).map_err(Fail::Io)?;
     }
 
@@ -519,7 +577,17 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
             .get(http::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(ToOwned::to_owned);
-        output::body(&mut out, ct.as_deref(), collected.bytes()).map_err(Fail::Io)?;
+        // `std::io::stdout()` beside the styled stream, not instead of
+        // it: `Stdout`'s lock is reentrant, so this is the same
+        // descriptor and the same lock, reached without the colour
+        // filter. See `output::body`.
+        output::body(
+            &mut out,
+            &mut std::io::stdout(),
+            ct.as_deref(),
+            collected.bytes(),
+        )
+        .map_err(Fail::Io)?;
     }
     // `--write-out` prints **after** the body and to stdout, which is
     // curl's placement. It is a surprise worth knowing about — a piped
@@ -547,6 +615,93 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
         return Err(Fail::Status(status));
     }
     Ok(())
+}
+
+/// The `--ws` request: a URI and headers, which is the whole of what
+/// `WebSocketConnect::websocket` takes. RFC 6455 §4.1 fixes the method
+/// and the version, so nothing here sets either.
+#[cfg(feature = "websocket")]
+fn websocket_request(cli: &Cli, parsed: &Parsed) -> Result<http::Request<()>, Fail> {
+    let mut b = http::Request::builder().uri(&parsed.url);
+    for (name, value) in effective_headers(&header_items(&parsed.items)) {
+        b = b.header(name, value);
+    }
+    if let Some(token) = &cli.bearer {
+        b = b.header(http::header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    b.body(())
+        .map_err(|e| Fail::Usage(format!("`{}` cannot open a WebSocket: {e}", parsed.url)))
+}
+
+/// The backend `match` for `--ws`.
+///
+/// It goes through the same [`backend::choose`] the request path does, so
+/// a `--backend` this build has not got is refused identically — that
+/// promise is the tool's one differentiator and splitting construction
+/// must not have cost it. What differs is only what each arm keeps: the
+/// concrete `Native`, alive on this frame for the length of the session,
+/// because `Tungstenite` borrows one.
+#[cfg(feature = "websocket")]
+async fn websocket_mode(
+    cli: &Cli,
+    parsed: &Parsed,
+    config: &backend::Config,
+    how: crate::mode::Verbosity,
+    out: &mut impl Write,
+) -> Result<(), Fail> {
+    let req = websocket_request(cli, parsed)?;
+    match backend::choose(cli.backend, backend::COMPILED_IN).map_err(Fail::Backend)? {
+        #[cfg(feature = "rustls")]
+        BackendName::Rustls => {
+            let native = backend::rustls_transport(config).map_err(Fail::Backend)?;
+            crate::ws::run(
+                hclient_tungstenite::Tungstenite::new(&native),
+                req,
+                how,
+                out,
+            )
+            .await
+        }
+        #[cfg(feature = "native-tls")]
+        BackendName::NativeTls => {
+            let native = backend::native_tls_transport(config).map_err(Fail::Backend)?;
+            crate::ws::run(
+                hclient_tungstenite::Tungstenite::new(&native),
+                req,
+                how,
+                out,
+            )
+            .await
+        }
+        #[allow(
+            unreachable_patterns,
+            reason = "reachable only in a build with a backend feature off, where `choose` has \
+                      already returned Err for exactly these values"
+        )]
+        other => Err(Fail::Backend(backend::Refused::NotCompiledIn(other))),
+    }
+}
+
+/// The same entry point in a build without the framing, and the reason it
+/// is a function rather than a `#[cfg]` at the call site: the refusal has
+/// to be the *only* difference, so both shapes are reached by one line in
+/// `run`.
+#[cfg(not(feature = "websocket"))]
+#[allow(
+    clippy::unused_async,
+    reason = "it mirrors the signature of the arm that is genuinely async"
+)]
+async fn websocket_mode(
+    _cli: &Cli,
+    _parsed: &Parsed,
+    _config: &backend::Config,
+    _how: crate::mode::Verbosity,
+    _out: &mut impl Write,
+) -> Result<(), Fail> {
+    Err(Fail::NotBuilt {
+        flag: "--ws",
+        feature: "websocket",
+    })
 }
 
 /// The header items alone, which is the whole of what either streaming
@@ -594,6 +749,14 @@ pub fn print_version(out: &mut impl Write) -> std::io::Result<()> {
     if cfg!(feature = "http3") {
         protocols.push("h3");
     }
+    // `ws` joins the list because `--ws` is a runtime flag like
+    // `--backend`, and the whole promise of this tool is that the binary
+    // says what it carries rather than leaving a caller to find out from
+    // a request that does nothing. `sse` is deliberately absent: it costs
+    // no feature and is in every build, so listing it would say nothing.
+    if cfg!(feature = "websocket") {
+        protocols.push("ws");
+    }
     writeln!(out, "protocols: {}", protocols.join(", "))
 }
 
@@ -635,7 +798,7 @@ mod tests {
     use super::*;
 
     fn norm(raw: &str) -> String {
-        normalise_url(raw)
+        normalise_url(raw, Mode::Request).expect("a plain URL is not refused")
     }
 
     #[test]
@@ -647,6 +810,35 @@ mod tests {
         // `https`, which is why nothing here upgrades.
         assert_eq!(norm("https://example.com"), "https://example.com");
         assert_eq!(norm("http://localhost:1/x"), "http://localhost:1/x");
+    }
+
+    /// A WebSocket scheme is a URL under `--ws` and a named refusal
+    /// everywhere else. Falling through would have produced
+    /// `http://wss://host` — a request to a host named `wss`, sent with
+    /// nothing said, which is the same silently-wrong outcome the item
+    /// grammar refuses a second URL for.
+    #[test]
+    fn a_websocket_scheme_is_a_url_under_ws_and_a_refusal_without_it() {
+        assert_eq!(
+            normalise_url("wss://example.com/s", Mode::WebSocket).unwrap(),
+            "wss://example.com/s"
+        );
+        assert_eq!(
+            normalise_url("ws://example.com/s", Mode::WebSocket).unwrap(),
+            "ws://example.com/s"
+        );
+        for mode in [Mode::Request, Mode::Sse { reconnect: false }] {
+            let Err(Fail::Usage(m)) = normalise_url("wss://example.com/s", mode) else {
+                panic!("a `wss://` URL outside --ws must be refused, not rewritten");
+            };
+            assert!(m.contains("--ws"), "{m}");
+        }
+        // And an ordinary URL is untouched under `--ws`, so the refusal
+        // is exactly as wide as the mistake.
+        assert_eq!(
+            normalise_url("http://example.com/s", Mode::WebSocket).unwrap(),
+            "http://example.com/s"
+        );
     }
 
     #[test]

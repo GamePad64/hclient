@@ -27,7 +27,8 @@ pub struct Config {
     /// `between_bytes` and deliberately no `total`, since the total is the
     /// one bound that needs a clock to race a sleep against a silent body.
     pub total: Option<std::time::Duration>,
-    /// A redirect policy for the **client**, which only `--sse` sets.
+    /// A redirect policy for the **client**, which only a streaming mode
+    /// sets.
     ///
     /// A request sets its own with `RequestBuilder::redirect`, and that is
     /// where `--follow` goes for an ordinary request. `SseBuilder` has no
@@ -143,15 +144,83 @@ pub fn available_list() -> String {
 /// answers for its own host and every other name still goes to the
 /// system — which is what `curl --resolve` means and is why this composes
 /// instead of being a mode.
-fn resolver(
-    cfg: &Config,
-) -> hclient_dns::Overrides<hclient_dns_system::SystemDns<hclient_rt_tokio::Tokio>> {
+pub type Resolver = hclient_dns::Overrides<hclient_dns_system::SystemDns<hclient_rt_tokio::Tokio>>;
+
+fn resolver(cfg: &Config) -> Resolver {
     let mut o =
         hclient_dns::Overrides::new(hclient_dns_system::SystemDns::new(hclient_rt_tokio::Tokio));
     for (host, addr) in &cfg.resolve {
         o = o.host(host, vec![*addr]);
     }
     o
+}
+
+/// The transport each backend arm builds, **before** it is boxed into an
+/// `hclient::Client`.
+///
+/// # Why these are their own functions
+///
+/// `build` used to be the only door, and it hands back an erased
+/// [`hclient::Client`], which is exactly right for a request: both arms
+/// return the same type, so `--backend` is an ordinary `match` and the
+/// rest of the tool is written once.
+///
+/// `--ws` cannot use that door. `hclient_tungstenite::Tungstenite`
+/// **borrows** a `Native` — it does not own one, because `Client::builder`
+/// takes its transport by value and `Native` is not `Clone` — so a
+/// connector needs the concrete transport, and an erased `Client` has
+/// thrown it away. `Client::transport_as::<Native<..>>()` would get it
+/// back as a downcast, and the `Option` it returns is honest: nothing
+/// checked at `build()` that the backend is the one the caller is about to
+/// name. Splitting construction in two removes the question instead of
+/// answering it — the WebSocket path holds the `Native` it built itself,
+/// on its own stack frame, and there is no downcast to fail.
+///
+/// The two arms cannot share one function, and the reason is this
+/// workspace's own rule about where `Send` is inferred and where it must
+/// be proven, one level up: `Native<R, T, D, H, P>` carries its bounds on
+/// the declaration, so anything generic over `T` has to restate
+/// `TcpConnect + Timer + TlsConnect + Resolve` and everything behind
+/// them. At a concrete type the bounds are inferred. Two four-line
+/// functions against a where-clause nobody would maintain.
+#[cfg(feature = "rustls")]
+pub type RustlsTransport =
+    hclient_native::Native<hclient_rt_tokio::Tokio, hclient_tls_rustls::Rustls, Resolver>;
+
+/// See [`RustlsTransport`].
+#[cfg(feature = "native-tls")]
+pub type NativeTlsTransport =
+    hclient_native::Native<hclient_rt_tokio::Tokio, hclient_tls_native_tls::NativeTls, Resolver>;
+
+#[cfg(feature = "rustls")]
+pub fn rustls_transport(cfg: &Config) -> Result<RustlsTransport, Refused> {
+    let tls = if cfg.insecure {
+        hclient_tls_rustls::Rustls::danger_accept_invalid_certs()
+    } else {
+        hclient_tls_rustls::Rustls::with_platform_verifier().map_err(|e| Refused::Unavailable {
+            backend: BackendName::Rustls,
+            cause: e.to_string(),
+        })?
+    };
+    Ok(hclient_native::Native::new(
+        hclient_rt_tokio::Tokio,
+        tls,
+        resolver(cfg),
+    ))
+}
+
+#[cfg(feature = "native-tls")]
+pub fn native_tls_transport(cfg: &Config) -> Result<NativeTlsTransport, Refused> {
+    let tls = if cfg.insecure {
+        hclient_tls_native_tls::NativeTls::new().danger_accept_invalid_certs()
+    } else {
+        hclient_tls_native_tls::NativeTls::new()
+    };
+    Ok(hclient_native::Native::new(
+        hclient_rt_tokio::Tokio,
+        tls,
+        resolver(cfg),
+    ))
 }
 
 /// Build the client. **Every arm returns the same `hclient::Client`**,
@@ -191,27 +260,11 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
     match which {
         #[cfg(feature = "rustls")]
         BackendName::Rustls => {
-            let tls = if cfg.insecure {
-                hclient_tls_rustls::Rustls::danger_accept_invalid_certs()
-            } else {
-                hclient_tls_rustls::Rustls::with_platform_verifier().map_err(|e| {
-                    Refused::Unavailable {
-                        backend: which,
-                        cause: e.to_string(),
-                    }
-                })?
-            };
-            // The recorder is installed here, at a **concrete** type,
-            // and not by a shared generic helper — which was written
-            // first and could not compile. `Native<R, T, D, H, P>` carries
-            // its bounds on the declaration, so a helper generic over `R`,
-            // `T` and `D` has to restate `TcpConnect + Timer + TlsConnect
-            // + Resolve` and everything behind them. This workspace's own
-            // rule, one layer up from where it usually appears: at a
-            // concrete type the bounds are inferred, in a generic one they
-            // must be proven. The duplication is four lines against a
-            // where-clause nobody would maintain.
-            let t = hclient_native::Native::new(hclient_rt_tokio::Tokio, tls, resolver(cfg));
+            let t = rustls_transport(cfg)?;
+            // The recorder is installed here, at a **concrete** type, and
+            // not by a shared generic helper — see `RustlsTransport`'s doc
+            // for the rule that forces it, which is the same rule that
+            // made the two constructors above two functions.
             match cfg.timings.clone() {
                 Some(rec) => finish(which, cfg, t.hooks(rec)),
                 None => finish(which, cfg, t),
@@ -219,12 +272,7 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
         }
         #[cfg(feature = "native-tls")]
         BackendName::NativeTls => {
-            let tls = if cfg.insecure {
-                hclient_tls_native_tls::NativeTls::new().danger_accept_invalid_certs()
-            } else {
-                hclient_tls_native_tls::NativeTls::new()
-            };
-            let t = hclient_native::Native::new(hclient_rt_tokio::Tokio, tls, resolver(cfg));
+            let t = native_tls_transport(cfg)?;
             match cfg.timings.clone() {
                 Some(rec) => finish(which, cfg, t.hooks(rec)),
                 None => finish(which, cfg, t),

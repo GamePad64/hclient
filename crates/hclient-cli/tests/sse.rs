@@ -107,7 +107,7 @@ fn run_hc(args: &[&str], input: &str) -> Ran {
         // by now, and the broken pipe that produces is not the subject of
         // any test here.
         let _ = stdin.write_all(input.as_bytes());
-        // Dropped here, so the child sees EOF.
+        // Dropped here, which is the EOF `--ws` ends on.
     }
     let started = std::time::Instant::now();
     let mut timed_out = false;
@@ -354,4 +354,13 @@ fn a_flag_this_mode_cannot_honour_is_refused_by_name_before_anything_connects() 
 fn without_a_refused_flag_the_same_command_line_reaches_the_network() {
     let ran = hc(&["--sse", "http://127.0.0.1:1/e"]);
     assert_eq!(ran.code, 4, "{} {}", ran.stdout, ran.stderr);
+}
+
+/// A `ws://` URL outside `--ws` is refused rather than turned into a
+/// request to a host named `wss`.
+#[test]
+fn a_websocket_url_without_ws_is_refused_by_name() {
+    let ran = hc(&["wss://example.invalid/s"]);
+    assert_eq!(ran.code, 2, "{} {}", ran.stdout, ran.stderr);
+    assert!(ran.stderr.contains("--ws"), "{}", ran.stderr);
 }

@@ -6,14 +6,18 @@
 //! `hc` sends **one request** and prints **one response**, and almost
 //! every flag it has is about that shape: a body to send, a status to
 //! check, a redirect to follow, a report to print once the exchange has
-//! finished. `--sse` is not that shape — it is a stream of
+//! finished. `--sse` and `--ws` are not that shape — they are a stream of
 //! events and a session of frames — and each is opened through a seam that
 //! is deliberately narrower than [`hclient::RequestBuilder`]:
 //!
-//! [`hclient::Client::sse`] hands back an `SseBuilder` carrying a **URL
-//! and headers and nothing else**: no body, no query, no per-request
-//! redirect policy, no auth helper, no `require_version`, and no way to
-//! read the response head back out of the stream it opens.
+//! - [`hclient::Client::sse`] hands back an `SseBuilder` carrying a **URL
+//!   and headers and nothing else**: no body, no query, no per-request
+//!   redirect policy, no auth helper, no `require_version`, and no way to
+//!   read the response head back out of the stream it opens.
+//! - [`hclient_core::unversioned::WebSocketConnect::websocket`] takes an
+//!   `http::Request<()>` — a URI and headers, with the method and version
+//!   fixed by RFC 6455 §4.1 — and the connector never consults the pool,
+//!   never follows a redirect and hands back no head at all.
 //!
 //! So a flag whose effect would have to travel on the request some other
 //! way has exactly two honest fates, and this module picks the second:
@@ -35,13 +39,14 @@
 //! both streaming modes exactly what they mean for a request, and are
 //! passed through untouched. `--bearer` survives too, and it is the one
 //! interesting case: it is a single `Authorization` header, which is the
-//! one thing the seam *does* carry — where `--auth` is refused beside it,
+//! one thing both seams *do* carry — where `--auth` is refused beside it,
 //! because Basic needs an encoder this crate does not have and Digest
 //! needs a `401` round trip neither seam can make.
 //!
-//! `--follow` survives too, and it is the other interesting case: the
-//! builder has no redirect setter, but a `Client` does, so the effect has
-//! somewhere else to travel and is honoured rather than refused.
+//! `--max-redirects` is not refused under `--ws` although redirects are:
+//! it is inert without `--follow` in request mode too, and a refusal for
+//! a flag that is always present because it carries a default would fire
+//! on every `--ws` command line ever typed.
 
 use crate::args::{Cli, Item};
 
@@ -53,6 +58,8 @@ pub enum Mode {
     /// `--sse`. `reconnect` is `--sse-reconnect`; see [`select`] for why
     /// it is opt-in.
     Sse { reconnect: bool },
+    /// `--ws`.
+    WebSocket,
 }
 
 impl Mode {
@@ -61,6 +68,7 @@ impl Mode {
         match self {
             Self::Request => "",
             Self::Sse { .. } => "--sse",
+            Self::WebSocket => "--ws",
         }
     }
 
@@ -70,6 +78,7 @@ impl Mode {
         match self {
             Self::Request => "response",
             Self::Sse { .. } => "events",
+            Self::WebSocket => "frames",
         }
     }
 
@@ -98,6 +107,14 @@ impl Mode {
 ///
 /// So the default is the honest one and the loop is asked for by name.
 pub fn select(cli: &Cli) -> Result<Mode, String> {
+    if cli.sse && cli.ws {
+        return Err(
+            "`--sse` and `--ws` are two different protocols and hc runs one at a time: \
+             `--sse` reads an HTTP response as a stream of events, `--ws` upgrades the \
+             connection and exchanges frames."
+                .into(),
+        );
+    }
     if cli.sse_reconnect && !cli.sse {
         return Err(
             "`--sse-reconnect` says how `--sse` behaves when the stream ends, and there is \
@@ -109,6 +126,8 @@ pub fn select(cli: &Cli) -> Result<Mode, String> {
         Mode::Sse {
             reconnect: cli.sse_reconnect,
         }
+    } else if cli.ws {
+        Mode::WebSocket
     } else {
         Mode::Request
     })
@@ -143,11 +162,15 @@ pub fn refuse_unusable(mode: Mode, cli: &Cli, items: &[Item]) -> Result<(), Stri
     if cli.headers {
         return Err(format!(
             "`--headers` prints one response head, and `{flag}` has none to print: {}",
-            // Not merely "there are several": `SseStream` owns the
-            // `Response` it was built from and exposes neither `status()`
-            // nor `headers()`, so this is unreachable rather than
-            // unimplemented.
-            "the stream owns the response it was opened with and hands back only events."
+            match mode {
+                // Not merely "there are several": `SseStream` owns the
+                // `Response` it was built from and exposes neither
+                // `status()` nor `headers()`, so this is unreachable
+                // rather than unimplemented.
+                Mode::Sse { .. } =>
+                    "the stream owns the response it was opened with and hands back only events.",
+                _ => "after the `101` the connection carries frames, not responses.",
+            }
         ));
     }
 
@@ -192,24 +215,35 @@ pub fn refuse_unusable(mode: Mode, cli: &Cli, items: &[Item]) -> Result<(), Stri
         return Err(format!(
             "`--auth` cannot be used with `{flag}`: Basic would need an encoder this \
              binary does not carry for one header, and Digest needs the `401` round trip \
-             the streaming seam cannot make. `--bearer` is carried, because it is one \
+             neither streaming seam can make. `--bearer` is carried, because it is one \
              header."
         ));
     }
     if cli.http.is_some() {
         return Err(format!(
-            "`--http` cannot be used with `{flag}`: the SSE builder carries a URL and \
-             headers and has no place to put a version demand."
+            "`--http` cannot be used with `{flag}`: {}",
+            match mode {
+                Mode::Sse { .. } =>
+                    "the SSE builder carries a URL and headers and has no place to put a \
+                     version demand.",
+                _ =>
+                    "the WebSocket handshake is an HTTP/1.1 upgrade by construction — the \
+                      connector offers `http/1.1` alone on the ALPN list.",
+            }
         ));
     }
     if cli.check_status {
-        // A flag that could never fire is the silently-ignored setting
-        // one layer up, so it is refused rather than accepted and left
-        // inert.
         return Err(format!(
-            "`--check-status` cannot be used with `{flag}`: any status but 200 already \
-             fails the stream outright — that is WHATWG's rule, not this tool's — so the \
-             flag could never fire."
+            "`--check-status` cannot be used with `{flag}`: {}",
+            match mode {
+                // A flag that could never fire is the silently-ignored
+                // setting one layer up, so it is refused rather than
+                // accepted and left inert.
+                Mode::Sse { .. } =>
+                    "any status but 200 already fails the stream outright — that is \
+                     WHATWG's rule, not this tool's — so the flag could never fire.",
+                _ => "a handshake answered with anything but a `101` is already an error.",
+            }
         ));
     }
     if cli.write_out.is_some() {
@@ -219,22 +253,46 @@ pub fn refuse_unusable(mode: Mode, cli: &Cli, items: &[Item]) -> Result<(), Stri
         ));
     }
 
-    // `--timeout` alone is a bound on the one connection, which is a
-    // thing a caller can want. With `--sse-reconnect` it is not a bound
-    // at all.
-    if matches!(mode, Mode::Sse { reconnect: true }) && cli.timeout.is_some() {
-        return Err(
-            "`--timeout` and `--sse-reconnect` together are a loop rather than a bound: \
-             the timeout is the client's whole-operation bound and applies to each \
-             connection, so every connection would be cut at that point and immediately \
-             reopened. Use one or the other."
-                .into(),
-        );
+    // ── the two that differ between the modes ───────────────────────────
+    match mode {
+        Mode::Request => {}
+        Mode::Sse { reconnect } => {
+            // `--follow` IS honoured under `--sse` — see `sse::run` — so
+            // there is nothing to refuse here.
+            if reconnect && cli.timeout.is_some() {
+                return Err(
+                    "`--timeout` and `--sse-reconnect` together are a loop rather than a \
+                     bound: the timeout is the client's whole-operation bound and applies \
+                     to each connection, so every connection would be cut at that point \
+                     and immediately reopened. Use one or the other."
+                        .into(),
+                );
+            }
+        }
+        Mode::WebSocket => {
+            if cli.follow {
+                return Err(
+                    "`--follow` cannot be used with `--ws`: the upgrade is opened on a \
+                     connection of its own and a `3xx` where a `101` was expected is a \
+                     failed handshake, not a hop to take."
+                        .into(),
+                );
+            }
+            if cli.timeout.is_some() {
+                return Err(
+                    "`--timeout` cannot be used with `--ws`: it is the whole-operation \
+                     bound, and a WebSocket is a connection meant to outlive the exchange \
+                     that opened it, so there is no operation for it to bound. Bounding \
+                     the handshake alone would be a narrower promise under the same name."
+                        .into(),
+                );
+            }
+        }
     }
     Ok(())
 }
 
-/// How much to say about each event.
+/// How much to say about each event or frame.
 ///
 /// The same three-way choice `print_selection` already makes for a
 /// response, and made the same way — a terminal gets the annotated form
@@ -269,6 +327,12 @@ mod tests {
         let mut all = vec!["hc"];
         all.extend_from_slice(args);
         Cli::try_parse_from(all).expect("the fixture's own command lines parse")
+    }
+
+    #[test]
+    fn the_two_streaming_flags_are_not_both_a_mode() {
+        let e = select(&cli(&["--sse", "--ws", "http://x/"])).unwrap_err();
+        assert!(e.contains("one at a time"), "{e}");
     }
 
     /// The default is one-shot, and the loop has to be asked for — which
@@ -310,37 +374,41 @@ mod tests {
             ("--write-out", &["-w", "%{http_code}"]),
         ];
         for (name, extra) in cases {
-            let mut args = vec!["--sse", "http://x/"];
-            args.extend_from_slice(extra);
-            let c = cli(&args);
-            let m = select(&c).unwrap();
-            let e = refuse_unusable(m, &c, &[])
-                .expect_err("an accepted flag here would be one that silently does nothing");
-            assert!(e.contains(name), "{name}: {e}");
-            assert!(e.contains("--sse"), "{name}: {e}");
+            for mode_flag in ["--sse", "--ws"] {
+                let mut args = vec![mode_flag, "http://x/"];
+                args.extend_from_slice(extra);
+                let c = cli(&args);
+                let m = select(&c).unwrap();
+                let e = refuse_unusable(m, &c, &[])
+                    .expect_err("an accepted flag here would be one that silently does nothing");
+                assert!(e.contains(name), "{name} with {mode_flag}: {e}");
+                assert!(e.contains(mode_flag), "{name} with {mode_flag}: {e}");
+            }
         }
     }
 
     /// The control for the table above: the flags that genuinely mean the
     /// same thing in a stream are **not** refused, or the rule would read
-    /// as "`--sse` takes no flags".
+    /// as "streaming modes take no flags".
     #[test]
     fn the_flags_that_still_mean_something_are_carried() {
-        for extra in [
-            vec!["-k"],
-            vec!["--resolve", "a:127.0.0.1"],
-            vec!["--bearer", "t"],
-            vec!["-v"],
-            vec!["-b"],
-        ] {
-            let mut args = vec!["--sse", "http://x/"];
-            args.extend_from_slice(&extra);
-            let c = cli(&args);
-            let m = select(&c).unwrap();
-            assert!(
-                refuse_unusable(m, &c, &[]).is_ok(),
-                "{extra:?} is refused under `--sse` and should not be"
-            );
+        for mode_flag in ["--sse", "--ws"] {
+            for extra in [
+                vec!["-k"],
+                vec!["--resolve", "a:127.0.0.1"],
+                vec!["--bearer", "t"],
+                vec!["-v"],
+                vec!["-b"],
+            ] {
+                let mut args = vec![mode_flag, "http://x/"];
+                args.extend_from_slice(&extra);
+                let c = cli(&args);
+                let m = select(&c).unwrap();
+                assert!(
+                    refuse_unusable(m, &c, &[]).is_ok(),
+                    "{extra:?} is refused under {mode_flag} and should not be"
+                );
+            }
         }
     }
 
@@ -389,17 +457,28 @@ mod tests {
         }
     }
 
-    /// The two flags the table does **not** refuse, and the one shape of
-    /// `--timeout` it does — checked in both directions, because a table
-    /// that refused everything would pass the test above and be wrong
-    /// here.
+    /// The two refusals that exist in one mode and not the other, checked
+    /// in both directions — a table that refused everything everywhere
+    /// would pass the test above and be wrong here.
     #[test]
-    fn follow_and_timeout_are_refused_only_where_they_cannot_be_honoured() {
-        // `--follow` is honoured, on the client rather than on the
-        // request — see `sse::run`.
+    fn follow_and_timeout_are_refused_where_they_cannot_be_honoured_and_not_where_they_can() {
+        let ws = cli(&["--ws", "http://x/", "-L"]);
+        assert!(
+            refuse_unusable(select(&ws).unwrap(), &ws, &[])
+                .unwrap_err()
+                .contains("--follow")
+        );
+        // `--follow` under `--sse` is honoured, on the client rather than
+        // on the request — see `sse::run`.
         let sse = cli(&["--sse", "http://x/", "-L"]);
         assert!(refuse_unusable(select(&sse).unwrap(), &sse, &[]).is_ok());
 
+        let ws_t = cli(&["--ws", "http://x/", "--timeout", "1"]);
+        assert!(
+            refuse_unusable(select(&ws_t).unwrap(), &ws_t, &[])
+                .unwrap_err()
+                .contains("--timeout")
+        );
         // One connection can be bounded; a reconnect loop of bounded
         // connections is a loop rather than a bound.
         let sse_t = cli(&["--sse", "http://x/", "--timeout", "1"]);

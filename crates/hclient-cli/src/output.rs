@@ -96,23 +96,52 @@ fn header_map(out: &mut impl Write, headers: &http::HeaderMap) -> std::io::Resul
 /// body that claims `application/json` and is not gets written through
 /// untouched, because a tool that swallows a malformed payload is hiding
 /// the one thing the caller needs to see.
-pub fn body(out: &mut impl Write, content_type: Option<&str>, bytes: &[u8]) -> std::io::Result<()> {
+///
+/// # Two writers, and the second one is a correctness requirement
+///
+/// This module's own opening rule is that *the body is written as bytes,
+/// never through a `String`: a response can be an image, and a tool that
+/// mangles one into replacement characters is not a tool anybody can
+/// pipe.* It was not being kept, and the cause was the wrapper rather
+/// than this function: everything went through one
+/// `anstream::AutoStream`, and with colour off that is a `StripStream` —
+/// an ANSI parser, which deletes bytes it cannot interpret.
+///
+/// Measured on `anstream` 0.6 before anything was changed, and then
+/// through the built binary: a PNG's magic `89 50 4e 47 0d 0a 1a 0a`
+/// comes back out of a piped `hc` as `50 4e 47 0d 0a 0a` — the `0x89`
+/// and the `0x1a` are gone, so `hc … > out.png` wrote a file no decoder
+/// will open. Colour off is not a corner: it is every pipe, every
+/// `--no-color` and every `NO_COLOR`.
+///
+/// So `payload` is the same file descriptor **without the filter**, and
+/// `text` is flushed before anything reaches it, because two sinks onto
+/// one descriptor otherwise interleave by buffer rather than by order.
+/// The styled branch keeps `text`: what it writes is this program's own
+/// output, which is what the filter is for.
+pub fn body(
+    text: &mut impl Write,
+    payload: &mut impl Write,
+    content_type: Option<&str>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
     let is_json = content_type.is_some_and(|ct| {
         let base = ct.split(';').next().unwrap_or("").trim();
         base.eq_ignore_ascii_case("application/json")
             || base.to_ascii_lowercase().ends_with("+json")
     });
     if is_json && let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
-        json_value(out, &v, 0)?;
-        return writeln!(out);
+        json_value(text, &v, 0)?;
+        return writeln!(text);
     }
-    out.write_all(bytes)?;
+    text.flush()?;
+    payload.write_all(bytes)?;
     // A trailing newline only where the payload does not already end in
     // one: adding a second would corrupt a diff of two runs.
     if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-        writeln!(out)?;
+        writeln!(payload)?;
     }
-    Ok(())
+    payload.flush()
 }
 
 fn json_value(out: &mut impl Write, v: &serde_json::Value, depth: usize) -> std::io::Result<()> {

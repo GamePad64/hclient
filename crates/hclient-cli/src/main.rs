@@ -13,6 +13,11 @@ mod output;
 mod run;
 mod sse;
 mod timings;
+// Gated with the dependency it needs: a build without the framing has no
+// use for the driver, and leaving it compiled would be dead code in the
+// one configuration that asked not to have it.
+#[cfg(feature = "websocket")]
+mod ws;
 
 use clap::Parser;
 use std::io::{IsTerminal, Write};

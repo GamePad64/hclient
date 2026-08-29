@@ -466,6 +466,40 @@ fn serve_raw(response: Vec<u8>) -> (SocketAddr, Arc<std::sync::atomic::AtomicUsi
     (addr, asked)
 }
 
+/// **A binary body survives a pipe byte for byte**, which this module's
+/// neighbour `output.rs` has claimed in its opening paragraph since it
+/// was written and was not delivering.
+///
+/// Everything went through one `anstream::AutoStream`, and with colour
+/// off that is an ANSI parser: it deletes bytes it cannot read as text.
+/// Measured through this binary before the fix — a PNG's magic
+/// `89 50 4e 47 0d 0a 1a 0a` came out as `50 4e 47 0d 0a 0a`, so
+/// `hc … > out.png` wrote a file no decoder will open. Colour off is
+/// every pipe, every `--no-color` and every `NO_COLOR`, so this test runs
+/// in the configuration the defect lived in.
+///
+/// The magic bytes are the fixture on purpose: `0x89` is not valid UTF-8
+/// on its own and `0x1a` is a control character, which are the two shapes
+/// the filter removed.
+#[test]
+fn a_binary_body_reaches_a_pipe_byte_for_byte() {
+    let payload: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, b'x'];
+    let mut response =
+        format!("HTTP/1.1 200 X\r\ncontent-type: image/png\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", payload.len())
+            .into_bytes();
+    response.extend_from_slice(payload);
+    let (addr, _) = serve_raw(response);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_hc"))
+        .args([&url(addr, "/i.png"), "--no-color"])
+        .output()
+        .expect("the binary is built by cargo before this test runs");
+    assert_eq!(out.status.code(), Some(0));
+    // The trailing newline is this tool's, and only because the body does
+    // not end in one — `output::body`'s own rule, unchanged.
+    assert_eq!(out.stdout, [payload, b"\n"].concat());
+}
+
 /// **`--follow` decides, and without it the `3xx` is the answer.**
 ///
 /// It did neither: `Client` falls back to `Limit::default()` — ten hops —

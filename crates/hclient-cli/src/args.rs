@@ -355,6 +355,14 @@ pub struct Cli {
     #[arg(long)]
     pub sse_reconnect: bool,
 
+    /// Open a WebSocket, send each line of stdin as a Text message and
+    /// print the messages that come back.
+    ///
+    /// Ends when stdin reaches EOF or the peer closes; the first Ctrl-C
+    /// closes politely and the second gives up waiting.
+    #[arg(long)]
+    pub ws: bool,
+
     /// Print a timing report after the response, curl's `--write-out`.
     ///
     /// `%{time_total}`, `%{http_code}` and eleven more; `\n` and `%%`

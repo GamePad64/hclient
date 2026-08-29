@@ -28,9 +28,27 @@ all-features = true
 # stacks together are 100 crates and 3.30 MiB stripped, against Ubuntu's
 # curl at 334 KB plus 33 shared libraries — so the comparison is one file
 # against thirty-four, not 3.3 MiB against 334 KB.
-default = ["rustls", "native-tls"]
+#
+# `websocket` is in that default for the same reason and no other: `--ws`
+# is a runtime flag, and a flag whose one legal answer is "this build has
+# not got it" is not a flag. It is still a *feature* rather than an
+# unconditional dependency, because it is the only capability here that
+# costs a whole crate — `hclient-tungstenite`, and `tungstenite` under it
+# — and a build that wants `hc` without RFC 6455 framing must be able to
+# say so. Measured, unique crates in `cargo tree -e normal`: 150 without
+# it and 158 with, the eight being `tungstenite` and its own graph. That
+# number is a fact about a resolution and will drift; what does not is
+# that turning the feature off removes them. `--ws` in a build without it is a refusal naming the feature,
+# the same shape as `--backend`'s and with the same exit code, rather
+# than an unknown flag.
+#
+# There is no `sse` feature beside it: `hclient::sse` is unconditional in
+# `hclient`, so `--sse` costs this build nothing to carry and a feature
+# would only be a way to switch off code that is already linked.
+default = ["rustls", "native-tls", "websocket"]
 rustls = ["dep:hclient-tls-rustls", "hclient-tls-rustls/dangerous-insecure"]
 native-tls = ["dep:hclient-tls-native-tls", "hclient-tls-native-tls/dangerous-insecure"]
+websocket = ["dep:hclient-tungstenite"]
 http2 = ["hclient-native/http2"]
 http3 = ["hclient-native/http3", "hclient-rt-tokio/udp", "hclient-tls-rustls?/quic"]
 
@@ -46,6 +64,18 @@ hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.1"
 hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.1" }
 hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.1", optional = true, features = ["platform-verifier"] }
 hclient-tls-native-tls = { path = "../hclient-tls-native-tls", version = "0.1.0-alpha.1", optional = true }
+hclient-tungstenite = { path = "../hclient-tungstenite", version = "0.1.0-alpha.1", optional = true }
+
+# The two halves of the WebSocket seam are a `Stream` and a `Sink`, and
+# `--ws` drives both by hand with `std::future::poll_fn` rather than
+# through `futures-util`'s `StreamExt`/`SinkExt`. That is four lines here
+# against a crate: both are already in this graph — `futures-core`
+# through `hyper`'s `futures-channel` and `futures-sink` through
+# `hclient-core`, which declares the seam in terms of it — so naming them
+# adds **no crate at all**, and `cargo tree -e normal -i futures-core` is
+# what says so rather than a count.
+futures-core = { workspace = true }
+futures-sink = { workspace = true }
 
 bytes = { workspace = true }
 http  = { workspace = true }
@@ -57,6 +87,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+# For `derive_accept_key` in `tests/websocket.rs`'s hand-written server,
+# and for nothing else: the fixture parses and builds RFC 6455 frames
+# itself, because a fixture sharing the client's frame codec cannot tell a
+# correct frame from a consistently wrong one — `hclient-tungstenite`'s own
+# test file opens with that argument and this one follows it. The accept
+# key is the one part borrowed, and it is defused the same way, by pinning
+# it against RFC 6455 §1.3's worked example. It is free: `tungstenite` is
+# already in this crate's graph through `hclient-tungstenite` at exactly
+# this feature set, so the dev-dependency resolves to the same copy.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [lints]
 workspace = true
