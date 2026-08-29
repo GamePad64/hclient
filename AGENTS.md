@@ -1965,6 +1965,62 @@ case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
 
+### An axum app is testable in process, and the seam that allows it is the one reqwest has not got
+
+`hclient_tower::app::AppTransport` makes a `tower::Service` a
+[`Transport`], so a test drives the **real** `hclient::Client` — redirects,
+the jar, the cache, retries, decompression, `.json()` — against a **real**
+`axum::Router`, with no socket, no port and nothing spawned. httpx's
+`ASGITransport`, in Rust.
+
+**It exists here rather than anywhere else for a structural reason.**
+`reqwest` has no `pub trait Connect` — measured in 0.13.4, zero hits — so
+testing an axum app against it means binding a port. And what
+`tower::ServiceExt::oneshot` already gives is a *service call*, not a
+client: the `http::Request` is assembled by hand, no redirect is followed,
+no cookie is stored, nothing is decompressed. The difference is the whole
+of `Client`, and the test that pins it walks a `302`, stores a
+`Set-Cookie` and presents it on the next hop — one `send()`, two hops, no
+socket.
+
+**The claim is executed rather than asserted.** `tests/axum_router.rs`
+runs a real `axum::Router`, because a claim about a third party is exactly
+as perishable as the check behind it — this file's own rule, and the
+reason `axum` is a dev-dependency here. It costs 22 crates with
+`default-features = false`, carrying neither tokio nor hyper, which is
+what made proving it affordable.
+
+**Two pieces were missing and both are boundary work.** `RequestBody` is
+not an `http_body::Body` — it is an enum with a factory arm — so
+`OutgoingBody` is the view that makes it one, built through
+`RequestBody::reduce` rather than by matching: the enum is
+`#[non_exhaustive]` now, so a match here needs a wildcard, and a wildcard
+is where a new variant goes to be silently mishandled. `Reduced` is
+exhaustive, owned by the crate that would add one, and already carries the
+factory arm's depth bound.
+
+And the response body needed mapping the other way. `BoxedTransport`'s
+blanket impl requires `<T::Body>::Error: Into<Error>`, which a server-side
+body does not satisfy — `Full`'s is `Infallible`, axum's is `axum::Error`.
+Without `IncomingBody` an `axum::Router` could be a `Transport` and still
+not back a `Client`, which is the whole point. **The transport is the
+boundary, so the conversion belongs there** and not in a caller's test.
+
+**The authority is named at construction and any other is refused.** An
+in-process service has no origin and a client needs an absolute URI —
+there is nowhere to resolve `Location: /other` against otherwise — so
+httpx invents `http://testserver` and so does this. What is added is the
+refusal: a test that names a real host would otherwise be *answered by
+the local router*, and pass while reaching nothing. Checked by mutation:
+removing the check kills exactly that test.
+
+**The body mapping is the caller's one line, deliberately.**
+`axum::Router` takes `axum::body::Body`, so the call site writes
+`app.map_request(|r| r.map(axum::body::Body::new))`. A type parameter and
+a stored closure on `AppTransport` would spare that line and would be this
+crate reimplementing `ServiceExt::map_request`, which the caller already
+has.
+
 ### Retry took the same shape, and the asymmetry between the two is the finding
 
 `RetryPolicy` is a trait with one method, `Standard` is the configuring

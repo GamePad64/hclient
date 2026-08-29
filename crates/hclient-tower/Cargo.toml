@@ -22,7 +22,7 @@ tower-service = "0.3"
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
-hclient          = { workspace = true, features = ["test-util"] }
+hclient          = { workspace = true, features = ["test-util", "cookies"] }
 hclient-mock     = { workspace = true }
 http-body-util   = { workspace = true }
 tower-service    = "0.3"
@@ -32,6 +32,14 @@ tower-service    = "0.3"
 # normal dependency would put `tokio` (`sync`) and `tokio-util` into the
 # graph of every consumer of this crate for a layer they may never use.
 tower            = { version = "0.5", default-features = false, features = ["util", "limit"] }
+# The app-transport tests drive a real `Client`, and its default clock is
+# tokio's; no reactor is needed for an in-process service, but the runtime is.
+tokio            = { version = "1", features = ["rt", "macros"] }
+# The proof that `AppTransport` really does drive an `axum::Router`, which
+# is the whole headline. A dev-dependency, so no consumer pays for it —
+# and 22 crates with `default-features = false`, carrying neither tokio
+# nor hyper, which is what makes proving it affordable rather than a claim.
+axum             = { version = "0.8", default-features = false }
 
 [lints]
 workspace = true

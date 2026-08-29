@@ -75,6 +75,8 @@
 //! records the gap rather than implying it away.
 #![forbid(unsafe_code)]
 
+pub mod app;
+
 use hclient_core::unversioned::Transport;
 use hclient_core::{Capabilities, Error, RequestBody};
 use std::error::Error as StdError;
