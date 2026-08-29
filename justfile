@@ -414,6 +414,19 @@ check-targets:
     # all. The library half carries the `cfg(unix)` — `unix_socket` — and
     # that is the half this line defends.
     check -p hclient-native --target x86_64-pc-windows-msvc --no-default-features --lib
+    # `hclient-idn`'s **test** target on both platforms, which is where
+    # the platform column of its differential corpus lives. Its `use` of
+    # `hclient_idn::testing` is `#[cfg]`-ed to the two platform backends,
+    # so losing that line broke Windows and macOS and left Linux green —
+    # every site that needs it is inside a function the same `cfg`
+    # removes. `--all-targets` is the load-bearing half here: the library
+    # compiled fine throughout.
+    check -p hclient-idn --target x86_64-pc-windows-msvc --all-features --all-targets
+    check -p hclient-idn --target aarch64-apple-darwin --all-features --all-targets
+    # macOS's transport half, mirroring the Windows line above: the
+    # library carries `cfg(unix)` and a test build cannot be checked from
+    # here, because `ring` needs an assembler for the target.
+    check -p hclient-native --target aarch64-apple-darwin --no-default-features --lib
 
     if [ ${#failed[@]} -ne 0 ]; then
       echo "::error::cross-target check failed for ${#failed[@]} of 6 invocations:"

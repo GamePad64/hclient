@@ -55,9 +55,15 @@
 //! divergence cannot appear without a test failing and a fixed one cannot
 //! stay listed.
 
-use rstest::rstest;
+// The platform column's seam. `#[cfg]`-ed because there is no platform
+// backend on Linux, and **its loss is why this file stopped compiling for
+// Windows and macOS**: a bulk `use`-tidying replaced this line with a
+// `Cow` import, which left `testing::` unresolved at five sites and `Cow`
+// imported twice. Neither is visible on Linux, where every use of both is
+// inside a function this same `cfg` removes.
 #[cfg(any(icu_backend, foundation_backend))]
-use std::borrow::Cow;
+use hclient_idn::testing;
+use rstest::rstest;
 use std::borrow::Cow;
 
 /// The oracle, called exactly as `hclient-proto::uri::host_to_ascii`
