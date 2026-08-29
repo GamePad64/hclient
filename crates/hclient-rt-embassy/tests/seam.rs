@@ -19,7 +19,19 @@
 //! is the one that must not quietly appear — a `Native` here reporting
 //! `SendTransport` would mean the bound had been satisfied by something
 //! that cannot honour it.
-#![cfg(all(feature = "proto-ipv4", feature = "medium-ethernet"))]
+// **`target_os = "linux"` is not about this file's subject, it is about
+// where its dependencies exist.** `hclient-core`, `hclient-native`,
+// `hclient-tls`, `hclient-dns` and `hclient-mock` are all declared under
+// `[target.'cfg(target_os = "linux")'.dev-dependencies]`, and this crate's
+// manifest already says why the gate and the `#![cfg]` only work as a
+// pair — `tuntap.rs` carries the matching line. This file did not, so it
+// compiled nowhere but Linux, and both `test (windows-latest)` and
+// `test (macos-latest)` failed on it with six `E0433`s.
+#![cfg(all(
+    target_os = "linux",
+    feature = "proto-ipv4",
+    feature = "medium-ethernet"
+))]
 
 // **Keeps `embassy-executor`'s rlib on this binary's link line**, which
 // nothing else here does: every other test file in this crate names the

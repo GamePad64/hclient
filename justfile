@@ -433,6 +433,15 @@ check-targets:
     # library carries `cfg(unix)` and a test build cannot be checked from
     # here, because `ring` needs an assembler for the target.
     check -p hclient-native --target aarch64-apple-darwin --no-default-features --lib
+    # The embassy runtime's **test** targets on both, which is where this
+    # gap was: its `hclient-*` dev-dependencies are declared under
+    # `[target.'cfg(target_os = "linux")'.dev-dependencies]`, and a test
+    # file that forgot the matching `#![cfg]` compiles nowhere else. The
+    # library was never the problem, so `--all-targets` is the whole
+    # point. Both `test (macos-latest)` and `test (windows-latest)` were
+    # red on it, and nothing a developer runs said so.
+    check -p hclient-rt-embassy --target x86_64-pc-windows-msvc --all-features --all-targets
+    check -p hclient-rt-embassy --target aarch64-apple-darwin --all-features --all-targets
 
     if [ ${#failed[@]} -ne 0 ]; then
       echo "::error::cross-target check failed for ${#failed[@]} of 6 invocations:"
