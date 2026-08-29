@@ -66,12 +66,14 @@ pub struct Timings {
     pub tls_version: Option<String>,
     pub tls_cipher: Option<String>,
     pub alpn: Option<Vec<u8>>,
-    /// What the server asked for when it requested a client certificate,
-    /// where the backend could see it.
+    /// Whether the server asked for a client certificate, and what for.
     ///
-    /// Owned, unlike the borrowed field it is read from: a `Timings` is
-    /// a snapshot the caller keeps after the exchange has ended.
-    pub client_cert_request: Option<hclient::hooks::ClientCertRequest>,
+    /// Three states, because `hc --backend` can put the reader on either
+    /// side of the distinction: rustls watches the handshake and
+    /// native-tls cannot, and a `-v` that printed the same nothing for
+    /// both would say *no server here wants a certificate* on a build
+    /// where that was never asked.
+    pub client_cert: hclient::hooks::ClientCertAsk,
 }
 
 /// The [`Hooks`] impl that fills a [`Timings`].
@@ -111,7 +113,7 @@ impl Hooks for Recorder {
                     t.tls_version = c.tls_version.map(ToOwned::to_owned);
                     t.tls_cipher = c.tls_cipher.map(ToOwned::to_owned);
                     t.alpn = c.alpn.map(<[u8]>::to_vec);
-                    t.client_cert_request = c.client_cert_request.cloned();
+                    t.client_cert = c.client_cert.clone();
                 }
                 t.connects += 1;
             }
@@ -299,7 +301,7 @@ mod tests {
             tls_version: Some("TLSv1.3".into()),
             tls_cipher: Some("TLS_AES_256_GCM_SHA384".into()),
             alpn: Some(b"h2".to_vec()),
-            client_cert_request: None,
+            client_cert: hclient::hooks::ClientCertAsk::Unobserved,
         }
     }
 

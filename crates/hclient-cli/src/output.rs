@@ -7,6 +7,7 @@
 //! mangles one into replacement characters is not a tool anybody can pipe.
 
 use anstyle::{AnsiColor, Style};
+use hclient::hooks::ClientCertAsk;
 use std::io::Write;
 
 const DIM: Style = Style::new().dimmed();
@@ -223,27 +224,37 @@ pub fn tls_line(out: &mut impl Write, t: &crate::timings::Timings) -> std::io::R
             String::from_utf8_lossy(alpn)
         )?;
     }
-    // **Only when the server asked**, because the silent case is nearly
-    // every connection and a line saying so on each of them is noise
-    // rather than information. When it did ask, the interesting half is
-    // whether anything answered: a `403` over a connection that offered
-    // no certificate is a different diagnosis from a `403` over one that
-    // did, and this is the only place a reader can see which they have.
-    if let Some(asked) = &t.client_cert_request {
-        let named = match asked.authority_names.len() {
-            0 => "naming no authority".to_string(),
-            1 => "naming 1 authority".to_string(),
-            n => format!("naming {n} authorities"),
-        };
-        let sent = if asked.answered {
-            "one was sent"
-        } else {
-            "none was sent"
-        };
-        writeln!(
+    // **Three states, three lines, and the silent one is the reason the
+    // type is not an `Option`.** `NotAsked` prints nothing, because it is
+    // nearly every connection and a line on each would be noise. But
+    // `Unobserved` over TLS is a different fact — this backend cannot
+    // tell — and printing the same nothing for it would say *no server
+    // here wants a certificate* on a `--backend native-tls` run where the
+    // question was never put. That is the distinction the SSL line above
+    // already draws for the version and the suite.
+    match &t.client_cert {
+        ClientCertAsk::NotAsked => {}
+        ClientCertAsk::Unobserved => writeln!(
             out,
-            "{DIM}* Server requested a client certificate, {named}; {sent}{DIM:#}"
-        )?;
+            "{DIM}* Client certificate: this TLS backend does not report whether one was \
+             requested{DIM:#}"
+        )?,
+        ClientCertAsk::Asked(asked) => {
+            let named = match asked.authority_names.len() {
+                0 => "naming no authority".to_string(),
+                1 => "naming 1 authority".to_string(),
+                n => format!("naming {n} authorities"),
+            };
+            let sent = if asked.answered {
+                "one was sent"
+            } else {
+                "none was sent"
+            };
+            writeln!(
+                out,
+                "{DIM}* Server requested a client certificate, {named}; {sent}{DIM:#}"
+            )?;
+        }
     }
     Ok(())
 }
@@ -315,7 +326,7 @@ mod tests {
     #[test]
     fn a_client_certificate_request_that_went_unanswered_is_reported() {
         let t = Timings {
-            client_cert_request: Some(
+            client_cert: ClientCertAsk::Asked(
                 hclient::hooks::ClientCertRequest::new()
                     .authority_names(vec![b"a".to_vec(), b"b".to_vec()]),
             ),
@@ -330,7 +341,7 @@ mod tests {
     #[test]
     fn a_client_certificate_that_was_sent_says_so() {
         let t = Timings {
-            client_cert_request: Some(
+            client_cert: ClientCertAsk::Asked(
                 hclient::hooks::ClientCertRequest::new()
                     .authority_names(vec![b"a".to_vec()])
                     .answered(true),
@@ -347,8 +358,25 @@ mod tests {
     /// `https://` request grows one.
     #[test]
     fn a_server_that_did_not_ask_produces_no_line() {
-        let out = render(&handshook());
+        let t = Timings {
+            client_cert: ClientCertAsk::NotAsked,
+            ..handshook()
+        };
+        let out = render(&t);
         assert!(!out.contains("client certificate"), "{out:?}");
+    }
+
+    /// **The third state, and the pair with the test above is the whole
+    /// argument for it.** A backend that cannot watch the handshake must
+    /// not be reported as one that watched and saw nothing.
+    #[test]
+    fn a_backend_that_cannot_watch_says_so_rather_than_staying_silent() {
+        // `handshook()` leaves the default, which is `Unobserved`.
+        let out = render(&handshook());
+        assert!(
+            out.contains("does not report whether one was requested"),
+            "{out:?}"
+        );
     }
 
     /// A version with no suite still prints the version. Two backends

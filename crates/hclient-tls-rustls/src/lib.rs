@@ -127,6 +127,30 @@ struct Named {
     id: TlsConfigId,
 }
 
+/// A client identity this backend was asked for and does not have.
+///
+/// Reachable only by a consumer that calls this backend directly:
+/// `hclient-native` resolves every label through
+/// [`TlsIdentity::config_id_for`] before it opens a socket and refuses
+/// there, naming the label. Kept private because it is a guard rather
+/// than a case a caller distinguishes — the message reaches them through
+/// `Error`'s source chain either way.
+#[derive(Debug)]
+pub(crate) struct UnknownIdentity(pub(crate) String);
+
+impl std::fmt::Display for UnknownIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no client identity is registered under the name `{}`: refusing rather than \
+             connecting with the default one",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownIdentity {}
+
 /// Wraps a config's client-certificate resolver so that what the server
 /// asks for is observable.
 ///
@@ -281,7 +305,11 @@ impl Rustls {
         self.identities.get(name).map(|n| n.config.clone())
     }
 
-    fn config_for(&self, alpn: &[&[u8]], identity: Option<&str>) -> Arc<rustls::ClientConfig> {
+    fn config_for(
+        &self,
+        alpn: &[&[u8]],
+        identity: Option<&str>,
+    ) -> Result<Arc<rustls::ClientConfig>, UnknownIdentity> {
         // **A named identity is not cached per ALPN**, and that is a
         // decision rather than an omission: the ALPN cache exists because
         // cloning a `ClientConfig` is rustls' most expensive operation on
@@ -290,33 +318,39 @@ impl Rustls {
         // would multiply the entries by the identities to save a clone on
         // a rarer path.
         //
-        // A name this backend has not got cannot arrive here: the
-        // transport resolved it through `config_id_for` before opening a
-        // socket, and refused there.
+        // **A name this backend has not got is a refusal here too**, and
+        // the belt is worth the brace: the transport resolves the label
+        // through `config_id_for` before opening a socket and refuses
+        // there, so this arm is unreachable through `hclient-native` —
+        // but the seam is public, and the alternative to refusing is
+        // connecting with the *default* identity, which is one tenant's
+        // certificate on another tenant's connection. A silent
+        // substitution guarded only by a comment is the shape this whole
+        // design exists to remove.
         if let Some(name) = identity {
             let Some(named) = self.config_for_identity(name) else {
-                return self.base.clone();
+                return Err(UnknownIdentity(name.to_string()));
             };
             if alpn.is_empty() {
-                return named;
+                return Ok(named);
             }
             let mut cfg = (*named).clone();
             cfg.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
-            return Arc::new(cfg);
+            return Ok(Arc::new(cfg));
         }
         if alpn.is_empty() {
-            return self.base.clone();
+            return Ok(self.base.clone());
         }
         let key: Vec<Vec<u8>> = alpn.iter().map(|a| a.to_vec()).collect();
         let mut cache = self.by_alpn.lock().expect("alpn cache poisoned");
-        cache
+        Ok(cache
             .entry(key.clone())
             .or_insert_with(|| {
                 let mut cfg = (*self.base).clone();
                 cfg.alpn_protocols = key;
                 Arc::new(cfg)
             })
-            .clone()
+            .clone())
     }
 }
 
@@ -518,11 +552,14 @@ impl TlsConnect for Rustls {
             Ok(n) => n.to_owned(),
             Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
         };
-        let conn =
-            match rustls::ClientConnection::new(self.config_for(req.alpn, req.identity), name) {
-                Ok(c) => c,
-                Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
-            };
+        let cfg = match self.config_for(req.alpn, req.identity) {
+            Ok(c) => c,
+            Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
+        };
+        let conn = match rustls::ClientConnection::new(cfg, name) {
+            Ok(c) => c,
+            Err(e) => return Handshaking::failed(Error::new(ErrorKind::Tls, e)),
+        };
         Handshaking::driving(TlsStream::new(io, conn))
     }
 }
@@ -721,6 +758,21 @@ where
             }
         }
 
+        // **An empty slot is `NotAsked`, not `Unobserved`**, and that is
+        // the line the three states exist for. This backend's recording
+        // resolver sits in *every* config it hands out, so it watched the
+        // whole handshake: nothing arriving means the server sent no
+        // `CertificateRequest`, which is an answer. `Unobserved` is what
+        // a backend that cannot watch reports, and this one always can.
+        let observed = match me.record.lock() {
+            Ok(mut slot) => match std::mem::take(&mut *slot) {
+                hclient_tls::ClientCertAsk::Unobserved => hclient_tls::ClientCertAsk::NotAsked,
+                asked => asked,
+            },
+            // A poisoned lock means a panic ran while it was held, which
+            // nothing here does. Understating rather than guessing.
+            Err(_) => hclient_tls::ClientCertAsk::Unobserved,
+        };
         let c = stream.conn();
         // `early_data_accepted` is left unset: this backend never offers
         // early data, so there is nothing to report as accepted or
@@ -737,7 +789,13 @@ where
                 c.negotiated_cipher_suite()
                     .and_then(|s| normalize_cipher_suite(s.suite())),
             )
-            .client_cert_request(me.record.lock().ok().and_then(|mut r| r.take()));
+            // **`NotAsked` and not `Unobserved`**: this backend watched
+            // the whole handshake through its own resolver, so an empty
+            // slot is an answer rather than a silence. That is the
+            // difference the three states exist for, and it is stated
+            // here because this is the only place in the workspace that
+            // can honestly say it.
+            .client_cert(observed);
         let Handshaking2::Driving(stream) =
             std::mem::replace(&mut me.state, Handshaking2::Failed(None))
         else {

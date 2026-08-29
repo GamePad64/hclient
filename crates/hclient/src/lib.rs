@@ -248,8 +248,8 @@ pub mod caps {
 /// [`hooks::Event`].
 pub mod hooks {
     pub use hclient_core::unversioned::{
-        ClientCertRequest, CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event,
-        Head, Hooks, Informational, NoHooks, Reused,
+        ClientCertAsk, ClientCertRequest, CloseReason, Closed, ConnectTiming, Connected,
+        ConnectionId, Event, Head, Hooks, Informational, NoHooks, Reused,
     };
 }
 

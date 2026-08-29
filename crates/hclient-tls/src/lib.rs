@@ -28,7 +28,7 @@
 #[cfg(feature = "quic")]
 pub mod quic;
 
-use hclient_core::unversioned::ClientCertRequest;
+pub use hclient_core::unversioned::{ClientCertAsk, ClientCertRequest};
 use hclient_core::{Error, ErrorKind, TlsSupport};
 use std::future::Future;
 
@@ -182,22 +182,16 @@ pub struct TlsInfo {
     /// the result of negotiation, not the whole proposed list from
     /// `TlsRequest::alpn`.
     pub alpn: Option<Vec<u8>>,
-    /// What the server asked for when it requested a client certificate,
-    /// or `None` where it did not ask — or where this backend cannot see
-    /// that it did.
+    /// Whether the server asked for a client certificate, and what for.
     ///
-    /// **Filled by a recording resolver, and absent where a backend
-    /// cannot observe.** `hclient-tls-rustls` wraps the config's
+    /// **Three states rather than an `Option`**, and the type carries the
+    /// argument: a backend that cannot observe the `CertificateRequest`
+    /// must be distinguishable from a server that did not send one.
+    /// `hclient-tls-rustls` sees it by wrapping the config's
     /// `ResolvesClientCert`; `native-tls` exposes no such hook and leaves
-    /// this `None`, which is the understating direction and
-    /// [`TlsConnect::reports_alpn`]'s rule.
-    ///
-    /// An empty [`ClientCertRequest::authority_names`] inside a `Some` is
-    /// a third state, not the second one: RFC 8446 §4.4.2.1 makes an
-    /// empty list *send whatever certificate you have*, so *did not ask*,
-    /// *asked and named nobody* and *asked and named these* are three
-    /// facts and a bare `Vec` collapses the first two.
-    pub client_cert_request: Option<ClientCertRequest>,
+    /// the default [`ClientCertAsk::Unobserved`], which is the
+    /// understating value and [`TlsConnect::reports_alpn`]'s rule.
+    pub client_cert: ClientCertAsk,
     /// The peer's certificate chain, DER, in leaf → root order. Backends
     /// like native-tls hand back only the leaf — in that case a
     /// single-element `Vec`, not `None`: there is a certificate, the chain
@@ -309,10 +303,10 @@ impl TlsInfo {
         self
     }
 
-    /// What the server asked for, where the backend could observe it.
+    /// Whether the server asked for a client certificate, and what for.
     #[must_use]
-    pub fn client_cert_request(mut self, request: Option<ClientCertRequest>) -> Self {
-        self.client_cert_request = request;
+    pub fn client_cert(mut self, asked: ClientCertAsk) -> Self {
+        self.client_cert = asked;
         self
     }
 }
@@ -430,6 +424,14 @@ pub trait TlsIdentity {
 
     /// The identity the caller named, or `None` — this backend has none
     /// by that name.
+    ///
+    /// **A backend that answers `Some` here owes that identity at
+    /// connect time**, and owes a *refusal* rather than a substitution if
+    /// it cannot serve it after all. Connecting with the default identity
+    /// instead is how one tenant's certificate reaches another tenant's
+    /// server, and the layer above cannot see it happen: it resolved the
+    /// label, put the id in its pool key, and has no way to learn that
+    /// the handshake used a different one.
     ///
     /// **Defaulted to refusing every name**, which is the understating
     /// direction and `reports_alpn`'s rule: a backend that knows nothing
@@ -720,6 +722,33 @@ impl TlsConnect for NoTls {
 
 #[cfg(test)]
 mod tests {
+
+    /// **The understating default, asserted rather than described.** A
+    /// backend that fills nothing must report *I could not see*, never
+    /// *the server did not ask*: the second is an answer, and a backend
+    /// that never watched has none. This is `reports_alpn`'s rule with a
+    /// test, and it is the property every backend that forgets the field
+    /// silently relies on.
+    #[test]
+    fn a_backend_that_says_nothing_reports_unobserved() {
+        assert_eq!(TlsInfo::new().client_cert, ClientCertAsk::Unobserved);
+        assert_eq!(TlsInfo::default().client_cert, ClientCertAsk::Unobserved);
+        assert_eq!(ClientCertAsk::default(), ClientCertAsk::Unobserved);
+    }
+
+    /// `asked()` is the caller's shortcut and must not paper over the
+    /// distinction the type exists for: both non-`Asked` states answer
+    /// `None`, and it is the *caller* choosing to treat them alike.
+    #[test]
+    fn the_shortcut_flattens_only_at_the_call_site() {
+        assert!(ClientCertAsk::Unobserved.asked().is_none());
+        assert!(ClientCertAsk::NotAsked.asked().is_none());
+        assert!(
+            ClientCertAsk::Asked(ClientCertRequest::new())
+                .asked()
+                .is_some()
+        );
+    }
     use super::*;
     use hyper::rt::{Read, ReadBufCursor, Write};
     use std::collections::VecDeque;
@@ -857,7 +886,7 @@ mod tests {
                 Ok((
                     PassThrough(io),
                     TlsInfo {
-                        client_cert_request: None,
+                        client_cert: ClientCertAsk::Unobserved,
                         alpn,
                         peer_certificates: None,
                         protocol_version: Some("TLSv1.3".to_string()),

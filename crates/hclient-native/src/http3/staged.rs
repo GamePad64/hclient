@@ -71,7 +71,6 @@ use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hoo
 use hclient_core::unversioned::{ConnectTiming, Connected, Event, Hooks, Reused, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody, Timeouts, check_version};
 use hclient_tls::quic::QuicTlsConnect;
-use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
@@ -260,7 +259,7 @@ pub(crate) struct Admitted {
     pub(crate) timeouts: Timeouts,
     /// The client identity, read from the request and already resolved:
     /// the name for `QuicTlsRequest`, and the id for the pool key.
-    pub(crate) identity: Option<Cow<'static, str>>,
+    pub(crate) identity: Option<hclient_core::ClientIdentity>,
     pub(crate) identity_id: Option<hclient_tls::TlsConfigId>,
 }
 
@@ -315,8 +314,8 @@ where
         let identity = req
             .extensions()
             .get::<hclient_core::ClientIdentity>()
-            .map(|i| i.0.clone());
-        let identity_id = match identity.as_deref() {
+            .cloned();
+        let identity_id = match identity.as_ref().map(hclient_core::ClientIdentity::name) {
             None => None,
             Some(name) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, name) {
                 Some(cfg) => Some(cfg),

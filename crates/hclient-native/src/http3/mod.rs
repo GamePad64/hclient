@@ -97,7 +97,6 @@ use hclient_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use hclient_tls::TlsConfigId;
 use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
 use hooks::{ConnState, Watch, mark, since};
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::poll_fn;
@@ -132,7 +131,7 @@ struct PoolKey {
     /// not what keeps two tenants apart. It is here because `dial` needs
     /// the *name* to hand to `QuicTlsRequest`, and the key is what `dial`
     /// is given.
-    identity: Option<Cow<'static, str>>,
+    identity: Option<hclient_core::ClientIdentity>,
 }
 
 type SendRequest = h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>;
@@ -768,7 +767,10 @@ where
             // present an identity over HTTP/1 and HTTP/2 and silently omit
             // it here — one request answered differently depending on
             // which protocol the pool happened to offer.
-            identity: key.identity.as_deref(),
+            identity: key
+                .identity
+                .as_ref()
+                .map(hclient_core::ClientIdentity::name),
         })?;
         let endpoint = self.endpoint(addr)?;
         let mut cfg = quinn::ClientConfig::new(crypto);

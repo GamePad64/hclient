@@ -138,8 +138,8 @@ use hclient_core::unversioned::{
     Reused, Transport,
 };
 use hclient_core::{
-    CancelSupport, Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody,
-    ReuseSupport, TimeoutSupport, Timeouts, check_version,
+    CancelSupport, Capabilities, ClientIdentity, Error, ErrorKind, Phase, RedirectSupport,
+    RequestBody, ReuseSupport, TimeoutSupport, Timeouts, check_version,
 };
 use hclient_dns::Resolve;
 use hclient_rt::{Spawn, TcpConnect, TcpOpts, Timer};
@@ -3074,8 +3074,8 @@ where
         let identity = parts
             .extensions
             .get::<hclient_core::ClientIdentity>()
-            .map(|i| i.0.clone());
-        let identity_id = match identity.as_deref() {
+            .cloned();
+        let identity_id = match identity.as_ref().map(ClientIdentity::name) {
             None => None,
             Some(id) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, id) {
                 Some(cfg) => Some(cfg),
@@ -3087,7 +3087,7 @@ where
                 }
             },
         };
-        let identity = identity.as_deref();
+        let identity = identity.as_ref().map(ClientIdentity::name);
         let parts_of_key = self.key_parts(&parts.uri, identity_id)?;
         // A transport that has forbidden HTTP/1.1 cannot serve `http://`:
         // plaintext carries no ALPN, and the only route to HTTP/2 there is
@@ -3376,9 +3376,15 @@ where
                             .and_then(|i| i.protocol_version.as_deref()),
                         tls_info.as_ref().and_then(|i| i.cipher_suite.as_deref()),
                         tls_info.as_ref().and_then(|i| i.alpn.as_deref()),
+                        // Cloned rather than borrowed: it is not a slice of
+                        // the `TlsInfo`, and the clone happens only in the
+                        // `Asked` arm. Over `http://` there is no `TlsInfo`
+                        // at all, which is `Unobserved` — there was no
+                        // handshake to watch.
                         tls_info
                             .as_ref()
-                            .and_then(|i| i.client_cert_request.as_ref()),
+                            .map(|i| i.client_cert.clone())
+                            .unwrap_or_default(),
                     )
                     .timing(
                         ConnectTiming::new()

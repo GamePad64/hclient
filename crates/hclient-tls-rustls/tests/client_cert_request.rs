@@ -160,9 +160,12 @@ async fn a_server_that_asks_is_reported_with_the_authorities_it_named() {
     let tls = Rustls::from_config(Arc::new(trusting(&server_ca)));
     let info = handshake(addr, tls).await;
 
-    let asked = info
-        .client_cert_request
-        .expect("the server sent a CertificateRequest and it must be reported");
+    let hclient_tls::ClientCertAsk::Asked(asked) = info.client_cert else {
+        panic!(
+            "the server sent a CertificateRequest and it must be reported: {:?}",
+            info.client_cert
+        )
+    };
     assert_eq!(
         asked.authority_names.len(),
         1,
@@ -198,9 +201,11 @@ async fn a_server_that_does_not_ask_reports_nothing() {
     let (addr, server_ca) = server::spawn_tls_echo();
     let tls = Rustls::from_config(Arc::new(trusting(&server_ca)));
     let info = handshake(addr, tls).await;
-    assert!(
-        info.client_cert_request.is_none(),
-        "no CertificateRequest was sent, so there is nothing to report"
+    assert_eq!(
+        info.client_cert,
+        hclient_tls::ClientCertAsk::NotAsked,
+        "this backend watches every handshake through its own resolver, so a \
+         server that did not ask is an answer and not a silence"
     );
 }
 
@@ -218,7 +223,9 @@ async fn a_certificate_that_was_sent_is_reported_as_answered() {
 
     let info = handshake(addr, Rustls::from_config(Arc::new(cfg))).await;
 
-    let asked = info.client_cert_request.expect("the server asked");
+    let hclient_tls::ClientCertAsk::Asked(asked) = info.client_cert else {
+        panic!("the server asked: {:?}", info.client_cert)
+    };
     assert!(
         asked.answered,
         "a certificate was configured and matched, so one was presented"

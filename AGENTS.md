@@ -648,24 +648,59 @@ builds their own config is the caller doing mTLS — and `Recording`
 forwards `resolve`, `has_certs` and `only_raw_public_keys` verbatim. It
 costs one config clone per *construction*, never per connection.
 
-**`answered` is the field that earns the type.** Without it a caller
-cannot tell *403 because I sent no certificate* from *403 because I am
-not authorised*, so a picker fires on the wrong responses. It is
+**`answered` is the field that earns the payload type.** Without it a
+caller cannot tell *403 because I sent no certificate* from *403 because
+I am not authorised*, so a picker fires on the wrong responses. It is
 discriminated by exactly one of the three tests, which is what says it is
-carrying a fact rather than decorating one; the control throughout is a
-server that does not ask, which must report `None` rather than a `Some`
-with an empty list — the `Discovered::NoRecord`/`NotConsulted`
-distinction a third time.
+carrying a fact rather than decorating one.
+
+**And the answer is three-state, because two would be a lie by
+omission.** `Option<ClientCertRequest>` was the shape that shipped for
+one commit, and it collapses *the server did not ask* into *this backend
+cannot see whether it did*. Both sides are reachable in one program —
+rustls observes by being the resolver, `native-tls` exposes no hook — and
+**`hc --backend` chooses between them at run time**, so a caller writing
+a picker would see nothing on one backend and conclude that no server
+ever asks. `ClientCertAsk::{Unobserved, NotAsked, Asked(..)}` is
+`Discovered::NoRecord`/`NotConsulted` a third time, and the default is
+`Unobserved` — the understating value, asserted rather than described, so
+a backend that forgets the field can never be read as having watched.
+
+Only `hclient-tls-rustls` may say `NotAsked`, and it may because its
+recording resolver sits in **every** config it hands out: an empty slot
+after a completed handshake is an answer. `hc -v` prints all three —
+nothing for `NotAsked`, the authorities and whether one was sent for
+`Asked`, and *this TLS backend does not report whether one was requested*
+for `Unobserved`, which is the same distinction the SSL line above it
+already draws for the version and the suite. The QUIC path reports
+`Unobserved`: quinn drives that handshake, so no slot of ours is
+installed.
+
+The enum is **not** `#[non_exhaustive]` where its payload is, and the
+split is this file's own rule: the payload is handed back and only read,
+where the enum is *branched on*, so exhaustiveness is the mechanism and a
+fourth state must be a compile error at every reader.
 
 It reaches a caller on `Connected`, by the path `tls_version`,
 `tls_cipher` and `alpn` already take, and through the same **one** setter
 for the same reason: a backend either read the handshake's outcome or it
-did not. `hc -v` is the in-tree reader — *server requested a client
-certificate, naming 2 authorities; none was sent* — printed **only when
-the server asked**, because the silent case is nearly every connection
-and a line on each of them is noise. The QUIC path reports `None`: quinn
-drives that handshake, so no slot of ours is installed, which is the
-understating direction.
+did not.
+
+**Two more things the seam owed and did not have.** `Rustls::config_for`
+fell back to the **default config** for a label it did not recognise,
+under a comment observing that the transport refuses first — a silent
+substitution guarded by an argument about unreachability, which is the
+exact failure the design exists to prevent, and the QUIC half had the
+same fallback written a second way. Both refuse now, naming the label,
+and the obligation is written on the seam: *a backend that answers `Some`
+from `config_id_for` owes that identity at connect time, and owes a
+refusal rather than a substitution if it cannot serve it.* The layer
+above cannot catch a breach — it resolved the label, put the id in its
+pool key, and has no way to learn the handshake used another. And
+`ClientIdentity`'s field is private: it was an `Arc<str>` for a day, so
+the representation is exactly the thing not to promise, and `Clone` is
+what a pool key needs — which is why the h3 key holds the type rather
+than the string inside it.
 
 What is still not here is the picker itself, and `docs/mtls-design.md`
 §3.5 is why it is the caller's: rustls has no handshake pause, so an

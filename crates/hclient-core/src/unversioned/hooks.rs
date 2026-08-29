@@ -359,20 +359,74 @@ pub struct Connected<'a> {
     /// hook that finds them disagreeing has found something worth
     /// reporting rather than a field to prefer.
     pub alpn: Option<&'a [u8]>,
-    /// What the server asked for when it requested a client certificate,
-    /// where the backend could observe it.
+    /// Whether the server asked for a client certificate, and what for.
     ///
-    /// **`None` and an empty [`ClientCertRequest::authority_names`] are
-    /// different facts**, which is why this is not a bare list. `None`
-    /// means the server did not ask — or that the backend cannot see
-    /// that it did, which is `hclient-tls-native-tls`, whose stack
-    /// exposes no hook for it. An empty list inside a `Some` means the
-    /// server asked and named nobody, which RFC 8446 §4.4.2.1 makes
-    /// *send whatever certificate you have*.
+    /// Owned, unlike the three fields above it, because it is not a slice
+    /// of anything: the clone happens once per connection and only in the
+    /// [`ClientCertAsk::Asked`] arm.
+    pub client_cert: ClientCertAsk,
+}
+
+/// Whether a server asked for a client certificate — **three answers,
+/// because two of them would be a lie by omission.**
+///
+/// `Option<ClientCertRequest>` was the first shape and it collapses
+/// *the server did not ask* into *this backend cannot see whether it
+/// did*. Both sides are reachable in one program: `hclient-tls-rustls`
+/// observes the `CertificateRequest` by being the resolver, and
+/// `hclient-tls-native-tls` cannot, because the platform stacks expose no
+/// hook for it — and `hc --backend` picks between them at run time. A
+/// caller writing a certificate picker would then see nothing on one
+/// backend and conclude that no server ever asks, which is the *silently
+/// ignored setting* defect pointed at a credential.
+///
+/// It is the shape [`Discovered::NoRecord`] against `NotConsulted` has
+/// one crate over, and the one `Retry-After` absent against unreadable
+/// has: **an answer and the absence of one are different values.**
+///
+/// [`Discovered::NoRecord`]: https://docs.rs/hclient-native
+/// **Not `#[non_exhaustive]`**, unlike [`ClientCertRequest`] beside it,
+/// and the split is this workspace's own rule: the payload is a value a
+/// library hands back and a caller only reads, where this is a value
+/// something *branches on* — `hc -v` prints a different line per arm.
+/// Exhaustiveness is the mechanism here, so a fourth state must be a
+/// compile error at every reader rather than a wildcard for it to be
+/// silently mishandled in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ClientCertAsk {
+    /// This backend cannot see whether the server asked.
     ///
-    /// Borrowed, like the three fields above it: the `TlsInfo` this is
-    /// read out of outlives the emission.
-    pub client_cert_request: Option<&'a ClientCertRequest>,
+    /// **The default, and deliberately the understating value** —
+    /// `reports_alpn`'s rule: a backend that says nothing is taken to
+    /// know nothing, so silence can never be read as *no server here
+    /// wants a certificate*. Reached over `http://` too, where there was
+    /// no handshake to observe.
+    #[default]
+    Unobserved,
+    /// The backend watched the handshake and the server did not ask.
+    NotAsked,
+    /// The server asked. The payload is what it asked for.
+    ///
+    /// An empty [`ClientCertRequest::authority_names`] here is a fourth
+    /// fact and not this variant's absence: RFC 8446 §4.4.2.1 makes an
+    /// empty list *send whatever certificate you have*.
+    Asked(ClientCertRequest),
+}
+
+impl ClientCertAsk {
+    /// The request, where there was one.
+    ///
+    /// For a reader that only wants the payload and has already decided
+    /// that *unobserved* and *not asked* mean the same thing to it —
+    /// which is a decision, made at the call site, rather than one this
+    /// type makes for everybody.
+    #[must_use]
+    pub fn asked(&self) -> Option<&ClientCertRequest> {
+        match self {
+            Self::Asked(r) => Some(r),
+            _ => None,
+        }
+    }
 }
 
 /// What a server asked for when it requested a client certificate.
@@ -627,7 +681,7 @@ impl<'a> Connected<'a> {
             timing: ConnectTiming::new(),
             tls_version: None,
             tls_cipher: None,
-            client_cert_request: None,
+            client_cert: ClientCertAsk::Unobserved,
             alpn: None,
         }
     }
@@ -654,12 +708,12 @@ impl<'a> Connected<'a> {
         version: Option<&'a str>,
         cipher: Option<&'a str>,
         alpn: Option<&'a [u8]>,
-        client_cert_request: Option<&'a ClientCertRequest>,
+        client_cert: ClientCertAsk,
     ) -> Self {
         self.tls_version = version;
         self.tls_cipher = cipher;
         self.alpn = alpn;
-        self.client_cert_request = client_cert_request;
+        self.client_cert = client_cert;
         self
     }
 

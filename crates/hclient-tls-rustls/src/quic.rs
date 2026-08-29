@@ -90,7 +90,9 @@ impl QuicTlsConnect for Rustls {
                 ),
             ));
         }
-        let cfg = self.quic_config_for(req.alpn, req.early_data, req.identity);
+        let cfg = self
+            .quic_config_for(req.alpn, req.early_data, req.identity)
+            .map_err(|e| Error::new(ErrorKind::Tls, e))?;
         let quic = quinn_proto::crypto::rustls::QuicClientConfig::try_from(cfg)
             .map_err(|e| Error::new(ErrorKind::Tls, e))?;
         Ok(Arc::new(quic))
@@ -115,7 +117,7 @@ impl Rustls {
         alpn: &[&[u8]],
         early_data: bool,
         identity: Option<&str>,
-    ) -> Arc<rustls::ClientConfig> {
+    ) -> Result<Arc<rustls::ClientConfig>, crate::UnknownIdentity> {
         // **The QUIC half of the client-identity seam, and it is where
         // this implementation nearly repeated the mistake its own design
         // document warns about.** Adding `identity` to `QuicTlsRequest`
@@ -126,21 +128,26 @@ impl Rustls {
         // Uncached, for `config_for`'s reason one file over: the cache
         // exists for a path taken on every connection, and a named
         // identity is asked for.
+        // A name this backend has not got is refused here as on the TCP
+        // path, and for the same reason: falling back to the default
+        // identity is the silent substitution the whole design exists to
+        // remove — and over QUIC it would be *asymmetric* with TCP, which
+        // is worse than either answer alone.
         if let Some(name) = identity {
             let Some(cfg) = self.config_for_identity(name) else {
-                return self.quic_config_for(alpn, early_data, None);
+                return Err(crate::UnknownIdentity(name.to_string()));
             };
             let state = self.quic.get_or_init(QuicState::default);
             let mut cfg = (*cfg).clone();
             cfg.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
             cfg.resumption = rustls::client::Resumption::store(state.store());
             cfg.enable_early_data = early_data;
-            return Arc::new(cfg);
+            return Ok(Arc::new(cfg));
         }
         let key: Vec<Vec<u8>> = alpn.iter().map(|a| a.to_vec()).collect();
         let state = self.quic.get_or_init(QuicState::default);
         let mut cache = state.configs.lock().expect("quic config cache poisoned");
-        cache
+        Ok(cache
             .entry((key.clone(), early_data))
             .or_insert_with(|| {
                 let mut cfg = (*self.base).clone();
@@ -155,6 +162,6 @@ impl Rustls {
                 cfg.enable_early_data = early_data;
                 Arc::new(cfg)
             })
-            .clone()
+            .clone())
     }
 }

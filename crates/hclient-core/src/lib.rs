@@ -58,8 +58,14 @@ pub mod unversioned;
 /// allocation and no refcount — where `Arc::from(&str)` allocates every
 /// time. A computed label is `Cow::Owned` and pays a `String` clone per
 /// hop, which is bounded by the redirect limit and is a few bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClientIdentity(pub Cow<'static, str>);
+///
+/// **The field is private and the representation is not promised.** It
+/// was an `Arc<str>` for a day; a label is a name and a caller has no
+/// business knowing what holds it. [`Self::name`] is the whole of the
+/// read side, and `Clone` is what a pool key needs — which is why the
+/// key holds this type rather than the string inside it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClientIdentity(Cow<'static, str>);
 
 impl ClientIdentity {
     #[must_use]

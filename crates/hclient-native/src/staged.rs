@@ -535,9 +535,15 @@ where
                             .and_then(|i| i.protocol_version.as_deref()),
                         tls_info.as_ref().and_then(|i| i.cipher_suite.as_deref()),
                         tls_info.as_ref().and_then(|i| i.alpn.as_deref()),
+                        // Cloned rather than borrowed: it is not a slice of
+                        // the `TlsInfo`, and the clone happens only in the
+                        // `Asked` arm. Over `http://` there is no `TlsInfo`
+                        // at all, which is `Unobserved` — there was no
+                        // handshake to watch.
                         tls_info
                             .as_ref()
-                            .and_then(|i| i.client_cert_request.as_ref()),
+                            .map(|i| i.client_cert.clone())
+                            .unwrap_or_default(),
                     )
                     .timing(
                         ConnectTiming::new()

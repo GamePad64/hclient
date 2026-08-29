@@ -30,13 +30,13 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use hclient_core::unversioned::ClientCertRequest;
+use hclient_core::unversioned::{ClientCertAsk, ClientCertRequest};
 use rustls::SignatureScheme;
 use rustls::client::ResolvesClientCert;
 use rustls::sign::CertifiedKey;
 
 /// Where a handshake's record lands. One per connection.
-pub(crate) type Slot = Arc<Mutex<Option<ClientCertRequest>>>;
+pub(crate) type Slot = Arc<Mutex<ClientCertAsk>>;
 
 thread_local! {
     /// The slot [`Recording`] writes into, for the length of one scoped
@@ -104,7 +104,7 @@ impl ResolvesClientCert for Recording {
             // is held, and it is held only here and in the poll that
             // takes the record out.
             if let Ok(mut slot) = slot.lock() {
-                *slot = Some(record);
+                *slot = ClientCertAsk::Asked(record);
             }
         });
         answer
