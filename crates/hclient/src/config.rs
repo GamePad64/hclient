@@ -43,6 +43,15 @@ pub struct Config {
     /// [`RedirectPolicy`] — see `crate::predicate` for that argument and
     /// for the `Send + Sync` bound it costs.
     pub redirect_predicate: Option<crate::predicate::RedirectPredicate>,
+    /// When to send a hop again, or `None` for never — the default.
+    ///
+    /// `None` rather than `Some(RetryPolicy::default())` because the
+    /// default policy still retries *something*: a request that provably
+    /// never reached a server. Opening sockets a caller did not ask for
+    /// is a decision about their program's behaviour on a flaky network,
+    /// so it is theirs to make — the same reason the QUIC race and the
+    /// cookie jar are both off until asked for.
+    pub retry: Option<hclient_proto::retry::RetryPolicy>,
     /// `Option::None` here is "the caller never asked for a redirect
     /// policy" — distinct from `Some(RedirectPolicy::None)`, which is the
     /// caller explicitly asking not to follow and to be handed the 3xx.
@@ -328,6 +337,20 @@ pub fn check_supported(
         // to refuse. `hclient-fetch` forbids `User-Agent` among others,
         // because the browser writes them.
         default_headers,
+        // **Not checked, and this is a decision rather than an
+        // omission.** A retry is this client sending the same request
+        // again through the ordinary path, so every transport can honour
+        // it by construction — there is no capability a backend could
+        // report about it and nothing it could fail to do. The one
+        // condition that can refuse a retry is the *body*, and that is
+        // `RequestBody::retry_kind()`, which is a fact about the request
+        // rather than about the transport, so it is answered per request
+        // and not at `build()`.
+        //
+        // Contrast `redirect` two fields down, which is checked precisely
+        // because a backend can follow the chain itself and then a
+        // caller's policy would be a setting silently ignored.
+        retry: _,
         // Checked, and by the same rule as `redirect` two fields up rather
         // than a new one: a predicate is a redirect decision, and a
         // backend that follows the chain internally never asks it.

@@ -470,6 +470,17 @@ pub use deadline::NoClock;
 // it is the seam's own comparison, for transports, and a consumer has
 // nothing to call it on.
 pub use hclient_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RequireVersion};
+/// When to send a request again — see [`ClientBuilder::retry`].
+///
+/// Re-exported so a caller configuring a retry never has to name
+/// `hclient-proto`, which is the same courtesy `redirect` gets one line
+/// away and which ACT's report found missing for half a dozen names.
+pub mod retry {
+    pub use hclient_proto::backoff::Backoff;
+    pub use hclient_proto::retry::{
+        Outcome, RetryPolicy, RetryStatuses, Stop, Verdict, retry_after_seconds,
+    };
+}
 // The observability seam, re-exported for the same reason
 // `AllowEarlyData` is: what a caller writes is an `impl Hooks for MyType`
 // and a `match` over `Event`, and both live in the core. A facade that

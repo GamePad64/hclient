@@ -12,6 +12,7 @@ use hclient_core::Timeouts;
 use hclient_core::unversioned::Timer;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind, UnsupportedCapability};
 use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
+use hclient_proto::retry::{Outcome, RetryPolicy, Verdict, retry_after_seconds};
 use std::fmt::Debug;
 use std::sync::Arc;
 #[cfg(any(feature = "cookies", feature = "cache"))]
@@ -310,6 +311,80 @@ impl ClientBuilder {
     /// hazard that existed only because of the rebuild. Erasure put the
     /// clock in a field, so this changes no type, assigns two fields, and
     /// the hazard is not merely avoided but unrepresentable.
+    /// Send a hop again when it fails, per [`RetryPolicy`].
+    ///
+    /// **Off by default**, because even the default policy opens sockets
+    /// a caller did not ask for.
+    ///
+    /// ```no_run
+    /// # fn f(t: hclient::mock::MockTransport) -> Result<(), Box<dyn std::error::Error>> {
+    /// use hclient::retry::{RetryPolicy, RetryStatuses};
+    ///
+    /// // The safe retry: only failures that provably never reached a
+    /// // server. Needs no promise from you, because there is nothing at
+    /// // the server to duplicate.
+    /// let c = hclient::Client::builder(t.clone())
+    ///     .retry(hclient_rt_tokio::Tokio, RetryPolicy::default())
+    ///     .build()?;
+    ///
+    /// // And with statuses, which is a different promise — a repeat can
+    /// // duplicate work the server already did.
+    /// let c = hclient::Client::builder(t)
+    ///     .retry(hclient_rt_tokio::Tokio, RetryPolicy {
+    ///         statuses: RetryStatuses::Transient,
+    ///         ..RetryPolicy::default()
+    ///     })
+    ///     .build()?;
+    /// # let _ = c; Ok(()) }
+    /// ```
+    ///
+    /// **What makes this different from a middleware that wraps a
+    /// client** is that the two failures are different values here. A
+    /// wrapper above the transport sees one error for *the connection was
+    /// refused* and for *the server answered and the answer was
+    /// unusable*, so it must either repeat both or neither. This reads
+    /// `Error::is_unsent`, which a transport sets only where it knows —
+    /// and whether the body may be sent twice is
+    /// `RequestBody::retry_kind()`, known before the first attempt rather
+    /// than guessed after it.
+    ///
+    /// **The retries are inside the `total` budget**, exactly as the
+    /// `425` replay is: a bound a server can extend by failing is not a
+    /// bound. And they are **per hop**, for the reason that replay is —
+    /// a failure on hop 3 is about a different request than hop 1 sent.
+    ///
+    /// # Why this takes a clock
+    ///
+    /// A retry **sleeps**, and the default clock cannot always. Without
+    /// the `default-transport` feature [`crate::DefaultClock`] is
+    /// [`crate::NoClock`], whose `Sleep` is `std::future::Pending` — so a
+    /// `retry(policy)` taking no timer would compile there and **hang for
+    /// ever** at the first backoff. Found by running the suite under
+    /// `--no-default-features`, where four of these tests timed out at
+    /// 300 s rather than failing.
+    ///
+    /// A hang is worse than a panic and much worse than a refusal, so the
+    /// precondition is in the signature instead of in this paragraph:
+    /// there is no way to ask for a retry without supplying something
+    /// that can wait. It is the same shape as [`Self::total_timeout`],
+    /// which takes a timer for the same reason.
+    ///
+    /// **The client has one clock**, so these two setters supply the same
+    /// field and the later call wins. Pass the same timer to both — there
+    /// is no case for a client whose backoff and whose deadline disagree
+    /// about what a second is.
+    #[must_use]
+    pub fn retry<Tm2>(mut self, timer: Tm2, policy: RetryPolicy) -> Self
+    where
+        Tm2: Timer + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        Tm2::Instant: Send,                         // send-bound-exception: amendment-C12
+        Tm2::Sleep: Send + 'static,                 // send-bound-exception: amendment-C12
+    {
+        self.timer = Arc::new(timer);
+        self.config.retry = Some(policy);
+        self
+    }
+
     pub fn total_timeout<Tm2>(mut self, timer: Tm2, total: Duration) -> Self
     where
         Tm2: Timer + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -1134,7 +1209,114 @@ impl Client {
                     // response was received"*. The gap between the two is
                     // `response_delay`, which is added to a received `Age`.
                     let mut requested_at = self.cache_now();
-                    let mut resp = self.send_hop(&hp, sending).await?;
+
+                    // **The retry loop, and it wraps the send alone.** A
+                    // retry is about getting *an answer for this hop*;
+                    // the redirect decision, the cache and the `425`
+                    // replay below all operate on the answer, so they see
+                    // one outcome however many attempts produced it.
+                    //
+                    // **Per hop rather than per operation**, which is the
+                    // `425` replay's rule three screens down and for its
+                    // reason: hop 3 answers a different request than hop 1
+                    // sent, and a budget spent on hop 1 has nothing to say
+                    // about hop 3. Bounded either way — `Backoff`'s
+                    // attempt count bounds each hop, the redirect policy
+                    // bounds the hops, and `Timeouts::total` bounds the
+                    // lot from outside this future.
+                    //
+                    // **`replayable` is read off the snapshot's *kind*,
+                    // never by building a body.** Calling a
+                    // `Rewindable`'s factory to find out whether it has
+                    // one would make this a second caller of it, and
+                    // `hclient`'s own
+                    // `a_rewindable_body_is_replayed_from_the_snapshot_taken_before_the_first_attempt`
+                    // counts those calls to pin *one snapshot per hop, not
+                    // one per attempt* — the same trap `hclient-mock`'s
+                    // body recording fell into and was fixed for.
+                    let replayable = replay.as_ref().is_some_and(|b| b.retry_kind().may_replay());
+                    let policy = self.config().retry;
+                    let mut sending = Some(sending);
+                    let mut attempt: u32 = 0;
+
+                    let mut resp = loop {
+                        attempt += 1;
+                        let this = match sending.take() {
+                            Some(b) => b,
+                            None => match replay_for_too_early(replay.as_ref()) {
+                                Some(b) => b,
+                                // Unreachable while `replayable` gates
+                                // every path that gets here, and a `break`
+                                // rather than a panic because the honest
+                                // answer to "we cannot rebuild the body"
+                                // is the outcome we already have.
+                                None => {
+                                    return Err(Error::new(
+                                        ErrorKind::Body,
+                                        BodyVanishedBeforeRetry,
+                                    ));
+                                }
+                            },
+                        };
+
+                        let outcome = self.send_hop(&hp, this).await;
+                        let Some(policy) = policy else {
+                            // No policy: the first outcome is the answer,
+                            // and an error propagates exactly as it did
+                            // before this loop existed.
+                            break outcome?;
+                        };
+
+                        let (verdict, keep) = match &outcome {
+                            Ok(r) => {
+                                let (after, unreadable) = read_retry_after(r.headers());
+                                (
+                                    policy.decide(
+                                        Outcome::status(r.status(), after, unreadable),
+                                        attempt,
+                                        crate::sse::jitter(),
+                                        replayable,
+                                    ),
+                                    true,
+                                )
+                            }
+                            // **`is_unsent`, not the `ErrorKind`.** The
+                            // category cannot answer this: a response head
+                            // over `H1Opts::max_headers` is
+                            // `ErrorKind::Connect` too, and it happens
+                            // after the request went out. Only the
+                            // transport knows, and a transport that says
+                            // nothing costs a retry rather than a
+                            // duplicate.
+                            Err(e) if e.is_unsent() => (
+                                policy.decide(
+                                    Outcome::Unsent,
+                                    attempt,
+                                    crate::sse::jitter(),
+                                    replayable,
+                                ),
+                                false,
+                            ),
+                            Err(_) => break outcome?,
+                        };
+
+                        match verdict {
+                            Verdict::After(delay) => {
+                                drop(outcome);
+                                self.inner.timer.sleep_boxed(delay).await;
+                                // RFC 9111 §4.2.3 again: the stored age
+                                // arithmetic is relative to when *this*
+                                // attempt was initiated, so the stamp
+                                // moves with the retry rather than dating
+                                // the response to the first try.
+                                requested_at = self.cache_now();
+                            }
+                            Verdict::Stop(_) => {
+                                let _ = keep;
+                                break outcome?;
+                            }
+                        }
+                    };
 
                     // **RFC 8470 §5.2 — `425 Too Early`: the third way a
                     // request that went into early data can fail, and the
@@ -1690,6 +1872,30 @@ impl Client {
 /// idempotency judgement: the server asked for the repeat. Early data does,
 /// and this function is not the place to grow one — see the long comment at
 /// the call site.
+/// The body could not be rebuilt for a retry the policy had approved.
+///
+/// Unreachable while `replayable` gates every path that reaches it —
+/// it exists so that the impossible case is a typed error a caller can
+/// read rather than a panic in a client that had already worked.
+#[derive(Debug, thiserror::Error)]
+#[error("the request body could not be rebuilt for a retry")]
+struct BodyVanishedBeforeRetry;
+
+/// Reads `Retry-After` into the pair [`Outcome::status`] wants.
+///
+/// The two `None`s are different and both are returned: *the header was
+/// absent* lets the backoff decide, where *the header was present and
+/// unreadable* stops the retry. Collapsing them would make a server
+/// naming an `HTTP-date` get retried on our own schedule, which is the
+/// one thing the header exists to prevent.
+fn read_retry_after(headers: &http::HeaderMap) -> (Option<Duration>, bool) {
+    let Some(raw) = headers.get(http::header::RETRY_AFTER) else {
+        return (None, false);
+    };
+    let parsed = raw.to_str().ok().and_then(retry_after_seconds);
+    (parsed, parsed.is_none())
+}
+
 fn replay_for_too_early(snapshot: Option<&RequestBody>) -> Option<RequestBody> {
     match snapshot.map(|b| (b.retry_kind(), b)) {
         Some((RetryKind::Free | RetryKind::ViaFactory, b)) => b.rewind(),

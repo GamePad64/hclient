@@ -71,6 +71,24 @@ pub enum ErrorKind {
 pub struct Error {
     kind: ErrorKind,
     source: Arc<dyn StdError + Send + Sync + 'static>, // send-bound-exception: amendment-C1
+    /// Whether the transport can say that **no byte of this request
+    /// reached a server**.
+    ///
+    /// Not derivable from [`ErrorKind`], which is why it is a field.
+    /// `Connect` looks like it should mean *nothing was sent* and does
+    /// not: `hclient-native` classifies a response head that exceeds
+    /// `H1Opts::max_headers` as `Connect` too, on hyper's own reasoning
+    /// that nothing usable came off the connection — and that happens
+    /// **after** the request went out. A retry deciding from the category
+    /// alone would resend a request the server had already processed,
+    /// which is precisely the guess this workspace exists not to make.
+    ///
+    /// So it is a claim a transport makes at a site where it knows, and
+    /// **`false` is the default**: a backend that says nothing costs a
+    /// caller a retry that did not happen, where a wrong `true` costs
+    /// them a duplicated request. The understating value is the safe one,
+    /// which is `reports_alpn`'s and `SUPPORTS_UNIX`'s rule one seam over.
+    unsent: bool,
 }
 
 impl Error {
@@ -81,8 +99,33 @@ impl Error {
         Self {
             kind,
             source: Arc::new(source),
+            unsent: false,
         }
     }
+
+    /// Marks this failure as one where no byte of the request reached a
+    /// server.
+    ///
+    /// Only a transport may say so, and only where it knows — a connect
+    /// that never completed, a name that did not resolve, a handshake
+    /// that failed, or a dispatcher handing the request back unsent. See
+    /// the field's own doc for why `ErrorKind` cannot answer this.
+    #[must_use]
+    pub fn unsent(mut self) -> Self {
+        self.unsent = true;
+        self
+    }
+
+    /// Whether the transport said no byte of the request reached a
+    /// server.
+    ///
+    /// `false` means *not known to be unsent* rather than *known to have
+    /// been sent* — see [`Self::unsent`].
+    #[must_use]
+    pub fn is_unsent(&self) -> bool {
+        self.unsent
+    }
+
     pub fn kind(&self) -> &ErrorKind {
         &self.kind
     }

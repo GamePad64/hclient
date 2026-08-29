@@ -1965,6 +1965,83 @@ case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
 
+### A retry that is safe by construction, and the one gap the ecosystem measures
+
+The competitive analysis in this workspace lists gaps against other
+clients. Measured from the other direction — what people **bolt onto**
+`reqwest`, in recent monthly downloads — the picture inverts:
+
+| bolt-on | per month | here |
+|---|---|---|
+| `reqwest-middleware` | 15,551,838 | `hclient-tower` |
+| **`reqwest-retry`** | **7,657,595** | **was missing** |
+| `reqwest-tracing` | 4,516,360 | hooks, in the box |
+| `reqwest-eventsource` | 2,510,406 | `hclient::sse` |
+| `http-cache-reqwest` | 859,999 | `hclient::cache` |
+| `reqwest-websocket` | 564,728 | `hclient-tungstenite` |
+| `reqwest_cookie_store` | 346,932 | `hclient::cookie` |
+
+Over 32 million downloads a month of things that are already inside this
+crate, plus one that was not. That is ACT's *the gap is a pointer, not a
+feature* at ecosystem scale.
+
+**One candidate was killed by the same measurement**: `rvcr`, record and
+replay, is at **437** downloads a month. Nobody in Rust wants a VCR, and
+knowing that before proposing it is worth more than the feature would
+have been.
+
+**`ClientBuilder::retry` is the gap, and it comes out better in kind
+rather than in degree.** A retry crate that wraps a client sits *above*
+the transport, so it cannot tell a request that never left from one a
+server received and acted on — both are an error — and must therefore
+repeat both or neither. Here they are different values:
+
+- `Error::is_unsent()` is a claim a **transport** makes at a site where it
+  knows. `hclient-native` marks it where the Happy Eyeballs race ends with
+  no connection and where no attempt was launched at all.
+- `RequestBody::retry_kind()` answers *can this be sent twice* **before**
+  the first attempt. A `Streaming` body is `Impossible` and no policy
+  overrides it.
+
+**The trap that makes the first of those necessary was found by reading
+rather than by testing.** `ErrorKind::Connect` looks like it means
+*nothing was sent* and does not: `hclient-native` classifies a response
+head over `H1Opts::max_headers` as `Connect` too, on hyper's reasoning
+that nothing usable came off the connection — and that happens **after**
+the request went out. A retry deciding from the category would resend a
+request the server had processed, which is exactly the guess this whole
+design exists not to make. Two tests differing only in the mark, with
+identical `ErrorKind`, are the pair that pins it; mutating the decision
+back to the category kills one and leaves the other green.
+
+**`Retry-After` that cannot be honoured stops the retry rather than being
+rounded down.** A server asking for longer than `max_retry_after`, or
+sending the `HTTP-date` form this module deliberately does not parse, ends
+the retry — because waiting *less* than a server asked is the one
+behaviour the header exists to prevent, and a client that caps the value
+and retries anyway has turned a limit into a violation. The date form is
+unparsed on purpose: reading it needs a calendar, `hclient-proto` is the
+sans-io leaf whose dependency count is guarded, and the narrowing has a
+direction.
+
+**And the signature takes a clock because the alternative hangs.** The
+first version was `retry(policy)`, using the client's own timer. Without
+`default-transport`, `DefaultClock` is `NoClock`, whose `Sleep` is
+`std::future::Pending` — so that version compiled everywhere and **hung
+for ever** at the first backoff. Found by `just test-no-default`, where
+four tests timed out at 300 s rather than failing; a hang is worse than a
+panic and much worse than a refusal, so the precondition moved into the
+signature, where `total_timeout` already had it. The tests supply a clock
+whose sleeps are instant, which also means every assertion in them is
+about the *decision* and never about a delay.
+
+The policy itself is in `hclient-proto`: `RetryPolicy::decide` is a pure
+function of a rule and one outcome, so every rule is tested with no
+socket, no clock and no entropy. It is deliberately **not**
+`#[non_exhaustive]`, on `TcpOpts`' argument — its whole use is
+`RetryPolicy { statuses: .., ..Default::default() }`, and the attribute
+forbids exactly that from outside the crate.
+
 ### The handshake was described three lines above where it was thrown away
 
 Asked whether `hc` can show the TLS handshake the way `curl -v` does. It

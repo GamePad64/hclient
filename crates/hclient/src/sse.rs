@@ -609,7 +609,7 @@ fn is_retryable(kind: &ErrorKind) -> bool {
 /// reduction, the conservative (slower, not faster) direction, so a
 /// starved entropy source degrades reconnect into un-jittered exponential
 /// backoff rather than into hammering the server.
-fn jitter() -> f64 {
+pub(crate) fn jitter() -> f64 {
     let mut buf = [0u8; 8];
     if getrandom::fill(&mut buf).is_err() {
         return 0.0;

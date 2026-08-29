@@ -562,14 +562,24 @@ where
                 // source() chain; wrapping it again would repeat the same
                 // categorization mistake in a different way.
                 if let Some(distinguishing) = errs.distinguishing_error() {
-                    return Err(distinguishing.clone());
+                    // **Marked unsent**: this block is reached only
+                    // when no attempt succeeded, so no request byte was
+                    // written whichever error turns out to be the
+                    // distinguishing one.
+                    return Err(distinguishing.clone().unsent());
                 }
                 if launched == 0 {
                     // Not a single TCP attempt happened — meaning there
                     // was nothing to try, not that every attempt failed.
-                    return Err(Error::new(ErrorKind::Resolve, errs));
+                    return Err(Error::new(ErrorKind::Resolve, errs).unsent());
                 }
-                return Err(Error::new(ErrorKind::Connect, AllAttemptsFailed(launched)));
+                // **Provably unsent.** Every attempt in the race failed to
+                // establish a connection, so no request byte was written
+                // — this is the site that knows, and the retry policy one
+                // crate up reads it rather than guessing from
+                // `ErrorKind::Connect`, which a response head that
+                // exceeds `H1Opts::max_headers` also carries.
+                return Err(Error::new(ErrorKind::Connect, AllAttemptsFailed(launched)).unsent());
             }
         }
     }
