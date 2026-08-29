@@ -1328,6 +1328,8 @@ dependencies = [
  "anstyle",
  "bytes",
  "clap",
+ "futures-core",
+ "futures-sink",
  "hclient",
  "hclient-core",
  "hclient-dns",
@@ -1336,9 +1338,11 @@ dependencies = [
  "hclient-rt-tokio",
  "hclient-tls-native-tls",
  "hclient-tls-rustls",
+ "hclient-tungstenite",
  "http",
  "serde_json",
  "tokio",
+ "tungstenite",
 ]
 
 [[package]]
