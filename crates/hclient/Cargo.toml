@@ -460,11 +460,33 @@ getrandom     = "0.4"
 # `std::time::SystemTime` there and not one signature in this crate or in
 # the jar's changed. Its `js-sys` and `wasm-bindgen` sit under
 # `[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'
-# .dependencies]` in its OWN manifest, so a native build resolves neither;
-# measured, the native graph goes 93 crates to 94, and the one crate is the
-# re-export. A `[target.'cfg(...)']` entry here would buy that single crate
-# back and cost every import site a `#[cfg]`, which is the machinery this
-# workspace removes rather than hides.
+# .dependencies]` in its OWN manifest, so a native build resolves neither.
+# Measured with `cargo tree -e normal`, unique crates, against the commit
+# before this line existed:
+#
+#   | build of `hclient`                                    | before | after |
+#   |-------------------------------------------------------|--------|-------|
+#   | native, `default-transport,cookies,cache`             |     93 |    94 |
+#   | native, default features                              |     51 |    52 |
+#   | `wasm32-unknown-unknown`, `default-transport,..`      |     71 |    72 |
+#   | `wasm32-unknown-unknown`, `cookies,cache` — no transport |  58 |    64 |
+#
+# **The last row is the one worth knowing, and it is why this comment is not
+# just "+1".** Three of the four cost exactly one crate, the re-export
+# itself: on native `js-sys` and `wasm-bindgen` are not resolved at all, and
+# in a browser build that has `hclient-fetch` they are already there. The
+# exception is a browser build with cookies or a cache and NO browser
+# transport, where `cargo tree -i js-sys` names `web-time` as the only
+# parent — so there this crate is what introduces `js-sys`, `wasm-bindgen`
+# and their transitives, +6. That configuration is a caller assembling their
+# own transport for the browser, and the trade there is six crates against a
+# jar that aborts the module; but it is a cost and it is stated rather than
+# rounded to the number the other three rows give.
+#
+# A `[target.'cfg(...)']` entry here would buy the single crate back on
+# native and change nothing about that last row, while costing every import
+# site a `#[cfg]` — which is the machinery this workspace removes rather
+# than hides.
 #
 # **Not a feature either, and neither direction of one is honest.** Cargo
 # unifies features, so a feature that turned it OFF would be a floor in
