@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-idn"
-version = "0.1.0"
+version = "0.1.0-alpha.2"
 dependencies = [
  "idna",
  "objc2-foundation",
