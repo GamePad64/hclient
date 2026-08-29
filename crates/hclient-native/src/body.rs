@@ -209,6 +209,27 @@ pub struct OutgoingBody {
     /// stays in `Native::execute`, which has one already, and this body
     /// knows only whether it may speak yet.
     gate: Option<Arc<ContinueGate>>,
+    /// The octets this body has handed over, for
+    /// [`hclient_core::unversioned::Progress`].
+    ///
+    /// **A field rather than a wrapper**, and this type's own doc three
+    /// lines down already says why: `poll_frame` below is *the one place
+    /// every frame of every request body passes through on its way to
+    /// hyper*, and *a wrapper would be a second thing to remember to put
+    /// on*. That argument was written for the trailer check and it decides
+    /// this identically. `hclient_core::unversioned::Metered` is the
+    /// wrapper the two ambient backends use, and they use it because
+    /// neither has a single type like this one.
+    ///
+    /// An [`Arc`] and no `H`: the count is written here, inside hyper's
+    /// poll, and reported where the hook is — which is `Native`'s
+    /// `Reporting` before the head and its `Counting` body after it. A type
+    /// parameter would be the honest way to carry a hook, and it cannot go
+    /// here: this type is named inside `hyper::client::conn::http1::SendRequest`,
+    /// which the connection pool stores, so an `H` here is an `H` on the
+    /// pool. A [`Meter`](hclient_core::unversioned::Meter) is `Send + Sync`
+    /// and concrete, so nothing about this type's auto traits moves.
+    sent: Option<Arc<hclient_core::unversioned::Meter>>,
 }
 
 /// Whether a request body withheld for `Expect: 100-continue` may go.
@@ -336,7 +357,33 @@ impl OutgoingBody {
             inner: Inner::from_reduced(reduced),
             declared_trailers: None,
             gate: None,
+            sent: None,
         })
+    }
+
+    /// Count what goes out into `meter`.
+    ///
+    /// `None` — which is what an unwatched build passes — leaves this body
+    /// exactly as it was.
+    pub(crate) fn counting(mut self, meter: Option<Arc<hclient_core::unversioned::Meter>>) -> Self {
+        self.sent = meter;
+        self
+    }
+
+    /// The counter, for whoever reports it. Cloned rather than borrowed
+    /// because the body is about to be handed to hyper.
+    pub(crate) fn meter(&self) -> Option<Arc<hclient_core::unversioned::Meter>> {
+        self.sent.clone()
+    }
+
+    /// What the caller's body says its whole length is, before a byte of
+    /// it has moved: `Some` only where it is exact.
+    ///
+    /// Read here rather than off a `Content-Length` header, because the
+    /// header is written from this same hint and the hint is the fact.
+    pub(crate) fn expected(&self) -> Option<u64> {
+        use http_body::Body as _;
+        self.size_hint().exact()
     }
 
     /// Withhold every frame until `gate` opens.
@@ -415,7 +462,15 @@ impl Body for OutgoingBody {
         // on its way to hyper — a wrapper would be a second thing to
         // remember to put on.
         match polled {
-            Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(this.check_trailers(frame))),
+            Poll::Ready(Some(Ok(frame))) => {
+                // Counted before the trailer check, and on the data arm
+                // only: a trailers frame is header fields, which no
+                // `Content-Length` counts and no progress bar should.
+                if let (Some(m), Some(data)) = (&this.sent, frame.data_ref()) {
+                    m.add(data.len() as u64);
+                }
+                Poll::Ready(Some(this.check_trailers(frame)))
+            }
             other => other,
         }
     }

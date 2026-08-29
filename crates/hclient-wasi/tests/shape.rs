@@ -90,13 +90,19 @@ fn a_send_hook_leaves_the_execute_future_send() {
 
     struct Atomic(std::sync::atomic::AtomicUsize);
     impl Hooks for Atomic {
-        fn on(&self, _event: Event<'_>) {
+        fn on(&self, _event: &Event<'_>) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    let transport =
-        hclient_wasi::WasiHttp::new().hooks(Atomic(std::sync::atomic::AtomicUsize::new(0)));
+    // Behind an `Arc`, and that is the transport's `H: Clone` bound rather
+    // than this test being fussy: the response body counts octets and
+    // reports them, so it outlives `execute` holding the hook — which is
+    // the bound `hclient-native` has carried since hooks existed, arriving
+    // here now that this backend's body has an event of its own.
+    let transport = hclient_wasi::WasiHttp::new().hooks(std::sync::Arc::new(Atomic(
+        std::sync::atomic::AtomicUsize::new(0),
+    )));
     let req = http::Request::builder()
         .uri("http://example.invalid/")
         .body(RequestBody::Empty)
@@ -121,7 +127,7 @@ fn a_non_send_hook_still_gives_a_working_transport() {
     #[derive(Clone, Default)]
     struct Local(std::rc::Rc<std::cell::Cell<usize>>);
     impl Hooks for Local {
-        fn on(&self, _event: Event<'_>) {
+        fn on(&self, _event: &Event<'_>) {
             self.0.set(self.0.get() + 1);
         }
     }

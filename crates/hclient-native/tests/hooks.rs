@@ -145,7 +145,7 @@ impl Recorder {
 }
 
 impl Hooks for Recorder {
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         assert!(
             !self.explode.load(Ordering::SeqCst),
             "the hook was told to panic"
@@ -867,7 +867,7 @@ async fn a_slow_hook_delays_its_own_request_and_no_other() {
     #[derive(Clone)]
     struct Slow(Arc<AtomicUsize>);
     impl Hooks for Slow {
-        fn on(&self, _event: Event<'_>) {
+        fn on(&self, _event: &Event<'_>) {
             self.0.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(20));
         }

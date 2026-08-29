@@ -73,7 +73,7 @@ impl FirstConnect {
 }
 
 impl Hooks for FirstConnect {
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         if let Event::Connected(e) = event {
             let mut slot = self.0.lock().expect("recorder");
             if slot.is_none() {

@@ -87,8 +87,7 @@ fn get(uri: &str) -> http::Request<RequestBody> {
 /// than through `http_body_util::BodyExt` — this crate deliberately has no
 /// `http-body-util` dependency, dev or otherwise, and `lib.rs`'s own
 /// `testing::collect` drains the same way for the same reason.
-async fn drain(resp: http::Response<hclient_fetch::Body>) {
-    use http_body::Body as _;
+async fn drain<B: http_body::Body<Error = hclient_core::Error> + Unpin>(resp: http::Response<B>) {
     let mut body = resp.into_body();
     loop {
         match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {

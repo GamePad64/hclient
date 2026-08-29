@@ -166,7 +166,7 @@ mod tests {
     /// A hook that does nothing but exist.
     struct Watching;
     impl Hooks for Watching {
-        fn on(&self, _event: Event<'_>) {}
+        fn on(&self, _event: &Event<'_>) {}
     }
 
     /// The zero-cost claim, as an equality on the one gate.

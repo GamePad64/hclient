@@ -206,7 +206,7 @@ fn the_connected_event_carries_no_address_and_is_still_emitted() {
     #[derive(Clone, Default)]
     struct Rec(Arc<Mutex<Vec<Option<std::net::SocketAddr>>>>);
     impl Hooks for Rec {
-        fn on(&self, event: Event<'_>) {
+        fn on(&self, event: &Event<'_>) {
             if let Event::Connected(c) = event {
                 self.0.lock().expect("lock").push(c.remote);
             }

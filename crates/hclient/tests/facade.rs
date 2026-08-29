@@ -359,7 +359,7 @@ fn a_hook_can_be_written_against_the_facade_alone() {
     }
 
     impl hclient::hooks::Hooks for Counts {
-        fn on(&self, event: hclient::hooks::Event<'_>) {
+        fn on(&self, event: &hclient::hooks::Event<'_>) {
             let bump = |c: &std::cell::Cell<usize>| c.set(c.get() + 1);
             match event {
                 // Named through the facade like the rest: a caller writing
@@ -419,7 +419,7 @@ fn a_hook_can_be_written_against_the_facade_alone() {
     let counts = Counts::default();
     hclient::hooks::Hooks::on(
         &counts,
-        hclient::hooks::Event::Closed(hclient::hooks::Closed::new(
+        &hclient::hooks::Event::Closed(hclient::hooks::Closed::new(
             hclient::hooks::ConnectionId::UNWATCHED,
             hclient::hooks::CloseReason::Ended,
         )),

@@ -102,7 +102,7 @@ pub trait Hooks {
 
     /// Something happened. Called synchronously, on the task driving the
     /// request.
-    fn on(&self, event: Event<'_>);
+    fn on(&self, event: &Event<'_>);
 }
 
 /// The hook a caller who asked for nothing gets: `WATCHING` is `false`,
@@ -115,7 +115,7 @@ pub struct NoHooks;
 
 impl Hooks for NoHooks {
     const WATCHING: bool = false;
-    fn on(&self, _event: Event<'_>) {}
+    fn on(&self, _event: &Event<'_>) {}
 }
 
 /// So that a hook can be shared without the caller writing the
@@ -123,7 +123,18 @@ impl Hooks for NoHooks {
 /// `Arc<NoHooks>` would start watching by being wrapped.
 impl<H: Hooks + ?Sized> Hooks for Arc<H> {
     const WATCHING: bool = H::WATCHING;
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
+        (**self).on(event);
+    }
+}
+
+/// A reference is a hook, so `&my_hook` composes and installs like the
+/// value — the shape `RedirectPolicy` and `RetryPolicy` already carry for
+/// the same reason, and what lets a body borrow the transport's hook where
+/// it does not need to own it.
+impl<H: Hooks + ?Sized> Hooks for &H {
+    const WATCHING: bool = H::WATCHING;
+    fn on(&self, event: &Event<'_>) {
         (**self).on(event);
     }
 }
@@ -134,18 +145,118 @@ impl<H: Hooks + ?Sized> Hooks for Arc<H> {
 /// `crates/hclient-core/tests/shape.rs`.
 impl<H: Hooks + ?Sized> Hooks for std::rc::Rc<H> {
     const WATCHING: bool = H::WATCHING;
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         (**self).on(event);
     }
 }
 
-/// What a transport reports.
+/// [`and`](HooksExt::and), kept off [`Hooks`] itself.
 ///
-/// Not `#[non_exhaustive]`, for `Message`'s reason (see
-/// [`Message`](crate::unversioned::Message)): nothing here is published,
-/// so a new variant costs a rebase inside this workspace, and a compile
-/// error is what an implementer of [`Hooks`] should get when the
-/// vocabulary grows — rather than a silently ignored fact.
+/// The two seams in this workspace that already compose —
+/// `RedirectPolicyExt` and `RetryPolicyExt` — keep it off their traits to
+/// stay object-safe, and **that reason does not apply here**: [`Hooks`]
+/// has an associated const, so it was never object-safe and never could
+/// be. The reasons that do apply are two.
+///
+/// `Hooks` is blanket-implemented for `Arc<H: ?Sized>` and
+/// `Rc<H: ?Sized>`, and `fn and(self, ..) -> And<Self, B>` needs
+/// `Self: Sized`. On the trait that is a `where Self: Sized` predicate
+/// every implementor reads and none of them wrote; here the bound is
+/// stated once, on the extension trait, where it is the whole point of the
+/// trait existing.
+///
+/// And a caller who learned `.and(..)` on a redirect policy should find it
+/// spelled the same way here. A third spelling for the same idea is a
+/// reader stopping to work out whether the difference means something.
+pub trait HooksExt: Hooks + Sized {
+    /// Both hooks see every event, `self` first.
+    ///
+    /// # What does **not** transfer from the policy seams
+    ///
+    /// `RedirectPolicy::and` and `RetryPolicy::and` compose *verdicts*, so
+    /// composing them is a meet on a lattice: the more conservative answer
+    /// wins, `Refuse` short-circuits, and the identity of the meet is the
+    /// trait's own default — which is why one narrows from *yes* and the
+    /// other from a single configured permission. **None of that has a
+    /// subject here.** [`Hooks::on`] returns `()`, and `()` has exactly one
+    /// value: there is no verdict to combine, nothing to be conservative
+    /// about, and nothing that could short-circuit.
+    ///
+    /// So this is **sequencing**, not a meet — and the difference is
+    /// visible, which is the part worth knowing. `redirect`'s own doc says
+    /// order is unobservable there and that this is what separates a policy
+    /// lattice from middleware. Here order *is* observable: hooks have side
+    /// effects, so two of them writing to one log write in an order. `self`
+    /// runs first, and that is a promise rather than an artefact of how
+    /// `And` happens to be written.
+    ///
+    /// # A panicking hook, composed
+    ///
+    /// Unchanged, and one thing is added. The module doc says a panic in
+    /// `on` propagates to whoever polled, is deliberately not caught, and
+    /// is survivable because no hook is called with a lock held or from a
+    /// `Drop`. `And` holds neither a lock nor a `Drop` impl of its own, so
+    /// all of that still holds verbatim.
+    ///
+    /// What composition adds is that **a panic in the first hook means the
+    /// second never sees that event**. There is no `catch_unwind` between
+    /// them, for the module doc's own reasons — `UnwindSafe` would become a
+    /// bound on the caller's type, and it does nothing under
+    /// `panic = "abort"`, so isolating them would be a promise that holds
+    /// in some builds and not others. A hook that must not be taken down by
+    /// its neighbour catches its own panics, which is the only place the
+    /// bound can be paid honestly.
+    #[must_use]
+    fn and<B: Hooks>(self, other: B) -> And<Self, B> {
+        And(self, other)
+    }
+}
+
+impl<T: Hooks + Sized> HooksExt for T {}
+
+/// Two hooks as one. See [`HooksExt::and`].
+///
+/// A named type rather than `impl Hooks for (A, B)`, and the tuple's cost
+/// is what decided it. The ordering promise and the `WATCHING` rule below
+/// are properties **of the composition**, and a tuple has nowhere to put
+/// them: their only home would be a doc comment on an impl for a
+/// primitive, which rustdoc renders on the tuple's own page rather than
+/// anywhere a reader of this module will pass. A tuple also needs one impl
+/// per arity, or `((a, b), c)`, which reads worse than `a.and(b).and(c)` —
+/// and it would make every two-tuple of hooks a hook, which is a coherence
+/// commitment on a foreign type taken in exchange for one import.
+///
+/// That import is what the tuple would have bought, and it is a real cost:
+/// `.and(..)` needs [`HooksExt`] in scope, exactly as `.and(..)` on a
+/// redirect policy needs `RedirectPolicyExt`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct And<A, B>(pub A, pub B);
+
+impl<A: Hooks, B: Hooks> Hooks for And<A, B> {
+    /// **A join, where the verdict lattices meet — and the sign is
+    /// load-bearing.**
+    ///
+    /// [`Hooks::WATCHING`] is a *demand*, not a permission: it says
+    /// whether anything reads these events, and a backend skips measuring
+    /// when it is `false`. Compose it with `&&` and
+    /// `NoHooks.and(my_hook)` would answer `false`, so every backend would
+    /// skip the work and `my_hook` would compile, install, and fire never
+    /// — a capability that lies, which this workspace treats as worse than
+    /// a silent downgrade because a caller can act on it.
+    ///
+    /// With `||`, [`NoHooks`] is the identity of composition: adding it
+    /// changes nothing, and adding anything else to it starts the
+    /// measuring. That is the same reason the [`Arc`] impl forwards
+    /// `WATCHING` rather than defaulting it.
+    const WATCHING: bool = A::WATCHING || B::WATCHING;
+
+    fn on(&self, event: &Event<'_>) {
+        self.0.on(event);
+        self.1.on(event);
+    }
+}
+
+/// What a transport reports.
 ///
 /// **There is deliberately no "request queued" variant.** The original
 /// list for this work had one, and `hclient-native` has nothing to put in
@@ -155,6 +266,7 @@ impl<H: Hooks + ?Sized> Hooks for std::rc::Rc<H> {
 /// time — so `SendRequest::poll_ready` never waits for a stream of ours.
 /// A variant no code can emit is a capability that lies; this one belongs
 /// here once a backend has a queue.
+///
 /// **`#[non_exhaustive]`, and the compile error it removes is kept in one
 /// place rather than lost.**
 ///
@@ -193,6 +305,10 @@ pub enum Event<'a> {
     /// exactly once. A caller who wants `103`'s preload hints reads them
     /// here, before the head that follows.
     Informational(Informational<'a>),
+    /// Octets moved, one direction, one exchange. See [`Progress`] for
+    /// which octets, how often they are counted, and why the denominator
+    /// is an `Option`.
+    Progress(Progress<'a>),
 }
 
 /// A `1xx` that arrived before the response.
@@ -219,6 +335,118 @@ pub struct Informational<'a> {
     /// never heard of is still a status the server sent.
     pub status: http::StatusCode,
     pub headers: &'a http::HeaderMap,
+}
+
+/// Octets moved, one direction, one exchange.
+///
+/// The fact a caller cannot otherwise get at, which is [`Reused`]'s test
+/// for whether an event earns its place: a caller holding a response body
+/// can count what it reads, and can count nothing at all about what it
+/// sent, about a body it never reads, or about the bytes a decompressor
+/// consumed to produce the ones it did.
+///
+/// # Which octets — the encoded ones, off the wire
+///
+/// [`Self::transferred`] counts **body octets as the transport moved
+/// them**, before any content coding is reversed and after any is applied.
+/// A `gzip`-encoded response of 1 MiB that decodes to 9 MiB reports 1 MiB.
+///
+/// That is settled twice over, and the second argument is the one that
+/// would decide it even if the first did not.
+///
+/// **Structurally**, a hook belongs to a transport and `ClientBuilder` has
+/// none: `hclient`'s `Decompressed` wrapper sits *above* every emitter
+/// there is, so the encoded octets are the only ones an emitter can see.
+///
+/// **Arithmetically**, the numerator and the denominator have to be in one
+/// unit. [`Self::expected`] comes from what the sender stated — a
+/// `Content-Length`, or a request body's exact `size_hint` — and
+/// RFC 9110 §8.6 makes that the length of the *encoded* body. Count
+/// decoded octets against it and the ratio passes 1 on every compressed
+/// response, which is a progress bar that overflows rather than one that
+/// is merely coarse. `ConnectTiming::tls`'s rule, one event over: a wrong
+/// answer is worse than a missing one.
+///
+/// The decoded count is reachable and is the caller's own — they are
+/// holding the frames. This one is not reachable any other way.
+///
+/// **One backend counts something else and cannot help it.**
+/// `hclient-fetch` is handed a stream the browser has already decoded, so
+/// what it counts is post-decode octets. It answers `None` for
+/// [`Self::expected`] whenever the response carried a `Content-Encoding`,
+/// rather than pairing a decoded numerator with an encoded denominator —
+/// which is the same rule as above, applied where the unit cannot be
+/// chosen.
+///
+/// # How often — whenever it moved, and the total is cumulative
+///
+/// An event is emitted when the count has changed since the last one for
+/// that direction, and never otherwise: no traffic, no event. In practice
+/// that is at most once per poll of the body or of the exchange, which is
+/// at most once per frame and often less.
+///
+/// There is **no threshold knob**, and the reason it costs nothing to
+/// refuse one is that [`Self::transferred`] is a running total rather than
+/// a delta. A hook that wants one event a second keeps the last value it
+/// acted on and compares; it may ignore any number of events and still be
+/// exactly right, because the next one it reads carries the whole answer.
+/// A delta would make dropping an event a permanent error and force every
+/// hook to sum. So sampling is the hook's decision, made where the hook
+/// is, rather than a byte or time policy this seam would have to pick for
+/// everybody — which is what `Backoff::delay` and `RetryPolicy` mean by
+/// keeping a rule pure and leaving the state to whoever owns the
+/// operation.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Progress<'a> {
+    /// The connection carrying it, or [`ConnectionId::UNWATCHED`] where
+    /// the transport owns none.
+    pub id: ConnectionId,
+    /// Which exchange this is about.
+    ///
+    /// Not redundant beside [`Self::id`], and h2 is why: several requests
+    /// share one multiplexed connection, so the id alone cannot say whose
+    /// octets these are.
+    pub uri: &'a http::Uri,
+    pub direction: Direction,
+    /// Octets moved in this direction of this exchange **so far** —
+    /// cumulative, monotonic, never a delta.
+    pub transferred: u64,
+    /// What the sender said the whole body would be, in the same unit as
+    /// [`Self::transferred`], or `None` where nobody said.
+    ///
+    /// `Some(n)` is a statement somebody made — a `Content-Length` on the
+    /// response, an exact `size_hint` on the request body. `None` is the
+    /// absence of one: a chunked response, an unbounded stream.
+    ///
+    /// **Two states rather than `Discovered`'s three**, and the missing
+    /// one is *not consulted*: the transport has the response head before
+    /// it counts an incoming octet and the request body before it counts
+    /// an outgoing one, so there is no path on which it could have failed
+    /// to look. A third variant would be a distinction with one reachable
+    /// side, which is what `UpgradeSupport`'s spare variants were deleted
+    /// for.
+    ///
+    /// It is not a promise. A server may send fewer octets than it
+    /// declared, or more; this is what was claimed, not what arrived.
+    pub expected: Option<u64>,
+}
+
+/// Which way the octets went, from the client's point of view.
+///
+/// **Not `#[non_exhaustive]`**, and the split is this workspace's own
+/// rule, the one [`ClientCertAsk`] states: a value a caller *branches on*
+/// wants exhaustiveness as its mechanism, where a value handed back and
+/// only read wants the attribute. A hook that draws an upload bar and a
+/// download bar branches, and a third direction — were there one — must
+/// be a compile error at every reader rather than a wildcard to be
+/// silently mishandled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// The request body, on its way out.
+    Sending,
+    /// The response body, on its way in.
+    Receiving,
 }
 
 /// Which connection an event is about.
@@ -666,6 +894,38 @@ impl<'a> Informational<'a> {
     }
 }
 
+impl<'a> Progress<'a> {
+    /// The three facts an octet count cannot be without: whose exchange,
+    /// which way, and how many so far.
+    ///
+    /// [`Progress::expected`] is a setter, because a backend may not know
+    /// it — a chunked response states no length, and neither does an
+    /// unbounded request body.
+    #[must_use]
+    pub fn new(
+        id: ConnectionId,
+        uri: &'a http::Uri,
+        direction: Direction,
+        transferred: u64,
+    ) -> Self {
+        Self {
+            id,
+            uri,
+            direction,
+            transferred,
+            expected: None,
+        }
+    }
+
+    /// What the sender said the whole body would be. `None` is the honest
+    /// answer where nobody said, and never a `0` standing in for one.
+    #[must_use]
+    pub fn expected(mut self, expected: Option<u64>) -> Self {
+        self.expected = expected;
+        self
+    }
+}
+
 impl<'a> Connected<'a> {
     /// A connection that was opened. `remote`, `timing` and the TLS
     /// facts are what a backend may not have — a Unix socket has no peer
@@ -854,6 +1114,343 @@ pub fn since<T>(at: Option<T>, elapsed: impl FnOnce(T) -> Duration) -> Duration 
     at.map_or(Duration::ZERO, elapsed)
 }
 
+/// A running octet count for one direction of one exchange, and the last
+/// value reported for it.
+///
+/// **It exists only when somebody is watching**, which is the whole of the
+/// gate: [`meter`] is the only constructor and it hands back `None` under
+/// [`NoHooks`], so a build with no hook has no counter, no atomic and no
+/// branch — the discipline [`mark`] already enforces for clocks, and for
+/// the same recorded reason. Four crates each writing `if H::WATCHING`
+/// around their own counter is four chances to reopen the defect where one
+/// of them forgets.
+///
+/// The count and the report are in different places on every backend here
+/// — the request body increments it and the transport emits, the response
+/// body does both — so the two halves are `&self` methods over atomics
+/// rather than `&mut self`, and the type is shared through an [`Arc`]
+/// where they are far apart.
+#[derive(Debug)]
+pub struct Meter {
+    expected: Option<u64>,
+    moved: AtomicU64,
+    told: AtomicU64,
+}
+
+/// A [`Meter`], but only if a hook is watching. See [`Meter`] and [`mark`].
+#[must_use]
+pub fn meter<H: Hooks>(expected: Option<u64>) -> Option<Meter> {
+    H::WATCHING.then(|| Meter {
+        expected,
+        moved: AtomicU64::new(0),
+        told: AtomicU64::new(0),
+    })
+}
+
+impl Meter {
+    /// Another `n` octets went past.
+    ///
+    /// `Relaxed`, for [`ConnectionId::next`]'s reason: this counter orders
+    /// nothing. Saturating, because a count that wrapped would be a
+    /// progress bar running backwards, and 2^64 octets is not a number any
+    /// exchange reaches by accident.
+    pub fn add(&self, n: u64) {
+        let _ = self
+            .moved
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |t| {
+                Some(t.saturating_add(n))
+            });
+    }
+
+    /// What the sender stated, unchanged since construction.
+    #[must_use]
+    pub fn expected(&self) -> Option<u64> {
+        self.expected
+    }
+
+    /// Octets so far.
+    #[must_use]
+    pub fn transferred(&self) -> u64 {
+        self.moved.load(Ordering::Relaxed)
+    }
+
+    /// Emit a [`Progress`] if the count has moved since the last one.
+    ///
+    /// **The "if" is the whole policy, and it is not a threshold.** A
+    /// caller of this may poll as often as it likes; what it cannot do is
+    /// produce an event for traffic that did not happen. Callers that poll
+    /// a body per frame therefore emit per frame, and one that polls a
+    /// future many times between two frames emits once — both correct,
+    /// because [`Progress::transferred`] is cumulative.
+    pub fn report<H: Hooks>(
+        &self,
+        hooks: &H,
+        id: ConnectionId,
+        uri: &http::Uri,
+        direction: Direction,
+    ) {
+        let now = self.moved.load(Ordering::Relaxed);
+        if self.told.swap(now, Ordering::Relaxed) == now {
+            return;
+        }
+        hooks.on(&Event::Progress(
+            Progress::new(id, uri, direction, now).expected(self.expected),
+        ));
+    }
+}
+
+/// A response body that counts what it yields, and reports it.
+///
+/// **It is the outermost thing a backend hands back, and innermost of the
+/// wrappers a client adds** — which is the whole of where the number comes
+/// from. `hclient`'s `Decompressed` sits above every transport's body, so
+/// what this sees is the encoded octets; see [`Progress`] for why that is
+/// the right number rather than merely the available one.
+///
+/// It also carries the **send** meter, where there is one, and reports
+/// that too. That is not a second job: on a protocol with a duplex request
+/// body the upload is still running after the head, and the response body
+/// is then the only thing the caller is polling — so it is the only place
+/// left that can notice the upload moving.
+///
+/// A pass-through with no allocation and no branch worth naming when
+/// nobody is watching: [`meter`] hands back `None`, so no [`http::Uri`] is
+/// cloned and no atomic exists.
+#[derive(Debug)]
+pub struct Counting<B, H> {
+    inner: B,
+    hooks: H,
+    id: ConnectionId,
+    /// The clone and the counter are produced **together or not at all**.
+    ///
+    /// Two `Option`s that have to agree is one more than is safe: a second
+    /// `H::WATCHING` test beside this one is exactly the shape whose
+    /// mutation survived `hclient-fetch`'s whole suite, leaving a
+    /// `NoHooks` build cloning a `Uri` per request while the cost test
+    /// still read zero.
+    recv: Option<(http::Uri, Meter)>,
+    /// Written by the request body, read here. `None` when nobody is
+    /// watching, and also when the request had no body to count.
+    sent: Option<Arc<Meter>>,
+}
+
+impl<B, H> Counting<B, H>
+where
+    B: http_body::Body,
+    H: Hooks,
+{
+    /// Wrap a body. `expected` is read off the body's own
+    /// [`http_body::Body::size_hint`] **once, here** — the exact hint, or
+    /// `None`.
+    ///
+    /// That one rule gives the right answer on every backend because each
+    /// body's `size_hint` already carries its own honesty argument.
+    /// `hclient-fetch`'s, for one, refuses to trust a `Content-Length`
+    /// beside a `Content-Encoding`, because the browser hands over a
+    /// stream it has already decoded — the same unit rule [`Progress`]
+    /// states, reached independently and written down one field over
+    /// before this event existed.
+    /// # `uri: None` is *do not count here*, not *no uri*
+    ///
+    /// It is the caller's statement that this wrapper is not the counter
+    /// for this body, and there are two ways to mean it. Nobody is
+    /// watching, which is `hclient-fetch`'s case — the `Uri` it still holds
+    /// after the request was consumed lives in the same `Option` as its
+    /// clock mark, so the gate travels rather than being read twice. Or
+    /// something underneath already counts: `hclient-native` wraps here for
+    /// its TCP protocols and passes `None` for a body that came up through
+    /// the QUIC arm, which `hclient_native::H3` has already wrapped.
+    ///
+    /// The type is the same either way, which is the point — `Transport::Body`
+    /// has to name one type, and a second one for the uncounted case would
+    /// be a `Transport` impl per route.
+    #[must_use]
+    pub fn new(
+        inner: B,
+        hooks: H,
+        id: ConnectionId,
+        uri: Option<&http::Uri>,
+        sent: Option<Arc<Meter>>,
+    ) -> Self {
+        let recv =
+            uri.and_then(|uri| meter::<H>(inner.size_hint().exact()).map(|m| (uri.clone(), m)));
+        Self {
+            inner,
+            hooks,
+            id,
+            recv,
+            sent,
+        }
+    }
+}
+
+impl<B, H> http_body::Body for Counting<B, H>
+where
+    B: http_body::Body + Unpin,
+    H: Hooks + Unpin,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        use bytes::Buf as _;
+        let this = self.get_mut();
+        let out = core::pin::Pin::new(&mut this.inner).poll_frame(cx);
+        let Some((uri, m)) = &this.recv else {
+            return out;
+        };
+        if let core::task::Poll::Ready(Some(Ok(frame))) = &out
+            && let Some(data) = frame.data_ref()
+        {
+            m.add(data.remaining() as u64);
+        }
+        // Both directions on every poll, and unconditionally: `report` is
+        // what decides whether anything moved, so a caller of it never has
+        // to know.
+        m.report(&this.hooks, this.id, uri, Direction::Receiving);
+        if let Some(sent) = &this.sent {
+            sent.report(&this.hooks, this.id, uri, Direction::Sending);
+        }
+        out
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// A body that counts what it yields into a shared [`Meter`], and reports
+/// nothing.
+///
+/// The counting half on its own, for the **request** side, where the
+/// thing that counts and the thing that reports are not the same object:
+/// the request body is handed to hyper, to `h2`'s pump or to the browser,
+/// and what reports is [`Reporting`] or [`Counting`] back where the hook
+/// is. That is why the meter is an [`Arc`] and this type names no `H`.
+///
+/// **`hclient-native` deliberately does not use it**, and its own
+/// `OutgoingBody` says why in a sentence written before this existed:
+/// that type is *the one place every frame of every request body passes
+/// through on its way to hyper*, and *a wrapper would be a second thing to
+/// remember to put on*. It carries the meter as a field for exactly that
+/// reason. The two ambient backends have no such single type — a
+/// `wasi:http` request body is a buffered arm and a streaming arm, and a
+/// browser's is three — so for them the wrapper is the choke point.
+#[derive(Debug)]
+pub struct Metered<B> {
+    inner: B,
+    meter: Option<Arc<Meter>>,
+}
+
+impl<B> Metered<B> {
+    /// `None` is a pass-through, which is what an unwatched build gets.
+    #[must_use]
+    pub fn new(inner: B, meter: Option<Arc<Meter>>) -> Self {
+        Self { inner, meter }
+    }
+}
+
+impl<B: http_body::Body + Unpin> http_body::Body for Metered<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        use bytes::Buf as _;
+        let this = self.get_mut();
+        let out = core::pin::Pin::new(&mut this.inner).poll_frame(cx);
+        if let Some(m) = &this.meter
+            && let core::task::Poll::Ready(Some(Ok(frame))) = &out
+            && let Some(data) = frame.data_ref()
+        {
+            m.add(data.remaining() as u64);
+        }
+        out
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// A future that reports what a request body has sent, each time it is
+/// polled.
+///
+/// **The upload has no body of its own for a caller to poll**, which is
+/// what this exists for: the request body belongs to hyper, to `h2`'s pump
+/// or to `h3`'s, and the only thing running while it drains is the
+/// exchange future. So the exchange future is what looks.
+///
+/// The granularity that falls out is *whenever this was polled and the
+/// count had moved* — never an event for traffic that did not happen, and
+/// never a threshold this seam had to pick for everybody. [`Progress`] says
+/// why a cumulative total makes that affordable.
+///
+/// `F: Unpin` rather than a `Box::pin`, so the caller writes
+/// `std::pin::pin!(fut)` and pays no allocation: a `Pin<&mut F>` is both.
+#[derive(Debug)]
+pub struct Reporting<F, H> {
+    inner: F,
+    hooks: H,
+    id: ConnectionId,
+    /// One `Option`, for [`Counting::recv`]'s reason.
+    watch: Option<(http::Uri, Arc<Meter>)>,
+}
+
+impl<F, H> Reporting<F, H> {
+    /// `meter` is already gated — [`meter`] hands back `None` when nobody
+    /// is watching — so this clones the [`http::Uri`] exactly when there
+    /// is something to report it against.
+    #[must_use]
+    pub fn new(
+        inner: F,
+        hooks: H,
+        id: ConnectionId,
+        uri: &http::Uri,
+        meter: Option<Arc<Meter>>,
+    ) -> Self {
+        Self {
+            inner,
+            hooks,
+            id,
+            watch: meter.map(|m| (uri.clone(), m)),
+        }
+    }
+}
+
+impl<F, H> core::future::Future for Reporting<F, H>
+where
+    F: core::future::Future + Unpin,
+    H: Hooks + Unpin,
+{
+    type Output = F::Output;
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        let out = core::pin::Pin::new(&mut this.inner).poll(cx);
+        if let Some((uri, m)) = &this.watch {
+            m.report(&this.hooks, this.id, uri, Direction::Sending);
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,6 +1478,7 @@ mod tests {
                 Event::Head(_) => "head",
                 Event::Closed(_) => "closed",
                 Event::Informational(_) => "informational",
+                Event::Progress(_) => "progress",
             }
         }
         // One live value, so the function is not merely compiled but

@@ -897,12 +897,13 @@ where
         head: http::Request<()>,
         body: RequestBody,
         watch: Option<Box<Watch<H>>>,
+        sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
     ) -> Result<http::Response<H3Body<H>>, Error> {
         let stream = send.send_request(head).await.map_err(body::stream_error)?;
         // From here on the head is on the wire, and a write-side failure
         // stops meaning what it meant a line ago. See `write_after_head`.
         let (writer, mut reader) = stream.split();
-        let mut pump = Some(pump::pump(writer, body));
+        let mut pump = Some(pump::pump(writer, body, sent));
         // The borrow of `reader` ends with this block, which is what lets
         // the same value move into `H3Body` two lines later.
         let resp = {
@@ -931,6 +932,26 @@ where
             parts,
             H3Body::new(reader, pump, watch),
         ))
+    }
+
+    /// Put a response body under the octet counter.
+    ///
+    /// **Here rather than in `Native::bound_body`**, and that is the same
+    /// split `report_head` already has: `H3::finish` is reached both by
+    /// `Transport::execute` on this type and by `Native`'s erased QUIC
+    /// arm, so wrapping here is the one place that covers both. `Native`
+    /// passes `Counted::already` for a body that came up this way, or
+    /// every octet would be counted twice.
+    fn counted(
+        &self,
+        resp: http::Response<H3Body<H>>,
+        id: hclient_core::unversioned::ConnectionId,
+        uri: &http::Uri,
+        sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
+    ) -> http::Response<hclient_core::unversioned::Counting<H3Body<H>, H>> {
+        resp.map(|b| {
+            hclient_core::unversioned::Counting::new(b, self.hooks.clone(), id, Some(uri), sent)
+        })
     }
 
     /// The hook, the connection and its state, packed for a body — or
@@ -980,7 +1001,7 @@ where
         // HTTP/3 and refuses every other demand. That is the same claim
         // `capabilities()` makes with `version_reported: true`, and
         // `Head::version`'s doc says the two must agree.
-        self.hooks.on(Event::Head(
+        self.hooks.on(&Event::Head(
             Head::new(id, uri, resp.status(), since::<R>(&self.rt, began))
                 .version(Some(resp.version())),
         ));
@@ -1122,12 +1143,24 @@ where
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
     T: QuicTlsConnect,
     D: hclient_dns::Resolve,
-    // Argued where the sibling impl above declares it. `Unpin` is not
-    // among them, which is the one bound this backend does not have to
-    // charge a hook that `hclient-native` does.
-    H: Hooks + Clone,
+    // Argued where the sibling impl above declares it. `Unpin` joined
+    // them when the response body gained an octet counter: that wrapper
+    // holds the hook and is polled through a `Pin`, so `H` has to be
+    // `Unpin` for the projection to be safe without `unsafe`. It is the
+    // bound `hclient-native`'s own `Transport` impl has always carried,
+    // and every shape a hook actually arrives in — `NoHooks`, `Arc`, `Rc`
+    // — satisfies it.
+    H: Hooks + Clone + Unpin,
 {
-    type Body = H3Body<H>;
+    /// The body, under the octet counter.
+    ///
+    /// Wrapped here rather than by `Native::bound_body`, and that is the
+    /// split `report_head` already has: `H3::finish` is reached both by
+    /// this `execute` and by `Native`'s erased QUIC arm, so this is the
+    /// one place that covers both. `Native` passes `Counted::already` for
+    /// a body that came up that way, or every octet would be counted
+    /// twice.
+    type Body = hclient_core::unversioned::Counting<H3Body<H>, H>;
     type Error = Error;
 
     /// `H3::stage` then `H3::finish` — the same two halves
@@ -1139,7 +1172,7 @@ where
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
-    ) -> Result<http::Response<H3Body<H>>, Error> {
+    ) -> Result<http::Response<Self::Body>, Error> {
         let staged = self.stage(req).await.map_err(|(e, _)| e)?;
         self.finish(staged).await
     }
@@ -1241,13 +1274,15 @@ where
     for<'a> D::Ipv4<'a>: Send, // send-bound-exception: amendment-C16
     for<'a> D::Ipv6<'a>: Send, // send-bound-exception: amendment-C16
     for<'a> D::Svcb<'a>: Send, // send-bound-exception: amendment-C16
-    H: Hooks + Clone + Send + Sync, // send-bound-exception: amendment-C16
+    H: Hooks + Clone + Unpin + Send + Sync, // send-bound-exception: amendment-C16
 {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
     ) -> std::pin::Pin<
-        Box<dyn Future<Output = Result<http::Response<H3Body<H>>, Error>> + Send + '_>, // send-bound-exception: amendment-C16
+        Box<
+            dyn Future<Output = Result<http::Response<Self::Body>, Error>> + Send + '_, // send-bound-exception: amendment-C16
+        >,
     > {
         Box::pin(<Self as Transport>::execute(self, req))
     }

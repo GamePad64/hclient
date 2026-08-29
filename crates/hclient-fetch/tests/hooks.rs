@@ -45,6 +45,16 @@ enum Seen {
     /// asserts an exact event sequence, so one of these appearing fails a
     /// line rather than being counted.
     Informational,
+    /// Octets, one direction, cumulative. Recorded so that
+    /// [`a_drained_body_reports_the_octets_the_browser_handed_over`]
+    /// can assert the count rather than merely the event's existence —
+    /// and so that a test asserting an exact sequence sees one where a
+    /// body was read.
+    Progress {
+        direction: hclient_core::unversioned::Direction,
+        transferred: u64,
+        expected: Option<u64>,
+    },
     Head {
         id: u64,
         uri: String,
@@ -67,7 +77,7 @@ enum Seen {
 /// this backend — including the two that go through `hclient::Client`,
 /// which is the layer `crate::promise::SendJsFuture`'s `unsafe impl Send`
 /// exists for.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 struct Recorder {
     seen: Rc<RefCell<Vec<Seen>>>,
     elapsed: Rc<RefCell<Vec<Duration>>>,
@@ -88,7 +98,7 @@ impl Recorder {
 }
 
 impl Hooks for Recorder {
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         let flat = match event {
             Event::Connected(_) => Seen::Connected,
             Event::Reused(_) => Seen::Reused,
@@ -103,6 +113,11 @@ impl Hooks for Recorder {
                     version: h.version,
                 }
             }
+            Event::Progress(p) => Seen::Progress {
+                direction: p.direction,
+                transferred: p.transferred,
+                expected: p.expected,
+            },
             // `Event` is `#[non_exhaustive]` outside `hclient-core`, so
             // this arm is required. An event this recorder does not model
             // is not recorded — a `Seen` value invented for it would be a
@@ -166,12 +181,76 @@ async fn a_successful_request_reports_one_head_and_no_connection_event_at_all() 
     assert_eq!(
         seen.len(),
         1,
-        "one request, one event — a browser owns the connection and reports \
-         nothing about it, so there is nothing else to say: {seen:?}"
+        "one request whose body was never read, one event — a browser owns \
+         the connection and reports nothing about it, so the head is all \
+         there is to say: {seen:?}"
     );
     assert!(
         matches!(seen[0], Seen::Head { .. }),
         "and the one event is the head: {seen:?}"
+    );
+}
+
+/// **Octets are reported for a body the caller actually reads**, and the
+/// count is the page's own length rather than anything this test supplied.
+///
+/// The pair with the test above is the assertion: the same request,
+/// undrained, produces one event, so what is being measured here is the
+/// reading rather than the request. `Sending` is absent because a `GET`
+/// carries nothing — no traffic, no event — which is what lets a hook read
+/// silence in a direction as *nothing moved* rather than as *this backend
+/// does not report it*.
+#[wasm_bindgen_test]
+async fn a_drained_body_reports_the_octets_the_browser_handed_over() {
+    use http_body::Body as _;
+
+    let rec = Recorder::default();
+    let t = Fetch::new().hooks(rec.clone());
+
+    let resp = t.execute(get(&page_url())).await.expect("the harness page");
+    assert_eq!(resp.status(), 200);
+
+    let mut body = resp.into_body();
+    let mut read = 0u64;
+    while let Some(frame) =
+        std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+    {
+        let frame = frame.expect("the harness page has a readable body");
+        if let Some(d) = frame.data_ref() {
+            read += d.len() as u64;
+        }
+    }
+    assert!(read > 0, "premise: the harness page is not empty");
+
+    let progress: Vec<_> = rec
+        .seen()
+        .into_iter()
+        .filter_map(|s| match s {
+            Seen::Progress {
+                direction,
+                transferred,
+                expected,
+            } => Some((direction, transferred, expected)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !progress.is_empty(),
+        "reading the body must report what it carried: {:?}",
+        rec.seen(),
+    );
+    assert!(
+        progress
+            .iter()
+            .all(|(d, ..)| *d == hclient_core::unversioned::Direction::Receiving),
+        "a GET sends no body, so nothing may be reported in the other \
+         direction: {progress:?}",
+    );
+    assert_eq!(
+        progress.last().map(|(_, t, _)| *t),
+        Some(read),
+        "and the last total is exactly what the caller read — the count is \
+         cumulative, so nothing earlier adds to it: {progress:?}",
     );
 }
 
@@ -475,12 +554,19 @@ fn a_send_hook_leaves_the_execute_future_send() {
 
     struct Atomic(std::sync::atomic::AtomicUsize);
     impl Hooks for Atomic {
-        fn on(&self, _event: Event<'_>) {
+        fn on(&self, _event: &Event<'_>) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    let t = Fetch::new().hooks(Atomic(std::sync::atomic::AtomicUsize::new(0)));
+    // Behind an `Arc`, and that is the transport's `H: Clone` bound rather
+    // than this test being fussy: the response body counts octets and
+    // reports them, so it outlives `execute` holding the hook — the bound
+    // `hclient-native` has carried since hooks existed, arriving here now
+    // that this backend's body has an event of its own.
+    let t = Fetch::new().hooks(std::sync::Arc::new(Atomic(
+        std::sync::atomic::AtomicUsize::new(0),
+    )));
     assert_send(t.execute(get("http://example.invalid/")));
 
     // And the default is `Send` too, which is what every existing caller

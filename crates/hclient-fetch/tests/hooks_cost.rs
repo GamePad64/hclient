@@ -137,7 +137,7 @@ impl CountingClock {
 #[derive(Clone, Copy, Default)]
 struct Watching;
 impl Hooks for Watching {
-    fn on(&self, _event: Event<'_>) {}
+    fn on(&self, _event: &Event<'_>) {}
 }
 
 fn page_url() -> String {

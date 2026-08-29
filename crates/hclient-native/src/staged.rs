@@ -369,7 +369,12 @@ where
             .take()
             .expect("a Staged is emptied only by this method, which consumes it");
         let (parts, body) = req.into_parts();
-        let req = http::Request::from_parts(parts, body::OutgoingBody::from_request_body(body)?);
+        let outgoing = body::OutgoingBody::from_request_body(body)?;
+        let sent = hclient_core::unversioned::meter::<H>(outgoing.expected())
+            .map(std::sync::Arc::new)
+            .inspect(|_| ());
+        let outgoing = outgoing.counting(sent.clone());
+        let req = http::Request::from_parts(parts, outgoing);
         let via = self.via(&uri);
         let gate = self.continue_gate(&req);
         let attempt = established::exchange(
@@ -384,12 +389,13 @@ where
                 gate: gate.clone(),
             },
         );
-        let resp = self
-            .within_first_byte_gated(first_byte, gate, attempt)
-            .await
-            .map_err(established::Failed::into_error)?;
+        let attempt = std::pin::pin!(self.within_first_byte_gated(first_byte, gate, attempt));
+        let resp =
+            hclient_core::unversioned::Reporting::new(attempt, &self.hooks, id, &uri, sent.clone())
+                .await
+                .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, &uri, began);
-        Ok(self.bound_body(resp, between_bytes))
+        Ok(self.bound_body(resp, between_bytes, crate::Counted::new(id, &uri, sent)))
     }
 }
 
@@ -475,7 +481,7 @@ where
                 continue;
             };
             let id = est.id();
-            self.hooks.on(Event::Reused(Reused::new(
+            self.hooks.on(&Event::Reused(Reused::new(
                 id,
                 &uri,
                 spoken_version(Some(protocol)),
@@ -521,7 +527,7 @@ where
         );
         let id = connection_id::<H>();
         if let Some(attempted) = attempted {
-            self.hooks.on(Event::Connected(
+            self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, spoken_version(protocol))
                     .remote(attempted.remote)
                     // The handshake's own report, which this transport has

@@ -40,6 +40,7 @@ use bytes::Bytes;
 use hclient_core::{Error, ErrorKind, Reduced, RequestBody};
 use std::future::poll_fn;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// The send half of a split request stream.
 pub(crate) type SendHalf = h3::client::RequestStream<
@@ -162,21 +163,47 @@ impl Drop for Writer {
 }
 
 /// The whole request body, as a future that can outlive `one_attempt`.
-pub(crate) fn pump(send: SendHalf, body: RequestBody) -> Pump {
+///
+/// `sent` counts what reaches the wire, for
+/// [`hclient_core::unversioned::Progress`]; `None` when nobody is
+/// watching. It is counted **here rather than in a wrapper** for
+/// `hclient-native`'s `OutgoingBody`'s reason — this is the one place
+/// every frame of a request body passes through on the QUIC path, and a
+/// wrapper would be a second thing to remember to put on.
+pub(crate) fn pump(
+    send: SendHalf,
+    body: RequestBody,
+    sent: Option<Arc<hclient_core::unversioned::Meter>>,
+) -> Pump {
     Box::pin(write_body(
         Writer {
             send,
             settled: false,
         },
         body,
+        sent,
     ))
 }
 
-async fn write_body(mut w: Writer, body: RequestBody) -> Result<(), Error> {
+async fn write_body(
+    mut w: Writer,
+    body: RequestBody,
+    sent: Option<Arc<hclient_core::unversioned::Meter>>,
+) -> Result<(), Error> {
     let stopped = match flatten(body.reduce().map_err(|e| Error::new(ErrorKind::Body, e))?) {
         Outgoing::Buffered(None) => false,
-        Outgoing::Buffered(Some(b)) => crate::http3::write_after_head(w.send.send_data(b).await)?,
-        Outgoing::Streaming(mut s) => write_stream(&mut w, &mut *s).await?,
+        Outgoing::Buffered(Some(b)) => {
+            let n = b.len() as u64;
+            let stopped = crate::http3::write_after_head(w.send.send_data(b).await)?;
+            // After the await, not before: what this counts is what the
+            // peer's flow control let through, which is the same rule the
+            // streaming arm gets for free by counting inside its loop.
+            if let Some(m) = &sent {
+                m.add(n);
+            }
+            stopped
+        }
+        Outgoing::Streaming(mut s) => write_stream(&mut w, &mut *s, sent.as_deref()).await?,
     };
     if !stopped {
         // Not `let _ =`: everything except the one tolerated failure still
@@ -211,6 +238,7 @@ async fn write_body(mut w: Writer, body: RequestBody) -> Result<(), Error> {
 async fn write_stream(
     w: &mut Writer,
     body: &mut (dyn http_body::Body<Data = Bytes, Error = Error> + Unpin + Send), // send-bound-exception: amendment-C2
+    sent: Option<&hclient_core::unversioned::Meter>,
 ) -> Result<bool, Error> {
     loop {
         let frame = poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await;
@@ -235,8 +263,12 @@ async fn write_stream(
             // costs a header and says nothing.
             Ok(data) if data.is_empty() => continue,
             Ok(data) => {
+                let n = data.len() as u64;
                 if crate::http3::write_after_head(w.send.send_data(data).await)? {
                     return Ok(true);
+                }
+                if let Some(m) = sent {
+                    m.add(n);
                 }
             }
             Err(other) => {

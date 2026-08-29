@@ -211,7 +211,7 @@ fn install_1xx<H>(
         if let (http::StatusCode::CONTINUE, Some(g)) = (resp.status(), &gate) {
             g.open();
         }
-        hooks.on(Event::Informational(
+        hooks.on(&Event::Informational(
             hclient_core::unversioned::Informational::new(id, resp.status(), resp.headers()),
         ));
     });
@@ -226,6 +226,47 @@ fn install_1xx<H>(
 pub type NativeIo<R, T> =
     Conn<<R as TcpConnect>::Stream, <T as TlsConnect>::Stream<<R as TcpConnect>::Stream>>;
 
+/// What [`Native::bound_body`] needs to count a response body.
+///
+/// A struct rather than three parameters because two of the three are
+/// `Option`-shaped and a call site passing them positionally reads as a
+/// puzzle — and because [`Counted::already`] is then a name for the one
+/// caller that does not count, rather than three `None`s a reader has to
+/// interpret.
+pub(crate) struct Counted<'a> {
+    id: ConnectionId,
+    /// `None` is *something below already counted this body*, which is the
+    /// QUIC arm — see `hclient_core::unversioned::Counting::new`.
+    uri: Option<&'a http::Uri>,
+    sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
+}
+
+impl<'a> Counted<'a> {
+    pub(crate) fn new(
+        id: ConnectionId,
+        uri: &'a http::Uri,
+        sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
+    ) -> Self {
+        Self {
+            id,
+            uri: Some(uri),
+            sent,
+        }
+    }
+
+    /// The QUIC arm's answer: `hclient_native::H3` wrapped this body
+    /// before handing it up, and counting it twice would report every
+    /// octet twice.
+    #[cfg(feature = "http3")]
+    pub(crate) fn already(id: ConnectionId) -> Self {
+        Self {
+            id,
+            uri: None,
+            sent: None,
+        }
+    }
+}
+
 /// What [`Native`]'s `Transport::Body` is, named once.
 ///
 /// A public alias for [`NativeIo`]'s reason — a caller who has to name
@@ -237,7 +278,10 @@ pub type NativeIo<R, T> =
 /// **innermost** wrapper, next to the socket, so it measures the gap
 /// between reads on the wire rather than the gap between whatever a
 /// wrapper above chose to pass on.
-pub type NativeBody<R, T, H> = IdleTimeout<established::NativeBody<NativeIo<R, T>, H>, R>;
+pub type NativeBody<R, T, H> = IdleTimeout<
+    hclient_core::unversioned::Counting<established::NativeBody<NativeIo<R, T>, H>, H>,
+    R,
+>;
 
 /// This crate's clock, handed to `hclient_core`'s gate.
 ///
@@ -1718,7 +1762,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// #[derive(Clone)]
     /// struct Counting(Rc<Cell<usize>>);
     /// impl Hooks for Counting {
-    ///     fn on(&self, _e: Event<'_>) { self.0.set(self.0.get() + 1) }
+    ///     fn on(&self, _e: &Event<'_>) { self.0.set(self.0.get() + 1) }
     /// }
     ///
     /// // Builds, and works: this transport reports events and is `!Send`.
@@ -1739,7 +1783,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// #[derive(Clone)]
     /// struct Counting(Arc<AtomicUsize>);
     /// impl Hooks for Counting {
-    ///     fn on(&self, _e: Event<'_>) { self.0.fetch_add(1, Ordering::Relaxed); }
+    ///     fn on(&self, _e: &Event<'_>) { self.0.fetch_add(1, Ordering::Relaxed); }
     /// }
     ///
     /// let shared = Native::new(Tokio, hclient_tls::NoTls, hclient_dns::IpLiteralOnly)
@@ -2541,8 +2585,24 @@ where
         &self,
         resp: http::Response<established::NativeBody<NativeIo<R, T>, H>>,
         every: Option<Duration>,
+        count: Counted<'_>,
     ) -> http::Response<NativeBody<R, T, H>> {
-        resp.map(|b| IdleTimeout::new(b, self.rt.clone(), every))
+        resp.map(|b| {
+            // The counter goes **inside** the `between_bytes` bound, for
+            // the same reason that bound is innermost: what it counts is
+            // what came off the wire, not what a wrapper above chose to
+            // pass on. Nothing observable turns on the order — a body cut
+            // by the idle timeout has still yielded what it yielded — and
+            // the two are written in the order their arguments give.
+            let counted = hclient_core::unversioned::Counting::new(
+                b,
+                self.hooks.clone(),
+                count.id,
+                count.uri,
+                count.sent,
+            );
+            IdleTimeout::new(counted, self.rt.clone(), every)
+        })
     }
     /// The `Head` event, from the one place both paths reach it.
     ///
@@ -2563,7 +2623,7 @@ where
         // is the same claim `capabilities()` makes with
         // `version_reported: true`, and `Head::version`'s doc says the two
         // must agree.
-        self.hooks.on(Event::Head(
+        self.hooks.on(&Event::Head(
             Head::new(id, uri, resp.status(), since::<R>(&self.rt, began))
                 .version(Some(resp.version())),
         ));
@@ -2706,7 +2766,7 @@ where
             // past it. A connection the pool itself drops for age never
             // reaches this function, and that hole is deliberate.
             self.hooks
-                .on(Event::Closed(Closed::new(est.id(), CloseReason::Stale)));
+                .on(&Event::Closed(Closed::new(est.id(), CloseReason::Stale)));
         }
     }
 }
@@ -3102,6 +3162,20 @@ where
         let uri = parts.uri.clone();
 
         let outgoing = body::OutgoingBody::from_request_body(body)?;
+        // The request body's octet count, made once for the whole
+        // operation and not once per attempt: `Native::run` may hand the
+        // same request back to a second connection after a `NotSent`, and
+        // a counter reset there would report the upload starting over when
+        // not a byte of it had reached the wire.
+        //
+        // `expected` is read off the body's own `size_hint` before
+        // anything moves, which is where a `Content-Length` would have
+        // come from anyway.
+        let outgoing = {
+            let meter =
+                hclient_core::unversioned::meter::<H>(outgoing.expected()).map(std::sync::Arc::new);
+            outgoing.counting(meter)
+        };
         // Left exactly as it arrived — absolute URI, and no `Host:` of
         // ours. That is the one shape both protocols can be derived from,
         // and deriving is `established::exchange`'s job, from the
@@ -3199,7 +3273,7 @@ where
             // connection's own, assigned when it was made, so a caller
             // can find the `Connected` this refers back to.
             let id = est.id();
-            self.hooks.on(Event::Reused(Reused::new(
+            self.hooks.on(&Event::Reused(Reused::new(
                 id,
                 &uri,
                 spoken_version(Some(protocol)),
@@ -3214,6 +3288,11 @@ where
             drop(connect_guard.take());
             let via = self.via(&uri);
             let gate = self.continue_gate(&req);
+            // Read off the body before it moves into the exchange: the meter
+            // was put there when the body was built, so this is one fact
+            // travelling rather than two places agreeing about whether to
+            // count.
+            let sent = req.body().meter();
             let attempt = established::exchange(
                 est,
                 req,
@@ -3226,13 +3305,24 @@ where
                     gate: gate.clone(),
                 },
             );
-            match self
-                .within_first_byte_gated(timeouts.first_byte, gate, attempt)
-                .await
+            let attempt =
+                std::pin::pin!(self.within_first_byte_gated(timeouts.first_byte, gate, attempt));
+            match hclient_core::unversioned::Reporting::new(
+                attempt,
+                &self.hooks,
+                id,
+                &uri,
+                sent.clone(),
+            )
+            .await
             {
                 Ok(resp) => {
                     self.report_head(&resp, id, &uri, began);
-                    return Ok(self.bound_body(resp, timeouts.between_bytes));
+                    return Ok(self.bound_body(
+                        resp,
+                        timeouts.between_bytes,
+                        Counted::new(id, &uri, sent),
+                    ));
                 }
                 // The one retry, and the reason it exists: a pool turns
                 // "the server closed this connection while it was idle"
@@ -3362,7 +3452,7 @@ where
         // the same function `handshake_for` branches on, so this cannot
         // claim HTTP/2 for a connection that got an HTTP/1 handshake.
         if let Some(attempted) = attempted {
-            self.hooks.on(Event::Connected(
+            self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, spoken_version(protocol))
                     .remote(attempted.remote)
                     // The handshake's own report, which this transport has
@@ -3443,6 +3533,11 @@ where
         drop(connect_guard.take());
         let via = self.via(&uri);
         let gate = self.continue_gate(&req);
+        // Read off the body before it moves into the exchange: the meter
+        // was put there when the body was built, so this is one fact
+        // travelling rather than two places agreeing about whether to
+        // count.
+        let sent = req.body().meter();
         let attempt = established::exchange(
             est,
             req,
@@ -3455,12 +3550,14 @@ where
                 gate: gate.clone(),
             },
         );
-        let resp = self
-            .within_first_byte_gated(timeouts.first_byte, gate, attempt)
-            .await
-            .map_err(established::Failed::into_error)?;
+        let attempt =
+            std::pin::pin!(self.within_first_byte_gated(timeouts.first_byte, gate, attempt));
+        let resp =
+            hclient_core::unversioned::Reporting::new(attempt, &self.hooks, id, &uri, sent.clone())
+                .await
+                .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, &uri, began);
-        Ok(self.bound_body(resp, timeouts.between_bytes))
+        Ok(self.bound_body(resp, timeouts.between_bytes, Counted::new(id, &uri, sent)))
     }
 }
 

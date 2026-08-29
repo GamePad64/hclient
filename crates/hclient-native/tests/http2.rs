@@ -786,7 +786,7 @@ async fn an_unmarked_request_still_offers_h2() {
 struct Hints(Arc<Mutex<Vec<String>>>);
 
 impl hclient_core::unversioned::Hooks for Hints {
-    fn on(&self, event: hclient_core::unversioned::Event<'_>) {
+    fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
         if let hclient_core::unversioned::Event::Informational(e) = event {
             self.0.lock().unwrap().push(format!(
                 "{} {}",

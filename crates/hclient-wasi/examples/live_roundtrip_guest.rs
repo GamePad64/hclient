@@ -496,7 +496,7 @@ async fn cancel_on_drop(port: u16, case: CancelCase) -> Result<(), ()> {
 struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
 
 impl hclient_core::unversioned::Hooks for Recorder {
-    fn on(&self, event: hclient_core::unversioned::Event<'_>) {
+    fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
         use hclient_core::unversioned::Event;
         let line = match event {
             // Named individually rather than through a catch-all, so that
@@ -529,6 +529,17 @@ impl hclient_core::unversioned::Hooks for Recorder {
                 h.elapsed.as_nanos()
             ),
 
+            // Octets, cumulative, one direction. Printed with the whole
+            // triple rather than a count, because the two facts a reader
+            // of this transcript needs — that the total is the body's own
+            // length, and that a chunked response reports no denominator
+            // — are both in the fields rather than in how many lines
+            // there are.
+            Event::Progress(p) => format!(
+                "EVENT progress dir={:?} transferred={} expected={:?}",
+                p.direction, p.transferred, p.expected
+            ),
+
             // `Event` is `#[non_exhaustive]` outside `hclient-core`, so
             // this arm is required. It prints rather than panicking, for
             // the same reason the arms above do: a variant this harness
@@ -548,6 +559,40 @@ impl Recorder {
             println!("{line}");
         }
         println!("EVENTS={}", self.0.borrow().len());
+        // Broken out because `EVENTS` stopped being able to carry the
+        // claim it used to. It was *one request, one event*; this backend
+        // now also reports octets, so a body that moves is a second line
+        // and the head has to be counted on its own for
+        // `the_head_is_reported_at_the_head_and_the_body_adds_no_second_one`
+        // to keep discriminating.
+        let lines = self.0.borrow();
+        println!(
+            "HEADS={}",
+            lines
+                .iter()
+                .filter(|l| l.starts_with("EVENT head "))
+                .count()
+        );
+        println!(
+            "PROGRESS={}",
+            lines
+                .iter()
+                .filter(|l| l.starts_with("EVENT progress "))
+                .count()
+        );
+        // The last word about octets received, which is the whole answer:
+        // the total is cumulative, so nothing earlier adds to it.
+        println!(
+            "RECEIVED={}",
+            lines
+                .iter()
+                .filter(|l| l.starts_with("EVENT progress dir=Receiving "))
+                .filter_map(|l| l
+                    .split_whitespace()
+                    .find_map(|w| w.strip_prefix("transferred=")))
+                .next_back()
+                .unwrap_or("none")
+        );
     }
 }
 
@@ -595,9 +640,9 @@ async fn hooks_head(port: u16) -> Result<(), ()> {
             return Err(());
         }
     }
-    // And again after the body, so the harness can check that draining it
-    // adds nothing: this backend has no body-level event, and a caller
-    // counting heads must not get a second one.
+    // And again after the body, so the harness can separate the two
+    // facts: draining must add no second **head**, and it must add the
+    // octets it moved.
     println!("AFTER_BODY");
     rec.report();
 

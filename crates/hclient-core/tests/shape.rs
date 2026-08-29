@@ -430,7 +430,7 @@ fn a_non_send_hook_reaches_a_bodys_poll_frame_and_the_transport_still_implements
     struct LocalHook(std::rc::Rc<std::cell::Cell<usize>>);
 
     impl Hooks for LocalHook {
-        fn on(&self, _event: Event<'_>) {
+        fn on(&self, _event: &Event<'_>) {
             self.0.set(self.0.get() + 1);
         }
     }
@@ -455,7 +455,7 @@ fn a_non_send_hook_reaches_a_bodys_poll_frame_and_the_transport_still_implements
             let this = self.get_mut();
             if !this.told {
                 this.told = true;
-                this.hooks.on(Event::Closed(Closed::new(
+                this.hooks.on(&Event::Closed(Closed::new(
                     ConnectionId::UNWATCHED,
                     CloseReason::Ended,
                 )));
@@ -525,7 +525,7 @@ fn a_send_hook_leaves_the_transport_and_its_body_send() {
 
     struct Counting(std::sync::atomic::AtomicUsize);
     impl Hooks for Counting {
-        fn on(&self, _event: Event<'_>) {
+        fn on(&self, _event: &Event<'_>) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
     }

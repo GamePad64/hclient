@@ -296,7 +296,7 @@ where
             // closure borrows for exactly this call, which is why HTTP/2
             // needs none of the `Send + Sync + 'static` HTTP/1 does.
             let report = |status, headers: &http::HeaderMap| {
-                hooks.on(Event::Informational(Informational::new(
+                hooks.on(&Event::Informational(Informational::new(
                     id, status, headers,
                 )));
             };
@@ -323,7 +323,7 @@ where
             // it did — a capability lying, which is the defect class this
             // workspace hunts.
             let report = |status, headers: &http::HeaderMap| {
-                hooks.on(Event::Informational(Informational::new(
+                hooks.on(&Event::Informational(Informational::new(
                     id, status, headers,
                 )));
             };

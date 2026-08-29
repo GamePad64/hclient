@@ -27,7 +27,7 @@ impl Recorder {
 }
 
 impl Hooks for Recorder {
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         let line = match event {
             Event::Informational(e) => format!(
                 "1xx {} id={} link={}",

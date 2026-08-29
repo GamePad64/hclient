@@ -1491,12 +1491,12 @@ where
                 // went wrong — there is simply no second request to be had
                 // on it"*.
                 this.hooks
-                    .on(Event::Closed(Closed::new(this.id, CloseReason::Ended)));
+                    .on(&Event::Closed(Closed::new(this.id, CloseReason::Ended)));
                 Poll::Ready(())
             }
             Poll::Ready(Err(e)) => {
                 let error = from_h2_error(e, ErrorKind::Connect);
-                this.hooks.on(Event::Closed(Closed::new(
+                this.hooks.on(&Event::Closed(Closed::new(
                     this.id,
                     CloseReason::Failed(&error),
                 )));
@@ -1515,7 +1515,7 @@ where
                     Lapsed::NoPong => Error::new(ErrorKind::Connect, PingNotAnswered),
                     Lapsed::Broken(e) => from_h2_error(e, ErrorKind::Connect),
                 };
-                this.hooks.on(Event::Closed(Closed::new(
+                this.hooks.on(&Event::Closed(Closed::new(
                     this.id,
                     CloseReason::Failed(&error),
                 )));

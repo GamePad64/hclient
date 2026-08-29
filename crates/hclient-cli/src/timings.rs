@@ -97,7 +97,7 @@ impl Recorder {
 }
 
 impl Hooks for Recorder {
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         let Ok(mut t) = self.0.lock() else { return };
         match event {
             Event::Connected(c) => {
@@ -449,7 +449,7 @@ mod tests {
         let rec = Recorder::new();
         let uri: http::Uri = "https://example.com/".parse().unwrap();
         for tcp in [7u64, 999] {
-            rec.on(Event::Connected(
+            rec.on(&Event::Connected(
                 Connected::new(
                     hclient_core::unversioned::ConnectionId::UNWATCHED,
                     &uri,

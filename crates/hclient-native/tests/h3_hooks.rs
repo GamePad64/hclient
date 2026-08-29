@@ -118,7 +118,7 @@ enum Why {
 /// to have a test notice if that ever stops being true. Here it would
 /// notice twice over — this crate's pool mutex is taken in `checkout` on
 /// the same code path that reports `Stale`.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 struct Recorder {
     seen: Arc<Mutex<Vec<Seen>>>,
     /// When set, every event panics — see
@@ -222,7 +222,7 @@ impl Recorder {
 }
 
 impl Hooks for Recorder {
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         assert!(
             !self.explode.load(Ordering::SeqCst),
             "the hook was told to panic"

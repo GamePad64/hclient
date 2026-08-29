@@ -509,7 +509,10 @@ fn issue_and_poll_once(
 ) -> Pin<
     Box<
         dyn std::future::Future<
-                Output = Result<http::Response<hclient_fetch::Body>, hclient_core::Error>,
+                Output = Result<
+                    http::Response<<Fetch as hclient_core::unversioned::Transport>::Body>,
+                    hclient_core::Error,
+                >,
             > + '_,
     >,
 > {

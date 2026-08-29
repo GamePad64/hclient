@@ -572,7 +572,7 @@ async fn beyond_the_peers_stream_limit_requests_queue_on_one_connection() {
 struct Counting(Arc<Mutex<Vec<String>>>);
 
 impl Hooks for Counting {
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         let line = match event {
             Event::Connected(_) => "connected".to_owned(),
             Event::Reused(r) => format!("reused:{:?}", r.version),
@@ -1288,7 +1288,7 @@ async fn a_1xx_on_a_shared_connection_reaches_the_hook() {
     struct Hints(Arc<Mutex<Vec<u16>>>);
 
     impl hclient_core::unversioned::Hooks for Hints {
-        fn on(&self, event: hclient_core::unversioned::Event<'_>) {
+        fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
             if let hclient_core::unversioned::Event::Informational(e) = event {
                 self.0.lock().unwrap().push(e.status.as_u16());
             }
@@ -1595,7 +1595,7 @@ async fn a_pooled_connection_that_goes_quiet_is_kept_by_the_keep_alive_ping() {
 struct WhyClosed(Arc<Mutex<Vec<String>>>);
 
 impl Hooks for WhyClosed {
-    fn on(&self, event: Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         if let Event::Closed(c) = event
             && let CloseReason::Failed(e) = c.reason
         {

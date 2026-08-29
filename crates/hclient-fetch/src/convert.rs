@@ -433,7 +433,7 @@ fn checked_url(uri: &http::Uri) -> Result<String, Error> {
 /// support is a strictly smaller, still-honest capability — unlike a
 /// forbidden header or an unbuildable body, there's no lie in sending a
 /// request that merely can't be aborted early.
-pub(crate) fn to_web_request(
+pub(crate) fn to_web_request<H: hclient_core::unversioned::Hooks>(
     req: http::Request<RequestBody>,
     caps: &Capabilities,
     opts: &crate::opts::FetchOpts,
@@ -482,10 +482,34 @@ pub(crate) fn to_web_request(
     init.set_headers(&headers);
 
     let streamed = matches!(resolved, ResolvedBody::Streaming(_));
+    // The request body's octet count. `expected` is what the resolved body
+    // itself states: a `Uint8Array`'s length, or a streaming body's own
+    // exact `size_hint`. `None` under `NoHooks`, so an unwatched build
+    // allocates nothing.
+    //
+    // **The `Full` arm is counted as one step, at hand-off**, and that is
+    // the honest shape rather than a shortcut: the bytes go into
+    // `set_body_opt_u8_array` and the browser owns them from that
+    // instant — there is no incremental send for this crate to observe, so
+    // a bar that jumped from nothing to everything is exactly what
+    // happened.
+    let sent = hclient_core::unversioned::meter::<H>(match &resolved {
+        ResolvedBody::None => Some(0),
+        ResolvedBody::Full(arr) => Some(u64::from(arr.length())),
+        ResolvedBody::Streaming(b) => b.size_hint().exact(),
+    })
+    .map(std::sync::Arc::new);
     match resolved {
         ResolvedBody::None => {}
-        ResolvedBody::Full(arr) => init.set_body_opt_u8_array(Some(&arr)),
+        ResolvedBody::Full(arr) => {
+            if let Some(m) = &sent {
+                m.add(u64::from(arr.length()));
+            }
+            init.set_body_opt_u8_array(Some(&arr));
+        }
         ResolvedBody::Streaming(body) => {
+            let body: Box<dyn http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin + Send> = // send-bound-exception: amendment-C2
+                Box::new(hclient_core::unversioned::Metered::new(body, sent.clone()));
             let stream = wasm_streams::ReadableStream::from_stream(BodyStream(body));
             init.set_body_opt_readable_stream(Some(&stream.into_raw()));
             // `duplex: "half"` — required, and required BEFORE the fact.
@@ -523,6 +547,7 @@ pub(crate) fn to_web_request(
         request,
         abort: controller,
         streamed,
+        sent,
     })
 }
 
@@ -543,4 +568,8 @@ pub(crate) struct Converted {
     /// from a [`RequestBody::Streaming`] — not merely whether the request
     /// has a body.
     pub(crate) streamed: bool,
+    /// The request body's octet counter, written by the body on the
+    /// browser's own task and read where `&self` is. `None` when nobody is
+    /// watching.
+    pub(crate) sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
 }

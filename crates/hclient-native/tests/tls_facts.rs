@@ -149,7 +149,7 @@ impl Seen {
 }
 
 impl hclient_core::unversioned::Hooks for Seen {
-    fn on(&self, event: hclient_core::unversioned::Event<'_>) {
+    fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
         if let hclient_core::unversioned::Event::Connected(c) = event {
             let mut g = self.0.lock().unwrap();
             if g.is_none() {

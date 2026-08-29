@@ -1,5 +1,12 @@
-//! What a transport that owns no connection can tell a [`Hooks`], which is
-//! one event out of four.
+//! What a transport that owns no connection can tell a [`Hooks`].
+//!
+//! **Two of the five events, and the pair is the point.** [`Head`] is what
+//! this backend can say about an exchange, and
+//! [`Progress`](hclient_core::unversioned::Progress) is what it can say
+//! about the octets — the second arrived later and did not disturb the
+//! argument below, because that argument is about *connections* and octets
+//! are not one. What is still absent is absent for the same reason it
+//! always was.
 //!
 //! The vocabulary is `hclient_core::unversioned::{Hooks, Event}` and it is
 //! **unchanged** here. `hclient-native` derived the event set from a
@@ -9,7 +16,7 @@
 //! all**: the browser makes them, keeps them, reuses them and closes them,
 //! and tells a page nothing about any of it.
 //!
-//! # Three of the four variants have no emitter here
+//! # Three of the five variants have no emitter here
 //!
 //! [`Connected`](hclient_core::unversioned::Connected),
 //! [`Reused`](hclient_core::unversioned::Reused) and

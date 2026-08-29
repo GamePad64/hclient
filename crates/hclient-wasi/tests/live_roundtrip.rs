@@ -1083,17 +1083,25 @@ fn a_successful_request_reports_one_head_and_no_connection_event_at_all() {
 }
 
 /// The head is reported **when the head arrives**, not when the caller
-/// gets round to reading the body — and reading the body adds nothing.
+/// gets round to reading the body — and reading the body adds no second
+/// one.
 ///
 /// Both halves are needed. A backend that emitted its `Head` at the end of
-/// the body would still print one event in the transcript above; a backend
+/// the body would still print one head in the transcript above; a backend
 /// that emitted a second one per body would still print one before the
 /// body. The guest reports its tally twice, either side of draining the
 /// response, so the two are separable here and only here.
+///
+/// **It counts heads rather than events, and that is a change this
+/// backend's second event forced.** The assertion used to read
+/// `EVENTS=1` on both sides, which said the same thing while `Head` was
+/// the only event there was; octets are reported now, so a body that
+/// moves is a line, and a tally of *all* events would fail for the right
+/// reason and stop discriminating for the wrong one.
 #[test]
-fn the_head_is_reported_at_the_head_and_the_body_adds_nothing() {
+fn the_head_is_reported_at_the_head_and_the_body_adds_no_second_one() {
     let Some(wasmtime) =
-        require_wasmtime("the_head_is_reported_at_the_head_and_the_body_adds_nothing")
+        require_wasmtime("the_head_is_reported_at_the_head_and_the_body_adds_no_second_one")
     else {
         return;
     };
@@ -1107,14 +1115,36 @@ fn the_head_is_reported_at_the_head_and_the_body_adds_nothing() {
         .split_once("AFTER_BODY")
         .expect("the guest prints its tally either side of draining the body");
     assert!(
-        before.contains("EVENTS=1"),
+        before.contains("HEADS=1"),
         "the head must already have been reported before a single body \
          frame was read\n--- stdout ---\n{stdout}"
     );
     assert!(
-        after.contains("EVENTS=1"),
-        "and draining the body must add nothing — this backend has no \
-         body-level event\n--- stdout ---\n{stdout}"
+        after.contains("HEADS=1"),
+        "and draining the body must add no second head — a caller counting \
+         heads against requests would otherwise read one exchange as \
+         two\n--- stdout ---\n{stdout}"
+    );
+    assert!(
+        before.contains("PROGRESS=0"),
+        "and nothing had moved yet: the head is not a body octet\
+         \n--- stdout ---\n{stdout}"
+    );
+    assert!(
+        after.contains(&format!("RECEIVED={}", HOOKS_RESPONSE_BODY.len())),
+        "draining the body reports exactly the octets this fixture wrote — \
+         the count is the server's, not the client's guess\n--- stdout ---\n{stdout}"
+    );
+    // Measured on this host rather than assumed, and it is the honest
+    // answer rather than a gap: `wasi:http@0.3.0`'s incoming body reports
+    // no size hint, so there is no stated length for this transport to
+    // pass on — even where the server sent `Content-Length`, as this
+    // fixture does. `Progress::expected` is an `Option` for exactly this,
+    // and an absent denominator is the under-claiming direction.
+    assert!(
+        after.contains("expected=None"),
+        "the host states no length, so neither does the event\
+         \n--- stdout ---\n{stdout}"
     );
 }
 

@@ -114,7 +114,7 @@ impl TcpConnect for Counting {
 #[derive(Clone, Copy, Default)]
 struct Watching;
 impl Hooks for Watching {
-    fn on(&self, _event: Event<'_>) {}
+    fn on(&self, _event: &Event<'_>) {}
 }
 
 /// An HTTP/1.1 server that answers and keeps the connection.

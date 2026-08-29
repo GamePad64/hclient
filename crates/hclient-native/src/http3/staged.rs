@@ -222,7 +222,7 @@ where
     for<'a> D::Ipv4<'a>: Send, // send-bound-exception: amendment-C15
     for<'a> D::Ipv6<'a>: Send, // send-bound-exception: amendment-C15
     for<'a> D::Svcb<'a>: Send, // send-bound-exception: amendment-C15
-    H: Hooks + Clone,
+    H: Hooks + Clone + Unpin,
 {
     type Staged = Staged<R, H>;
 
@@ -270,7 +270,7 @@ where
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
     T: QuicTlsConnect,
     D: hclient_dns::Resolve,
-    H: Hooks + Clone,
+    H: Hooks + Clone + Unpin,
 {
     /// Every question that can be answered from the request alone, in the
     /// order `execute` has always asked them.
@@ -454,7 +454,7 @@ where
         // for.
         let id = ConnState::id(state.as_ref());
         match &made {
-            Some(m) => self.hooks.on(Event::Connected(
+            Some(m) => self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, http::Version::HTTP_3)
                     .remote(Some(m.remote))
                     .timing(
@@ -467,7 +467,7 @@ where
             )),
             None => self
                 .hooks
-                .on(Event::Reused(Reused::new(id, &uri, http::Version::HTTP_3))),
+                .on(&Event::Reused(Reused::new(id, &uri, http::Version::HTTP_3))),
         }
 
         Ok(Staged {
@@ -487,7 +487,10 @@ where
     pub(crate) async fn finish(
         &self,
         staged: Staged<R, H>,
-    ) -> Result<http::Response<crate::http3::H3Body<H>>, Error> {
+    ) -> Result<
+        http::Response<hclient_core::unversioned::Counting<crate::http3::H3Body<H>, H>>,
+        Error,
+    > {
         let Staged {
             mut send,
             zero_rtt,
@@ -515,8 +518,34 @@ where
         } else {
             None
         };
+        // One meter for the whole exchange, made before the first attempt.
+        //
+        // **The 0-RTT replay sends the body twice and this counts it
+        // twice**, which is the honest answer rather than a rounding of
+        // it: the first attempt's DATA really did go on the wire, in early
+        // data, and a total that went back to zero for the replay would
+        // stop being monotonic — the one property that lets a hook drop
+        // events and still be right. So `expected` can be exceeded exactly
+        // once, on a connection whose early data the server refused, and
+        // `Progress::expected` already says it is a claim rather than a
+        // promise.
+        let sent = hclient_core::unversioned::meter::<H>(body.size_hint()).map(std::sync::Arc::new);
         let head = http::Request::from_parts(parts.clone(), ());
-        let first = Self::one_attempt(&mut send, head, body, watch.clone()).await;
+        let first = {
+            // The upload is reported while it is happening, which on this
+            // stack means *while the head is being awaited*: h3 is genuinely
+            // full duplex, so the body and the response are polled beside
+            // each other and this future is the only thing running.
+            let attempt = std::pin::pin!(Self::one_attempt(
+                &mut send,
+                head,
+                body,
+                watch.clone(),
+                sent.clone()
+            ));
+            hclient_core::unversioned::Reporting::new(attempt, &self.hooks, id, &uri, sent.clone())
+                .await
+        };
 
         // The second of the three 0-RTT failure paths (`crate::http3::early` has
         // the table). The rejection is detected by AWAITING THE VERDICT,
@@ -527,7 +556,7 @@ where
         let e = match first {
             Ok(resp) => {
                 self.report_head(&resp, id, &uri, began);
-                return Ok(resp);
+                return Ok(self.counted(resp, id, &uri, sent));
             }
             Err(e) => e,
         };
@@ -551,10 +580,10 @@ where
             return Err(e);
         };
         let head = http::Request::from_parts(parts, ());
-        match Self::one_attempt(&mut send, head, body, watch.clone()).await {
+        match Self::one_attempt(&mut send, head, body, watch.clone(), sent.clone()).await {
             Ok(resp) => {
                 self.report_head(&resp, id, &uri, began);
-                Ok(resp)
+                Ok(self.counted(resp, id, &uri, sent))
             }
             Err(e) => {
                 self.report_failed(&watch, &e);

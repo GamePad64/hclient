@@ -67,7 +67,9 @@ pub use timer::BrowserClock;
 // only type the module has to export.
 pub use websocket::FetchWebSocket;
 
-use hclient_core::unversioned::{ConnectionId, Event, Head, Hooks, NoHooks, Transport};
+use hclient_core::unversioned::{
+    ConnectionId, Direction, Event, Head, Hooks, Meter, NoHooks, Transport,
+};
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody};
 use wasm_bindgen::JsCast;
 
@@ -87,11 +89,13 @@ use wasm_bindgen::JsCast;
 /// type*, because the hook is a type parameter rather than a
 /// `Box<dyn Hooks>`, which is the whole of the zero-cost claim.
 ///
-/// **This backend emits exactly one of the four events**, and which one is
-/// the finding rather than an omission: see `crate::hooks`'s module doc
-/// for why a transport that owns no connection has nothing to put in
-/// `Connected`, `Reused` or `Closed`, and which two fields of `Head`
-/// itself it cannot fill either.
+/// **This backend emits two of the five events, and the three it does not
+/// are the finding rather than an omission**: see `crate::hooks`'s module
+/// doc for why a transport that owns no connection has nothing to put in
+/// `Connected`, `Reused` or `Closed`, and which two fields of `Head` itself
+/// it cannot fill either. The second event is `Progress` — octets are a
+/// fact about a body rather than about a connection, so this backend can
+/// count them exactly as any other can.
 #[derive(Debug)]
 pub struct Fetch<H = NoHooks> {
     caps: Capabilities,
@@ -233,21 +237,28 @@ impl Drop for AbortOnDrop {
     }
 }
 
-impl<H: Hooks> Transport for Fetch<H> {
-    type Body = Body;
+impl<H: Hooks + Clone + Unpin> Transport for Fetch<H> {
+    /// The body, wrapped in the octet counter.
+    ///
+    /// `H: Clone + Unpin` is what that costs, and it is the bound
+    /// `hclient-native` has carried since hooks existed: a body that
+    /// reports events outlives `execute`, so it **holds** the hook rather
+    /// than borrowing it. `NoHooks` is a ZST and a real hook arrives
+    /// behind an `Arc` or an `Rc`, both of which are `Clone`.
+    type Body = hclient_core::unversioned::Counting<Body, H>;
     type Error = Error;
 
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
-    ) -> Result<http::Response<Body>, Error> {
+    ) -> Result<http::Response<Self::Body>, Error> {
         // The direct path, and it is unchanged: no channel and no spawn,
         // so a caller using this as a `Transport` pays nothing for a
         // property only `Client` asks for.
-        let (promise, guard, streamed, watched) = self.start(req)?;
+        let (promise, guard, streamed, watched) = self.start::<H>(req)?;
         let out = Self::finish(promise, guard, streamed).await;
         self.report(&out, watched.as_ref());
-        out
+        self.counted(out, watched.as_ref())
     }
 
     /// Identity, not the default wrapping: `Self::Error` is already
@@ -287,7 +298,7 @@ impl<H: Hooks> Transport for Fetch<H> {
 /// regression: a `fetch` exchange belongs to the realm that started it.
 impl<H> hclient_core::unversioned::SendTransport for Fetch<H>
 where
-    H: Hooks + Sync, // send-bound-exception: amendment-C16
+    H: Hooks + Clone + Unpin + Sync, // send-bound-exception: amendment-C16
 {
     // send-bound-exception: amendment-C16
     fn execute_send(
@@ -318,7 +329,7 @@ where
         // no spawn. The promise carries the cost, which is the shape this
         // workspace applies to `SendTransport` itself.
         Box::pin(async move {
-            let (promise, guard, streamed, watched) = self.start(req)?;
+            let (promise, guard, streamed, watched) = self.start::<H>(req)?;
             let (tx, rx) = futures_channel::oneshot::channel();
             wasm_bindgen_futures::spawn_local(async move {
                 // Racing the send against the receiver going away is what
@@ -338,7 +349,7 @@ where
                 ))
             });
             self.report(&out, watched.as_ref());
-            out
+            self.counted(out, watched.as_ref())
         })
     }
 }
@@ -417,7 +428,8 @@ pub mod testing {
         f: &crate::Fetch,
         req: http::Request<hclient_core::RequestBody>,
     ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::Error> {
-        crate::convert::to_web_request(req, &f.caps, &f.opts).map(|c| (c.request, c.abort))
+        crate::convert::to_web_request::<hclient_core::unversioned::NoHooks>(req, &f.caps, &f.opts)
+            .map(|c| (c.request, c.abort))
     }
 
     /// Same conversion, against a caller-supplied `Capabilities` rather than
@@ -436,8 +448,12 @@ pub mod testing {
         req: http::Request<hclient_core::RequestBody>,
         caps: &hclient_core::Capabilities,
     ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::Error> {
-        crate::convert::to_web_request(req, caps, &crate::opts::FetchOpts::default())
-            .map(|c| (c.request, c.abort))
+        crate::convert::to_web_request::<hclient_core::unversioned::NoHooks>(
+            req,
+            caps,
+            &crate::opts::FetchOpts::default(),
+        )
+        .map(|c| (c.request, c.abort))
     }
 
     /// The conversion with caller-chosen
@@ -455,7 +471,8 @@ pub mod testing {
         caps: &hclient_core::Capabilities,
         opts: &crate::opts::FetchOpts,
     ) -> Result<web_sys::Request, hclient_core::Error> {
-        crate::convert::to_web_request(req, caps, opts).map(|c| c.request)
+        crate::convert::to_web_request::<hclient_core::unversioned::NoHooks>(req, caps, opts)
+            .map(|c| c.request)
     }
 
     pub fn check_headers(
@@ -608,9 +625,16 @@ pub async fn deliver<T>(
     }
 }
 
-/// What `Head` needs, carried from before the request was consumed to
+/// What the events need, carried from before the request was consumed to
 /// after the response arrived. `None` where no hook is watching.
-type Watched = Option<(f64, http::Uri)>;
+///
+/// **One `Option`, not three.** The clock mark, the [`http::Uri`] clone
+/// and the request body's counter are all produced by the same
+/// `H::WATCHING` read, and keeping them in one `Option` is what stops a
+/// mutation from ungating one of them alone — the defect recorded on
+/// `start` below, which survived a whole suite when there were two gates
+/// here.
+type Watched = Option<(f64, http::Uri, Option<std::sync::Arc<Meter>>)>;
 
 impl<H: Hooks> Fetch<H> {
     /// The synchronous half of an exchange: everything up to the point
@@ -620,7 +644,7 @@ impl<H: Hooks> Fetch<H> {
     /// half on the thread that owns the JS realm and this half wherever
     /// the caller is. Nothing here awaits, so nothing here can be
     /// interrupted, and the split costs `execute` no behaviour.
-    fn start(
+    fn start<H2: Hooks>(
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<(js_sys::Promise, AbortOnDrop, bool, Watched), Error> {
@@ -643,13 +667,18 @@ impl<H: Hooks> Fetch<H> {
         // `web_sys::Request` afterwards — its `url()` is the browser's
         // serialisation, not the caller's `http::Uri`, and `Head::uri`
         // promises the URI "as the transport received it".
-        let watched = hooks::mark::<H>().map(|at| (at, req.uri().clone()));
+        let watched = hooks::mark::<H2>().map(|at| (at, req.uri().clone()));
 
         let convert::Converted {
             request,
             abort,
             streamed,
-        } = convert::to_web_request(req, &self.caps, &self.opts)?;
+            sent,
+        } = convert::to_web_request::<H2>(req, &self.caps, &self.opts)?;
+        // Joined into the one `Option` above rather than carried beside
+        // it: `sent` is `Some` on exactly the same condition, and two
+        // things that must agree are one more than is safe.
+        let watched = watched.map(|(at, uri)| (at, uri, sent));
         let guard = AbortOnDrop(abort);
 
         // `fetch` lives in both `Window` and `WorkerGlobalScope` — go
@@ -728,7 +757,7 @@ impl<H: Hooks> Fetch<H> {
             .body(body)
             .map_err(|e| Error::new(ErrorKind::Other, e))?;
 
-        // The one event this backend has. `if let Some(uri)` is the gate
+        // The head, and the upload's total. `if let Some(uri)` is the gate
         // rather than a second read of `H::WATCHING`: the `Some` above is
         // exactly `H::WATCHING`, and two places that have to agree is one
         // more than is safe.
@@ -758,21 +787,72 @@ impl<H: Hooks> Fetch<H> {
     fn report(
         &self,
         out: &Result<http::Response<Body>, Error>,
-        watched: Option<&(f64, http::Uri)>,
+        watched: Option<&(f64, http::Uri, Option<std::sync::Arc<Meter>>)>,
     ) {
         let Ok(out) = out else { return };
-        if let Some((began, uri)) = watched {
+        if let Some((began, uri, sent)) = watched {
+            // The upload, before the head, because that is the order it
+            // happened in: `duplex: "half"` means the browser has the
+            // whole request body before it gives us a response.
+            //
+            // **One event, and it is the browser's fence rather than this
+            // crate's shortcut.** Once the `Request` is constructed the
+            // body belongs to the browser, and a `ReadableStream` is
+            // pulled from *its* task — this crate is on the caller's task
+            // only before the `fetch` call and after the promise settles.
+            // So the incremental half of an upload is not observable here
+            // without putting the hook inside the stream's pull callback,
+            // which is the one thing `Fetch`'s `start`/`finish` split
+            // exists to avoid. The count is exact; its granularity is
+            // what the browser leaves.
+            if let Some(m) = sent {
+                m.report(
+                    &self.hooks,
+                    ConnectionId::UNWATCHED,
+                    uri,
+                    Direction::Sending,
+                );
+            }
             // `version` is left unset, which is the whole of what
             // `Capabilities::version_reported == false` means here: the
             // browser does not tell us which protocol it used, and
             // answering `HTTP/1.1` would be a wrong answer where the
             // absence is a missing one.
-            self.hooks.on(Event::Head(Head::new(
+            self.hooks.on(&Event::Head(Head::new(
                 ConnectionId::UNWATCHED,
                 uri,
                 out.status(),
                 hooks::since(Some(*began)),
             )));
         }
+    }
+}
+
+impl<H: Hooks + Clone + Unpin> Fetch<H> {
+    /// Put the response body under the octet counter.
+    ///
+    /// After [`Fetch::report`] rather than instead of it: `report` needs
+    /// the body untouched to read its status, and the two answer different
+    /// questions about the same response.
+    fn counted(
+        &self,
+        out: Result<http::Response<Body>, Error>,
+        watched: Option<&(f64, http::Uri, Option<std::sync::Arc<Meter>>)>,
+    ) -> Result<http::Response<hclient_core::unversioned::Counting<Body, H>>, Error> {
+        let (uri, sent) = match watched {
+            Some((_, uri, sent)) => (Some(uri), sent.clone()),
+            None => (None, None),
+        };
+        out.map(|r| {
+            r.map(|b| {
+                hclient_core::unversioned::Counting::new(
+                    b,
+                    self.hooks.clone(),
+                    ConnectionId::UNWATCHED,
+                    uri,
+                    sent,
+                )
+            })
+        })
     }
 }

@@ -604,10 +604,19 @@ where
         };
         let refused = match arm.connect_boxed(req).await {
             Ok(staged) => {
-                return staged
-                    .exchange_boxed()
-                    .await
-                    .map(|r| self.bound_body(r.map(EstablishedBody::from_h3), every));
+                return staged.exchange_boxed().await.map(|r| {
+                    // `Counted::already`: the QUIC arm's body was
+                    // wrapped by `crate::http3::H3` before it was
+                    // erased, so counting it again here would report
+                    // every octet twice. The `Head` for this request
+                    // comes from `H3` for the same reason — the two
+                    // events are emitted where the exchange happened.
+                    self.bound_body(
+                        r.map(EstablishedBody::from_h3),
+                        every,
+                        crate::Counted::already(hclient_core::unversioned::ConnectionId::UNWATCHED),
+                    )
+                });
             }
             Err(refused) => refused,
         };
