@@ -1965,6 +1965,63 @@ case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
 
+### Authentication became a seam, and the measurement says that is where the demand is
+
+Digest was a hard-coded `401` branch in `Client::run`. It is now
+`hclient::auth`: [`Auth`] is the configuration and [`AuthFlow`] is one
+exchange's state, made fresh per hop. `Digest` is the one scheme this
+crate ships, written on the seam like any other.
+
+**The reason is a measurement rather than a taste for abstraction.** NTLM
+and Negotiate need a platform's own security provider, and those crates
+have real users — `libgssapi` at **565,785** downloads a month, `sspi` at
+**561,893**, `cross-krb5` at **496,315**. What does not exist on
+crates.io is any HTTP glue over them: there is no `reqwest-ntlm` and no
+`hyper-ntlm`, because those clients have nowhere to put one. So this
+crate does not grow a Kerberos dependency; it grows the two traits
+somebody else needs to write one in their own crate.
+
+**Two traits, for the reason the redirect and retry policies have one
+each and a client-owned counter.** The scheme is shared by every clone of
+the client; the *flow* is one hop's state, because a scheme with three
+legs has to remember which leg it is on and a shared value cannot. It is
+httpx's generator-based `Auth` — `response = yield request` — written as
+a state machine, which is what Rust has instead.
+
+**Three rules the client enforces and a flow cannot override**: a body
+that cannot be replayed ends it (`retry_kind()`, asked before every extra
+leg exactly as for `425` and a retry); credentials do not cross an origin
+(digest's rule, now every scheme's); and `MAX_LEGS` bounds a flow that
+never says `Done`, which would otherwise be an infinite exchange against
+a server that keeps challenging.
+
+**The first shape had two flows and the tests killed it in one run.** One
+was made before the send and one after the response, so the second had
+never seen the request — and digest hashes the method and the
+request-target into `A2`, so it had nothing to hash. One flow per hop,
+made before the first send, and it sits *outside* the retry loop: a retry
+re-sends the same request, and a flow counting legs must not count an
+attempt that failed for the network's reasons.
+
+**`on_response` is given only the response, deliberately**, and the
+consequence is that a flow stashes what it needs in `authorize` — which
+the trait's contract makes safe, since `authorize` runs before every
+send. `DigestFlow` does exactly that. The alternative, passing the method
+and target to both methods, duplicates what the flow has already seen.
+
+**And `cargo fmt` deletes a marker rather than moving it, which is new.**
+This file records that `cargo fmt` moves a trailing comment off a line it
+reflows, so a `send-bound-exception` marker on a `pub trait X: Send {`
+line is lost. The obvious repair — a trait-level `where Self: Send,` —
+is **worse**: `cargo fmt` removes that comment outright. Reproduced in
+isolation before it was believed.
+
+What that forced is better than what it broke: **neither trait declares
+an auto trait at all.** `Send` is demanded where the facade *stores* the
+value — `BoxedFlow` and `SharedAuth`, one line each — which is this
+workspace's own rule for a seam, arrived at from a formatter rather than
+from the argument.
+
 ### An axum app is testable in process, and the seam that allows it is the one reqwest has not got
 
 `hclient_tower::app::AppTransport` makes a `tower::Service` a

@@ -144,6 +144,7 @@
 //! than by a `#[cfg]`.
 #![forbid(unsafe_code)]
 
+pub mod auth;
 #[cfg(feature = "cache")]
 pub mod cache;
 mod cached;

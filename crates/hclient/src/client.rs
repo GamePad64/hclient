@@ -712,13 +712,9 @@ impl Client {
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<crate::body::ClientBody>, Error> {
-        self.execute_with(
-            req,
-            #[cfg(feature = "digest-auth")]
-            None,
-        )
-        .await
-        .map(|(resp, _final_uri)| resp)
+        self.execute_with(req, None)
+            .await
+            .map(|(resp, _final_uri)| resp)
     }
 
     /// [`Self::execute`] with the one thing that cannot travel in the
@@ -731,7 +727,7 @@ impl Client {
     pub(crate) async fn execute_with(
         &self,
         mut req: http::Request<RequestBody>,
-        #[cfg(feature = "digest-auth")] digest: Option<(String, String)>,
+        auth: Option<crate::auth::SharedAuth>,
     ) -> Result<(http::Response<crate::body::ClientBody>, http::Uri), Error> {
         // Content negotiation happens ONCE, here, before the first hop —
         // and the `Accept-Encoding` it may set travels to every subsequent
@@ -766,26 +762,8 @@ impl Client {
             // one, so it spends what is left of `total` rather than a
             // fresh copy of it — a bound a server can double by answering
             // `401` is not a bound.
-            None => {
-                self.run(
-                    req,
-                    #[cfg(feature = "digest-auth")]
-                    digest,
-                )
-                .await?
-            }
-            Some(t) => {
-                within(
-                    self.run(
-                        req,
-                        #[cfg(feature = "digest-auth")]
-                        digest,
-                    ),
-                    &*self.inner.timer,
-                    t,
-                )
-                .await?
-            }
+            None => self.run(req, auth).await?,
+            Some(t) => within(self.run(req, auth), &*self.inner.timer, t).await?,
         };
         let (resp, final_uri) = resp;
         let (mut parts, body) = resp.into_parts();
@@ -835,7 +813,7 @@ impl Client {
     async fn run(
         &self,
         req: http::Request<RequestBody>,
-        #[cfg(feature = "digest-auth")] mut digest: Option<(String, String)>,
+        mut auth: Option<crate::auth::SharedAuth>,
     ) -> Result<
         (
             http::Response<Cached<hclient_core::unversioned::erased::BoxBody>>,
@@ -1059,6 +1037,27 @@ impl Client {
                     // the request was initiated, not the time that the
                     // response was received"*. The gap between the two is
                     // `response_delay`, which is added to a received `Age`.
+                    // **One flow per hop, made here**, before the first
+                    // send — so a scheme that can authenticate
+                    // pre-emptively (Basic, or Digest with a nonce it
+                    // already has) never needs a challenge at all, and so
+                    // the flow that sees the response is the one that
+                    // authorized the request. Two flows was the first
+                    // shape and it was wrong in a way the tests caught
+                    // immediately: the second had never seen the request,
+                    // so a scheme that hashes the method — which digest
+                    // does — had nothing to hash.
+                    //
+                    // It sits **outside** the retry loop deliberately: a
+                    // retry re-sends the same request, and a flow
+                    // counting legs must not count an attempt that
+                    // failed for the network's reasons.
+                    let mut flow = auth.as_ref().map(|a| {
+                        let mut f = a.start();
+                        f.authorize(&hp.method, &hp.uri, &mut hp.headers);
+                        f
+                    });
+
                     let mut requested_at = self.cache_now();
 
                     // **The retry loop, and it wraps the send alone.** A
@@ -1265,38 +1264,42 @@ impl Client {
                     // the nonce expired between the challenge and the answer, which
                     // a second round would only race again. Either way the `401` is
                     // the server's answer and it goes to the caller.
-                    #[cfg(feature = "digest-auth")]
-                    if resp.status() == http::StatusCode::UNAUTHORIZED
-                        && let Some((user, password)) = &digest
-                        && let Some(again) = replay_for_too_early(replay.as_ref())
-                        && let Ok(challenge) = crate::digest::best_challenge(
-                            resp.headers().get_all("www-authenticate").iter(),
-                        )
-                    {
-                        // The request-target, not the URL: §3.4.2 hashes what goes
-                        // on the request line, and a server recomputing from a full
-                        // URL would get a different `A2` and answer `401` again.
-                        let target = hp
-                            .uri
-                            .path_and_query()
-                            .map_or_else(|| hp.uri.path().to_owned(), |pq| pq.to_string());
-                        let value = crate::digest::answer(
-                            &challenge,
-                            user,
-                            password,
-                            &hp.method,
-                            &target,
-                            &crate::digest::cnonce(),
-                        );
-                        if let Ok(mut v) = http::HeaderValue::from_str(&value) {
-                            // Marked for the reason `basic_auth`'s is: the value
-                            // is derived from a password, and a `Debug` of the
-                            // request is the only place it would show.
-                            v.set_sensitive(true);
-                            let mut retry = hp.clone();
-                            retry.headers.insert(http::header::AUTHORIZATION, v);
+                    // **Authentication, as many legs as the scheme needs.**
+                    // This was a hard-coded `401` branch computing a
+                    // digest header; it is a loop over `AuthFlow` now, so
+                    // NTLM and Negotiate are writable in somebody else's
+                    // crate over `sspi` or `libgssapi` — which is where
+                    // the demand measurably is, and where no HTTP client
+                    // in this ecosystem currently lets them go.
+                    //
+                    // Bounded twice over: `MAX_LEGS` here, and the body's
+                    // own `retry_kind()`, which is asked before every
+                    // extra leg exactly as it is for `425` and a retry.
+                    if let Some(flow) = flow.as_mut() {
+                        let mut legs: u8 = 1;
+                        loop {
+                            match flow.on_response(resp.status(), resp.headers()) {
+                                crate::auth::AuthStep::Done => break,
+                                crate::auth::AuthStep::Again => {}
+                            }
+                            legs += 1;
+                            if legs > crate::auth::MAX_LEGS {
+                                return Err(Error::new(
+                                    ErrorKind::Status,
+                                    crate::auth::TooManyLegs,
+                                ));
+                            }
+                            let Some(again) = replay_for_too_early(replay.as_ref()) else {
+                                // A body that cannot be sent twice leaves
+                                // the challenge standing as the answer,
+                                // which is the server's own and is more
+                                // use than an error of ours.
+                                break;
+                            };
+                            let mut next = hp.clone();
+                            flow.authorize(&next.method, &next.uri, &mut next.headers);
                             requested_at = self.cache_now();
-                            resp = self.send_hop(&retry, again).await?;
+                            resp = self.send_hop(&next, again).await?;
                         }
                     }
 
@@ -1348,9 +1351,12 @@ impl Client {
                     // secret to a server they never vouched for — the
                     // judgement `AllowEarlyData` had to be taken off for,
                     // and a stronger case, since this one is the password.
-                    #[cfg(feature = "digest-auth")]
+                    // **Credentials do not cross an origin**, which was
+                    // digest's rule and is now every scheme's: a
+                    // password-derived secret must not reach a server the
+                    // caller never named.
                     if f.strip_sensitive {
-                        digest = None;
+                        auth = None;
                     }
                     // Asked here rather than inside `decide`, and only
                     // about a hop `decide` approved — see

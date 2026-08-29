@@ -39,8 +39,11 @@ pub struct RequestBuilder<'a> {
     /// transport, including one this workspace did not write. It travels
     /// as an argument to `Client::execute` instead, which is also what
     /// keeps the cross-origin rule below in one place.
-    #[cfg(feature = "digest-auth")]
-    digest: Option<(String, String)>,
+    /// The scheme, where the caller named one. Not in
+    /// `http::Extensions`, because extensions reach
+    /// `Transport::execute` and credentials there would be readable by
+    /// any transport, including one this workspace did not write.
+    auth: Option<crate::auth::SharedAuth>,
     /// The first build error. Surfaces in `send()`: a silently swallowed
     /// invalid header is exactly the silent no-op `ClientBuilder::build` was
     /// built against (see `check_supported` in config.rs). The shape this
@@ -59,8 +62,7 @@ impl<'a> RequestBuilder<'a> {
             body: RequestBody::Empty,
             extensions: http::Extensions::new(),
             multipart: None,
-            #[cfg(feature = "digest-auth")]
-            digest: None,
+            auth: None,
             error: None,
         }
     }
@@ -328,8 +330,28 @@ impl<'a> RequestBuilder<'a> {
     /// challenge should not link.
     #[cfg(feature = "digest-auth")]
     #[must_use]
-    pub fn digest_auth(mut self, user: &str, password: &str) -> Self {
-        self.digest = Some((user.to_owned(), password.to_owned()));
+    pub fn digest_auth(self, user: &str, password: &str) -> Self {
+        self.auth(crate::auth::Digest::new(user, password))
+    }
+
+    /// Authenticate this request with a scheme of your own.
+    ///
+    /// [`digest_auth`](Self::digest_auth) is this with the one scheme
+    /// this crate implements. What the seam is *for* is the ones it does
+    /// not: NTLM and Negotiate need a platform security provider, and the
+    /// crates that have one — `sspi`, `libgssapi`, `cross-krb5` — are at
+    /// half a million downloads a month each with no HTTP client in this
+    /// ecosystem able to take them.
+    ///
+    /// See [`crate::auth`] for the three rules a flow cannot override:
+    /// a body that cannot be replayed ends it, credentials do not cross
+    /// an origin, and the legs are bounded.
+    #[must_use]
+    pub fn auth<A>(mut self, scheme: A) -> Self
+    where
+        A: crate::auth::Auth + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
+        self.auth = Some(std::sync::Arc::new(scheme));
         self
     }
 
@@ -490,14 +512,7 @@ impl<'a> RequestBuilder<'a> {
         *req.uri_mut() = uri.clone();
         *req.headers_mut() = headers;
         *req.extensions_mut() = self.extensions;
-        let (resp, final_uri) = self
-            .client
-            .execute_with(
-                req,
-                #[cfg(feature = "digest-auth")]
-                self.digest,
-            )
-            .await?;
+        let (resp, final_uri) = self.client.execute_with(req, self.auth).await?;
         // **The URL the answer came from, not the one that was asked
         // for.** They differ exactly when a redirect was followed, and
         // then it is the last hop that is worth reporting — the caller
