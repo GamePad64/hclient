@@ -433,3 +433,75 @@ fn verbose_over_plaintext_prints_no_ssl_line() {
         ran.stdout
     );
 }
+
+/// A server that answers one canned **byte** response, for the two tests
+/// whose subject is bytes rather than text.
+fn serve_raw(response: Vec<u8>) -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&asked);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let response = response.clone();
+            let counter = Arc::clone(&counter);
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() || line.is_empty() {
+                        return;
+                    }
+                    if line.trim_end().is_empty() {
+                        break;
+                    }
+                }
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.write_all(&response);
+                let _ = stream.flush();
+            });
+        }
+    });
+    (addr, asked)
+}
+
+/// **`--follow` decides, and without it the `3xx` is the answer.**
+///
+/// It did neither: `Client` falls back to `Limit::default()` — ten hops —
+/// when nobody sets a policy, so `hc` followed redirects whether or not
+/// `-L` was given, and the flag did nothing at all. Measured against the
+/// built binary before it was believed, with and without the flag: the
+/// same second URL's body, the same exit code.
+///
+/// The negative half is `Forbid` rather than `Limit::new(0)`, which is
+/// the distinction `RedirectVerdict` exists to keep: the first hands the
+/// `3xx` back as an answer, the second is an error, and a caller who did
+/// not ask to follow has not asked to fail.
+#[test]
+fn a_redirect_is_followed_only_when_it_was_asked_for() {
+    let hop =
+        b"HTTP/1.1 302 Found\r\nlocation: /moved\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            .to_vec();
+
+    let (addr, asked) = serve_raw(hop.clone());
+    let plain = hc(&[&url(addr, "/e")]);
+    assert_eq!(plain.code, 0, "a 3xx is an answer, not a failure");
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one request, because nothing was followed"
+    );
+
+    let (addr, asked) = serve_raw(hop);
+    let followed = hc(&["-L", &url(addr, "/e")]);
+    // The server answers every request with the same hop, so following
+    // runs into `--max-redirects` — which is the point: the flag changed
+    // what happened, and it is the *count* that says so rather than a
+    // body that could have come from either arm.
+    assert_ne!(followed.code, 0, "{}", followed.stderr);
+    assert!(
+        asked.load(std::sync::atomic::Ordering::SeqCst) > 1,
+        "`-L` did not follow anything"
+    );
+}

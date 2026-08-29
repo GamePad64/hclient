@@ -341,6 +341,20 @@ pub struct Cli {
     #[arg(long)]
     pub no_color: bool,
 
+    /// Read the URL as a stream of Server-Sent Events and print them
+    /// until the stream ends or the caller interrupts.
+    ///
+    /// **One connection.** When the stream ends, so does `hc`. Add
+    /// `--sse-reconnect` for the browser's `EventSource` behaviour; see
+    /// `mode::select` for why that is the opt-in rather than the default.
+    #[arg(long)]
+    pub sse: bool,
+
+    /// Reopen an `--sse` stream after it ends, with jittered exponential
+    /// backoff and `Last-Event-ID`.
+    #[arg(long)]
+    pub sse_reconnect: bool,
+
     /// Print a timing report after the response, curl's `--write-out`.
     ///
     /// `%{time_total}`, `%{http_code}` and eleven more; `\n` and `%%`

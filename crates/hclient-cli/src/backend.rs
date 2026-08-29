@@ -27,6 +27,15 @@ pub struct Config {
     /// `between_bytes` and deliberately no `total`, since the total is the
     /// one bound that needs a clock to race a sleep against a silent body.
     pub total: Option<std::time::Duration>,
+    /// A redirect policy for the **client**, which only `--sse` sets.
+    ///
+    /// A request sets its own with `RequestBuilder::redirect`, and that is
+    /// where `--follow` goes for an ordinary request. `SseBuilder` has no
+    /// such setter — it carries a URL, headers and its own options and
+    /// nothing else — so the only place the policy can be stated for a
+    /// stream is on the client that opens it. One flag, two places, each
+    /// being the only place its mode can express it.
+    pub redirect: Option<Redirects>,
     /// Installed only when `--write-out` asked for timings.
     ///
     /// `None` is not "a recorder that discards": with no hooks the
@@ -49,6 +58,29 @@ pub const COMPILED_IN: &[BackendName] = &[
 /// build carrying only the platform stack still has a default.
 pub fn default_backend() -> Option<BackendName> {
     COMPILED_IN.first().copied()
+}
+
+/// What `--follow` resolves to, as a value both modes can carry.
+///
+/// **Both arms are stated, and `None` is not one of them.** `Client`
+/// falls back to `Limit::default()` — ten hops — when nobody sets a
+/// policy, so a `hc` that set one only for `--follow` followed redirects
+/// either way and the flag did nothing at all. Measured against the built
+/// binary before it was believed: with and without `-L`, a `302` was
+/// followed and the second URL's body printed, identically. That is the
+/// silently-ignored-setting defect from the other side — the setting was
+/// silently *already on* — and curl, httpie and `xh` all default to not
+/// following, so the flag was also the only thing telling a reader which
+/// of the two `hc` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Redirects {
+    /// The `3xx` is the answer. `Forbid` rather than `Limit::new(0)`:
+    /// the first is a response and the second is an error, and a caller
+    /// who did not ask to follow has not asked for a failure either —
+    /// which is the distinction `RedirectVerdict` exists to keep.
+    Forbid,
+    /// `--follow`, bounded by `--max-redirects`.
+    AtMost(u8),
 }
 
 #[derive(Debug)]
@@ -192,16 +224,6 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
             } else {
                 hclient_tls_native_tls::NativeTls::new()
             };
-            // The recorder is installed here, at a **concrete** type,
-            // and not by a shared generic helper — which was written
-            // first and could not compile. `Native<R, T, D, H, P>` carries
-            // its bounds on the declaration, so a helper generic over `R`,
-            // `T` and `D` has to restate `TcpConnect + Timer + TlsConnect
-            // + Resolve` and everything behind them. This workspace's own
-            // rule, one layer up from where it usually appears: at a
-            // concrete type the bounds are inferred, in a generic one they
-            // must be proven. The duplication is four lines against a
-            // where-clause nobody would maintain.
             let t = hclient_native::Native::new(hclient_rt_tokio::Tokio, tls, resolver(cfg));
             match cfg.timings.clone() {
                 Some(rec) => finish(which, cfg, t.hooks(rec)),
@@ -246,6 +268,11 @@ where
     let mut b = hclient::Client::builder(transport);
     if let Some(total) = cfg.total {
         b = b.total_timeout(hclient_rt_tokio::Tokio, total);
+    }
+    match cfg.redirect {
+        Some(Redirects::Forbid) => b = b.redirect(hclient::redirect::Forbid),
+        Some(Redirects::AtMost(n)) => b = b.redirect(hclient::redirect::Limit::new(n)),
+        None => {}
     }
     b.build().map_err(|e| Refused::Unavailable {
         backend,

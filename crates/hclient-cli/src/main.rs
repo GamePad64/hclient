@@ -8,8 +8,10 @@
 
 mod args;
 mod backend;
+mod mode;
 mod output;
 mod run;
+mod sse;
 mod timings;
 
 use clap::Parser;

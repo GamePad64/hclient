@@ -1,6 +1,7 @@
 //! Turning a command line into one request, and one response into output.
 
 use crate::args::{BackendName, Cli, HttpVersion, Item, Print};
+use crate::mode::{self, Mode};
 use crate::{backend, output};
 use std::io::Write;
 
@@ -199,6 +200,17 @@ fn parse_resolve(spec: &str) -> Result<(String, std::net::IpAddr), Fail> {
     Ok((host.to_owned(), addr))
 }
 
+/// `--follow` and `--max-redirects`, resolved to a policy — in one place,
+/// because the two modes install it in two different ones and a rule
+/// written twice is a rule that drifts.
+fn redirects(cli: &Cli) -> backend::Redirects {
+    if cli.follow {
+        backend::Redirects::AtMost(cli.max_redirects)
+    } else {
+        backend::Redirects::Forbid
+    }
+}
+
 /// What to print, from three flags that all mean it.
 fn print_selection(cli: &Cli, is_tty: bool) -> Result<Print, Fail> {
     if let Some(s) = &cli.print {
@@ -243,8 +255,15 @@ fn print_selection(cli: &Cli, is_tty: bool) -> Result<Print, Fail> {
 }
 
 pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Result<(), Fail> {
+    // The mode first, because it decides which flags can be honoured at
+    // all.
+    let mode = mode::select(&cli).map_err(Fail::Usage)?;
     let parsed = split_positionals(&cli)?;
-    let print = print_selection(&cli, is_tty)?;
+    // Before anything is built or connected: a combination this tool
+    // cannot honour is a mistake in what the caller wrote, and finding it
+    // after a socket has been opened would report it as a failure of the
+    // request.
+    mode::refuse_unusable(mode, &cli, &parsed.items).map_err(Fail::Usage)?;
 
     let mut resolve = Vec::new();
     for spec in &cli.resolve {
@@ -258,18 +277,46 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     // handshake, and the handshake is only knowable through the same
     // events. A build with neither flag still carries `NoHooks` and reads
     // no clocks.
-    let watching = cli.write_out.is_some() || cli.verbose;
+    //
+    // **Never under `--sse`**, and that is not an omission. The handshake
+    // line is printed above a *response head*, and a stream has none to
+    // print it above — it owns the response it was opened with and
+    // exposes neither its status nor its headers. `-w`, the recorder's
+    // other reader, is refused there. So there is nothing left to read a
+    // clock for.
+    let watching = !mode.is_streaming() && (cli.write_out.is_some() || cli.verbose);
     let recorder = watching.then(crate::timings::Recorder::new);
-    let client = backend::build(
-        cli.backend,
-        &backend::Config {
-            insecure: cli.insecure,
-            resolve,
-            total: cli.timeout.map(std::time::Duration::from_secs_f64),
-            timings: recorder.clone(),
-        },
-    )
-    .map_err(Fail::Backend)?;
+    let config = backend::Config {
+        insecure: cli.insecure,
+        resolve,
+        total: cli.timeout.map(std::time::Duration::from_secs_f64),
+        // Only a stream needs the policy on the client; a request sets its
+        // own below. See `backend::Config::redirect`.
+        redirect: mode.is_streaming().then(|| redirects(&cli)),
+        timings: recorder.clone(),
+    };
+
+    // The streaming mode takes over here. It is opened from the header
+    // set the request path computes, and reaches none of the body work
+    // below — `refuse_unusable` has already said so, by name, for every
+    // flag that would have led there.
+    match mode {
+        Mode::Request => {}
+        Mode::Sse { reconnect } => {
+            let client = backend::build(cli.backend, &config).map_err(Fail::Backend)?;
+            let mut out = anstream::AutoStream::new(std::io::stdout().lock(), colour);
+            return crate::sse::run(
+                &client,
+                &parsed.url,
+                &effective_headers(&header_items(&parsed.items)),
+                cli.bearer.as_deref(),
+                reconnect,
+                mode::verbosity(&cli, is_tty),
+                &mut out,
+            )
+            .await;
+        }
+    }
 
     // Split the items by kind before choosing a method: whether there is a
     // body is what decides GET against POST.
@@ -288,6 +335,7 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
         }
     }
 
+    let client = backend::build(cli.backend, &config).map_err(Fail::Backend)?;
     let has_body =
         !data.is_empty() || !raw_json.is_empty() || !files.is_empty() || cli.raw_body.is_some();
     let method = parsed.method.unwrap_or(if has_body {
@@ -296,6 +344,7 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
         http::Method::GET
     });
 
+    let print = print_selection(&cli, is_tty)?;
     let mut req = client.request(method.clone(), &parsed.url);
     for (k, v) in &query {
         req = req.query([(k, v)]);
@@ -386,8 +435,12 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
             HttpVersion::Http3 => http::Version::HTTP_3,
         });
     }
-    if cli.follow {
-        req = req.redirect(hclient::redirect::Limit::new(cli.max_redirects));
+    // Stated in both directions rather than only for `--follow`: see
+    // `backend::Redirects` for the measurement that says why the absent
+    // arm was a flag that did nothing.
+    match redirects(&cli) {
+        backend::Redirects::Forbid => req = req.redirect(hclient::redirect::Forbid),
+        backend::Redirects::AtMost(n) => req = req.redirect(hclient::redirect::Limit::new(n)),
     }
 
     let mut out = anstream::AutoStream::new(std::io::stdout().lock(), colour);
@@ -496,6 +549,19 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     Ok(())
 }
 
+/// The header items alone, which is the whole of what either streaming
+/// seam can carry — every other kind was refused by name before this is
+/// reached.
+fn header_items(items: &[Item]) -> Vec<(String, String)> {
+    items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Header { name, value } => Some((name.clone(), value.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 fn has_data(data: &[(String, String)], raw: &[(String, String)]) -> bool {
     !data.is_empty() || !raw.is_empty()
 }
@@ -568,18 +634,19 @@ fn effective_headers(items: &[(String, String)]) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
+    fn norm(raw: &str) -> String {
+        normalise_url(raw)
+    }
+
     #[test]
     fn a_bare_host_gets_http_and_a_leading_colon_gets_localhost() {
-        assert_eq!(normalise_url("example.com/x"), "http://example.com/x");
-        assert_eq!(normalise_url(":8080/x"), "http://localhost:8080/x");
-        assert_eq!(normalise_url(":/x"), "http://localhost/x");
+        assert_eq!(norm("example.com/x"), "http://example.com/x");
+        assert_eq!(norm(":8080/x"), "http://localhost:8080/x");
+        assert_eq!(norm(":/x"), "http://localhost/x");
         // An explicit scheme is left exactly as written — including
         // `https`, which is why nothing here upgrades.
-        assert_eq!(normalise_url("https://example.com"), "https://example.com");
-        assert_eq!(
-            normalise_url("http://localhost:1/x"),
-            "http://localhost:1/x"
-        );
+        assert_eq!(norm("https://example.com"), "https://example.com");
+        assert_eq!(norm("http://localhost:1/x"), "http://localhost:1/x");
     }
 
     #[test]
