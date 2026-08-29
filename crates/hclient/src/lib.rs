@@ -167,7 +167,6 @@ mod decompress;
 pub mod digest;
 pub mod erased;
 mod limit;
-mod predicate;
 /// Mock transport and controllable timer, re-exported from `hclient-mock`.
 ///
 /// The doubles live in their own crate because a `Transport` implementation
@@ -222,11 +221,11 @@ pub use client::without_a_default_transport::DefaultTransportFeature;
 /// every signature in the crate, and a door in front of them would be one
 /// every caller walks through immediately.
 pub mod error {
+    pub use crate::client::RedirectRefused;
     pub use crate::config::InvalidBaseUrl;
     pub use crate::deadline::TotalTimeoutElapsed;
     pub use crate::decompress::DecodeFailed;
     pub use crate::limit::ResponseTooLarge;
-    pub use crate::predicate::RedirectRefused;
     pub use crate::request::{ColonInUsername, ContentTypeIsNotOursToKeep};
     #[cfg(feature = "charset")]
     pub use crate::response::CharsetError;
@@ -479,10 +478,12 @@ pub use hclient_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RequireVer
 /// `hclient-proto`, which is the same courtesy `redirect` gets one line
 /// away and which ACT's report found missing for half a dozen names.
 pub mod retry {
-    pub use crate::predicate::{ProposedRetry, RetryPredicate, RetryVerdict};
+    pub use crate::config::SharedRetryPolicy;
     pub use hclient_proto::backoff::Backoff;
     pub use hclient_proto::retry::{
-        Outcome, RetryPolicy, RetryStatuses, Stop, Verdict, retry_after_seconds,
+        Never, Outcome, ProposedRetry, RetryAll, RetryAnd, RetryFromFn, RetryPolicy,
+        RetryPolicyExt, RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard, Stop, Verdict,
+        retry_after_seconds,
     };
 }
 // The observability seam, re-exported for the same reason

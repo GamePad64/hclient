@@ -1,7 +1,7 @@
 //! Whether to send a request again, and how long to wait first.
 //!
-//! **Sans-io and clockless**, like every module here: [`RetryPolicy`] is a
-//! rule, [`RetryPolicy::decide`] is a pure function of the rule and one
+//! **Sans-io and clockless**, like every module here: a policy is a
+//! rule, [`Standard::decide`] is a pure function of the rule and one
 //! outcome, and nothing in this file reads a clock, draws entropy or
 //! touches a socket. `hclient::Client` supplies the jitter, the sleep and
 //! the remaining budget.
@@ -23,7 +23,7 @@
 //! `RetryKind::Impossible` and no policy can override it.
 //!
 //! So the safe retry is expressible without asking the caller to promise
-//! anything, and it is the default: [`RetryPolicy::default`] retries what
+//! anything, and it is the default: [`Standard::default`] retries what
 //! provably never arrived and nothing else.
 //!
 //! # A status retry is a different promise, and it is opt-in
@@ -38,7 +38,7 @@
 //!
 //! # `Retry-After` that cannot be honoured stops the retry
 //!
-//! A server asking for a longer wait than [`RetryPolicy::max_retry_after`]
+//! A server asking for a longer wait than [`Standard::max_retry_after`]
 //! is refused, **not rounded down**. Waiting less than a server asked is
 //! the one behaviour the header exists to prevent, so a client that caps
 //! the value and retries anyway has turned a limit into a violation. The
@@ -104,7 +104,7 @@ pub enum Outcome {
     /// the connect timed out.
     ///
     /// This is the outcome a middleware above a transport cannot
-    /// distinguish, and it is the only one [`RetryPolicy::default`]
+    /// distinguish, and it is the only one [`Standard::default`]
     /// retries.
     Unsent,
     /// A response came back.
@@ -160,7 +160,7 @@ pub enum Stop {
     /// [`Backoff::max_attempts`] is spent.
     OutOfAttempts,
     /// The server asked for a longer wait than
-    /// [`RetryPolicy::max_retry_after`], or sent one this module cannot
+    /// [`Standard::max_retry_after`], or sent one this module cannot
     /// read. Refused rather than rounded down.
     RetryAfterTooLong,
 }
@@ -174,20 +174,22 @@ pub enum Verdict {
     Stop(Stop),
 }
 
-/// When to send a request again.
+/// The configuring policy: when to send a request again, and how long
+/// to wait.
 ///
-/// See the module doc for why the default is what it is.
+/// See the module doc for why the default is what it is, and
+/// [`RetryPolicy`] for how this composes with guards.
 ///
 /// **Deliberately not `#[non_exhaustive]`**, copying `TcpOpts` and
 /// `H2Opts`: its whole use is
-/// `RetryPolicy { statuses: .., ..Default::default() }`, and the
+/// `Standard { statuses: .., ..Default::default() }`, and the
 /// attribute forbids exactly that expression — functional update included
 /// — from outside this crate, leaving per-field setters that exist only
 /// to work around it. The cost is that adding a field is a major version;
 /// that is the trade this workspace makes wherever the caller is the one
 /// building the value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RetryPolicy {
+pub struct Standard {
     /// How long to wait, and how many times.
     pub backoff: Backoff,
     /// Retry a failure whose request provably never reached a server.
@@ -205,7 +207,7 @@ pub struct RetryPolicy {
     pub max_retry_after: Duration,
 }
 
-impl Default for RetryPolicy {
+impl Default for Standard {
     fn default() -> Self {
         Self {
             backoff: Backoff {
@@ -220,7 +222,7 @@ impl Default for RetryPolicy {
     }
 }
 
-impl RetryPolicy {
+impl Standard {
     /// The default, plus [`RetryStatuses::Transient`].
     #[must_use]
     pub fn transient() -> Self {
@@ -317,4 +319,278 @@ pub fn retry_after_seconds(value: &str) -> Option<Duration> {
         return None;
     }
     v.parse::<u64>().ok().map(Duration::from_secs)
+}
+
+/// What a policy says about one attempt's outcome.
+///
+/// Two arms and the meet is *the more conservative*: any `Stop` wins, and
+/// two `After`s take the **longer** wait. Combining short-circuits at
+/// `Stop`, which is the top of this lattice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryVerdict {
+    /// Send it again, no sooner than this.
+    ///
+    /// A **floor**, which is what makes `max` the right meet: a guard
+    /// that permits a retry without an opinion about timing returns
+    /// `After(Duration::ZERO)` and never shortens anybody's backoff.
+    After(Duration),
+    /// Keep what this attempt produced.
+    Stop,
+}
+
+impl RetryVerdict {
+    /// Permit, with no opinion about how long to wait.
+    #[must_use]
+    pub const fn permit() -> Self {
+        Self::After(Duration::ZERO)
+    }
+
+    /// The more conservative of two verdicts.
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Stop, _) | (_, Self::Stop) => Self::Stop,
+            (Self::After(a), Self::After(b)) => Self::After(if a > b { a } else { b }),
+        }
+    }
+}
+
+/// One attempt's outcome, offered to the policy.
+#[derive(Debug, Clone, Copy)]
+pub struct ProposedRetry<'a> {
+    method: &'a http::Method,
+    uri: &'a http::Uri,
+    attempt: u32,
+    outcome: Outcome,
+    body_replayable: bool,
+    jitter: f64,
+}
+
+impl<'a> ProposedRetry<'a> {
+    /// Builds one — public for the same reason
+    /// `redirect::ProposedRedirect::new` is: policies are written by
+    /// callers, and a seam whose implementations live outside this
+    /// workspace needs a way to drive them in a unit test.
+    #[must_use]
+    pub fn new(
+        method: &'a http::Method,
+        uri: &'a http::Uri,
+        attempt: u32,
+        outcome: Outcome,
+        body_replayable: bool,
+        jitter: f64,
+    ) -> Self {
+        Self {
+            method,
+            uri,
+            attempt,
+            outcome,
+            body_replayable,
+            jitter,
+        }
+    }
+
+    /// The method that would be sent again.
+    ///
+    /// **The field the guards exist for.** `RequestBody::retry_kind()`
+    /// answers *can this be sent again*; nothing in this workspace
+    /// answers *may this be repeated*, because that is a judgement about
+    /// what a request does at a server. See [`SafeMethodsOnly`].
+    #[must_use]
+    pub fn method(&self) -> &'a http::Method {
+        self.method
+    }
+    /// Where it would go.
+    #[must_use]
+    pub fn uri(&self) -> &'a http::Uri {
+        self.uri
+    }
+    /// Attempts already made, so the first proposal reports `1`.
+    #[must_use]
+    pub fn attempt(&self) -> u32 {
+        self.attempt
+    }
+    /// What the attempt produced.
+    #[must_use]
+    pub fn outcome(&self) -> Outcome {
+        self.outcome
+    }
+    /// Whether the body can be sent a second time —
+    /// `RequestBody::retry_kind().may_replay()`, known before the first
+    /// attempt rather than discovered after it.
+    #[must_use]
+    pub fn body_replayable(&self) -> bool {
+        self.body_replayable
+    }
+    /// A fraction in `0..=1`, drawn by the client.
+    ///
+    /// **On the proposal rather than read by the policy**, for
+    /// [`Backoff::delay`]'s own reason: a function that reads live
+    /// entropy can only be tested statistically. The client owns the
+    /// entropy, exactly as it owns the hop count one module over.
+    #[must_use]
+    pub fn jitter(&self) -> f64 {
+        self.jitter
+    }
+}
+
+/// Whether to send a request again, and how long to wait.
+///
+/// **`and` narrows, and here that is worth a sentence it did not need for
+/// redirects.** Following a redirect is what happens unless a policy says
+/// otherwise, so composing restrictions there is the whole vocabulary.
+/// Retrying happens only because a policy permitted it, so `and` narrows
+/// from **one configured permission** — [`Standard`] — rather than from
+/// *yes*. Composing two permitters gives their intersection, not their
+/// union: to retry *more*, widen the one [`Standard`]; to retry *less*,
+/// `and` a guard onto it.
+pub trait RetryPolicy: core::fmt::Debug {
+    /// Whether to send it again.
+    ///
+    /// Defaulted to [`RetryVerdict::Stop`], because a retry is opt-in:
+    /// a policy that says nothing must not open sockets nobody asked for.
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        let _ = attempt;
+        RetryVerdict::Stop
+    }
+}
+
+/// [`and`](RetryPolicyExt::and), kept off the trait so the trait stays
+/// object-safe.
+pub trait RetryPolicyExt: RetryPolicy + Sized {
+    /// Both policies must agree; the more conservative answer wins.
+    #[must_use]
+    fn and<B: RetryPolicy>(self, other: B) -> RetryAnd<Self, B> {
+        RetryAnd(self, other)
+    }
+}
+
+impl<T: RetryPolicy + Sized> RetryPolicyExt for T {}
+
+/// Two policies, both of which must permit.
+#[derive(Debug, Clone, Copy)]
+pub struct RetryAnd<A, B>(pub A, pub B);
+
+impl<A: RetryPolicy, B: RetryPolicy> RetryPolicy for RetryAnd<A, B> {
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        let first = self.0.retry(attempt);
+        if first == RetryVerdict::Stop {
+            return first;
+        }
+        first.and(self.1.retry(attempt))
+    }
+}
+
+impl<T: RetryPolicy + ?Sized> RetryPolicy for &T {
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        (**self).retry(attempt)
+    }
+}
+
+impl<T: RetryPolicy + ?Sized> RetryPolicy for std::boxed::Box<T> {
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        (**self).retry(attempt)
+    }
+}
+
+impl<T: RetryPolicy + ?Sized> RetryPolicy for std::sync::Arc<T> {
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        (**self).retry(attempt)
+    }
+}
+
+impl RetryPolicy for Standard {
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        match self.decide(
+            attempt.outcome(),
+            attempt.attempt(),
+            attempt.jitter(),
+            attempt.body_replayable(),
+        ) {
+            Verdict::After(d) => RetryVerdict::After(d),
+            Verdict::Stop(_) => RetryVerdict::Stop,
+        }
+    }
+}
+
+/// Never. The default a client has when nobody configured one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Never;
+
+impl RetryPolicy for Never {}
+
+/// Permit only methods RFC 9110 §9.2.2 calls idempotent.
+///
+/// **This is the whole of the method-safety question, and it is a guard
+/// rather than a rule of the client's.** `POST` with a buffered body is
+/// trivially replayable and is exactly the request that must not be
+/// repeated; only its author knows whether a duplicate is acceptable, so
+/// the client hands them a named type instead of guessing.
+///
+/// `GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS` and `TRACE`. `QUERY` is
+/// included: it is safe and idempotent by its own specification, which is
+/// the whole reason this workspace does not group it with `POST`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SafeMethodsOnly;
+
+impl RetryPolicy for SafeMethodsOnly {
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        let m = attempt.method();
+        if matches!(
+            *m,
+            http::Method::GET
+                | http::Method::HEAD
+                | http::Method::PUT
+                | http::Method::DELETE
+                | http::Method::OPTIONS
+                | http::Method::TRACE
+        ) || m.as_str() == "QUERY"
+        {
+            RetryVerdict::permit()
+        } else {
+            RetryVerdict::Stop
+        }
+    }
+}
+
+/// A closure as a policy.
+#[derive(Clone, Copy)]
+pub struct RetryFromFn<F>(pub F);
+
+impl<F> core::fmt::Debug for RetryFromFn<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RetryFromFn(..)")
+    }
+}
+
+impl<F> RetryPolicy for RetryFromFn<F>
+where
+    F: Fn(&ProposedRetry<'_>) -> RetryVerdict,
+{
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        (self.0)(attempt)
+    }
+}
+
+/// Every policy in a list must permit, for a chain built at run time.
+///
+/// An empty list **stops**, which is the opposite of
+/// `redirect::All`'s empty case and is the same asymmetry stated once
+/// more: a meet over nothing is the identity, and the identity for a
+/// default-no operation is *no*.
+#[derive(Debug, Default)]
+pub struct RetryAll(pub Vec<Box<dyn RetryPolicy + Send + Sync>>); // send-bound-exception: amendment-C12
+
+impl RetryPolicy for RetryAll {
+    fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {
+        let mut verdict = RetryVerdict::Stop;
+        for (i, policy) in self.0.iter().enumerate() {
+            let this = policy.retry(attempt);
+            verdict = if i == 0 { this } else { verdict.and(this) };
+            if verdict == RetryVerdict::Stop {
+                return verdict;
+            }
+        }
+        verdict
+    }
 }

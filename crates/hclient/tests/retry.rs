@@ -7,8 +7,9 @@
 
 use std::time::Duration;
 
-use hclient::retry::RetryVerdict;
-use hclient::retry::{Backoff, RetryPolicy, RetryStatuses};
+use hclient::retry::{
+    Backoff, RetryPolicyExt as _, RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard,
+};
 use hclient_core::{Error, ErrorKind, RequestBody};
 use hclient_mock::MockTransport;
 
@@ -29,7 +30,7 @@ fn unavailable(retry_after: Option<&str>) -> http::Response<&'static str> {
     b.body("busy").unwrap()
 }
 
-fn client(mock: &MockTransport, policy: Option<RetryPolicy>) -> hclient::Client {
+fn client(mock: &MockTransport, policy: Option<Standard>) -> hclient::Client {
     let mut b = hclient::Client::builder(mock.clone());
     if let Some(p) = policy {
         b = b.retry(Immediate, p);
@@ -83,7 +84,7 @@ fn the_default_policy_does_not_repeat_a_status() {
     let m = MockTransport::new();
     m.push_response(unavailable(None));
     m.push_response(http::Response::new("second"));
-    let c = client(&m, Some(RetryPolicy::default()));
+    let c = client(&m, Some(Standard::default()));
 
     let got = get(&c).expect("a 503 is an answer, not a failure");
     assert_eq!(got.status(), 503);
@@ -100,10 +101,10 @@ fn a_transient_status_is_sent_again_within_the_same_operation() {
     m.push_response(http::Response::new("third"));
     let c = client(
         &m,
-        Some(RetryPolicy {
+        Some(Standard {
             backoff: brisk(),
             statuses: RetryStatuses::Transient,
-            ..RetryPolicy::default()
+            ..Standard::default()
         }),
     );
 
@@ -124,10 +125,10 @@ fn a_wedged_server_gets_the_attempts_and_no_more() {
     }
     let c = client(
         &m,
-        Some(RetryPolicy {
+        Some(Standard {
             backoff: brisk(),
             statuses: RetryStatuses::Transient,
-            ..RetryPolicy::default()
+            ..Standard::default()
         }),
     );
 
@@ -146,10 +147,10 @@ fn a_streaming_body_is_not_repeated_even_when_the_policy_says_retry() {
     m.push_response(http::Response::new("would have been the retry"));
     let c = client(
         &m,
-        Some(RetryPolicy {
+        Some(Standard {
             backoff: brisk(),
             statuses: RetryStatuses::Transient,
-            ..RetryPolicy::default()
+            ..Standard::default()
         }),
     );
 
@@ -178,9 +179,9 @@ fn an_unsent_failure_is_retried_by_the_default_policy() {
     m.push_response(http::Response::new("after the refusal"));
     let c = client(
         &m,
-        Some(RetryPolicy {
+        Some(Standard {
             backoff: brisk(),
-            ..RetryPolicy::default()
+            ..Standard::default()
         }),
     );
 
@@ -201,9 +202,9 @@ fn the_same_failure_without_the_mark_is_not_retried() {
     m.push_response(http::Response::new("never reached"));
     let c = client(
         &m,
-        Some(RetryPolicy {
+        Some(Standard {
             backoff: brisk(),
-            ..RetryPolicy::default()
+            ..Standard::default()
         }),
     );
 
@@ -222,10 +223,10 @@ fn an_http_date_retry_after_stops_the_retry() {
     m.push_response(http::Response::new("never reached"));
     let c = client(
         &m,
-        Some(RetryPolicy {
+        Some(Standard {
             backoff: brisk(),
             statuses: RetryStatuses::Transient,
-            ..RetryPolicy::default()
+            ..Standard::default()
         }),
     );
 
@@ -244,11 +245,11 @@ fn a_retry_after_beyond_the_ceiling_stops_and_one_inside_it_does_not() {
         m.push_response(http::Response::new("retried"));
         let c = client(
             &m,
-            Some(RetryPolicy {
+            Some(Standard {
                 backoff: brisk(),
                 statuses: RetryStatuses::Transient,
                 max_retry_after: Duration::from_secs(60),
-                ..RetryPolicy::default()
+                ..Standard::default()
             }),
         );
         let _ = get(&c).expect("an answer either way");
@@ -278,12 +279,11 @@ impl http_body::Body for OneShot {
     }
 }
 
-/// **The question this client refuses to answer for the caller.** A
-/// `POST` with a buffered body is trivially replayable and is exactly the
-/// request that must not be repeated — `RetryKind` says *can*, and
-/// nothing here says *may*. The predicate is where *may* lives.
+/// **The question this client refuses to answer for the caller**, and it
+/// is a named type now rather than something each caller writes.
+/// `SafeMethodsOnly` is a policy like any other, composed with `and`.
 #[test]
-fn a_predicate_can_refuse_a_retry_the_policy_approved() {
+fn a_guard_refuses_a_retry_the_configured_policy_approved() {
     for (method, expected_sends) in [("GET", 2), ("POST", 1)] {
         let m = MockTransport::new();
         m.push_response(unavailable(None));
@@ -291,19 +291,13 @@ fn a_predicate_can_refuse_a_retry_the_policy_approved() {
         let c = hclient::Client::builder(m.clone())
             .retry(
                 Immediate,
-                RetryPolicy {
+                Standard {
                     backoff: brisk(),
                     statuses: RetryStatuses::Transient,
-                    ..RetryPolicy::default()
-                },
-            )
-            .retry_predicate(|r| {
-                if r.method() == http::Method::GET {
-                    RetryVerdict::Retry
-                } else {
-                    RetryVerdict::Stop
+                    ..Standard::default()
                 }
-            })
+                .and(SafeMethodsOnly),
+            )
             .build()
             .expect("supported");
 
@@ -322,24 +316,28 @@ fn a_predicate_can_refuse_a_retry_the_policy_approved() {
     }
 }
 
-/// **It can only narrow.** A predicate saying `Retry` about a retry the
-/// policy already refused changes nothing — it is never asked, because it
-/// is consulted after the decision rather than as part of it.
+/// **`and` narrows and never widens.** A guard that permits cannot make
+/// a retry happen that the configured policy refused — and it is not even
+/// asked, because `Stop` is the top of this lattice and nothing raises it.
 #[test]
-fn a_predicate_cannot_widen_what_the_policy_refused() {
+fn a_guard_cannot_widen_what_the_configured_policy_refused() {
     let m = MockTransport::new();
     m.push_response(unavailable(None));
     m.push_response(http::Response::new("never reached"));
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen = asked.clone();
 
-    // The default policy does not retry statuses at all.
+    // The default configured policy does not retry statuses at all.
     let c = hclient::Client::builder(m.clone())
-        .retry(Immediate, RetryPolicy::default())
-        .retry_predicate(move |_| {
-            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            RetryVerdict::Retry
-        })
+        .retry(
+            Immediate,
+            Standard::default().and(hclient::retry::RetryFromFn(
+                move |_: &hclient::retry::ProposedRetry<'_>| {
+                    seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    RetryVerdict::permit()
+                },
+            )),
+        )
         .build()
         .expect("supported");
 
@@ -349,52 +347,59 @@ fn a_predicate_cannot_widen_what_the_policy_refused() {
     assert_eq!(
         asked.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "and the predicate was never even asked"
+        "and the guard was never even asked"
     );
 }
 
-/// What the predicate is handed is the policy's **output**, including the
-/// delay it settled on — `Retry-After` included — so a caller can refuse
-/// a wait that is too long for this particular target.
+/// **A guard can lengthen a wait and cannot shorten one**, which is the
+/// meet stated at the one place it is tempting to want otherwise.
+///
+/// The old predicate was handed the settled delay and could refuse a wait
+/// it found too long. That is gone deliberately: shortening a wait is the
+/// *less* careful answer, and `Standard::max_retry_after` already caps by
+/// **stopping** rather than by waiting less — which is the same principle
+/// and the whole reason `Retry-After` is not clamped.
 #[test]
-fn the_predicate_sees_the_decision_the_policy_reached() {
-    let m = MockTransport::new();
-    m.push_response(unavailable(Some("30")));
-    m.push_response(http::Response::new("retried"));
+fn a_guard_sees_the_request_and_can_only_lengthen_the_wait() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = seen.clone();
 
+    let m = MockTransport::new();
+    m.push_response(unavailable(None));
+    m.push_response(http::Response::new("retried"));
     let c = hclient::Client::builder(m.clone())
         .retry(
             Immediate,
-            RetryPolicy {
+            Standard {
                 backoff: brisk(),
                 statuses: RetryStatuses::Transient,
-                ..RetryPolicy::default()
-            },
+                ..Standard::default()
+            }
+            .and(hclient::retry::RetryFromFn(
+                move |r: &hclient::retry::ProposedRetry<'_>| {
+                    sink.lock().unwrap().push((
+                        r.attempt(),
+                        r.method().clone(),
+                        r.uri().path().to_owned(),
+                        r.body_replayable(),
+                    ));
+                    // Zero: no opinion about timing. `and` takes the
+                    // longer of the two, so this cannot shorten the
+                    // configured backoff.
+                    RetryVerdict::permit()
+                },
+            )),
         )
-        .retry_predicate(move |r| {
-            sink.lock().unwrap().push((
-                r.attempt(),
-                r.delay(),
-                r.uri().path().to_owned(),
-                r.method().clone(),
-            ));
-            RetryVerdict::Retry
-        })
         .build()
         .expect("supported");
 
     let _ = get(&c).expect("an answer");
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1, "asked once, about the one approved retry");
-    let (attempt, delay, path, method) = &seen[0];
+    let (attempt, method, path, replayable) = &seen[0];
     assert_eq!(*attempt, 1, "attempts already made");
-    assert_eq!(
-        *delay,
-        Duration::from_secs(30),
-        "the server's Retry-After, not the raw backoff"
-    );
-    assert_eq!(path, "/x");
     assert_eq!(method, http::Method::GET);
+    assert_eq!(path, "/x");
+    assert!(replayable, "an empty body can be sent again");
+    assert_eq!(m.requests().len(), 2, "and the retry happened");
 }

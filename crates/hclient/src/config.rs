@@ -15,6 +15,10 @@ use hclient_proto::redirect::RedirectPolicy;
 /// `Send + Sync` is amendment C12's shape: a value the caller owns
 /// reaching `Client` by erasure, bound where they hand it over and
 /// nowhere else.
+/// A retry policy as the client stores it — see [`SharedRedirectPolicy`]
+/// for why it is an `Arc<dyn ..>` and not a type parameter.
+pub type SharedRetryPolicy = std::sync::Arc<dyn hclient_proto::retry::RetryPolicy + Send + Sync>; // send-bound-exception: amendment-C12
+
 pub type SharedRedirectPolicy = std::sync::Arc<dyn RedirectPolicy + Send + Sync>; // send-bound-exception: amendment-C12
 
 #[derive(Debug, Clone, Default)]
@@ -55,18 +59,7 @@ pub struct Config {
     /// is a decision about their program's behaviour on a flaky network,
     /// so it is theirs to make — the same reason the QUIC race and the
     /// cookie jar are both off until asked for.
-    pub retry: Option<hclient_proto::retry::RetryPolicy>,
-    /// A caller's own say over each retry the policy approved, or `None`
-    /// for none.
-    ///
-    /// Asked **after** `RetryPolicy::decide` and only about a retry it
-    /// already approved — `redirect_predicate`'s order, and its reason:
-    /// what a predicate wants is the decision rather than its inputs.
-    ///
-    /// It exists because this workspace deliberately has no notion of
-    /// method safety, so *may this be repeated* is a question only the
-    /// caller can answer. Without one there is nowhere to answer it.
-    pub retry_predicate: Option<crate::predicate::RetryPredicate>,
+    pub retry: Option<SharedRetryPolicy>,
     /// `Option::None` here is "the caller never asked for a redirect
     /// policy" — distinct from `Some(Forbid)`, which is the
     /// caller explicitly asking not to follow and to be handed the 3xx.
@@ -372,10 +365,6 @@ pub fn check_supported(
         // because a backend can follow the chain itself and then a
         // caller's policy would be a setting silently ignored.
         retry: _,
-        // Not checked, for `retry`'s reason one field up: it is this
-        // client asking a closure a question, which every transport can
-        // honour by knowing nothing about it.
-        retry_predicate: _,
         // Checked, and by the same rule as `redirect` two fields up rather
         // than a new one: a predicate is a redirect decision, and a
         // backend that follows the chain internally never asks it.

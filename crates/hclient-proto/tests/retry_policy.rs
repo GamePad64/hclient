@@ -6,9 +6,7 @@
 use core::time::Duration;
 
 use hclient_proto::backoff::Backoff;
-use hclient_proto::retry::{
-    Outcome, RetryPolicy, RetryStatuses, Stop, Verdict, retry_after_seconds,
-};
+use hclient_proto::retry::{Outcome, RetryStatuses, Standard, Stop, Verdict, retry_after_seconds};
 
 fn status(code: u16) -> Outcome {
     Outcome::status(http::StatusCode::from_u16(code).unwrap(), None, false)
@@ -27,7 +25,7 @@ fn after(code: u16, secs: u64) -> Outcome {
 /// nothing at the server to duplicate.
 #[test]
 fn the_default_retries_what_never_arrived_and_no_status_at_all() {
-    let p = RetryPolicy::default();
+    let p = Standard::default();
     assert!(matches!(
         p.decide(Outcome::Unsent, 1, 0.0, true),
         Verdict::After(_)
@@ -46,7 +44,7 @@ fn the_default_retries_what_never_arrived_and_no_status_at_all() {
 /// the `425` replay is gated on one crate up.
 #[test]
 fn a_body_that_cannot_be_replayed_stops_every_kind_of_retry() {
-    let p = RetryPolicy::transient();
+    let p = Standard::transient();
     for outcome in [Outcome::Unsent, status(503), after(503, 1)] {
         assert_eq!(
             p.decide(outcome, 1, 0.0, false),
@@ -83,13 +81,13 @@ fn transient_excludes_the_statuses_a_repeat_cannot_fix() {
 /// before*, and nothing obliges a client to come back the instant it may.
 #[test]
 fn a_short_retry_after_does_not_shorten_the_backoff() {
-    let p = RetryPolicy {
+    let p = Standard {
         backoff: Backoff {
             base: Duration::from_secs(5),
             max: Duration::from_secs(30),
             max_attempts: Some(3),
         },
-        ..RetryPolicy::transient()
+        ..Standard::transient()
     };
     assert_eq!(
         p.decide(after(503, 1), 1, 0.0, true),
@@ -109,9 +107,9 @@ fn a_short_retry_after_does_not_shorten_the_backoff() {
 /// that caps and retries anyway has turned a limit into a violation.
 #[test]
 fn a_retry_after_beyond_the_ceiling_stops_rather_than_being_clamped() {
-    let p = RetryPolicy {
+    let p = Standard {
         max_retry_after: Duration::from_secs(60),
-        ..RetryPolicy::transient()
+        ..Standard::transient()
     };
     assert_eq!(
         p.decide(after(503, 61), 1, 0.0, true),
@@ -128,7 +126,7 @@ fn a_retry_after_beyond_the_ceiling_stops_rather_than_being_clamped() {
 /// absent, which lets the backoff decide.
 #[test]
 fn an_unreadable_retry_after_stops_where_an_absent_one_does_not() {
-    let p = RetryPolicy::transient();
+    let p = Standard::transient();
     let unreadable = Outcome::status(http::StatusCode::SERVICE_UNAVAILABLE, None, true);
     assert_eq!(
         p.decide(unreadable, 1, 0.0, true),
@@ -144,7 +142,7 @@ fn an_unreadable_retry_after_stops_where_an_absent_one_does_not() {
 /// rather than a silent `NotRetryable`.
 #[test]
 fn running_out_of_attempts_says_so() {
-    let p = RetryPolicy::default();
+    let p = Standard::default();
     assert!(matches!(
         p.decide(Outcome::Unsent, 2, 0.0, true),
         Verdict::After(_)
@@ -161,7 +159,7 @@ fn running_out_of_attempts_says_so() {
 /// ceiling holds.
 #[test]
 fn jitter_only_shortens() {
-    let p = RetryPolicy::default();
+    let p = Standard::default();
     let Verdict::After(none) = p.decide(Outcome::Unsent, 1, 0.0, true) else {
         panic!("retried")
     };

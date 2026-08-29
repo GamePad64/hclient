@@ -12,7 +12,7 @@ use hclient_core::Timeouts;
 use hclient_core::unversioned::Timer;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind, UnsupportedCapability};
 use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
-use hclient_proto::retry::{Outcome, RetryPolicy, Verdict, retry_after_seconds};
+use hclient_proto::retry::{Outcome, RetryPolicy, RetryVerdict, retry_after_seconds};
 use std::fmt::Debug;
 use std::sync::Arc;
 #[cfg(any(feature = "cookies", feature = "cache"))]
@@ -213,174 +213,16 @@ impl ClientBuilder {
         self.config.base_url = Some(uri);
         self
     }
-    /// A bound on the **whole operation**, and the clock that measures it
-    /// — in one call, because neither is any use without the other.
-    ///
-    /// The gap this closes:
-    /// `connect`/`first_byte`/`between_bytes` bound three phases, and a
-    /// response that starts promptly and then dribbles just under the
-    /// `between_bytes` threshold is bounded by none of them. This one
-    /// covers everything from the moment `execute` is entered — every
-    /// redirect hop included, which is precisely why it lives in `Client`
-    /// and cannot be a `tower` layer: a layer sees one hop, not the
-    /// operation, and would restart its clock on each one.
-    ///
-    /// What expiry produces is `ErrorKind::Timeout(Phase::Total)` with a
-    /// [`crate::error::TotalTimeoutElapsed`] source, and it stops the exchange
-    /// rather than only reporting on it — see [`crate::body::Deadline`], which
-    /// also states exactly what this does NOT cover (a body that goes
-    /// completely silent after the head; that is `between_bytes`).
-    ///
-    /// **The clock is an argument, not something this crate supplies.**
-    /// The reasoning is `SseBuilder::with_timer`'s, in full: an ambient
-    /// per-target clock inside `hclient` means a `#[cfg]` in the facade
-    /// crate, and a `std::thread`-backed sleep that compiles on
-    /// `wasm32-wasip2` while having no thread to hand out at runtime — a
-    /// capability that looks supported and silently is not. A caller on
-    /// `hclient-rt-tokio` or `hclient-rt-smol` already has one in scope,
-    /// and `hclient`'s `test-util` feature carries
-    /// [`crate::mock::TestTimer`].
-    ///
-    /// A client whose clock is already the target's default does not need
-    /// this call and can adjust the bound alone, on a built client:
-    /// [`Client::total_timeout`].
-    ///
-    /// `Tm2: Clone` because the clock travels into every response body
-    /// this client produces ([`crate::body::Deadline`] owns one); every clock in
-    /// this workspace is a handle or a ZST, and `tests/two_runtimes.rs`
-    /// already bounds runtimes by `Clone` for the same reason.
-    /// **This used to rebuild the whole builder field by field**, because
-    /// it changed `ClientBuilder<T, Tm>`'s second parameter and a
-    /// type-changing step has no `self` to mutate. It carried a comment
-    /// warning that a cookie jar dropped here would be "the exact class of
-    /// defect `base_url` and `timeouts` were each caught being once" — a
-    /// hazard that existed only because of the rebuild. Erasure put the
-    /// clock in a field, so this changes no type, assigns two fields, and
-    /// the hazard is not merely avoided but unrepresentable.
-    /// Send a hop again when it fails, per [`RetryPolicy`].
-    ///
-    /// **Off by default**, because even the default policy opens sockets
-    /// a caller did not ask for.
-    ///
-    /// ```no_run
-    /// # fn f(t: hclient::mock::MockTransport) -> Result<(), Box<dyn std::error::Error>> {
-    /// use hclient::retry::{RetryPolicy, RetryStatuses};
-    ///
-    /// // The safe retry: only failures that provably never reached a
-    /// // server. Needs no promise from you, because there is nothing at
-    /// // the server to duplicate.
-    /// let c = hclient::Client::builder(t.clone())
-    ///     .retry(hclient_rt_tokio::Tokio, RetryPolicy::default())
-    ///     .build()?;
-    ///
-    /// // And with statuses, which is a different promise — a repeat can
-    /// // duplicate work the server already did.
-    /// let c = hclient::Client::builder(t)
-    ///     .retry(hclient_rt_tokio::Tokio, RetryPolicy {
-    ///         statuses: RetryStatuses::Transient,
-    ///         ..RetryPolicy::default()
-    ///     })
-    ///     .build()?;
-    /// # let _ = c; Ok(()) }
-    /// ```
-    ///
-    /// **What makes this different from a middleware that wraps a
-    /// client** is that the two failures are different values here. A
-    /// wrapper above the transport sees one error for *the connection was
-    /// refused* and for *the server answered and the answer was
-    /// unusable*, so it must either repeat both or neither. This reads
-    /// `Error::is_unsent`, which a transport sets only where it knows —
-    /// and whether the body may be sent twice is
-    /// `RequestBody::retry_kind()`, known before the first attempt rather
-    /// than guessed after it.
-    ///
-    /// **The retries are inside the `total` budget**, exactly as the
-    /// `425` replay is: a bound a server can extend by failing is not a
-    /// bound. And they are **per hop**, for the reason that replay is —
-    /// a failure on hop 3 is about a different request than hop 1 sent.
-    ///
-    /// # Why this takes a clock
-    ///
-    /// A retry **sleeps**, and the default clock cannot always. Without
-    /// the `default-transport` feature [`crate::DefaultClock`] is
-    /// [`crate::NoClock`], whose `Sleep` is `std::future::Pending` — so a
-    /// `retry(policy)` taking no timer would compile there and **hang for
-    /// ever** at the first backoff. Found by running the suite under
-    /// `--no-default-features`, where four of these tests timed out at
-    /// 300 s rather than failing.
-    ///
-    /// A hang is worse than a panic and much worse than a refusal, so the
-    /// precondition is in the signature instead of in this paragraph:
-    /// there is no way to ask for a retry without supplying something
-    /// that can wait. It is the same shape as [`Self::total_timeout`],
-    /// which takes a timer for the same reason.
-    ///
-    /// **The client has one clock**, so these two setters supply the same
-    /// field and the later call wins. Pass the same timer to both — there
-    /// is no case for a client whose backoff and whose deadline disagree
-    /// about what a second is.
-    /// A say over each retry the policy approved.
-    ///
-    /// [`Self::retry`] answers *how many and how long*; this answers
-    /// *may this particular one happen* — no repeat of a `POST`, none to
-    /// another host, none after a wait longer than a second.
-    ///
-    /// ```no_run
-    /// # fn f(t: hclient::mock::MockTransport) -> Result<(), Box<dyn std::error::Error>> {
-    /// use hclient::retry::{RetryPolicy, RetryStatuses, RetryVerdict};
-    ///
-    /// let c = hclient::Client::builder(t)
-    ///     .retry(hclient_rt_tokio::Tokio, RetryPolicy {
-    ///         statuses: RetryStatuses::Transient,
-    ///         ..RetryPolicy::default()
-    ///     })
-    ///     // The question this client will not answer for you.
-    ///     .retry_predicate(|r| match *r.method() {
-    ///         http::Method::GET | http::Method::HEAD | http::Method::PUT => {
-    ///             RetryVerdict::Retry
-    ///         }
-    ///         _ => RetryVerdict::Stop,
-    ///     })
-    ///     .build()?;
-    /// # let _ = c; Ok(()) }
-    /// ```
-    ///
-    /// **Asked after the policy and only about a retry it approved**,
-    /// which is the redirect policy's order and its reason: a
-    /// predicate wants the decision, not the inputs. So a body that
-    /// cannot be replayed, a status the policy does not cover and an
-    /// exhausted attempt count never reach it — it is a narrowing and
-    /// never a widening.
-    ///
-    /// **Two verdicts, where the redirect predicate has three.** Refusing
-    /// a redirect needs an error arm because the alternative is handing
-    /// back a `3xx` that reads as success; declining a retry hands back
-    /// what the attempt produced, which is already the honest answer.
-    ///
-    /// Without [`Self::retry`] this is inert, and that is said here
-    /// rather than made impossible: a predicate is a rule about retries,
-    /// and a client with no retry policy has none to rule on.
     #[must_use]
-    pub fn retry_predicate<F>(mut self, f: F) -> Self
-    where
-        F: Fn(&crate::predicate::ProposedRetry<'_>) -> crate::predicate::RetryVerdict
-            + Send // send-bound-exception: amendment-C12
-            + Sync // send-bound-exception: amendment-C12
-            + 'static, // send-bound-exception: amendment-C12
-    {
-        self.config.retry_predicate = Some(crate::predicate::RetryPredicate::new(f));
-        self
-    }
-
-    #[must_use]
-    pub fn retry<Tm2>(mut self, timer: Tm2, policy: RetryPolicy) -> Self
+    pub fn retry<Tm2, P>(mut self, timer: Tm2, policy: P) -> Self
     where
         Tm2: Timer + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C12
         Tm2::Instant: Send,                         // send-bound-exception: amendment-C12
         Tm2::Sleep: Send + 'static,                 // send-bound-exception: amendment-C12
+        P: RetryPolicy + Send + Sync + 'static,     // send-bound-exception: amendment-C12
     {
         self.timer = Arc::new(timer);
-        self.config.retry = Some(policy);
+        self.config.retry = Some(Arc::new(policy));
         self
     }
 
@@ -1244,7 +1086,7 @@ impl Client {
                     // one per attempt* — the same trap `hclient-mock`'s
                     // body recording fell into and was fixed for.
                     let replayable = replay.as_ref().is_some_and(|b| b.retry_kind().may_replay());
-                    let policy = self.config().retry;
+                    let policy = self.config().retry.clone();
                     let mut sending = Some(sending);
                     let mut attempt: u32 = 0;
 
@@ -1269,68 +1111,44 @@ impl Client {
                         };
 
                         let outcome = self.send_hop(&hp, this).await;
-                        let Some(policy) = policy else {
+                        let Some(policy) = policy.as_ref() else {
                             // No policy: the first outcome is the answer,
                             // and an error propagates exactly as it did
                             // before this loop existed.
                             break outcome?;
                         };
 
-                        let (verdict, what) = match &outcome {
+                        let what = match &outcome {
                             Ok(r) => {
                                 let (after, unreadable) = read_retry_after(r.headers());
-                                let what = Outcome::status(r.status(), after, unreadable);
-                                (
-                                    policy.decide(what, attempt, crate::sse::jitter(), replayable),
-                                    what,
-                                )
+                                Outcome::status(r.status(), after, unreadable)
                             }
                             // **`is_unsent`, not the `ErrorKind`.** The
                             // category cannot answer this: a response head
                             // over `H1Opts::max_headers` is
                             // `ErrorKind::Connect` too, and it happens
                             // after the request went out. Only the
-                            // transport knows, and a transport that says
-                            // nothing costs a retry rather than a
-                            // duplicate.
-                            Err(e) if e.is_unsent() => (
-                                policy.decide(
-                                    Outcome::Unsent,
-                                    attempt,
-                                    crate::sse::jitter(),
-                                    replayable,
-                                ),
-                                Outcome::Unsent,
-                            ),
+                            // transport knows, and one that says nothing
+                            // costs a retry rather than a duplicate.
+                            Err(e) if e.is_unsent() => Outcome::Unsent,
                             Err(_) => break outcome?,
                         };
 
+                        // One ask where there used to be a policy call and
+                        // then a predicate call. A guard is a policy now,
+                        // so `Standard::transient().and(SafeMethodsOnly)`
+                        // is one value and answers once.
+                        let verdict = policy.retry(&hclient_proto::retry::ProposedRetry::new(
+                            &hp.method,
+                            &hp.uri,
+                            attempt,
+                            what,
+                            replayable,
+                            crate::sse::jitter(),
+                        ));
+
                         match verdict {
-                            Verdict::After(delay) => {
-                                // **The caller's own say, and it can only
-                                // narrow.** Asked here rather than inside
-                                // the policy because what a predicate
-                                // wants is the decision the policy
-                                // reached — `redirect_predicate`'s order
-                                // one screen up, for its reason. So a
-                                // body that cannot be replayed, a status
-                                // the policy does not cover and an
-                                // exhausted attempt count never reach it.
-                                //
-                                // It is where *method safety* lives, and
-                                // the only place it can: `RetryKind`
-                                // answers "can this be sent again" and
-                                // nothing in this workspace answers "may
-                                // this be repeated", because that is a
-                                // judgement about what a request does at
-                                // a server and only its author has it.
-                                if let Some(pred) = &self.config().retry_predicate
-                                    && pred.ask(&crate::predicate::ProposedRetry::new(
-                                        &hp.method, &hp.uri, attempt, what, delay,
-                                    )) == crate::predicate::RetryVerdict::Stop
-                                {
-                                    break outcome?;
-                                }
+                            RetryVerdict::After(delay) => {
                                 drop(outcome);
                                 self.inner.timer.sleep_boxed(delay).await;
                                 // RFC 9111 §4.2.3 again: the stored age
@@ -1340,7 +1158,7 @@ impl Client {
                                 // the response to the first try.
                                 requested_at = self.cache_now();
                             }
-                            Verdict::Stop(_) => break outcome?,
+                            RetryVerdict::Stop => break outcome?,
                         }
                     };
 
@@ -1511,7 +1329,7 @@ impl Client {
                 RedirectAction::Refused { why, to } => {
                     return Err(Error::new(
                         ErrorKind::Redirect,
-                        crate::predicate::RedirectRefused {
+                        RedirectRefused {
                             to,
                             status: resp.status(),
                             why,
@@ -2234,6 +2052,31 @@ pub(crate) mod without_a_default_transport {
             unreachable!("`Client::new` has an unsatisfiable bound; no call to it compiles")
         }
     }
+}
+
+/// A redirect policy refused a hop.
+///
+/// Raised beside the unresolvable-`Location` error, because both are
+/// `decide`'s answers
+/// turned into errors at the same place. It replaced `TooMany(u8)`, which
+/// could say only one of the things a policy can now refuse for.
+#[derive(Debug, thiserror::Error)]
+#[error("the redirect policy refused a {status} to {to} after {after_hops} hops: {why}")]
+#[non_exhaustive]
+pub struct RedirectRefused {
+    pub to: http::Uri,
+    pub status: http::StatusCode,
+    /// The policy's own words — `"redirect limit reached"`,
+    /// `"redirect leaves the origin"`, or whatever a caller's own policy
+    /// returned.
+    pub why: &'static str,
+    /// How many hops had already been taken.
+    ///
+    /// The client's fact rather than the policy's, which is why it is
+    /// here and not in the verdict: a `&'static str` cannot carry a
+    /// number without allocating, and *how far did this get* is true of
+    /// every refusal rather than only a limit.
+    pub after_hops: u8,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -1965,6 +1965,59 @@ case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
 
+### Retry took the same shape, and the asymmetry between the two is the finding
+
+`RetryPolicy` is a trait with one method, `Standard` is the configuring
+struct that implements it, and the retry predicate is gone the way the
+redirect one went. `SafeMethodsOnly`, `Never`, `RetryFromFn`, `RetryAll`
+and `.and(..)` are the rest.
+
+**But the two operations are not symmetrical, and forcing the symmetry
+without saying so would have been wrong.** Following a redirect is what
+happens *unless* a policy objects, so composing there is a vocabulary of
+restrictions and the trait's default is `Follow`. Retrying happens *only
+because* a policy permitted it, so the trait's default is `Stop` and
+`and` narrows from **one configured permission** rather than from *yes*.
+
+The consequence is a rule that needed writing down: **composing two
+permitters gives their intersection, not their union.**
+`Standard::default().and(OnStatus(..))` does not mean "unsent errors *or*
+these statuses" — it means neither, because each refuses what the other
+allows. To retry *more*, widen the one `Standard`; to retry *less*, `and`
+a guard onto it. The same `and` reads as pure restriction one module over
+because there is nothing to widen there.
+
+`RetryAll`'s empty case is the same asymmetry once more: an empty
+`redirect::All` permits everything and an empty `RetryAll` stops, because
+the identity of a meet is the operation's default and the two defaults
+are opposite.
+
+**`SafeMethodsOnly` is what the whole method-safety argument was owed.**
+This workspace states in four places that `RetryKind` answers *can this be
+sent again* and nothing answers *may this be repeated* — and until there
+was a guard seam, that principled refusal had nowhere for a caller to act
+on it. It is now a named type: `GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`,
+`TRACE` and `QUERY`, the last included because it is safe and idempotent
+by its own specification, which is the same reason this workspace does
+not group it with `POST` for redirects.
+
+**One capability was deliberately lost.** The old predicate was handed the
+settled delay and could refuse a wait it found too long. The verdict now
+*is* the delay, and `and` takes the **longer** of two — so a guard can
+lengthen a wait and cannot shorten one. That is not an oversight: waiting
+less is the less careful answer, and `Standard::max_retry_after` already
+caps by **stopping** rather than by waiting less, which is the whole
+reason `Retry-After` is refused rather than clamped.
+
+**`jitter` moved onto the proposal**, so the policy stays a pure function
+of its inputs — the client owns the entropy exactly as it owns the hop
+count one module over, and for `Backoff::delay`'s own stated reason.
+
+`crates/hclient/src/predicate.rs` is deleted. It had held two verdicts,
+two proposals and two boxed closures; what survived is one error type,
+which now sits beside the other redirect errors in `client.rs`. A module
+named after a concept that no longer exists is worse than no module.
+
 ### The redirect policy is a trait now, and the predicate stopped being a second concept
 
 `RedirectPolicy` was a `Copy` enum in `hclient-proto` and
