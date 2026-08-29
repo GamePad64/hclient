@@ -48,8 +48,12 @@
 //!   `Client` — including the `Capabilities::owns_cookie_jar` check that
 //!   must switch it off against a transport owning its own jar, such as
 //!   `hclient-fetch` — is [`Client`](crate::Client)'s, not this module's.
-//! - **It does not persist.** [`CookieJar::iter`] hands out everything
-//!   held; where that goes is the caller's decision.
+//! - **It does not choose a serialisation.** [`CookieJar::records`] hands
+//!   out a [`CookieRecord`] per persistent cookie and
+//!   [`CookieJar::restore`] takes one back with its creation and
+//!   last-access times intact; the *format* — and the file, the database
+//!   row, the `localStorage` key — is the caller's, and `persist.rs`
+//!   carries the measurement behind that.
 //! - **It has no background sweep.** Expired cookies are filtered on
 //!   retrieval and dropped on the next [`store`](CookieJar::store); a jar
 //!   nobody touches keeps its expired entries until it is touched. Same
@@ -60,8 +64,10 @@ mod date;
 mod jar;
 mod matching;
 mod parse;
+mod persist;
 mod suffix;
 
 pub use jar::{Cookie, CookieJar, Limits, Rejected};
 pub use parse::{ParseError, SameSite, SetCookie};
+pub use persist::CookieRecord;
 pub use suffix::{BuiltinList, NoList, PublicSuffixList};

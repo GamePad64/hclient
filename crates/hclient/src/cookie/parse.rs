@@ -257,7 +257,7 @@ fn trim(mut s: &[u8]) -> &[u8] {
 /// 6265bis forbids CTLs in the name and value, **excluding HTAB** — a tab
 /// inside a value is legal (the surrounding ones have already been
 /// trimmed), a `\n` is not.
-fn is_ctl(b: u8) -> bool {
+pub(super) fn is_ctl(b: u8) -> bool {
     (b <= 0x08) || (0x0A..=0x1F).contains(&b) || b == 0x7F
 }
 

@@ -29,7 +29,7 @@ use super::suffix::{BuiltinList, PublicSuffixList};
 /// also removes the arithmetic hazard from the other end — a server sending
 /// `Max-Age=9223372036854775807` cannot overflow anything, because the sum
 /// is never computed.
-const MAX_EXPIRY: Duration = Duration::from_secs(400 * 24 * 60 * 60);
+pub(super) const MAX_EXPIRY: Duration = Duration::from_secs(400 * 24 * 60 * 60);
 
 /// How large the jar is allowed to get.
 ///
@@ -61,30 +61,31 @@ impl Default for Limits {
 
 /// One stored cookie.
 ///
-/// Fields are private and read through accessors: the invariants that make
-/// `domain` and `path` safe to match against — lowercased, no leading dot,
-/// path always absolute — are established once in
-/// [`CookieJar::store`] and would be a caller's problem if the fields were
-/// public.
+/// Fields are `pub(super)` — read through accessors from anywhere else:
+/// the invariants that make `domain` and `path` safe to match against —
+/// lowercased, no leading dot, path always absolute — are established in
+/// exactly two places, [`CookieJar::store`] and
+/// [`CookieJar::restore`](super::CookieJar::restore), and would be a
+/// caller's problem if the fields were public.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cookie {
-    name: String,
-    value: String,
-    domain: String,
-    path: String,
-    expires: Option<SystemTime>,
-    creation: SystemTime,
-    last_access: SystemTime,
+    pub(super) name: String,
+    pub(super) value: String,
+    pub(super) domain: String,
+    pub(super) path: String,
+    pub(super) expires: Option<SystemTime>,
+    pub(super) creation: SystemTime,
+    pub(super) last_access: SystemTime,
     /// Insertion order, and the tiebreak for §5.4's "earlier creation-time
     /// first" when two cookies share a `SystemTime` — which they do
     /// routinely, because one response's `Set-Cookie` headers are all
     /// stored with the same `now`.
-    seq: u64,
-    host_only: bool,
-    persistent: bool,
-    secure: bool,
-    http_only: bool,
-    same_site: Option<SameSite>,
+    pub(super) seq: u64,
+    pub(super) host_only: bool,
+    pub(super) persistent: bool,
+    pub(super) secure: bool,
+    pub(super) http_only: bool,
+    pub(super) same_site: Option<SameSite>,
 }
 
 impl Cookie {
@@ -128,17 +129,26 @@ impl Cookie {
         self.creation
     }
 
-    fn is_expired(&self, now: SystemTime) -> bool {
+    pub(super) fn is_expired(&self, now: SystemTime) -> bool {
         self.expires.is_some_and(|e| e <= now)
     }
 }
 
-/// Why a `Set-Cookie` was not stored.
+/// Why a cookie was not stored — by [`CookieJar::store`] from a
+/// `Set-Cookie`, or by [`CookieJar::restore`](super::CookieJar::restore)
+/// from a saved [`CookieRecord`](super::CookieRecord).
 ///
 /// Everything here is a refusal the RFC requires, and each one is a place a
 /// cookie would otherwise end up somewhere it does not belong. They are
 /// reported rather than swallowed because "the cookie silently did not
 /// arrive" is among the harder things to debug in an HTTP client.
+///
+/// **One error type for both entry points rather than two**, because
+/// they are the same refusals asked of two different inputs: §4.1.3's
+/// name prefixes, the public-suffix rule and [`Limits`] apply to a
+/// restored cookie exactly as they apply to a fresh one. The three
+/// variants only `restore` can produce are marked as such; the two only
+/// `store` can produce name a request that `restore` does not have.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Rejected {
@@ -179,6 +189,30 @@ pub enum Rejected {
     /// [`Limits::max_name_value_bytes`].
     #[error("name and value are {bytes} bytes, over the {limit}-byte limit")]
     TooLarge { bytes: usize, limit: usize },
+    /// [`restore`](super::CookieJar::restore) only: a record whose
+    /// `domain` is empty, or is nothing but the leading `.` §5.2.3 strips.
+    /// A `Set-Cookie` cannot reach this — an empty `Domain` attribute is
+    /// no attribute at all (§5.2.3) and the request host stands in.
+    #[error("the record has no domain")]
+    EmptyDomain,
+    /// [`restore`](super::CookieJar::restore) only: a record whose `path`
+    /// is not absolute. A `Set-Cookie` cannot reach this either — §5.2.4
+    /// makes such a `Path` unspecified and the default path stands in,
+    /// and there is no request here for a default to be derived from.
+    #[error("Path={path} is not absolute")]
+    RelativePath { path: String },
+    /// [`restore`](super::CookieJar::restore) only: a record scoped to an
+    /// IP literal that is **not** host-only.
+    ///
+    /// §5.7 makes an IP-literal host host-only unconditionally, so
+    /// [`store`](CookieJar::store) cannot produce this pair — and
+    /// §5.1.3's domain-match is not written to survive it. Measured:
+    /// `domain_matches("evil.1.2.3.4", "1.2.3.4")` is **true**, because
+    /// the IP test in that rule asks whether the *request host* is a
+    /// literal, and `evil.1.2.3.4` is an ordinary name. So the pair is a
+    /// cookie for every name ending in `.1.2.3.4`.
+    #[error("Domain={domain} is an IP literal, so the cookie must be host-only")]
+    IpDomainNotHostOnly { domain: String },
 }
 
 /// A cookie jar: parse, store, expire and hand back.
@@ -208,10 +242,10 @@ pub enum Rejected {
 /// [`PublicSuffixList`] for why it is a seam and not a fixed table.
 #[derive(Debug, Clone)]
 pub struct CookieJar<P = BuiltinList> {
-    cookies: Vec<Cookie>,
-    limits: Limits,
-    suffixes: P,
-    next_seq: u64,
+    pub(super) cookies: Vec<Cookie>,
+    pub(super) limits: Limits,
+    pub(super) suffixes: P,
+    pub(super) next_seq: u64,
 }
 
 impl Default for CookieJar<BuiltinList> {
@@ -289,9 +323,10 @@ impl<P: PublicSuffixList> CookieJar<P> {
         self.cookies.clear();
     }
 
-    /// Every cookie held, in insertion order. For inspection and
-    /// persistence; retrieval for a request is
-    /// [`matching`](Self::matching).
+    /// Every cookie held, in insertion order. For inspection; retrieval
+    /// for a request is [`matching`](Self::matching), and saving a jar is
+    /// [`records`](Self::records) — which filters the session cookies this
+    /// does not.
     pub fn iter(&self) -> impl Iterator<Item = &Cookie> {
         self.cookies.iter()
     }
@@ -549,7 +584,7 @@ impl<P: PublicSuffixList> CookieJar<P> {
     /// collapse into one cookie, and the survivor is whichever arrived
     /// last: a host-only cookie silently acquires a subdomain scope it was
     /// never given, or loses the one it had.
-    fn position_of(&self, cookie: &Cookie) -> Option<usize> {
+    pub(super) fn position_of(&self, cookie: &Cookie) -> Option<usize> {
         self.cookies.iter().position(|c| {
             c.name == cookie.name
                 && c.domain == cookie.domain
@@ -560,7 +595,7 @@ impl<P: PublicSuffixList> CookieJar<P> {
 
     /// RFC 6265 §5.3's eviction: expired cookies first, then the least
     /// recently used, per domain and then overall.
-    fn make_room_for(&mut self, incoming: &Cookie, now: SystemTime) {
+    pub(super) fn make_room_for(&mut self, incoming: &Cookie, now: SystemTime) {
         self.cookies.retain(|c| !c.is_expired(now));
 
         while self
