@@ -1965,6 +1965,77 @@ case the workspace's own tests were the wrong instrument, because they
 share the author's knowledge of where the doors are. **Writing a consumer
 is a different measurement from writing a test.**
 
+### `hc` gained `--sse` and `--ws`, and found two defects it had shipped all along
+
+Both features are ordinary; the two things it turned up on the way are
+not.
+
+**`-L` was a flag that did nothing, and that is the *silently ignored
+setting* defect inverted.** `Client` falls back to `Limit::default()` —
+ten hops — when no policy is set, so `hc` followed redirects with or
+without `-L`: measured against the built binary, same body and same exit
+code either way. The usual defect is a setting the code ignores; this was
+a setting that was silently already **on**, which no amount of reading
+the flag's own code would show. It is `Forbid` without the flag now and
+`Limit(--max-redirects)` with it — `Forbid` rather than `Limit::new(0)`,
+because one is an answer and the other an error. **This changes `hc`'s
+default**, to what curl, httpie and xh all do. The rule it earns: a CLI
+must state *both* arms of a boolean flag, never only the `true` one,
+because the library's default is not the tool's.
+
+**`hc` corrupted every binary body on a pipe, for the CLI's whole life.**
+Everything went through one `anstream::AutoStream`, and with colour off
+that stream is an **ANSI parser**: it deletes bytes it cannot read as
+text. Measured on the built binary — a PNG's `89 50 4e 47 0d 0a 1a 0a`
+arrived as `50 4e 47 0d 0a 0a`; `ColorChoice::Always` is byte-exact and
+`Never` is not.
+
+That is the *wrapper was the limitation* shape a fourth time, after
+`native-tls`'s ALPN, `hclient-fetch`'s `!Send` body and `TlsInfo` in
+`hclient-native` — **and it is the worst of the four**, because the other
+three were silent absences where this one silently broke a promise
+`output.rs`'s own opening paragraph makes about bytes surviving. Payload
+bytes bypass the filter now.
+
+**A mutation that hangs is worse than one that fails**, and a suite that
+drives a subprocess needs a watchdog for exactly the mutations whose
+defect is non-termination. Making `--sse` reconnect unconditionally
+produces *no answer* rather than a wrong one, so four of that mutation's
+eight kills land on a 20-second watchdog rather than on an assertion.
+`hclient-tungstenite`'s `BOUND` is the precedent; this is the rule behind
+both rather than two local decisions.
+
+**The `-j96` flake instrument earned its keep a fourth time.** A real
+race in the new `--ws` code reproduced 7 times in 12 there and never at
+`-j16` or `-j32`: `tungstenite`'s `read` can lift a data frame *and* the
+close behind it off the socket in one go, so a `start_send` at stdin EOF
+answers *"Sending after closing is not allowed"* — exit 4 on a session
+that delivered every byte. The fix is two guards, and they were
+discriminated properly: removing either alone gives 0 failures in 12,
+removing **both** gives 7. So the suite pins their conjunction and
+nothing pins either half, which is written where they are so that
+neither is deleted as redundant.
+
+**Two library facts the CLI work established**, both reasons rather than
+defects. `SseStream` owns its `Response` and exposes neither `status()`
+nor `headers()`, and `SseBuilder` carries a URL and headers and nothing
+else — no body, no query, no redirect policy, no `require_version`. That
+is why `--sse` refuses six flags by name instead of accepting them into
+silence, and it is what would have to change for `--print h` over a
+stream. And `hclient_proto::sse` strips one leading space after a
+comment's colon, so a faithful re-serialisation is `": {text}"` — the
+kind of thing only a round-trip test finds.
+
+**The `--ws` obstacle was the one predicted and the fix is the better of
+two.** `Tungstenite` borrows a `Native` and `backend::build` returned an
+erased `Client`, so construction is split into *make the transport* and
+*wrap it*. `transport_as::<Native<..>>()` was the alternative and is
+worse: it returns an `Option` because nothing checked at `build()` which
+backend is inside, so it answers a question at run time that splitting
+removes. Both paths still go through `backend::choose`, so `--backend`'s
+refusal is intact — checked by making `--ws` bypass it and watching the
+exit code go from 3 to 4.
+
 ### Authentication became a seam, and the measurement says that is where the demand is
 
 Digest was a hard-coded `401` branch in `Client::run`. It is now
