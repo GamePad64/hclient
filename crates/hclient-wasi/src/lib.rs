@@ -63,12 +63,14 @@ static FORBIDDEN_REQUEST_HEADERS: std::sync::LazyLock<[http::HeaderName; 5]> =
 /// hook is a type parameter rather than a `Box<dyn Hooks>`, which is the
 /// whole of the zero-cost claim.
 ///
-/// **This backend emits two of the five events, and the three it does not
+/// **This backend emits two of the six events, and the four it does not
 /// are the finding rather than an omission**: `wasi:http@0.3.0` has no
 /// connection resource anywhere in it, so `Connected`, `Reused` and
-/// `Closed` have nothing to be about. See `crate::hooks`. The second event
-/// is `Progress` — octets are a fact about a body rather than about a
-/// connection, so a host that names no connection can still count them.
+/// `Closed` have nothing to be about, and `Informational` is a fact about
+/// an HTTP/1 or h2 exchange this backend does not conduct. See
+/// `crate::hooks`. The second event it does emit is `Progress` — octets
+/// are a fact about a body rather than about a connection, so a host that
+/// names no connection can still count them.
 #[derive(Debug)]
 pub struct WasiHttp<H = NoHooks> {
     caps: Capabilities,

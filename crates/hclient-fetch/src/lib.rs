@@ -89,11 +89,13 @@ use wasm_bindgen::JsCast;
 /// type*, because the hook is a type parameter rather than a
 /// `Box<dyn Hooks>`, which is the whole of the zero-cost claim.
 ///
-/// **This backend emits two of the five events, and the three it does not
+/// **This backend emits two of the six events, and the four it does not
 /// are the finding rather than an omission**: see `crate::hooks`'s module
 /// doc for why a transport that owns no connection has nothing to put in
 /// `Connected`, `Reused` or `Closed`, and which two fields of `Head` itself
-/// it cannot fill either. The second event is `Progress` — octets are a
+/// it cannot fill either. `Informational` is the fourth and is absent for
+/// its own reason — a `1xx` is a fact about an HTTP/1 or h2 exchange this
+/// backend does not conduct. The second event is `Progress` — octets are a
 /// fact about a body rather than about a connection, so this backend can
 /// count them exactly as any other can.
 #[derive(Debug)]

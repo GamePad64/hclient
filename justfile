@@ -327,7 +327,11 @@ test-browser BROWSER="chrome":
       fi
       echo "$crate on {{BROWSER}}: $passed browser tests passed (minimum $min)"
     }
-    run_browser_suite crates/hclient-fetch 123
+    # 123 -> 128 when `Event::Progress` landed and this crate gained a
+    # browser test for it. Measured by running the suite, not taken from
+    # the change's own report, which said 129 — a floor set one above the
+    # truth is a gate that fails for everybody until somebody notices.
+    run_browser_suite crates/hclient-fetch 128
     # `--test wasm_default` and not the whole crate, for a reason worth
     # stating: `wasm-pack test` also compiles the crate's **doctests** for
     # `wasm32-unknown-unknown`, and two of them cannot build there —

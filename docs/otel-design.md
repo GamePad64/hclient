@@ -11,10 +11,11 @@ and the reason is structural rather than a missing feature.
 ## 1. `Hooks` is the wrong seam, and it is not close
 
 ```rust
-fn on(&self, event: Event<'_>);
+fn on(&self, event: &Event<'_>);
 ```
 
-An immutable event, `&self`, no return value. **Nothing reachable from a
+An immutable event — by reference since hook composition landed, which
+changed nothing here — `&self`, no return value. **Nothing reachable from a
 hook can put a header into an outgoing request.** That is not an
 oversight to be patched: the seam exists so that a backend can announce
 what happened without a hook being able to change what happens, and
@@ -25,9 +26,12 @@ request mid-flight.
 
 Two smaller facts point the same way, both measured in this tree:
 
-- **There is no request-start event.** `Event` has exactly five variants —
-  `Connected`, `Reused`, `Head`, `Closed`, `Informational` — which is the
-  life of a *connection* plus the arrival of a response head. A span needs
+- **There is no request-start event.** `Event` has six variants —
+  `Connected`, `Reused`, `Head`, `Closed`, `Informational`, `Progress` —
+  which is the life of a *connection*, the arrival of a response head, and
+  octets moving. `Progress` arrived after this document was written and
+  does not change the conclusion: it is emitted from inside an exchange
+  that has already begun, so it is no more a beginning than `Head` is. A span needs
   a beginning, and there is nothing to hang one on.
 - **`Hooks` is not universal.** `fn hooks` is declared on four backends:
   `Native`, `H3`, `Fetch`, `WasiHttp`. It is absent from

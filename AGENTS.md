@@ -1266,17 +1266,27 @@ deliberately does not have. `POST /transfer` with `RequestBody::Full(..)`
 is `RetryKind::Free` and is precisely what must never go into early data.
 `.notes/h3-research.md` §3.5 has the three-row table.
 
-### Every backend now reports events, and two of them report one thing (v0.4 W2)
+### Every backend now reports events, and two of them report only what a body can say (v0.4 W2)
 
 Hooks landed on `hclient-native`, then `hclient-h3`, then the two that own
-no connections at all. **`hclient-fetch` and `hclient-wasi` emit exactly one
-of the four events — `Head` — and they reached that answer without sharing
-any reasoning.** `Connected`, `Reused` and `Closed` have no emitter in
-either, and for `wasi:http` that is checkable rather than argued: `client`
+no connections at all. **`hclient-fetch` and `hclient-wasi` emit two of the
+six events — `Head` and `Progress` — and they reached the first without
+sharing any reasoning.** `Connected`, `Reused` and `Closed` have no emitter
+in either, and for `wasi:http` that is checkable rather than argued: `client`
 is one function and there is **no connection resource anywhere in
 `wasi:http@0.3.0`**. `error-code`'s eleven `connection-*` variants are how
 `send` fails, not events — a `Closed::Failed` built from one would announce
-the end of a connection whose beginning was never announced.
+the end of a connection whose beginning was never announced. `Informational` is
+the fourth they do not emit, for a reason of its own: a `1xx` is a fact
+about an HTTP/1 or h2 exchange, and neither backend conducts one.
+
+**This heading said *one of the four* until `Progress` arrived**, and the
+count is the only thing that moved: the argument beneath it is about
+**connections**, and an octet is a fact about a body. That is why the
+reasoning which leaves these two backends without `Connected` does not
+also leave them without a byte counter — the two facts are about different
+things, and a section written before the second one existed reads as
+though they were the same.
 
 **The browser's `Performance` surface was the real question and it is
 measured, not assumed**: the entry does not exist when `execute` returns
