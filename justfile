@@ -186,7 +186,13 @@ embassy-strict-link:
       fi
       # Fail closed, per binary: a renamed package or test file would
       # otherwise leave this green forever while linking less than it claims.
-      for exe in 'Executable unittests src/lib.rs' 'Executable tests/tuntap.rs'; do
+      # **Three, and the list went stale the day `tests/seam.rs` was
+      # added.** That is the failure mode this loop exists for, met by the
+      # loop itself: a file appears, nothing names it, and the check keeps
+      # reporting on the two it knew about. `seam.rs` is also the binary
+      # that was failing to link, which is not a coincidence — it is the
+      # one test file here that names no embassy type of its own.
+      for exe in 'Executable unittests src/lib.rs' 'Executable tests/tuntap.rs' 'Executable tests/seam.rs'; do
         if ! printf '%s\n' "$out" | grep -qF "$exe"; then
           echo "::error::cargo reported no '$exe' for [${features:-default features}] — this check linked less than it claims to"
           exit 1

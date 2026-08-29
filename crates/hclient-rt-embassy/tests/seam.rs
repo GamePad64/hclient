@@ -21,6 +21,20 @@
 //! that cannot honour it.
 #![cfg(all(feature = "proto-ipv4", feature = "medium-ethernet"))]
 
+// **Keeps `embassy-executor`'s rlib on this binary's link line**, which
+// nothing else here does: every other test file in this crate names the
+// executor for its own reasons, and this one only names types. Under
+// `--no-gc-sections` — `just embassy-strict-link` — the linker keeps
+// `embassy-executor-timer-queue`'s reference to
+// `__embassy_time_queue_item_from_waker`, whose only definition is in
+// `embassy-executor`'s `raw` module, and an archive member nothing asks
+// for is never pulled. Same `#[no_mangle]` contract, and the same repair,
+// as the `use` in `src/lib.rs`, which its own comment explains at length.
+//
+// It was absent for as long as this file has existed, and the gate said
+// so — on Linux only because the recipe passes the flag; a Windows link
+// would have been `LNK2019`.
+use embassy_executor as _;
 use hclient_core::unversioned::Transport;
 
 type Embedded = hclient_native::Native<
