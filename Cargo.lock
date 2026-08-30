@@ -1765,6 +1765,8 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "block2",
  "bytes",
+ "futures-channel",
+ "futures-core",
  "futures-executor",
  "hclient",
  "hclient-core",
@@ -1814,6 +1816,8 @@ name = "hclient-winhttp"
 version = "0.1.0-alpha.2"
 dependencies = [
  "bytes",
+ "futures-channel",
+ "futures-core",
  "hclient-core",
  "hclient-proto",
  "http",
