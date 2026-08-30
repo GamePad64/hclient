@@ -11,16 +11,31 @@
 //! process and nowhere else. So under the `tracing` front alone there is
 //! no value for a propagator to write, and this crate emits no header.
 //!
-//! **The tempting repair is worse than the absence.** With the `otel`
-//! feature also compiled in, the `tracing` front could inject
-//! `Context::current()` — and under `tracing-opentelemetry`, which is the
-//! whole reason anybody picks that front, `Context::current()` is *empty*:
+//! **The tempting repair is worse than the absence, and the first
+//! version of this paragraph was wrong about why.** It read that
+//! `Context::current()` is *empty* under `tracing-opentelemetry` because
 //! that bridge keeps the OTel span in the tracing span's extensions and
-//! never pushes it onto the `Context` stack. The propagator would then
-//! write nothing at all, on a request that looked instrumented. A header
-//! that is silently absent is this workspace's *capability that lies* one
-//! layer down, and §6's own rule — *naming it as absent is better than
-//! implying it exists* — is what settles it.
+//! never pushes it onto the `Context` stack. Measured instead of
+//! believed, on a scratch consumer running `tracing-opentelemetry` 0.33:
+//! the bridge has `with_context_activation`, **on by default**, and
+//! `Context::current()` inside `execute` is not empty at all — it names
+//! the **enclosing** span, the caller's, because activation happens on
+//! span *entry* and this crate never enters the span it opens.
+//!
+//! So the repair does not write nothing; it writes the **wrong parent**.
+//! The server's span would come out a *sibling* of this client span
+//! rather than its child — two children of the caller, with the client
+//! span's duration not containing the server's — which is a trace shape
+//! nobody can read and nothing announces. Without the bridge, or with
+//! activation off, it is the silent-absence failure the first version
+//! described. Both are silent, and §6's own rule — *naming it as absent
+//! is better than implying it exists* — settles it either way.
+//!
+//! **What the same measurement confirms is the front's actual value**:
+//! under the bridge this span exports as an OTel span named `GET`, kind
+//! `Client`, parented on the caller's span and sharing its trace. So
+//! §7's *"anyone with `tracing-opentelemetry` gets OTel for nothing"* is
+//! true of everything except the header.
 //!
 //! What would close it is `tracing_opentelemetry::OpenTelemetrySpanExt`,
 //! which can read the OTel context of a `tracing` span. Taking it would

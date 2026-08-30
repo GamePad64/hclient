@@ -31,9 +31,10 @@ all-features = true
 # local `Id` and no W3C trace-id at all, so there is nothing for a
 # propagator to write. A default that cannot propagate is a default that
 # does not do what the crate is named after. See `src/context.rs` for the
-# whole of that argument, including why injecting from
-# `Context::current()` under the `tracing` front would be a header that is
-# silently absent rather than a smaller feature.
+# whole of that argument, including the measurement against
+# `tracing-opentelemetry` 0.33 showing that injecting `Context::current()`
+# under the `tracing` front would name the *caller's* span rather than
+# this one.
 #
 # **What that costs was measured, and the measurement reversed the
 # argument that had been written here first.** That draft said `tracing`

@@ -26,6 +26,12 @@ struct Recorded {
 struct SpanRecord {
     name: &'static str,
     fields: BTreeMap<String, String>,
+    /// Which `Visit` method each field arrived through.
+    ///
+    /// A second map rather than a tagged value, so that every other
+    /// assertion in this file stays a plain string comparison and one
+    /// test carries the whole of the typing question.
+    kinds: BTreeMap<String, &'static str>,
     closed: bool,
 }
 
@@ -48,6 +54,10 @@ impl SpanRecord {
     fn field(&self, key: &str) -> Option<&str> {
         self.fields.get(key).map(String::as_str)
     }
+
+    fn kind_of(&self, key: &str) -> Option<&'static str> {
+        self.kinds.get(key).copied()
+    }
 }
 
 /// Where a span's index lives while it is open.
@@ -60,15 +70,33 @@ struct Index(usize);
 /// `&str` field through the first and a `u16` through the second, and a
 /// `Debug` rendering of a string would carry its quotes into every
 /// assertion below.
-struct Fields<'a>(&'a mut BTreeMap<String, String>);
+struct Fields<'a> {
+    values: &'a mut BTreeMap<String, String>,
+    kinds: &'a mut BTreeMap<String, &'static str>,
+}
+
+impl Fields<'_> {
+    fn put(&mut self, field: &tracing::field::Field, kind: &'static str, value: String) {
+        self.values.insert(field.name().to_owned(), value);
+        self.kinds.insert(field.name().to_owned(), kind);
+    }
+}
 
 impl tracing::field::Visit for Fields<'_> {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.0.insert(field.name().to_owned(), value.to_owned());
+        self.put(field, "str", value.to_owned());
+    }
+
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        self.put(field, "i64", value.to_string());
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.put(field, "u64", value.to_string());
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.insert(field.name().to_owned(), format!("{value:?}"));
+        self.put(field, "debug", format!("{value:?}"));
     }
 }
 
@@ -83,11 +111,16 @@ where
         ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         let mut fields = BTreeMap::new();
-        attrs.record(&mut Fields(&mut fields));
+        let mut kinds = BTreeMap::new();
+        attrs.record(&mut Fields {
+            values: &mut fields,
+            kinds: &mut kinds,
+        });
         let mut spans = self.spans.lock().expect("not poisoned");
         spans.push(SpanRecord {
             name: attrs.metadata().name(),
             fields,
+            kinds,
             closed: false,
         });
         let index = Index(spans.len() - 1);
@@ -108,7 +141,11 @@ where
             return;
         };
         let mut spans = self.spans.lock().expect("not poisoned");
-        values.record(&mut Fields(&mut spans[i].fields));
+        let record = &mut spans[i];
+        values.record(&mut Fields {
+            values: &mut record.fields,
+            kinds: &mut record.kinds,
+        });
     }
 
     fn on_close(&self, id: tracing::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
@@ -195,6 +232,61 @@ fn the_span_is_named_for_the_method_and_carries_the_attribute_set() {
     assert_eq!(s.field("error.type"), None);
     assert_eq!(s.field("http.request.method_original"), None);
     assert_eq!(s.field("network.protocol.version"), None);
+}
+
+#[test]
+fn every_numeric_attribute_is_recorded_as_an_i64() {
+    // **Not a style choice — measured against the bridge this front
+    // exists for.** `tracing-opentelemetry` 0.33 maps a `u16` or a `u64`
+    // field to a *string* and only an `i64` to an integer; probed
+    // directly on four fields, at creation and after it, in a scratch
+    // consumer outside this workspace. `server.port`,
+    // `http.response.status_code` and `http.request.resend_count` are
+    // `int` in the OTel registry, so recording them in their natural
+    // width puts quoted numbers in front of every collector that groups
+    // on them.
+    //
+    // A plain `tracing` subscriber cannot tell the two apart, which is
+    // why this test reads the `Visit` method each field arrived through
+    // rather than its rendering.
+    let recorded = recording();
+    let mock = MockTransport::new();
+    mock.push_response(
+        http::Response::builder()
+            .status(302)
+            .header(http::header::LOCATION, "https://api.test/two")
+            .body("")
+            .unwrap(),
+    );
+    mock.push_response(http::Response::builder().status(200).body("ok").unwrap());
+    let client = hclient::Client::builder(Instrumented::tracing(mock))
+        .build()
+        .expect("built");
+    block_on(async {
+        client
+            .get("https://api.test:8443/one")
+            .send()
+            .await
+            .expect("chain")
+            .collect()
+            .await
+            .expect("body");
+    });
+
+    // The second hop, because it is the only one carrying all five.
+    let s = &recorded.spans()[1];
+    for key in [
+        "server.port",
+        "http.response.status_code",
+        "http.request.resend_count",
+        "hclient.hop",
+        "hclient.resend",
+    ] {
+        assert_eq!(s.kind_of(key), Some("i64"), "{key}");
+    }
+    // And the strings stay strings, so the widening did not reach them.
+    assert_eq!(s.kind_of("url.full"), Some("str"));
+    assert_eq!(s.kind_of("http.request.method"), Some("str"));
 }
 
 #[test]

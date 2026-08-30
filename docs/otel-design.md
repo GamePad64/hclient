@@ -259,14 +259,41 @@ building found.** The two are *not* interchangeable: the `tracing` front
 **cannot inject**, at any price. `traceparent` is a W3C trace-id and
 span-id; a `tracing` span's identity is a `tracing::span::Id` handed out
 by whichever subscriber is installed, meaningful in one process and
-nowhere else. Injecting `opentelemetry::Context::current()` instead is the
-tempting repair and is worse than the absence — under
-`tracing-opentelemetry`, which is the whole reason anybody picks that
-front, that context is *empty*, because the bridge keeps the OTel span in
-the tracing span's extensions and never pushes it onto the `Context`
-stack. The propagator would write nothing at all on a request that looked
-instrumented. So the crate says so at the constructor. What would close it
-is `tracing_opentelemetry::OpenTelemetrySpanExt`, and taking it means
+nowhere else.
+
+Injecting `opentelemetry::Context::current()` instead is the tempting
+repair, and it is worse than the absence — **for a reason that had to be
+executed to be got right.** The first version of this paragraph said that
+context is *empty* under `tracing-opentelemetry`, because the bridge keeps
+the OTel span in the tracing span's extensions and never pushes it onto
+the `Context` stack. Measured on a scratch consumer running
+`tracing-opentelemetry` 0.33: that bridge has `with_context_activation`,
+**on by default**, and `Context::current()` inside `execute` is not empty
+— it names the **enclosing** span, the caller's, because activation
+happens on span *entry* and this crate never enters the span it opens. So
+the repair writes the **wrong parent** rather than nothing: the server's
+span comes out a sibling of the client span instead of its child, two
+children of the caller, with the client span's duration not containing the
+server's. Without the bridge it is the silent absence originally
+described. Both are silent, which is what settles it.
+
+**The same run confirms what the front is worth**, and it is most of what
+§7 promised: under the bridge this span exports as an OTel span named
+`GET`, kind `Client`, parented on the caller's span and sharing its trace.
+Everything but the header.
+
+**And it found a defect that no reading would have.**
+`tracing-opentelemetry` maps a `u16` or a `u64` field to a **string** and
+only an `i64` to an integer — probed directly, four fields, at creation
+and after it. `server.port`, `http.response.status_code` and
+`http.request.resend_count` are `int` in the registry, so recording them
+in their natural width put quoted numbers in front of every collector that
+groups on them. Every number the `tracing` front records is an `i64`, and
+a test reads the `Visit` method each field arrived through rather than its
+rendering, because a plain subscriber cannot tell the two apart.
+
+What would close the injection gap is
+`tracing_opentelemetry::OpenTelemetrySpanExt`, and taking it means
 choosing the caller's bridge crate and its version for them: a third
 feature, not a change to these two.
 

@@ -218,10 +218,11 @@ impl<T> Instrumented<T> {
     /// `tracing::span::Id` handed out by whatever subscriber is
     /// installed, meaningful in one process and nowhere else, so there is
     /// no trace-id for a propagator to write. [`crate::context`]'s module
-    /// doc has the whole of it, including why injecting
-    /// `Context::current()` here would be a header that is silently
-    /// absent rather than a smaller feature. Use [`otel`](Self::otel) if
-    /// the requests have to be joinable at the server.
+    /// doc has the whole of it, including the measurement showing that
+    /// injecting `Context::current()` here would name the **caller's**
+    /// span rather than this one — a server span that comes out a sibling
+    /// of the client span instead of its child. Use [`otel`](Self::otel)
+    /// if the requests have to be joinable at the server.
     ///
     /// The span's name is the method, `otel.kind` is `client` and
     /// `otel.status_code` is `ERROR` where §5a says the exchange failed —

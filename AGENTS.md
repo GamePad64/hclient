@@ -2350,14 +2350,29 @@ meaning with a feature. A feature decides which constructors exist.
 **`tracing` emits and cannot inject, and that is structural.** A
 `tracing` span's identity is a `tracing::span::Id` from whatever
 subscriber is installed; `traceparent` is a W3C trace-id, and there is no
-value to write. The tempting repair is worse than the absence: with
-`opentelemetry` also compiled in, that front could inject
-`Context::current()` — and under `tracing-opentelemetry`, the whole reason
-anybody picks it, that context is *empty*, because the bridge keeps the
-OTel span in the tracing span's extensions and never pushes it on the
-`Context` stack. The propagator would write nothing on a request that
-looked instrumented, which is the *capability that lies* one layer down.
-Said at the constructor instead.
+value to write. The tempting repair — with `opentelemetry` also compiled
+in, inject `Context::current()` — is worse than the absence, and the
+first draft of this paragraph was **wrong about why**, which is the whole
+reason it is worth a paragraph. It said that context is empty under
+`tracing-opentelemetry`. Measured against 0.33 on a scratch consumer:
+that bridge has `with_context_activation`, on by default, and the current
+context inside `execute` names the **enclosing** span — the caller's —
+because activation happens on span *entry* and this crate never enters
+the span it opens. So the repair writes the **wrong parent**: the
+server's span comes out a sibling of the client span rather than its
+child. Silently. Said at the constructor instead.
+
+**The same run paid for itself twice.** It confirms the front's actual
+value — under the bridge this span exports as an OTel span named `GET`,
+kind `Client`, parented on the caller's span and sharing its trace, so
+*"OTel for nothing"* is true of everything but the header. And it found a
+defect no reading would have: `tracing-opentelemetry` maps a `u16` or a
+`u64` field to a **string** and only an `i64` to an integer, so
+`server.port`, `http.response.status_code` and `http.request.resend_count`
+— all `int` in the registry — were arriving at collectors quoted. Every
+number the `tracing` front records is an `i64` now, and the test reads
+the `Visit` method each field arrived through rather than its rendering,
+because a plain subscriber renders the two identically.
 
 **Three attribute decisions the specification makes and the design got
 wrong.** `http.request.method_original` was recorded as *absent, and that

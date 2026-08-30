@@ -222,7 +222,24 @@ mod tracing_front {
     ///
     /// `otel.kind` and `otel.status_code` are that bridge's own field
     /// names and are set regardless, because they are the only way a
-    /// `tracing` span can say `CLIENT` and `Error` at all.
+    /// `tracing` span can say `CLIENT` and `Error` at all. **Executed
+    /// rather than read**: a scratch consumer outside this workspace
+    /// running `tracing-opentelemetry` 0.33 over this front exports a
+    /// span named `GET` with `kind = Client`, parented on the caller's
+    /// own span and sharing its trace — so the bridge really does give
+    /// OTel for nothing, and `otel.kind` is consumed rather than passed
+    /// through as an attribute.
+    ///
+    /// **Every number is recorded as `i64`, and that is not cosmetic.**
+    /// The same measurement found that `tracing-opentelemetry` maps a
+    /// `u16` or a `u64` field to a **string** and only an `i64` to an
+    /// integer — probed directly, four fields, at creation and after it.
+    /// `server.port`, `http.response.status_code` and
+    /// `http.request.resend_count` are `int` in the OTel registry, so
+    /// recording them in their natural width would put quoted numbers in
+    /// front of every collector that groups on them. A plain `tracing`
+    /// subscriber cannot tell the two apart, so the widening costs
+    /// nobody anything.
     macro_rules! open_span {
         ($name:literal) => {
             tracing::span!(
@@ -269,23 +286,23 @@ mod tracing_front {
             span.record("server.address", address);
         }
         if let Some(port) = req.server_port {
-            span.record("server.port", port);
+            span.record("server.port", i64::from(port));
         }
         if let Some(ua) = req.user_agent {
             span.record("user_agent.original", ua);
         }
         if let Some(n) = req.resend_count {
-            span.record("http.request.resend_count", n);
+            span.record("http.request.resend_count", i64::from(n));
         }
         if let Some(a) = req.attempt {
-            span.record("hclient.hop", a.hop);
-            span.record("hclient.resend", a.resend);
+            span.record("hclient.hop", i64::from(a.hop));
+            span.record("hclient.resend", i64::from(a.resend));
         }
         span
     }
 
     pub(super) fn head(span: &tracing::Span, head: &attrs::Head) {
-        span.record("http.response.status_code", head.status.as_u16());
+        span.record("http.response.status_code", i64::from(head.status.as_u16()));
         if let Some(v) = head.version {
             span.record("network.protocol.version", v);
         }
