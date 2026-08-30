@@ -7,6 +7,7 @@
 
 mod body;
 mod convert;
+mod error;
 mod hooks;
 
 pub use body::Body;

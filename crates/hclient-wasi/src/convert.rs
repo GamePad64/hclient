@@ -11,6 +11,9 @@
 //! discipline: the `no-discarded-wasi-setter-result` ast-grep rule, and
 //! the corpus it was accepted against, in `scripts/ast-grep`.
 
+use crate::error::{
+    BadScheme, BodyWriteFailed, FieldsError, Rejected, TimeoutRejected, UndeclaredTrailers,
+};
 use bytes::Bytes;
 use hclient_core::{Error, ErrorKind, RequestBody};
 use http_body::{Body as HttpBody, Frame};
@@ -36,11 +39,7 @@ pub(crate) fn to_wasi_method(m: &http::Method) -> WM {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("URI scheme must be http or https")]
-pub(crate) struct BadScheme;
-
-/// `BadScheme` is the same class of failure as `Rejected` (below) — "the
+/// [`BadScheme`] is the same class of failure as [`Rejected`] — "the
 /// backend just doesn't take this particular value" — so it is classified the same way rather than
 /// flattened into `ErrorKind::Other`. A caller wants to tell "the backend
 /// doesn't support this" from other errors via `is_unsupported()`.
@@ -85,49 +84,10 @@ fn unsupported_timeout(what: &'static str, source: RequestOptionsError) -> Error
     Error::new(ErrorKind::Unsupported, TimeoutRejected { what, source })
 }
 
-/// The host's rejection of applying a request timeout option.
-///
-/// Unlike `Rejected` (below), this rejection has a substantive reason —
-/// `RequestOptionsError::{NotSupported,Immutable,Other}` — and it isn't
-/// flattened into a string: `Display` reports both WHAT was rejected and
-/// WHY, and the `RequestOptionsError` itself stays fully reachable through
-/// `Error::source()`. The same principle as `wasi_err` for `ErrorCode`:
-/// the category (`ErrorKind::Unsupported`) is kept separate from the
-/// reason, and the reason isn't a string.
-///
-/// The field is named `source` on purpose, not by accident of naming:
-/// that is what makes it the `Error::source()` of this type, without an
-/// attribute — and it must stay so, because the reason is exactly what a
-/// caller comes down the chain for.
-#[derive(Debug, thiserror::Error)]
-#[error("backend `wasi:http` does not support `{what}`: {source}")]
-pub(crate) struct TimeoutRejected {
-    what: &'static str,
-    source: RequestOptionsError,
-}
-
-/// The host's rejection of applying `method`/`scheme`/`authority`/
-/// `path_with_query`.
-///
-/// Unlike `TimeoutRejected`, these `wasi:http` setters return a bare
-/// `Result<(), ()>` — the host never sends back any reason at all,
-/// there's nothing to wrap in `source`. `what` is all there is to report.
-#[derive(Debug, thiserror::Error)]
-#[error("wasi:http host rejected setting `{0}`")]
-pub(crate) struct Rejected(&'static str);
 pub(crate) fn rejected(what: &'static str) -> Error {
     Error::new(ErrorKind::Unsupported, Rejected(what))
 }
 
-/// `Fields::from_list` failed: the header is syntactically invalid,
-/// forbidden, or exceeds a host limit.
-///
-/// `#[source]`, not `#[from]`: the category is chosen per variant by
-/// `fields_error` below, so there is no single `HeaderError -> Error`
-/// conversion to hand out.
-#[derive(Debug, thiserror::Error)]
-#[error("invalid headers: {0}")]
-pub(crate) struct FieldsError(#[source] HeaderError);
 /// `HeaderError::Forbidden`/`::Immutable`
 /// — the host refuses to accept a specific header — structurally the same
 /// class of failure as `Rejected`/`TimeoutRejected` (`ErrorKind::Unsupported`),
@@ -197,18 +157,6 @@ pub(crate) fn wasi_err(e: ErrorCode) -> Error {
     Error::new(kind, e)
 }
 
-/// Writing the request body (`BodyWriter::send_http_body`) failed.
-///
-/// Wraps the whole `wasip3::http_compat::Error`, not just its `Display`:
-/// the reason (`HttpBody` — our own frame source failed;
-/// `StreamReaderClosed` — the host closed the reading end early;
-/// `ResultReaderClosed` / `InvalidTrailers` — a failure at the tail of the
-/// transfer) stays reachable through `Error::source()` instead of being
-/// flattened into a string. See `resolve_send` for exactly when this
-/// error wins and when it yields to the `send` error.
-#[derive(Debug, thiserror::Error)]
-#[error("failed to write request body: {0}")]
-pub(crate) struct BodyWriteFailed(#[source] wasip3::http_compat::Error);
 fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
     Error::new(ErrorKind::Body, BodyWriteFailed(e))
 }
@@ -342,41 +290,6 @@ pub(crate) fn declared_trailer_names(
         .collect()
 }
 
-/// The request body emitted trailer field(s) that `Trailer:` didn't name.
-///
-/// `wasi:http` honestly accepts trailers from `BodyWriter` (they go into
-/// `result_writer` regardless of headers — see
-/// `wasip3::http_compat::body_writer::send_http_body`), but it's measured
-/// on a live host that the host's
-/// HTTP/1.1 encoder silently drops them on the wire if the specific field
-/// name wasn't declared in advance via `Trailer:` (RFC 9110 §6.5.1: a
-/// receiver that chooses not to buffer the body is required to ignore
-/// undeclared trailers). What needs comparing is the field NAMES
-/// themselves, not just whether the `Trailer:` header is present. A `Trailer:
-/// X-Other` header, declaring a different field than the one actually emitted
-/// (`x-checksum`), loses data exactly as if the header were absent entirely —
-/// measured:
-/// `execute` returned `Ok(200)`, while the wire showed `0\r\n\r\n` with no
-/// trailer.
-///
-/// **The error arrives after the fact**: by the time the caller sees this
-/// error, the request has
-/// already reached the server and gotten a response — the guard only
-/// fires AFTER `race_send_with_body` has already succeeded, because
-/// trailer field names, generally speaking, are only known once the body
-/// has ended, and there's no predicting that before the headers. Don't
-/// take this as a sign the request can be blindly retried: for a
-/// non-idempotent request, that's a double send.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "streaming request body emitted trailer field(s) [{}] that the request's \
-     `Trailer:` header did not declare — wasi:http's HTTP/1.1 encoder drops undeclared \
-     trailer fields silently. This error arrives after the request already reached the \
-     server and was answered (race_send_with_body already succeeded) — do not retry \
-     blindly, a non-idempotent request may already have taken effect.",
-    .0.iter().map(http::HeaderName::as_str).collect::<Vec<_>>().join(", ")
-)]
-pub(crate) struct UndeclaredTrailers(Vec<http::HeaderName>);
 pub(crate) fn undeclared_trailers(names: Vec<http::HeaderName>) -> Error {
     Error::new(ErrorKind::Body, UndeclaredTrailers(names))
 }
