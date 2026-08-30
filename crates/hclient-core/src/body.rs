@@ -98,6 +98,31 @@ impl RequestBody {
         }
     }
 
+    /// What is visible without consuming this body — see [`BodyView`].
+    ///
+    /// The match is here rather than in a consumer because `RequestBody`
+    /// is `#[non_exhaustive]`, so an exhaustive one is legal only inside
+    /// this crate (amendment C6). A variant added later is a compile
+    /// error on this line, which is the point.
+    ///
+    /// **That it cannot run a factory is enforced by the signature rather
+    /// than by care.** Borrowing `self` means the answer borrows from
+    /// `self`, so the tempting `Rewindable(f) => f().view()` is `E0515`,
+    /// *cannot return value referencing temporary value* — checked by
+    /// writing it. A looker therefore cannot be the reason a
+    /// `Rewindable`'s factory is called, whoever writes the consumer.
+    #[must_use]
+    pub fn view(&self) -> BodyView<'_> {
+        match self {
+            Self::Empty => BodyView::Empty,
+            // An empty `Full` stays `Bytes`, unlike in `reduce`: there the
+            // collapse spares every backend a framing decision, and here
+            // the two are the same answer to anyone looking.
+            Self::Full(b) => BodyView::Bytes(b),
+            Self::Rewindable(_) | Self::Streaming(_) => BodyView::Opaque,
+        }
+    }
+
     pub fn size_hint(&self) -> Option<u64> {
         match self {
             RequestBody::Empty => Some(0),
@@ -146,6 +171,40 @@ pub enum Reduced {
     Bytes(Bytes),
     /// A body that has to be pumped, and can be sent once.
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
+}
+
+/// What can be seen of a [`RequestBody`] **without consuming it and
+/// without calling a factory**.
+///
+/// [`Reduced`] is the other half of the same idea and they are not
+/// interchangeable: `reduce` takes the body by value and runs a
+/// `Rewindable`'s factory to get an answer, where this borrows and never
+/// does. A caller that only wants to *look* — to sign the payload, to log
+/// its size — must not be the reason a factory is called a second time,
+/// because "one snapshot per hop" is a rule this workspace's own tests
+/// pin by counting those calls.
+///
+/// **Exhaustive on purpose, where `RequestBody` is not**, and for
+/// `Reduced`'s reason word for word: a variant added later is either
+/// visible bytes or it is not, and the crate that adds it owns this match.
+/// A `_` arm in a consumer is where a new body shape would go to be
+/// silently mis-signed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyView<'a> {
+    /// There is no body. **Not the same as zero bytes to a scheme that
+    /// hashes payloads** — AWS SigV4 hashes the empty string here, which
+    /// is a real value rather than an absence.
+    Empty,
+    /// The bytes that will be sent.
+    Bytes(&'a Bytes),
+    /// There is a body and it cannot be shown without work the looker did
+    /// not ask for.
+    ///
+    /// Two ways to arrive, and a looker cannot tell them apart because
+    /// nothing it could do would differ: a `Streaming` body has no bytes
+    /// until it is pumped, and a `Rewindable` one has them only behind a
+    /// call to its factory.
+    Opaque,
 }
 
 /// Hand-written for the same reason [`RequestBody`]'s is: a boxed

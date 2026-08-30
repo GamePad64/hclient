@@ -90,6 +90,8 @@
 //! this workspace spent the erasure work recovering. Stated here rather
 //! than discovered later.
 
+use hclient_core::BodyView;
+
 mod error;
 
 pub use error::TooManyLegs;
@@ -129,6 +131,74 @@ pub enum AuthStep {
     Again,
 }
 
+/// The request a flow is about to authenticate.
+///
+/// A named type rather than three parameters, because the list grew once
+/// already: [`body`](Self::body) is here for schemes that sign what they
+/// send, and a fourth would otherwise be a fourth breaking change to
+/// every implementor.
+#[derive(Debug)]
+pub struct AuthRequest<'a> {
+    method: &'a http::Method,
+    uri: &'a http::Uri,
+    body: BodyView<'a>,
+}
+
+impl<'a> AuthRequest<'a> {
+    /// Built by the client. A flow receives one; nothing constructs one
+    /// except [`Client`](crate::Client) and a test.
+    #[must_use]
+    pub fn new(method: &'a http::Method, uri: &'a http::Uri, body: BodyView<'a>) -> Self {
+        Self { method, uri, body }
+    }
+
+    /// The method going on the request line. Digest hashes it into `A2`.
+    #[must_use]
+    pub fn method(&self) -> &http::Method {
+        self.method
+    }
+
+    /// The full URI. **A scheme that signs the request-target wants the
+    /// path and query rather than this** — RFC 7616 §3.4.2, and hashing
+    /// the whole URL gives a server a different `A2` and a second `401`
+    /// nobody can explain.
+    #[must_use]
+    pub fn uri(&self) -> &http::Uri {
+        self.uri
+    }
+
+    /// What the body is, to a scheme that has to sign it.
+    ///
+    /// **Three states, because two would make "there is nothing to hash"
+    /// and "there is something and you cannot have it" the same answer** —
+    /// and a signing scheme must tell them apart: AWS SigV4 hashes the
+    /// empty string for the first and writes `UNSIGNED-PAYLOAD` for the
+    /// second, and getting that backwards produces a signature the server
+    /// rejects with nothing in the rejection to say why.
+    ///
+    /// **What a flow sees is what the replay snapshot sees**, and that is
+    /// more than it sounds: `Client` takes the snapshot before building
+    /// the flow, so an ordinary `Rewindable` body — the shape a retryable
+    /// upload has — arrives as its **bytes**, with no second call to its
+    /// factory. This was written the other way round first, and the test
+    /// that fixed it is
+    /// `a_rewindable_body_is_shown_as_bytes_without_a_second_factory_call`.
+    ///
+    /// [`BodyView::Opaque`] is left to a snapshot that has no bytes
+    /// either: a `Streaming` body, which has none until it is pumped, and
+    /// a `Rewindable` whose factory hands back another one, whose bytes
+    /// are behind a call this client will not make. Neither is a refusal
+    /// it could lift by trying harder — buffering a stream is a cost
+    /// every caller would pay for a scheme most do not use.
+    ///
+    /// It is a **view**: reading it consumes nothing and allocates
+    /// nothing.
+    #[must_use]
+    pub fn body(&self) -> BodyView<'a> {
+        self.body
+    }
+}
+
 /// One exchange's authentication state.
 ///
 /// Made by [`Auth::start`], used for one hop, and dropped. A scheme with
@@ -143,7 +213,12 @@ pub trait AuthFlow {
     /// A header carrying a secret should be marked with
     /// [`http::HeaderValue::set_sensitive`], which is what keeps it out
     /// of a `Debug`.
-    fn authorize(&mut self, method: &http::Method, uri: &http::Uri, headers: &mut http::HeaderMap);
+    ///
+    /// **The request arrives as a value and the headers as a borrow**, so
+    /// that a scheme may read what it signs and change only what it adds.
+    /// [`AuthRequest::body`] is what makes signing schemes writable here
+    /// at all — see [`AuthRequest::body`] for what it can and cannot show.
+    fn authorize(&mut self, req: &AuthRequest<'_>, headers: &mut http::HeaderMap);
 
     /// Look at what came back.
     ///
@@ -249,14 +324,21 @@ struct DigestFlow {
 
 #[cfg(feature = "digest-auth")]
 impl AuthFlow for DigestFlow {
-    fn authorize(&mut self, method: &http::Method, uri: &http::Uri, headers: &mut http::HeaderMap) {
+    fn authorize(&mut self, req: &AuthRequest<'_>, headers: &mut http::HeaderMap) {
         // The **request-target**, not the URL: §3.4.2 hashes what goes on
         // the request line, and a full URL would give the server a
         // different `A2` and a second `401` nobody could explain.
-        let target = uri
+        //
+        // The body is not read at all, and that is RFC 7616's decision
+        // rather than a shortcut: `qop=auth` hashes the method and the
+        // target and nothing else. `auth-int` is the one that hashes the
+        // entity, and this crate refuses a challenge offering it alone —
+        // see `digest::best_challenge`.
+        let target = req
+            .uri()
             .path_and_query()
-            .map_or_else(|| uri.path().to_owned(), ToString::to_string);
-        self.seen = Some((method.clone(), target));
+            .map_or_else(|| req.uri().path().to_owned(), ToString::to_string);
+        self.seen = Some((req.method().clone(), target));
         if let Some(v) = self.answer.take() {
             headers.insert(http::header::AUTHORIZATION, v);
         }

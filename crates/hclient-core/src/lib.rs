@@ -79,7 +79,7 @@ impl ClientIdentity {
     }
 }
 
-pub use body::{MAX_REWIND_DEPTH, Reduced, RequestBody, RetryKind, RewindFactory};
+pub use body::{BodyView, MAX_REWIND_DEPTH, Reduced, RequestBody, RetryKind, RewindFactory};
 pub use caps::{
     AllowEarlyData, CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport,
     RedirectSupport, RequireVersion, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,

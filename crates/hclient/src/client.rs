@@ -1098,7 +1098,18 @@ impl Client {
                     // failed for the network's reasons.
                     let mut flow = auth.as_ref().map(|a| {
                         let mut f = a.start();
-                        f.authorize(&hp.method, &hp.uri, &mut hp.headers);
+                        // The snapshot above is what a signing scheme has
+                        // to hash, and it is already taken — `rewind()`
+                        // ran before this, so reading it here costs no
+                        // second call to a `Rewindable`'s factory. That
+                        // rule is not a nicety: this crate's own
+                        // `a_rewindable_body_is_replayed_from_the_snapshot_taken_before_the_first_attempt`
+                        // counts those calls.
+                        let seen = auth_body(replay.as_ref());
+                        f.authorize(
+                            &crate::auth::AuthRequest::new(&hp.method, &hp.uri, seen),
+                            &mut hp.headers,
+                        );
                         f
                     });
 
@@ -1352,7 +1363,15 @@ impl Client {
                                 break;
                             };
                             let mut next = hp.clone();
-                            flow.authorize(&next.method, &next.uri, &mut next.headers);
+                            // **The body of *this* leg, not of the first.**
+                            // `again` is what will actually be sent, and a
+                            // signature over anything else is a signature
+                            // over a request that never existed.
+                            let seen = auth_body(Some(&again));
+                            flow.authorize(
+                                &crate::auth::AuthRequest::new(&next.method, &next.uri, seen),
+                                &mut next.headers,
+                            );
                             requested_at = self.cache_now();
                             // An authentication leg is a send of the same
                             // hop too — the `425` branch's shape, which is
@@ -1774,6 +1793,27 @@ fn read_retry_after(headers: &http::HeaderMap) -> (Option<Duration>, bool) {
 /// The body a `425 Too Early` replay is sent with, or `None` when this
 /// request cannot honestly be sent a second time.
 ///
+/// What a flow may see of the body about to go out.
+///
+/// **Read off the snapshot rather than off the body being sent**, and the
+/// two are the same bytes by [`RequestBody::rewind`]'s own contract — a
+/// factory must answer the same thing twice. Reading the snapshot is what
+/// makes this free: it was taken before this call, so a `Rewindable`
+/// body's bytes are already in hand and no factory runs a second time.
+///
+/// That is why an ordinary `Rewindable` is `Bytes` here rather than
+/// `Opaque`: the snapshot has already reduced one level. A `Rewindable`
+/// whose factory returns another one has not, and stays `Opaque` — this
+/// crate makes one snapshot per hop, a rule `hclient-mock` is where this
+/// workspace learned to pin by counting factory calls.
+#[cfg_attr(not(feature = "digest-auth"), allow(dead_code))]
+fn auth_body(snapshot: Option<&RequestBody>) -> hclient_core::BodyView<'_> {
+    // `None` is a `Streaming` body, whose `rewind()` answers nothing —
+    // the same answer `view()` gives for the body itself, arrived at from
+    // the other side.
+    snapshot.map_or(hclient_core::BodyView::Opaque, RequestBody::view)
+}
+
 /// `snapshot` is the rewind taken before the attempt that got the `425`.
 /// The verdict is read off the body **that is about to be sent**, never off
 /// one cached from before a `rewind()` — `RequestBody::Rewindable`'s own doc
