@@ -48,6 +48,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
+use crate::error::{BodyFailure, WrongAuthority};
 use bytes::Bytes;
 use hclient_core::Capabilities;
 use hclient_core::unversioned::Transport;
@@ -195,10 +196,6 @@ where
     }
 }
 
-/// A response body failed, with the service's own message.
-#[derive(Debug)]
-struct BodyFailure(String);
-
 impl core::fmt::Display for BodyFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.0)
@@ -206,13 +203,6 @@ impl core::fmt::Display for BodyFailure {
 }
 
 impl std::error::Error for BodyFailure {}
-
-/// A request named an authority this transport does not serve.
-#[derive(Debug)]
-pub struct WrongAuthority {
-    pub expected: String,
-    pub actual: String,
-}
 
 impl core::fmt::Display for WrongAuthority {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

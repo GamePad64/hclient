@@ -15,6 +15,7 @@
 //! and `hc --version` prints that list without being asked.
 
 use crate::args::BackendName;
+pub use crate::error::Refused;
 
 /// Everything that varies between backends, decided once so the rest of
 /// the tool is written for one client.
@@ -83,48 +84,6 @@ pub enum Redirects {
     /// `--follow`, bounded by `--max-redirects`.
     AtMost(u8),
 }
-
-#[derive(Debug)]
-pub enum Refused {
-    /// Named a backend this build does not carry. Never a fallback.
-    NotCompiledIn(BackendName),
-    /// A build with no backend at all — possible only with
-    /// `--no-default-features`, and worth its own message rather than an
-    /// empty list in the one above.
-    NoneAtAll,
-    /// The backend is here and would not start.
-    Unavailable { backend: BackendName, cause: String },
-}
-
-impl std::fmt::Display for Refused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotCompiledIn(b) => {
-                write!(f, "this build of hc has no `{b}` backend.\n\nIt carries: ")?;
-                write!(f, "{}", available_list())?;
-                write!(
-                    f,
-                    "\n\nA backend is refused rather than silently replaced, which is the \
-                     one thing this tool promises over curl's `CURL_SSL_BACKEND`."
-                )
-            }
-            Self::NoneAtAll => write!(
-                f,
-                "this build of hc carries no backend at all — it was built with \
-                 `--no-default-features` and no backend feature. Rebuild with \
-                 `--features rustls` or `--features native-tls`."
-            ),
-            Self::Unavailable { backend, cause } => {
-                write!(
-                    f,
-                    "the `{backend}` backend is compiled in and would not start: {cause}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for Refused {}
 
 pub fn available_list() -> String {
     if COMPILED_IN.is_empty() {

@@ -42,6 +42,7 @@
 //! behalf.
 #![forbid(unsafe_code)]
 
+mod error;
 #[cfg(feature = "dangerous-insecure")]
 mod insecure;
 #[cfg(feature = "quic")]
@@ -49,6 +50,7 @@ mod quic;
 mod record;
 mod stream;
 
+use error::UnknownIdentity;
 pub use stream::TlsStream;
 
 use hclient_core::{Error, ErrorKind};
@@ -126,17 +128,6 @@ struct Named {
     config: Arc<rustls::ClientConfig>,
     id: TlsConfigId,
 }
-
-/// A client identity this backend was asked for and does not have.
-///
-/// Reachable only by a consumer that calls this backend directly:
-/// `hclient-native` resolves every label through
-/// [`TlsIdentity::config_id_for`] before it opens a socket and refuses
-/// there, naming the label. Kept private because it is a guard rather
-/// than a case a caller distinguishes — the message reaches them through
-/// `Error`'s source chain either way.
-#[derive(Debug)]
-pub(crate) struct UnknownIdentity(pub(crate) String);
 
 impl std::fmt::Display for UnknownIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

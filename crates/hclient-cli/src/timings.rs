@@ -37,6 +37,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+pub use crate::error::Unknown;
 use hclient_core::unversioned::{Event, Hooks};
 
 /// What the hooks saw, plus what the CLI measured around them.
@@ -141,23 +142,6 @@ pub struct Facts {
     /// arrives without a redirect — see that type.
     pub redirects: Redirects,
 }
-
-/// A `%{...}` this build does not know.
-#[derive(Debug)]
-pub struct Unknown(pub String);
-
-impl std::fmt::Display for Unknown {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "unknown --write-out variable `%{{{}}}`.\n\nThis build knows: {}",
-            self.0,
-            KNOWN.join(", ")
-        )
-    }
-}
-
-impl std::error::Error for Unknown {}
 
 /// Every name [`render`] answers, in the order a reader would want them
 /// listed. Also the message an unknown one is refused with, so the two

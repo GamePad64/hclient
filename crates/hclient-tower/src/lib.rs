@@ -76,6 +76,11 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+mod error;
+
+// `WrongAuthority` keeps the root it already had; `BodyFailure` is
+// private and reaches a caller only through `Error::source`.
+pub use error::WrongAuthority;
 
 use hclient_core::unversioned::Transport;
 use hclient_core::{Capabilities, Error, RequestBody};

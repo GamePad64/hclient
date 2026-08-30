@@ -8,6 +8,7 @@
 
 mod args;
 mod backend;
+mod error;
 mod mode;
 mod output;
 mod run;
