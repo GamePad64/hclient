@@ -16,72 +16,65 @@ fn mock_transport_is_send_and_sync_so_client_futures_can_be_spawned() {
     assert_send_sync::<hclient::mock::MockTransport>();
 }
 
-/// **Nothing a request produces is `Send` after erasure — not the future,
-/// not the response body — and the reason is the browser.**
+/// **Everything a request produces is `Send`, and this file asserted the
+/// opposite with three checks that never ran.**
 ///
-/// `Client` names no transport type, so one `BoxBody` has to serve every
-/// backend, and `hclient-fetch`'s body holds a `dyn Stream` with no auto
-/// trait: putting `Send` on `BoxBody` does not weaken the browser backend,
-/// it **excludes** it, `Client::builder(Fetch::new())` and all. Measured,
-/// not reasoned — that is the state this file was written in for one
-/// commit, and `cargo test -p hclient-fetch --target
-/// wasm32-unknown-unknown --no-run` refused it.
+/// The claim was true when it was written. `Client` had just given up its
+/// type parameter, one `BoxBody` had to serve every backend, and
+/// `hclient-fetch`'s body held a `dyn Stream` with no auto trait — so
+/// declaring `Send` there would have **excluded** the browser rather than
+/// weakened it. Amendments C14 and C16 removed the cause: `hclient-fetch`
+/// hands `Bytes` across a channel instead of a JS handle, `BoxBody` and
+/// `BoxExchange` carry `Send`, and `SendTransport` is where a backend
+/// proves it at a concrete type. `AGENTS.md` records the measurement.
 ///
-/// So the trade is forced and it is worth naming both halves:
+/// **The instrument is the finding.** The three assertions were
+/// ```` ```compile_fail ```` fences in this file's doc comments, and
+/// **rustdoc collects doctests from library targets only** — measured:
+/// `cargo test --doc -p hclient --all-features` runs 13 doctests and every
+/// one is from `src/`, none from `tests/`. So a `compile_fail` in an
+/// integration test is not a lenient check or a slow one. It is not a
+/// check: nothing ever compiled it, in either direction, and it went on
+/// asserting a fact that had stopped being true for months.
 ///
-/// * **Lost.** `tokio::spawn` of a response body, which worked on
-///   `hclient-native` and is an ordinary thing to want. `deadline.rs`
-///   pins the negative.
-/// * **Kept.** Every backend this workspace ships can be a `Client`.
+/// That is why the assertions below are ordinary `#[test]` functions.
+/// A type-level claim needs no runtime, but it does need to be **compiled**,
+/// and in a `tests/` file the only thing that compiles is code.
 ///
-/// The request future is a separate matter and costs less: putting `Send`
-/// on `BoxExchange` would need the blanket `impl<T> BoxedTransport for T`
-/// to prove `T::execute`'s RPITIT `Send` for an abstract `T`, which is
-/// return type notation — `E0658` on stable. And `hclient-native`'s
-/// `execute` future is *already* `!Send`, pinned by a paired doctest on
-/// `Native`, so the only backend this takes it from is the mock.
-///
-/// **What stays `Send + Sync` is the `Client` itself**, which is the half
-/// that has to: a client lives in shared application state.
+/// The rule this earns: **a doc fence in `tests/` is dead text.** Put the
+/// fence in `src/`, where `just test-doc` will run it, or write a test.
 #[test]
-fn the_client_is_send_and_sync_and_what_a_request_produces_is_not() {
-    fn is_send_sync<T: Send + Sync>() {}
-    is_send_sync::<hclient::Client>();
-    // The control for the line above: the same bound, asked of the type
-    // this test says does *not* have it, is the `compile_fail` below.
-    is_send_sync::<hclient::mock::MockTransport>();
+fn what_a_request_produces_is_send() {
+    fn assert_send<T: Send>(_: T) {}
+    fn assert_send_ty<T: Send>() {}
+
+    let c = hclient::Client::builder(MockTransport::new())
+        .build()
+        .expect("mock supports the default config");
+
+    // The request future. This is the one `AGENTS.md` records as lost to
+    // erasure and regained by C16, so it is the one worth naming.
+    assert_send(c.execute(http::Request::new(hclient_core::RequestBody::Empty)));
+
+    // The response body, through the alias a caller actually meets.
+    assert_send_ty::<hclient::body::ClientBody>();
+
+    // And what a caller holds between them.
+    assert_send_ty::<hclient::Response>();
 }
 
-/// The paired negatives, each with a control differing by one line.
+/// **The control for the test above is in `src/`, and it has to be.**
 ///
-/// Spawning a request does not compile:
+/// `assert_send<T: Send>` is a live bound — a type that stopped being
+/// `Send` fails to compile there — but the *helper* could be weakened to
+/// `assert_send<T>` and the test would pass vacuously. Catching that needs
+/// a compile that must **fail**, and this file has just established that
+/// `tests/` cannot hold one: rustdoc never reads it.
 ///
-/// ```compile_fail
-/// # fn main() {
-/// let c = hclient::Client::builder(hclient::mock::MockTransport::new())
-///     .build()
-///     .unwrap();
-/// fn assert_send<T: Send>(_: T) {}
-/// assert_send(c.execute(http::Request::new(hclient_core::RequestBody::Empty)));
-/// # }
-/// ```
-///
-/// Neither does asserting the response body is `Send`:
-///
-/// ```compile_fail
-/// fn body_is_send<B: Send>() {}
-/// body_is_send::<hclient::body::ClientBody>();
-/// ```
-///
-/// And the control, identical but for the type asserted about, so that
-/// both blocks above are known to fail for their own reason:
-///
-/// ```
-/// fn body_is_send<B: Send>() {}
-/// body_is_send::<hclient::mock::MockTransport>();
-/// ```
-#[allow(dead_code)]
-struct NothingARequestProducesIsSend;
+/// So the negative lives on `body::ClientBody`'s own doc comment, as a
+/// ```` ```compile_fail ```` fence that `just test-doc` runs, and the two
+/// halves are cross-referenced rather than co-located. That is the cost of
+/// the rule above, paid rather than hidden.
 
 /// Cloning shares the transport rather than copying it, which is what makes
 /// a `Client` safe to hand to several tasks. The check is not "does it

@@ -291,6 +291,26 @@ pub mod body {
     /// [`hclient_core::unversioned::erased::BoxBody`] at the seam, so this
     /// alias names no type parameters at all — which is what lets
     /// [`crate::Response`] and [`crate::Client`] name none either.
+    ///
+    /// **It is `Send`, and this fence is the control for the test that
+    /// says so.** `tests/shape.rs` asserts the positive with a live
+    /// `T: Send` bound, which a weakened helper would satisfy vacuously —
+    /// and a `compile_fail` in a `tests/` file is dead text, because
+    /// rustdoc reads library targets only. So the negative lives here,
+    /// where `just test-doc` compiles it and requires it to fail:
+    ///
+    /// ```compile_fail
+    /// fn assert_send<T: Send>() {}
+    /// assert_send::<std::rc::Rc<()>>();
+    /// ```
+    ///
+    /// and the positive beside it, so a reader can see the pair differs by
+    /// one type:
+    ///
+    /// ```
+    /// fn assert_send<T: Send>() {}
+    /// assert_send::<hclient::body::ClientBody>();
+    /// ```
     pub type ClientBody = Limited<Decompressed<Deadline<Cached<BoxBody>>>>;
 
     /// The transport's own body, erased — the innermost layer of
