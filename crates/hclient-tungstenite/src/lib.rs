@@ -235,6 +235,14 @@ use std::time::Duration;
 use tungstenite::Message as Frame;
 use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
 
+mod error;
+
+// `PongNotReceived` keeps the root it already had, so no consumer's `use`
+// line moves. The other four are private and reach a caller only through
+// `Error::source`.
+pub use error::PongNotReceived;
+use error::{AcceptKeyMismatch, BadUpgradeHeader, ReservedHeader, UnsupportedScheme};
+
 /// The handshake headers this crate owns.
 ///
 /// A request that already carries one is refused rather than silently
@@ -252,22 +260,6 @@ const OURS: [http::HeaderName; 4] = [
     http::header::SEC_WEBSOCKET_KEY,
     http::header::SEC_WEBSOCKET_VERSION,
 ];
-
-#[derive(Debug, thiserror::Error)]
-#[error("the WebSocket handshake sets {0} itself; a request may not carry one")]
-struct ReservedHeader(http::HeaderName);
-
-#[derive(Debug, thiserror::Error)]
-#[error("unsupported URI scheme for a WebSocket: {0:?} (expected ws, wss, http or https)")]
-struct UnsupportedScheme(String);
-
-#[derive(Debug, thiserror::Error)]
-#[error("the 101 response is missing or misspells its {0} header")]
-struct BadUpgradeHeader(&'static str);
-
-#[derive(Debug, thiserror::Error)]
-#[error("the server's Sec-WebSocket-Accept does not match the Sec-WebSocket-Key this client sent")]
-struct AcceptKeyMismatch;
 
 /// `ws`/`wss` are RFC 6455's schemes; `http`/`https` are accepted as the
 /// same two, because a caller who already holds an origin should not have
@@ -548,33 +540,6 @@ impl WebSocketKeepAlive {
         Self { every, within }
     }
 }
-
-/// The source of the [`ErrorKind::Body`] error a missed pong produces.
-///
-/// A named public type rather than a message, for the reason
-/// [`hclient_native::BetweenBytesElapsed`] is one: a caller must be able to tell
-/// this apart from every other way a connection can fail with
-/// `Error::source().downcast_ref()`, and to read the bound that was
-/// actually in force rather than parse it out of a string.
-///
-/// # Why it is an error and not a `Message::Close`
-///
-/// Because those are different facts and a caller acts differently on
-/// them: a `Close` is the peer saying goodbye, this is the network having
-/// gone away underneath a peer that never did. `hclient-fetch` already
-/// draws that line in the same place and in the same vocabulary — a
-/// browser `CloseEvent` with `wasClean == false` becomes an
-/// `ErrorKind::Body` on the `Stream` rather than a `Message::Close(1006)`,
-/// precisely so that a caller inspecting `Message::Close` is not told its
-/// peer said goodbye when it did not. This agrees with that rather than
-/// inventing a second vocabulary.
-///
-/// It is deliberately **not** an `ErrorKind::Timeout`: no field of
-/// [`hclient_core::Timeouts`] is in force here, and `Phase::BetweenBytes`
-/// in particular would name a bound this seam deliberately does not have.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("the peer did not answer a keep-alive ping within {0:?}")]
-pub struct PongNotReceived(pub Duration);
 
 /// The keep-alive's state, and the one sleep it runs at a time.
 ///
