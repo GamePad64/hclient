@@ -109,6 +109,7 @@ async fn a_service_mode_record_round_trips_every_field_svcbendpoint_holds() {
 
     assert_eq!(e.priority, 1);
     assert_eq!(e.target, "svc.example.net");
+    assert_eq!(e.ttl, Some(std::time::Duration::from_secs(3600)));
     assert_eq!(e.alpn, vec![b"h3".to_vec(), b"h2".to_vec()]);
     assert_eq!(e.port, Some(8443));
     assert_eq!(e.ipv4hint, vec![Ipv4Addr::new(192, 0, 2, 1)]);
@@ -228,4 +229,56 @@ async fn a_failed_svcb_lookup_is_an_error_even_with_a_fallback_configured() {
     let found: Vec<Item> = doh.lookup_svcb("example.com").collect().await;
     assert_eq!(found.len(), 1);
     found[0].as_ref().expect_err("expected an error");
+}
+
+/// **The record's own lifetime reaches the caller, and it is read off the
+/// wire rather than defaulted.**
+///
+/// `SvcbEndpoint::ttl` is what makes a cache of HTTPS records honest —
+/// without it, a consumer wanting one has to invent a lifetime for
+/// somebody else's answer, which is the reason `hclient-native`'s
+/// discovery has no cache. The value was always on the wire; it simply
+/// stopped at this crate's decoder.
+///
+/// **Two records with different TTLs, in one test, because one alone
+/// passes for a constant.** A decoder returning `Some(3600)` for
+/// everything satisfies the assertion in
+/// `a_service_mode_record_round_trips_every_field_svcbendpoint_holds`; it
+/// does not satisfy this one.
+#[tokio::test]
+async fn the_records_own_ttl_reaches_the_caller_and_is_not_a_constant() {
+    for wire in [30u32, 86400] {
+        let server = Server::answering(noerror(
+            "example.com",
+            TYPE_HTTPS,
+            &[Rr::https("example.com", wire, 1, "svc.example.net", &[])],
+        ));
+        let found = endpoints(&server, "example.com").await;
+        let e = found[0].as_ref().expect("an endpoint, not an error");
+        assert_eq!(
+            e.ttl,
+            Some(std::time::Duration::from_secs(u64::from(wire))),
+            "the endpoint's ttl must be the record's, not a default"
+        );
+    }
+}
+
+/// **A TTL of zero is an instruction and `None` is silence, so the two
+/// must not be one value.**
+///
+/// RFC 2181 §8 makes a zero TTL "do not cache this at all"; a resolver
+/// that reports no TTL has said nothing, and a cache is free to pick its
+/// own bound. Collapsing them would make the safe answer and the unsafe
+/// one indistinguishable, which is `Discovered::NoRecord` against
+/// `NotConsulted` a third time.
+#[tokio::test]
+async fn a_zero_ttl_is_some_zero_rather_than_none() {
+    let server = Server::answering(noerror(
+        "example.com",
+        TYPE_HTTPS,
+        &[Rr::https("example.com", 0, 1, "svc.example.net", &[])],
+    ));
+    let found = endpoints(&server, "example.com").await;
+    let e = found[0].as_ref().expect("an endpoint, not an error");
+    assert_eq!(e.ttl, Some(std::time::Duration::ZERO));
 }

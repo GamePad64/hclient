@@ -27,6 +27,7 @@ pub use crate::error::SvcbRecordError;
 use crate::SvcbEndpoint;
 use bytes::Bytes;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
 
 /// The SvcParamKeys this client understands well enough to honour a
 /// `mandatory` requirement for (RFC 9460 §8).
@@ -72,6 +73,9 @@ pub struct RawBinding {
     /// meanings to.
     pub target: String,
     pub params: Vec<RawParam>,
+    /// The record's TTL, as the resolver reported it — `None` where it
+    /// reported none. See [`SvcbEndpoint::ttl`], which this becomes.
+    pub ttl: Option<Duration>,
 }
 
 /// One SvcParam, reduced to what `SvcbEndpoint` can hold plus the key
@@ -164,6 +168,9 @@ pub fn endpoint_from_binding(
             ipv4hint: Vec::new(),
             ipv6hint: Vec::new(),
             ech_config_list: None,
+            // An AliasMode record has a TTL like any other, and it is the
+            // one a caller following the alias would have to respect.
+            ttl: binding.ttl,
         }));
     }
 
@@ -183,6 +190,7 @@ pub fn endpoint_from_binding(
         ipv4hint: Vec::new(),
         ipv6hint: Vec::new(),
         ech_config_list: None,
+        ttl: binding.ttl,
     };
 
     let mut mandatory: &[u16] = &[];
@@ -288,6 +296,10 @@ pub fn binding_from_decoded(binding: &dns_message_parser::rr::ServiceBinding) ->
         owner: name_to_string(&binding.name),
         target: name_to_string(&binding.target_name),
         params,
+        // `ServiceBinding::ttl` is a plain `u32` and the decoder always
+        // fills it, so this is always `Some` on this path — the `Option`
+        // is for the backends that genuinely may not know.
+        ttl: Some(Duration::from_secs(u64::from(binding.ttl))),
     }
 }
 

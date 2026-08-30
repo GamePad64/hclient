@@ -182,11 +182,14 @@ fn is_empty_answer(e: &NetError) -> bool {
 /// `no-default-alpn`, private keys — rather than inventing fields. A
 /// parameter this client cannot act on is not made visible just because it
 /// was on the wire.
-fn to_endpoint(svcb: &SVCB) -> SvcbEndpoint {
+fn to_endpoint(svcb: &SVCB, ttl: Option<Duration>) -> SvcbEndpoint {
     // The trailing dot on the target is included: that is the name as the
     // server sent it, and normalising it here would make the caller's own
     // comparison against a `Uri` host quietly disagree with the wire.
-    let mut out = SvcbEndpoint::new(svcb.svc_priority, svcb.target_name.to_string());
+    // The TTL is the **record's**, not the rdata's — hickory keeps it on
+    // `Record` where DNS puts it, so it has to be passed in rather than
+    // read off the `SVCB` the rest of this function reads.
+    let mut out = SvcbEndpoint::new(svcb.svc_priority, svcb.target_name.to_string()).ttl(ttl);
     for (_, value) in &svcb.svc_params {
         match value {
             SvcParamValue::Alpn(alpn) => {
@@ -264,7 +267,10 @@ impl<P: ConnectionProvider> Resolve for Hickory<P> {
                         .answers()
                         .iter()
                         .filter_map(|rec| match &rec.data {
-                            RData::HTTPS(h) => Some(Ok(to_endpoint(&h.0))),
+                            RData::HTTPS(h) => Some(Ok(to_endpoint(
+                                &h.0,
+                                Some(Duration::from_secs(u64::from(rec.ttl))),
+                            ))),
                             _ => None,
                         })
                         .collect();
@@ -323,6 +329,12 @@ mod tests {
     /// below compare against this with `..bare()`, so each one asserts not
     /// only that its own field was filled but that no OTHER field was — which
     /// is what catches a mapping that puts the right value in the wrong home.
+    /// The TTL is the record's and these fixtures build rdata, so every
+    /// test that is not about the TTL passes `None` through one place.
+    fn to_endpoint_no_ttl(svcb: &SVCB) -> SvcbEndpoint {
+        to_endpoint(svcb, None)
+    }
+
     fn bare() -> SvcbEndpoint {
         SvcbEndpoint::new(1, "example.com.".to_owned())
     }
@@ -384,7 +396,7 @@ mod tests {
         #[case] value: SvcParamValue,
         #[case] expected: SvcbEndpoint,
     ) {
-        assert_eq!(to_endpoint(&one(value)), expected);
+        assert_eq!(to_endpoint(&one(value), None), expected);
     }
 
     /// AliasMode is SvcPriority 0 (RFC 9460 §2.4.2). It has to arrive as 0:
@@ -398,7 +410,7 @@ mod tests {
             Name::from_str("example.net.").unwrap(),
             vec![(SvcParamKey::Port, SvcParamValue::Port(8443))],
         );
-        let e = to_endpoint(&alias);
+        let e = to_endpoint(&alias, None);
         assert_eq!(e.priority, 0, "0 is AliasMode, not a missing priority");
         assert_eq!(e.target, "example.net.");
     }
@@ -410,7 +422,7 @@ mod tests {
     #[test]
     fn a_root_target_survives_as_the_root() {
         assert_eq!(
-            to_endpoint(&SVCB::new(1, Name::root(), Vec::new())).target,
+            to_endpoint(&SVCB::new(1, Name::root(), Vec::new()), None).target,
             "."
         );
     }
@@ -421,7 +433,7 @@ mod tests {
     /// any test that put the unknown key last.
     #[test]
     fn an_unknown_parameter_is_stepped_over_and_the_rest_of_the_record_still_maps() {
-        let e = to_endpoint(&svcb(vec![
+        let e = to_endpoint_no_ttl(&svcb(vec![
             (
                 SvcParamKey::Alpn,
                 SvcParamValue::Alpn(Alpn(vec!["h2".to_owned()])),
@@ -448,7 +460,7 @@ mod tests {
     /// presence check.
     #[test]
     fn every_mapped_parameter_arrives_with_its_value() {
-        let e = to_endpoint(&svcb(vec![
+        let e = to_endpoint_no_ttl(&svcb(vec![
             (
                 SvcParamKey::Alpn,
                 SvcParamValue::Alpn(Alpn(vec!["h3".to_owned(), "h2".to_owned()])),
@@ -495,7 +507,7 @@ mod tests {
     /// something plausible.
     #[test]
     fn a_bare_record_maps_to_empty_fields_not_to_guesses() {
-        let e = to_endpoint(&svcb(vec![]));
+        let e = to_endpoint_no_ttl(&svcb(vec![]));
         assert_eq!(e.priority, 1);
         assert!(e.alpn.is_empty());
         assert_eq!(e.port, None, "no port means no port, not 443");
@@ -509,14 +521,14 @@ mod tests {
     /// `Uri` host disagree with the wire in one direction only.
     #[test]
     fn the_target_keeps_the_form_the_server_sent() {
-        assert_eq!(to_endpoint(&svcb(vec![])).target, "example.com.");
+        assert_eq!(to_endpoint_no_ttl(&svcb(vec![])).target, "example.com.");
     }
 
     /// A parameter with no home in `SvcbEndpoint` is dropped, not
     /// smuggled into a field that nearly fits.
     #[test]
     fn an_unmapped_parameter_is_dropped_rather_than_misfiled() {
-        let e = to_endpoint(&svcb(vec![(
+        let e = to_endpoint_no_ttl(&svcb(vec![(
             SvcParamKey::Mandatory,
             SvcParamValue::Mandatory(Mandatory(vec![SvcParamKey::Alpn])),
         )]));

@@ -3017,10 +3017,16 @@ pub trait Prefetch: Transport {
     /// for why that is the whole point.
     ///
     /// **Not a cache.** What comes back is good for the one request it
-    /// travels with, and nothing here remembers it — for
-    /// `hclient-native`'s reason: an HTTPS record carries no TTL, and
-    /// inventing a lifetime for someone else's answer is how a resolver's
-    /// cache and ours drift apart.
+    /// travels with, and nothing here remembers it.
+    ///
+    /// The reason recorded here was that an HTTPS record carries no TTL,
+    /// so a cache would have to invent a lifetime for someone else's
+    /// answer — which is how a resolver's cache and ours drift apart. That
+    /// was true of [`SvcbEndpoint`](hclient_dns::SvcbEndpoint) and never
+    /// of the wire: the lifetime was always on the record, and it is
+    /// carried now. What is left is the ordinary work of a cache — a key,
+    /// a bound, and an answer to what `network_changed()` means for an
+    /// entry — none of which is written, so this still remembers nothing.
     ///
     /// # What it costs, and when it costs nothing
     ///

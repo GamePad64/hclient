@@ -100,6 +100,25 @@ pub struct SvcbEndpoint {
     pub ipv4hint: Vec<Ipv4Addr>,
     pub ipv6hint: Vec<Ipv6Addr>,
     pub ech_config_list: Option<Bytes>,
+    /// How long this record may be reused, as the resolver reported it.
+    ///
+    /// **`None` is "the resolver did not say", and it is not zero.** RFC
+    /// 9460 records are ordinary DNS records with an ordinary TTL, and a
+    /// TTL of `0` is an instruction — *do not reuse this* — where a
+    /// resolver that reports none has told the caller nothing. Collapsing
+    /// the two would make "cache for no time" and "cache for as long as
+    /// you like" the same value, and the second is the unsafe direction.
+    /// [`ResolvedAddr::ttl`] is the same shape for the same reason.
+    ///
+    /// This field is what makes a cache of HTTPS records honest, and it
+    /// is why there was none: `hclient-native`'s discovery has no cache
+    /// because inventing a lifetime for somebody else's answer is how a
+    /// resolver's cache and ours drift apart — and the lifetime was
+    /// always on the wire, simply not carried here. Every backend in this
+    /// workspace fills it in: `dns-message-parser` and Windows' resolver
+    /// both hand one over, and hickory keeps it on the `Record` rather
+    /// than on the rdata.
+    pub ttl: Option<Duration>,
 }
 
 impl SvcbEndpoint {
@@ -118,7 +137,15 @@ impl SvcbEndpoint {
             ipv4hint: Vec::new(),
             ipv6hint: Vec::new(),
             ech_config_list: None,
+            ttl: None,
         }
+    }
+
+    /// How long this record may be reused. See the field.
+    #[must_use]
+    pub fn ttl(mut self, ttl: Option<Duration>) -> Self {
+        self.ttl = ttl;
+        self
     }
 
     /// RFC 9460's `SvcPriority`. A setter as well as a `new` parameter,

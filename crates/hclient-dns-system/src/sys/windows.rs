@@ -96,6 +96,7 @@ use core::ptr::null_mut;
 use hclient_dns::SvcbEndpoint;
 use std::ffi::CString;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
 use windows_sys::Win32::Foundation::{DNS_ERROR_RCODE_NAME_ERROR, ERROR_SUCCESS, WIN32_ERROR};
 // The long paths are imported rather than written inline, and that is not
 // only taste: `cargo fmt` breaks an over-long `unsafe { … }` across lines,
@@ -259,6 +260,10 @@ fn binding_from_record(record: &DNS_RECORDA) -> Option<RawBinding> {
         owner: strip_root_dot(owner),
         target: strip_root_dot(target),
         params,
+        // `dwTtl` is on the record rather than on the SVCB data, which is
+        // where DNS puts it — the resolver's own remaining lifetime for
+        // this answer, already counted down by whatever cached it.
+        ttl: Some(Duration::from_secs(u64::from(record.dwTtl))),
     })
 }
 

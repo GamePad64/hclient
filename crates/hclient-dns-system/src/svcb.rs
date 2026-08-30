@@ -739,6 +739,7 @@ mod tests {
 
     fn binding(priority: u16, owner: &str, target: &str, params: Vec<RawParam>) -> RawBinding {
         RawBinding {
+            ttl: None,
             priority,
             owner: owner.to_owned(),
             target: target.to_owned(),

@@ -1604,11 +1604,21 @@ is **1.0 s**, and it too is a constant: PTO₀ off RFC 9002's guessed 333 ms
 
 The slow tier is where a cache became honest, and the reason inverts the
 fast tier's. There is deliberately no cache for HTTPS records here, because
-`SvcbEndpoint` carries no TTL and inventing a lifetime for someone else's
-answer is how a resolver's cache and ours drift apart. RFC 7838 §3.1's `ma`
-**is** that lifetime, given by the origin for exactly this advertisement —
-so the cache that would have been dishonest for SVCB is the right shape for
-Alt-Svc.
+inventing a lifetime for someone else's answer is how a resolver's cache
+and ours drift apart. RFC 7838 §3.1's `ma` **is** that lifetime, given by
+the origin for exactly this advertisement — so the cache that would have
+been dishonest for SVCB is the right shape for Alt-Svc.
+
+**Half of that reason has since been removed, and it was ours.** The
+sentence above read *`SvcbEndpoint` carries no TTL*, which was true of
+the type and never of the wire: every backend's decoder had the record's
+TTL in hand and dropped it. `SvcbEndpoint::ttl` carries it now —
+`Option<Duration>`, where `None` is *the resolver did not say* and
+`Some(ZERO)` is RFC 2181 §8's *do not cache this*, which are different
+instructions and must not be one value. So a cache of HTTPS records is
+no longer structurally dishonest; it is simply not written, and what it
+would still need is a key, a bound and an answer to what
+`network_changed()` means for an entry.
 
 The order between them is a rule rather than an accident: **the record
 first, the cache only where there is no record.** So an origin that
