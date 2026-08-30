@@ -73,6 +73,16 @@ trait from outside quinn either satisfies those conditions or does not
 implement it. This is the class C10 exists to name — neither erasure nor
 a trait of ours.
 
+**C10 covers a second site**, and naming it here rather than minting a
+new amendment is C7's precedent: the argument is identical and only the
+foreign crate differs. `hclient`'s `RequestBuilder::extension` declares
+`T: Clone + Send + Sync + 'static` because that is what
+`http::Extensions::insert` demands — a caller either satisfies it or
+cannot put a value into an `http::Request` by any route, including the
+one they already have through `http::request::Builder::extension`. The
+bound is on one opt-in method and reaches no signature a caller already
+writes.
+
 **C12 — `hclient` declares `Send` on opt-in setters.** A bound this
 crate *chooses*, so a caller's own cache store and public suffix list
 reach `Client` by erasure rather than by a type parameter. A type

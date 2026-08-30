@@ -67,6 +67,8 @@
 //! | to build a body by hand | [`RequestBody`], re-exported at this crate's root |
 //! | text in a charset that is not UTF-8 | [`Collected::text_with_charset`], behind the `charset` feature |
 //! | basic or bearer auth | [`RequestBuilder::basic_auth`], [`RequestBuilder::bearer_auth`] |
+//! | to choose a client certificate per request | [`RequestBuilder::client_identity`] — a label your TLS backend was configured with |
+//! | to put your own value where the transport can read it | [`RequestBuilder::extension`] |
 //! | to save a cookie jar across a restart | [`cookie::CookieJar::records`] and [`cookie::CookieJar::restore`], behind `cookies` — the format is yours, so no `serde` arrives with it |
 //! | the `Link:` header a paginated API sends | [`Response::links`] and [`Collected::links`] |
 //! | a body read line by line | [`Response::lines`] — for NDJSON and log tailing |

@@ -480,6 +480,79 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    /// Which client certificate this request presents, by the label a
+    /// backend was configured with.
+    ///
+    /// See `hclient_core::ClientIdentity`: what travels is a name the
+    /// caller invented, never a certificate and never a store query,
+    /// because a name is the only value that means the same thing on
+    /// Windows, macOS, PKCS#11 and Android at once. A backend that does
+    /// not know the label **refuses before it opens a socket** rather than
+    /// connecting with its default, and two labels to one origin cannot
+    /// share a connection, because the label resolves into the pool key.
+    ///
+    /// **This setter is why the feature has a caller.** It shipped without
+    /// one: `ClientIdentity` reached `Transport` through the extensions and
+    /// `RequestBuilder` had no route to them, so the only way to select an
+    /// identity was to build an `http::Request` by hand and call
+    /// `Transport::execute` directly — which is to say, without redirects,
+    /// cookies, the cache or anything else `Client` is for.
+    #[must_use]
+    pub fn client_identity(mut self, name: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        self.extensions
+            .insert(hclient_core::ClientIdentity::new(name));
+        self
+    }
+
+    /// Admits this request into TLS early data (0-RTT) where the transport
+    /// offers it.
+    ///
+    /// **The caller's decision and nobody else's**, which is the whole
+    /// reason it is per request. `RequestBody::retry_kind` is checked
+    /// beneath it as a *correctness* condition — a rejected 0-RTT request
+    /// is replayed and a single-pass body cannot be — and deliberately not
+    /// as a safety one: `POST /transfer` with a buffered body is
+    /// `RetryKind::Free`, trivially replayable, and exactly the request
+    /// that must never enter early data. *Can I send this again* and *may
+    /// an attacker send this again* are different questions and only you
+    /// can answer the second.
+    ///
+    /// The mark is stripped from a `425` replay and on a cross-origin hop,
+    /// and survives an ordinary redirect. `hclient_core::AllowEarlyData`
+    /// has the rest.
+    #[must_use]
+    pub fn allow_early_data(mut self) -> Self {
+        self.extensions.insert(hclient_core::AllowEarlyData);
+        self
+    }
+
+    /// Puts an arbitrary value in the request's [`http::Extensions`].
+    ///
+    /// **For a type this crate has never heard of**, which is the case the
+    /// two setters above cannot serve: a tracing decorator's context
+    /// belongs to the decorator's crate, and `hclient` must not depend on
+    /// it to let a caller set one. `docs/otel-design.md` §3 is the
+    /// motivating reader.
+    ///
+    /// It adds no capability that did not exist one layer down —
+    /// `http::request::Builder::extension` has always been there, and
+    /// going around this builder to reach it was the workaround this
+    /// replaces. What it removes is the reason to bypass `Client`.
+    ///
+    /// **Prefer a named setter where one exists.** `timeouts`,
+    /// `redirect`, `require_version`, `client_identity` and
+    /// `allow_early_data` each carry the argument for their own value, and
+    /// a reader who meets `.extension(RequireVersion(HTTP_2))` learns
+    /// nothing about the capability gate behind it.
+    #[must_use]
+    pub fn extension<T>(mut self, value: T) -> Self
+    where
+        T: Clone + Send + Sync + 'static, // send-bound-exception: amendment-C10
+    {
+        self.extensions.insert(value);
+        self
+    }
+
     /// Sends the request.
     ///
     /// The body comes back wrapped in [`crate::body::Deadline`], which carries the
