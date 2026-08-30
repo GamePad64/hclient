@@ -160,9 +160,11 @@
 //! choice is forced.
 #![forbid(unsafe_code)]
 
+mod error;
 mod wire;
 
-pub use wire::{DohError, MAX_RESPONSE_BYTES};
+pub use error::{DohError, EndpointError};
+pub use wire::MAX_RESPONSE_BYTES;
 
 use futures_util::StreamExt;
 use futures_util::stream;
@@ -271,38 +273,6 @@ pub struct Doh<C, F = NoFallback> {
     endpoint: Uri,
     fallback: F,
     timeouts: Timeouts,
-}
-
-/// Why an endpoint URI was refused at construction.
-///
-/// Every variant is a caller mistake that would otherwise show up as a
-/// resolution failure at the first lookup, i.e. arbitrarily far from the
-/// line that caused it.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum EndpointError {
-    /// The URI has no host at all — `/dns-query`, or `https:///`.
-    #[error("the DoH endpoint `{uri}` has no host")]
-    NoHost { uri: String },
-    /// [`Doh::pinned`] was given a name.
-    #[error(
-        "`{host}` is a name, not an IP literal: `Doh::pinned` is the no-bootstrap constructor, \
-         use `Doh::bootstrapped` if the inner transport's resolver should look this name up"
-    )]
-    NotAnIpLiteral { host: String },
-    /// [`Doh::bootstrapped`] was given an IP literal.
-    #[error(
-        "`{host}` is an IP literal, so nothing bootstraps it: use `Doh::pinned`, which says so"
-    )]
-    IsAnIpLiteral { host: String },
-    /// The scheme is neither `https` nor loopback `http`. See
-    /// [`Doh::pinned`] for the loopback rule.
-    #[error(
-        "the DoH endpoint `{uri}` is not https, and its host is not a loopback address: \
-         RFC 8484 is DNS over HTTPS, and cleartext DNS to a host that is not this machine \
-         is the thing it exists to prevent"
-    )]
-    NotConfidential { uri: String },
 }
 
 impl<C> Doh<C, NoFallback> {

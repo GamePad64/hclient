@@ -38,6 +38,7 @@
 //! a partial RRSet — the same call `hclient-dns-system` makes for the same
 //! reason.
 
+use crate::error::DohError;
 use bytes::Bytes;
 use dns_message_parser::question::{QClass, QType, Question};
 use dns_message_parser::rr::RR;
@@ -106,80 +107,6 @@ impl Family {
 pub(crate) struct Answer {
     pub(crate) addrs: Vec<ResolvedAddr>,
     pub(crate) endpoints: Vec<SvcbEndpoint>,
-}
-
-/// Everything that can go wrong between "the caller asked for a name" and
-/// "there is a decoded answer".
-///
-/// Every variant is a *failure to ask*, never an empty answer — see the
-/// table in this module's doc for where the line is drawn.
-#[derive(Debug, Clone, thiserror::Error)]
-#[non_exhaustive]
-pub enum DohError {
-    /// The name cannot be put in a DNS question: it is not a valid domain
-    /// name, or a label is too long. A caller bug or a hostile input, never
-    /// a server problem.
-    #[error("`{name}` cannot be used as a DNS query name: {reason}")]
-    NameNotUsable { name: String, reason: String },
-    /// The query could not be serialised. Structurally unreachable for a
-    /// one-question query with no answer sections — kept because the
-    /// encoder returns a `Result` and swallowing it would be the
-    /// discarded-result defect this workspace has an ast-grep rule about.
-    #[error("could not encode the DNS query: {0}")]
-    Encode(String),
-    /// The transport failed: no connection, a timeout, a TLS failure. The
-    /// transport's own classified [`hclient_core::Error`] is kept whole.
-    #[error("the DoH request failed: {0}")]
-    Transport(#[source] hclient_core::Error),
-    /// The DoH server answered with something other than 200. RFC 8484 §4.2
-    /// gives no other success status.
-    #[error("the DoH server answered with HTTP status {status}")]
-    Status { status: u16 },
-    /// The response was not `application/dns-message` (RFC 8484 §6). A
-    /// captive portal's login page, most often.
-    #[error("the DoH server answered with content-type `{got}`, not `application/dns-message`")]
-    ContentType { got: String },
-    /// The response body could not be read to the end, or exceeded
-    /// [`MAX_RESPONSE_BYTES`].
-    ///
-    /// A `String` rather than the body's own error type: `Transport::Body`'s
-    /// error is an unconstrained associated type, so there is no type here
-    /// to name — and `http_body_util::Limited` wraps it in a
-    /// `Box<dyn Error>` of its own anyway, which is not `Clone` and this
-    /// enum is.
-    #[error("could not read the DoH response body: {0}")]
-    Body(String),
-    /// The bytes were not a DNS message. RFC 9460 §2.2 requires rejecting
-    /// the whole RRSet when any record is malformed, which is what a
-    /// whole-message decode failure already gives: no half-parsed answer
-    /// reaches a caller.
-    #[error("the DoH server's answer is not a valid DNS message: {0}")]
-    Malformed(String),
-    /// `QR` was clear: what came back is a query, not a response.
-    #[error("the DoH server echoed a query rather than answering one")]
-    NotAResponse,
-    /// `TC` was set. See this module's doc for why this is an error over
-    /// DoH specifically.
-    #[error("the DoH server's answer was truncated")]
-    Truncated,
-    /// RCODE was neither NOERROR nor NXDOMAIN. RFC 1035 §4.1.1 / RFC 6895
-    /// §2.3.
-    #[error("the DoH server answered with RCODE {rcode}")]
-    ResponseCode { rcode: u8 },
-    /// The response's question section does not echo the question that was
-    /// asked.
-    ///
-    /// Cheap, and worth doing even though HTTP already binds a response to
-    /// its request: it catches a server (or a cache in front of one) that
-    /// answers the wrong question, which over plain DNS would be a
-    /// cache-poisoning primitive and here would be a silent wrong address.
-    #[error("the DoH server answered a different question: asked {asked}, got {got}")]
-    QuestionMismatch { asked: String, got: String },
-    /// RFC 9460 §8: a record's `mandatory` list names a key the record does
-    /// not carry. The one client-side malformity no decoder checks — see
-    /// `hclient_dns::svcb`.
-    #[error("SvcParamKey {key} is listed as mandatory but is not present in the record")]
-    MandatoryKeyAbsent { key: u16 },
 }
 
 /// One RFC 8484 query, ready to be a request body.
