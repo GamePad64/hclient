@@ -767,6 +767,13 @@ where
     }
 }
 
+pin_project_lite::pin_project! {
+// Two shapes this macro does not take, both measured against 0.2.17 rather
+// than worked around blindly: `I: Read + Write` is `no rules expected
+// \`+\``, so the bounds are written one predicate each; and a `///` on any
+// field is `no rules expected \`=\``, so the field notes below are `//`.
+// Nothing is lost in the rendered docs — every field here is private, and
+// rustdoc does not show those.
 /// The background task that closes idle connections when their deadline
 /// passes — [`crate::Native::with_reaper`], and nothing else, starts one.
 ///
@@ -783,19 +790,30 @@ where
 ///
 /// # Why the state is behind a `Box`, and the sleep behind a second one
 ///
-/// This workspace forbids `unsafe`, so there is no pin projection to be
-/// had: the only way to poll a `!Unpin` field is to own it behind a
-/// pointer, and the only way to take `&mut` at a field at all is for the
-/// whole future to be `Unpin`. `tokio::time::Sleep` is `!Unpin` (smol's
-/// is not, which is exactly why one of the two runtimes must not be
-/// allowed to decide the shape), hence `Pin<Box<R::Sleep>>`; and
-/// `R::Instant` could be anything at all, hence the outer box, which makes
-/// `Reaper` `Unpin` for **every** `R` rather than for those whose private
-/// types happen to be. The alternative was `R: Unpin, R::Instant: Unpin`
-/// on a public constructor — a promise a caller cannot read off their own
-/// runtime's documentation, to buy back one allocation per transport.
+/// `tokio::time::Sleep` is `!Unpin` (smol's is not, which is exactly why
+/// one of the two runtimes must not be allowed to decide the shape), so
+/// polling one held in a field needs a pin projection. This workspace
+/// forbids `unsafe`, and `pin_project_lite` is how a projection is had
+/// without any — `SeamTimer` in `http3/runtime.rs` is the same answer to
+/// the same question, and this type used to be the exception.
 ///
-/// Both boxes hold **concrete** types, so nothing is erased and the auto
+/// **It was two boxes and it is none.** `Pin<Box<R::Sleep>>` held the
+/// sleep, and an outer `Box<ReaperState<..>>` made `Reaper` `Unpin` for
+/// **every** `R` — the alternative then being `R: Unpin, R::Instant:
+/// Unpin` on a public constructor, a promise a caller cannot read off
+/// their own runtime's documentation. Neither is needed, because `Unpin`
+/// was never the requirement: [`Spawn`](hclient_rt::Spawn) declares no
+/// bounds at all and neither shipped runtime's impl adds one, so a
+/// spawned future may be `!Unpin` — read, not assumed.
+///
+/// So `Reaper` is `!Unpin` now, which is a change to a **public** type and
+/// is the whole of what this costs. It is safe here and would not have
+/// been one type over: the only thing anyone does with a `Reaper` is hand
+/// it to `spawn`, which takes it by value, where `IdleTimeout` is a
+/// **body** and `http_body_util::BodyExt::frame()` is `where Self: Unpin`
+/// — measured, which is why that one keeps its box.
+///
+/// The field holds a **concrete** type, so nothing is erased and the auto
 /// traits still pass through — the property `h1.rs`'s module doc is about.
 ///
 /// # A reaper is at most as good as the executor under it
@@ -808,35 +826,32 @@ where
 /// the seam, not something this type can check, and it is written down
 /// here because the alternative is someone discovering it from a socket
 /// count in production.
-pub struct Reaper<R, I>(Box<ReaperState<R, I>>)
+pub struct Reaper<R, I>
 where
     R: Timer,
-    I: Read + Write + Unpin;
-
-/// [`Reaper`]'s fields, boxed — see its doc comment for why they are not
-/// simply its fields.
-struct ReaperState<R, I>
-where
-    R: Timer,
-    I: Read + Write + Unpin,
+    I: Read,
+    I: Write,
+    I: Unpin,
 {
     rt: R,
     pool: WeakPool<I>,
-    /// The same origin every [`Idle::expires_at`] is measured from — the
-    /// owning transport's `epoch`. Passed in rather than read here: a
-    /// second origin would make this task's arithmetic disagree with the
-    /// pool's by however long the two constructions were apart.
+    // The same origin every [`Idle::expires_at`] is measured from — the
+    // owning transport's `epoch`. Passed in rather than read here: a
+    // second origin would make this task's arithmetic disagree with the
+    // pool's by however long the two constructions were apart.
     epoch: R::Instant,
-    /// How long to wait when there is nothing in the pool to wait *for*.
+    // How long to wait when there is nothing in the pool to wait *for*.
     idle_timeout: Duration,
-    /// `None` until the first poll. Nothing about this task touches the
-    /// runtime before it is polled, which matters for the ZST
-    /// `hclient_rt_tokio::Tokio`: its `sleep` reads the ambient runtime out
-    /// of a thread-local and panics off a runtime thread, and a client is
-    /// usually built off one. Constructing the sleep at first poll puts
-    /// that call on whichever thread the executor polls from, which is a
-    /// runtime thread by construction.
-    sleep: Option<Pin<Box<R::Sleep>>>,
+    // `None` until the first poll. Nothing about this task touches the
+    // runtime before it is polled, which matters for the ZST
+    // `hclient_rt_tokio::Tokio`: its `sleep` reads the ambient runtime out
+    // of a thread-local and panics off a runtime thread, and a client is
+    // usually built off one. Constructing the sleep at first poll puts
+    // that call on whichever thread the executor polls from, which is a
+    // runtime thread by construction.
+    #[pin]
+    sleep: Option<R::Sleep>,
+}
 }
 
 /// The shortest interval the reaper will ever wake at.
@@ -854,13 +869,13 @@ where
     I: Read + Write + Unpin,
 {
     pub(crate) fn new(rt: R, pool: WeakPool<I>, epoch: R::Instant, idle_timeout: Duration) -> Self {
-        Self(Box::new(ReaperState {
+        Self {
             rt,
             pool,
             epoch,
             idle_timeout,
             sleep: None,
-        }))
+        }
     }
 }
 
@@ -871,8 +886,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Reaper")
-            .field("idle_timeout", &self.0.idle_timeout)
-            .field("pool_alive", &self.0.pool.upgrade().is_some())
+            .field("idle_timeout", &self.idle_timeout)
+            .field("pool_alive", &self.pool.upgrade().is_some())
             .finish()
     }
 }
@@ -890,13 +905,13 @@ where
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let this = &mut *self.get_mut().0;
+        let mut this = self.project();
         loop {
             if this.sleep.is_none() {
-                this.sleep = Some(Box::pin(this.rt.sleep(this.idle_timeout)));
+                this.sleep.set(Some(this.rt.sleep(*this.idle_timeout)));
             }
-            let sleep = this.sleep.as_mut().expect("just set");
-            std::task::ready!(sleep.as_mut().poll(cx));
+            let sleep = this.sleep.as_mut().as_pin_mut().expect("just set");
+            std::task::ready!(sleep.poll(cx));
 
             // The transport is gone, and with it the last strong reference
             // to the pool: whatever was in it has already been dropped, so
@@ -904,7 +919,7 @@ where
             let Some(pool) = this.pool.upgrade() else {
                 return Poll::Ready(());
             };
-            let now = this.rt.elapsed_since(this.epoch);
+            let now = this.rt.elapsed_since(*this.epoch);
             // Two answers in one call, deliberately: a separate "when is
             // the next deadline" query would read the pool a second time,
             // under a second lock, and could disagree with what the first
@@ -919,13 +934,14 @@ where
                 // so an exchange lasting `d` makes its deadline `d`
                 // earlier than that, and the reap that follows this sleep
                 // is late by at most one exchange.
-                None => this.idle_timeout,
+                None => *this.idle_timeout,
             };
             // Dropped before the next sleep so that this task holds no
             // strong reference to the pool while it waits — otherwise
             // "the transport was dropped" could never be observed.
             drop(pool);
-            this.sleep = Some(Box::pin(this.rt.sleep(wake.max(MIN_REAP_INTERVAL))));
+            this.sleep
+                .set(Some(this.rt.sleep(wake.max(MIN_REAP_INTERVAL))));
         }
     }
 }

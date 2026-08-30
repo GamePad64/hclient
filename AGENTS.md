@@ -5925,6 +5925,54 @@ all answer 1, and `Connected::remote` changed a field's *type*, which no
 attribute has ever protected. The freedom this workspace has been spending
 was never mostly about additions.
 
+### `pin_project_lite` reaches one of five boxes, and the other four are the finding
+
+`Pin<Box<T>>` around a **concrete** type appears at five sites here, and
+each carries the same note: `tokio::time::Sleep` is `!Unpin`, this
+workspace forbids `unsafe`, so there is no projection to be had and the
+box is what stands in for one. The premise is false —
+`pin_project_lite` is a projection with no `unsafe` at the call site, it
+was already in this crate's graph, and `http3/runtime.rs`'s `SeamTimer`
+had been using it for a vertical.
+
+**`pool::Reaper` is the one that converted, and it went from two boxes to
+none.** The inner box held the sleep; an outer `Box<ReaperState<..>>`
+existed to make `Reaper` `Unpin` for every `R`. Neither was needed,
+because `Unpin` was never the requirement: `Spawn` declares no bounds and
+neither shipped runtime's impl adds one, so a spawned future may be
+`!Unpin`. That is a change to a public type, and it is safe here because
+the only thing anyone does with a `Reaper` is hand it to `spawn`, which
+takes it by value.
+
+**`IdleTimeout` is the one that must not, and it was measured rather than
+argued.** It is the site with the most to gain — it drops and rebuilds
+its sleep on **every gap between frames**, so the box is an allocation
+per gap rather than per connection. Converted, it compiles and all 2259
+tests pass. What it costs is invisible from in here: `IdleTimeout` is
+`NativeBody`, a **public** response body, and
+`http_body_util::BodyExt::frame()` is `where Self: Unpin`. A green suite
+means this workspace never calls it; a consumer holding a body from
+`Native::execute` directly does. `pin_project_lite` generates its own
+conditional `Unpin` and offers no way to keep the hand-written one, so
+the choice is binary and the box stays.
+
+`connect::Answers` and `http2::keepalive::Phase` are the same wall from
+the `&mut` side: both are polled through `&mut self` by a chain of
+ordinary functions, so converting either means threading `Pin<&mut ..>`
+through that chain to save two allocations per connection and one per
+ping interval. `hclient-core`'s `MapErr` is a third shape — `box_body`
+allocates twice per response body, and one of them would go — at the
+price of putting `pin-project-lite` into `hclient-core`, measured at
+13 crates to 14 for every graph that has no transport.
+
+**Two limits of the macro are worth knowing before the next attempt,
+because both look like a mistake in your own code.** In 0.2.17 a bound
+list is one predicate at a time — `I: Read + Write` is `no rules expected
+"+"` — and a `///` on any **field** is `no rules expected "="`. The
+second is why `SeamTimer` had no field docs and read as a style choice.
+Nothing is lost by writing them `//` where the fields are private, since
+rustdoc does not render those anyway.
+
 ### Every error type lives in a file called `error.rs`
 
 A reader asking *what can this crate refuse* had to read the crate. Error
