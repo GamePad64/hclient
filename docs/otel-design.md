@@ -1,6 +1,12 @@
 # OpenTelemetry for `hclient`: a transport decorator, and why not hooks
 
-**Status: design. Nothing here is built.**
+**Status: built, and corrected against the building.** `crates/hclient-otel`
+implements §11's steps 1-5. Six claims below were wrong and are struck
+through and answered in place — each marked **[corrected]** — because a
+design document that survives its implementation unamended is the shape
+this workspace records failing three times over about checks: the claim is
+exactly as perishable as the thing it describes. §12's list of what a first
+version leaves out still holds, and metrics are still not built.
 
 The want is ordinary: a span per request, `traceparent` and `baggage`
 injected into the outgoing headers, and the result reaching whatever
@@ -175,10 +181,10 @@ OTel's; the right-hand column is ours.
 |---|---|---|
 | `http.request.method` | Required | the request |
 | `server.address`, `server.port` | Required | the URI, port defaulted by scheme |
-| `url.full` | Required | the URI, **with userinfo redacted** — the spec requires it and a span is a place credentials travel to a collector |
+| `url.full` | Required | the URI, **with userinfo redacted** — the spec requires it and a span is a place credentials travel to a collector. **[corrected]** Userinfo is half of it: the specification also names seven query-string keys whose values are credentials (`X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `AWSAccessKeyId`, `Signature`, `sig`, `X-Goog-Signature`), and a presigned URL is the commoner case by far. The key is kept and the value replaced, so a span can still say *this was presigned* |
 | `http.response.status_code` | Cond. Required | the response |
-| `error.type` | Cond. Required | `ErrorKind`'s variant name, which is why that type is an enum |
-| `http.request.method_original` | Cond. Required | only when we normalise a method, which this client does not — so absent, and that is an answer |
+| `error.type` | Cond. Required | `ErrorKind`'s variant name, which is why that type is an enum. **[corrected]** That is one of the rule's two arms and this row had only it: where a response *did* arrive with an error status, the specification asks for the **status code as a string**. Without the second arm a span for a `500` carries an `Error` status and no `error.type` at all — and `error.type` is what an aggregation groups by, so the commonest error a client sees would be the one nothing could group. `Timeout` also carries its `Phase` (`Timeout.Connect`), five values, still low cardinality, and the fact a dashboard is built on |
+| `http.request.method_original` | Cond. Required | ~~only when we normalise a method, which this client does not — so absent, and that is an answer~~ **[corrected]** Normalising is a **MUST**: an unknown method is reported as `_OTHER` with the original here. It is also what makes the paragraph below true — a caller who invents a method per request would otherwise put it in the span *name*, which is the cardinality blow-up the name rule exists to prevent. So the span name is one of ten values for ever |
 | `network.protocol.name` | Cond. Required | absent: it is required only when the protocol is **not** HTTP |
 | `http.request.resend_count` | Recommended | `Attempt`, as above |
 | `network.protocol.version` | Recommended | `Response::version()`, gated on `version_reported` |
@@ -228,10 +234,49 @@ Two fronts, and the second is nearly free:
 - feature `tracing` — emit `tracing` spans, which is what applications
   actually have, and anyone with `tracing-opentelemetry` gets OTel for
   nothing;
-- feature `otel` — a `Tracer` directly.
+- feature `otel` — ~~a `Tracer` directly~~ **[corrected]** the global
+  tracer *provider*, with the instrumentation **scope** as the argument. A
+  `Tracer` taken by value is a type parameter, and a type parameter on
+  `Instrumented<T>` is one every consumer naming the type has to carry —
+  the ceremony erasing `Client` removed. Which provider is a thing the
+  application sets, and it is setting one anyway.
 
-`opentelemetry` depends on `tracing` already, so the second front adds no
-graph.
+~~`opentelemetry` depends on `tracing` already, so the second front adds
+no graph.~~ **[corrected], twice over.** It depends on `tracing` only
+through its default `internal-logs` feature, which this crate switches
+off — so the two fronts are genuinely additive. And measured on the built
+crate rather than standalone, the arithmetic inverts: `hclient-otel` is
+**16** crates with `otel`, **18** with `tracing`, **19** with both,
+against `hclient-core`'s own 13. `opentelemetry` adds exactly itself,
+because `futures-core`, `futures-sink`, `pin-project-lite` and
+`thiserror` are already in the client's graph; `tracing` adds itself plus
+`tracing-core` and `once_cell`. **The front that propagates is the
+smaller one**, which is why `otel` is the default feature and `tracing`
+is not.
+
+**A third correction the fronts forced, and it is the sharpest thing the
+building found.** The two are *not* interchangeable: the `tracing` front
+**cannot inject**, at any price. `traceparent` is a W3C trace-id and
+span-id; a `tracing` span's identity is a `tracing::span::Id` handed out
+by whichever subscriber is installed, meaningful in one process and
+nowhere else. Injecting `opentelemetry::Context::current()` instead is the
+tempting repair and is worse than the absence — under
+`tracing-opentelemetry`, which is the whole reason anybody picks that
+front, that context is *empty*, because the bridge keeps the OTel span in
+the tracing span's extensions and never pushes it onto the `Context`
+stack. The propagator would write nothing at all on a request that looked
+instrumented. So the crate says so at the constructor. What would close it
+is `tracing_opentelemetry::OpenTelemetrySpanExt`, and taking it means
+choosing the caller's bridge crate and its version for them: a third
+feature, not a change to these two.
+
+**And the fronts compose at the *constructor*, not through the features.**
+`Instrumented::tracing` and `Instrumented::otel`; a feature decides which
+exists and never what a built decorator does. Cargo unifies features
+across a graph, so the other arrangement lets a neighbour's build add a
+second span per request to this one — which is worse than either front
+alone. It is `Collected::text`'s rule one crate over: a call must not
+change meaning with a feature.
 
 **And a bootstrap loop that must be named.** If the OTLP exporter makes
 its requests through an instrumented `Client`, exporting produces spans
@@ -255,6 +300,14 @@ Measured in a scratch crate outside this workspace:
 **No build script, no `-sys` crate, no C**, and it type-checks for
 `wasm32-unknown-unknown`. For this workspace that is a cheap guest.
 
+**One thing the standalone measurement did not show, and a wasm build
+does.** On `wasm32-unknown-unknown` `opentelemetry`'s clock is
+`js_sys::Date::now()` — a target-conditional dependency — so
+`hclient-otel` is **29** crates there against 19 on `wasm32-wasip2`, the
+ten being `js-sys` and `wasm-bindgen`'s tree. Nothing new to a browser
+build, which carries them for `hclient-fetch` already, and a fact worth
+having written down before somebody counts them.
+
 `opentelemetry-http` is not worth taking: what it offers here is a
 `HeaderInjector` over `HeaderMap`, which is fifteen obvious lines. This
 workspace's rule for taking a dependency is whether a wrong answer would
@@ -273,6 +326,8 @@ hclient-otel/
   src/attrs.rs      the request/response attribute set, sans-io
   src/body.rs       SpanBody<B>, which ends the span
   src/context.rs    reading the context, and propagate_when
+  src/span.rs       [corrected] a fifth file: the two fronts behind one
+                    recorder, so that "end exactly once" is written once
 ```
 
 **`Instrumented<T>`** wraps any `T: Transport` and implements `Transport`;
@@ -292,6 +347,24 @@ tests, because a `SpanBody` that ended only on `poll_frame` returning
 `None` passes the first and fails the second, and one that ended only on
 `Drop` passes the second and reports every duration as the caller's
 lifetime rather than the exchange's.
+
+**[corrected] — the pair is right and the second half is not reachable by
+a mutation of this crate, which is worth knowing before somebody trusts
+it as one.** Both fronts close themselves when dropped:
+`opentelemetry_sdk::trace::Span` has an `impl Drop` that ends and
+exports, and dropping a `tracing::Span` fires the registry's `on_close`.
+So emptying `Recorder`'s own `Drop` leaves the whole suite green —
+measured. The impl is kept regardless, and on a measurement rather than
+on caution: `opentelemetry::trace::Span` is a **trait with no `Drop`
+requirement**, and the API crate carries no `impl Drop` on any span type
+at all — the one that exists belongs to the SDK. A conforming provider
+whose spans do not self-end is allowed, and this crate hands its spans to
+whatever the application installed.
+
+The other half **is** reachable, and only because of how the test is
+written: the assertion that the span has closed is made **while the body
+is still alive**. A body read to its end and then dropped looks the same
+either way.
 
 ## 10. What a test can pin without a collector
 
@@ -333,6 +406,8 @@ that belongs rather than in a paragraph.
 5. **Stop and check.** At this point the crate is useful and every
    attribute it sets is one it can defend.
 6. Metrics, if wanted, as a separate surface — §12.
+
+**Built: 1-5, and stopped at 5.**
 
 ## 12. What a first version leaves out
 

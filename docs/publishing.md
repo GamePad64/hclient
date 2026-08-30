@@ -1,4 +1,4 @@
-# Releasing the 23 crates
+# Releasing the 26 crates
 
 ```
 cargo release <patch|minor|major|VERSION>            # shows the plan, changes nothing
@@ -172,16 +172,29 @@ the wave count is a fact about the graph rather than a guess:
 |---|---|
 | 1 | `hclient-core`, `hclient-idn` |
 | 2 | `hclient-dns`, `hclient-fetch`, `hclient-mock`, `hclient-proto`, `hclient-rt`, `hclient-tls`, `hclient-webtransport` |
-| 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-proxy`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-rustls` |
-| 4 | `hclient-native` |
+| 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-proxy`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-rustls`, `hclient-winhttp` |
+| 4 | `hclient-native`, `hclient-tls-native-tls` |
 | 5 | `hclient`, `hclient-dns-doh` |
-| 6 | `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
+| 6 | `hclient-otel`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
+| 7 | `hclient-cli` |
 
-**It is six and not four, and that is two questions rather than a
+**Re-derived on 2026-08-30 with the script below, and three rows had
+drifted.** `hclient-winhttp` and `hclient-cli` were missing entirely and
+`hclient-tls-native-tls` had moved from wave 3 to wave 4 — none of which
+anything forced, because this is a table and not a check, and the sentence
+above about re-deriving after a dependency change is the only thing that
+was ever going to move it. `hclient-otel` is the crate that prompted the
+re-derivation and it changed **nothing**: it joins wave 6 with the other
+terminal crates, because its only normal dependency is `hclient-core` and
+its only version-carrying dev-dependency is `hclient`. **A crate that adds
+no wave is the ordinary case**, and saying so is the point of checking.
+
+**It is seven and not five, and that is two questions rather than a
 miscount.** Five is the *normal* dependency graph; `cargo publish` must
-also satisfy **dev-dependencies that carry a version**, of which there are
-32 here. Cargo's own ordering includes those edges, which is how the two
-derivations were checked against each other.
+also satisfy **dev-dependencies that carry a version**. Cargo's own
+ordering includes those edges, which is how the two derivations were
+checked against each other. Wave 7 is `hclient-cli`, which dev-depends on
+nothing but is the one crate depending on `hclient-tungstenite`.
 
 The chokepoints are one crate wide and each is a real edge:
 `hclient-native` needs both runtimes, the system resolver and

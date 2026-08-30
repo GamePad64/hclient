@@ -1,0 +1,111 @@
+[package]
+name = "hclient-otel"
+version.workspace = true
+description = "OpenTelemetry for hclient: a Transport decorator that opens a span per request and injects traceparent"
+keywords     = ["hclient", "opentelemetry", "tracing", "observability", "http-client"]
+categories   = ["web-programming::http-client", "development-tools::debugging"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+# Two emission fronts, and **the constructor picks one, not the feature.**
+#
+# Cargo unifies features across a graph, so a feature that decided *what a
+# built decorator does* would be a floor: a caller who wanted the OTel span
+# would get a `tracing` span as well the moment any other crate in the tree
+# took this crate's defaults, and two spans per request is worse than
+# either. The rule this workspace already applies to `Collected::text` one
+# crate over — a method must not change meaning with a feature — is what
+# decides it: the feature gates whether `Instrumented::tracing` and
+# `Instrumented::otel` *exist*, and an existing call means the same thing
+# whatever else is switched on.
+#
+# **`otel` is the default and `tracing` was, for one draft.** The crate's
+# headline is a span per request *and* `traceparent` injected, and only the
+# `otel` front can do the second half — a `tracing` span has a subscriber-
+# local `Id` and no W3C trace-id at all, so there is nothing for a
+# propagator to write. A default that cannot propagate is a default that
+# does not do what the crate is named after. See `src/context.rs` for the
+# whole of that argument, including why injecting from
+# `Context::current()` under the `tracing` front would be a header that is
+# silently absent rather than a smaller feature.
+#
+# **What that costs was measured, and the measurement reversed the
+# argument that had been written here first.** That draft said `tracing`
+# was the cheap front and `otel` the expensive one — 12 crates against 20,
+# a number nothing had run. `cargo tree -p hclient-otel -e normal`, this
+# tree: **16 crates with `otel` alone, 18 with `tracing` alone, 19 with
+# both**, against `hclient-core`'s own 13. So the front that propagates is
+# also the *smaller* one, by two: `opentelemetry` with
+# `default-features = false, features = ["trace"]` adds exactly itself,
+# because `futures-core`, `futures-sink`, `pin-project-lite` and
+# `thiserror` are already in `hclient-core`'s graph, where `tracing` adds
+# itself plus `tracing-core` and `once_cell`.
+#
+# `docs/otel-design.md` §8's 13 and 10 are not contradicted by that: they
+# are standalone measurements of each crate in an empty graph, and this is
+# the marginal cost beside a client. Both are re-measured here rather than
+# copied.
+#
+# So the floor a `tracing`-only consumer pays for a neighbour's default is
+# **one crate**, and the population that pays it is a library depending on
+# this crate with `tracing` alone — where this is an application-level
+# crate.
+[features]
+default = ["otel"]
+# An OpenTelemetry span through the global provider, and — the half
+# `tracing` structurally cannot do — `traceparent` and `baggage` injected,
+# which needs `opentelemetry`'s `Context` and its propagator.
+otel = ["dep:opentelemetry"]
+# A `tracing` span instead. What most applications already have, and with
+# `tracing-opentelemetry` installed it becomes an OTel span for nothing.
+# It emits and does not inject; `src/context.rs` says why that is
+# structural.
+tracing = ["dep:tracing"]
+
+[dependencies]
+bytes        = { workspace = true }
+http         = { workspace = true }
+http-body    = { workspace = true }
+hclient-core = { workspace = true }
+# `attributes` off: this crate opens its spans with `tracing::span!` and
+# never with `#[instrument]`, so the proc macro and the three crates behind
+# it buy nothing. `std` stays, because a span with no subscriber storage is
+# not one.
+tracing = { version = "0.1", default-features = false, features = ["std"], optional = true }
+# `trace` alone. The default set is `trace,metrics,logs,internal-logs,
+# futures`; `metrics` and `logs` are surfaces this crate does not have —
+# §12 of docs/otel-design.md says why metrics are a separate one — and
+# `internal-logs` routes opentelemetry's own diagnostics through `tracing`,
+# which would put that crate in the graph of an `otel`-only build that
+# deliberately left it out.
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"], optional = true }
+
+[dev-dependencies]
+http-body-util   = { workspace = true }
+# A current-thread runtime and nothing else — no reactor, because no test
+# here opens a socket. It replaces `futures-executor`, which cannot drive
+# these at all: `SimpleSpanProcessor::on_end` blocks on the exporter's own
+# future and `futures_executor::block_on` refuses to nest. See
+# `tests/otel_front.rs`.
+tokio            = { version = "1", features = ["rt", "macros"] }
+hclient          = { workspace = true, features = ["test-util"] }
+hclient-mock     = { workspace = true }
+# The recorder for the `tracing` front: a `Layer` writing into a `Vec`, per
+# §10. `registry` is what makes a span's fields readable from a layer at
+# all; nothing here needs a formatter, an env filter or `fmt`.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+# The recorder for the `otel` front, and the propagator the crate
+# deliberately does not own — §7: a library that decides where a process's
+# telemetry is shipped has drawn the boundary in the wrong place, so the
+# `TraceContextPropagator` a test installs is the same one an application
+# installs.
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "testing"] }
+
+[lints]
+workspace = true

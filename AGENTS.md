@@ -121,9 +121,11 @@ place. The fifth quotes `embassy-net`'s own `Drop for TcpSocket` as
 evidence and is ```text, because someone else's code cited in an
 argument was never our example. The recipe now fails closed on both
 shapes — no `test result:` line at all, and any `ignored` count — so
-13 doctests were checked where 9 had been — and **22 today**, which is
+13 doctests were checked where 9 had been — and **45 today**, which is
 the number's real job: it grows with the crate, so what it pins is the
-recipe's honesty rather than a figure. `just test-doc` prints it, and the
+recipe's honesty rather than a figure. (It read 22 for long enough to be
+worth noticing: nothing forces a figure in prose to move, which is why
+the gate is the fail-closed pair and never the value.) `just test-doc` prints it, and the
 gate is the fail-closed pair rather than any value.
 
 And `test-no-default` **ran, printed `error:`, and exited zero**, for as
@@ -364,10 +366,15 @@ What is still missing is enumerated at the end of
 themselves the thing to check first: several entries on them were built
 after they were written.
 
-The mechanics are in place and were measured, not assumed. All 24
+The mechanics are in place and were measured, not assumed. All **26**
 publishable crates carry `description`, `license` and `repository`; inter-crate dependencies
 carry `version` beside `path`, without which nothing here could be
-published at all; `hclient-rt-pair-check` is the only `publish = false`.
+published at all. Three crates are `publish = false` —
+`hclient-rt-pair-check`, `hclient-rt-nal` and `hclient-rt-embassy` — and
+this sentence said there was one for as long as there had been two, which
+is the count-in-prose defect this file records about itself elsewhere:
+`just packaging` derives the figure from `cargo metadata` and does not go
+stale, and a number written here does.
 `cargo publish -p hclient-core --dry-run` packages **and verifies** clean,
 and `cargo package -p hclient` correctly refuses, because its dependencies
 are not in the index — which is what the order is for.
@@ -2297,6 +2304,100 @@ an auto trait at all.** `Send` is demanded where the facade *stores* the
 value — `BoxedFlow` and `SharedAuth`, one line each — which is this
 workspace's own rule for a seam, arrived at from a formatter rather than
 from the argument.
+
+### OpenTelemetry landed as a transport decorator, and the seam it wanted was the one it could not use
+
+`hclient-otel`: `Instrumented::otel(transport)` or
+`Instrumented::tracing(transport)`, one line at `Client::builder`, a span
+per request with the OTel HTTP client attribute set, and `traceparent`
+and `baggage` on the wire. `docs/otel-design.md` is the design and now
+also the record of six places it was wrong.
+
+**The obvious home was `Hooks` and it is not close.** `fn on(&self, event:
+&Event<'_>)` takes an immutable event, `&self`, and returns nothing, so
+**nothing reachable from a hook can put a header into an outgoing
+request** — which is what that seam is *for*. Two smaller facts point the
+same way: there is no request-start event, `Event` being the life of a
+connection plus a head plus octets, and `fn hooks` is declared on four
+backends of six. `Transport::execute` gives both halves away already: the
+request arrives by value, so headers are editable, and `Self::Body` is an
+associated type, so the body is wrappable — which is what makes the
+duration the exchange's rather than the time to first byte.
+
+**Its own crate by the local test, measured rather than asserted.**
+`cargo tree -e normal`: `hclient-core` alone is 13 crates, `hclient-otel`
+is **16** with `otel`, **18** with `tracing`, **19** with both, and **29**
+on `wasm32-unknown-unknown`, where `opentelemetry`'s clock reaches for
+`js_sys::Date::now`. A feature of `hclient` would put `opentelemetry` into
+every graph in any tree that switched it on.
+
+**And that measurement reversed the design's own arithmetic.** §8 said
+`opentelemetry` depends on `tracing` already, so the second front adds no
+graph. It depends on it only through the default `internal-logs` feature,
+which this crate switches off — so the fronts are additive, and the one
+that *propagates* is the **smaller** by two, because `futures-core`,
+`futures-sink`, `pin-project-lite` and `thiserror` are already in the
+client's graph and `tracing` brings `tracing-core` and `once_cell` that
+are not. `otel` is therefore the default feature and `tracing` is not,
+which is the opposite of what was planned.
+
+**The two fronts are chosen at the constructor and never by a feature.**
+Cargo unifies features, so a feature deciding what a *built* decorator
+does would let a neighbour's build add a second span per request to this
+one — `Collected::text`'s rule one crate over, that a call must not change
+meaning with a feature. A feature decides which constructors exist.
+
+**`tracing` emits and cannot inject, and that is structural.** A
+`tracing` span's identity is a `tracing::span::Id` from whatever
+subscriber is installed; `traceparent` is a W3C trace-id, and there is no
+value to write. The tempting repair is worse than the absence: with
+`opentelemetry` also compiled in, that front could inject
+`Context::current()` — and under `tracing-opentelemetry`, the whole reason
+anybody picks it, that context is *empty*, because the bridge keeps the
+OTel span in the tracing span's extensions and never pushes it on the
+`Context` stack. The propagator would write nothing on a request that
+looked instrumented, which is the *capability that lies* one layer down.
+Said at the constructor instead.
+
+**Three attribute decisions the specification makes and the design got
+wrong.** `http.request.method_original` was recorded as *absent, and that
+is an answer*; normalising an unknown method to `_OTHER` is a **MUST**,
+and it is also what bounds the span name — without it a caller who invents
+a method per request puts it in the name, which is the cardinality
+blow-up the `{method}` rule exists to prevent. `error.type` had one arm
+and has two: a status that indicates an error is reported as the **status
+number as a string**, without which a span for a `500` carries an `Error`
+status and nothing an aggregation can group by. And `url.full`'s redaction
+is userinfo *and* seven named query-string keys — a presigned URL carries
+its signature in the query, which is the commoner case by far.
+
+**`resend_count` is `hop + resend` and the field names invite the wrong
+mapping**, which is the one thing the design got most emphatically right:
+`Attempt` splits the total on a line OTel does not draw, and reading
+`resend` alone reports nothing for the third hop of a redirect chain —
+exactly the case the attribute exists for. Both halves travel beside it
+as `hclient.hop` and `hclient.resend`, because *third send, first hop* and
+*first send, third hop* are different failures.
+
+**One mutation survived on purpose, and the measurement is why it is
+kept.** Emptying `Recorder`'s `Drop` leaves all 39 tests green, because
+both fronts close themselves — `opentelemetry_sdk::trace::Span` has an
+`impl Drop` and a dropped `tracing::Span` fires the registry's
+`on_close`. The impl stays because `opentelemetry::trace::Span` is a
+**trait with no `Drop` requirement** and the API crate carries no `impl
+Drop` on any span type: a provider whose spans do not self-end is
+conforming, and this crate hands its spans to whatever the application
+installed. Leaving the close to the SDK's convenience would make the
+promise the SDK's. The killable half of the same rule is
+`SpanBody::poll_frame` calling `end` at end-of-stream, and its test is
+written with the body **still alive** — a body read to its end and then
+dropped looks the same under either mutation.
+
+**And a chain of redirects is flat rather than nested**, which OTel's
+model chooses: one client span per request, and a redirect is a resend.
+With no ambient span each hop is the root of its own trace; with one, all
+three are children of the caller's span and none of each other, which is
+what the test asserts rather than merely asserting one trace id.
 
 ### An axum app is testable in process, and the seam that allows it is the one reqwest has not got
 
@@ -5696,8 +5797,8 @@ workspace-wide `git ls-files | xargs sed -i` silently turns every licence
 link, and `CLAUDE.md`'s link to this file, into copies. Both renames this
 week did it. The tell is `git status`'s `T` (type change), not `M`, and the
 check that settles it is the **index**: `git ls-files -s | awk '$1=="120000"'`
-should count **two per publishable crate, plus one** for `CLAUDE.md` — 51
-today at 25 crates, and stated as a relationship rather than a number
+should count **two per publishable crate, plus one** for `CLAUDE.md` — 53
+today at 26 crates, and stated as a relationship rather than a number
 because it was written down as 59 at 29 crates and was wrong within the
 week. `just packaging` is the gate that does not go stale, because it
 asserts against the packaged file list. Restoring is one loop; noticing is

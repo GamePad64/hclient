@@ -385,8 +385,10 @@ check-targets:
     # argument `docs/ci.md` makes for nextest over `cargo test`, one level
     # up.
     failed=()
+    ran=0
     check() {
       echo "==> $*"
+      ran=$((ran+1))
       cargo check "$@" --color never || failed+=("$*")
     }
     # The browser: the backend with its tests, and the facade over it —
@@ -401,6 +403,19 @@ check-targets:
     check -p hclient --target wasm32-unknown-unknown --features default-transport --lib
     # WASI, including the example — where one of the three breaks was.
     check -p hclient-wasi --target wasm32-wasip2 --all-targets
+    # The instrumenter, on both wasm targets and `--all-features`, which
+    # is `docs/otel-design.md` §10's *"one property is not a test but a
+    # build"*: a client whose whole claim is one API everywhere must not
+    # grow an instrumenter that only exists on native. `--lib`, because
+    # its dev-dependencies are host-only — `tokio`'s `rt` and
+    # `opentelemetry_sdk`'s in-memory exporter — and what is being
+    # defended is the crate a consumer would compile, not its own
+    # harness. Nothing in it is `#[cfg]`-ed by target: the reason it can
+    # break here and not on Linux is a dependency, `opentelemetry`, whose
+    # `wasm32-unknown-unknown` clock reaches for `js_sys::Date::now` and
+    # brings ten crates with it.
+    check -p hclient-otel --target wasm32-unknown-unknown --all-features --lib
+    check -p hclient-otel --target wasm32-wasip2 --all-features --lib
     # Apple, from here. `hclient-urlsession` has no other build on this
     # machine and its live tests need a Mac; this is what keeps its shape
     # honest in between.
@@ -451,12 +466,22 @@ check-targets:
     check -p hclient-rt-embassy --target x86_64-pc-windows-msvc --all-features --all-targets
     check -p hclient-rt-embassy --target aarch64-apple-darwin --all-features --all-targets
 
+    # **Counted rather than written down.** This line said `6` while the
+    # recipe made thirteen calls, which is this file's own recurring
+    # defect — a number in prose that nothing forces to move. `ran` is
+    # incremented by `check` itself, so it cannot drift; the floor below
+    # is what keeps a recipe whose body got deleted from reporting
+    # success over nothing.
+    if [ "$ran" -lt 6 ]; then
+      echo "::error::only $ran cross-target checks ran — a green run over almost nothing is the defect this recipe exists for"
+      exit 1
+    fi
     if [ ${#failed[@]} -ne 0 ]; then
-      echo "::error::cross-target check failed for ${#failed[@]} of 6 invocations:"
+      echo "::error::cross-target check failed for ${#failed[@]} of $ran invocations:"
       for f in "${failed[@]}"; do echo "  cargo check $f"; done
       exit 1
     fi
-    echo "cross-target check: 6 invocations, 4 targets, all clean"
+    echo "cross-target check: $ran invocations, 4 targets, all clean"
 
 # the Transport acceptance: one source, no #[cfg], three targets
 build-three-targets:

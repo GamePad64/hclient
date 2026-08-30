@@ -82,6 +82,7 @@ flowchart TB
 
     TR --> AMB["hclient-fetch · hclient-wasi<br/>hclient-urlsession · hclient-winhttp<br/><i>ambient: they own no connection,<br/>so they ask for none of the seams below</i>"]
     TR --> OTH["hclient-tower<br/>hclient-mock"]
+    OTEL["<b>hclient-otel</b><br/><i>a Transport wrapping a Transport:<br/>a span per request, traceparent injected</i>"] -. "decorates any of them" .-> TR
     TR --> NAT
     NAT -. "hands over the upgraded stream" .-> TUN
 
@@ -153,6 +154,7 @@ or `dns` on the family members.
 | `hclient-urlsession` | Apple's `URLSession` |
 | `hclient-tower` | any `tower::Service`, so `tower-http` middleware applies |
 | `hclient-winhttp` | Windows' own WinHTTP |
+| `hclient-otel` | not a transport of its own but a **decorator** over one: a span per request, `traceparent` and `baggage` injected |
 
 **Runtimes** — what the native transport does I/O and time with
 
