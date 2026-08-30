@@ -120,6 +120,7 @@
 // independently, path-scoped to that one file; see amendment C8.
 #![deny(unsafe_code)]
 
+mod error;
 mod svcb;
 mod sys;
 
@@ -132,6 +133,7 @@ type SendAddrs<'a> =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 type SendRecords<'a> =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+use crate::error::ResolveFailed;
 #[cfg(test)]
 use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
@@ -150,20 +152,6 @@ impl<B> SystemDns<B> {
         Self { blocking }
     }
 }
-
-/// `getaddrinfo` said no, with the name it was asked about kept alongside
-/// the reason.
-///
-/// The name is in the message AND the `io::Error` is a `#[source]`, which
-/// is not redundant: `hclient_core::Error` chains `source()`, so a caller
-/// that wants the errno downcasts to `std::io::Error` through this without
-/// parsing text, while a caller that only logs still sees which name
-/// failed. Dropping `#[source]` would leave the second reader with the
-/// same message and the first with nothing — see
-/// `a_resolve_failure_keeps_the_io_error_reachable_by_downcast`.
-#[derive(Debug, thiserror::Error)]
-#[error("failed to resolve `{0}`: {1}")]
-struct ResolveFailed(String, #[source] std::io::Error);
 
 impl<B: Blocking> SystemDns<B> {
     /// `Blocking::run` returns `Result<T,
