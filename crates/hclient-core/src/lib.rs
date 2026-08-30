@@ -79,12 +79,14 @@ impl ClientIdentity {
     }
 }
 
-pub use body::{MAX_REWIND_DEPTH, Reduced, RequestBody, RetryKind, RewindFactory, RewindTooDeep};
+pub use body::{MAX_REWIND_DEPTH, Reduced, RequestBody, RetryKind, RewindFactory};
 pub use caps::{
     AllowEarlyData, CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport,
     RedirectSupport, RequireVersion, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,
-    UnsupportedCapability, VersionNotAvailable, check_version,
+    check_version,
 };
-pub use error::{Error, ErrorKind, Phase};
+pub use error::{
+    Error, ErrorKind, Phase, RewindTooDeep, UnsupportedCapability, VersionNotAvailable,
+};
 pub use host::bare_host;
 use std::borrow::Cow;

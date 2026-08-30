@@ -1,3 +1,4 @@
+use crate::error::VersionNotAvailable;
 use http::HeaderName;
 
 /// Who follows a redirect chain: nobody, `Client`, or the backend.
@@ -416,7 +417,7 @@ pub enum EarlyDataSupport {
 /// for the handshake to complete, and **there is no configuration in which
 /// a request the caller did not mark ends up in early data**. Present
 /// against a transport reporting [`EarlyDataSupport::None`], it is a typed
-/// [`UnsupportedCapability`] rather than a silent no-op.
+/// [`UnsupportedCapability`](crate::UnsupportedCapability) rather than a silent no-op.
 ///
 /// # What marking a request asserts, and what it does not
 ///
@@ -551,7 +552,7 @@ pub struct AllowEarlyData;
 /// - The **backend cannot honour demands at all**
 ///   ([`Capabilities::version_select`] is `false` — `hclient-fetch` and
 ///   `hclient-wasi`, neither of which chooses or even learns the version):
-///   a typed [`UnsupportedCapability`] from `Client`, the same arm a
+///   a typed [`UnsupportedCapability`](crate::UnsupportedCapability) from `Client`, the same arm a
 ///   `RedirectPolicy` against
 ///   [`RedirectSupport::Internal`] takes. It fires whatever version was
 ///   demanded, because the backend cannot answer for any of them.
@@ -579,27 +580,6 @@ pub struct AllowEarlyData;
 /// prevent, arriving through the one door left open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequireVersion(pub http::Version);
-
-/// A [`RequireVersion`] demand the connection in hand does not satisfy.
-///
-/// Carries both halves, because "HTTP/2 was required" and "HTTP/1.1 is
-/// what this connection negotiated" are separately actionable — the first
-/// is the caller's own request coming back, the second is a fact about the
-/// server or the TLS configuration.
-///
-/// One type in this crate rather than one per backend (the shape
-/// `hclient_h3::RequestTrailersNotSent` takes), because a caller
-/// downcasting on it must not have to know which transport is underneath:
-/// the demand is portable, so its refusal is too.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "the request required {required:?} and this connection negotiated {negotiated:?}; \
-     it was refused before the head was written"
-)]
-pub struct VersionNotAvailable {
-    pub required: http::Version,
-    pub negotiated: http::Version,
-}
 
 /// The one comparison, shared by every transport that honours a demand.
 ///
@@ -789,7 +769,7 @@ pub struct Capabilities {
     /// from — *a variant exists only if a caller decision turns on it*. The
     /// decision that arrived is `ClientBuilder::cache`, and a client-side
     /// cache against a transport reporting `true` is an
-    /// [`UnsupportedCapability`] at `build()`, the same arm
+    /// [`UnsupportedCapability`](crate::UnsupportedCapability) at `build()`, the same arm
     /// `owns_cookie_jar` takes for a jar and [`RedirectSupport::Internal`]
     /// takes for a redirect policy.
     ///
@@ -824,7 +804,7 @@ pub struct Capabilities {
     /// `false` is for a transport that cannot answer at all:
     /// `hclient-fetch` and `hclient-wasi` neither select the version nor
     /// learn it (both also report `version_reported: false`), so a demand
-    /// against either becomes an [`UnsupportedCapability`] from `Client` —
+    /// against either becomes an [`UnsupportedCapability`](crate::UnsupportedCapability) from `Client` —
     /// the same arm a `RedirectPolicy` against
     /// [`RedirectSupport::Internal`] takes.
     ///
@@ -856,20 +836,10 @@ pub struct Capabilities {
     pub forbidden_request_headers: &'static [HeaderName],
 }
 
-/// A setting the chosen transport cannot honor.
-///
-/// Returned from `build()` rather than silently ignored. The model is
-/// wasi:http itself, whose setters return `request-options-error::not-supported`.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("backend `{backend}` does not support `{what}`")]
-pub struct UnsupportedCapability {
-    pub what: &'static str,
-    pub backend: &'static str,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::UnsupportedCapability;
     use std::error::Error as StdError;
 
     /// **Every field is a gate or a report, and adding one without saying

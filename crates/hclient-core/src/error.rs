@@ -1,3 +1,29 @@
+//! The vocabulary every backend translates into, and the three refusals
+//! no backend owns.
+//!
+//! This crate defines seams and implements none of them, so nothing here
+//! is a failure that *happened* — there is no socket to reset and no
+//! handshake to lose. [`Error`] and [`ErrorKind`] are the shape a backend
+//! reports such a failure in, and the rest are the refusals made above
+//! every backend, where the fact being refused is portable: a
+//! [`Capabilities`](crate::Capabilities) field a transport does not have
+//! ([`UnsupportedCapability`]), a
+//! [`RequireVersion`](crate::RequireVersion) demand a connection cannot
+//! meet ([`VersionNotAvailable`]), and a
+//! [`RequestBody`](crate::RequestBody) whose factory contract was broken
+//! ([`RewindTooDeep`]).
+//!
+//! **That is why they are here and not one per backend**, which the two
+//! newer ones say in their own words: a caller downcasting on
+//! `VersionNotAvailable` must not have to know which transport is
+//! underneath, and `MAX_REWIND_DEPTH` exists because four backends
+//! answered the same question three different ways. A refusal that is
+//! portable has one type.
+//!
+//! Each is re-exported at the crate root, where it has always been, so no
+//! consumer's `use` line moves.
+
+use crate::body::MAX_REWIND_DEPTH;
 use std::error::Error as StdError;
 use std::fmt::Display;
 use std::sync::Arc;
@@ -156,6 +182,52 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         Some(&*self.source)
     }
+}
+
+/// A [`RequestBody::Rewindable`](crate::RequestBody::Rewindable) whose factory kept handing back another
+/// `Rewindable`, past [`MAX_REWIND_DEPTH`](crate::MAX_REWIND_DEPTH).
+///
+/// The factory contract is being broken rather than a legitimate shape
+/// being refused — but a broken contract that overflows the stack is worse
+/// than one that returns this.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "RequestBody::Rewindable factory nested more than {MAX_REWIND_DEPTH} levels deep \
+     (each factory call returned another Rewindable instead of a terminal body)"
+)]
+#[non_exhaustive]
+pub struct RewindTooDeep;
+
+/// A [`RequireVersion`](crate::RequireVersion) demand the connection in hand does not satisfy.
+///
+/// Carries both halves, because "HTTP/2 was required" and "HTTP/1.1 is
+/// what this connection negotiated" are separately actionable — the first
+/// is the caller's own request coming back, the second is a fact about the
+/// server or the TLS configuration.
+///
+/// One type in this crate rather than one per backend (the shape
+/// `hclient_h3::RequestTrailersNotSent` takes), because a caller
+/// downcasting on it must not have to know which transport is underneath:
+/// the demand is portable, so its refusal is too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the request required {required:?} and this connection negotiated {negotiated:?}; \
+     it was refused before the head was written"
+)]
+pub struct VersionNotAvailable {
+    pub required: http::Version,
+    pub negotiated: http::Version,
+}
+
+/// A setting the chosen transport cannot honor.
+///
+/// Returned from `build()` rather than silently ignored. The model is
+/// wasi:http itself, whose setters return `request-options-error::not-supported`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("backend `{backend}` does not support `{what}`")]
+pub struct UnsupportedCapability {
+    pub what: &'static str,
+    pub backend: &'static str,
 }
 
 #[cfg(test)]

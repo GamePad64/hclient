@@ -1,3 +1,4 @@
+use crate::error::RewindTooDeep;
 use bytes::Bytes;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -122,20 +123,6 @@ impl RequestBody {
 /// There is no legitimate scenario for the nesting either: a factory
 /// calling a factory referring to a third buys the caller nothing.
 pub const MAX_REWIND_DEPTH: u8 = 16;
-
-/// A [`RequestBody::Rewindable`] whose factory kept handing back another
-/// `Rewindable`, past [`MAX_REWIND_DEPTH`].
-///
-/// The factory contract is being broken rather than a legitimate shape
-/// being refused — but a broken contract that overflows the stack is worse
-/// than one that returns this.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "RequestBody::Rewindable factory nested more than {MAX_REWIND_DEPTH} levels deep \
-     (each factory call returned another Rewindable instead of a terminal body)"
-)]
-#[non_exhaustive]
-pub struct RewindTooDeep;
 
 /// What a transport actually has to send: bytes, or a stream.
 ///
