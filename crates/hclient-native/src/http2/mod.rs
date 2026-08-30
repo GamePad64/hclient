@@ -153,9 +153,9 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
-mod errors;
+mod error;
 mod keepalive;
-use errors::{
+use error::{
     ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBeforeTheRequest,
     StreamClosedWhileSendingTheRequestBody, UnknownRequestBodyFrame, from_h2_error,
     stopped_after_a_complete_response,

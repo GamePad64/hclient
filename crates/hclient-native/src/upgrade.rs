@@ -101,6 +101,7 @@
 //! `tests/switching_protocols.rs` reached from the other side, and here it
 //! costs nothing to arrange — this module never builds a `CheckIn`.
 use crate::connect;
+use crate::error::{EndedBeforeTheResponse, NotSwitchingProtocols};
 use crate::{Native, NativeIo};
 use bytes::Bytes;
 use hclient_core::unversioned::NoHooks;
@@ -113,14 +114,6 @@ use hyper::rt::{Read, Write};
 use std::fmt::Debug;
 use std::future::poll_fn;
 use std::task::Poll;
-
-#[derive(Debug, thiserror::Error)]
-#[error("the server answered {0} rather than 101 Switching Protocols")]
-pub struct NotSwitchingProtocols(pub http::StatusCode);
-
-#[derive(Debug, thiserror::Error)]
-#[error("the connection ended before the handshake response arrived")]
-pub struct EndedBeforeTheResponse;
 
 /// A `101` that has arrived, on a connection not yet taken apart.
 ///

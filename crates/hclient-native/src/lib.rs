@@ -32,6 +32,7 @@
 mod body;
 mod connect;
 mod discovery;
+mod error;
 /// RFC 9114's ALPN identifier, and the one string that decides whether an
 /// origin's HTTPS record or `Alt-Svc` advertisement is about HTTP/3.
 #[cfg(feature = "http3")]
@@ -111,27 +112,30 @@ pub mod proxy;
 mod staged;
 mod upgrade;
 
-pub use body::UndeclaredRequestTrailers;
-pub use connect::{Conn, ResolveTimedOut};
+pub use connect::Conn;
 pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
+pub use error::{
+    BetweenBytesElapsed, EndedBeforeTheResponse, FirstByteTimedOut, Http2NotCompiledIn,
+    MaxBufSizeTooSmall, NoVersionsLeft, NotSwitchingProtocols, PlaintextNeedsHttp1,
+    ProxyAndUnixSocket, ProxySpokeFirst, ResolveTimedOut, UndeclaredRequestTrailers,
+};
+pub(crate) use error::{ConnectTimedOut, UnknownClientIdentity};
 /// The future [`Native::multiplexed`] spawns — public because that
 /// constructor's `Spawn` bound has to name it, and for no other reason.
 #[cfg(feature = "http2")]
 pub use http2::{H2Driver, H2KeepAlive, H2Opts, PingNotAnswered};
 // `Prefetch` is declared in this file, beside the exchange it refines.
-pub use http1::{H1Opts, MaxBufSizeTooSmall};
-pub use idle::{BetweenBytesElapsed, IdleTimeout};
+pub use http1::H1Opts;
+pub use idle::IdleTimeout;
 pub use pool::{PoolConfig, Reaper};
-pub use proxy::{
-    Approach, Handshake, NoProxy, Proxy, ProxyAndUnixSocket, ProxyScheme, ProxySpokeFirst,
-};
+pub use proxy::{Approach, Handshake, NoProxy, Proxy, ProxyScheme};
 #[cfg(feature = "proxy")]
 pub use proxy::{
     HttpConnect, ProxyRefused, Socks4, Socks4HandshakeError, Socks4Refused, Socks5,
     Socks5HandshakeError, Socks5Refused,
 };
 pub use staged::{Refused, Staged, StagedConnect};
-pub use upgrade::{EndedBeforeTheResponse, NotSwitchingProtocols, Upgrading};
+pub use upgrade::Upgrading;
 
 use hclient_core::unversioned::{
     CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
@@ -487,38 +491,6 @@ impl Default for Versions {
         }
     }
 }
-
-/// A plaintext request on a transport that has forbidden HTTP/1.1.
-///
-/// `http://` carries no ALPN, so HTTP/2 there needs prior knowledge (RFC
-/// 9113 §3.4) and this transport does not do it. Serving the request over
-/// HTTP/1.1 anyway would ignore the setting; serving it at all would make
-/// [`Capabilities::full_duplex`] wrong, since [`Native::http1`] raises
-/// that floor on the guarantee that no connection here speaks HTTP/1.1.
-#[derive(Debug, thiserror::Error)]
-#[error("`http://` needs HTTP/1.1, which this transport has been told not to speak")]
-pub struct PlaintextNeedsHttp1;
-
-/// Turning off the last version this transport could speak.
-///
-/// Raised by whichever of [`Native::http1`]/[`Native::http2`] would leave
-/// nothing, so the refusal is local to the call that caused it rather than
-/// deferred to `build()` — the caller learns it at the line they wrote.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "this would leave the transport unable to speak any HTTP version: \
-     `http1` and `http2` cannot both be off"
-)]
-pub struct NoVersionsLeft;
-
-/// Asking for HTTP/2 in a build that did not compile it.
-///
-/// A named refusal rather than a silent `false`: the fix is a cargo
-/// feature, which is not something a caller can guess from a request that
-/// quietly went out over HTTP/1.1.
-#[derive(Debug, thiserror::Error)]
-#[error("`http2(true)` needs `hclient-native`'s `http2` feature, which this build does not have")]
-pub struct Http2NotCompiledIn;
 
 #[derive(Debug)]
 pub struct Native<R, T, D, H = NoHooks, P = crate::proxy::NoProxy>
@@ -2282,7 +2254,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                crate::http1::MaxBufSizeTooSmall { asked },
+                crate::error::MaxBufSizeTooSmall { asked },
             ));
         }
         self.h1_opts = opts;
@@ -3719,23 +3691,6 @@ where
     }
 }
 
-/// The failure `Native`'s `first_byte` gate ends in when the timer wins
-/// the race against the exchange.
-///
-/// A named type rather than a string, for the same reason
-/// `ConnectTimedOut` is one: a caller must be able to tell the phases
-/// apart with `Error::source().downcast_ref()`, and to read the bound
-/// that was actually in force.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("no response head within the first_byte timeout of {0:?}")]
-pub struct FirstByteTimedOut(pub Duration);
-
-/// The failure [`with_connect_timeout`] ends in when the timer wins the
-/// race against `connect::connect`.
-#[derive(Debug, thiserror::Error)]
-#[error("connect timed out after {0:?}")]
-struct ConnectTimedOut(Duration);
-
 /// Races `fut` against `rt.sleep(d)`: `fut` if it finished first,
 /// otherwise `Err(ErrorKind::Timeout(Phase::Connect))`.
 ///
@@ -4054,12 +4009,3 @@ where
         ))
     }
 }
-
-/// A request named a client identity this TLS backend has not got.
-///
-/// A refusal rather than a fallback: connecting with the default identity
-/// is how one tenant's certificate reaches another tenant's server, and
-/// nothing at the call site would show it happened.
-#[derive(Debug, thiserror::Error)]
-#[error("no client identity named `{0}` in this TLS backend")]
-pub(crate) struct UnknownClientIdentity(pub(crate) String);

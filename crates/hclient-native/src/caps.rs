@@ -47,39 +47,10 @@
 //! in `tests/capabilities.rs` counts the fields off the `Debug` output and
 //! fails when the count moves.
 
+pub use crate::error::Disagreement;
+
 use hclient_core::Capabilities;
 use std::fmt::Debug;
-
-/// Two stacks that cannot be given one honest answer for one field.
-///
-/// Returned from [`combine`], and therefore from
-/// [`Selecting::new`](crate::Native::new) — the same shape as
-/// `UnsupportedCapability` at `ClientBuilder::build()`, and for the same
-/// reason: the error arrives where the mistake was made, rather than as a
-/// surprise on the first request that happens to take the other stack.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "the two stacks disagree on `{field}`, and neither value is true of the pair: the TCP stack says `{tcp}`, the QUIC stack says `{quic}`"
-)]
-#[non_exhaustive]
-pub struct Disagreement {
-    /// The `Capabilities` field, by its own name.
-    pub field: &'static str,
-    /// What `hclient-native` said, formatted with `Debug`.
-    pub tcp: String,
-    /// What `hclient-h3` said, formatted with `Debug`.
-    pub quic: String,
-}
-
-impl Disagreement {
-    fn new<V: Debug>(field: &'static str, tcp: &V, quic: &V) -> Self {
-        Self {
-            field,
-            tcp: format!("{tcp:?}"),
-            quic: format!("{quic:?}"),
-        }
-    }
-}
 
 /// The value both members can be held to, or the first field on which
 /// there is none.

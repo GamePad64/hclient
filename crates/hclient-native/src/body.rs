@@ -122,6 +122,7 @@
 //! because the host owns the encoder there and the send is raced against
 //! the body write. Here the encoder is downstream of a body we own, so
 //! the refusal comes before the terminator rather than after the `200`.
+use crate::error::UndeclaredRequestTrailers;
 use bytes::Bytes;
 use hclient_core::{Error, ErrorKind, Reduced, RequestBody};
 use http::HeaderName;
@@ -264,56 +265,6 @@ impl ContinueGate {
         // between the load and the lock — the ordinary lost-wakeup race,
         // and the reason this is not `if !open { register; return false }`.
         self.open.load(Ordering::Acquire)
-    }
-}
-
-/// The request body carried trailer field(s) the request never declared,
-/// on a connection speaking HTTP/1.1.
-///
-/// **Some of the request may already have gone**, and the error says so
-/// rather than leaving a caller to assume otherwise. How much is a fact
-/// about the caller's own body, measured both ways in
-/// `tests/request_trailers.rs`: a body that pends between its last data
-/// frame and its trailers — the shape of any real streaming producer —
-/// has had the head and every preceding chunk flushed to the socket by
-/// then, while one that answers `Ready` throughout is drained inside a
-/// single `Dispatcher::poll_write` and dies with the head still in
-/// hyper's write buffer, leaving the server with a connection and no
-/// request at all.
-///
-/// What the refusal prevents in both cases is the *last-chunk marker*:
-/// the message is aborted instead of completed without the caller's
-/// trailers, so no server ever treats it as a well-formed request whose
-/// trailers happened to be absent. A server that did receive the prefix
-/// may still have acted on it, so this is not a signal to retry blindly.
-///
-/// The fix is the caller's and is one header: `Trailer:` naming each field
-/// the body will emit (RFC 9110 §6.6.2, and hyper's
-/// `proto/h1/encode.rs` enforces it). The same request over HTTP/2 needs
-/// no such header and is unaffected — which is why
-/// [`Capabilities::request_trailers`](hclient_core::Capabilities::request_trailers)
-/// is `true` for this transport: it sends them on both protocols it
-/// speaks, and a request that omits the declaration HTTP/1.1 requires is
-/// malformed rather than unsupported.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "the request body emitted trailer field(s) [{}] that the request's `Trailer:` header did \
-     not declare, and this connection speaks HTTP/1.1, where hyper's encoder drops an \
-     undeclared trailer field silently (RFC 9110 §6.6.2) — send `Trailer: {}` with the \
-     request head. The message was aborted rather than finished without them, so the server \
-     never saw a complete request; how much of it had already been flushed depends on \
-     whether the body pended before its trailers, and a non-idempotent request that had may \
-     already have taken effect — do not retry blindly",
-    .0.iter().map(HeaderName::as_str).collect::<Vec<_>>().join(", "),
-    .0.iter().map(HeaderName::as_str).collect::<Vec<_>>().join(", "),
-)]
-pub struct UndeclaredRequestTrailers(Vec<HeaderName>);
-
-impl UndeclaredRequestTrailers {
-    /// The field names that were emitted and not declared, in the order
-    /// they appeared in the trailers frame.
-    pub fn fields(&self) -> &[HeaderName] {
-        &self.0
     }
 }
 

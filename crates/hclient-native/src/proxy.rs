@@ -37,7 +37,9 @@ use std::io;
 use std::pin::Pin;
 use std::task::Poll;
 
+pub use crate::error::{ProxyAndUnixSocket, ProxySpokeFirst};
 use bytes::{Bytes, BytesMut};
+
 use hclient_core::{Error, ErrorKind};
 use hyper::rt::{Read, Write};
 use std::future::poll_fn;
@@ -66,21 +68,6 @@ pub(crate) enum Via<'a> {
     Direct,
     AbsoluteForm(Option<&'a http::HeaderValue>),
 }
-
-/// The proxy sent bytes past the end of its own handshake.
-///
-/// **The transport's rule rather than any protocol's**, which is why it
-/// lives here and not in `hclient-proxy`: a handshake reports faithfully
-/// how much of the buffer was its own, and what to make of the rest is a
-/// question about what happens next. Nothing the origin might say can have
-/// arrived yet — the client has not written to it — so these bytes are the
-/// proxy's, and carrying them on would feed them to the TLS handshake, or
-/// to hyper, as if the origin had sent them. A refusal to connect rather
-/// than a rewind, because the rewind is the quieter failure and the worse
-/// one.
-#[derive(Debug, thiserror::Error)]
-#[error("the proxy sent {0} bytes past its own handshake, before anything was sent to the origin")]
-pub struct ProxySpokeFirst(pub usize);
 
 /// Run `h` over `io` until the tunnel is open.
 ///
@@ -161,14 +148,6 @@ async fn read_some<S: Read + Unpin>(io: &mut S, buf: &mut BytesMut) -> Result<()
 fn conn(e: io::Error) -> Error {
     Error::new(ErrorKind::Connect, e)
 }
-
-/// A proxy and a Unix socket both answer *where does this connection go*,
-/// and a precedence rule between them would be one nobody could guess.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "a proxy and a Unix socket both answer `where does this connection go`; configure at most one"
-)]
-pub struct ProxyAndUnixSocket;
 
 /// Gated on `proxy` because the tests drive the **protocols**, which are;
 /// the driver above is not, because `connect.rs` calls it whichever

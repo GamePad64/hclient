@@ -221,6 +221,7 @@
 //! below proves this with a real (if synthetic-IO) handshake — not just
 //! by reading the code.
 use crate::body::OutgoingBody;
+use crate::error::{ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBeforeTheRequest};
 use crate::established::Failed;
 use crate::pool::CheckIn;
 use bytes::Bytes;
@@ -275,22 +276,6 @@ where
             .finish()
     }
 }
-
-/// A pooled connection that turned out to be finished at the last moment
-/// before its request was handed to hyper — the server closed it while
-/// nothing was polling it, and the checkout poll one instant earlier had
-/// not seen it yet.
-#[derive(Debug, thiserror::Error)]
-#[error("the pooled connection was closed before the request was sent")]
-struct ConnectionWentAwayBeforeTheRequest;
-
-/// The residual race the pool cannot close: the connection ended between
-/// the request being handed to hyper and hyper writing it. Named rather
-/// than folded into a generic connect error, because a caller reading it
-/// should be able to tell it apart from a connect that never happened.
-#[derive(Debug, thiserror::Error)]
-#[error("the connection ended while the request was still queued on it")]
-struct ConnectionEndedWithTheRequestQueued;
 
 /// A response body that **polls the connection itself**.
 ///
@@ -537,13 +522,6 @@ pub struct H1Opts {
 /// guessed, and the reason [`Native::h1_opts`](crate::Native::h1_opts) can
 /// fail.
 pub(crate) const MINIMUM_MAX_BUF_SIZE: usize = 8192;
-
-/// A [`H1Opts`] value hyper would refuse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("max_buf_size is {asked}, below hyper's minimum of {MINIMUM_MAX_BUF_SIZE}")]
-pub struct MaxBufSizeTooSmall {
-    pub asked: usize,
-}
 
 /// The HTTP/1 handshake, split out from [`exchange`] because a pooled
 /// connection has already had one and a fresh one has not.

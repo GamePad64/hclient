@@ -48,6 +48,7 @@
 //! on any inner body at all, which is what `tests/idle.rs` does with a body
 //! that has no socket under it.
 
+use crate::error::BetweenBytesElapsed;
 use bytes::Bytes;
 use hclient_core::unversioned::Timer;
 use hclient_core::{Error, ErrorKind, Phase};
@@ -56,17 +57,6 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-
-/// The source of an [`ErrorKind::Timeout`]`(`[`Phase::BetweenBytes`]`)`.
-///
-/// A named type rather than a string, for the same reason
-/// `hclient::error::TotalTimeoutElapsed` is one: a caller must be able to tell
-/// this apart from any other timeout with
-/// `Error::source().downcast_ref()`, and to read the bound that was
-/// actually in force rather than parse it out of a message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("the response body sent nothing for {0:?}, its between_bytes timeout")]
-pub struct BetweenBytesElapsed(pub Duration);
 
 /// A response body that fails if the peer stops sending for longer than
 /// its `between_bytes` bound — see the module doc.

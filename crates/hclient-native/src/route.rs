@@ -31,6 +31,7 @@
 use crate::altsvc::{self, Origin};
 use crate::connect::HTTPS_DEFAULT_PORT;
 use crate::discovery::Discovered;
+use crate::error::NoQuicArm;
 use crate::established::NativeBody as EstablishedBody;
 use crate::{ALPN_H3, Native, Prefetch as _, Prepared, Protocol, spoken_version};
 use futures_util::StreamExt as _;
@@ -661,13 +662,3 @@ where
         self.run(Prepared::new(req)).await
     }
 }
-
-/// Routing chose the QUIC arm on a transport that has none.
-///
-/// Unreachable through [`Native::route`], which only ever chooses QUIC
-/// after finding an arm — it exists because `over_quic` is also reached
-/// from the hedge, and an `unreachable!` in a transport is a panic in a
-/// caller's process for a mistake that is ours.
-#[derive(Debug, thiserror::Error)]
-#[error("this transport has no QUIC arm; see `Native::http3`")]
-pub struct NoQuicArm;

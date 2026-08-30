@@ -121,6 +121,9 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::discovery::{self, Endpoint, NegativeCache, Origin, Prefetched};
+use crate::error::{
+    AllAttemptsFailed, InvalidHeConfig, ResolveErrors, ResolveTimedOut, UnsupportedScheme, UriError,
+};
 use crate::{mark, since};
 use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -192,121 +195,6 @@ impl<P: Write + Unpin, T: Write + Unpin> Write for Conn<P, T> {
     }
 }
 
-// --- Typed errors for this module ---------------------------------------
-//
-// "No silent no-ops": none of the sites below collapse a failure into
-// `AllAttemptsFailed`/`ErrorKind::Connect` silently — every distinction
-// (the resolver failed / the resolver honestly found zero addresses /
-// TCP attempts genuinely happened and all failed / the Happy Eyeballs
-// config was outside the RFC-recommended range) stays visible through a
-// separate type and a separate `ErrorKind`.
-
-#[derive(Debug, thiserror::Error)]
-#[error("all {0} connection attempts failed")]
-pub(crate) struct AllAttemptsFailed(pub(crate) usize);
-
-/// No address arrived for either family — and THIS DISTINGUISHES whether
-/// the cause was the resolver failing, or the resolver honestly finishing
-/// and finding zero records (e.g. `NXDOMAIN`). Collapsing both cases into
-/// `AllAttemptsFailed(0)` would be exactly the "resolver error becomes
-/// 'no addresses'" this type exists to prevent: it would read as "zero
-/// TCP attempts failed," even though there was no TCP attempt at all —
-/// not because none were tried, but because there was nothing to try.
-/// [`Neither`](Self::Neither) is that second case, named rather than
-/// spelled `(None, None)`.
-///
-/// **Four variants rather than two `Option<Error>` fields — because of
-/// `source()`, not for tidiness.** The chain here has to lead to the
-/// first family that actually failed, whichever one that is; as a struct
-/// that is `v6.or(v4)`, and `thiserror` has no way to say it: `#[source]`
-/// marks one field, so marking `v6` would end the chain at `None`
-/// whenever only ipv4 failed — a truncation that changes no message and
-/// breaks no test written about one. Split into variants, each carries
-/// exactly the errors that exist in that case, `#[source]` names the
-/// right one in each, and the case with no cause at all has no `#[source]`
-/// because there is genuinely nothing to point at.
-#[derive(Debug, thiserror::Error)]
-enum ResolveErrors {
-    #[error("ipv6 lookup failed ({v6}); ipv4 lookup failed ({v4})")]
-    Both {
-        #[source]
-        v6: Error,
-        v4: Error,
-    },
-    #[error("ipv6 lookup failed ({v6}); ipv4 lookup returned no addresses")]
-    Ipv6 {
-        #[source]
-        v6: Error,
-    },
-    #[error("ipv4 lookup failed ({v4}); ipv6 lookup returned no addresses")]
-    Ipv4 {
-        #[source]
-        v4: Error,
-    },
-    #[error("resolver returned no addresses for either address family")]
-    Neither,
-}
-
-impl ResolveErrors {
-    /// Whatever each family recorded, if anything — the shape `drive`
-    /// accumulates in, folded into the variant that describes it.
-    fn from_families(v6: Option<Error>, v4: Option<Error>) -> Self {
-        match (v6, v4) {
-            (Some(v6), Some(v4)) => Self::Both { v6, v4 },
-            (Some(v6), None) => Self::Ipv6 { v6 },
-            (None, Some(v4)) => Self::Ipv4 { v4 },
-            (None, None) => Self::Neither,
-        }
-    }
-
-    /// The errors this variant recorded, ipv6 first — the same order
-    /// `source()` follows, so the two cannot drift apart.
-    fn recorded(&self) -> [Option<&Error>; 2] {
-        match self {
-            Self::Both { v6, v4 } => [Some(v6), Some(v4)],
-            Self::Ipv6 { v6 } => [Some(v6), None],
-            Self::Ipv4 { v4 } => [None, Some(v4)],
-            Self::Neither => [None, None],
-        }
-    }
-
-    /// The first recorded resolve error (from either family) whose
-    /// `kind()` is NOT `ErrorKind::Resolve`. Wrapping any resolve error
-    /// (when `launched == 0`) in a fresh `Error::new(ErrorKind::Resolve,
-    /// errs)` and not reading `errs` at all when `launched > 0` erases
-    /// `ErrorKind::Cancelled` — the background thread pool shutting down
-    /// before the resolve finished — indistinguishably from "this name
-    /// doesn't resolve." `Cancelled` is the case that was found,
-    /// but the rule is general: ANY `kind()` other than the `Resolve`
-    /// this module synthesizes itself carries information the connector
-    /// didn't produce and has no right to rename. Called BEFORE both
-    /// failure branches in `drive`'s `HeAction::Exhausted`, so neither
-    /// `AllAttemptsFailed` nor the synthetic `ErrorKind::Resolve` is
-    /// reachable without going through this check — discarding becomes
-    /// structurally impossible, not merely handled for the one case that
-    /// was found.
-    fn distinguishing_error(&self) -> Option<&Error> {
-        self.recorded()
-            .into_iter()
-            .flatten()
-            .find(|e| e.kind() != &ErrorKind::Resolve)
-    }
-}
-
-/// The requested `HeConfig`'s `attempt_delay` is outside the RFC 8305
-/// recommended range. `Scheduler::new` silently clamps such a
-/// value, because its signature is fixed by the task's interface — `Self`,
-/// not `Result`. THIS module's signature isn't fixed by anything, so here
-/// it's a typed error rather than the same silent clamp two layers down.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "attempt_delay {requested:?} is outside the RFC 8305 recommended range and would be \
-     silently clamped to {effective:?}; pass a value inside the range instead"
-)]
-struct InvalidHeConfig {
-    requested: Duration,
-    effective: Duration,
-}
 /// Builds a [`Scheduler`], rejecting an out-of-range `attempt_delay` as a
 /// typed error — instead of accepting `Scheduler::new`'s silent clamp
 /// as-is.
@@ -335,10 +223,6 @@ fn build_scheduler(cfg: HeConfig) -> Result<Scheduler, Error> {
     Ok(sched)
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("request URI has no host to connect to")]
-struct UriError;
-
 /// The host from `uri`, regardless of scheme: a URI with no authority
 /// (e.g., origin-form `/path`) is rejected right here, before the
 /// question "which scheme" even comes up — there's no point asking a URI
@@ -362,10 +246,6 @@ pub(crate) fn host(uri: &Uri) -> Result<&str, Error> {
 pub(crate) fn port(uri: &Uri, use_tls: bool) -> u16 {
     uri.port_u16().unwrap_or(if use_tls { 443 } else { 80 })
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("unsupported URI scheme: {0:?}")]
-struct UnsupportedScheme(String);
 
 /// `true` — TLS is needed (`https`), `false` — plain TCP (`http`). Any
 /// other (or missing) scheme is a typed `ErrorKind::Unsupported`, not a
@@ -1381,17 +1261,6 @@ where
     .await
 }
 
-/// The failure `first_address_within` ends in.
-///
-/// A named type rather than a string, for the reason
-/// [`crate::FirstByteTimedOut`] is one: a caller tells the phases apart
-/// with `Error::source().downcast_ref()`, and the point of this bound is
-/// that *"DNS is broken"* and *"the origin is unreachable"* stop looking
-/// alike.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("no address from the resolver within the resolve timeout of {0:?}")]
-pub struct ResolveTimedOut(pub Duration);
-
 /// One connection attempt: Happy Eyeballs over `endpoint`'s hints followed
 /// by the origin's own addresses, then TLS if the scheme asks for it.
 ///
@@ -2189,7 +2058,7 @@ mod tests {
 
     // --- `ResolveErrors`: the chain, not just the message ---------------
     //
-    // `ResolveErrors` is the only error in this module that a caller is
+    // `ResolveErrors` is the only error this module raises that a caller is
     // expected to WALK rather than read: it says which family failed, and
     // its `source()` hands back that family's own `Error` — kind, source
     // chain and all — instead of a copy of its `Display`. The four tests
