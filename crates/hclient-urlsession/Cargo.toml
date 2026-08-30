@@ -25,6 +25,13 @@ thiserror    = { workspace = true }
 # way and compiles to nothing there — `cargo check --workspace` on a Linux
 # host stays honest rather than silently skipping a member.
 [target.'cfg(target_vendor = "apple")'.dependencies]
+# `futures-channel` for the delegate's queue, `futures-core` for the
+# `Stream` it is polled through. Target-gated with the rest because a
+# Linux build of this crate compiles to nothing and should resolve
+# nothing — measured: `cargo tree -p hclient-urlsession -e normal` on this
+# host is unchanged by these two lines.
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+futures-core    = { version = "0.3", default-features = false }
 objc2 = "0.6"
 block2 = "0.6"
 

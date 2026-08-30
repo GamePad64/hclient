@@ -15,11 +15,13 @@
 //! and `Capabilities::streaming_request_body`'s counterpart on the
 //! response side is real rather than declared.
 
-use std::collections::VecDeque;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
+use futures_channel::mpsc;
+use futures_core::Stream as _;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, DefinedClass, define_class};
@@ -42,50 +44,69 @@ pub(crate) enum Chunk {
 
 /// The queue between the delegate and whoever is polling.
 ///
+/// **An unbounded channel rather than a mutex, a `VecDeque` and a hand-
+/// rolled waker**, which is what this was. The three moved together and
+/// the third was the interesting one: `poll_next` had to pop, register
+/// the waker, and then pop **again**, because the delegate can push
+/// between the first pop and the lock — the ordinary lost-wakeup race,
+/// written out by hand each time. A channel owns that race.
+///
+/// **Unbounded, and the bound is not a knob we declined to set.** The
+/// producer is a **synchronous Objective-C callback**: `URLSession`
+/// invokes it on its own queue and it cannot `.await`. On a bounded
+/// channel a full queue makes `try_send` an error, and there is nothing
+/// here that could wait instead — so a bound would convert backpressure
+/// into a dropped body. `hclient-fetch` uses `mpsc::channel(0)` for the
+/// same job and can, because its producer is a spawned task with
+/// somewhere to park. What is lost is backpressure this code never had:
+/// the `VecDeque` was unbounded too.
+///
 /// `Send + Sync` because `NSURLSessionDelegate` is declared
 /// `NSObjectProtocol + Send + Sync` and `define_class!` derives the
 /// class's auto traits from its ivars — so this is what makes the class
-/// legal rather than a choice about our own API. Nothing on this crate's
-/// public surface declares either.
-#[derive(Debug, Default)]
+/// legal rather than a choice about our own API. Measured before the
+/// swap: `futures_channel::mpsc::UnboundedSender<T>` is `Send + Sync`,
+/// so the class stays legal. Nothing on this crate's public surface
+/// declares either.
+#[derive(Debug)]
 pub(crate) struct Shared {
-    queue: Mutex<VecDeque<Chunk>>,
-    waker: Mutex<Option<Waker>>,
+    tx: mpsc::UnboundedSender<Chunk>,
+    rx: Mutex<mpsc::UnboundedReceiver<Chunk>>,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::unbounded();
+        Self {
+            tx,
+            rx: Mutex::new(rx),
+        }
+    }
 }
 
 impl Shared {
     pub(crate) fn push(&self, c: Chunk) {
-        self.queue
-            .lock()
-            .expect("urlsession queue poisoned")
-            .push_back(c);
-        if let Some(w) = self.waker.lock().expect("urlsession waker poisoned").take() {
-            w.wake();
-        }
+        // A closed receiver means the polling side went away, which is an
+        // ordinary end rather than an error: the delegate has no one to
+        // tell and nothing to do about it.
+        let _ = self.tx.unbounded_send(c);
     }
 
     /// The next thing the delegate saw, or `Pending` with `cx` registered.
-    pub(crate) fn poll_next(&self, cx: &Context<'_>) -> Poll<Chunk> {
-        if let Some(c) = self
-            .queue
-            .lock()
-            .expect("urlsession queue poisoned")
-            .pop_front()
-        {
-            return Poll::Ready(c);
-        }
-        *self.waker.lock().expect("urlsession waker poisoned") = Some(cx.waker().clone());
-        // Re-checked after registering: the delegate may have pushed
-        // between the pop and the lock, which is the ordinary lost-wakeup
-        // race and the reason this is not a plain early return.
-        match self
-            .queue
-            .lock()
-            .expect("urlsession queue poisoned")
-            .pop_front()
-        {
-            Some(c) => Poll::Ready(c),
-            None => Poll::Pending,
+    ///
+    /// The `Mutex` is over the **receiver**, not over a queue, and it is
+    /// never contended: one body polls one exchange. It is there because
+    /// `poll_next` takes `&self` — the delegate's ivar is an `Arc<Shared>`
+    /// — where `Stream::poll_next` wants `&mut`.
+    pub(crate) fn poll_next(&self, cx: &mut Context<'_>) -> Poll<Chunk> {
+        let mut rx = self.rx.lock().expect("urlsession receiver poisoned");
+        match Pin::new(&mut *rx).poll_next(cx) {
+            // A closed channel with the delegate gone means the exchange
+            // ended without a terminal `Chunk`, which `body.rs` reads as
+            // the end it is.
+            Poll::Ready(Some(c)) => Poll::Ready(c),
+            Poll::Ready(None) => Poll::Ready(Chunk::End(None)),
+            Poll::Pending => Poll::Pending,
         }
     }
 }

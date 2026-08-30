@@ -4700,7 +4700,10 @@ parent's, so it asserts nothing about the host it runs on. The cost is
 measured: `hclient-urlsession` goes from **19 crates to 30** on
 `aarch64-apple-darwin`, four of them the platform bindings that do the
 reading and none of them `url` or ICU, which `just graph-proxy-cost`
-asserts in both directions.
+asserts in both directions. It is **31** since the delegate's queue became
+a channel — `futures-channel` alone, because `futures-core` and
+`futures-sink` were already there through `hclient-core`, which names both
+on the WebSocket seam.
 
 ### Proxies: an HTTP one and SOCKS5, behind one seam
 
