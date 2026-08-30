@@ -289,6 +289,7 @@ impl<H: Hooks> WasiHttp<H> {
     fn reporting<'a, F: core::future::Future + Unpin>(
         &'a self,
         fut: F,
+        request: hclient_core::unversioned::RequestId,
         uri: &http::Uri,
         sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
     ) -> hclient_core::unversioned::Reporting<F, &'a H> {
@@ -296,6 +297,7 @@ impl<H: Hooks> WasiHttp<H> {
             fut,
             &self.hooks,
             ConnectionId::UNWATCHED,
+            request,
             uri,
             sent,
         )
@@ -327,6 +329,13 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
         let began = hooks::mark::<H>();
 
         let (parts, body) = req.into_parts();
+        // Which request, read **once** — the response body reports
+        // `Progress` after `execute` has returned and `parts` is gone, so
+        // the value travels on the counter. `identify` is gated on
+        // `H::WATCHING`, so an unwatched build touches no map; this
+        // transport owns no connection, so the request id is the only
+        // identity its four events carry.
+        let request = hclient_core::unversioned::identify::<H>(&parts.extensions);
         let scheme = convert::scheme_of(&parts.uri)?;
 
         // Captured BEFORE the headers go into `Fields` — needed
@@ -456,7 +465,8 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
                     wasip3::http::client::send(wasi_request),
                     w.send_http_body(&mut b),
                 ));
-                self.reporting(fut, &parts.uri, sent.clone()).await?
+                self.reporting(fut, request, &parts.uri, sent.clone())
+                    .await?
             }
             Some((w, Payload::Streaming(s))) => {
                 let (watched, trailer_names_seen) = TrailerWatch::new(s);
@@ -465,7 +475,9 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
                     wasip3::http::client::send(wasi_request),
                     w.send_http_body(&mut watched),
                 ));
-                let resp = self.reporting(fut, &parts.uri, sent.clone()).await?;
+                let resp = self
+                    .reporting(fut, request, &parts.uri, sent.clone())
+                    .await?;
                 // Compare the NAMES of trailer fields that actually
                 // arrived against the declared ones, not just
                 // whether `Trailer:` is present — a header naming the
@@ -505,6 +517,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
                 Body::from_incoming(incoming),
                 self.hooks.clone(),
                 ConnectionId::UNWATCHED,
+                request,
                 Some(&parts.uri),
                 sent,
             ),
@@ -534,12 +547,15 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
         if began.is_some() {
             // `version` unset: `wasi:http@0.3.0` reports no protocol, and
             // `Capabilities::version_reported` says so.
-            self.hooks.on(&Event::Head(Head::new(
-                ConnectionId::UNWATCHED,
-                &parts.uri,
-                out.status(),
-                hooks::since(began),
-            )));
+            self.hooks.on(&Event::Head(
+                Head::new(
+                    ConnectionId::UNWATCHED,
+                    &parts.uri,
+                    out.status(),
+                    hooks::since(began),
+                )
+                .request(request),
+            ));
         }
         Ok(out)
     }

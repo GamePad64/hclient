@@ -453,9 +453,13 @@ where
         // it never heard about would be a connection nothing could account
         // for.
         let id = ConnState::id(state.as_ref());
+        // Read once from the request still in hand; `Staged` keeps the
+        // request, so `exchange` reads it back off the same one.
+        let request = hclient_core::unversioned::identify::<H>(req.extensions());
         match &made {
             Some(m) => self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, http::Version::HTTP_3)
+                    .request(request)
                     .remote(Some(m.remote))
                     .timing(
                         ConnectTiming::new()
@@ -465,9 +469,9 @@ where
                             .total(crate::http3::since::<R>(&self.rt, began)),
                     ),
             )),
-            None => self
-                .hooks
-                .on(&Event::Reused(Reused::new(id, &uri, http::Version::HTTP_3))),
+            None => self.hooks.on(&Event::Reused(
+                Reused::new(id, &uri, http::Version::HTTP_3).request(request),
+            )),
         }
 
         Ok(Staged {
@@ -509,6 +513,7 @@ where
         let watch = self.watch(&conn, &state);
 
         let (parts, body) = req.into_parts();
+        let request = hclient_core::unversioned::identify::<H>(&parts.extensions);
         // Taken before the first attempt, because after it the body is gone
         // — but **only when there is something a replay could be needed
         // for**. `zero_rtt.is_some()` is exactly the condition: it is
@@ -543,8 +548,15 @@ where
                 watch.clone(),
                 sent.clone()
             ));
-            hclient_core::unversioned::Reporting::new(attempt, &self.hooks, id, &uri, sent.clone())
-                .await
+            hclient_core::unversioned::Reporting::new(
+                attempt,
+                &self.hooks,
+                id,
+                request,
+                &uri,
+                sent.clone(),
+            )
+            .await
         };
 
         // The second of the three 0-RTT failure paths (`crate::http3::early` has
@@ -555,8 +567,8 @@ where
         // question anyway.
         let e = match first {
             Ok(resp) => {
-                self.report_head(&resp, id, &uri, began);
-                return Ok(self.counted(resp, id, &uri, sent));
+                self.report_head(&resp, id, request, &uri, began);
+                return Ok(self.counted(resp, id, request, &uri, sent));
             }
             Err(e) => e,
         };
@@ -582,8 +594,8 @@ where
         let head = http::Request::from_parts(parts, ());
         match Self::one_attempt(&mut send, head, body, watch.clone(), sent.clone()).await {
             Ok(resp) => {
-                self.report_head(&resp, id, &uri, began);
-                Ok(self.counted(resp, id, &uri, sent))
+                self.report_head(&resp, id, request, &uri, began);
+                Ok(self.counted(resp, id, request, &uri, sent))
             }
             Err(e) => {
                 self.report_failed(&watch, &e);

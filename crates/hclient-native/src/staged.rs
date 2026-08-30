@@ -369,6 +369,7 @@ where
             .take()
             .expect("a Staged is emptied only by this method, which consumes it");
         let (parts, body) = req.into_parts();
+        let request = hclient_core::unversioned::identify::<H>(&parts.extensions);
         let outgoing = body::OutgoingBody::from_request_body(body)?;
         let sent = hclient_core::unversioned::meter::<H>(outgoing.expected())
             .map(std::sync::Arc::new)
@@ -390,12 +391,22 @@ where
             },
         );
         let attempt = std::pin::pin!(self.within_first_byte_gated(first_byte, gate, attempt));
-        let resp =
-            hclient_core::unversioned::Reporting::new(attempt, &self.hooks, id, &uri, sent.clone())
-                .await
-                .map_err(established::Failed::into_error)?;
-        self.report_head(&resp, id, &uri, began);
-        Ok(self.bound_body(resp, between_bytes, crate::Counted::new(id, &uri, sent)))
+        let resp = hclient_core::unversioned::Reporting::new(
+            attempt,
+            &self.hooks,
+            id,
+            request,
+            &uri,
+            sent.clone(),
+        )
+        .await
+        .map_err(established::Failed::into_error)?;
+        self.report_head(&resp, id, request, &uri, began);
+        Ok(self.bound_body(
+            resp,
+            between_bytes,
+            crate::Counted::new(id, request, &uri, sent),
+        ))
     }
 }
 
@@ -455,6 +466,10 @@ where
             },
         };
         let identity = named.map(hclient_core::ClientIdentity::name);
+        // Which request this connect is being paid for, read once from the
+        // request still in hand — `Staged` keeps it, so `exchange` reads it
+        // back off the same request rather than looking again.
+        let request = hclient_core::unversioned::identify::<H>(req.extensions());
 
         let parts_of_key = match self.key_parts(req.uri(), identity_id) {
             Ok(p) => p,
@@ -481,11 +496,9 @@ where
                 continue;
             };
             let id = est.id();
-            self.hooks.on(&Event::Reused(Reused::new(
-                id,
-                &uri,
-                spoken_version(Some(protocol)),
-            )));
+            self.hooks.on(&Event::Reused(
+                Reused::new(id, &uri, spoken_version(Some(protocol))).request(request),
+            ));
             let checkin = self.checkin_for(&key, now);
             return Ok(self.hold(est, checkin, req, uri, id, began, timeouts));
         }
@@ -529,6 +542,7 @@ where
         if let Some(attempted) = attempted {
             self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, spoken_version(protocol))
+                    .request(request)
                     .remote(attempted.remote)
                     // The handshake's own report, which this transport has
                     // had in hand at this line since TLS became a seam and

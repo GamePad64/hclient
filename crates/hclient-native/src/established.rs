@@ -31,7 +31,7 @@ use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
 use hclient_core::Error;
-use hclient_core::unversioned::{ConnectionId, Hooks};
+use hclient_core::unversioned::{ConnectionId, Hooks, identify};
 use http_body::{Body, Frame, SizeHint};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -253,6 +253,11 @@ where
     H: Hooks,
 {
     let id = est.id();
+    // Read once, here, from the request this exchange is about — the
+    // three events below fire from three arms of one `match` and a lookup
+    // per arm would be three chances to forget one. `identify` is gated on
+    // `H::WATCHING`, so an unwatched build does not touch the map.
+    let request = identify::<H>(req.extensions());
     match est {
         Established::H1(e) => {
             let Dispatch {
@@ -272,7 +277,7 @@ where
                 req.body_mut().withhold_until(Arc::clone(g));
             }
             match (watch_1xx, gate) {
-                (Some(install), g) => install(&hooks, &mut req, id, g),
+                (Some(install), g) => install(&hooks, &mut req, id, request, g),
                 // No hook to report to, so no bound to satisfy — see
                 // `crate::install_gate_only`.
                 (None, Some(g)) => crate::install_gate_only(&mut req, g),
@@ -296,9 +301,9 @@ where
             // closure borrows for exactly this call, which is why HTTP/2
             // needs none of the `Send + Sync + 'static` HTTP/1 does.
             let report = |status, headers: &http::HeaderMap| {
-                hooks.on(&Event::Informational(Informational::new(
-                    id, status, headers,
-                )));
+                hooks.on(&Event::Informational(
+                    Informational::new(id, status, headers).request(request),
+                ));
             };
             let on_1xx = how.watch_1xx.map(|_| &report);
             crate::http2::exchange(*e, req, checkin, on_1xx)
@@ -323,9 +328,9 @@ where
             // it did — a capability lying, which is the defect class this
             // workspace hunts.
             let report = |status, headers: &http::HeaderMap| {
-                hooks.on(&Event::Informational(Informational::new(
-                    id, status, headers,
-                )));
+                hooks.on(&Event::Informational(
+                    Informational::new(id, status, headers).request(request),
+                ));
             };
             let on_1xx = how.watch_1xx.map(|_| &report);
             crate::http2::exchange_shared(s, req, on_1xx)

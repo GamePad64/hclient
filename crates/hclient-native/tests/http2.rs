@@ -783,7 +783,7 @@ async fn an_unmarked_request_still_offers_h2() {
 /// different routes — hyper's `Send + Sync + 'static` callback on h1, a
 /// plain poll here — and only running both shows they agree.
 #[derive(Debug, Clone, Default)]
-struct Hints(Arc<Mutex<Vec<String>>>);
+struct Hints(Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<u64>>>);
 
 impl hclient_core::unversioned::Hooks for Hints {
     fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
@@ -796,6 +796,7 @@ impl hclient_core::unversioned::Hooks for Hints {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("<none>")
             ));
+            self.1.lock().unwrap().push(e.request.get());
         }
     }
 }
@@ -825,5 +826,19 @@ async fn a_103_over_http2_reaches_the_hook_too() {
         seen,
         ["100 <none>", "103 </s.css>; rel=preload"],
         "both interim heads, in order, each with its own headers"
+    );
+
+    // **And each one names the request it arrived for.** The h2 route to
+    // this event shares no code with the HTTP/1 one — a poll on the
+    // response future against hyper's stored callback — so the identity
+    // has to be threaded twice and is asserted twice. The number is the
+    // client's, so what can be asserted is its shape: one operation, one
+    // id, and never the absent value.
+    let requests = hints.1.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2, "one id per interim head: {requests:?}");
+    assert!(
+        requests.iter().all(|r| *r == requests[0] && *r != 0),
+        "both belong to the one operation the client minted an id for, \
+         and `0` is `RequestId::UNIDENTIFIED`: {requests:?}",
     );
 }

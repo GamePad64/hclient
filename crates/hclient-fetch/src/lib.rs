@@ -630,13 +630,22 @@ pub async fn deliver<T>(
 /// What the events need, carried from before the request was consumed to
 /// after the response arrived. `None` where no hook is watching.
 ///
-/// **One `Option`, not three.** The clock mark, the [`http::Uri`] clone
-/// and the request body's counter are all produced by the same
-/// `H::WATCHING` read, and keeping them in one `Option` is what stops a
-/// mutation from ungating one of them alone — the defect recorded on
-/// `start` below, which survived a whole suite when there were two gates
-/// here.
-type Watched = Option<(f64, http::Uri, Option<std::sync::Arc<Meter>>)>;
+/// **One `Option`, not four.** The clock mark, the [`http::Uri`] clone,
+/// the request identity and the request body's counter are all produced by
+/// the same `H::WATCHING` read, and keeping them in one `Option` is what
+/// stops a mutation from ungating one of them alone — the defect recorded
+/// on `start` below, which survived a whole suite when there were two
+/// gates here.
+type Watched = Option<WatchedParts>;
+
+/// The contents of a [`Watched`], named so that the two readers below
+/// borrow it rather than each restating a four-element tuple.
+type WatchedParts = (
+    f64,
+    http::Uri,
+    hclient_core::unversioned::RequestId,
+    Option<std::sync::Arc<Meter>>,
+);
 
 impl<H: Hooks> Fetch<H> {
     /// The synchronous half of an exchange: everything up to the point
@@ -669,7 +678,20 @@ impl<H: Hooks> Fetch<H> {
         // `web_sys::Request` afterwards — its `url()` is the browser's
         // serialisation, not the caller's `http::Uri`, and `Head::uri`
         // promises the URI "as the transport received it".
-        let watched = hooks::mark::<H2>().map(|at| (at, req.uri().clone()));
+        // The request id joins the clock and the `Uri` in the same
+        // `Option`, for the reason written above them: it is `Some` on
+        // exactly `H::WATCHING`, and a second gate is a second thing to
+        // forget. It has to be read now for the same reason the `Uri` does
+        // — `to_web_request` consumes the request, and neither the
+        // extensions nor the caller's `Uri` can be taken back off a
+        // `web_sys::Request`.
+        let watched = hooks::mark::<H2>().map(|at| {
+            (
+                at,
+                req.uri().clone(),
+                hclient_core::unversioned::identify::<H2>(req.extensions()),
+            )
+        });
 
         let convert::Converted {
             request,
@@ -680,7 +702,7 @@ impl<H: Hooks> Fetch<H> {
         // Joined into the one `Option` above rather than carried beside
         // it: `sent` is `Some` on exactly the same condition, and two
         // things that must agree are one more than is safe.
-        let watched = watched.map(|(at, uri)| (at, uri, sent));
+        let watched = watched.map(|(at, uri, request)| (at, uri, request, sent));
         let guard = AbortOnDrop(abort);
 
         // `fetch` lives in both `Window` and `WorkerGlobalScope` — go
@@ -786,13 +808,9 @@ impl<H: Hooks> Fetch<H> {
 
     /// The `Head` event, emitted by whoever holds `&self` — which is the
     /// outer future in both paths, so a hook never crosses a thread.
-    fn report(
-        &self,
-        out: &Result<http::Response<Body>, Error>,
-        watched: Option<&(f64, http::Uri, Option<std::sync::Arc<Meter>>)>,
-    ) {
+    fn report(&self, out: &Result<http::Response<Body>, Error>, watched: Option<&WatchedParts>) {
         let Ok(out) = out else { return };
-        if let Some((began, uri, sent)) = watched {
+        if let Some((began, uri, request, sent)) = watched {
             // The upload, before the head, because that is the order it
             // happened in: `duplex: "half"` means the browser has the
             // whole request body before it gives us a response.
@@ -811,6 +829,7 @@ impl<H: Hooks> Fetch<H> {
                 m.report(
                     &self.hooks,
                     ConnectionId::UNWATCHED,
+                    *request,
                     uri,
                     Direction::Sending,
                 );
@@ -820,12 +839,15 @@ impl<H: Hooks> Fetch<H> {
             // browser does not tell us which protocol it used, and
             // answering `HTTP/1.1` would be a wrong answer where the
             // absence is a missing one.
-            self.hooks.on(&Event::Head(Head::new(
-                ConnectionId::UNWATCHED,
-                uri,
-                out.status(),
-                hooks::since(Some(*began)),
-            )));
+            self.hooks.on(&Event::Head(
+                Head::new(
+                    ConnectionId::UNWATCHED,
+                    uri,
+                    out.status(),
+                    hooks::since(Some(*began)),
+                )
+                .request(*request),
+            ));
         }
     }
 }
@@ -839,11 +861,15 @@ impl<H: Hooks + Clone + Unpin> Fetch<H> {
     fn counted(
         &self,
         out: Result<http::Response<Body>, Error>,
-        watched: Option<&(f64, http::Uri, Option<std::sync::Arc<Meter>>)>,
+        watched: Option<&WatchedParts>,
     ) -> Result<http::Response<hclient_core::unversioned::Counting<Body, H>>, Error> {
-        let (uri, sent) = match watched {
-            Some((_, uri, sent)) => (Some(uri), sent.clone()),
-            None => (None, None),
+        let (uri, request, sent) = match watched {
+            Some((_, uri, request, sent)) => (Some(uri), *request, sent.clone()),
+            None => (
+                None,
+                hclient_core::unversioned::RequestId::UNIDENTIFIED,
+                None,
+            ),
         };
         out.map(|r| {
             r.map(|b| {
@@ -851,6 +877,7 @@ impl<H: Hooks + Clone + Unpin> Fetch<H> {
                     b,
                     self.hooks.clone(),
                     ConnectionId::UNWATCHED,
+                    request,
                     uri,
                     sent,
                 )

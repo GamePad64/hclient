@@ -1,7 +1,13 @@
 # Observing `hclient::Client`: identity first, and a small second seam
 
-**Status: design. Nothing here is built.** What is measured is marked as
-measured; every measurement was taken in this tree on 2026-08-30.
+**Status: §12's steps 1 and 2 are built; steps 4 and 5 are not.**
+`RequestId`, `Attempt` and the minting in `Client::run` landed first; the
+`request(..)` setter on the five payloads that carry one, and each in-tree
+backend reading the identity off the request, landed second. What §12 calls
+the place to *stop and check* is therefore where this now sits.
+`ClientHooks`/`ClientEvent` and `hc -w`'s `%{num_redirects}` are still
+design. What is measured is marked as measured; every measurement was taken
+in this tree on 2026-08-30.
 
 `docs/otel-design.md` reached this from one direction and named two things
 it could not fix from below: `http.request.resend_count` is not computable,

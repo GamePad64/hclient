@@ -8,7 +8,8 @@
 
 use bytes::Bytes;
 use hclient_core::unversioned::{
-    Counting, Direction, Event, Hooks, Meter, Metered, NoHooks, Progress, meter,
+    Attempt, Counting, Direction, Event, Hooks, Meter, Metered, NoHooks, Progress, RequestId,
+    identify, meter,
 };
 use http_body::{Frame, SizeHint};
 use std::cell::RefCell;
@@ -25,9 +26,16 @@ struct Seen {
     expected: Option<u64>,
 }
 
+/// Kept out of [`Seen`] so that the assertions above, which compare whole
+/// `Seen` values, stay about the octets: the identity is a separate claim
+/// with a test of its own.
+#[derive(Debug, Default)]
+struct Requests(RefCell<Vec<RequestId>>);
+
 #[derive(Clone, Default)]
 struct Recorder {
     seen: Rc<RefCell<Vec<Seen>>>,
+    requests: Rc<Requests>,
 }
 
 impl Recorder {
@@ -40,6 +48,9 @@ impl Recorder {
             .filter(|s| s.direction == d)
             .collect()
     }
+    fn requests(&self) -> Vec<RequestId> {
+        self.requests.0.borrow().clone()
+    }
 }
 
 impl Hooks for Recorder {
@@ -50,6 +61,7 @@ impl Hooks for Recorder {
                 transferred: p.transferred,
                 expected: p.expected,
             });
+            self.requests.0.borrow_mut().push(p.request);
         }
     }
 }
@@ -121,6 +133,7 @@ fn a_receiving_total_accumulates_rather_than_reporting_deltas() {
         body,
         rec.clone(),
         hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::unversioned::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -149,6 +162,7 @@ fn the_poll_that_ends_a_body_adds_no_event() {
         body,
         rec.clone(),
         hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::unversioned::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -170,6 +184,7 @@ fn an_unstated_length_is_none_rather_than_a_guess() {
         body,
         rec.clone(),
         hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::unversioned::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -195,6 +210,7 @@ fn a_stated_length_is_reported_as_the_denominator() {
         body,
         rec.clone(),
         hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::unversioned::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -220,6 +236,7 @@ fn trailers_are_not_counted_as_body_octets() {
         body,
         rec.clone(),
         hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::unversioned::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -247,6 +264,7 @@ fn a_wrapper_told_not_to_count_reports_nothing_and_still_yields_the_body() {
         body,
         rec.clone(),
         hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::unversioned::RequestId::UNIDENTIFIED,
         None,
         None,
     );
@@ -279,6 +297,7 @@ fn the_send_meter_is_reported_beside_the_receive_one_and_the_two_are_distinguish
         Chunks::data(&["xyz"], SizeHint::with_exact(3)),
         rec.clone(),
         hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::unversioned::RequestId::UNIDENTIFIED,
         Some(&uri()),
         Some(sent),
     );
@@ -320,11 +339,12 @@ fn a_meter_asked_twice_with_nothing_in_between_reports_once() {
     let m = meter::<Recorder>(None).expect("watching");
     let uri = uri();
     let id = hclient_core::unversioned::ConnectionId::UNWATCHED;
+    let req = hclient_core::unversioned::RequestId::UNIDENTIFIED;
 
-    m.report(&rec, id, &uri, Direction::Sending);
+    m.report(&rec, id, req, &uri, Direction::Sending);
     m.add(5);
-    m.report(&rec, id, &uri, Direction::Sending);
-    m.report(&rec, id, &uri, Direction::Sending);
+    m.report(&rec, id, req, &uri, Direction::Sending);
+    m.report(&rec, id, req, &uri, Direction::Sending);
 
     assert_eq!(
         rec.one_way(Direction::Sending),
@@ -364,5 +384,82 @@ fn a_progress_event_carries_what_it_was_built_with() {
         .expected,
         None,
         "the setter's default is the absent denominator, not a zero one",
+    );
+}
+
+// ── the identity the wrappers carry ─────────────────────────────────────
+
+/// **`identify` reads the request's identity, and nothing when there is
+/// none** — the two halves of one function, and the second is what a
+/// transport driven with no `Client` above it gets.
+#[test]
+fn identify_answers_the_attempt_or_the_absent_value() {
+    let mut with = http::Extensions::new();
+    let id = RequestId::next();
+    with.insert(Attempt::new(id));
+    assert_eq!(identify::<Recorder>(&with), id);
+
+    assert_eq!(
+        identify::<Recorder>(&http::Extensions::new()),
+        RequestId::UNIDENTIFIED,
+        "no `Attempt` is no identity, and a minted one would name a \
+         request nobody made",
+    );
+}
+
+/// **Nobody watching, nothing read** — `mark`'s gate, on a lookup.
+///
+/// The map holds an `Attempt` and a `NoHooks` build still answers
+/// `UNIDENTIFIED`, so the extension is never consulted: the same rule
+/// `meter` enforces one function up, stated once here rather than in each
+/// of the four backends that would otherwise write their own
+/// `if H::WATCHING`.
+#[test]
+fn an_unwatched_build_does_not_read_the_extension_at_all() {
+    let mut with = http::Extensions::new();
+    with.insert(Attempt::new(RequestId::next()));
+    assert_eq!(identify::<NoHooks>(&with), RequestId::UNIDENTIFIED);
+}
+
+/// The wrappers carry the identity to the event, which is the whole of why
+/// they take one: [`Progress`] fires from a body that outlives the request
+/// it belongs to, so a lookup at emission time has nothing left to look
+/// in.
+///
+/// Both directions in one exchange, because the send meter is reported
+/// through the receiving body — the `Counting` wrapper is the only thing
+/// the caller polls once the upload has left.
+#[test]
+fn a_counting_body_reports_the_request_it_was_built_for() {
+    let rec = Recorder::default();
+    let id = RequestId::next();
+
+    let sent = Arc::new(meter::<Recorder>(Some(2)).expect("watching"));
+    let outgoing = Metered::new(
+        Chunks::data(&["hi"], SizeHint::with_exact(2)),
+        Some(sent.clone()),
+    );
+    drain(outgoing);
+
+    let counted = Counting::new(
+        Chunks::data(&["abc"], SizeHint::with_exact(3)),
+        rec.clone(),
+        hclient_core::unversioned::ConnectionId::UNWATCHED,
+        id,
+        Some(&uri()),
+        Some(sent),
+    );
+    drain(counted);
+
+    let requests = rec.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "premise: both directions were reported: {requests:?}",
+    );
+    assert!(
+        requests.iter().all(|r| *r == id),
+        "every `Progress` names the request the wrapper was built for: \
+         {requests:?}",
     );
 }

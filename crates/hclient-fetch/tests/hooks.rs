@@ -54,11 +54,22 @@ enum Seen {
         direction: hclient_core::unversioned::Direction,
         transferred: u64,
         expected: Option<u64>,
+        /// Which request — see [`Seen::Head::request`].
+        request: hclient_core::unversioned::RequestId,
     },
     Head {
         id: u64,
         uri: String,
         status: u16,
+        /// Which request this event belongs to.
+        ///
+        /// The one identity an event from this backend can carry, and the
+        /// reason it matters more here than on a transport that owns
+        /// connections: [`Seen::Head::id`] is always
+        /// `ConnectionId::UNWATCHED`, because a browser gives a page no
+        /// connection object at all, so without this there is nothing to
+        /// join an event to.
+        request: hclient_core::unversioned::RequestId,
         /// The `Option` `Head::version` actually is, not a `String` of
         /// it. A `String` would be the shape for an assertion about what
         /// the value *prints as*; the claim here is that there is no value,
@@ -111,12 +122,14 @@ impl Hooks for Recorder {
                     uri: h.uri.to_string(),
                     status: h.status.as_u16(),
                     version: h.version,
+                    request: h.request,
                 }
             }
             Event::Progress(p) => Seen::Progress {
                 direction: p.direction,
                 transferred: p.transferred,
                 expected: p.expected,
+                request: p.request,
             },
             // `Event` is `#[non_exhaustive]` outside `hclient-core`, so
             // this arm is required. An event this recorder does not model
@@ -230,6 +243,7 @@ async fn a_drained_body_reports_the_octets_the_browser_handed_over() {
                 direction,
                 transferred,
                 expected,
+                request: _,
             } => Some((direction, transferred, expected)),
             _ => None,
         })
@@ -252,6 +266,144 @@ async fn a_drained_body_reports_the_octets_the_browser_handed_over() {
         "and the last total is exactly what the caller read — the count is \
          cumulative, so nothing earlier adds to it: {progress:?}",
     );
+}
+
+// ---------------------------------------------------------------------
+// The identity: which request an event belongs to.
+// ---------------------------------------------------------------------
+
+/// **Every event names the request that was sent**, and here that is the
+/// only identity there is: `Head::id` and `Progress::id` are both
+/// `ConnectionId::UNWATCHED` on this backend, because a browser hands a
+/// page no connection object — so without this an event could not be
+/// joined to anything at all.
+///
+/// The id is one this test minted and put in the request's extensions,
+/// which is what a `Client` does, so the assertion is an equality against
+/// a known value rather than a check that the events agree with each
+/// other — which they would also do if the transport stamped a constant.
+#[wasm_bindgen_test]
+async fn every_event_names_the_request_that_was_sent() {
+    use hclient_core::unversioned::{Attempt, RequestId};
+    use http_body::Body as _;
+
+    let rec = Recorder::default();
+    let t = Fetch::new().hooks(rec.clone());
+
+    let minted = RequestId::next();
+    assert_ne!(
+        minted,
+        RequestId::UNIDENTIFIED,
+        "premise: `RequestId::next` never returns the absent value, or \
+         this test and its control would be indistinguishable",
+    );
+    // A body, so the **outbound** octets have something to report: they
+    // travel through `Fetch::report`'s send meter rather than through the
+    // response body's `Counting`, so a request that sends nothing leaves
+    // half the threading unexercised. The harness page answers a POST the
+    // same way it answers a GET — what is asserted is the event, not the
+    // server's opinion of the method.
+    let mut req = http::Request::builder()
+        .method(http::Method::POST)
+        .uri(page_url())
+        .body(RequestBody::Full(bytes::Bytes::from_static(
+            b"a payload worth counting",
+        )))
+        .expect("a well-formed POST");
+    req.extensions_mut().insert(Attempt::new(minted));
+
+    let resp = t.execute(req).await.expect("the harness page");
+    let mut body = resp.into_body();
+    while let Some(frame) =
+        std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+    {
+        frame.expect("the harness page has a readable body");
+    }
+
+    let seen = rec.seen();
+    let directions: Vec<_> = seen
+        .iter()
+        .filter_map(|s| match s {
+            Seen::Progress { direction, .. } => Some(*direction),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        seen.iter().any(|s| matches!(s, Seen::Head { .. }))
+            && directions.contains(&hclient_core::unversioned::Direction::Sending)
+            && directions.contains(&hclient_core::unversioned::Direction::Receiving),
+        "premise: the head and both directions of octets were reported: {seen:?}",
+    );
+    for s in &seen {
+        let request = match s {
+            Seen::Head { request, .. } | Seen::Progress { request, .. } => *request,
+            other => panic!("this backend emits no {other:?}"),
+        };
+        assert_eq!(
+            request, minted,
+            "every event must name the request it belongs to: {seen:?}",
+        );
+    }
+}
+
+/// The control, and what makes the test above mean anything: the same
+/// transport and the same page, one thing different — no `Attempt` in the
+/// extensions, which is what a transport driven with no `Client` above it
+/// gets.
+///
+/// `UNIDENTIFIED` is the understating answer and the only honest one.
+#[wasm_bindgen_test]
+async fn a_request_with_no_attempt_reports_no_identity() {
+    use hclient_core::unversioned::RequestId;
+    use http_body::Body as _;
+
+    let rec = Recorder::default();
+    let t = Fetch::new().hooks(rec.clone());
+
+    // The same POST as the test above, so the only difference between the
+    // two halves is the extension.
+    let req = http::Request::builder()
+        .method(http::Method::POST)
+        .uri(page_url())
+        .body(RequestBody::Full(bytes::Bytes::from_static(
+            b"a payload worth counting",
+        )))
+        .expect("a well-formed POST");
+
+    let resp = t.execute(req).await.expect("the harness page");
+    let mut body = resp.into_body();
+    while let Some(frame) =
+        std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+    {
+        frame.expect("the harness page has a readable body");
+    }
+
+    let seen = rec.seen();
+    let directions: Vec<_> = seen
+        .iter()
+        .filter_map(|s| match s {
+            Seen::Progress { direction, .. } => Some(*direction),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        seen.iter().any(|s| matches!(s, Seen::Head { .. }))
+            && directions.contains(&hclient_core::unversioned::Direction::Sending)
+            && directions.contains(&hclient_core::unversioned::Direction::Receiving),
+        "premise: the same events were reported as in the test above: {seen:?}",
+    );
+    for s in &seen {
+        let request = match s {
+            Seen::Head { request, .. } | Seen::Progress { request, .. } => *request,
+            other => panic!("this backend emits no {other:?}"),
+        };
+        assert_eq!(
+            request,
+            RequestId::UNIDENTIFIED,
+            "there is no identity to report, and inventing one would attach \
+             this exchange to a request nobody made: {seen:?}",
+        );
+    }
 }
 
 /// The counterpart, and the reason the test above is not vacuous: a

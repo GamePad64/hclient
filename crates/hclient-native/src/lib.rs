@@ -135,7 +135,7 @@ pub use upgrade::{EndedBeforeTheResponse, NotSwitchingProtocols, Upgrading};
 
 use hclient_core::unversioned::{
     CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
-    Reused, Transport,
+    RequestId, Reused, Transport,
 };
 use hclient_core::{
     CancelSupport, Capabilities, ClientIdentity, Error, ErrorKind, Phase, RedirectSupport,
@@ -165,8 +165,13 @@ type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H, R>);
 
 /// Monomorphised where `H: Clone + Send + Sync + 'static` is known, called
 /// where it is not.
-type Watch1xx<H> =
-    fn(&H, &mut http::Request<body::OutgoingBody>, ConnectionId, Option<Arc<body::ContinueGate>>);
+type Watch1xx<H> = fn(
+    &H,
+    &mut http::Request<body::OutgoingBody>,
+    ConnectionId,
+    RequestId,
+    Option<Arc<body::ContinueGate>>,
+);
 
 /// The same callback with nothing to report to.
 ///
@@ -194,6 +199,7 @@ fn install_1xx<H>(
     hooks: &H,
     req: &mut http::Request<body::OutgoingBody>,
     id: ConnectionId,
+    request: RequestId,
     gate: Option<Arc<body::ContinueGate>>,
 ) where
     // The marker sits on the `where` line rather than in the angle
@@ -212,7 +218,8 @@ fn install_1xx<H>(
             g.open();
         }
         hooks.on(&Event::Informational(
-            hclient_core::unversioned::Informational::new(id, resp.status(), resp.headers()),
+            hclient_core::unversioned::Informational::new(id, resp.status(), resp.headers())
+                .request(request),
         ));
     });
 }
@@ -235,6 +242,7 @@ pub type NativeIo<R, T> =
 /// interpret.
 pub(crate) struct Counted<'a> {
     id: ConnectionId,
+    request: RequestId,
     /// `None` is *something below already counted this body*, which is the
     /// QUIC arm — see `hclient_core::unversioned::Counting::new`.
     uri: Option<&'a http::Uri>,
@@ -244,11 +252,13 @@ pub(crate) struct Counted<'a> {
 impl<'a> Counted<'a> {
     pub(crate) fn new(
         id: ConnectionId,
+        request: RequestId,
         uri: &'a http::Uri,
         sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
     ) -> Self {
         Self {
             id,
+            request,
             uri: Some(uri),
             sent,
         }
@@ -261,6 +271,10 @@ impl<'a> Counted<'a> {
     pub(crate) fn already(id: ConnectionId) -> Self {
         Self {
             id,
+            // Nothing is counted here and nothing is reported, so there is
+            // no event for an id to name: the QUIC arm already put its own
+            // on the `Progress` events for this body.
+            request: RequestId::UNIDENTIFIED,
             uri: None,
             sent: None,
         }
@@ -2598,6 +2612,7 @@ where
                 b,
                 self.hooks.clone(),
                 count.id,
+                count.request,
                 count.uri,
                 count.sent,
             );
@@ -2615,6 +2630,7 @@ where
         &self,
         resp: &http::Response<established::NativeBody<NativeIo<R, T>, H>>,
         id: ConnectionId,
+        request: RequestId,
         uri: &http::Uri,
         began: Option<R::Instant>,
     ) {
@@ -2625,6 +2641,7 @@ where
         // must agree.
         self.hooks.on(&Event::Head(
             Head::new(id, uri, resp.status(), since::<R>(&self.rt, began))
+                .request(request)
                 .version(Some(resp.version())),
         ));
     }
@@ -3114,6 +3131,12 @@ where
             .get::<Timeouts>()
             .copied()
             .unwrap_or_default();
+        // The same reading, one extension over, and it is read **once**:
+        // the request is consumed by the exchange, and the response body
+        // that reports `Progress` outlives it, so the value has to be
+        // carried rather than looked up again. Gated on `H::WATCHING`
+        // inside `identify`, so an unwatched build touches no map.
+        let request = hclient_core::unversioned::identify::<H>(&parts.extensions);
 
         // Which connections may serve this request. Computed BEFORE
         // `origin_form` below rewrites the URI into origin-form and the
@@ -3273,11 +3296,9 @@ where
             // connection's own, assigned when it was made, so a caller
             // can find the `Connected` this refers back to.
             let id = est.id();
-            self.hooks.on(&Event::Reused(Reused::new(
-                id,
-                &uri,
-                spoken_version(Some(protocol)),
-            )));
+            self.hooks.on(&Event::Reused(
+                Reused::new(id, &uri, spoken_version(Some(protocol))).request(request),
+            ));
             let checkin = self.checkin_for(&key, now);
             // Nobody waiting for a connect should wait for this exchange:
             // what they are waiting for is a connection to exist, and one
@@ -3311,17 +3332,18 @@ where
                 attempt,
                 &self.hooks,
                 id,
+                request,
                 &uri,
                 sent.clone(),
             )
             .await
             {
                 Ok(resp) => {
-                    self.report_head(&resp, id, &uri, began);
+                    self.report_head(&resp, id, request, &uri, began);
                     return Ok(self.bound_body(
                         resp,
                         timeouts.between_bytes,
-                        Counted::new(id, &uri, sent),
+                        Counted::new(id, request, &uri, sent),
                     ));
                 }
                 // The one retry, and the reason it exists: a pool turns
@@ -3454,6 +3476,7 @@ where
         if let Some(attempted) = attempted {
             self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, spoken_version(protocol))
+                    .request(request)
                     .remote(attempted.remote)
                     // The handshake's own report, which this transport has
                     // had in hand at this line since TLS became a seam and
@@ -3552,12 +3575,22 @@ where
         );
         let attempt =
             std::pin::pin!(self.within_first_byte_gated(timeouts.first_byte, gate, attempt));
-        let resp =
-            hclient_core::unversioned::Reporting::new(attempt, &self.hooks, id, &uri, sent.clone())
-                .await
-                .map_err(established::Failed::into_error)?;
-        self.report_head(&resp, id, &uri, began);
-        Ok(self.bound_body(resp, timeouts.between_bytes, Counted::new(id, &uri, sent)))
+        let resp = hclient_core::unversioned::Reporting::new(
+            attempt,
+            &self.hooks,
+            id,
+            request,
+            &uri,
+            sent.clone(),
+        )
+        .await
+        .map_err(established::Failed::into_error)?;
+        self.report_head(&resp, id, request, &uri, began);
+        Ok(self.bound_body(
+            resp,
+            timeouts.between_bytes,
+            Counted::new(id, request, &uri, sent),
+        ))
     }
 }
 

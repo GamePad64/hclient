@@ -1285,12 +1285,15 @@ async fn a_demand_for_http2_is_served_by_the_shared_connection() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_1xx_on_a_shared_connection_reaches_the_hook() {
     #[derive(Debug, Clone, Default)]
-    struct Hints(Arc<Mutex<Vec<u16>>>);
+    struct Hints(Arc<Mutex<Vec<(u16, u64)>>>);
 
     impl hclient_core::unversioned::Hooks for Hints {
         fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
             if let hclient_core::unversioned::Event::Informational(e) = event {
-                self.0.lock().unwrap().push(e.status.as_u16());
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((e.status.as_u16(), e.request.get()));
             }
         }
     }
@@ -1321,10 +1324,21 @@ async fn a_1xx_on_a_shared_connection_reaches_the_hook() {
         1,
         "one connection, or this is not the shared path"
     );
+    let seen = hints.0.lock().unwrap().clone();
     assert_eq!(
-        hints.0.lock().unwrap().clone(),
+        seen.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
         vec![103, 103],
         "one interim head per request, on the connection they share"
+    );
+    // **And the two name different requests**, which is the whole reason
+    // an event carries a `RequestId` beside a `ConnectionId`: these two
+    // interim heads arrived on **one** connection, so the connection id
+    // is the same for both and cannot say whose `103` is whose.
+    let requests: Vec<u64> = seen.iter().map(|(_, r)| *r).collect();
+    assert!(
+        requests[0] != requests[1] && requests.iter().all(|r| *r != 0),
+        "two concurrent operations, two identities, neither of them \
+         `RequestId::UNIDENTIFIED`: {requests:?}",
     );
 }
 

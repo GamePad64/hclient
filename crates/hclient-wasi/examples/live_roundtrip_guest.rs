@@ -96,6 +96,7 @@ impl wasip3::exports::cli::run::Guest for Guest {
             "hooks-head" => hooks_head(port).await,
             "hooks-no-head" => hooks_no_head(port).await,
             "hooks-quiet" => hooks_quiet(port).await,
+            "hooks-request-id" => hooks_request_id(port).await,
             other => {
                 eprintln!("unknown mode: {other}");
                 Err(())
@@ -520,9 +521,14 @@ impl hclient_core::unversioned::Hooks for Recorder {
             // a version prints `Some(HTTP/1.1)` where the test expects
             // `None` — the difference reaches the transcript as a word
             // rather than as a value that has to be compared.
+            // `request` is printed beside `id`, and the two are
+            // different questions: this backend owns no connection, so
+            // `id` is always `UNWATCHED` and the request identity is the
+            // only thing an event here can be joined on.
             Event::Head(h) => format!(
-                "EVENT head id={} uri={} status={} version={:?} elapsed_ns={}",
+                "EVENT head id={} request={} uri={} status={} version={:?} elapsed_ns={}",
                 h.id,
+                h.request,
                 h.uri,
                 h.status.as_u16(),
                 h.version,
@@ -536,8 +542,8 @@ impl hclient_core::unversioned::Hooks for Recorder {
             // — are both in the fields rather than in how many lines
             // there are.
             Event::Progress(p) => format!(
-                "EVENT progress dir={:?} transferred={} expected={:?}",
-                p.direction, p.transferred, p.expected
+                "EVENT progress request={} dir={:?} transferred={} expected={:?}",
+                p.request, p.direction, p.transferred, p.expected
             ),
 
             // `Event` is `#[non_exhaustive]` outside `hclient-core`, so
@@ -586,7 +592,7 @@ impl Recorder {
             "RECEIVED={}",
             lines
                 .iter()
-                .filter(|l| l.starts_with("EVENT progress dir=Receiving "))
+                .filter(|l| l.contains(" dir=Receiving "))
                 .filter_map(|l| l
                     .split_whitespace()
                     .find_map(|w| w.strip_prefix("transferred=")))
@@ -679,6 +685,74 @@ async fn hooks_no_head(port: u16) -> Result<(), ()> {
     rec.report();
 
     println!("HOOKS_NO_HEAD_OK");
+    Ok(())
+}
+
+/// The identity on the events: two exchanges through one transport, the
+/// first carrying an [`Attempt`] the guest minted and the second carrying
+/// none.
+///
+/// The pair is the claim. The first says the events name the request that
+/// was sent; the second says a transport driven with no `Client` above it
+/// under-reports rather than inventing an identity — and without it an
+/// emitter that stamped any constant would pass the first.
+///
+/// The id is printed from the guest rather than assumed by the harness,
+/// because `RequestId::next` is a process-wide counter and the guest is
+/// its own process: a number hard-coded on the host side would be
+/// asserting on the order the tests happen to run in.
+async fn hooks_request_id(port: u16) -> Result<(), ()> {
+    use hclient_core::unversioned::{Attempt, RequestId};
+
+    let get = |rec: &Recorder, attempt: Option<Attempt>| {
+        let transport = hclient_wasi::WasiHttp::new().hooks(rec.clone());
+        let uri: http::Uri = format!("http://127.0.0.1:{port}/hooked?probe=1")
+            .parse()
+            .expect("uri");
+        // A body, so that the **outbound** octets have something to
+        // report: they travel through `Reporting`, a different wrapper
+        // from the response body's `Counting`, and a request that sends
+        // nothing leaves that half of the threading unexercised.
+        let mut req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri(uri)
+            .body(RequestBody::Full(bytes::Bytes::from_static(
+                b"a payload worth counting",
+            )))
+            .expect("request");
+        if let Some(a) = attempt {
+            req.extensions_mut().insert(a);
+        }
+        (transport, req)
+    };
+
+    let minted = RequestId::next();
+    println!("MINTED={minted}");
+
+    for (label, attempt) in [
+        ("IDENTIFIED", Some(Attempt::new(minted))),
+        ("ANONYMOUS", None),
+    ] {
+        let rec = Recorder::default();
+        let (transport, req) = get(&rec, attempt);
+        let resp = transport.execute(req).await.map_err(|e| {
+            eprintln!("execute failed: {e}");
+        })?;
+        // Drained, because `Progress` is reported from the response body
+        // and a transcript taken before the body would carry the head
+        // alone.
+        let mut body = resp.into_body();
+        while let Some(frame) = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+            if let Err(e) = frame {
+                eprintln!("body error: {e}");
+                return Err(());
+            }
+        }
+        println!("SECTION {label}");
+        rec.report();
+    }
+
+    println!("HOOKS_REQUEST_ID_OK");
     Ok(())
 }
 

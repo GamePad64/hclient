@@ -331,7 +331,11 @@ test-browser BROWSER="chrome":
     # browser test for it. Measured by running the suite, not taken from
     # the change's own report, which said 129 — a floor set one above the
     # truth is a gate that fails for everybody until somebody notices.
-    run_browser_suite crates/hclient-fetch 128
+    #
+    # 128 -> 130 when the events gained a `RequestId`: the pair asserting
+    # that an event names the request that was sent, and that it names
+    # nothing where there was none. Measured the same way.
+    run_browser_suite crates/hclient-fetch 130
     # `--test wasm_default` and not the whole crate, for a reason worth
     # stating: `wasm-pack test` also compiles the crate's **doctests** for
     # `wasm32-unknown-unknown`, and two of them cannot build there —

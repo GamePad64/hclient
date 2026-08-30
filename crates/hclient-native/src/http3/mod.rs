@@ -946,11 +946,19 @@ where
         &self,
         resp: http::Response<H3Body<H>>,
         id: hclient_core::unversioned::ConnectionId,
+        request: hclient_core::unversioned::RequestId,
         uri: &http::Uri,
         sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
     ) -> http::Response<hclient_core::unversioned::Counting<H3Body<H>, H>> {
         resp.map(|b| {
-            hclient_core::unversioned::Counting::new(b, self.hooks.clone(), id, Some(uri), sent)
+            hclient_core::unversioned::Counting::new(
+                b,
+                self.hooks.clone(),
+                id,
+                request,
+                Some(uri),
+                sent,
+            )
         })
     }
 
@@ -994,6 +1002,7 @@ where
         &self,
         resp: &http::Response<H3Body<H>>,
         id: ConnectionId,
+        request: hclient_core::unversioned::RequestId,
         uri: &http::Uri,
         began: Option<R::Instant>,
     ) {
@@ -1003,6 +1012,7 @@ where
         // `Head::version`'s doc says the two must agree.
         self.hooks.on(&Event::Head(
             Head::new(id, uri, resp.status(), since::<R>(&self.rt, began))
+                .request(request)
                 .version(Some(resp.version())),
         ));
     }

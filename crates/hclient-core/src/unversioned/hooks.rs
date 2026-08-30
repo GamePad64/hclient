@@ -330,6 +330,8 @@ pub enum Event<'a> {
 #[non_exhaustive]
 pub struct Informational<'a> {
     pub id: ConnectionId,
+    /// Which request. See [`RequestId`] and [`RequestId::UNIDENTIFIED`].
+    pub request: RequestId,
     /// `1xx`. Which one is the whole of what distinguishes a `100` from a
     /// `103`, so it is not narrowed to an enum: a status this crate has
     /// never heard of is still a status the server sent.
@@ -402,6 +404,8 @@ pub struct Progress<'a> {
     /// The connection carrying it, or [`ConnectionId::UNWATCHED`] where
     /// the transport owns none.
     pub id: ConnectionId,
+    /// Which request. See [`RequestId`] and [`RequestId::UNIDENTIFIED`].
+    pub request: RequestId,
     /// Which exchange this is about.
     ///
     /// Not redundant beside [`Self::id`], and h2 is why: several requests
@@ -553,10 +557,25 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 impl RequestId {
     /// The id an event carries when it names no request.
     ///
-    /// One producer, unlike [`ConnectionId::UNWATCHED`]'s two: a transport
-    /// driven directly, with no `Client` above it, has no extension to
-    /// read. It is the **understating** value and that direction is the
-    /// point — `reports_alpn`'s rule. A backend that forgets the setter
+    /// **This said *one producer, unlike [`ConnectionId::UNWATCHED`]'s
+    /// two* until the setter had a caller**, and there are two — the
+    /// same two, for the same reasons, which is worth knowing because it
+    /// makes the constant next door the precedent rather than a near
+    /// neighbour:
+    ///
+    /// - **There is no request to name.** A transport driven directly,
+    ///   with no `Client` above it, has no [`Attempt`] in the request's
+    ///   extensions to read.
+    /// - **Nobody is watching.** [`identify`] is gated on
+    ///   [`Hooks::WATCHING`], so an unwatched build does not look in the
+    ///   map — and by that const's own declaration such a build has no
+    ///   reader for the event carrying this.
+    ///
+    /// So a reader can only ever meet the first, and to a hook it means
+    /// exactly one thing: *this event names no request*.
+    ///
+    /// It is the **understating** value and that direction is the point —
+    /// `reports_alpn`'s rule. A backend that forgets the setter
     /// under-reports, costing a hook a join it cannot make; over-reporting
     /// would attach one request's handshake to another's span, and there
     /// is no third answer.
@@ -646,6 +665,12 @@ impl Attempt {
 #[non_exhaustive]
 pub struct Connected<'a> {
     pub id: ConnectionId,
+    /// The request that paid for this connection. See [`RequestId`].
+    ///
+    /// **A connection outlives the request that opened it**, so this
+    /// names the one that paid rather than the one that will use it
+    /// next: the [`Reused`] events that follow name their own.
+    pub request: RequestId,
     /// The URI whose request paid for this connection, as the transport
     /// received it — absolute, before any protocol rewrote it.
     pub uri: &'a http::Uri,
@@ -897,6 +922,10 @@ pub struct Reused<'a> {
     /// The id this connection was given when it was made — so the
     /// [`Connected`] it belongs to is findable.
     pub id: ConnectionId,
+    /// The request taking it. See [`RequestId`]; and note that this is
+    /// **not** the request the [`Connected`] with the same [`Self::id`]
+    /// names, which is the point of carrying both.
+    pub request: RequestId,
     pub uri: &'a http::Uri,
     /// What is spoken on it. A pooled connection is keyed on its
     /// protocol, so this is what the connection negotiated when it was
@@ -909,6 +938,8 @@ pub struct Reused<'a> {
 #[non_exhaustive]
 pub struct Head<'a> {
     pub id: ConnectionId,
+    /// Which request. See [`RequestId`] and [`RequestId::UNIDENTIFIED`].
+    pub request: RequestId,
     pub uri: &'a http::Uri,
     pub status: http::StatusCode,
     /// What was spoken — or `None` where the transport could not observe
@@ -956,6 +987,27 @@ pub struct Head<'a> {
 }
 
 /// A connection ended.
+///
+/// # The one event with no [`RequestId`], and that is the answer rather
+/// than the omission
+///
+/// Its five siblings carry one. This does not, because **a connection
+/// ending is not a fact about a request**, and the two protocols say so
+/// in opposite ways. On a multiplexed HTTP/2 or HTTP/3 connection, every
+/// request sharing it is equally the subject, so naming one would be
+/// naming the wrong one — over-reporting, which
+/// [`RequestId::UNIDENTIFIED`] exists to say this seam never does. On a
+/// pooled HTTP/1 connection the close is often reported to a request that
+/// merely *found* it dead: [`CloseReason::Stale`] is emitted at checkout,
+/// so the request in hand is the one that will pay for a fresh connect
+/// and not the one whose exchange the connection ended after.
+///
+/// The join a caller wants is there anyway and costs nothing extra:
+/// [`Self::id`] is the connection's, and every [`Connected`], [`Reused`],
+/// [`Head`] and [`Progress`] carries both ids — so *which requests used
+/// the connection that just died* is a lookup in what the hook already
+/// saw, where a single request id on this event would have been an answer
+/// to a question nobody asked.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Closed<'a> {
@@ -999,6 +1051,13 @@ pub enum CloseReason<'a> {
 // `new`, and what a backend may not know goes in a setter. So a new field
 // that a backend may not know is additive; one it must supply is a break,
 // and no attribute has ever protected against that.
+//
+// `request` is a setter on all five payloads that carry one, and it is the
+// rule's own worked example rather than a case near its edge: a transport
+// driven directly, with no `hclient::Client` above it, has no `Attempt` in
+// the request's extensions to read, so `RequestId::UNIDENTIFIED` is what
+// it honestly reports. A `new` parameter would have obliged every backend
+// to name a request it may have no way of knowing.
 
 impl<'a> Informational<'a> {
     /// Every field is required: an interim response without a status or a
@@ -1007,9 +1066,17 @@ impl<'a> Informational<'a> {
     pub fn new(id: ConnectionId, status: http::StatusCode, headers: &'a http::HeaderMap) -> Self {
         Self {
             id,
+            request: RequestId::UNIDENTIFIED,
             status,
             headers,
         }
+    }
+
+    /// Which request this interim response belongs to.
+    #[must_use]
+    pub fn request(mut self, request: RequestId) -> Self {
+        self.request = request;
+        self
     }
 }
 
@@ -1029,11 +1096,23 @@ impl<'a> Progress<'a> {
     ) -> Self {
         Self {
             id,
+            request: RequestId::UNIDENTIFIED,
             uri,
             direction,
             transferred,
             expected: None,
         }
+    }
+
+    /// Which request these octets belong to.
+    ///
+    /// Read **once**, where the counter is built, and carried on the
+    /// wrapper: this event fires per frame, so a lookup per event would be
+    /// work on the one path §9 of `docs/observability-design.md` measures.
+    #[must_use]
+    pub fn request(mut self, request: RequestId) -> Self {
+        self.request = request;
+        self
     }
 
     /// What the sender said the whole body would be. `None` is the honest
@@ -1054,6 +1133,7 @@ impl<'a> Connected<'a> {
     pub fn new(id: ConnectionId, uri: &'a http::Uri, version: http::Version) -> Self {
         Self {
             id,
+            request: RequestId::UNIDENTIFIED,
             uri,
             remote: None,
             version,
@@ -1063,6 +1143,13 @@ impl<'a> Connected<'a> {
             client_cert: ClientCertAsk::Unobserved,
             alpn: None,
         }
+    }
+
+    /// The request that paid for this connection.
+    #[must_use]
+    pub fn request(mut self, request: RequestId) -> Self {
+        self.request = request;
+        self
     }
 
     /// The peer's address, where there is one. `None` is not a gap to be
@@ -1107,7 +1194,19 @@ impl<'a> Reused<'a> {
     /// target and a negotiated version, or it is not one.
     #[must_use]
     pub fn new(id: ConnectionId, uri: &'a http::Uri, version: http::Version) -> Self {
-        Self { id, uri, version }
+        Self {
+            id,
+            request: RequestId::UNIDENTIFIED,
+            uri,
+            version,
+        }
+    }
+
+    /// The request taking this connection out of the pool.
+    #[must_use]
+    pub fn request(mut self, request: RequestId) -> Self {
+        self.request = request;
+        self
     }
 }
 
@@ -1126,11 +1225,19 @@ impl<'a> Head<'a> {
     ) -> Self {
         Self {
             id,
+            request: RequestId::UNIDENTIFIED,
             uri,
             status,
             version: None,
             elapsed,
         }
+    }
+
+    /// Which request this head answers.
+    #[must_use]
+    pub fn request(mut self, request: RequestId) -> Self {
+        self.request = request;
+        self
     }
 
     /// The protocol this response arrived over. Set it exactly when
@@ -1223,6 +1330,34 @@ pub fn mark<H: Hooks, T>(now: impl FnOnce() -> T) -> Option<T> {
     H::WATCHING.then(now)
 }
 
+/// Which request this exchange is, read from the request's extensions —
+/// but only if a hook is watching.
+///
+/// [`mark`]'s gate for a lookup rather than a clock, and it is in this
+/// module for the same recorded reason: four backends each writing their
+/// own `if H::WATCHING` is four chances to reopen the defect where one of
+/// them forgets, which is exactly how a `NoHooks` build once ended up
+/// reading a clock and cloning a [`http::Uri`] per request while the cost
+/// test still read zero.
+///
+/// **Call it once per exchange and carry the answer.** A [`Progress`]
+/// fires per frame from a body that outlives `Transport::execute` and no
+/// longer holds the request, so the value has to travel on the wrapper —
+/// [`Counting`] and [`Reporting`] take it beside their [`ConnectionId`]
+/// for that reason.
+///
+/// [`RequestId::UNIDENTIFIED`] where there is no [`Attempt`], which is
+/// every transport driven without an `hclient::Client` above it.
+#[must_use]
+pub fn identify<H: Hooks>(extensions: &http::Extensions) -> RequestId {
+    if !H::WATCHING {
+        return RequestId::UNIDENTIFIED;
+    }
+    extensions
+        .get::<Attempt>()
+        .map_or(RequestId::UNIDENTIFIED, |a| a.id)
+}
+
 /// How long since [`mark`], or zero where nothing was marked.
 ///
 /// `Duration::ZERO` rather than an `Option`: an unwatched request has no
@@ -1305,6 +1440,7 @@ impl Meter {
         &self,
         hooks: &H,
         id: ConnectionId,
+        request: RequestId,
         uri: &http::Uri,
         direction: Direction,
     ) {
@@ -1313,7 +1449,9 @@ impl Meter {
             return;
         }
         hooks.on(&Event::Progress(
-            Progress::new(id, uri, direction, now).expected(self.expected),
+            Progress::new(id, uri, direction, now)
+                .request(request)
+                .expected(self.expected),
         ));
     }
 }
@@ -1340,6 +1478,11 @@ pub struct Counting<B, H> {
     inner: B,
     hooks: H,
     id: ConnectionId,
+    /// Captured here rather than looked up at emission, because by the
+    /// time this body is polled the request is gone: it was consumed by
+    /// the exchange that produced the response this wraps. See
+    /// [`identify`].
+    request: RequestId,
     /// The clone and the counter are produced **together or not at all**.
     ///
     /// Two `Option`s that have to agree is one more than is safe: a second
@@ -1388,6 +1531,7 @@ where
         inner: B,
         hooks: H,
         id: ConnectionId,
+        request: RequestId,
         uri: Option<&http::Uri>,
         sent: Option<Arc<Meter>>,
     ) -> Self {
@@ -1397,6 +1541,7 @@ where
             inner,
             hooks,
             id,
+            request,
             recv,
             sent,
         }
@@ -1429,9 +1574,15 @@ where
         // Both directions on every poll, and unconditionally: `report` is
         // what decides whether anything moved, so a caller of it never has
         // to know.
-        m.report(&this.hooks, this.id, uri, Direction::Receiving);
+        m.report(
+            &this.hooks,
+            this.id,
+            this.request,
+            uri,
+            Direction::Receiving,
+        );
         if let Some(sent) = &this.sent {
-            sent.report(&this.hooks, this.id, uri, Direction::Sending);
+            sent.report(&this.hooks, this.id, this.request, uri, Direction::Sending);
         }
         out
     }
@@ -1525,6 +1676,8 @@ pub struct Reporting<F, H> {
     inner: F,
     hooks: H,
     id: ConnectionId,
+    /// See [`Counting::request`].
+    request: RequestId,
     /// One `Option`, for [`Counting::recv`]'s reason.
     watch: Option<(http::Uri, Arc<Meter>)>,
 }
@@ -1538,6 +1691,7 @@ impl<F, H> Reporting<F, H> {
         inner: F,
         hooks: H,
         id: ConnectionId,
+        request: RequestId,
         uri: &http::Uri,
         meter: Option<Arc<Meter>>,
     ) -> Self {
@@ -1545,6 +1699,7 @@ impl<F, H> Reporting<F, H> {
             inner,
             hooks,
             id,
+            request,
             watch: meter.map(|m| (uri.clone(), m)),
         }
     }
@@ -1564,7 +1719,7 @@ where
         let this = self.get_mut();
         let out = core::pin::Pin::new(&mut this.inner).poll(cx);
         if let Some((uri, m)) = &this.watch {
-            m.report(&this.hooks, this.id, uri, Direction::Sending);
+            m.report(&this.hooks, this.id, this.request, uri, Direction::Sending);
         }
         out
     }

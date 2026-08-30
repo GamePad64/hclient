@@ -1190,6 +1190,96 @@ fn a_request_that_never_got_a_head_reports_nothing() {
     );
 }
 
+/// **The identity on the events, through a real host.**
+///
+/// `wasi:http@0.3.0` has no connection resource, so every event this
+/// backend emits carries `ConnectionId::UNWATCHED` and the request
+/// identity is the *only* thing a hook could join on — which makes the
+/// claim worth more here than on a transport that owns connections, not
+/// less.
+///
+/// The pair is what makes it a test. One exchange carries an `Attempt`
+/// the guest minted and prints the number it minted; the other carries
+/// none and must report `RequestId::UNIDENTIFIED`. An emitter that
+/// stamped any constant passes the first and fails the second.
+#[test]
+fn the_events_name_the_request_that_was_sent_and_nothing_where_there_is_none() {
+    let Some(wasmtime) = require_wasmtime(
+        "the_events_name_the_request_that_was_sent_and_nothing_where_there_is_none",
+    ) else {
+        return;
+    };
+    let (stdout, stderr, status) =
+        run_guest_against_status_server_n(&wasmtime, "hooks-request-id", 2);
+    let ok = |cond: bool, what: &str| {
+        assert!(
+            cond,
+            "{what}\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}"
+        );
+    };
+    ok(status.success(), "the guest run itself failed");
+    ok(
+        stdout.contains("HOOKS_REQUEST_ID_OK"),
+        "the guest did not finish both exchanges",
+    );
+
+    // The number the guest minted, read out of its own transcript: the
+    // counter is process-wide and the guest is its own process, so a
+    // number written here would be asserting on run order.
+    let minted = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("MINTED="))
+        .unwrap_or_else(|| panic!("the guest did not report the id it minted\n{stdout}"));
+    ok(
+        minted != "0",
+        "`RequestId::next` starts at 1 and never returns the absent value, \
+         or the two halves of this test would be indistinguishable",
+    );
+
+    let section = |name: &str| -> Vec<&str> {
+        stdout
+            .split(&format!("SECTION {name}\n"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("no `SECTION {name}` in the transcript\n{stdout}"))
+            .lines()
+            .take_while(|l| !l.starts_with("SECTION ") && !l.starts_with("HOOKS_"))
+            .filter(|l| l.starts_with("EVENT "))
+            .collect()
+    };
+
+    let identified = section("IDENTIFIED");
+    ok(
+        identified.iter().any(|l| l.starts_with("EVENT head "))
+            && identified.iter().any(|l| l.contains(" dir=Receiving "))
+            && identified.iter().any(|l| l.contains(" dir=Sending ")),
+        "premise: the head and both directions of octets were reported — \
+         the upload travels through a different wrapper from the download, \
+         so a test blind to one is blind to half the threading",
+    );
+    for line in &identified {
+        ok(
+            line.contains(&format!("request={minted}")),
+            &format!("every event must name the request that was sent: {line}"),
+        );
+    }
+
+    let anonymous = section("ANONYMOUS");
+    ok(
+        anonymous.len() == identified.len(),
+        "premise: the control produced the same events, so the only \
+         difference between the two halves is the extension",
+    );
+    for line in &anonymous {
+        ok(
+            line.contains("request=0"),
+            &format!(
+                "with no `Attempt` there is no identity to report, and \
+                 `RequestId::UNIDENTIFIED` is the understating answer: {line}"
+            ),
+        );
+    }
+}
+
 /// The default transport is unchanged by the type parameter added beside
 /// it: `WasiHttp::new()` is still `WasiHttp<NoHooks>`, and it still works
 /// against a real host.
@@ -1219,21 +1309,75 @@ fn run_guest_against_status_server(
     wasmtime: &Path,
     mode: &str,
 ) -> (String, String, std::process::ExitStatus) {
+    run_guest_against_status_server_n(wasmtime, mode, 1)
+}
+
+/// The same, for a mode that makes `exchanges` requests rather than one.
+///
+/// A count rather than a loop with no bound: the accept thread is joined
+/// at the end, so a server that waited for a connection the guest never
+/// makes would hang the test instead of failing it.
+fn run_guest_against_status_server_n(
+    wasmtime: &Path,
+    mode: &str,
+    exchanges: usize,
+) -> (String, String, std::process::ExitStatus) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("local_addr").port();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept");
+        for _ in 0..exchanges {
+            answer_one(&listener);
+        }
+    });
+
+    let out = run_hooks_guest(wasmtime, port, mode);
+    server.join().expect("mock server thread panicked");
+    out
+}
+
+fn answer_one(listener: &TcpListener) {
+    let (mut stream, _) = listener.accept().expect("accept");
+    {
         let mut buf = [0u8; 1024];
         let mut head = Vec::new();
-        loop {
+        let head_end = loop {
             let n = stream.read(&mut buf).expect("reading the request head");
             if n == 0 {
                 return;
             }
             head.extend_from_slice(&buf[..n]);
-            if head.windows(4).any(|w| w == b"\r\n\r\n") {
+            if let Some(i) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+        };
+        // The request body, read before answering — **a guard on the
+        // premise, not an assertion**, which is `Behaviour::close_delay`'s
+        // shape one crate over. Without it the fixture writes its response
+        // and drops the socket while the guest may still be writing, and
+        // `race_send_with_body` waits for both halves, so a mode that
+        // uploads anything could fail on the write rather than on what it
+        // is about.
+        //
+        // What is honest about it: `the_events_name_the_request_..` was
+        // seen failing **once**, in a full-workspace run, and has not
+        // reproduced in thirty since — at `-j96`, forcing rebuilds, and in
+        // isolation. Removing this loop does not fail it either. So this
+        // is a race the fixture could lose rather than one measured
+        // losing, and the loop is here because the fixture had no business
+        // answering a request it had not finished reading.
+        //
+        // **Both framings, and the chunked one is the one that matters**:
+        // measured against the built guest, a `RequestBody::Full` goes out
+        // as `transfer-encoding: chunked` with no `Content-Length` at all,
+        // so a drain that read only a declared length would be a guard
+        // that never fires.
+        let mut body = head.split_off(head_end);
+        while !body_is_complete(&head, &body) {
+            let n = stream.read(&mut buf).expect("reading the request body");
+            if n == 0 {
                 break;
             }
+            body.extend_from_slice(&buf[..n]);
         }
         // `Content-Length`, not the chunked+trailer response
         // `live_roundtrip.rs` needs: nothing here is about
@@ -1255,11 +1399,42 @@ fn run_guest_against_status_server(
         out.extend_from_slice(HOOKS_RESPONSE_BODY);
         stream.write_all(&out).expect("write");
         let _ = stream.flush();
-    });
+    }
+}
 
-    let out = run_hooks_guest(wasmtime, port, mode);
-    server.join().expect("mock server thread panicked");
-    out
+/// Whether `body` is all of the body the `head` said there would be.
+///
+/// Three answers rather than two, and the third is what keeps a
+/// bodyless request from waiting for a byte that never comes: a head
+/// declaring neither framing has no body at all.
+///
+/// The chunked case looks for the terminating `0\r\n\r\n` rather than
+/// walking the chunk sizes — this is a drain, not a parser, and what it
+/// owes is *do not close the socket yet*.
+fn body_is_complete(head: &[u8], body: &[u8]) -> bool {
+    if header(head, "transfer-encoding").is_some_and(|v| v.contains("chunked")) {
+        return body.ends_with(b"0\r\n\r\n");
+    }
+    match header(head, "content-length").and_then(|v| v.parse::<usize>().ok()) {
+        Some(len) => body.len() >= len,
+        None => true,
+    }
+}
+
+/// One header off a request head, lowercased.
+///
+/// Case-insensitive on the field name because the transport under test is
+/// what wrote it, and a fixture that only understood one spelling would
+/// silently stop draining if that ever changed.
+fn header(head: &[u8], name: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(head);
+    text.lines().find_map(|l| {
+        let (field, value) = l.split_once(':')?;
+        field
+            .trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_ascii_lowercase())
+    })
 }
 
 /// Run the guest under `wasmtime` against `port` in `mode`, with no server
