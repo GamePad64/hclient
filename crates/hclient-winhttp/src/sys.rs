@@ -39,6 +39,7 @@
 //! instead — a synchronous call that copies — so the send passes no
 //! header pointer at all and the question does not arise.
 
+use crate::error::Win32Error;
 use std::ffi::c_void;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -400,18 +401,6 @@ impl Drop for Handle {
         unsafe { w::WinHttpCloseHandle(self.0) }; // unsafe-code-exception: amendment-C18
     }
 }
-
-/// What WinHTTP said went wrong, as a Win32 error code.
-///
-/// The code and nothing more: WinHTTP's own `FormatMessage` text needs
-/// `winhttp.dll` loaded as a message source, and mapping the codes onto
-/// this workspace's `ErrorKind` at this layer would be a second
-/// vocabulary invented at the boundary — the same reason
-/// `hclient-urlsession` reports what Apple said rather than a translation
-/// of it. `session.rs` maps the handful that have an unambiguous kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("WinHTTP error {0}")]
-pub struct Win32Error(pub u32);
 
 #[allow(
     unsafe_code, // unsafe-code-exception: amendment-C18

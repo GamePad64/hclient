@@ -101,8 +101,10 @@
 #![cfg(windows)]
 
 mod body;
+mod error;
 mod session;
 mod sys;
 
 pub use body::WinHttpBody;
-pub use session::{WinHttp, WinHttpError};
+pub use error::WinHttpError;
+pub use session::WinHttp;

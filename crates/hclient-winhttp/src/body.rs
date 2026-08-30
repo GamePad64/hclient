@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use hclient_core::{Error, ErrorKind};
 
-use crate::session::WinHttpError;
+use crate::error::WinHttpError;
 use crate::sys::{Connect, Event, Exchange, Request, Session};
 
 /// Where the body is between two of WinHTTP's completions.
@@ -108,7 +108,7 @@ impl http_body::Body for WinHttpBody {
                     Poll::Ready(Event::Failed(code)) => {
                         this.state = State::Done;
                         return Poll::Ready(Some(Err(body_error(WinHttpError::Request(
-                            crate::sys::Win32Error(code),
+                            crate::error::Win32Error(code),
                         )))));
                     }
                     Poll::Ready(Event::SecureFailure(flags)) => {
