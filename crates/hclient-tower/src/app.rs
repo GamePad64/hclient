@@ -196,27 +196,6 @@ where
     }
 }
 
-impl core::fmt::Display for BodyFailure {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for BodyFailure {}
-
-impl core::fmt::Display for WrongAuthority {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "this app transport serves `{}`; the request named `{}`",
-            self.expected, self.actual
-        )
-    }
-}
-
-impl std::error::Error for WrongAuthority {}
-
-/// A `tower::Service` as a [`Transport`], for testing a server in
 /// process. See the module doc.
 #[derive(Debug, Clone)]
 pub struct AppTransport<S> {

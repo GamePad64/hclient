@@ -73,6 +73,7 @@ pub(crate) mod arm;
 mod body;
 mod early;
 mod hooks;
+mod error;
 mod pump;
 /// quinn's `Runtime` over this workspace's own seams — and **the one
 /// module in this crate that names `quinn`**, which
@@ -82,7 +83,8 @@ mod staged;
 
 pub use crate::http3::runtime::QuinnTask;
 pub use body::H3Body;
-pub use pump::{RequestTrailersNotSent, UnknownRequestBodyFrame};
+pub use error::{ConnectTimedOut, RequestTrailersNotSent, UnknownRequestBodyFrame};
+
 pub use staged::{Refused, Staged, StagedConnect};
 
 use bytes::Bytes;
@@ -1226,17 +1228,6 @@ impl From<Error> for DialFailed {
         Self::Fatal(e)
     }
 }
-
-/// The failure `within_connect` ends in when the timer wins.
-///
-/// A named type rather than a string, for the reason
-/// `hclient_native::FirstByteTimedOut` gives: a caller must be able to tell
-/// the phases apart with `Error::source().downcast_ref()`, and to read the
-/// bound that was actually in force rather than parse it back out of a
-/// message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("no HTTP/3 connection within the connect timeout of {0:?}")]
-pub struct ConnectTimedOut(pub Duration);
 
 /// Races `fut` against `rt.sleep(d)`, and reports `ErrorKind::
 /// Timeout(Phase::Connect)` if the sleep wins.

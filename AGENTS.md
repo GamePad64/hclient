@@ -5925,6 +5925,65 @@ all answer 1, and `Connected::remote` changed a field's *type*, which no
 attribute has ever protected. The freedom this workspace has been spending
 was never mostly about additions.
 
+### Every error type lives in a file called `error.rs`
+
+A reader asking *what can this crate refuse* had to read the crate. Error
+types sat wherever the code that raises them sits — `lib.rs`, `body.rs`,
+`keepalive.rs` — so the answer was a grep rather than a file. They are all
+in an `error.rs` now, in every crate that has one, and the convention is
+held by `just invariants` rather than by memory.
+
+**The rule is about the file *name*, not about one file per crate.** A
+self-contained subsystem keeps its own: `hclient-native/src/http2/error.rs`
+and `.../http3/error.rs` are legal, and so is `hclient/src/cookie/error.rs`.
+What the check forbids is an error type beside the code that raises it,
+which is the state that made the question a grep. The boundary is written
+in each `error.rs`'s own module doc, so the next type has somewhere to look
+rather than a precedent to copy.
+
+**A type goes by what it is, not by which half of a `Result` it appears
+in.** `hclient-mock`'s `RecordedBody` is not an error and stays where the
+recorder is; `hclient-native`'s `ConnectTimedOut` is one and moves — and
+there are two of that name, in the crate root and under `http3/`, bounding
+a TCP connect and a QUIC handshake respectively. That is the boundary
+working rather than a collision.
+
+**No consumer's `use` line moved.** Every type is re-exported under the
+path it already had, and a type that was private becomes `pub(crate)` —
+the smallest visibility change that compiles, never `pub`, because the
+convention is about where a maintainer looks and not about widening a
+surface.
+
+**Ordering inside the file is by how far the request got** — what a
+builder refuses, then what a connect refuses, then what a body loses —
+because that is the order a reader debugging a failure arrives in, and
+alphabetical order is the order of a type nobody is looking for.
+
+**The check is `scripts/errors-live-in-error-rs.sh`, and it is two greps
+rather than one.** The survey that sized this work looked for
+`#[derive(thiserror::Error)]` alone and undercounted by three crates:
+`hclient-cli`, `hclient-tls-rustls` and `hclient-tower` write
+`impl Display` + `impl Error` by hand, and those were exactly the types
+nobody had looked at recently — the check finds a class it would otherwise
+have been blind to by construction. A `#[cfg(test)]` module is exempt, by
+brace counting rather than by *after the first `#[cfg(test)]`*, so a test
+module in the middle of a file does not blind the check to everything
+below it; the exemption is about who reads the type, since a fixture that
+exists to make one test fail has no caller asking what the crate refuses.
+It fails closed on finding fewer than 15 `error.rs` files, because a
+`find` that matched nothing and a tidy tree print the same thing
+otherwise — this file's own recurring defect.
+
+**Two things went wrong doing it and both are worth knowing.** A carve
+script that moves a `pub struct` by walking back over `///` and `#[` lines
+stops at the *first* line ending in `)]`, so a multi-line `#[error(..)]`
+below a `#[derive(..)]` is left behind attached to nothing — three types
+here, caught by the compiler. And moving a hand-written error moves *three*
+items, not one: the struct, its `Display` and its `Error` impl. A script
+matching only the struct leaves two orphans that still compile, so nothing
+fails — it was the new check that found them, on the same run that was
+meant to confirm the work was finished.
+
 ### The rendered docs had no check, and the prose is the product
 
 `just docs` — `RUSTDOCFLAGS="-D warnings" cargo doc --workspace

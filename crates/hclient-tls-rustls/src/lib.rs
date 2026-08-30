@@ -129,19 +129,6 @@ struct Named {
     id: TlsConfigId,
 }
 
-impl std::fmt::Display for UnknownIdentity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "no client identity is registered under the name `{}`: refusing rather than \
-             connecting with the default one",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for UnknownIdentity {}
-
 /// Wraps a config's client-certificate resolver so that what the server
 /// asks for is observable.
 ///

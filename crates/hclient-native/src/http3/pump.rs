@@ -36,6 +36,7 @@
 //! body's terminal error. This is cost (2) from `hclient-wasi`'s deferral
 //! note, paid rather than deferred.
 
+use super::error::{RequestTrailersNotSent, UnknownRequestBodyFrame};
 use bytes::Bytes;
 use hclient_core::{Error, ErrorKind, Reduced, RequestBody};
 use std::future::poll_fn;
@@ -292,16 +293,3 @@ async fn write_stream(
         }
     }
 }
-
-/// The request body carried trailers and this transport does not send any.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "hclient-h3 does not send request trailers; Capabilities::request_trailers reports false, \
-     and the request stream was reset rather than finished without them"
-)]
-pub struct RequestTrailersNotSent;
-
-/// A frame kind `http_body` has and this crate has no wire form for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("the request body yielded a frame that is neither data nor trailers")]
-pub struct UnknownRequestBodyFrame;

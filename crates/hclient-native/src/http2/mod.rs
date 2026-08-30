@@ -160,7 +160,8 @@ use error::{
     StreamClosedWhileSendingTheRequestBody, UnknownRequestBodyFrame, from_h2_error,
     stopped_after_a_complete_response,
 };
-pub use keepalive::{H2KeepAlive, PingNotAnswered};
+pub use error::PingNotAnswered;
+pub use keepalive::H2KeepAlive;
 use keepalive::{KeepAlive, Lapsed};
 
 use std::sync::atomic::{AtomicU64, Ordering};

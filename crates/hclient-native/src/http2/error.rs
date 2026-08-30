@@ -80,3 +80,8 @@ pub(super) struct StreamClosedWhileSendingTheRequestBody;
 #[derive(Debug, thiserror::Error)]
 #[error("the request body produced a frame that is neither data nor trailers")]
 pub(super) struct UnknownRequestBodyFrame;
+
+/// The peer did not answer a keep-alive `PING` in time.
+#[derive(Debug, thiserror::Error)]
+#[error("the HTTP/2 peer did not answer a keep-alive PING within the bound")]
+pub struct PingNotAnswered;

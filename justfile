@@ -1099,7 +1099,7 @@ fuzz-smoke:
 # ── invariants no build can express ─────────────────────────────────────
 
 # the text scans, together
-invariants: ast-grep no-send-or-sync unsafe-policy ci-mirrors-just
+invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs ci-mirrors-just
 
 # the ast-grep rules, their own corpus tests, and a fail-closed glob check
 ast-grep:
@@ -1116,6 +1116,10 @@ no-send-or-sync:
 # unsafe_code stays forbidden by declaration
 unsafe-policy:
     ./scripts/unsafe-code-policy.sh
+
+# every error type lives in a file named `error.rs`
+errors-in-error-rs:
+    ./scripts/errors-live-in-error-rs.sh
 
 # The guard reads the workflow with a real YAML parser rather than by
 # indentation, because it has to find every `run:` and missing one is a
