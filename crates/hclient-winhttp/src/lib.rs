@@ -63,21 +63,75 @@
 //! all, unlike WinINET, so [`Capabilities::owns_cache`](hclient_core::Capabilities::owns_cache)
 //! is `false` by construction rather than by a call.
 //!
+//! # HTTP/2 and HTTP/3, and the read-back that the obvious call gets wrong
+//!
+//! [`WinHttp::protocols`] switches them on —
+//! `WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL` with
+//! `WINHTTP_PROTOCOL_FLAG_HTTP2` (`0x1`) and `WINHTTP_PROTOCOL_FLAG_HTTP3`
+//! (`0x2`) — and they are **off by default**, because turning one on
+//! changes what every request puts on the wire and, for HTTP/3, which
+//! transport protocol carries it. That is `hclient-native`'s decision
+//! about its own QUIC arm, made here for the same reason.
+//!
+//! **This section replaces one that said the feature was one call away
+//! and named the wrong second call.** It read that enabling HTTP/2 would
+//! oblige reading `WINHTTP_QUERY_VERSION` back on every response to keep
+//! [`Capabilities::version_reported`](hclient_core::Capabilities::version_reported)
+//! honest. It would not: `WINHTTP_QUERY_VERSION` reads the **status
+//! line**, an HTTP/2 or HTTP/3 response has none, and WinHTTP synthesises
+//! `HTTP/1.1` into the raw header block this crate already parses. A
+//! client following that instruction reports every h2 and h3 response as
+//! HTTP/1.1 — which is the capability that lies the paragraph was written
+//! to prevent, arriving through the repair. The option that answers is
+//! `WINHTTP_OPTION_HTTP_PROTOCOL_USED`, and .NET's `WinHttpResponseParser`
+//! bypasses the status line entirely once it reads non-zero.
+//!
+//! It is queried on **every** response, including where nothing was
+//! enabled, so the claim rests on what WinHTTP reports rather than on the
+//! mask's documented `0x0` default still being the default on a Windows
+//! nobody here has seen.
+//!
+//! **A demand is now honoured rather than refused**, which is the other
+//! half. `WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED` prevents a fallback off
+//! the mask, so a [`RequireVersion`](hclient_core::RequireVersion) demand
+//! narrows the mask for that one request and WinHTTP refuses the
+//! connection rather than quietly answering over HTTP/1.1 —
+//! [`Capabilities::version_select`](hclient_core::Capabilities::version_select)
+//! is `true`. Without that option a demand could only be *noticed* after
+//! the head, which is `check_version`'s own definition of a check placed
+//! too late.
+//!
+//! **`version_select` was `false` before any of this and should not have
+//! been.** `Client` refused every demand, `RequireVersion(HTTP_11)`
+//! included — the one demand this backend has satisfied trivially since
+//! it existed, and exactly the failure `Capabilities::version_select`'s
+//! own doc names.
+//!
+//! [`WinHttp::keep_alive`] is the third of the group:
+//! `WINHTTP_OPTION_HTTP2_KEEPALIVE` and `WINHTTP_OPTION_HTTP3_KEEPALIVE`
+//! put the ping clock in the OS, where `hclient-native` needs
+//! `multiplexed()` and a spawned driver of its own to send one.
+//!
 //! # Deliberately not done, each with what it would need
 //!
-//! - **HTTP/2.** `WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL` with
-//!   `WINHTTP_PROTOCOL_FLAG_HTTP2` is one call away, and it is not made:
-//!   turning it on changes what every request puts on the wire, and
-//!   [`Capabilities::version_reported`](hclient_core::Capabilities::version_reported)
-//!   would then have to become `true`, which obliges reading
-//!   `WINHTTP_QUERY_VERSION` back on every response. Neither half is
-//!   verifiable without a Windows machine, and a capability that lies is
-//!   worse than one that under-reports — this workspace's floor rule.
 //! - **Streaming request bodies.** `WinHttpWriteData` is the piece, plus a
 //!   `WRITE_COMPLETE` arm in the callback. Until then a
 //!   [`RequestBody::Streaming`](hclient_core::RequestBody::Streaming) is a
 //!   typed `Unsupported` error rather than a silent empty body, which is
 //!   the same refusal `hclient-urlsession` makes and for the same reason.
+//! - **The rest of the HTTP/2 and HTTP/3 knobs.** WinHTTP documents
+//!   `WINHTTP_OPTION_HTTP2_RECEIVE_WINDOW` (the pair `H2Opts` calls
+//!   `initial_stream_window`/`connection_window` one crate over, through a
+//!   `WINHTTP_HTTP2_RECEIVE_WINDOW` struct rather than a `DWORD`),
+//!   `WINHTTP_OPTION_DISABLE_STREAM_QUEUE` — open a second connection at
+//!   the peer's stream limit rather than queue, which is the decision
+//!   `hclient-native` made the other way and pins with a test — and three
+//!   HTTP/3 dials: `HTTP3_HANDSHAKE_TIMEOUT`, `HTTP3_INITIAL_RTT` and the
+//!   query-only `HTTP3_STREAM_ERROR_CODE`. Each is a setter and none has
+//!   a reader: no caller in this workspace can ask for one, and a knob
+//!   with no consumer is what `UpgradeSupport`'s spare variants were
+//!   deleted for. They are listed because the next person will otherwise
+//!   re-read the option table to find them.
 //! - **WebSocket.** `WinHttpWebSocketCompleteUpgrade` and its five
 //!   neighbours exist, and the seam for them is
 //!   `hclient_core::unversioned::WebSocketConnect`. A separate crate, by
@@ -107,4 +161,4 @@ mod sys;
 
 pub use body::WinHttpBody;
 pub use error::WinHttpError;
-pub use session::WinHttp;
+pub use session::{Protocols, WinHttp};

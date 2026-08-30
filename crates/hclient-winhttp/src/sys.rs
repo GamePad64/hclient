@@ -411,6 +411,69 @@ fn last_error() -> Win32Error {
     Win32Error(unsafe { GetLastError() }) // unsafe-code-exception: amendment-C18
 }
 
+/// Sets a `DWORD`-valued option on any handle.
+///
+/// Every option this crate sets bar the context pointer is one `u32`, so
+/// the FFI is written once here rather than at each of them: three of the
+/// four callers arrived with the HTTP/2 and HTTP/3 work, and a fourth
+/// copy of the same six lines would have been four places to get the
+/// buffer length wrong.
+///
+/// **A refused option is returned rather than swallowed**, which is the
+/// decision the callers rest on. WinHTTP answers `ERROR_WINHTTP_INVALID_
+/// OPTION` for an option this Windows does not have — every one of these
+/// is newer than the API itself — and .NET's `WinHttpHandler` logs that
+/// and carries on, which is the *silently ignored setting* this workspace
+/// closes wherever it finds one. Here it becomes a named error and the
+/// caller decides.
+#[allow(
+    unsafe_code, // unsafe-code-exception: amendment-C18
+    reason = "WinHttpSetOption over a DWORD the call copies"
+)]
+fn set_dword(handle: *const c_void, option: u32, value: u32) -> Result<(), Win32Error> {
+    // SAFETY: the option takes a `u32` by pointer and copies it before
+    // returning; `handle` is borrowed from a live wrapper by every
+    // caller.
+    let ok = unsafe {
+        // unsafe-code-exception: amendment-C18
+        w::WinHttpSetOption(
+            handle,
+            option,
+            std::ptr::from_ref(&value).cast::<c_void>(),
+            u32::try_from(size_of::<u32>()).expect("four"),
+        )
+    };
+    if ok == 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+/// Reads a `DWORD`-valued option back off a handle.
+#[allow(
+    unsafe_code, // unsafe-code-exception: amendment-C18
+    reason = "WinHttpQueryOption into a DWORD this frame owns"
+)]
+fn query_dword(handle: *mut c_void, option: u32) -> Result<u32, Win32Error> {
+    let mut value: u32 = 0;
+    let mut len = u32::try_from(size_of::<u32>()).expect("four");
+    // SAFETY: the buffer is one `u32` and `len` says so, which is what
+    // this option's documented type is; the call writes at most that.
+    let ok = unsafe {
+        // unsafe-code-exception: amendment-C18
+        w::WinHttpQueryOption(
+            handle,
+            option,
+            std::ptr::from_mut(&mut value).cast::<c_void>(),
+            &raw mut len,
+        )
+    };
+    if ok == 0 {
+        return Err(last_error());
+    }
+    Ok(value)
+}
+
 /// The session handle: one per transport, callback installed.
 #[derive(Debug)]
 pub(crate) struct Session(Handle);
@@ -483,6 +546,28 @@ impl Session {
             return Err(last_error());
         }
         Ok(Connect(Handle(h)))
+    }
+
+    /// Asks WinHTTP to keep an idle HTTP/2 or HTTP/3 connection alive.
+    ///
+    /// `WINHTTP_OPTION_HTTP2_KEEPALIVE` and
+    /// `WINHTTP_OPTION_HTTP3_KEEPALIVE` are documented on the **session**
+    /// handle and take a timeout in milliseconds, after which WinHTTP
+    /// begins sending HTTP/2 `PING` frames or QUIC keep-alives on a
+    /// connection with no activity. That is the OS holding the clock this
+    /// workspace holds itself one crate over — `Native::h2_keep_alive`
+    /// spawns a driver to send the ping and `hclient-h3` sets quinn's
+    /// `keep_alive_interval` — and it is the reason this is reachable at
+    /// all here, where nothing of ours drives a pooled connection.
+    ///
+    /// Both are set from one call for the reason `Native::watching_1xx`
+    /// switches on both protocols at once: a keep-alive that held on one
+    /// of the two would be a promise the other could not keep, and which
+    /// of them a request gets is the server's choice rather than the
+    /// caller's.
+    pub(crate) fn set_keep_alive(&self, millis: u32) -> Result<(), Win32Error> {
+        set_dword((self.0).0, w::WINHTTP_OPTION_HTTP2_KEEPALIVE, millis)?;
+        set_dword((self.0).0, w::WINHTTP_OPTION_HTTP3_KEEPALIVE, millis)
     }
 }
 
@@ -587,6 +672,68 @@ impl Request {
             return Err(last_error());
         }
         Ok(())
+    }
+
+    /// Names the advanced HTTP versions this request may negotiate.
+    ///
+    /// `WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL` is a bitmask of
+    /// `WINHTTP_PROTOCOL_FLAG_HTTP2` (`0x1`) and
+    /// `WINHTTP_PROTOCOL_FLAG_HTTP3` (`0x2`), and its documented default
+    /// is `0x0` — *"restricts the request to HTTP/1.1 and prior"*. So
+    /// HTTP/1.1 is not something a caller can switch off, and the mask
+    /// says only what may be negotiated **above** it.
+    ///
+    /// Set on the **request** handle rather than the session, although
+    /// WinHTTP accepts either. Per request is what lets a
+    /// `RequireVersion` demand narrow the mask for one exchange without
+    /// changing what every other request on this transport offers, which
+    /// is the whole of `session.rs`'s `mask_for`. .NET's
+    /// `WinHttpHandler` sets it on the request handle too, from
+    /// `SetRequestHandleHttp2Options`.
+    pub(crate) fn set_protocols(&self, mask: u32) -> Result<(), Win32Error> {
+        set_dword((self.0).0, w::WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL, mask)
+    }
+
+    /// Refuses a version outside the mask rather than falling back to it.
+    ///
+    /// `WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED` — *"prevents protocol
+    /// versions other than those enabled by
+    /// **WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL** from being used for the
+    /// request"* — and it is what makes
+    /// [`Capabilities::version_select`](hclient_core::Capabilities::version_select)
+    /// honest here. Without it a demand could only be *checked* after the
+    /// head came back, which is `check_version`'s own definition of a
+    /// check placed too late: the request would already be at the server.
+    ///
+    /// **The buffer type is the one thing here the documentation does not
+    /// state.** Every other boolean option in WinHTTP takes a `DWORD`,
+    /// and that is the assumption. It is a safe one to make in this
+    /// direction and it is worth saying why: a wrong length is
+    /// `ERROR_INVALID_PARAMETER` from `WinHttpSetOption`, which
+    /// `session.rs` turns into a named refusal *before the request is
+    /// sent* — so the failure of the guess is a request that does not go,
+    /// never one that goes out over a version the caller ruled out.
+    pub(crate) fn require_protocols(&self) -> Result<(), Win32Error> {
+        set_dword((self.0).0, w::WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED, 1)
+    }
+
+    /// Which advanced version WinHTTP actually used, as the same bitmask.
+    ///
+    /// **`WINHTTP_QUERY_VERSION` cannot answer this, and this crate's own
+    /// doc named it as the way to.** That header query reads the status
+    /// line, and an HTTP/2 or HTTP/3 response has none — WinHTTP
+    /// synthesises `HTTP/1.1` for the raw header block, so a client
+    /// reading it reports every h2 and h3 response as HTTP/1.1.
+    /// `WINHTTP_OPTION_HTTP_PROTOCOL_USED` is the option that says
+    /// otherwise, and .NET's `WinHttpResponseParser` bypasses the status
+    /// line entirely when it answers non-zero.
+    ///
+    /// Queried on the request handle once the head is available. `0` is
+    /// HTTP/1.1 or prior, which is also what an older Windows without the
+    /// option effectively means — hence the caller treating a failure as
+    /// `0` rather than as an error.
+    pub(crate) fn protocol_used(&self) -> Result<u32, Win32Error> {
+        query_dword((self.0).0, w::WINHTTP_OPTION_HTTP_PROTOCOL_USED)
     }
 
     /// Adds the caller's headers, synchronously — see the module doc on
