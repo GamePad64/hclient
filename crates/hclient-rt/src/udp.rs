@@ -24,8 +24,7 @@
 //!    either, and cannot carry ECN at all.
 //! 3. **Offloads are capabilities, not assumptions.** See [`UdpCaps`].
 
-use std::error::Error as StdError;
-use std::fmt::Display;
+use crate::error::UnsupportedUdpOffload;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, SocketAddr};
 use std::task::{Context, Poll};
@@ -370,44 +369,6 @@ impl UdpCaps {
         may_fragment: true,
     };
 }
-
-/// The caller asked for an offload this socket does not have.
-///
-/// Carried inside an [`std::io::Error`] with
-/// [`ErrorKind::Unsupported`](std::io::ErrorKind::Unsupported) by
-/// [`Datagrams::reject_unsupported`], and reachable again through
-/// `io::Error::get_ref().downcast_ref()` — the shape `UnsupportedTcpOpts`
-/// already uses, so a caller who wants to react per-offload does not have
-/// to scrape `Display`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnsupportedUdpOffload {
-    gso: bool,
-    ecn: bool,
-}
-
-impl UnsupportedUdpOffload {
-    /// The offending offload names. Every one of them, not just the first.
-    pub fn names(&self) -> impl Iterator<Item = &'static str> {
-        [("gso", self.gso), ("ecn", self.ecn)]
-            .into_iter()
-            .filter_map(|(name, bad)| bad.then_some(name))
-    }
-}
-
-impl Display for UnsupportedUdpOffload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            "this socket does not have these UDP offloads, and does not silently drop them:",
-        )?;
-        for (i, name) in self.names().enumerate() {
-            f.write_str(if i > 0 { ", " } else { " " })?;
-            f.write_str(name)?;
-        }
-        Ok(())
-    }
-}
-
-impl StdError for UnsupportedUdpOffload {}
 
 impl Datagrams<'_> {
     /// How many datagrams this send describes.

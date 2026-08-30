@@ -6,18 +6,16 @@
 #![forbid(unsafe_code)]
 
 mod caps;
+mod error;
 mod futures_io;
 mod udp;
 
 pub use caps::{
-    Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport,
-    UnixSocketsUnsupported, UnixUnsupported, UnsupportedTcpOpts,
+    Blocking, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, UnixUnsupported,
 };
+pub use error::{Cancelled, UnixSocketsUnsupported, UnsupportedTcpOpts, UnsupportedUdpOffload};
 pub use futures_io::FuturesIo;
-pub use udp::{
-    Datagrams, EcnCodepoint, RecvMeta, UdpAdoptStd, UdpBind, UdpCaps, UdpDatagrams,
-    UnsupportedUdpOffload,
-};
+pub use udp::{Datagrams, EcnCodepoint, RecvMeta, UdpAdoptStd, UdpBind, UdpCaps, UdpDatagrams};
 
 /// `Timer` is defined once, in `hclient-core`: the portable core needs it
 /// for timeouts and backoff. This is just a re-export.
