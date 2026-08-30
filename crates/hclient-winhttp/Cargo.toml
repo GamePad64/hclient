@@ -51,6 +51,7 @@ windows-sys = { version = "0.61", features = [
 # see `tests/shape.rs` — so they need the traits and nothing to drive a
 # future with.
 [dev-dependencies]
+static_assertions = { workspace = true }
 hclient-core = { workspace = true }
 bytes = { workspace = true }
 http-body = { workspace = true }

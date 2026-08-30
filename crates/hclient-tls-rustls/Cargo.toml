@@ -35,6 +35,7 @@ quic              = ["hclient-tls/quic", "dep:quinn-proto"]
 webpki-roots      = ["dep:webpki-roots"]
 
 [dependencies]
+thiserror = { workspace = true }
 hclient-core     = { workspace = true }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.1" }
 hyper            = { version = "1.11", default-features = false }

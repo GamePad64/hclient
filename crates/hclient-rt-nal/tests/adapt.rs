@@ -5,6 +5,7 @@
 mod support;
 
 use hclient_rt::{TcpConnect, TcpOpts};
+use static_assertions::{assert_impl_all, assert_not_impl_all};
 use std::sync::{Arc, Mutex};
 use support::{LocalStack, Log, SendStack};
 
@@ -30,45 +31,26 @@ fn addr() -> std::net::SocketAddr {
 /// the macro has it for the stacks that deserve it.
 #[test]
 fn a_send_capable_stack_yields_a_send_connect_future() {
-    fn assert_send<T: Send>() {}
-    assert_send::<<SendRt as TcpConnect>::Connecting<'static>>();
-    assert_send::<<SendRt as TcpConnect>::Stream>();
+    assert_impl_all!(<SendRt as TcpConnect>::Connecting<'static>: Send);
+    assert_impl_all!(<SendRt as TcpConnect>::Stream: Send);
 }
 
 /// And the control, without which the test above would also pass for a
 /// macro that claimed `Send` unconditionally: the `!Send` stack goes
 /// through `adapt_local!` and is **not** `Send`.
 ///
-/// A real negative rather than `fn assert_not<T>() {}`, which accepts
-/// anything: the inherent method is found only when the trait method is
-/// not applicable.
+/// A compile-time negative, and the pair is the assertion. This was an
+/// autoref probe — 25 lines, and correct — replaced because a probe is
+/// itself weakenable: written the other way round it always answers
+/// `false` and discriminates nothing, which is how this test first
+/// failed. `assert_not_impl_all!` cannot be written the other way round
+/// from here.
 #[test]
 fn a_local_stack_yields_a_future_that_is_not_send() {
-    // Inherent methods win over trait ones, so the answer is `true` only
-    // where the bound holds — the shape `hclient-rt-embassy`'s own seam
-    // test uses. Written the other way round it always answers `false`
-    // and discriminates nothing, which is how this test first failed.
-    struct Probe<T>(std::marker::PhantomData<T>);
-    trait Fallback {
-        fn is() -> bool {
-            false
-        }
-    }
-    impl<T> Fallback for Probe<T> {}
-    impl<T: Send> Probe<T> {
-        fn is() -> bool {
-            true
-        }
-    }
-
-    assert!(
-        !Probe::<<LocalRt as TcpConnect>::Connecting<'static>>::is(),
-        "a stack holding an Rc must not produce a Send future — if this passes, \
-         `adapt_local!` is claiming something it cannot keep"
-    );
-    // The probe discriminates rather than always answering `false`, which
-    // is what would make the assertion above vacuous.
-    assert!(Probe::<<SendRt as TcpConnect>::Connecting<'static>>::is());
+    // A stack holding an `Rc` must not produce a `Send` future — if this
+    // stops failing, `adapt_local!` is claiming something it cannot keep.
+    assert_not_impl_all!(<LocalRt as TcpConnect>::Connecting<'static>: Send);
+    assert_impl_all!(<SendRt as TcpConnect>::Connecting<'static>: Send);
 }
 
 /// The adapter is a real `TcpConnect`, not just a type that satisfies the

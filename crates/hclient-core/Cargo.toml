@@ -29,6 +29,7 @@ http-body = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+static_assertions = { workspace = true }
 http-body-util = { workspace = true }
 
 

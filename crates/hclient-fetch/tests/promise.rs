@@ -1,5 +1,6 @@
 #![cfg(target_arch = "wasm32")]
 
+use static_assertions::assert_impl_all;
 use std::future::poll_fn;
 use wasm_bindgen_test::*;
 
@@ -23,8 +24,7 @@ async fn propagates_rejection() {
 fn future_is_send_on_the_default_target() {
     // The main claim: `!Send` is a property of building with wasm threads,
     // not of the browser. Without `+atomics`, everything is Send.
-    fn assert_send<T: Send>() {}
-    assert_send::<hclient_fetch::testing::SendJsFutureAlias>();
+    assert_impl_all!(hclient_fetch::testing::SendJsFutureAlias: Send);
 }
 
 /// `SendJsFuture` must not hold its two `Closure`s as a sibling field,

@@ -274,7 +274,6 @@
 //! different `libicu` versions, and promote whatever rows move into the
 //! acceptance probe — at which point the probe becomes a version floor.
 
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // `deny`, not `forbid`, and only since spec amendment C9: `forbid` cannot
 // be relaxed by a scoped `#[allow]` from inside the crate (`E0453`), and
 // `icu.rs` needs exactly one such allowance to declare and call the three

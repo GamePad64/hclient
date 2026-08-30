@@ -53,6 +53,7 @@ http2 = ["hclient-native/http2"]
 http3 = ["hclient-native/http3", "hclient-rt-tokio/udp", "hclient-tls-rustls?/quic"]
 
 [dependencies]
+thiserror = { workspace = true }
 # Only five crates are centralised in `[workspace.dependencies]`; the rest
 # are written by path, which is this workspace's convention and not an
 # oversight — see the neighbours.

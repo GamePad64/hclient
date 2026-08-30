@@ -141,6 +141,7 @@ wasm-bindgen-futures = "0.4"
 thiserror    = { workspace = true }
 
 [dev-dependencies]
+static_assertions = { workspace = true }
 wasm-bindgen-test = "0.3"
 # `sink` on top of the `[dependencies]` entry above, for `tests/websocket.rs`
 # alone: `SinkExt::send`/`close` are how a caller actually drives the

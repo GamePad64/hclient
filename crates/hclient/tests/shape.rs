@@ -4,8 +4,7 @@
 #![cfg(feature = "test-util")]
 
 use hclient::mock::MockTransport;
-
-fn assert_send_sync<T: Send + Sync>() {}
+use static_assertions::assert_impl_all;
 
 #[test]
 fn mock_transport_is_send_and_sync_so_client_futures_can_be_spawned() {
@@ -13,7 +12,7 @@ fn mock_transport_is_send_and_sync_so_client_futures_can_be_spawned() {
     // Send, and `Client::execute`'s future would end up !Send — meaning
     // the test double itself would take away our ability to check the
     // design's central property.
-    assert_send_sync::<hclient::mock::MockTransport>();
+    assert_impl_all!(hclient::mock::MockTransport: Send, Sync);
 }
 
 /// **Everything a request produces is `Send`, and this file asserted the
@@ -46,7 +45,6 @@ fn mock_transport_is_send_and_sync_so_client_futures_can_be_spawned() {
 #[test]
 fn what_a_request_produces_is_send() {
     fn assert_send<T: Send>(_: T) {}
-    fn assert_send_ty<T: Send>() {}
 
     let c = hclient::Client::builder(MockTransport::new())
         .build()
@@ -57,24 +55,28 @@ fn what_a_request_produces_is_send() {
     assert_send(c.execute(http::Request::new(hclient_core::RequestBody::Empty)));
 
     // The response body, through the alias a caller actually meets.
-    assert_send_ty::<hclient::body::ClientBody>();
+    assert_impl_all!(hclient::body::ClientBody: Send);
 
     // And what a caller holds between them.
-    assert_send_ty::<hclient::Response>();
+    assert_impl_all!(hclient::Response: Send);
 }
 
-// **The control for the test above is in `src/`, and it has to be.**
+// **Two of the three assertions above need no control any more, and the
+// third still does — which is the whole reason to prefer the macro.**
 //
-// `assert_send<T: Send>` is a live bound — a type that stopped being
-// `Send` fails to compile there — but the *helper* could be weakened to
-// `assert_send<T>` and the test would pass vacuously. Catching that needs
-// a compile that must **fail**, and this file has just established that
-// `tests/` cannot hold one: rustdoc never reads it.
+// A hand-written `fn assert_send<T: Send>(_: T) {}` is a live bound, but
+// the *helper* can be weakened to `fn assert_send<T>(_: T) {}` and every
+// call site then passes vacuously. Nothing local catches that: the
+// weakening is one word, in this file, and it makes the test greener
+// rather than redder. `static_assertions::assert_impl_all!` cannot be
+// weakened here at all — the bound lives in a crate this file only calls
+// — so the two type-level claims are self-guarding.
 //
-// So the negative lives on `body::ClientBody`'s own doc comment, as a
-// ```` ```compile_fail ```` fence that `just test-doc` runs, and the two
-// halves are cross-referenced rather than co-located. That is the cost of
-// the rule above, paid rather than hidden.
+// The claim about the request *future* is not, because its type has no
+// name to hand a macro, so it keeps the helper and keeps the control: the
+// negative lives on `body::ClientBody`'s own doc comment, as a
+// ```` ```compile_fail ```` fence that `just test-doc` runs, since this
+// file has just established that `tests/` cannot hold one.
 
 /// Cloning shares the transport rather than copying it, which is what makes
 /// a `Client` safe to hand to several tasks. The check is not "does it

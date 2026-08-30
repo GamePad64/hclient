@@ -7,19 +7,17 @@
 use bytes::Bytes;
 use hclient_core::unversioned::{Timer, Transport};
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, Timeouts, UnsupportedCapability};
+use static_assertions::assert_impl_all;
 use std::error::Error as StdError;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-fn assert_send_sync<T: Send + Sync>() {}
-fn assert_send<T: Send>() {}
-
 #[test]
 fn capability_types_are_send_and_sync() {
-    assert_send_sync::<Capabilities>();
-    assert_send_sync::<Timeouts>();
-    assert_send_sync::<UnsupportedCapability>();
+    assert_impl_all!(Capabilities: Send, Sync);
+    assert_impl_all!(Timeouts: Send, Sync);
+    assert_impl_all!(UnsupportedCapability: Send, Sync);
 }
 
 /// `Error: Send + Sync` — spec amendment-C1, the single documented exception
@@ -31,7 +29,7 @@ fn capability_types_are_send_and_sync() {
 /// vacuous no-op.
 #[test]
 fn error_is_send_sync_and_constructs_a_real_error_not_just_compiles() {
-    assert_send_sync::<Error>();
+    assert_impl_all!(Error: Send, Sync);
     let e = Error::new(ErrorKind::Other, Never);
     assert_eq!(e.kind(), &ErrorKind::Other);
 }
@@ -44,8 +42,8 @@ fn error_is_send_sync_and_constructs_a_real_error_not_just_compiles() {
 /// above.
 #[test]
 fn request_body_and_its_request_are_send() {
-    assert_send::<RequestBody>();
-    assert_send::<http::Request<RequestBody>>();
+    assert_impl_all!(RequestBody: Send);
+    assert_impl_all!(http::Request<RequestBody>: Send);
 }
 
 struct Echo {
@@ -530,10 +528,10 @@ fn a_send_hook_leaves_the_transport_and_its_body_send() {
         }
     }
 
-    assert_send::<NoHooks>();
-    assert_send_sync::<NoHooks>();
-    assert_send::<Counting>();
-    assert_send::<Arc<Counting>>();
+    assert_impl_all!(NoHooks: Send);
+    assert_impl_all!(NoHooks: Send, Sync);
+    assert_impl_all!(Counting: Send);
+    assert_impl_all!(Arc<Counting>: Send);
     assert_eq!(
         std::mem::size_of::<NoHooks>(),
         0,

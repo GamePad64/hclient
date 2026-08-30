@@ -72,8 +72,8 @@
 pub(crate) mod arm;
 mod body;
 mod early;
-mod hooks;
 mod error;
+mod hooks;
 mod pump;
 /// quinn's `Runtime` over this workspace's own seams — and **the one
 /// module in this crate that names `quinn`**, which

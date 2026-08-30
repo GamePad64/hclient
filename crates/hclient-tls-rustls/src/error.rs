@@ -14,18 +14,9 @@
 /// there, naming the label. Kept private because it is a guard rather
 /// than a case a caller distinguishes — the message reaches them through
 /// `Error`'s source chain either way.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "no client identity is registered under the name `{0}`: refusing rather than \
+     connecting with the default one"
+)]
 pub(crate) struct UnknownIdentity(pub(crate) String);
-
-impl std::fmt::Display for UnknownIdentity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "no client identity is registered under the name `{}`: refusing rather than \
-             connecting with the default one",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for UnknownIdentity {}

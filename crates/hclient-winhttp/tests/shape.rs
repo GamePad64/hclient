@@ -8,9 +8,7 @@
 
 use hclient_core::unversioned::{SendTransport, Transport};
 use hclient_winhttp::{WinHttp, WinHttpBody};
-
-fn assert_send<T: Send>() {}
-fn assert_sync<T: Sync>() {}
+use static_assertions::assert_impl_all;
 
 /// The transport crosses threads, which is what `SendTransport` promises
 /// on its behalf. A WinHTTP handle has no thread affinity and the
@@ -19,9 +17,9 @@ fn assert_sync<T: Sync>() {}
 /// `hclient::Client` stopped accepting this backend.
 #[test]
 fn the_transport_and_its_body_cross_threads() {
-    assert_send::<WinHttp>();
-    assert_sync::<WinHttp>();
-    assert_send::<WinHttpBody>();
+    assert_impl_all!(WinHttp: Send);
+    assert_impl_all!(WinHttp: Sync);
+    assert_impl_all!(WinHttpBody: Send);
 }
 
 /// `Client::builder` requires `SendTransport`, so this is the line

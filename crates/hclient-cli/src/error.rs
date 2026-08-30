@@ -10,61 +10,35 @@ use crate::args::BackendName;
 use crate::backend::available_list;
 use crate::timings::KNOWN;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Refused {
     /// Named a backend this build does not carry. Never a fallback.
+    ///
+    /// The message names what the build *does* carry, so the list is an
+    /// expression rather than a field: it is a fact about the build and
+    /// there is nothing for a constructor to pass.
+    #[error(
+        "this build of hc has no `{}` backend.\n\nIt carries: {}\n\nA backend is refused \
+         rather than silently replaced, which is the one thing this tool promises over curl's \
+         `CURL_SSL_BACKEND`.",
+        .0,
+        available_list()
+    )]
     NotCompiledIn(BackendName),
     /// A build with no backend at all — possible only with
     /// `--no-default-features`, and worth its own message rather than an
     /// empty list in the one above.
+    #[error(
+        "this build of hc carries no backend at all — it was built with `--no-default-features` \
+         and no backend feature. Rebuild with `--features rustls` or `--features native-tls`."
+    )]
     NoneAtAll,
     /// The backend is here and would not start.
+    #[error("the `{backend}` backend is compiled in and would not start: {cause}")]
     Unavailable { backend: BackendName, cause: String },
 }
 
-impl std::fmt::Display for Refused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotCompiledIn(b) => {
-                write!(f, "this build of hc has no `{b}` backend.\n\nIt carries: ")?;
-                write!(f, "{}", available_list())?;
-                write!(
-                    f,
-                    "\n\nA backend is refused rather than silently replaced, which is the \
-                     one thing this tool promises over curl's `CURL_SSL_BACKEND`."
-                )
-            }
-            Self::NoneAtAll => write!(
-                f,
-                "this build of hc carries no backend at all — it was built with \
-                 `--no-default-features` and no backend feature. Rebuild with \
-                 `--features rustls` or `--features native-tls`."
-            ),
-            Self::Unavailable { backend, cause } => {
-                write!(
-                    f,
-                    "the `{backend}` backend is compiled in and would not start: {cause}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for Refused {}
-
 /// A `%{...}` this build does not know.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("unknown --write-out variable `%{{{}}}`.\n\nThis build knows: {}", .0, KNOWN.join(", "))]
 pub struct Unknown(pub String);
-
-impl std::fmt::Display for Unknown {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "unknown --write-out variable `%{{{}}}`.\n\nThis build knows: {}",
-            self.0,
-            KNOWN.join(", ")
-        )
-    }
-}
-
-impl std::error::Error for Unknown {}

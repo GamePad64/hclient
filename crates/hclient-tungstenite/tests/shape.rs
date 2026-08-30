@@ -24,11 +24,10 @@
 /// what makes that available — the same property `IdleTimeout` relies on.
 #[test]
 fn auto_traits_reach_the_websocket() {
-    fn assert_send<T: Send>() {}
-
     type Rt = hclient_rt_tokio::Tokio;
     type Tls = hclient_tls_rustls::Rustls;
 
-    assert_send::<hclient_tungstenite::TungsteniteWebSocket<hclient_native::NativeIo<Rt, Tls>, Rt>>(
+    static_assertions::assert_impl_all!(
+        hclient_tungstenite::TungsteniteWebSocket<hclient_native::NativeIo<Rt, Tls>, Rt>: Send
     );
 }

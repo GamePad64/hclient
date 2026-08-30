@@ -73,6 +73,7 @@ hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.1" }
 hyper        = { version = "1.11", default-features = false }
 
 [dev-dependencies]
+static_assertions = { workspace = true }
 # `arch-std` + `executor-thread` is embassy's own executor on a host OS —
 # the same executor as on a device, with a std-based pender. The point of
 # the acceptance is that the whole client runs under THIS executor.

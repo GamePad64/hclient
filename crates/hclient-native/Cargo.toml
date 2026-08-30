@@ -125,6 +125,7 @@ thiserror      = { workspace = true }
 tokio          = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]
+static_assertions = { workspace = true }
 # `mod h3`'s own unit tests build a stub `QuicTlsConnect`, whose one method
 # returns quinn's client-config trait object — the type that seam names.
 quinn-proto        = { version = "0.11", default-features = false }

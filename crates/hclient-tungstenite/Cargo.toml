@@ -54,6 +54,7 @@ thiserror    = { workspace = true }
 tungstenite  = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
+static_assertions = { workspace = true }
 # For the module doc's example alone, and it is the reason the borrow
 # exists: `Tungstenite` borrows a `Native` a `Client` already owns, so the
 # example that shows why cannot be written without naming `Client`. The

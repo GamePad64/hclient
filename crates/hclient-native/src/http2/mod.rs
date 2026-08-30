@@ -155,12 +155,12 @@ use std::future::poll_fn;
 use std::pin::Pin;
 mod error;
 mod keepalive;
+pub use error::PingNotAnswered;
 use error::{
     ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBeforeTheRequest,
     StreamClosedWhileSendingTheRequestBody, UnknownRequestBodyFrame, from_h2_error,
     stopped_after_a_complete_response,
 };
-pub use error::PingNotAnswered;
 pub use keepalive::H2KeepAlive;
 use keepalive::{KeepAlive, Lapsed};
 

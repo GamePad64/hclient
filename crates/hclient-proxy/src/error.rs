@@ -39,8 +39,6 @@ use hclient_proto::head;
 
 #[cfg(feature = "system")]
 use crate::system::ProxyKind;
-#[cfg(feature = "system")]
-use std::fmt;
 
 /// The proxy refused the tunnel. Deliberately **not** a response: a `407`
 /// is the proxy's answer to us, not the origin's answer to the caller,
@@ -214,7 +212,7 @@ pub enum SystemProxyRefused {
 #[cfg(feature = "system")]
 /// A proxy value the platform gave that names no proxy this client can
 /// reach.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParseError {
     /// `https://proxy:8443` — TLS *to the proxy*, which is not the same
@@ -226,31 +224,20 @@ pub enum ParseError {
     /// plaintext would send the `CONNECT` line, and any
     /// `Proxy-Authorization` with it, in the clear to a proxy whose owner
     /// configured TLS precisely so that it would not be.
+    #[error(
+        "an `https://` proxy URL means TLS to the proxy itself, which this client cannot speak; \
+         for a proxy that serves `https://` requests, name it as `http://`"
+    )]
     TlsToProxyUnsupported,
     /// A scheme this crate does not know — `quic://`, a typo, a `.pac`
     /// URL that landed in a proxy variable.
+    #[error("unknown proxy scheme `{0}`")]
     UnknownScheme(Box<str>),
     /// `host:70000`, `host:` — there is a colon and what follows it is
     /// not a port.
+    #[error("`{0}` is not a port")]
     BadPort(Box<str>),
     /// Nothing left after the scheme and the userinfo.
+    #[error("no host")]
     NoHost,
 }
-
-#[cfg(feature = "system")]
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TlsToProxyUnsupported => f.write_str(
-                "an `https://` proxy URL means TLS to the proxy itself, which this client cannot \
-                 speak; for a proxy that serves `https://` requests, name it as `http://`",
-            ),
-            Self::UnknownScheme(s) => write!(f, "unknown proxy scheme `{s}`"),
-            Self::BadPort(p) => write!(f, "`{p}` is not a port"),
-            Self::NoHost => f.write_str("no host"),
-        }
-    }
-}
-
-#[cfg(feature = "system")]
-impl std::error::Error for ParseError {}

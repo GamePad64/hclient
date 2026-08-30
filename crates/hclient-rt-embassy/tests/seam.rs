@@ -48,6 +48,7 @@
 // would have been `LNK2019`.
 use embassy_executor as _;
 use hclient_core::unversioned::Transport;
+use static_assertions::{assert_impl_all, assert_not_impl_all};
 
 type Embedded = hclient_native::Native<
     hclient_rt_embassy::Embassy<4, 1024, 1024>,
@@ -61,35 +62,24 @@ fn the_embedded_transport_is_still_a_transport() {
     is_transport::<Embedded>();
 }
 
-/// A real negative, not `fn assert_not<T>() {}` — which accepts anything
-/// and would pass for the exact defect it is here to catch. Inherent
-/// methods win over trait ones, so the answer is `true` only where the
-/// bound holds.
+/// A real negative, and it is a **compile-time** one: the assertion lives
+/// in `static_assertions` rather than in a helper this file could weaken.
+///
+/// This was 25 lines of autoref probe — an inherent method winning over a
+/// trait one, so the answer was `true` only where the bound held — and the
+/// probe was right. What it could not be is unweakenable: a
+/// `fn assert_not<T>() {}` accepts anything and passes for the exact
+/// defect it is here to catch, so the probe needed its own control beside
+/// it to prove it discriminated. The macro needs none, because the bound
+/// it checks is in a crate this file only calls.
+///
+/// The control is kept anyway, one line up in kind: a transport that *can*
+/// promise `Send` is asserted to. Without it a macro that silently stopped
+/// checking would leave both halves green.
 #[test]
 fn and_deliberately_not_a_send_transport() {
-    struct Probe<T>(std::marker::PhantomData<T>);
-    trait Fallback {
-        fn is() -> bool {
-            false
-        }
-    }
-    impl<T> Fallback for Probe<T> {}
-    impl<T: hclient_core::unversioned::SendTransport> Probe<T> {
-        fn is() -> bool {
-            true
-        }
-    }
-
-    assert!(
-        !Probe::<Embedded>::is(),
-        "embassy cannot promise Send, and a bound satisfied by something that cannot honour it \
-         is worse than one nothing satisfies",
-    );
-    // The probe discriminates: a transport that *can* promise it answers
-    // the other way, so a `Probe` that always said `false` would not pass
-    // this pair.
-    // The probe discriminates rather than always answering `false`, which
-    // is what would make the assertion above vacuous: a transport that
-    // *can* promise `Send` answers the other way.
-    assert!(Probe::<hclient_mock::MockTransport>::is());
+    // embassy cannot promise `Send`, and a bound satisfied by something
+    // that cannot honour it is worse than one nothing satisfies.
+    assert_not_impl_all!(Embedded: hclient_core::unversioned::SendTransport);
+    assert_impl_all!(hclient_mock::MockTransport: hclient_core::unversioned::SendTransport);
 }

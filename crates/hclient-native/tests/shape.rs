@@ -6,6 +6,7 @@
 //! confused with the production invariant, because this file isn't
 //! `src`.
 use hclient_native::testing::OutgoingBody;
+use static_assertions::assert_impl_all;
 use std::error::Error as StdError;
 
 /// Used to live in `src/body.rs`'s `#[cfg(test)] mod tests` as
@@ -31,15 +32,12 @@ use std::error::Error as StdError;
 /// lives outside `src` (see the module doc above).
 #[test]
 fn auto_traits_reach_the_transport_and_its_body() {
-    fn assert_send<T: Send>() {}
-    fn assert_send_sync<T: Send + Sync>() {}
-
     type Rt = hclient_rt_tokio::Tokio;
     type Tls = hclient_tls_rustls::Rustls;
     type Dns = hclient_dns_system::SystemDns<Rt>;
 
-    assert_send_sync::<hclient_native::Native<Rt, Tls, Dns>>();
-    assert_send::<hclient_native::testing::NativeBody<hclient_native::NativeIo<Rt, Tls>>>();
+    assert_impl_all!(hclient_native::Native<Rt, Tls, Dns>: Send, Sync);
+    assert_impl_all!(hclient_native::testing::NativeBody<hclient_native::NativeIo<Rt, Tls>>: Send);
 }
 
 #[test]
@@ -70,10 +68,8 @@ fn outgoing_bodys_error_satisfies_hypers_send_sync_bound() {
 /// through `&mut`, and nothing in this workspace shares one.
 #[test]
 fn auto_traits_reach_an_upgrade() {
-    fn assert_send<T: Send>() {}
-
     type Rt = hclient_rt_tokio::Tokio;
     type Tls = hclient_tls_rustls::Rustls;
 
-    assert_send::<hclient_native::Upgrading<hclient_native::NativeIo<Rt, Tls>>>();
+    assert_impl_all!(hclient_native::Upgrading<hclient_native::NativeIo<Rt, Tls>>: Send);
 }
