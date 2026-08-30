@@ -21,6 +21,13 @@ http          = { workspace = true }
 http-body     = { workspace = true }
 bytes         = { workspace = true }
 thiserror     = { workspace = true }
+# The exchange's event queue. Ungated, unlike `windows-sys` below, because
+# the type is named in `sys.rs`'s own structures rather than only in the
+# calls — and `futures-core`/`futures-sink` are already in every graph here
+# through `hclient-core`, which names both on the WebSocket seam, so the
+# addition is `futures-channel` alone.
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+futures-core    = { version = "0.3", default-features = false }
 
 # `windows-sys` and nothing else, target-gated so a Linux or wasm build of
 # the workspace resolves none of it — `hclient-dns-system` and

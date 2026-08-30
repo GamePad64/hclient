@@ -295,11 +295,27 @@ express, and each made structural rather than disciplinary where it
 could be:
 
 **The read buffer belongs to WinHTTP between `WinHttpReadData` and
-`READ_COMPLETE`.** So while it is lent there is no `Box` — the buffer is
-an enum, `Home(Box<[u8]>)` or `Loaned { ptr, len }`, and the hand-off is
-`Box::into_raw` with `Box::from_raw` on the completion. Safe code above
-this file cannot read bytes WinHTTP is still writing, because the value
-it would read through does not exist.
+`READ_COMPLETE`.** The buffer is an enum, `Home(BytesMut)` or
+`Loaned { held: BytesMut }`, and the hand-off is a pointer into the
+buffer's **spare capacity** that `read` computes, gives to WinHTTP and
+keeps none of. Safe code above this file cannot read bytes WinHTTP is
+still writing because `take_read` refuses the `Loaned` arm, and the
+allocation cannot move or be reallocated because nothing between the two
+touches `held`.
+
+**This paragraph used to describe a `Box<[u8]>` given away with
+`Box::into_raw` and taken back with `Box::from_raw`**, and the argument
+was that the value safe code would read through did not exist. That was
+stronger, and it was paid for with a copy of every chunk into a fresh
+`Bytes` — a `Box` cannot be split. The `BytesMut` version removes the
+copy and, with it, **two `unsafe impl`s**: `Exchange` needed
+`Send`/`Sync` by hand only because `Inner` held a raw pointer, and it
+holds none now, so the auto impls apply. `reclaim` lost its `unsafe`
+too. What arrived in exchange is one `advance_mut`, asserting that
+WinHTTP wrote the `n` bytes it reported — bounded by what was lent
+rather than trusted. Fewer `unsafe` sites in a crate not one line of
+which has ever been executed, which is where they were least
+affordable.
 
 **The context is a `usize` the callback is handed back.** It is
 `Arc::into_raw` of the shared state, installed with

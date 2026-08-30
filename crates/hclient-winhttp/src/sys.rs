@@ -39,12 +39,14 @@
 //! instead — a synchronous call that copies — so the send passes no
 //! header pointer at all and the question does not arise.
 
-use std::collections::VecDeque;
 use std::ffi::c_void;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
+use futures_channel::mpsc;
+use futures_core::Stream as _;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Networking::WinHttp as w;
 
@@ -91,14 +93,29 @@ pub(crate) enum Event {
 #[derive(Debug)]
 enum Buf {
     /// Ours. Safe to read.
-    Home(Box<[u8]>),
-    /// WinHTTP's, until `READ_COMPLETE` or `HANDLE_CLOSING`.
-    Loaned { ptr: *mut u8, len: usize },
+    Home(BytesMut),
+    /// Lent to WinHTTP until `READ_COMPLETE` or `HANDLE_CLOSING`.
+    ///
+    /// **The buffer is kept here rather than given away**, which is what
+    /// changed when it became a `BytesMut`: the allocation must stay alive
+    /// and unmoved for as long as WinHTTP holds the pointer `read` handed
+    /// it, and holding the `BytesMut` is how. That pointer is into the
+    /// **spare capacity**, so the initialised prefix — always empty here,
+    /// because every completed read is split off at once — is untouched.
+    ///
+    /// **This arm carries no raw pointer**, which is the second thing the
+    /// `BytesMut` bought: `read` computes the pointer, hands it to WinHTTP
+    /// and forgets it, and `reclaim` moves the buffer back out rather than
+    /// reconstructing it. Moving this enum moves the `BytesMut` struct and
+    /// not its heap allocation, so what WinHTTP holds stays valid. What
+    /// must not happen while lent is a `reserve` on `held`, which could
+    /// reallocate; nothing between `read` and `reclaim` touches it, and
+    /// `take_read` refuses this arm outright.
+    Loaned { held: BytesMut },
 }
 
 #[derive(Debug)]
 struct Inner {
-    events: VecDeque<Event>,
     buf: Buf,
     /// The request body, held only until `SENDREQUEST_COMPLETE`: the
     /// pointer handed to `WinHttpSendRequest` points into this
@@ -110,86 +127,104 @@ struct Inner {
 #[derive(Debug)]
 pub(crate) struct Exchange {
     inner: Mutex<Inner>,
-    waker: Mutex<Option<Waker>>,
+    /// What WinHTTP said, in order.
+    ///
+    /// **An unbounded channel rather than a `VecDeque` and a hand-rolled
+    /// waker**, for `hclient-urlsession`'s reason and with the same
+    /// producer: WinHTTP's status callback is a **synchronous C
+    /// function**, invoked on a thread this crate does not own, and it
+    /// cannot wait. A bounded channel would make a full queue a dropped
+    /// completion, which here is not a slow body but a lost `ReadComplete`
+    /// — the buffer would never be reclaimed. Nothing is lost that
+    /// existed: the `VecDeque` was unbounded too.
+    tx: mpsc::UnboundedSender<Event>,
+    rx: Mutex<mpsc::UnboundedReceiver<Event>>,
 }
 
-// SAFETY: `Inner` holds a raw pointer only in `Buf::Loaned`, and it is an
-// allocation this crate owns — `Box::into_raw` on one side,
-// `Box::from_raw` on the other. What crosses a thread is ownership of that
-// allocation, which is exactly what a `Box` may do; the pointer carries no
-// thread affinity of its own. Everything else in `Inner` is `Send`
-// already.
-#[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
-    reason = "the only raw pointer is an owned allocation; see the SAFETY note"
-)]
-unsafe impl Send for Exchange {} // unsafe-code-exception: amendment-C18
-#[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
-    reason = "as above; every field is behind a Mutex"
-)]
-unsafe impl Sync for Exchange {} // unsafe-code-exception: amendment-C18
+// **`Exchange` needs no `unsafe impl Send`/`Sync` any more**, and the two
+// it carried are gone. They existed because `Inner` held a raw pointer:
+// the buffer was a `Box<[u8]>` given away with `Box::into_raw` and taken
+// back with `Box::from_raw`, and the note here argued that what crossed a
+// thread was ownership of an allocation, which is what a `Box` may do.
+//
+// With the buffer a `BytesMut` that `Buf::Loaned` **holds**, `read`
+// computes the pointer, hands it to WinHTTP and keeps none of it — so
+// every field of `Exchange` is `Send + Sync` already and the auto impls
+// apply. Two `unsafe` blocks removed from a crate not one line of which
+// has ever been executed, which is where they were least affordable.
 
 impl Exchange {
     pub(crate) fn new() -> Self {
+        let (tx, rx) = mpsc::unbounded();
         Self {
             inner: Mutex::new(Inner {
-                events: VecDeque::new(),
-                buf: Buf::Home(vec![0u8; READ_BUF].into_boxed_slice()),
+                buf: Buf::Home(BytesMut::with_capacity(READ_BUF)),
                 sending: None,
             }),
-            waker: Mutex::new(None),
+            tx,
+            rx: Mutex::new(rx),
         }
     }
 
     fn push(&self, e: Event) {
-        self.inner
-            .lock()
-            .expect("winhttp exchange poisoned")
-            .events
-            .push_back(e);
-        if let Some(w) = self.waker.lock().expect("winhttp waker poisoned").take() {
-            w.wake();
-        }
+        // A closed receiver means the polling side went away, which is an
+        // ordinary end: the callback has no one to tell and nothing it
+        // could do about it.
+        let _ = self.tx.unbounded_send(e);
     }
 
     /// The next thing WinHTTP said, or `Pending` with `cx` registered.
     ///
-    /// The re-check after registering is the ordinary lost-wakeup race:
-    /// the callback may have pushed between the pop and the lock.
-    pub(crate) fn poll_next(&self, cx: &Context<'_>) -> Poll<Event> {
-        if let Some(e) = self
-            .inner
-            .lock()
-            .expect("winhttp exchange poisoned")
-            .events
-            .pop_front()
-        {
-            return Poll::Ready(e);
-        }
-        *self.waker.lock().expect("winhttp waker poisoned") = Some(cx.waker().clone());
-        match self
-            .inner
-            .lock()
-            .expect("winhttp exchange poisoned")
-            .events
-            .pop_front()
-        {
-            Some(e) => Poll::Ready(e),
-            None => Poll::Pending,
+    /// The pop / register / pop-again dance this replaced was the ordinary
+    /// lost-wakeup race written out by hand — the callback can push
+    /// between the first pop and the lock. A channel owns that race.
+    ///
+    /// The `Mutex` is over the **receiver** and is never contended: one
+    /// body polls one exchange. It is there because callers hold an
+    /// `Arc<Exchange>`, so this takes `&self` where `Stream::poll_next`
+    /// wants `&mut`.
+    pub(crate) fn poll_next(&self, cx: &mut Context<'_>) -> Poll<Event> {
+        let mut rx = self.rx.lock().expect("winhttp receiver poisoned");
+        match Pin::new(&mut *rx).poll_next(cx) {
+            Poll::Ready(Some(e)) => Poll::Ready(e),
+            // Every sender is gone, which happens only when the exchange
+            // is being torn down; `HANDLE_CLOSING` is the last event and
+            // arrives before that.
+            Poll::Ready(None) => Poll::Pending,
+            Poll::Pending => Poll::Pending,
         }
     }
 
-    /// The first `n` bytes of the buffer, copied out.
+    /// The bytes WinHTTP just wrote, **split off rather than copied**.
+    ///
+    /// `split().freeze()` hands back a `Bytes` sharing this buffer's
+    /// allocation, where `Bytes::copy_from_slice` allocated and memcpy'd
+    /// once per chunk. The trade is stated rather than assumed: the
+    /// returned handle keeps the whole allocation alive until it is
+    /// dropped, so a caller holding one small frame pins up to `READ_BUF`.
+    /// The next `read` reserves again, which reuses the allocation when
+    /// the previous chunk has been dropped and allocates a fresh one when
+    /// it has not — so the worst case is today's allocation count with
+    /// today's copy removed, and the ordinary case is one allocation per
+    /// `READ_BUF` bytes rather than one per chunk.
     ///
     /// Callable only between reads: the buffer is `Home` exactly then,
     /// and a `Loaned` one here would mean the state machine handed out an
     /// `Event::ReadComplete` without reclaiming, which is a bug in this
     /// file rather than something a caller can cause.
     pub(crate) fn take_read(&self, n: usize) -> Bytes {
-        let inner = self.inner.lock().expect("winhttp exchange poisoned");
-        match &inner.buf {
-            Buf::Home(b) => Bytes::copy_from_slice(&b[..n.min(b.len())]),
+        let mut inner = self.inner.lock().expect("winhttp exchange poisoned");
+        match &mut inner.buf {
+            Buf::Home(b) => {
+                let n = n.min(b.capacity() - b.len());
+                // SAFETY: WinHTTP wrote `n` bytes into the spare capacity
+                // this buffer lent it — `n` is the count it reported in
+                // `WINHTTP_CALLBACK_STATUS_READ_COMPLETE`, and `read`
+                // lent exactly `spare_capacity_mut()`. The `min` above
+                // bounds it by what was lent rather than trusting it.
+                unsafe { b.advance_mut(n) }; // unsafe-code-exception: amendment-C18
+                b.split().freeze()
+            }
             Buf::Loaned { .. } => {
                 unreachable!("the buffer is reclaimed before ReadComplete is pushed")
             }
@@ -226,14 +261,17 @@ unsafe fn release(context: usize) {
 )]
 fn reclaim(ex: &Exchange) {
     let mut inner = ex.inner.lock().expect("winhttp exchange poisoned");
-    if let Buf::Loaned { ptr, len } = inner.buf {
-        // SAFETY: `ptr`/`len` came from `Box::into_raw` on a
-        // `Box<[u8]>` of that length in `Request::read`, and WinHTTP has
-        // finished with it — this is called from `READ_COMPLETE`,
-        // `REQUEST_ERROR` or `HANDLE_CLOSING`, after each of which no
-        // further write to the buffer happens.
-        let b = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) }; // unsafe-code-exception: amendment-C18
-        inner.buf = Buf::Home(b);
+    // **No `unsafe` here any more**, and that is what the `BytesMut`
+    // bought besides the copy: the allocation was never given away, so
+    // taking it back is moving a value out of an enum arm. What this used
+    // to be was `Box::from_raw` over a pointer `Box::into_raw` had
+    // produced, with the obligation that WinHTTP was finished with it —
+    // the obligation is unchanged and is now discharged by the state
+    // machine alone.
+    if let Buf::Loaned { held, .. } =
+        std::mem::replace(&mut inner.buf, Buf::Home(BytesMut::with_capacity(READ_BUF)))
+    {
+        inner.buf = Buf::Home(held);
     }
 }
 
@@ -706,22 +744,23 @@ impl Request {
     pub(crate) fn read(&self, ex: &Arc<Exchange>) -> Result<(), Win32Error> {
         let (ptr, len) = {
             let mut inner = ex.inner.lock().expect("winhttp exchange poisoned");
-            let b = match std::mem::replace(
-                &mut inner.buf,
-                Buf::Loaned {
-                    ptr: std::ptr::null_mut(),
-                    len: 0,
-                },
-            ) {
+            let mut b = match std::mem::replace(&mut inner.buf, Buf::Home(BytesMut::new())) {
                 Buf::Home(b) => b,
                 // A second read while one is in flight would hand the
                 // same buffer over twice. `body.rs` polls one read at a
                 // time, so this is a bug here rather than a caller's.
                 Buf::Loaned { .. } => unreachable!("two reads in flight on one exchange"),
             };
-            let len = b.len();
-            let ptr = Box::into_raw(b).cast::<u8>();
-            inner.buf = Buf::Loaned { ptr, len };
+            // Reserving before lending is what makes the pointer valid for
+            // `len`, and it is also the only place this buffer may
+            // reallocate — which is why it happens here, before the
+            // pointer exists, rather than anywhere between here and
+            // `reclaim`.
+            b.reserve(READ_BUF);
+            let spare = b.spare_capacity_mut();
+            let len = spare.len();
+            let ptr = spare.as_mut_ptr().cast::<u8>();
+            inner.buf = Buf::Loaned { held: b };
             (ptr, len)
         };
         // SAFETY: obligation 1. The buffer is `Loaned` from here until a
