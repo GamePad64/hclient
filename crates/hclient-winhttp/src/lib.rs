@@ -132,14 +132,35 @@
 //!   with no consumer is what `UpgradeSupport`'s spare variants were
 //!   deleted for. They are listed because the next person will otherwise
 //!   re-read the option table to find them.
-//! - **WebSocket.** `WinHttpWebSocketCompleteUpgrade` and its five
-//!   neighbours exist, and the seam for them is
-//!   `hclient_core::unversioned::WebSocketConnect`. A separate crate, by
-//!   the rule that put the framing in `hclient-tungstenite`.
 //! - **Windows authentication.** `WinHttpSetCredentials` plus
 //!   `WinHttpQueryAuthSchemes`, driven from a `401` — the shape
 //!   `hclient`'s digest support already has one layer up, and it needs a
 //!   decision about which schemes to offer silently.
+//!
+//! # WebSocket, and the rule this crate cited at itself
+//!
+//! [`WinHttpWebSocket`] implements
+//! [`WebSocketConnect`](hclient_core::unversioned::WebSocketConnect), and
+//! it is **in this crate** rather than one of its own. The list above used
+//! to say the opposite, citing the rule that put the framing in
+//! `hclient-tungstenite` — and that rule is about a *dependency*: a
+//! `websocket` feature on `hclient-native` would have put `tungstenite`
+//! into every build in any graph that switched it on. Measured here, the
+//! whole feature costs **zero crates**: `WinHttpWebSocketSend` and its
+//! five neighbours are in the `Win32_Networking_WinHttp` feature this
+//! crate already names. `hclient-fetch` is the precedent that fits, and
+//! it keeps its seam impl at home for the same reason.
+//!
+//! **Almost none of RFC 6455 is here.** WinHTTP writes the handshake,
+//! checks the `Sec-WebSocket-Accept`, masks, frames, and answers pings.
+//! What is left is assembling fragments into messages, checking that a
+//! text message is UTF-8 — the seam requires an error rather than a lossy
+//! conversion, and WinHTTP does not check — and routing one completion
+//! queue to two readers, since `Stream` and `Sink` are on one value.
+//!
+//! That a message-oriented seam designed around the browser fitted a
+//! second backend unchanged is the strongest evidence it has had that its
+//! shape is not the browser's accident.
 //!
 //! # What has not been observed
 //!
@@ -158,7 +179,9 @@ mod body;
 mod error;
 mod session;
 mod sys;
+mod websocket;
 
 pub use body::WinHttpBody;
 pub use error::WinHttpError;
 pub use session::{Protocols, WinHttp};
+pub use websocket::WinHttpWebSocket;

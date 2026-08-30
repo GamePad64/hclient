@@ -28,6 +28,15 @@ thiserror     = { workspace = true }
 # addition is `futures-channel` alone.
 futures-channel = { version = "0.3", default-features = false, features = ["std"] }
 futures-core    = { version = "0.3", default-features = false }
+# The `Sink` half of the WebSocket seam, which `hclient-core` already
+# names — so this costs no crate in any graph that has a client.
+futures-sink    = { workspace = true }
+# `Protocols` is WinHTTP's own bitmask, so it is written as one. Already
+# in this workspace's lockfile at 2.13 through other trees; here it is one
+# crate with no dependencies of its own, and what it buys is that adding a
+# protocol later is a new constant rather than a new field — additive,
+# where a `pub` field in a struct callers write as a literal is not.
+bitflags        = { workspace = true }
 
 # `windows-sys` and nothing else, target-gated so a Linux or wasm build of
 # the workspace resolves none of it — `hclient-dns-system` and
@@ -42,6 +51,16 @@ futures-core    = { version = "0.3", default-features = false }
 # status callback and a `dwContext`, which no binding generator makes
 # safe.
 [target.'cfg(windows)'.dependencies]
+# The wide strings every WinHTTP call takes. `HSTRING` owns its buffer and
+# **reserves the terminating null inside the allocation**, so `as_ptr()`
+# is an `LPCWSTR` by construction rather than by this crate remembering to
+# chain a zero — which is what it did, in a two-line helper that nothing
+# would have caught losing.
+#
+# One crate: `windows-strings` depends on `windows-link` alone, which is
+# already here under `windows-sys`.
+windows-strings = { version = "0.5", default-features = false }
+
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Networking_WinHttp",

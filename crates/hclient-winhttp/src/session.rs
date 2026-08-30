@@ -64,10 +64,11 @@ impl WinHttp {
     /// # fn main() -> Result<(), hclient_core::Error> {
     /// use hclient_winhttp::{Protocols, WinHttp};
     ///
-    /// let transport = WinHttp::new()?.protocols(Protocols {
-    ///     http2: true,
-    ///     ..Default::default()
-    /// });
+    /// let transport = WinHttp::new()?.protocols(Protocols::HTTP2);
+    ///
+    /// // Or both, which is what a caller who wants whatever is fastest
+    /// // asks for:
+    /// let fastest = WinHttp::new()?.protocols(Protocols::HTTP2 | Protocols::HTTP3);
     /// # Ok(())
     /// # }
     /// ```
@@ -157,36 +158,75 @@ impl WinHttp {
 /// documented default and means HTTP/1.1 and prior, which is what this
 /// transport does unless [`WinHttp::protocols`] says otherwise.
 ///
-/// Deliberately **not** `#[non_exhaustive]`, on `TcpOpts`' argument one
-/// crate over: its whole use is `Protocols { http2: true,
-/// ..Default::default() }`, and the attribute forbids exactly that
-/// expression from outside this crate.
+/// **A bitmask rather than a struct of `bool`s, because that is what it
+/// is** — and because the two shapes differ in what a later version costs.
+/// A third protocol is a new constant here, which no caller has to know
+/// about; as a `pub` field it would be a new field in a struct callers
+/// write as a literal, and only the ones who remembered
+/// `..Default::default()` would survive it. `TcpOpts`' argument for
+/// staying exhaustive was about exactly that expression, and a bitmask
+/// does not need it.
+///
+/// `empty()` is the default, which is WinHTTP's own: the option's
+/// documented `0x0` means HTTP/1.1 and prior.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Protocols {
+pub struct Protocols(ProtocolFlags);
+
+bitflags::bitflags! {
+    /// The bits themselves, kept private so that [`Protocols`] is the
+    /// only spelling a caller meets.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    struct ProtocolFlags: u32 {
+        const HTTP2 = windows_sys::Win32::Networking::WinHttp::WINHTTP_PROTOCOL_FLAG_HTTP2;
+        const HTTP3 = windows_sys::Win32::Networking::WinHttp::WINHTTP_PROTOCOL_FLAG_HTTP3;
+    }
+}
+
+impl Protocols {
+    /// Neither — HTTP/1.1 and prior, WinHTTP's documented default.
+    pub const NONE: Self = Self(ProtocolFlags::empty());
     /// Offer HTTP/2.
-    pub http2: bool,
+    pub const HTTP2: Self = Self(ProtocolFlags::HTTP2);
     /// Offer HTTP/3.
     ///
     /// QUIC, so UDP: a network that blocks it is a network where this
     /// costs a fallback rather than a failure — WinHTTP still offers
-    /// HTTP/1.1 and, if [`http2`](Self::http2) is set, HTTP/2 — unless a
+    /// HTTP/1.1, and HTTP/2 if that is set too — unless a
     /// [`RequireVersion`] demand has taken the fallback away, which is
     /// what that demand is for.
-    pub http3: bool,
+    pub const HTTP3: Self = Self(ProtocolFlags::HTTP3);
+
+    /// Both, which is what a caller who wants whatever is fastest asks
+    /// for.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self(ProtocolFlags::all())
+    }
+
+    /// Whether HTTP/2 is offered.
+    #[must_use]
+    pub const fn http2(self) -> bool {
+        self.0.contains(ProtocolFlags::HTTP2)
+    }
+
+    /// Whether HTTP/3 is offered.
+    #[must_use]
+    pub const fn http3(self) -> bool {
+        self.0.contains(ProtocolFlags::HTTP3)
+    }
+}
+
+impl std::ops::BitOr for Protocols {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
 }
 
 impl Protocols {
     /// The bitmask WinHTTP wants.
     fn bits(self) -> u32 {
-        (if self.http2 {
-            windows_sys::Win32::Networking::WinHttp::WINHTTP_PROTOCOL_FLAG_HTTP2
-        } else {
-            0
-        }) | (if self.http3 {
-            windows_sys::Win32::Networking::WinHttp::WINHTTP_PROTOCOL_FLAG_HTTP3
-        } else {
-            0
-        })
+        self.0.bits()
     }
 }
 
@@ -240,8 +280,8 @@ fn mask_for(enabled: Protocols, extensions: &http::Extensions) -> Result<(u32, b
         return Ok((enabled.bits(), false));
     };
     match demanded {
-        http::Version::HTTP_2 if enabled.http2 => Ok((w::WINHTTP_PROTOCOL_FLAG_HTTP2, true)),
-        http::Version::HTTP_3 if enabled.http3 => Ok((w::WINHTTP_PROTOCOL_FLAG_HTTP3, true)),
+        http::Version::HTTP_2 if enabled.http2() => Ok((w::WINHTTP_PROTOCOL_FLAG_HTTP2, true)),
+        http::Version::HTTP_3 if enabled.http3() => Ok((w::WINHTTP_PROTOCOL_FLAG_HTTP3, true)),
         http::Version::HTTP_11 => Ok((0, false)),
         _ => Err(check_version(extensions, http::Version::HTTP_11)
             .expect_err("a demand for HTTP/1.1 is answered by the arm above")),
@@ -310,6 +350,14 @@ fn capabilities() -> Capabilities {
     // that as the failure mode to avoid.
     c.version_select = true;
     c
+}
+
+impl WinHttp {
+    /// The session every handle here is derived from, for
+    /// `websocket.rs`'s handshake.
+    pub(crate) fn session(&self) -> &Session {
+        &self.session
+    }
 }
 
 impl Transport for WinHttp {
@@ -451,12 +499,12 @@ impl hclient_core::unversioned::SendTransport for WinHttp {
 }
 
 /// A synchronous WinHTTP call that failed while setting the exchange up.
-fn setup(call: &'static str, source: Win32Error) -> Error {
+pub(crate) fn setup(call: &'static str, source: Win32Error) -> Error {
     Error::new(ErrorKind::Connect, WinHttpError::Call { call, source })
 }
 
 /// Wait for the next completion and insist it is the expected one.
-async fn expect(ex: &Arc<Exchange>, expected: &'static str) -> Result<(), Error> {
+pub(crate) async fn expect(ex: &Arc<Exchange>, expected: &'static str) -> Result<(), Error> {
     match poll_fn(|cx| ex.poll_next(cx)).await {
         Event::SendComplete if expected == "SENDREQUEST_COMPLETE" => Ok(()),
         Event::HeadersAvailable if expected == "HEADERS_AVAILABLE" => Ok(()),
@@ -481,7 +529,7 @@ async fn expect(ex: &Arc<Exchange>, expected: &'static str) -> Result<(), Error>
 /// the target and a secure flag — so the URI is taken apart here rather
 /// than handed over whole, which is also what makes the default port a
 /// decision this file can state.
-fn split_uri(uri: &http::Uri) -> Result<(bool, String, u16, String), Error> {
+pub(crate) fn split_uri(uri: &http::Uri) -> Result<(bool, String, u16, String), Error> {
     let refuse = |what: String| {
         Err(Error::new(
             ErrorKind::Connect,
@@ -537,7 +585,7 @@ fn split_uri(uri: &http::Uri) -> Result<(bool, String, u16, String), Error> {
 /// there are values this boundary cannot carry — and dropping one would
 /// send a request the caller did not write, which is the silent-omission
 /// defect this workspace refuses everywhere.
-fn header_block(headers: &http::HeaderMap) -> Result<String, Error> {
+pub(crate) fn header_block(headers: &http::HeaderMap) -> Result<String, Error> {
     let mut out = String::new();
     for (name, value) in headers {
         if name == http::header::HOST || name == http::header::CONTENT_LENGTH {
@@ -618,10 +666,7 @@ mod tests {
         e
     }
 
-    const BOTH: Protocols = Protocols {
-        http2: true,
-        http3: true,
-    };
+    const BOTH: Protocols = Protocols::all();
 
     #[test]
     fn with_no_demand_a_request_offers_what_the_transport_enables() {
@@ -674,13 +719,7 @@ mod tests {
         for (enabled, demand) in [
             (Protocols::default(), http::Version::HTTP_2),
             (Protocols::default(), http::Version::HTTP_3),
-            (
-                Protocols {
-                    http2: true,
-                    http3: false,
-                },
-                http::Version::HTTP_3,
-            ),
+            (Protocols::HTTP2, http::Version::HTTP_3),
             (BOTH, http::Version::HTTP_10),
         ] {
             let e = mask_for(enabled, &demanding(demand)).expect_err("not offered");

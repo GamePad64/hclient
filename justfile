@@ -1038,8 +1038,17 @@ docs:
     # `--no-deps` because a dependency's warnings are not ours to fix, and
     # `--all-features` because a feature-gated item's docs are the half of
     # this crate a reader most needs — every backend, coding and knob.
+    # A crate that declares a docs.rs `default-target` is documented for
+    # **that** target below and excluded here, because the two runs
+    # compile different files: `hclient-winhttp` is `#![cfg(windows)]`, so
+    # a host pass sees an empty crate in which every link to one of its
+    # own types is unresolved — a failure about this recipe rather than
+    # about the prose. Excluded, not skipped: what a reader sees on
+    # docs.rs is what gets checked, one line down.
+    excluded=""
+    while read -r crate _; do excluded="$excluded --exclude $crate"; done < <(./scripts/docsrs-targets.sh)
     rc=0
-    out="$(RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features \
+    out="$(RUSTDOCFLAGS="-D warnings" cargo doc --workspace $excluded --all-features \
              --no-deps --color never 2>&1)" || rc=$?
     printf '%s\n' "$out"
     [ "$rc" -eq 0 ] || { echo "::error::rustdoc reported warnings"; exit "$rc"; }
@@ -1051,6 +1060,25 @@ docs:
       echo "::error::no sign rustdoc ran at all — the check did not happen"
       exit 1
     fi
+    # **A crate that documents for another target is documented for it**,
+    # and this is not thoroughness — it is the only run that sees the
+    # crate at all. `hclient-winhttp` is `#![cfg(windows)]`, so the
+    # workspace pass above compiles an empty file for it and every link to
+    # one of its own types is unresolved. It carries
+    # `default-target = "x86_64-pc-windows-msvc"`, which is what docs.rs
+    # builds and therefore what a reader sees, so that is what is checked.
+    #
+    # This was found the way it usually is: the run that was green was not
+    # the run CI makes. `cargo doc --target x86_64-pc-windows-msvc` was
+    # clean while `just docs` had three unresolved links, because they are
+    # two different compilations of two different files.
+    targets=$(./scripts/docsrs-targets.sh)
+    [ -n "$targets" ] || { echo "::error::no crate declares a docs.rs default-target — the query found nothing rather than a tidy tree"; exit 1; }
+    printf '%s\n' "$targets" | while read -r crate target; do
+      echo "==> $crate for $target"
+      RUSTDOCFLAGS="-D warnings" cargo doc -p "$crate" --target "$target" \
+        --all-features --no-deps || exit 1
+    done
 # nightly is not optional here (sanitizer flags), and `RUSTUP_TOOLCHAIN` is
 # how it survives rust-toolchain.toml. The explicit `--target` is not
 # cosmetic either: cargo-fuzz defaults to the triple it was itself built for,

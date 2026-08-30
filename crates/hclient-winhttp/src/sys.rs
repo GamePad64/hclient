@@ -62,8 +62,21 @@ const READ_BUF: usize = 16 * 1024;
 ///
 /// Every WinHTTP call that takes one here is synchronous and copies what
 /// it needs, so the `Vec` may die at the end of the statement.
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
+/// A `&str` as the null-terminated UTF-16 every WinHTTP call takes.
+///
+/// **`HSTRING` rather than a `Vec<u16>` with a zero chained on**, and the
+/// difference is where the terminator comes from: this crate used to add
+/// it, in a helper whose one job was not to forget — and losing it is not
+/// a compile error, it is a call that reads past the end of an
+/// allocation. `windows-strings` reserves the terminator inside the
+/// allocation, so `as_ptr()` on the slice is an `LPCWSTR` by
+/// construction.
+///
+/// The value must outlive the call: every caller binds it to a local and
+/// passes `.as_ptr()`, which is what keeps the buffer alive across the
+/// FFI boundary.
+fn wide(s: &str) -> windows_strings::HSTRING {
+    windows_strings::HSTRING::from(s)
 }
 
 /// What WinHTTP last told us, in the order it said it.
@@ -75,6 +88,21 @@ pub(crate) enum Event {
     HeadersAvailable,
     /// Bytes were read into the buffer. `0` is end of body.
     ReadComplete(usize),
+    /// A WebSocket receive completed: how many bytes, and what WinHTTP
+    /// says they are — `WINHTTP_WEB_SOCKET_*_BUFFER_TYPE`.
+    ///
+    /// **A separate variant from [`ReadComplete`](Self::ReadComplete)
+    /// although both arrive as `WINHTTP_CALLBACK_STATUS_READ_COMPLETE`**,
+    /// because the notification carries a different thing in each mode: a
+    /// byte count for a body, and a `WINHTTP_WEB_SOCKET_STATUS` for a
+    /// socket. Which one it is cannot be read off the status, so the
+    /// callback reads it off [`Inner::ws`], set before the first
+    /// WebSocket call and never unset.
+    WsRead { bytes: usize, kind: i32 },
+    /// A WebSocket send completed and its buffer is ours again.
+    WsWrote,
+    /// `WinHttpWebSocketClose` finished: the close handshake is over.
+    WsClosed,
     /// A Win32 error code from `WINHTTP_ASYNC_RESULT::dwError`.
     Failed(u32),
     /// A TLS failure, with `WINHTTP_CALLBACK_STATUS_SECURE_FAILURE`'s
@@ -122,6 +150,23 @@ struct Inner {
     /// pointer handed to `WinHttpSendRequest` points into this
     /// allocation, and `Bytes` keeps it alive and immovable.
     sending: Option<Bytes>,
+    /// The payload of a WebSocket send in flight, held for exactly the
+    /// reason `sending` is: `WinHttpWebSocketSend` is asynchronous, so
+    /// the buffer must outlive the call and not move until
+    /// `WRITE_COMPLETE`.
+    ///
+    /// One slot, because `Sink` sends one message at a time and WinHTTP
+    /// documents one outstanding send per socket.
+    ws_sending: Option<Bytes>,
+    /// Whether this exchange has been upgraded to a WebSocket.
+    ///
+    /// **The callback's only way to know what a `READ_COMPLETE` means.**
+    /// The status number is the same in both modes and the payload is
+    /// not; nothing on the notification distinguishes them, and the
+    /// handle it names is one this crate would have to store and compare.
+    /// Set once, before the first WebSocket call, and never cleared:
+    /// after the upgrade there are no more body reads on this exchange.
+    ws: bool,
 }
 
 /// The state the callback and the polling side share.
@@ -161,6 +206,8 @@ impl Exchange {
             inner: Mutex::new(Inner {
                 buf: Buf::Home(BytesMut::with_capacity(READ_BUF)),
                 sending: None,
+                ws_sending: None,
+                ws: false,
             }),
             tx,
             rx: Mutex::new(rx),
@@ -194,6 +241,43 @@ impl Exchange {
             Poll::Ready(None) => Poll::Pending,
             Poll::Pending => Poll::Pending,
         }
+    }
+
+    /// Whether this exchange has been upgraded — see [`Inner::ws`].
+    fn is_ws(&self) -> bool {
+        self.inner.lock().expect("winhttp exchange poisoned").ws
+    }
+
+    /// Marks the exchange as upgraded, before the first WebSocket call.
+    ///
+    /// **Called before `WinHttpWebSocketReceive`, never after**, because
+    /// the callback reads this to decide what a `READ_COMPLETE` carries:
+    /// setting it late would make one completion be read as the wrong
+    /// struct, which is the one mistake in this file that is not a
+    /// compile error.
+    pub(crate) fn mark_ws(&self) {
+        self.inner.lock().expect("winhttp exchange poisoned").ws = true;
+    }
+
+    /// Holds the payload of a send until `WRITE_COMPLETE`.
+    ///
+    /// Hands back the pointer and length to pass to
+    /// `WinHttpWebSocketSend`. The `Bytes` stays here, so the allocation
+    /// outlives the call and does not move.
+    pub(crate) fn lend_ws_send(&self, payload: Bytes) -> (*const c_void, u32) {
+        let mut inner = self.inner.lock().expect("winhttp exchange poisoned");
+        let held = inner.ws_sending.insert(payload);
+        let len = u32::try_from(held.len()).unwrap_or(u32::MAX);
+        (held.as_ptr().cast::<c_void>(), len)
+    }
+
+    /// Takes the payload back when the send never started.
+    pub(crate) fn unlend_ws_send(&self) {
+        self.inner
+            .lock()
+            .expect("winhttp exchange poisoned")
+            .ws_sending
+            .take();
     }
 
     /// The bytes WinHTTP just wrote, **split off rather than copied**.
@@ -327,8 +411,43 @@ unsafe extern "system" fn callback(
             // Obligation 1's other end: the buffer is ours again before
             // anything is allowed to look at it.
             reclaim(ex);
-            ex.push(Event::ReadComplete(info_len as usize));
+            if ex.is_ws() {
+                // **The same status number, a different payload.** For a
+                // WebSocket receive WinHTTP documents
+                // `lpvStatusInformation` as a `*mut
+                // WINHTTP_WEB_SOCKET_STATUS` and `dwStatusInformationLength`
+                // as that struct's size — where for a body read the
+                // pointer is the buffer and the length is the byte count.
+                // Reading one as the other is why `Inner::ws` exists.
+                //
+                // SAFETY: null-checked rather than trusted, for the
+                // reason the two arms below give. A null here would
+                // otherwise read address zero.
+                let (bytes, kind) = if info.is_null() {
+                    (0, w::WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE)
+                } else {
+                    // SAFETY: the pointer is the struct WinHTTP
+                    // documents for this status on a WebSocket handle.
+                    let st = unsafe { *info.cast::<w::WINHTTP_WEB_SOCKET_STATUS>() }; // unsafe-code-exception: amendment-C18
+                    (st.dwBytesTransferred as usize, st.eBufferType)
+                };
+                ex.push(Event::WsRead { bytes, kind });
+            } else {
+                ex.push(Event::ReadComplete(info_len as usize));
+            }
         }
+        w::WINHTTP_CALLBACK_STATUS_WRITE_COMPLETE => {
+            // The payload pointer handed to `WinHttpWebSocketSend` is
+            // dead from here, so the `Bytes` keeping it alive can go —
+            // `SENDREQUEST_COMPLETE`'s arm above, one buffer over.
+            ex.inner
+                .lock()
+                .expect("winhttp exchange poisoned")
+                .ws_sending
+                .take();
+            ex.push(Event::WsWrote);
+        }
+        w::WINHTTP_CALLBACK_STATUS_CLOSE_COMPLETE => ex.push(Event::WsClosed),
         w::WINHTTP_CALLBACK_STATUS_SECURE_FAILURE => {
             reclaim(ex);
             // SAFETY: for this status WinHTTP documents
@@ -344,6 +463,15 @@ unsafe extern "system" fn callback(
         }
         w::WINHTTP_CALLBACK_STATUS_REQUEST_ERROR => {
             reclaim(ex);
+            // **This arm is right in both modes and that is not luck.** A
+            // WebSocket failure reports `WINHTTP_WEB_SOCKET_ASYNC_RESULT`
+            // rather than `WINHTTP_ASYNC_RESULT`, and its first field
+            // **is** a `WINHTTP_ASYNC_RESULT` — both are `repr(C)`, so
+            // `dwError` is at the same offset either way. Read in
+            // `windows-sys` 0.61 rather than assumed, because the
+            // alternative reading would have been a second arm keyed on
+            // `Inner::ws` that did the same thing.
+            //
             // SAFETY: for this status WinHTTP documents
             // `lpvStatusInformation` as a `*mut WINHTTP_ASYNC_RESULT`.
             // Null-checked for the same reason as above.
@@ -362,6 +490,130 @@ unsafe extern "system" fn callback(
         _ => {}
     }
 }
+
+/// An upgraded WebSocket, closed on drop.
+///
+/// A handle like the other three, and it is a type of its own for what it
+/// can be asked rather than for how it is closed: `WinHttpWebSocketSend`
+/// and its neighbours take a socket handle and refuse a request one.
+#[derive(Debug)]
+pub(crate) struct WebSocket(Handle);
+
+impl WebSocket {
+    /// Queues one message. Completion arrives as [`Event::WsWrote`].
+    ///
+    /// The payload is lent to the exchange for the length of the call —
+    /// `WinHttpWebSocketSend` is asynchronous, so a buffer that died when
+    /// this function returned would be read after free.
+    pub(crate) fn send(
+        &self,
+        ex: &Arc<Exchange>,
+        kind: i32,
+        payload: Bytes,
+    ) -> Result<(), Win32Error> {
+        let (ptr, len) = ex.lend_ws_send(payload);
+        // SAFETY: the buffer is held by `Inner::ws_sending` until
+        // `WRITE_COMPLETE` takes it back, so the pointer is valid for
+        // `len` for as long as WinHTTP may read it.
+        let rc = unsafe { w::WinHttpWebSocketSend((self.0).0, kind, ptr, len) }; // unsafe-code-exception: amendment-C18
+        if rc != 0 {
+            // The send never started, so no completion will free it.
+            ex.unlend_ws_send();
+            return Err(Win32Error(rc));
+        }
+        Ok(())
+    }
+
+    /// Starts a receive into the exchange's buffer. Completion arrives as
+    /// [`Event::WsRead`].
+    ///
+    /// The buffer discipline is `Request::read`'s, unchanged: `Loaned`
+    /// from here until a completion reclaims it, so no safe code can read
+    /// bytes WinHTTP is still writing.
+    pub(crate) fn receive(&self, ex: &Arc<Exchange>) -> Result<(), Win32Error> {
+        let (ptr, len) = {
+            let mut inner = ex.inner.lock().expect("winhttp exchange poisoned");
+            let mut b = match std::mem::replace(&mut inner.buf, Buf::Home(BytesMut::new())) {
+                Buf::Home(b) => b,
+                Buf::Loaned { .. } => unreachable!("two receives in flight on one socket"),
+            };
+            b.reserve(READ_BUF);
+            let spare = b.spare_capacity_mut();
+            let len = spare.len();
+            let ptr = spare.as_mut_ptr().cast::<u8>();
+            inner.buf = Buf::Loaned { held: b };
+            (ptr, len)
+        };
+        // SAFETY: obligation 1, exactly as in `Request::read`.
+        let rc = unsafe {
+            // unsafe-code-exception: amendment-C18
+            w::WinHttpWebSocketReceive(
+                (self.0).0,
+                ptr.cast::<c_void>(),
+                u32::try_from(len).unwrap_or(u32::MAX),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if rc != 0 {
+            reclaim(ex);
+            return Err(Win32Error(rc));
+        }
+        Ok(())
+    }
+
+    /// Sends a close frame and waits for the peer's — completion arrives
+    /// as [`Event::WsClosed`].
+    ///
+    /// `WinHttpWebSocketClose` rather than `…Shutdown`: shutdown sends
+    /// the frame and leaves the socket open for what the peer is still
+    /// sending, which is a half-close this seam has no way to express —
+    /// [`Message::Close`] ends the stream.
+    pub(crate) fn close(&self, code: u16, reason: &[u8]) -> Result<(), Win32Error> {
+        let (ptr, len) = if reason.is_empty() {
+            (std::ptr::null(), 0)
+        } else {
+            (reason.as_ptr().cast::<c_void>(), reason.len() as u32)
+        };
+        // SAFETY: `reason` outlives the call — WinHTTP copies it before
+        // returning, which is what makes this one synchronous where the
+        // send is not.
+        let rc = unsafe { w::WinHttpWebSocketClose((self.0).0, code, ptr, len) }; // unsafe-code-exception: amendment-C18
+        if rc != 0 {
+            return Err(Win32Error(rc));
+        }
+        Ok(())
+    }
+
+    /// The peer's close code and reason, once a close has been seen.
+    pub(crate) fn close_status(&self) -> Result<(u16, Vec<u8>), Win32Error> {
+        let mut code: u16 = 0;
+        let mut reason = vec![0u8; MAX_CLOSE_REASON];
+        let mut used: u32 = 0;
+        // SAFETY: both out-parameters are owned locals, and `reason` is
+        // `MAX_CLOSE_REASON` long — RFC 6455 §5.5's bound on the whole
+        // control frame, so WinHTTP cannot report more than fits.
+        let rc = unsafe {
+            // unsafe-code-exception: amendment-C18
+            w::WinHttpWebSocketQueryCloseStatus(
+                (self.0).0,
+                std::ptr::from_mut(&mut code),
+                reason.as_mut_ptr().cast::<c_void>(),
+                u32::try_from(reason.len()).expect("MAX_CLOSE_REASON is small"),
+                std::ptr::from_mut(&mut used),
+            )
+        };
+        if rc != 0 {
+            return Err(Win32Error(rc));
+        }
+        reason.truncate(used as usize);
+        Ok((code, reason))
+    }
+}
+
+/// RFC 6455 §5.5: a control frame's payload is at most 125 bytes, and a
+/// close frame spends two of them on the code.
+const MAX_CLOSE_REASON: usize = 123;
 
 /// A WinHTTP handle, closed on drop.
 ///
@@ -877,6 +1129,54 @@ impl Request {
         unsafe_code, // unsafe-code-exception: amendment-C18
         reason = "WinHttpReadData over a buffer this hands to WinHTTP; see obligation 1"
     )]
+    /// Asks WinHTTP to make this request a WebSocket handshake.
+    ///
+    /// `WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET`, set **before**
+    /// `WinHttpSendRequest`: it makes WinHTTP write RFC 6455's
+    /// `Upgrade: websocket`, `Connection: Upgrade`, the nonce and the
+    /// version, so none of the handshake is this crate's to build. The
+    /// option takes no value — the documentation says the buffer is
+    /// ignored — and a zero `DWORD` is what every published example
+    /// passes, so that is what goes.
+    pub(crate) fn upgrade_to_websocket(&self) -> Result<(), Win32Error> {
+        set_dword((self.0).0, w::WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, 0)
+    }
+
+    /// Turns a completed `101` into a WebSocket handle.
+    ///
+    /// **The context handed over is this same `Exchange`**, and that is
+    /// the decision worth reading before changing anything here. The
+    /// alternative — a second state object for the socket — would leave
+    /// one callback function reachable with two unrelated pointer types
+    /// and nothing on the notification to say which it was holding, which
+    /// is undefined behaviour one release of Windows away. Sharing the
+    /// exchange makes every callback's dereference correct by
+    /// construction, and the mode flag decides only how to *read* a
+    /// payload, never what type the context is.
+    ///
+    /// It is a second owned reference, released by the socket's own
+    /// `HANDLE_CLOSING` exactly as the request's is by its own.
+    pub(crate) fn complete_upgrade(&self, ex: &Arc<Exchange>) -> Result<WebSocket, Win32Error> {
+        let raw = Arc::into_raw(Arc::clone(ex)) as usize;
+        // SAFETY: `hRequest` is this handle, open and with its `101`
+        // received; the context is a pointer this crate owns a strong
+        // reference for, released in `HANDLE_CLOSING`.
+        let h = unsafe { w::WinHttpWebSocketCompleteUpgrade((self.0).0, raw) }; // unsafe-code-exception: amendment-C18
+        if h.is_null() {
+            let e = last_error();
+            // The handover did not happen — `set_context`'s reasoning,
+            // and the same repair.
+            //
+            // SAFETY: `raw` is the pointer just produced and WinHTTP did
+            // not keep it, so this is the only reconstitution.
+            drop(unsafe { Arc::from_raw(raw as *const Exchange) }); // unsafe-code-exception: amendment-C18
+            return Err(e);
+        }
+        // Before any receive, for `Exchange::mark_ws`'s reason.
+        ex.mark_ws();
+        Ok(WebSocket(Handle(h)))
+    }
+
     pub(crate) fn read(&self, ex: &Arc<Exchange>) -> Result<(), Win32Error> {
         let (ptr, len) = {
             let mut inner = ex.inner.lock().expect("winhttp exchange poisoned");

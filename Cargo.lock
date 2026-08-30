@@ -1825,15 +1825,18 @@ dependencies = [
 name = "hclient-winhttp"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "bitflags 2.13.1",
  "bytes",
  "futures-channel",
  "futures-core",
+ "futures-sink",
  "hclient-core",
  "hclient-proto",
  "http",
  "http-body",
  "static_assertions",
  "thiserror",
+ "windows-strings",
  "windows-sys 0.61.2",
 ]
 

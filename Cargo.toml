@@ -35,6 +35,7 @@ proptest       = "1"
 # test then passes vacuously, which is why the ones that mattered needed a
 # `compile_fail` control in another file.
 static_assertions = "1.1"
+bitflags       = "2.13"
 
 # `default-features = false` on both, and it is the whole reason they are
 # affordable in a sans-io leaf. jiff's default pulls `tz-system`, which

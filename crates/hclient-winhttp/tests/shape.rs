@@ -46,36 +46,37 @@ fn the_associated_body_is_the_one_this_crate_exports() {
     same::<WinHttp>();
 }
 
-/// `Protocols` is written with a struct literal and a functional update
-/// from **outside** this crate, which is what its lack of
-/// `#[non_exhaustive]` is for — `TcpOpts`' argument one crate over, and
-/// the reason a shape test rather than a comment: the attribute would
-/// make this line stop compiling and nothing else would notice.
+/// `Protocols` is a bitmask, composed and read from **outside** this
+/// crate.
+///
+/// A shape test rather than a comment for the reason the literal version
+/// of it had: the constants and the accessors are the whole public
+/// surface, and a change to either would stop this line compiling where
+/// nothing else would notice.
+///
+/// **What it replaced is worth knowing.** This was
+/// `Protocols { http2: true, ..Default::default() }`, and the type's doc
+/// argued against `#[non_exhaustive]` to keep exactly that expression
+/// legal from here. A bitmask does not need the argument: a third
+/// protocol is a new constant, which is additive without anybody writing
+/// `..Default::default()` to be safe from it.
 #[test]
-fn the_protocol_set_is_written_as_a_literal_from_outside() {
+fn the_protocol_set_is_composed_and_read_from_outside() {
     use hclient_winhttp::Protocols;
-    let one = Protocols {
-        http2: true,
-        ..Default::default()
-    };
-    assert_eq!(
-        one,
-        Protocols {
-            http2: true,
-            http3: false
-        }
-    );
+
+    assert!(Protocols::HTTP2.http2());
+    assert!(!Protocols::HTTP2.http3());
+    let both = Protocols::HTTP2 | Protocols::HTTP3;
+    assert!(both.http2() && both.http3());
+    assert_eq!(both, Protocols::all());
     // `Copy`, because `WinHttp::protocols` stores it and `mask_for` takes
     // it by value once per request.
-    let two = one;
-    assert_eq!(one, two);
-    assert_eq!(
-        Protocols::default(),
-        Protocols {
-            http2: false,
-            http3: false
-        }
-    );
+    let two = both;
+    assert_eq!(both, two);
+    // The default is neither, which is WinHTTP's own `0x0` — HTTP/1.1 and
+    // prior.
+    assert_eq!(Protocols::default(), Protocols::NONE);
+    assert!(!Protocols::default().http2());
 }
 
 /// The crate's one doctest, compiled where something actually compiles
@@ -95,9 +96,6 @@ fn the_protocol_set_is_written_as_a_literal_from_outside() {
 fn the_documented_construction_type_checks() -> Result<(), hclient_core::Error> {
     use hclient_winhttp::{Protocols, WinHttp};
 
-    let _transport = WinHttp::new()?.protocols(Protocols {
-        http2: true,
-        ..Default::default()
-    });
+    let _transport = WinHttp::new()?.protocols(Protocols::HTTP2 | Protocols::HTTP3);
     Ok(())
 }

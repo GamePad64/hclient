@@ -144,5 +144,12 @@ pub(crate) fn event_name(e: &Event) -> &'static str {
         Event::ReadComplete(_) => "READ_COMPLETE",
         Event::Failed(_) => "REQUEST_ERROR",
         Event::SecureFailure(_) => "SECURE_FAILURE",
+        // The three WebSocket completions. A body will never see one —
+        // an exchange is upgraded or it is not — but the name is what an
+        // error message shows, and an arm here is what keeps a new
+        // completion from being reported as somebody else's.
+        Event::WsRead { .. } => "READ_COMPLETE (WebSocket)",
+        Event::WsWrote => "WRITE_COMPLETE",
+        Event::WsClosed => "CLOSE_COMPLETE",
     }
 }
