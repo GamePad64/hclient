@@ -37,7 +37,7 @@ webpki-roots      = ["dep:webpki-roots"]
 [dependencies]
 thiserror = { workspace = true }
 hclient-core     = { workspace = true }
-hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.1" }
+hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.2" }
 hyper            = { version = "1.11", default-features = false }
 rustls           = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pki-types = "1.15"

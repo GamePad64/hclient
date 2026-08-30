@@ -25,8 +25,8 @@ all-features = true
 # is public where the wrapper's was not.
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core     = { workspace = true }
-hclient-rt       = { path = "../hclient-rt", version = "0.1.0-alpha.1" }
-hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.1" }
+hclient-rt       = { path = "../hclient-rt", version = "0.1.0-alpha.2" }
+hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.2" }
 hyper            = { version = "1.11", default-features = false }
 native-tls       = { version = "0.2", features = ["alpn"] }
 
@@ -61,8 +61,8 @@ rustls           = { version = "0.23", default-features = false, features = ["st
 rustls-pki-types = "1.15"
 tokio-rustls     = { version = "0.26", default-features = false, features = ["ring"] }
 tokio            = { version = "1", features = ["macros", "net", "rt", "time", "io-util"] }
-hclient-rt       = { path = "../hclient-rt",       version = "0.1.0-alpha.1" }
-hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.1" }
+hclient-rt       = { path = "../hclient-rt",       version = "0.1.0-alpha.2" }
+hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.2" }
 
 # NOT `[lints] workspace = true`, for the reason `hclient-fetch`'s own
 # table gives: the workspace sets `unsafe_code = "forbid"`, and `forbid`

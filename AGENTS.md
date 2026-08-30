@@ -393,8 +393,9 @@ tree, 29 packaged, 29 verified, and its ordering identical to the one
 derived here from `cargo metadata` before either tool was consulted. The
 table is kept because that agreement is what makes the count a fact about
 the graph rather than a guess. `cargo-release` does the half cargo does not:
-the bump, including the **69 literal version requirements** that
-must move with `[workspace.package].version` and that cargo gives no way to
+the bump, including the literal version requirements — dozens of them,
+counted by `just versions-agree` rather than written down here — that must
+move with `[workspace.package].version` and that cargo gives no way to
 centralise.
 
 **The policy is one shared version and every crate published on every
@@ -405,21 +406,36 @@ where publishing everything cannot forget. The cost is 23 uploads for a
 one-line fix, which for crates this size is cosmetic.
 
 **What guarantees the set resolves is the requirement, not the matching
-numbers**, and the intuition runs the other way: the published `hclient`
-asks `^0.1.0-alpha.1` of each neighbour, and semver is the mechanism.
-Equal version numbers are a consequence.
+numbers** — and that was written here as a reassurance, which is exactly
+where it went wrong. The published `hclient` 0.1.0-alpha.2 asks
+`^0.1.0-alpha.1` of each neighbour; semver is indeed the mechanism, and
+the mechanism was **making a promise nobody had made**. Measured on the
+published crates, not reasoned about: a caller who pins `hclient-core =
+"=0.1.0-alpha.1"` beside `hclient = "=0.1.0-alpha.2"` gets a resolution
+cargo accepts and rustc refuses — *cannot find `Reduced` in
+`hclient_core`*, because that type arrived in alpha.2. A pre-release
+promises nothing between alphas, which is what this file says a
+pre-release is **for**; a requirement spanning two of them says the
+opposite.
 
-Selecting is still configured, because the policy may change, and the
-setting that makes it legal is `dependent-version`. Its default,
-`upgrade`, rewrites every dependent's requirement to the new number — and
-a requirement is a demand, so `hclient-native` 0.1.1 requiring
-`hclient-core` 0.1.1 obliges a release of a crate nothing changed in.
-`fix` touches a requirement only when it must, the requirements stay at
-`^0.1.0`, and `cargo release -p <crate> patch` publishes that crate
-alone. Two things then read as mistakes and are not — an unpublished
-crate's version runs ahead of the index, and published versions go sparse
-per crate — and **publishing everything removes both**, which is the
-second argument for the policy. cargo-release does **not** work out which
+**The cause was `dependent-version = "fix"`, and it was configured for a
+policy this workspace does not have.** `fix` rewrites a requirement only
+when the new version stops satisfying it, and `^0.1.0-alpha.1` goes on
+satisfying alpha.2 for ever — so after the alpha.2 release every one of
+the requirements still read alpha.1, and nothing said so. Its argument is
+sound and its subject is `cargo release -p <crate>`: sparing a publish for
+a neighbour that did not change. The policy two paragraphs up forbids
+exactly that — **every crate is published on every release** — so there was
+no publish to spare and only the lie to pay for.
+
+It is `upgrade` now. `^0.1.0-alpha.2` excludes alpha.1 outright, so this
+needs no `=` pins, and `just versions-agree` checks the **result** rather
+than the setting: a release run from an older checkout, a hand-edited
+manifest and a merge all bypass a setting, and none of them bypass a gate.
+Two things still read as mistakes and are not — an unpublished crate's
+version runs ahead of the index, and published versions go sparse per
+crate — and **publishing everything removes both**, which is the second
+argument for the policy. cargo-release does **not** work out which
 crates changed — measured, with a tag one commit back: a plain `cargo
 release patch` still planned all 23 uploads, which under this policy is
 the wanted behaviour. `just release-pending` answers it for the day the

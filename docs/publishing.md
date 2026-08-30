@@ -109,7 +109,8 @@ order computed by cargo itself. So publishing is not the part that needed a
 tool.
 
 **The bump is.** `[workspace.package].version` is one number, and beside it
-are **69 literal version requirements** — 8 in the root
+are dozens of literal version requirements, counted by
+`just versions-agree` rather than written down — 8 in the root
 `[workspace.dependencies]` and 61 in crate manifests — which must move with
 it. (The header says 70: that is these 69 plus the workspace version
 itself. Both counts were measured; an earlier "68 / 7" here was a narrower
@@ -273,12 +274,20 @@ document spent §5a building a tool against. Publishing everything cannot
 forget anything. The cost is 24 uploads for a one-line fix and a version
 history with no gaps in it, which for crates this size is cosmetic.
 
-**It is also not what guarantees compatibility, and that is worth saying
-because the intuition is wrong.** What guarantees it is the *requirement*:
-the published `hclient` asks `^0.1.0-alpha.1` of each neighbour, and
-semver is what makes the set resolve. Matching version numbers are a
-consequence, not the mechanism — under `dependent-version = "fix"` the
-numbers on crates.io are free to differ and the set still works.
+**It is also not what guarantees compatibility — and the version of that
+sentence which stood here was wrong in a way worth keeping.** It read:
+what guarantees it is the *requirement*, the published `hclient` asks
+`^0.1.0-alpha.1` of each neighbour, and semver makes the set resolve.
+Semver is indeed the mechanism, and under `fix` the mechanism was
+promising something nobody had. Measured on the published crates:
+`hclient = "=0.1.0-alpha.2"` beside `hclient-core = "=0.1.0-alpha.1"`
+resolves, and then fails to compile — *cannot find `Reduced` in
+`hclient_core`*, a type that arrived in alpha.2. A pre-release promises
+nothing between alphas; a requirement spanning two of them says otherwise.
+
+`dependent-version = "upgrade"` is what closes it: `^0.1.0-alpha.2`
+excludes alpha.1 outright, so no `=` pin is needed, and matching numbers
+stop being a coincidence the requirements are indifferent to.
 
 **Selecting by name still works and the configuration still supports it**,
 because the policy may change:
@@ -292,13 +301,21 @@ version moves to `0.1.1` in every manifest, `hclient-native` is
 published, and every other crate is skipped — *"disabled by user, skipping
 hclient-core, despite being unpublished"*.
 
-**What makes that legal is `dependent-version = "fix"`.** The default,
-`upgrade`, rewrites every dependent's requirement to the new number, so
-`hclient` 0.1.1 would require `hclient-core` 0.1.1 — and a
-requirement is a demand: that version must then exist in the index whether
-or not anything in it changed. `fix` touches a requirement only when it
-must, so they stay at `^0.1.0` and the already-published 0.1.0 keeps
-satisfying them.
+**What used to make that legal is `dependent-version = "fix"`, and it is
+no longer set.** `fix` rewrites a requirement only when the new version
+stops satisfying it, so requirements stay at `^0.1.0` and an
+already-published 0.1.0 keeps satisfying them — which is what lets a
+neighbour be skipped. That is a real property and it was paid for by the
+lie above, so `upgrade` is set instead: every dependent's requirement
+moves to the new number, and a `-p` release then obliges publishing the
+neighbours it names. Under §5's policy — everything, every time — that
+obligation costs nothing, because everything is being published anyway.
+
+Selecting with `-p` therefore now means bumping the neighbours too, or
+setting `fix` back for that release and accepting what it means: a
+requirement that spans two versions this project does not claim are
+compatible. `just versions-agree` is the check either way, and it reads
+the manifests rather than the setting.
 
 **cargo-release does not work out which crates changed** — it was measured
 and it does not: with a tag one commit back and one crate touched, a plain
@@ -346,7 +363,8 @@ crate's directory between that tag and `HEAD`. Three answers, and the
 third is the one worth having:
 
 - **unchanged** — nothing in the directory moved since it was published.
-  Do not release it; `dependent-version = "fix"` is what makes that legal.
+  Under a `-p` release that is a crate to skip — see §5 for what
+  `dependent-version = "upgrade"` now costs that form.
 - **CHANGED (n files)** — it has unreleased content. The recipe prints a
   ready `cargo release -p … -p … <level>` line at the end, which is the
   selecting form §5 keeps rather than the policy it uses.

@@ -73,9 +73,9 @@ winnow         = { version = "1.0", default-features = false, features = ["alloc
 # `hclient` forwards it as its own `idn` feature, which is where a consumer
 # of the facade can switch it off. Building `hclient-proto` on its own
 # still gets `idn`, since that is its own default.
-hclient-proto = { path = "crates/hclient-proto", version = "0.1.0-alpha.1", default-features = false }
-hclient-core  = { path = "crates/hclient-core",  version = "0.1.0-alpha.1" }
-hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0-alpha.1" }
+hclient-proto = { path = "crates/hclient-proto", version = "0.1.0-alpha.2", default-features = false }
+hclient-core  = { path = "crates/hclient-core",  version = "0.1.0-alpha.2" }
+hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0-alpha.2" }
 # Default features left ON, and the opposite of `hclient-proto` above:
 # this crate's default is `platform`, which is
 # not a choice a consumer makes but a fact about the target — the bundled
@@ -84,11 +84,11 @@ hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0-alpha.1" }
 # no backend at all, which its own `compile_error!` refuses. The switch a
 # consumer actually wants is one level up: `hclient-proto`'s `idn`, which
 # decides whether this crate is in the graph at all.
-hclient-idn   = { path = "crates/hclient-idn",   version = "0.1.0-alpha.1" }
+hclient-idn   = { path = "crates/hclient-idn",   version = "0.1.0-alpha.2" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
 assert_matches = "1.5"
-hclient       = { path = "crates/hclient",       version = "0.1.0-alpha.1" }
+hclient       = { path = "crates/hclient",       version = "0.1.0-alpha.2" }
 
 [workspace.lints.rust]
 unsafe_code       = "forbid"
@@ -103,12 +103,15 @@ unexpected_cfgs   = { level = "warn", check-cfg = [] }
 # the same order `docs/publishing.md` derives independently.
 #
 # What has no other owner is the version: `[workspace.package].version` is
-# one number, and beside it are **68 literal `version = "0.1.0-alpha.1"`
-# requirements** — 7 here and 61 in the crate manifests — that must move
-# with it. Cargo offers no way to write `version.workspace = true` inside a
-# dependency requirement, so the repetition is forced, and nothing checked
-# that the copies agreed. That is the drift this file already removed once
-# for the version itself.
+# one number, and beside it are dozens of literal `version = "..."`
+# requirements that must move with it. Cargo offers no way to write
+# `version.workspace = true` inside a dependency requirement, so the
+# repetition is forced, and nothing checked that the copies agreed — so
+# they did not. After the alpha.2 release every one of them still read
+# `alpha.1`. `just versions-agree` derives the count from the manifests
+# and compares each requirement against the workspace version, so the
+# figure is not written here: a number in prose is the drift this file
+# already removed once for the version itself.
 #
 # An unknown key here is a hard parse error rather than a silent no-op —
 # checked on purpose before writing this block, because a release
@@ -118,20 +121,30 @@ unexpected_cfgs   = { level = "warn", check-cfg = [] }
 # One version for all 30 crates, which is what `version.workspace = true`
 # already says; this is the release tool being told the same thing.
 shared-version = true
-# **`fix`, not the default `upgrade`, and this is what stops one typo from
-# republishing thirty crates.** `upgrade` rewrites every dependent's
-# requirement to the new number, so `hclient` 0.1.1 would require
-# `hclient-core` 0.1.1 — and a requirement is a demand: that version then
-# has to exist in the index whether or not anything in it changed. `fix`
-# touches a requirement only when it has to, so the requirements stay at
-# `^0.1.0`, an already-published 0.1.0 keeps satisfying them, and only the
-# crates that actually changed need publishing.
+# **`upgrade`, and `fix` was here for a policy this workspace does not
+# have.** `fix` touches a dependent's requirement only when the new
+# version stops satisfying it, which keeps `hclient` asking for
+# `^0.1.0-alpha.1` for ever, so an already-published neighbour keeps
+# satisfying it and only the crates that changed need publishing. Every
+# word of that is true and its subject is `cargo release -p <crate>` —
+# which the policy three lines up forbids: **every crate is published on
+# every release**, so there is no neighbour to spare a publish.
 #
-# The cost, said here because it reads as a mistake otherwise: an
-# unpublished crate's version number runs ahead of the index.
-# `hclient-core` can be 0.1.5 in this tree and 0.1.0 on crates.io, because
-# nothing in it changed. That is correct and is not a drift to "fix".
-dependent-version = "fix"
+# What it cost is a requirement that lies, and it was measured on the
+# published crates rather than reasoned about. `hclient` 0.1.0-alpha.2
+# asks `^0.1.0-alpha.1` of `hclient-core`, and a caller who pins
+# `hclient-core = "=0.1.0-alpha.1"` gets a resolution cargo accepts and
+# rustc refuses: `cannot find Reduced in hclient_core`, because
+# `Reduced` arrived in alpha.2. A pre-release promises nothing between
+# alphas — that is what this file says a pre-release is *for* — so a
+# requirement spanning two of them claims a compatibility that was never
+# offered.
+#
+# `^0.1.0-alpha.2` excludes alpha.1 outright, so `upgrade` closes it with
+# no need for `=` pins. The 61 literal requirements move with the version
+# now, and `just versions-agree` is what says they did — because they had
+# already drifted once, silently, which is how this was found.
+dependent-version = "upgrade"
 # One commit for the bump, not thirty.
 consolidate-commits = true
 # Releases come off `main` and nowhere else. The default is every branch

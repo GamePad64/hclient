@@ -82,7 +82,7 @@ system-proxy = ["proxy", "hclient-proxy/system"]
 
 [dependencies]
 bytes          = { workspace = true }
-hclient-proxy  = { path = "../hclient-proxy", version = "0.1.0-alpha.1" }
+hclient-proxy  = { path = "../hclient-proxy", version = "0.1.0-alpha.2" }
 futures-util   = { version = "0.3", default-features = false, features = ["std"] }
 h2             = { version = "0.4", optional = true }
 http           = { workspace = true }
@@ -94,15 +94,15 @@ winnow = { workspace = true }
 http-body      = { workspace = true }
 http-body-util = { workspace = true }
 hclient-core   = { workspace = true }
-hclient-dns    = { path = "../hclient-dns",   version = "0.1.0-alpha.1" }
+hclient-dns    = { path = "../hclient-dns",   version = "0.1.0-alpha.2" }
 # No default features, from `[workspace.dependencies]`: this crate uses
 # `happy_eyeballs` only, and a default-on `idn` here would union back into
 # every build that also contains `hclient`, turning the facade's `idn`
 # switch into a no-op for exactly the native builds that have
 # `default-transport`.
 hclient-proto  = { workspace = true }
-hclient-rt     = { path = "../hclient-rt",    version = "0.1.0-alpha.1" }
-hclient-tls    = { path = "../hclient-tls",   version = "0.1.0-alpha.1" }
+hclient-rt     = { path = "../hclient-rt",    version = "0.1.0-alpha.2" }
+hclient-tls    = { path = "../hclient-tls",   version = "0.1.0-alpha.2" }
 # The HTTP/3 stack, folded in as `mod h3` and `mod quinn` — these are the
 # dependencies those two modules bring, all of them optional and all
 # reached only through the `http3` feature.
@@ -149,8 +149,8 @@ futures-executor    = { version = "0.3", default-features = false, features = ["
 # the documented way through and changes nothing about how the tests build
 # here. Caught by `just package-build` rather than by reading.
 hclient = { path = "../hclient" }
-hclient-dns-system  = { path = "../hclient-dns-system",  version = "0.1.0-alpha.1" }
-hclient-rt-tokio    = { path = "../hclient-rt-tokio",    version = "0.1.0-alpha.1", features = ["udp"] }
+hclient-dns-system  = { path = "../hclient-dns-system",  version = "0.1.0-alpha.2" }
+hclient-rt-tokio    = { path = "../hclient-rt-tokio",    version = "0.1.0-alpha.2", features = ["udp"] }
 # `udp`, like its `hclient-rt-tokio` neighbour above, and for a reason
 # worth stating: `tests/h3_two_runtimes.rs` instantiates the HTTP/3 path
 # under `Smol`, which needs `UdpAdoptStd`. Without this the file compiled
@@ -158,8 +158,8 @@ hclient-rt-tokio    = { path = "../hclient-rt-tokio",    version = "0.1.0-alpha.
 # unifies — so `cargo check -p hclient-native --all-features --all-targets`,
 # which is how a reader builds this crate, failed while the workspace run
 # was green. Same defect as the two doctest examples `CLAUDE.md` records.
-hclient-rt-smol     = { path = "../hclient-rt-smol",     version = "0.1.0-alpha.1", features = ["udp"] }
-hclient-tls-rustls  = { path = "../hclient-tls-rustls",  version = "0.1.0-alpha.1", features = ["webpki-roots", "quic"] }
+hclient-rt-smol     = { path = "../hclient-rt-smol",     version = "0.1.0-alpha.2", features = ["udp"] }
+hclient-tls-rustls  = { path = "../hclient-tls-rustls",  version = "0.1.0-alpha.2", features = ["webpki-roots", "quic"] }
 # `tests/tls_server_name.rs` alone: a REAL TLS server on loopback, whose
 # certificate carries an IP SAN. The claim there is "the handshake
 # completes", and a handshake needs a second implementation to complete
