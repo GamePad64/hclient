@@ -27,32 +27,50 @@ use std::sync::atomic::Ordering;
 /// client, so a client that quietly used a store of its own would leave it
 /// at zero.
 #[cfg(feature = "cache")]
-#[derive(Debug, Clone, Default)]
+/// **No longer `Clone`, because `MemoryStore` is not.** The store's
+/// methods take `&self` now, so it holds its own `Mutex` and a clone would
+/// have been a second, independent cache wearing the same name.
+#[derive(Debug, Default)]
 struct CountingStore {
     inner: hclient::cache::MemoryStore,
     puts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(feature = "cache")]
+/// **A decorator written from outside the crate, which is the point of
+/// this file** — and the asynchronous seam costs it nothing beyond naming
+/// the inner store's future types, because it forwards rather than waits.
 impl hclient::cache::CacheStore for CountingStore {
-    fn get(&self, key: &hclient::cache::Key) -> Vec<hclient::cache::StoredResponse> {
+    type Get<'a> = <hclient::cache::MemoryStore as hclient::cache::CacheStore>::Get<'a>;
+    type Done<'a> = <hclient::cache::MemoryStore as hclient::cache::CacheStore>::Done<'a>;
+    type Len<'a> = <hclient::cache::MemoryStore as hclient::cache::CacheStore>::Len<'a>;
+
+    fn get<'a>(&'a self, key: &'a hclient::cache::Key) -> Self::Get<'a> {
         self.inner.get(key)
     }
-    fn put(&mut self, key: &hclient::cache::Key, entry: hclient::cache::StoredResponse) {
+    fn put<'a>(
+        &'a self,
+        key: &'a hclient::cache::Key,
+        entry: hclient::cache::StoredResponse,
+    ) -> Self::Done<'a> {
         self.puts.fetch_add(1, Ordering::Relaxed);
-        self.inner.put(key, entry);
+        self.inner.put(key, entry)
     }
-    fn remove(&mut self, key: &hclient::cache::Key, selector: &hclient::cache::Selector) {
-        self.inner.remove(key, selector);
+    fn remove<'a>(
+        &'a self,
+        key: &'a hclient::cache::Key,
+        selector: &'a hclient::cache::Selector,
+    ) -> Self::Done<'a> {
+        self.inner.remove(key, selector)
     }
-    fn invalidate(&mut self, key: &hclient::cache::Key) {
-        self.inner.invalidate(key);
+    fn invalidate<'a>(&'a self, key: &'a hclient::cache::Key) -> Self::Done<'a> {
+        self.inner.invalidate(key)
     }
-    fn len(&self) -> usize {
+    fn len(&self) -> Self::Len<'_> {
         self.inner.len()
     }
-    fn clear(&mut self) {
-        self.inner.clear();
+    fn clear(&self) -> Self::Done<'_> {
+        self.inner.clear()
     }
 }
 
@@ -178,4 +196,167 @@ fn a_client_with_both_configured_still_crosses_a_spawn() {
     let c = c.cache(hclient::cache::HttpCache::new());
     let c = c.build().expect("build");
     assert_send_sync(&c);
+}
+
+// ── A store that actually waits ─────────────────────────────────────────
+
+/// A store whose every answer suspends once before it arrives.
+///
+/// **This is the store the asynchronous seam exists for**, and nothing
+/// else in this workspace is one: `MemoryStore` answers `Ready`, so a
+/// suite built on it alone would pass for a seam that had never stopped
+/// being synchronous. What a disk or a Redis store does is suspend, and
+/// this does exactly that and nothing more.
+#[cfg(feature = "cache")]
+#[derive(Debug, Default)]
+struct SuspendingStore {
+    inner: hclient::cache::MemoryStore,
+    suspends: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Answers `Pending` the first time it is polled, waking immediately, and
+/// the wrapped value the second.
+#[cfg(feature = "cache")]
+struct Once<T> {
+    value: Option<T>,
+    polled: bool,
+    counter: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(feature = "cache")]
+impl<T: Unpin> std::future::Future for Once<T> {
+    type Output = T;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<T> {
+        if self.polled {
+            let v = self.value.take().expect("polled after completion");
+            return std::task::Poll::Ready(v);
+        }
+        self.polled = true;
+        self.counter.fetch_add(1, Ordering::Relaxed);
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
+}
+
+/// `MemoryStore` answers `Ready`, so one poll with a noop waker takes its
+/// value out — `block_on` cannot be used here, because this runs *inside*
+/// the executor the test itself is driving.
+#[cfg(feature = "cache")]
+fn now<T>(f: impl std::future::Future<Output = T>) -> T {
+    let mut f = std::pin::pin!(f);
+    match f
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    {
+        std::task::Poll::Ready(v) => v,
+        std::task::Poll::Pending => unreachable!("MemoryStore never suspends"),
+    }
+}
+
+#[cfg(feature = "cache")]
+impl SuspendingStore {
+    fn once<T>(&self, value: T) -> Once<T> {
+        Once {
+            value: Some(value),
+            polled: false,
+            counter: Arc::clone(&self.suspends),
+        }
+    }
+}
+
+#[cfg(feature = "cache")]
+impl hclient::cache::CacheStore for SuspendingStore {
+    type Get<'a> = Once<Vec<hclient::cache::StoredResponse>>;
+    type Done<'a> = Once<()>;
+    type Len<'a> = Once<usize>;
+
+    fn get<'a>(&'a self, key: &'a hclient::cache::Key) -> Self::Get<'a> {
+        self.once(now(self.inner.get(key)))
+    }
+    fn put<'a>(
+        &'a self,
+        key: &'a hclient::cache::Key,
+        entry: hclient::cache::StoredResponse,
+    ) -> Self::Done<'a> {
+        now(self.inner.put(key, entry));
+        self.once(())
+    }
+    fn remove<'a>(
+        &'a self,
+        key: &'a hclient::cache::Key,
+        selector: &'a hclient::cache::Selector,
+    ) -> Self::Done<'a> {
+        now(self.inner.remove(key, selector));
+        self.once(())
+    }
+    fn invalidate<'a>(&'a self, key: &'a hclient::cache::Key) -> Self::Done<'a> {
+        now(self.inner.invalidate(key));
+        self.once(())
+    }
+    fn len(&self) -> Self::Len<'_> {
+        self.once(now(self.inner.len()))
+    }
+    fn clear(&self) -> Self::Done<'_> {
+        now(self.inner.clear());
+        self.once(())
+    }
+}
+
+/// **A store that suspends is served from, which is what the whole change
+/// is for.**
+///
+/// Two requests, one reaching the transport: the second is answered out
+/// of a store that answered `Pending` on the way in and on the way out.
+/// With a synchronous seam this store could not exist at all — it would
+/// have had to block the executor or not be written.
+///
+/// The suspend counter is the half that makes it a test rather than a
+/// re-run of the `MemoryStore` one: without it, a store that quietly
+/// stopped suspending would pass.
+#[cfg(feature = "cache")]
+#[test]
+fn a_store_that_suspends_is_written_to_and_served_from() {
+    let suspends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let store = SuspendingStore {
+        inner: hclient::cache::MemoryStore::new(),
+        suspends: Arc::clone(&suspends),
+    };
+
+    let t = MockTransport::new();
+    t.push_response(
+        http::Response::builder()
+            .header("cache-control", "max-age=600")
+            .body("cached")
+            .expect("response"),
+    );
+    let c = Client::builder(t.clone())
+        .cache(hclient::cache::HttpCache::with_store(store))
+        .build()
+        .expect("client");
+
+    let first = futures_executor::block_on(async {
+        c.get("https://e.test/x").send().await?.collect().await
+    })
+    .expect("first");
+    assert_eq!(first.text().expect("utf-8"), "cached");
+
+    let second = futures_executor::block_on(async {
+        c.get("https://e.test/x").send().await?.collect().await
+    })
+    .expect("second");
+    assert_eq!(second.text().expect("utf-8"), "cached");
+
+    assert_eq!(
+        t.requests().len(),
+        1,
+        "the second answer came from the store"
+    );
+    assert!(
+        suspends.load(Ordering::Relaxed) >= 3,
+        "the store suspended on the way in and out; it suspended {} times",
+        suspends.load(Ordering::Relaxed)
+    );
 }

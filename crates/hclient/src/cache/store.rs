@@ -14,6 +14,8 @@
 //! and cannot serve a stale response to a request that forbade one.
 
 use std::collections::HashMap;
+use std::future::{Future, Ready, ready};
+use std::sync::Mutex;
 // `web_time`, not `std::time`: on `wasm32-unknown-unknown` these two
 // timestamps come from a clock `std` does not have there, and on every
 // other target `web_time::SystemTime` IS `std::time::SystemTime`, so the
@@ -259,34 +261,83 @@ impl StoredResponse {
 /// a store has to cross a thread — as it does the moment `hclient::Client`
 /// holds one, since a `Client` is meant to survive a `tokio::spawn` — the
 /// bound belongs at that call site and not on this trait.
+///
+/// # Every method is a future, and every method takes `&self`
+///
+/// **Because the interesting stores are not in memory.** A cache on disk,
+/// in Redis, or in `moka::future` cannot answer without waiting, and a
+/// synchronous seam offers such a store two choices: block the executor,
+/// or be unimplementable. The one this crate ships is in memory and
+/// answers immediately — [`std::future::Ready`], no allocation — so the
+/// shape costs it nothing.
+///
+/// `&self` rather than `&mut self` follows from the first: a store that
+/// awaits cannot be held across that await behind a `&mut`, and a store
+/// that is remote is *already* shared by everyone talking to it. So
+/// interior synchronisation is the store's own business — which is what a
+/// database connection pool, an `Arc<Mutex<..>>` or a `moka` cache each
+/// are anyway. [`MemoryStore`] holds a `Mutex` for exactly this reason and
+/// is still `Clone`-free to use.
+///
+/// # Associated futures, not `async fn`
+///
+/// The same decision as `hclient_rt::TcpConnect::Connecting` and for the
+/// same reason, at length in that trait's doc: a consumer that must prove
+/// its own future `Send` — `hclient::Client`, which boxes its cache
+/// `Send + Sync` — cannot do so over an RPITIT, because an unnameable
+/// future cannot be bounded. Naming is not requiring: each store answers
+/// for itself, and a single-threaded one is still a `CacheStore`.
+///
+/// There is no `is_empty`, and its absence is this shape's one real cost:
+/// a defaulted method would have to name a future built from `len`'s, and
+/// there is no way to write that type without boxing every implementor's
+/// answer. `len().await == 0` is what a caller writes.
+// `len` without `is_empty`, and the reason is in this trait's doc: a
+// defaulted `is_empty` would have to name a future built from `len`'s, and
+// there is no way to write that type without boxing every implementor's
+// answer. `len().await == 0` is what a caller writes.
+#[allow(clippy::len_without_is_empty)]
 pub trait CacheStore {
     /// Every variant stored under `key`, in no particular order.
     ///
-    /// Owned rather than borrowed: the caller holds a lock while asking,
+    /// Owned rather than borrowed: a remote store has nothing to lend,
     /// and everything in a [`StoredResponse`] clones cheaply — `Bytes` is
-    /// a refcount, and the header map is the only real copy. Lending
-    /// instead would put the lock's lifetime into the policy's signatures
-    /// and out into `hclient`'s.
-    fn get(&self, key: &Key) -> Vec<StoredResponse>;
+    /// a refcount, and the header map is the only real copy.
+    type Get<'a>: Future<Output = Vec<StoredResponse>> + 'a
+    where
+        Self: 'a;
+    /// The answer to [`put`](Self::put), [`remove`](Self::remove),
+    /// [`invalidate`](Self::invalidate) and [`clear`](Self::clear).
+    ///
+    /// One type for the four, because they answer the same thing —
+    /// nothing — and four identical associated types would be four places
+    /// for an implementor to disagree with itself.
+    type Done<'a>: Future<Output = ()> + 'a
+    where
+        Self: 'a;
+    /// The answer to [`len`](Self::len).
+    type Len<'a>: Future<Output = usize> + 'a
+    where
+        Self: 'a;
+
+    /// Every variant stored under `key`, in no particular order.
+    fn get<'a>(&'a self, key: &'a Key) -> Self::Get<'a>;
 
     /// Store `entry`, replacing any variant already stored under `key`
     /// with the same [`Selector`].
-    fn put(&mut self, key: &Key, entry: StoredResponse);
+    fn put<'a>(&'a self, key: &'a Key, entry: StoredResponse) -> Self::Done<'a>;
 
     /// Remove the one variant under `key` whose selector matches.
-    fn remove(&mut self, key: &Key, selector: &Selector);
+    fn remove<'a>(&'a self, key: &'a Key, selector: &'a Selector) -> Self::Done<'a>;
 
     /// Remove every variant under `key` — RFC 9111 §4.4's invalidation.
-    fn invalidate(&mut self, key: &Key);
+    fn invalidate<'a>(&'a self, key: &'a Key) -> Self::Done<'a>;
 
     /// How many variants are held, across every key.
-    fn len(&self) -> usize;
+    fn len(&self) -> Self::Len<'_>;
 
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    fn clear(&mut self);
+    /// Drop everything.
+    fn clear(&self) -> Self::Done<'_>;
 }
 
 /// The store this crate ships: a `HashMap` in memory, bounded by a count
@@ -297,10 +348,29 @@ pub trait CacheStore {
 /// `&mut self` and a `now` — a wider seam, for a policy this type has no
 /// evidence is better. Oldest-first is what a cache with no access record
 /// can honestly do, and it is stated rather than implied by a name.
-#[derive(Debug, Clone)]
+/// **The `Mutex` is what `&self` on the seam costs an in-memory store,
+/// and it is the cheaper half of that trade.** A store that awaits cannot
+/// be held behind a `&mut` across the await; a store that is remote is
+/// shared already. So the seam takes `&self` and each store synchronises
+/// itself — here one uncontended lock per operation, against a network
+/// round trip for the stores the shape exists for.
+///
+/// It is `std::sync::Mutex` and not an async one deliberately: nothing
+/// under this lock awaits, so holding it across an await is impossible
+/// rather than merely discouraged.
+#[derive(Debug)]
 pub struct MemoryStore {
-    entries: HashMap<Key, Vec<StoredResponse>>,
+    entries: Mutex<Held>,
     capacity: usize,
+}
+
+/// What the lock protects. `held` is a count of variants across every key
+/// and is kept beside the map rather than derived, because
+/// [`CacheStore::len`] is on the seam and summing the map on every call
+/// would make a bookkeeping figure cost a walk.
+#[derive(Debug, Default)]
+struct Held {
+    entries: HashMap<Key, Vec<StoredResponse>>,
     held: usize,
 }
 
@@ -327,9 +397,8 @@ impl MemoryStore {
 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: Mutex::new(Held::default()),
             capacity,
-            held: 0,
         }
     }
 
@@ -337,8 +406,21 @@ impl MemoryStore {
         self.capacity
     }
 
-    fn evict_until_room(&mut self) {
-        while self.held >= self.capacity && self.held > 0 {
+    /// The lock, with a poisoned one read through rather than panicked on
+    /// — the same choice `hclient::cached::lock` makes for the jar: a
+    /// panic in one request must not take every later one with it, and
+    /// nothing here can be left half-written, since every mutation below
+    /// completes before the guard drops.
+    fn held(&self) -> std::sync::MutexGuard<'_, Held> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl Held {
+    fn evict_until_room(&mut self, capacity: usize) {
+        while self.held >= capacity && self.held > 0 {
             let Some((key, idx)) = self
                 .entries
                 .iter()
@@ -361,22 +443,6 @@ impl MemoryStore {
             }
         }
     }
-}
-
-impl CacheStore for MemoryStore {
-    fn get(&self, key: &Key) -> Vec<StoredResponse> {
-        self.entries.get(key).cloned().unwrap_or_default()
-    }
-
-    fn put(&mut self, key: &Key, entry: StoredResponse) {
-        self.remove(key, &entry.selector.clone());
-        if self.capacity == 0 {
-            return;
-        }
-        self.evict_until_room();
-        self.entries.entry(key.clone()).or_default().push(entry);
-        self.held += 1;
-    }
 
     fn remove(&mut self, key: &Key, selector: &Selector) {
         let Some(v) = self.entries.get_mut(key) else {
@@ -389,26 +455,66 @@ impl CacheStore for MemoryStore {
             self.entries.remove(key);
         }
     }
+}
 
-    fn invalidate(&mut self, key: &Key) {
-        if let Some(v) = self.entries.remove(key) {
-            self.held -= v.len();
+/// Every answer is [`Ready`] — this store is in memory, so there is
+/// nothing to wait for and nothing to allocate. That is what makes the
+/// asynchronous seam free for the store that does not need it.
+impl CacheStore for MemoryStore {
+    type Get<'a> = Ready<Vec<StoredResponse>>;
+    type Done<'a> = Ready<()>;
+    type Len<'a> = Ready<usize>;
+
+    fn get<'a>(&'a self, key: &'a Key) -> Self::Get<'a> {
+        ready(self.held().entries.get(key).cloned().unwrap_or_default())
+    }
+
+    fn put<'a>(&'a self, key: &'a Key, entry: StoredResponse) -> Self::Done<'a> {
+        let mut h = self.held();
+        h.remove(key, &entry.selector.clone());
+        if self.capacity == 0 {
+            return ready(());
         }
+        h.evict_until_room(self.capacity);
+        h.entries.entry(key.clone()).or_default().push(entry);
+        h.held += 1;
+        ready(())
     }
 
-    fn len(&self) -> usize {
-        self.held
+    fn remove<'a>(&'a self, key: &'a Key, selector: &'a Selector) -> Self::Done<'a> {
+        self.held().remove(key, selector);
+        ready(())
     }
 
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.held = 0;
+    fn invalidate<'a>(&'a self, key: &'a Key) -> Self::Done<'a> {
+        let mut h = self.held();
+        if let Some(v) = h.entries.remove(key) {
+            h.held -= v.len();
+        }
+        ready(())
+    }
+
+    fn len(&self) -> Self::Len<'_> {
+        ready(self.held().held)
+    }
+
+    fn clear(&self) -> Self::Done<'_> {
+        let mut h = self.held();
+        h.entries.clear();
+        h.held = 0;
+        ready(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_executor::block_on;
+
+    /// Every store method is a future now. This one is in memory and
+    /// answers immediately, so the tests read it with `block_on` and no
+    /// runtime — which is also a small proof that the seam costs an
+    /// in-memory store nothing.
     use std::time::Duration;
 
     fn key(u: &str) -> Key {
@@ -513,48 +619,48 @@ mod tests {
 
     #[test]
     fn a_put_replaces_the_variant_with_the_same_selector() {
-        let mut s = MemoryStore::new();
+        let s = MemoryStore::new();
         let k = key("https://e.test/x");
-        s.put(&k, entry(1));
-        s.put(&k, entry(2));
-        assert_eq!(s.len(), 1);
-        assert_eq!(s.get(&k)[0].received_at(), entry(2).received_at());
+        block_on(s.put(&k, entry(1)));
+        block_on(s.put(&k, entry(2)));
+        assert_eq!(block_on(s.len()), 1);
+        assert_eq!(block_on(s.get(&k))[0].received_at(), entry(2).received_at());
     }
 
     #[test]
     fn eviction_drops_the_oldest_response_first() {
-        let mut s = MemoryStore::with_capacity(2);
-        s.put(&key("https://e.test/a"), entry(30));
-        s.put(&key("https://e.test/b"), entry(10));
-        s.put(&key("https://e.test/c"), entry(20));
-        assert_eq!(s.len(), 2);
+        let s = MemoryStore::with_capacity(2);
+        block_on(s.put(&key("https://e.test/a"), entry(30)));
+        block_on(s.put(&key("https://e.test/b"), entry(10)));
+        block_on(s.put(&key("https://e.test/c"), entry(20)));
+        assert_eq!(block_on(s.len()), 2);
         assert!(
-            s.get(&key("https://e.test/b")).is_empty(),
+            block_on(s.get(&key("https://e.test/b"))).is_empty(),
             "the oldest went"
         );
-        assert!(!s.get(&key("https://e.test/a")).is_empty());
-        assert!(!s.get(&key("https://e.test/c")).is_empty());
+        assert!(!block_on(s.get(&key("https://e.test/a"))).is_empty());
+        assert!(!block_on(s.get(&key("https://e.test/c"))).is_empty());
     }
 
     #[test]
     fn a_zero_capacity_store_holds_nothing_rather_than_looping() {
-        let mut s = MemoryStore::with_capacity(0);
-        s.put(&key("https://e.test/a"), entry(1));
-        assert_eq!(s.len(), 0);
+        let s = MemoryStore::with_capacity(0);
+        block_on(s.put(&key("https://e.test/a"), entry(1)));
+        assert_eq!(block_on(s.len()), 0);
     }
 
     #[test]
     fn invalidation_takes_every_variant_under_the_key() {
-        let mut s = MemoryStore::new();
+        let s = MemoryStore::new();
         let k = key("https://e.test/x");
         let mut h = HeaderMap::new();
         h.insert(http::header::ACCEPT, HeaderValue::from_static("a"));
         let mut e2 = entry(2);
         e2.selector = Selector::of(&h, &[http::header::ACCEPT]);
-        s.put(&k, entry(1));
-        s.put(&k, e2);
-        assert_eq!(s.len(), 2);
-        s.invalidate(&k);
-        assert_eq!(s.len(), 0);
+        block_on(s.put(&k, entry(1)));
+        block_on(s.put(&k, e2));
+        assert_eq!(block_on(s.len()), 2);
+        block_on(s.invalidate(&k));
+        assert_eq!(block_on(s.len()), 0);
     }
 }

@@ -396,12 +396,13 @@ impl ClientBuilder {
     #[cfg(feature = "cache")]
     pub fn cache<S>(mut self, cache: crate::cache::HttpCache<S>) -> Self
     where
-        S: crate::cache::CacheStore + Send + 'static, // send-bound-exception: amendment-C12
+        S: crate::cache::CacheStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,                            // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send,                           // send-bound-exception: amendment-C12
+        for<'a> S::Len<'a>: Send,                            // send-bound-exception: amendment-C12
     {
         self.config.cache = true;
-        self.cache = Some(Arc::new(Mutex::new(
-            cache.map_store(crate::erased::AnyStore::new),
-        )));
+        self.cache = Some(Arc::new(cache.map_store(crate::erased::AnyStore::new)));
         self
     }
 
@@ -625,8 +626,7 @@ impl Client {
         Some(lock(self.inner.cookies.as_ref()?))
     }
 
-    /// This client's response cache, if it was given one — locked for as
-    /// long as the guard is held.
+    /// This client's response cache, if it was given one.
     ///
     /// `None` when no cache was configured. That is the same answer for
     /// "caching was never switched on" and for "the transport keeps its
@@ -634,23 +634,16 @@ impl Client {
     /// [`ClientBuilder::build`] and so cannot reach this method at all —
     /// the shape [`Client::cookies`] already has.
     ///
-    /// **Holding this guard blocks more than this client's requests.** A
-    /// response body still being read holds the same lock's `Arc` and takes
-    /// it once, when the body ends; a guard held across an `.await` can
-    /// therefore stall a body belonging to a client handle that no longer
-    /// exists. Hold it to read or to clear, not to work.
-    ///
-    /// A poisoned lock is recovered rather than propagated
-    /// (`PoisonError::into_inner`), for the reason [`Client::cookies`]
-    /// gives: the store is a map of parsed responses, a panic while
-    /// holding it cannot leave it half-written in any sense this type can
-    /// observe, and a client that stopped caching because an unrelated
-    /// task panicked would be a worse answer than a slightly stale store.
+    /// **A borrow rather than a guard, and there is nothing to block.**
+    /// This returned a `MutexGuard` for as long as the cache was behind
+    /// one, with a paragraph warning that holding it across an `.await`
+    /// could stall a response body belonging to some other handle. The
+    /// store's own methods take `&self` now, so there is no lock here to
+    /// hold and that hazard is gone rather than documented — the
+    /// synchronisation, where a store needs any, is the store's.
     #[cfg(feature = "cache")]
-    pub fn cache(
-        &self,
-    ) -> Option<std::sync::MutexGuard<'_, crate::cache::HttpCache<crate::erased::AnyStore>>> {
-        Some(crate::cached::lock(self.inner.cache.as_ref()?))
+    pub fn cache(&self) -> Option<&crate::cache::HttpCache<crate::erased::AnyStore>> {
+        Some(self.inner.cache.as_ref()?)
     }
 
     /// The verb methods below, and this one, take `impl AsRef<str>` rather
@@ -1058,7 +1051,19 @@ impl Client {
             // `Continue` carries whether this hop is a **revalidation**,
             // which is what makes a `304` mean *serve the stored body*
             // rather than *hand the caller a bodyless 304*.
-            let resp = match self.cache_before(&mut hp, caller_owns_the_conditionals) {
+            // **Boxed, and the number is why.** Both cache hooks became
+            // `async fn` when the store did, and an `async fn` awaited
+            // inline has its whole state machine inlined into this one:
+            // measured at 4,344 bytes before the store was asynchronous,
+            // **5,776** with the two inlined, and **4,784** with them
+            // boxed — against `tests/future_size.rs`'s 6 KiB ceiling,
+            // which is meant to have room rather than to be met. The cost
+            // is two allocations per hop on a path that is about to touch
+            // a store; `Cached::recorder` is boxed one file over for the
+            // same reason and with its own measurement beside it.
+            let resp = match Box::pin(self.cache_before(&mut hp, caller_owns_the_conditionals))
+                .await
+            {
                 std::ops::ControlFlow::Break(answered) => answered,
                 std::ops::ControlFlow::Continue(plan) => {
                     // **This is written out here rather than factored into
@@ -1382,7 +1387,7 @@ impl Client {
                         }
                     }
 
-                    self.cache_after(&hp, plan, resp, requested_at)
+                    Box::pin(self.cache_after(&hp, plan, resp, requested_at)).await
                 }
             };
 
@@ -1630,7 +1635,7 @@ impl Client {
     /// [`Timer`] cannot supply it, and why it is `web-time`'s clock, are
     /// both on [`ClientBuilder::cache`].
     #[cfg(feature = "cache")]
-    fn cache_before(
+    async fn cache_before(
         &self,
         hp: &mut HopParts,
         caller_owns_the_conditionals: bool,
@@ -1649,7 +1654,7 @@ impl Client {
         hp.headers.remove(http::header::IF_MODIFIED_SINCE);
 
         let now = SystemTime::now();
-        match crate::cached::lock(cache).lookup(&hp.method, &hp.uri, &hp.headers, now) {
+        match cache.lookup(&hp.method, &hp.uri, &hp.headers, now).await {
             crate::cache::Lookup::Miss => Continue(Plan::default()),
             crate::cache::Lookup::Hit(stored) => Break(crate::cached::serve(stored)),
             crate::cache::Lookup::Unsatisfiable => Break(crate::cached::only_if_cached_miss()),
@@ -1675,7 +1680,7 @@ impl Client {
     /// it in a conditional would put the per-hop reasoning behind a feature
     /// flag too.
     #[cfg(not(feature = "cache"))]
-    fn cache_before(
+    async fn cache_before(
         &self,
         _: &mut HopParts,
         _: bool,
@@ -1708,7 +1713,7 @@ impl Client {
     /// stored; a `POST` returning `201` stores nothing and must still
     /// evict the `GET`.
     #[cfg(feature = "cache")]
-    fn cache_after(
+    async fn cache_after(
         &self,
         hp: &HopParts,
         plan: Plan,
@@ -1723,25 +1728,22 @@ impl Client {
 
         if let Some(r) = plan.0 {
             if parts.status == http::StatusCode::NOT_MODIFIED {
-                let served = crate::cached::lock(cache).revalidated(
-                    &r.key,
-                    r.stale,
-                    &parts,
-                    requested_at,
-                    received_at,
-                );
+                let served = cache
+                    .revalidated(&r.key, r.stale, &parts, requested_at, received_at)
+                    .await;
                 return crate::cached::serve(served);
             }
             // Not a `304`, so the entry we conditioned on is no longer the
             // origin's answer — see `HttpCache::superseded` for why it is
             // removed here rather than left for the storing path below to
             // replace.
-            crate::cached::lock(cache).superseded(&r.key, &r.stale);
+            cache.superseded(&r.key, &r.stale).await;
         }
 
-        let mut guard = crate::cached::lock(cache);
-        guard.invalidated_by(&hp.method, &hp.uri, parts.status);
-        let storing = guard.storing(
+        cache
+            .invalidated_by(&hp.method, &hp.uri, parts.status)
+            .await;
+        let storing = cache.storing(
             &hp.method,
             &hp.uri,
             &hp.headers,
@@ -1749,7 +1751,6 @@ impl Client {
             requested_at,
             received_at,
         );
-        drop(guard);
 
         let body = match storing {
             Ok(s) => Cached::recording(body, crate::cached::Recorder::new(Arc::clone(cache), s)),
@@ -1764,7 +1765,7 @@ impl Client {
 
     /// The twin without the feature — see `cache_before`'.
     #[cfg(not(feature = "cache"))]
-    fn cache_after(
+    async fn cache_after(
         &self,
         _: &HopParts,
         _: Plan,

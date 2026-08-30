@@ -103,6 +103,84 @@ impl crate::cookie::PublicSuffixList for AnyList {
     }
 }
 
+/// The object-safe half of [`CacheStore`](crate::cache::CacheStore).
+///
+/// The seam names its futures as associated types, which is what lets a
+/// single-threaded store answer for itself — and is exactly what makes it
+/// not `dyn`-compatible. So there are two traits, and the split is
+/// [`BoxedTransport`](hclient_core::unversioned::BoxedTransport)'s one
+/// crate over, down to the blanket impl: **a store author writes
+/// nothing**, and the boxing happens where the type is still concrete, so
+/// `Send` is inferred rather than proved.
+///
+/// The box is the price of erasure and it is paid once per operation, on
+/// a path that is already about to touch a `HashMap` or a socket.
+#[cfg(feature = "cache")]
+trait BoxedCacheStore {
+    fn get_boxed<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+    ) -> futures_core::future::BoxFuture<'a, Vec<crate::cache::StoredResponse>>;
+    fn put_boxed<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+        entry: crate::cache::StoredResponse,
+    ) -> futures_core::future::BoxFuture<'a, ()>;
+    fn remove_boxed<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+        selector: &'a crate::cache::Selector,
+    ) -> futures_core::future::BoxFuture<'a, ()>;
+    fn invalidate_boxed<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+    ) -> futures_core::future::BoxFuture<'a, ()>;
+    fn len_boxed(&self) -> futures_core::future::BoxFuture<'_, usize>;
+    fn clear_boxed(&self) -> futures_core::future::BoxFuture<'_, ()>;
+}
+
+#[cfg(feature = "cache")]
+impl<S> BoxedCacheStore for S
+where
+    S: crate::cache::CacheStore,
+    for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
+    for<'a> S::Done<'a>: Send, // send-bound-exception: amendment-C12
+    for<'a> S::Len<'a>: Send,  // send-bound-exception: amendment-C12
+{
+    fn get_boxed<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+    ) -> futures_core::future::BoxFuture<'a, Vec<crate::cache::StoredResponse>> {
+        Box::pin(self.get(key))
+    }
+    fn put_boxed<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+        entry: crate::cache::StoredResponse,
+    ) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.put(key, entry))
+    }
+    fn remove_boxed<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+        selector: &'a crate::cache::Selector,
+    ) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.remove(key, selector))
+    }
+    fn invalidate_boxed<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+    ) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.invalidate(key))
+    }
+    fn len_boxed(&self) -> futures_core::future::BoxFuture<'_, usize> {
+        Box::pin(self.len())
+    }
+    fn clear_boxed(&self) -> futures_core::future::BoxFuture<'_, ()> {
+        Box::pin(self.clear())
+    }
+}
+
 /// A [`CacheStore`](crate::cache::CacheStore) of any type.
 ///
 /// [`AnyList`]'s counterpart, built by
@@ -110,46 +188,64 @@ impl crate::cookie::PublicSuffixList for AnyList {
 /// store the caller's cache was over.
 #[cfg(feature = "cache")]
 pub struct AnyStore(
-    Box<dyn crate::cache::CacheStore + Send>, // send-bound-exception: amendment-C12
+    Box<dyn BoxedCacheStore + Send + Sync>, // send-bound-exception: amendment-C12
 );
 
 #[cfg(feature = "cache")]
 impl AnyStore {
     pub fn new<S>(store: S) -> Self
     where
-        S: crate::cache::CacheStore + Send + 'static, // send-bound-exception: amendment-C12
+        S: crate::cache::CacheStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,                            // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send,                           // send-bound-exception: amendment-C12
+        for<'a> S::Len<'a>: Send,                            // send-bound-exception: amendment-C12
     {
         Self(Box::new(store))
     }
 }
 
 #[cfg(feature = "cache")]
+/// **The count is gone from the `Debug`, and that is the seam's doing.**
+/// `len` is a future now, and a `Debug` cannot await one — a store on
+/// disk or in Redis would have to be asked over the network to print
+/// itself. Printing a number a remote store might not agree with is worse
+/// than printing none.
 impl Debug for AnyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AnyStore")
-            .field("len", &self.0.len())
-            .finish_non_exhaustive()
+        f.debug_struct("AnyStore").finish_non_exhaustive()
     }
 }
 
 #[cfg(feature = "cache")]
 impl crate::cache::CacheStore for AnyStore {
-    fn get(&self, key: &crate::cache::Key) -> Vec<crate::cache::StoredResponse> {
-        self.0.get(key)
+    type Get<'a> = futures_core::future::BoxFuture<'a, Vec<crate::cache::StoredResponse>>;
+    type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
+    type Len<'a> = futures_core::future::BoxFuture<'a, usize>;
+
+    fn get<'a>(&'a self, key: &'a crate::cache::Key) -> Self::Get<'a> {
+        self.0.get_boxed(key)
     }
-    fn put(&mut self, key: &crate::cache::Key, entry: crate::cache::StoredResponse) {
-        self.0.put(key, entry);
+    fn put<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+        entry: crate::cache::StoredResponse,
+    ) -> Self::Done<'a> {
+        self.0.put_boxed(key, entry)
     }
-    fn remove(&mut self, key: &crate::cache::Key, selector: &crate::cache::Selector) {
-        self.0.remove(key, selector);
+    fn remove<'a>(
+        &'a self,
+        key: &'a crate::cache::Key,
+        selector: &'a crate::cache::Selector,
+    ) -> Self::Done<'a> {
+        self.0.remove_boxed(key, selector)
     }
-    fn invalidate(&mut self, key: &crate::cache::Key) {
-        self.0.invalidate(key);
+    fn invalidate<'a>(&'a self, key: &'a crate::cache::Key) -> Self::Done<'a> {
+        self.0.invalidate_boxed(key)
     }
-    fn len(&self) -> usize {
-        self.0.len()
+    fn len(&self) -> Self::Len<'_> {
+        self.0.len_boxed()
     }
-    fn clear(&mut self) {
-        self.0.clear();
+    fn clear(&self) -> Self::Done<'_> {
+        self.0.clear_boxed()
     }
 }

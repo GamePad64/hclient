@@ -3095,6 +3095,65 @@ without thought. `cached::Cached::recorder` was already boxed for the
 same reason with its own measurement recorded; this is that finding one
 level up.
 
+### The cache store waits now, and the client stopped holding a lock to ask it
+
+`CacheStore`'s six methods are futures and every one takes `&self`. The
+store this crate ships is in memory and answers [`std::future::Ready`], so
+the shape costs it no allocation and no suspension; what it buys is the
+stores that were unwritable before — on disk, in Redis, in
+`moka::future` — for which a synchronous seam offered two options, block
+the executor or do not exist.
+
+**`&self` is not a second decision, it follows from the first.** A store
+that awaits cannot be held behind a `&mut` across that await, and a store
+that is remote is shared by everyone talking to it already. So
+synchronisation is the store's own: `MemoryStore` holds a `Mutex` around
+its map, which is a *narrower* lock than the one it replaced.
+
+**What went was `Arc<Mutex<HttpCache>>` in `Client`.** The old paragraph
+beside it argued the lock was safe because it was never held across an
+`.await` — true, and it stopped being true the moment the store could
+wait. Rather than an async mutex there is now no lock at that level at
+all, so two requests no longer queue behind each other to read a header.
+`Client::cache()` hands back a borrow rather than a `MutexGuard`, and the
+warning it carried — that holding the guard across an `.await` could
+stall a body belonging to another handle — is gone rather than reworded.
+
+**Associated futures, not `async fn`**, for `TcpConnect::Connecting`'s
+reason: `Client` boxes its cache `Send + Sync`, and an RPITIT cannot be
+bounded. `AnyStore` is the erased half, and it is `BoxedTransport`'s split
+one crate over — a private object-safe trait with a blanket impl, so **a
+store author writes nothing** and `Send` is inferred where the type is
+still concrete.
+
+**Two costs, both measured.** `Client::execute`'s future went from 4,344
+bytes to **5,776** when the two cache hooks became `async fn`, against a
+6 KiB ceiling that is meant to have room; boxing those two calls brings it
+to **4,784**, at two allocations per hop on a path about to touch a store.
+And `AnyStore`'s `Debug` no longer prints a count, because `len` is a
+future and a `Debug` cannot await one — a number a remote store might
+disagree with is worse than none.
+
+**The write is a state of the body rather than a call inside it.**
+`Recorder::commit` was one line in `poll_frame`; it hands back a future
+now, which the body drives to completion before it reports the end of the
+stream. It is deliberately **not** spawned — a spawned write lets the body
+end before the entry exists, so a caller who asks again immediately misses
+what it was just told was cached, and this crate does not spawn on a
+caller's behalf anywhere.
+
+Setting that field and returning the poll's own answer was the first
+shape, and it stored nothing at all: the body had ended, so nothing would
+ever poll it again and the future was dropped where it stood. Three cache
+tests said so on the first run.
+
+**The suite needed a store that actually waits**, because every store in
+this workspace answers `Ready` and a suite built on those would pass for a
+seam that had never stopped being synchronous. `SuspendingStore` in
+`tests/pluggable_stores.rs` suspends once per operation and counts it; the
+test asserts a second request is served from it *and* that it suspended.
+Removing the body's wait for the write fails four tests across two files.
+
 ### The jar and the cache became modules, and one feature shape is what made it free
 
 `hclient-cookie` and `hclient-cache` are `hclient::cookie` and

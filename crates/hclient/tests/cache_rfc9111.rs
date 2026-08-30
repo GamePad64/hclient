@@ -11,6 +11,9 @@
 
 #![cfg(feature = "cache")]
 
+/// The store is asynchronous now, and these tests drive it by hand — no
+/// runtime, because `MemoryStore` answers `Ready` and never suspends.
+use futures_executor::block_on;
 use std::time::{Duration, SystemTime};
 
 use assert_matches::assert_matches;
@@ -68,11 +71,11 @@ fn put(
     let s = c
         .storing(&Method::GET, &uri(), request, p, at, at)
         .expect("storable");
-    c.store(s, Bytes::from_static(body)).expect("stored");
+    block_on(c.store(s, Bytes::from_static(body))).expect("stored");
 }
 
 fn look(c: &mut HttpCache, request: &HeaderMap, at: SystemTime) -> Lookup {
-    c.lookup(&Method::GET, &uri(), request, at)
+    block_on(c.lookup(&Method::GET, &uri(), request, at))
 }
 
 fn age_of(e: &StoredResponse) -> u64 {
@@ -291,7 +294,7 @@ fn a_status_this_cache_cannot_reuse_is_not_stored() {
 
 #[test]
 fn a_body_over_the_limit_is_not_stored_by_either_check() {
-    let mut c = HttpCache::new().with_limits(Limits { max_body_bytes: 4 });
+    let c = HttpCache::new().with_limits(Limits { max_body_bytes: 4 });
     // Declared too large: refused before a byte is recorded.
     assert_eq!(
         c.storing(
@@ -321,18 +324,18 @@ fn a_body_over_the_limit_is_not_stored_by_either_check() {
         )
         .expect("storable until the body says otherwise");
     assert_eq!(
-        c.store(s, Bytes::from_static(b"far too long")).unwrap_err(),
+        block_on(c.store(s, Bytes::from_static(b"far too long"))).unwrap_err(),
         NotStored::TooLarge {
             bytes: 12,
             limit: 4
         }
     );
-    assert_eq!(c.store_ref().len(), 0);
+    assert_eq!(block_on(c.store_ref().len()), 0);
 }
 
 #[test]
 fn a_body_that_disagrees_with_content_length_is_not_stored() {
-    let mut c = HttpCache::new();
+    let c = HttpCache::new();
     let s = c
         .storing(
             &Method::GET,
@@ -347,7 +350,7 @@ fn a_body_that_disagrees_with_content_length_is_not_stored() {
         )
         .unwrap();
     assert_eq!(
-        c.store(s, Bytes::from_static(b"hi")).unwrap_err(),
+        block_on(c.store(s, Bytes::from_static(b"hi"))).unwrap_err(),
         NotStored::LengthMismatch {
             bytes: 2,
             declared: 5
@@ -407,7 +410,7 @@ fn the_most_recently_received_matching_variant_is_the_one_served() {
     let fields = &[("cache-control", "max-age=600"), ("vary", "Accept")];
     put(&mut c, &a, &parts(200, fields), b"first", t(0));
     put(&mut c, &b, &parts(200, fields), b"second", t(10));
-    assert_eq!(c.store_ref().len(), 2);
+    assert_eq!(block_on(c.store_ref().len()), 2);
     let hit = assert_matches!(look(&mut c, &a, t(20)), Lookup::Hit(e) => e);
     assert_eq!(hit.body().as_ref(), b"first");
 }
@@ -561,13 +564,13 @@ fn a_304_freshens_the_entry_and_updates_the_fields_it_carries() {
         look(&mut c, &req(&[]), t(60)),
         Lookup::Revalidate { key, stale, .. } => (key, stale)
     );
-    let served = c.revalidated(
+    let served = block_on(c.revalidated(
         &key,
         stale,
         &parts(304, &[("cache-control", "max-age=10"), ("x-note", "new")]),
         t(60),
         t(60),
-    );
+    ));
     assert_eq!(
         served.body().as_ref(),
         b"body",
@@ -602,7 +605,7 @@ fn a_304_does_not_relabel_the_stored_bytes() {
         look(&mut c, &req(&[]), t(1)),
         Lookup::Revalidate { key, stale, .. } => (key, stale)
     );
-    let served = c.revalidated(
+    let served = block_on(c.revalidated(
         &key,
         stale,
         &parts(
@@ -617,7 +620,7 @@ fn a_304_does_not_relabel_the_stored_bytes() {
         ),
         t(1),
         t(1),
-    );
+    ));
     assert_eq!(served.headers()["content-encoding"], "gzip");
     assert_eq!(served.headers()["content-length"], "4");
     assert!(
@@ -633,8 +636,8 @@ fn a_non_304_answer_to_a_revalidation_removes_the_stale_variant() {
         look(&mut c, &req(&[]), t(60)),
         Lookup::Revalidate { key, stale, .. } => (key, stale)
     );
-    c.superseded(&key, &stale);
-    assert_eq!(c.store_ref().len(), 0);
+    block_on(c.superseded(&key, &stale));
+    assert_eq!(block_on(c.store_ref().len()), 0);
     assert_matches!(
         look(&mut c, &req(&[("cache-control", "max-stale")]), t(60)),
         Lookup::Miss
@@ -646,32 +649,32 @@ fn a_non_304_answer_to_a_revalidation_removes_the_stale_variant() {
 #[test]
 fn an_unsafe_method_invalidates_the_stored_get_and_a_failed_one_does_not() {
     let mut c = cache_with(&[("cache-control", "max-age=600")], b"x");
-    c.invalidated_by(&Method::POST, &uri(), StatusCode::INTERNAL_SERVER_ERROR);
+    block_on(c.invalidated_by(&Method::POST, &uri(), StatusCode::INTERNAL_SERVER_ERROR));
     assert_matches!(look(&mut c, &req(&[]), t(1)), Lookup::Hit(_));
-    c.invalidated_by(&Method::GET, &uri(), StatusCode::OK);
+    block_on(c.invalidated_by(&Method::GET, &uri(), StatusCode::OK));
     assert_matches!(
         look(&mut c, &req(&[]), t(1)),
         Lookup::Hit(_),
         "a safe method invalidates nothing"
     );
-    c.invalidated_by(&Method::POST, &uri(), StatusCode::CREATED);
+    block_on(c.invalidated_by(&Method::POST, &uri(), StatusCode::CREATED));
     assert_matches!(look(&mut c, &req(&[]), t(1)), Lookup::Miss);
 }
 
 #[test]
 fn a_method_nobody_here_has_heard_of_invalidates() {
     let mut c = cache_with(&[("cache-control", "max-age=600")], b"x");
-    c.invalidated_by(
+    block_on(c.invalidated_by(
         &Method::from_bytes(b"PURGE").unwrap(),
         &uri(),
         StatusCode::OK,
-    );
+    ));
     assert_matches!(look(&mut c, &req(&[]), t(1)), Lookup::Miss);
 }
 
 #[test]
 fn a_head_is_neither_stored_nor_looked_up() {
-    let mut c = cache_with(&[("cache-control", "max-age=600")], b"x");
+    let c = cache_with(&[("cache-control", "max-age=600")], b"x");
     assert_eq!(
         c.storing(
             &Method::HEAD,
@@ -685,7 +688,7 @@ fn a_head_is_neither_stored_nor_looked_up() {
         NotStored::Method(Method::HEAD)
     );
     assert_matches!(
-        c.lookup(&Method::HEAD, &uri(), &req(&[]), t(1)),
+        block_on(c.lookup(&Method::HEAD, &uri(), &req(&[]), t(1))),
         Lookup::Miss,
         "the method is in the primary key, so a stored GET could not answer this anyway"
     );

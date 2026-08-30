@@ -63,7 +63,7 @@ fn ours(s: &str) -> Option<i64> {
 /// Is a response `Date`d at the epoch and `Expires`-ing at `s` still fresh
 /// `after` seconds later?
 fn fresh_at(s: &str, after: i64) -> bool {
-    let mut cache = HttpCache::new();
+    let cache = HttpCache::new();
     let uri: Uri = "https://example.test/x".parse().unwrap();
     let epoch = SystemTime::UNIX_EPOCH;
     let (p, ()) = http::Response::builder()
@@ -75,10 +75,10 @@ fn fresh_at(s: &str, after: i64) -> bool {
     let Ok(storing) = cache.storing(&Method::GET, &uri, &HeaderMap::new(), &p, epoch, epoch) else {
         return false;
     };
-    cache.store(storing, bytes::Bytes::new()).expect("stored");
+    futures_executor::block_on(cache.store(storing, bytes::Bytes::new())).expect("stored");
     let now = epoch + Duration::from_secs(u64::try_from(after).unwrap());
     matches!(
-        cache.lookup(&Method::GET, &uri, &HeaderMap::new(), now),
+        futures_executor::block_on(cache.lookup(&Method::GET, &uri, &HeaderMap::new(), now)),
         Lookup::Hit(_)
     )
 }

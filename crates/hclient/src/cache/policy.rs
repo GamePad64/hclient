@@ -201,7 +201,8 @@ impl Storing {
 /// use http::{HeaderMap, Method, Response, Uri};
 /// use hclient::cache::{HttpCache, Lookup};
 ///
-/// let mut cache = HttpCache::new();
+/// # futures_executor::block_on(async {
+/// let cache = HttpCache::new();
 /// let uri: Uri = "https://example.com/thing".parse().unwrap();
 /// let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
 ///
@@ -213,10 +214,13 @@ impl Storing {
 /// let storing = cache
 ///     .storing(&Method::GET, &uri, &HeaderMap::new(), &parts, t0, t0)
 ///     .expect("an explicit max-age is storable");
-/// cache.store(storing, bytes::Bytes::from_static(b"hello")).unwrap();
+/// cache.store(storing, bytes::Bytes::from_static(b"hello")).await.unwrap();
 ///
-/// let hit = cache.lookup(&Method::GET, &uri, &HeaderMap::new(), t0 + Duration::from_secs(30));
+/// let hit = cache
+///     .lookup(&Method::GET, &uri, &HeaderMap::new(), t0 + Duration::from_secs(30))
+///     .await;
 /// assert!(matches!(hit, Lookup::Hit(_)));
+/// # });
 /// ```
 #[derive(Debug, Clone)]
 pub struct HttpCache<S = MemoryStore> {
@@ -300,8 +304,8 @@ impl<S: CacheStore> HttpCache<S> {
     ///   (freshening a stored `GET`) needs a `HEAD` to have been made.
     ///   Unsafe methods do not look anything up, but they do
     ///   **invalidate**: see [`invalidated_by`](Self::invalidated_by).
-    pub fn lookup(
-        &mut self,
+    pub async fn lookup(
+        &self,
         method: &Method,
         uri: &Uri,
         headers: &HeaderMap,
@@ -329,6 +333,7 @@ impl<S: CacheStore> HttpCache<S> {
         let Some(stored) = self
             .store
             .get(&key)
+            .await
             .into_iter()
             .filter(|e| selector_matches(e, headers))
             .max_by_key(StoredResponse::received_at)
@@ -466,7 +471,7 @@ impl<S: CacheStore> HttpCache<S> {
     /// body the transport truncated is exactly the one a cache must not
     /// keep, because a truncated entry served later is indistinguishable
     /// from a complete one.
-    pub fn store(&mut self, s: Storing, body: Bytes) -> Result<(), NotStored> {
+    pub async fn store(&self, s: Storing, body: Bytes) -> Result<(), NotStored> {
         let len = body.len() as u64;
         if len > s.max_body_bytes {
             return Err(NotStored::TooLarge {
@@ -489,7 +494,7 @@ impl<S: CacheStore> HttpCache<S> {
             s.requested_at,
             s.received_at,
         );
-        self.store.put(&s.key, entry);
+        self.store.put(&s.key, entry).await;
         Ok(())
     }
 
@@ -500,8 +505,8 @@ impl<S: CacheStore> HttpCache<S> {
     /// RFC 9111 §4.3.4 by way of §3.2 — every field in the `304` replaces
     /// the stored one, except those in `NOT_UPDATED_BY_304` and any the
     /// `304`'s own `Connection` header nominates.
-    pub fn revalidated(
-        &mut self,
+    pub async fn revalidated(
+        &self,
         key: &Key,
         stale: StoredResponse,
         parts: &http::response::Parts,
@@ -521,7 +526,7 @@ impl<S: CacheStore> HttpCache<S> {
             }
         }
         fresh.freshen(requested_at, received_at);
-        self.store.put(key, fresh.clone());
+        self.store.put(key, fresh.clone()).await;
         let age = current_age(&fresh, received_at);
         with_age(fresh, age)
     }
@@ -536,8 +541,8 @@ impl<S: CacheStore> HttpCache<S> {
     /// `max-stale` request serve a response we have direct evidence was
     /// superseded. Erring towards the empty cache is the direction that
     /// costs a request.
-    pub fn superseded(&mut self, key: &Key, stale: &StoredResponse) {
-        self.store.remove(key, stale.selector());
+    pub async fn superseded(&self, key: &Key, stale: &StoredResponse) {
+        self.store.remove(key, stale.selector()).await;
     }
 
     /// RFC 9111 §4.4: a non-error answer to an unsafe method invalidates
@@ -555,13 +560,13 @@ impl<S: CacheStore> HttpCache<S> {
     /// optional, and the part that is not optional is the guard on doing
     /// it. Declining costs a stale entry for a resource the caller did not
     /// name; doing it costs an origin comparison that has to be right.
-    pub fn invalidated_by(&mut self, method: &Method, uri: &Uri, status: StatusCode) {
+    pub async fn invalidated_by(&self, method: &Method, uri: &Uri, status: StatusCode) {
         if is_safe(method) || status.is_client_error() || status.is_server_error() {
             return;
         }
         for m in [Method::GET, Method::HEAD] {
             if let Some(k) = Key::new(&m, uri) {
-                self.store.invalidate(&k);
+                self.store.invalidate(&k).await;
             }
         }
     }

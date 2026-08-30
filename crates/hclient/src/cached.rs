@@ -56,6 +56,8 @@
 
 use bytes::Bytes;
 use std::fmt::Debug;
+#[cfg(feature = "cache")]
+use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -100,7 +102,33 @@ pub struct Cached<B> {
     /// an `hclient::Client`, **overflowed its stack** and aborted.
     #[cfg(feature = "cache")]
     recorder: Option<Box<Recorder>>,
+    /// The store's own write, once the body has ended.
+    ///
+    /// **A field rather than a call, because the store is asynchronous.**
+    /// `commit` used to be one line inside `poll_frame`; a store on disk
+    /// or in Redis cannot answer inside a poll, so the write is a future
+    /// this body drives to completion before it reports the end of the
+    /// stream. For the store this crate ships it is `Ready` and finishes
+    /// on the same poll, so nothing observable changed there.
+    ///
+    /// **Not spawned**, which is the decision: a spawned write would let
+    /// the body end before the entry existed, and a caller who
+    /// immediately asks again would miss what it had just been told was
+    /// cached. This crate does not spawn on a caller's behalf anywhere —
+    /// the same sentence `stale-while-revalidate`'s absence is written
+    /// under.
+    #[cfg(feature = "cache")]
+    committing: Option<Committing>,
 }
+
+/// The store's write, erased.
+///
+/// **An alias so that the marker below has a short line to sit on**, which
+/// is this workspace's own rule about `cargo fmt`: a trailing comment on a
+/// line the formatter has to reflow is lost, and `erased::SharedTransport`
+/// is the same shape one crate over.
+#[cfg(feature = "cache")]
+type Committing = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>; // send-bound-exception: amendment-C12
 
 impl<B> Cached<B> {
     /// The ordinary case: whatever the transport sent, untouched.
@@ -111,6 +139,8 @@ impl<B> Cached<B> {
             stored: None,
             #[cfg(feature = "cache")]
             recorder: None,
+            #[cfg(feature = "cache")]
+            committing: None,
         }
     }
 }
@@ -123,6 +153,8 @@ impl<B> Cached<B> {
             inner: None,
             stored: Some(bytes),
             recorder: None,
+            #[cfg(feature = "cache")]
+            committing: None,
         }
     }
 
@@ -132,6 +164,8 @@ impl<B> Cached<B> {
             inner: Some(inner),
             stored: None,
             recorder: Some(Box::new(recorder)),
+            #[cfg(feature = "cache")]
+            committing: None,
         }
     }
 }
@@ -168,6 +202,15 @@ where
             }
         }
 
+        // A write already in flight is finished before the end of the
+        // stream is reported — see `committing`.
+        #[cfg(feature = "cache")]
+        if let Some(w) = this.committing.as_mut() {
+            std::task::ready!(w.as_mut().poll(cx));
+            this.committing = None;
+            return Poll::Ready(None);
+        }
+
         let Some(inner) = this.inner.as_mut() else {
             return Poll::Ready(None);
         };
@@ -189,10 +232,23 @@ where
             Poll::Ready(Some(Err(_))) => this.recorder = None,
             Poll::Ready(None) => {
                 if let Some(r) = this.recorder.take() {
-                    r.commit();
+                    this.committing = Some(r.commit());
                 }
             }
             Poll::Pending => {}
+        }
+
+        // **The write is polled on the same turn it is started, and the
+        // end of the stream is not reported until it finishes.** Setting
+        // the field and returning `polled` was the first shape and it
+        // stored nothing at all: the body had ended, so nothing would ever
+        // poll this body again and the future was dropped where it stood.
+        // Three cache tests said so immediately.
+        #[cfg(feature = "cache")]
+        if let Some(w) = this.committing.as_mut() {
+            std::task::ready!(w.as_mut().poll(cx));
+            this.committing = None;
+            return Poll::Ready(None);
         }
 
         polled
@@ -263,20 +319,40 @@ impl Recorder {
     /// same call `CookieJar::store_response`'s contract makes for a
     /// malformed `Set-Cookie`. The reasons are typed
     /// (`crate::cache::NotStored`) for whoever drives the cache directly.
-    fn commit(self) {
-        let _ = lock(&self.cache).store(self.storing, Bytes::from(self.buffered));
+    fn commit(self) -> Committing {
+        let Self {
+            cache,
+            storing,
+            buffered,
+        } = self;
+        // The `Arc` moves **into** the future rather than being borrowed
+        // by it, which is what makes the boxed write `'static` and so
+        // storable in a body that outlives this call.
+        Box::pin(async move {
+            let _ = cache.store(storing, Bytes::from(buffered)).await;
+        })
     }
 }
 
 /// The cache a `Client` holds, shared with every clone of it and with
 /// every recording body it has handed out.
 ///
-/// `Mutex` and not `RefCell`, for the reason the cookie jar gives one
-/// field up: a `Client` is meant to cross a `tokio::spawn`, and `!Sync`
-/// here would take that away from every client whether or not it caches.
-/// The lock is held across no `.await` at all — every method on
-/// `HttpCache` is a pure function of the store, the message and a `now`,
-/// which is what the sans-io shape of `hclient-cache` buys here.
+/// **No lock at all, which it used to have.** The jar one field up is
+/// `Arc<Mutex<..>>`, and this was too, under a paragraph observing that
+/// the lock was never held across an `.await` — true then, because every
+/// `HttpCache` method was a pure function of the store. The store is
+/// asynchronous now, so that sentence could not stay true, and rather
+/// than an async mutex the lock is gone: every
+/// [`CacheStore`](crate::cache::CacheStore) method takes `&self` and
+/// synchronises itself. A store that is a connection pool or a `moka`
+/// cache is shared already; one that is a `HashMap` holds its own
+/// `Mutex`, which is where a lock belongs — around the map rather than
+/// around the whole policy, so two requests no longer queue behind each
+/// other to read a header.
+///
+/// `Arc` and not `Rc`, for the reason the jar gives: a `Client` is meant
+/// to cross a `tokio::spawn`, and `!Sync` here would take that away from
+/// every client whether or not it caches.
 ///
 /// **The store is a caller's choice and is not a type parameter**, which
 /// is [`crate::erased::AnyStore`]'s whole subject: `HttpCache<S>` here would put
@@ -285,19 +361,14 @@ impl Recorder {
 /// feature nobody in a graph asked for should change. Erasing at the store
 /// leaves every arity fixed and every method of `HttpCache` reachable. The
 /// cookie jar's list is the same shape one field up, for the same reason.
+/// **No `Mutex`, unlike the jar one field up, and the store is why.**
+/// Every [`CacheStore`](crate::cache::CacheStore) method takes `&self`
+/// and answers a future, so a store that needs synchronising does it
+/// itself — a lock here would serialise every request against a store
+/// that may already be a connection pool, and could not be held across
+/// the awaits the seam now has anyway.
 #[cfg(feature = "cache")]
-pub(crate) type Cache =
-    std::sync::Arc<std::sync::Mutex<crate::cache::HttpCache<crate::erased::AnyStore>>>;
-
-/// Locks the cache, recovering from poisoning rather than propagating it —
-/// see [`crate::Client::cache`] for why a poisoned cache is still a usable
-/// one.
-#[cfg(feature = "cache")]
-pub(crate) fn lock(
-    c: &Cache,
-) -> std::sync::MutexGuard<'_, crate::cache::HttpCache<crate::erased::AnyStore>> {
-    c.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+pub(crate) type Cache = std::sync::Arc<crate::cache::HttpCache<crate::erased::AnyStore>>;
 
 /// What the cache decided about a hop, carried from before the request
 /// goes out to after the answer comes back.
