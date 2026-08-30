@@ -63,18 +63,18 @@ fn what_a_request_produces_is_send() {
     assert_send_ty::<hclient::Response>();
 }
 
-/// **The control for the test above is in `src/`, and it has to be.**
-///
-/// `assert_send<T: Send>` is a live bound — a type that stopped being
-/// `Send` fails to compile there — but the *helper* could be weakened to
-/// `assert_send<T>` and the test would pass vacuously. Catching that needs
-/// a compile that must **fail**, and this file has just established that
-/// `tests/` cannot hold one: rustdoc never reads it.
-///
-/// So the negative lives on `body::ClientBody`'s own doc comment, as a
-/// ```` ```compile_fail ```` fence that `just test-doc` runs, and the two
-/// halves are cross-referenced rather than co-located. That is the cost of
-/// the rule above, paid rather than hidden.
+// **The control for the test above is in `src/`, and it has to be.**
+//
+// `assert_send<T: Send>` is a live bound — a type that stopped being
+// `Send` fails to compile there — but the *helper* could be weakened to
+// `assert_send<T>` and the test would pass vacuously. Catching that needs
+// a compile that must **fail**, and this file has just established that
+// `tests/` cannot hold one: rustdoc never reads it.
+//
+// So the negative lives on `body::ClientBody`'s own doc comment, as a
+// ```` ```compile_fail ```` fence that `just test-doc` runs, and the two
+// halves are cross-referenced rather than co-located. That is the cost of
+// the rule above, paid rather than hidden.
 
 /// Cloning shares the transport rather than copying it, which is what makes
 /// a `Client` safe to hand to several tasks. The check is not "does it
