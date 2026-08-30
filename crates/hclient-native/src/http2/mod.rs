@@ -302,6 +302,24 @@ where
 /// link can do. Nothing about this is specific to this client, and the
 /// only fix is a bigger number.
 ///
+/// # The empty frame, which is itself a fingerprint
+///
+/// **Every field here is `None` by default, so a plain `hclient` sends a
+/// `SETTINGS` frame with no entries in it** — and measured against a
+/// fingerprinting service, that is `|00|0|m,s,a,p` where Chrome 152 is
+/// `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`. No client anyone
+/// fingerprints looks like that, so the good default — announce nothing
+/// you were not asked to — is itself distinctive.
+///
+/// This is **not** an argument for impersonating a browser, and
+/// `docs/tls-fingerprint.md` measures why the near-miss is worse than the
+/// miss: the half of Chrome's HTTP/2 fingerprint reachable without a fork
+/// is exactly the contradictory pair Akamai's patent describes as a
+/// detector. What it is an argument for is that a caller whose traffic a
+/// WAF is cutting has no lever at all, because two of the four settings
+/// `h2` exposes were not reachable from here. Now all four are, and what a
+/// caller does with them is theirs.
+///
 /// # What is deliberately not here
 ///
 /// - **An adaptive window.** hyper computes one from measured RTT; `h2`
@@ -347,6 +365,16 @@ pub struct H2Opts {
     /// `SETTINGS_MAX_HEADER_LIST_SIZE`, RFC 9113 §6.5.2: an advisory
     /// ceiling on a response head's uncompressed size.
     pub max_header_list_size: Option<u32>,
+    /// `SETTINGS_HEADER_TABLE_SIZE`, RFC 9113 §6.5.2 and RFC 7541 §4.2:
+    /// how large an HPACK dynamic table this client will let the *peer*
+    /// keep for encoding towards it.
+    pub header_table_size: Option<u32>,
+    /// `SETTINGS_ENABLE_PUSH`, RFC 9113 §6.5.2.
+    ///
+    /// **`h2` never accepts a pushed stream**, so this changes what goes on
+    /// the wire and nothing about what this client does. That is the whole
+    /// reason it is here — see the type's doc on the empty frame.
+    pub enable_push: Option<bool>,
 }
 
 /// The HTTP/2 connection preface and the first `SETTINGS` exchange.
@@ -400,6 +428,12 @@ where
     }
     if let Some(n) = opts.max_frame_size {
         builder.max_frame_size(n);
+    }
+    if let Some(n) = opts.header_table_size {
+        builder.header_table_size(n);
+    }
+    if let Some(v) = opts.enable_push {
+        builder.enable_push(v);
     }
     if let Some(n) = opts.max_header_list_size {
         builder.max_header_list_size(n);

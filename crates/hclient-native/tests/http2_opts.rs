@@ -362,3 +362,116 @@ fn the_header_list_ceiling_a_caller_sets_is_the_one_enforced() {
          h2's business rather than this test's: {err:?}"
     );
 }
+
+/// The `SETTINGS` frame itself, read off the socket rather than inferred
+/// from a peer's behaviour.
+///
+/// The four tests above each found a local observable — a granted window,
+/// a DATA frame size, an enforced ceiling. `header_table_size` and
+/// `enable_push` have none: `h2` never accepts a pushed stream whatever
+/// the setting says, and HPACK table sizing shows up only as compression
+/// behaviour. **What they do is change what goes on the wire, so the wire
+/// is where they are checked.**
+///
+/// This also pins the claim `H2Opts`' own doc makes and nothing else
+/// asserted: with every field `None`, this client sends a `SETTINGS` frame
+/// with **no entries at all**.
+fn settings_frame(listener: std::net::TcpListener) -> Vec<(u16, u32)> {
+    use std::io::Read as _;
+
+    let (mut sock, _) = listener.accept().expect("accept");
+    sock.set_read_timeout(Some(BOUND)).expect("timeout");
+
+    // RFC 9113 §3.4: the 24-byte connection preface, then frames.
+    let mut preface = [0u8; 24];
+    sock.read_exact(&mut preface).expect("preface");
+    assert_eq!(&preface[..], b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+
+    // RFC 9113 §4.1: length(24) type(8) flags(8) r+stream(32).
+    let mut head = [0u8; 9];
+    sock.read_exact(&mut head).expect("frame header");
+    let len = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+    assert_eq!(
+        head[3], 0x4,
+        "the first frame after the preface is SETTINGS"
+    );
+    assert_eq!(head[4] & 0x1, 0, "and it is not the ACK");
+
+    let mut body = vec![0u8; len];
+    sock.read_exact(&mut body).expect("frame body");
+    assert_eq!(len % 6, 0, "SETTINGS is a sequence of 6-octet entries");
+    body.as_chunks::<6>()
+        .0
+        .iter()
+        .map(|e| {
+            (
+                u16::from_be_bytes([e[0], e[1]]),
+                u32::from_be_bytes([e[2], e[3], e[4], e[5]]),
+            )
+        })
+        .collect()
+}
+
+/// Drives one request at a listener that will never answer, purely to make
+/// the client send its preface. The request's failure is the expected
+/// outcome and carries no information.
+fn provoke_settings(opts: H2Opts) -> Vec<(u16, u32)> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+
+    let reader = std::thread::spawn(move || settings_frame(listener));
+
+    let t = transport(opts);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let _ = rt.block_on(async {
+        tokio::time::timeout(
+            BOUND,
+            t.execute(
+                http::Request::builder()
+                    .uri(format!("https://{addr}/"))
+                    .body(RequestBody::Empty)
+                    .expect("request"),
+            ),
+        )
+        .await
+    });
+
+    reader.join().expect("reader")
+}
+
+/// **A plain client announces nothing**, which is the good default and is
+/// also what makes this client distinctive on the wire — see `H2Opts`.
+#[test]
+fn the_default_settings_frame_is_empty() {
+    assert_eq!(
+        provoke_settings(H2Opts::default()),
+        Vec::new(),
+        "every field is `None`, so there is nothing to announce"
+    );
+}
+
+/// The two fields with no local observable, checked where they land.
+///
+/// `SETTINGS_HEADER_TABLE_SIZE` is `0x1` and `SETTINGS_ENABLE_PUSH` is
+/// `0x2`, RFC 9113 §6.5.2. The pair is one test because the point is that
+/// *both* reach the frame: a forwarding function that dropped one would
+/// otherwise be caught by neither.
+#[test]
+fn the_two_settings_with_no_local_observable_reach_the_frame() {
+    let seen = provoke_settings(H2Opts {
+        header_table_size: Some(8192),
+        enable_push: Some(false),
+        ..H2Opts::default()
+    });
+    assert!(
+        seen.contains(&(0x1, 8192)),
+        "SETTINGS_HEADER_TABLE_SIZE must carry the number asked for: {seen:?}"
+    );
+    assert!(
+        seen.contains(&(0x2, 0)),
+        "SETTINGS_ENABLE_PUSH must carry the flag asked for: {seen:?}"
+    );
+}
