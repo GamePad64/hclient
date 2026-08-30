@@ -490,10 +490,22 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     // Stated in both directions rather than only for `--follow`: see
     // `backend::Redirects` for the measurement that says why the absent
     // arm was a flag that did nothing.
-    match redirects(&cli) {
-        backend::Redirects::Forbid => req = req.redirect(hclient::redirect::Forbid),
-        backend::Redirects::AtMost(n) => req = req.redirect(hclient::redirect::Limit::new(n)),
-    }
+    // Wrapped so that `%{num_redirects}` and `%{redirect_url}` come from
+    // the policy's own verdicts rather than from the head count, which
+    // counts a digest challenge, a `425` replay and a retry as redirects.
+    // Per request, so the counter is per operation — see `Counting`.
+    let seen_redirects = match redirects(&cli) {
+        backend::Redirects::Forbid => {
+            let (p, seen) = crate::timings::Counting::new(hclient::redirect::Forbid);
+            req = req.redirect(p);
+            seen
+        }
+        backend::Redirects::AtMost(n) => {
+            let (p, seen) = crate::timings::Counting::new(hclient::redirect::Limit::new(n));
+            req = req.redirect(p);
+            seen
+        }
+    };
 
     let mut out = anstream::AutoStream::new(std::io::stdout().lock(), colour);
     if print.request_head {
@@ -605,6 +617,7 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
             url: url_effective.to_string(),
             size_download: collected.bytes().len() as u64,
             total: started.elapsed(),
+            redirects: seen_redirects.lock().map(|s| s.clone()).unwrap_or_default(),
         };
         let rendered = crate::timings::render(fmt, &t, &facts).map_err(Fail::WriteOut)?;
         write!(out, "{rendered}").map_err(Fail::Io)?;

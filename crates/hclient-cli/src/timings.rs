@@ -136,6 +136,10 @@ pub struct Facts {
     pub url: String,
     pub size_download: u64,
     pub total: Duration,
+    /// What the redirect policy saw. Counted by [`Counting`] rather than
+    /// derived from the head count, which is wrong whenever a second head
+    /// arrives without a redirect — see that type.
+    pub redirects: Redirects,
 }
 
 /// A `%{...}` this build does not know.
@@ -158,6 +162,14 @@ impl std::error::Error for Unknown {}
 /// Every name [`render`] answers, in the order a reader would want them
 /// listed. Also the message an unknown one is refused with, so the two
 /// cannot drift.
+///
+/// **curl's `%{time_redirect}` is deliberately absent.** It is the total
+/// time spent in all redirect steps, and this tool keeps the *first*
+/// connection's phases only — a redirect's second connection would
+/// overwrite `time_connect` with an unrelated number, which is why
+/// [`Recorder`] ignores it. Answering `time_redirect` would therefore mean
+/// inventing a number, and an unknown name is refused by name, which is
+/// the better answer.
 pub const KNOWN: &[&str] = &[
     "time_namelookup",
     "time_connect",
@@ -168,6 +180,7 @@ pub const KNOWN: &[&str] = &[
     "http_version",
     "num_connects",
     "num_redirects",
+    "redirect_url",
     "remote_ip",
     "remote_port",
     "size_download",
@@ -257,10 +270,8 @@ fn value(name: &str, t: &Timings, f: &Facts) -> Option<String> {
         "http_code" => f.status.to_string(),
         "http_version" => f.version.clone(),
         "num_connects" => t.connects.to_string(),
-        // One head per hop, so the redirects followed are one fewer. A
-        // hop that failed before a head is not counted, which is right:
-        // it was not a redirect, it was a failure.
-        "num_redirects" => t.heads.saturating_sub(1).to_string(),
+        "num_redirects" => f.redirects.followed.to_string(),
+        "redirect_url" => f.redirects.last_target.clone().unwrap_or_default(),
         "remote_ip" => t.remote.map(|a| a.ip().to_string()).unwrap_or_default(),
         "remote_port" => t.remote.map(|a| a.port().to_string()).unwrap_or_default(),
         "size_download" => f.size_download.to_string(),
@@ -312,6 +323,7 @@ mod tests {
             url: "https://example.com/after".into(),
             size_download: 1234,
             total: Duration::from_millis(150),
+            redirects: Redirects::default(),
         }
     }
 
@@ -362,17 +374,86 @@ mod tests {
         assert_eq!(out, "0.000000|0|0.005000");
     }
 
-    /// One head per hop, so the redirects followed are one fewer — and a
-    /// single-hop request reports zero rather than underflowing.
+    /// **The rule this replaced was `heads - 1`**, and it was wrong in both
+    /// directions: a digest challenge, a `425` replay and a retry each add
+    /// a head without a redirect, while a fully-cached response adds a
+    /// redirect's head without a connection. The count now comes from the
+    /// policy's own verdicts, so the number is *redirects followed*.
     #[test]
-    fn redirects_are_heads_minus_one_and_never_underflow() {
-        let mut t = timings();
-        t.heads = 3;
-        assert_eq!(render("%{num_redirects}", &t, &facts()).unwrap(), "2");
-        t.heads = 1;
-        assert_eq!(render("%{num_redirects}", &t, &facts()).unwrap(), "0");
-        t.heads = 0;
-        assert_eq!(render("%{num_redirects}", &t, &facts()).unwrap(), "0");
+    fn redirects_are_counted_from_the_policy_and_not_from_the_heads() {
+        let t = Timings {
+            heads: 3,
+            ..timings()
+        };
+
+        // Three heads and no redirect at all — the digest, `425` and retry
+        // shape. The old rule said 2.
+        let f = Facts {
+            redirects: Redirects::default(),
+            ..facts()
+        };
+        assert_eq!(render("%{num_redirects}", &t, &f).unwrap(), "0");
+
+        // And a real chain, with one head fewer than hops to prove the two
+        // numbers are now independent.
+        let f = Facts {
+            redirects: Redirects {
+                followed: 2,
+                last_target: Some("https://example.com/after".into()),
+            },
+            ..facts()
+        };
+        assert_eq!(render("%{num_redirects}", &t, &f).unwrap(), "2");
+        assert_eq!(
+            render("%{redirect_url}", &t, &f).unwrap(),
+            "https://example.com/after"
+        );
+    }
+
+    /// `%{redirect_url}` is empty rather than absent when nothing pointed
+    /// anywhere, which is curl's behaviour and the one a shell script can
+    /// test with `-z`.
+    #[test]
+    fn a_request_that_met_no_redirect_renders_an_empty_target() {
+        assert_eq!(render("%{redirect_url}", &timings(), &facts()).unwrap(), "");
+    }
+
+    /// **The counter itself, driven rather than fed.** The two tests above
+    /// hand `Facts` to `render` and never run a policy, so a `Counting`
+    /// that counted nothing would satisfy them — measured, by making the
+    /// increment a no-op and watching all 98 pass. This is what fails.
+    #[test]
+    fn the_wrapper_counts_a_hop_it_allowed_and_not_one_it_refused() {
+        use hclient::redirect::RedirectPolicy as _;
+
+        let from: http::Uri = "https://example.com/one".parse().unwrap();
+        let to: http::Uri = "https://example.com/two".parse().unwrap();
+        let method = http::Method::GET;
+        let hop = hclient::redirect::ProposedRedirect::new(
+            &from,
+            &to,
+            http::StatusCode::FOUND,
+            &method,
+            false,
+            0,
+            &[],
+        );
+
+        // Allowed: counted, and the target recorded.
+        let (policy, seen) = Counting::new(hclient::redirect::Limit::new(10));
+        let _ = policy.follow(&hop);
+        let s = seen.lock().unwrap().clone();
+        assert_eq!(s.followed, 1);
+        assert_eq!(s.last_target.as_deref(), Some("https://example.com/two"));
+
+        // Refused: **not** counted, and the target recorded anyway —
+        // `%{redirect_url}` is where a `3xx` would have gone, which is the
+        // case a caller without `-L` reaches for it in.
+        let (policy, seen) = Counting::new(hclient::redirect::Forbid);
+        let _ = policy.follow(&hop);
+        let s = seen.lock().unwrap().clone();
+        assert_eq!(s.followed, 0, "a refused hop is not a redirect followed");
+        assert_eq!(s.last_target.as_deref(), Some("https://example.com/two"));
     }
 
     #[test]
@@ -467,5 +548,80 @@ mod tests {
         let t = rec.snapshot();
         assert_eq!(t.tcp, Duration::from_millis(7), "the first, not the last");
         assert_eq!(t.connects, 2, "and both are counted");
+    }
+}
+
+/// A [`hclient::redirect::RedirectPolicy`] that counts the hops it allows, wrapping the one
+/// the caller actually chose.
+///
+/// **`%{num_redirects}` used to be `heads - 1`, and that is wrong for
+/// every reason a second head can exist without a redirect.** A digest
+/// challenge answers `401` and the client sends again; a `425 Too Early`
+/// is replayed; a retry re-sends a hop that failed unsent. Each adds a
+/// head and no redirect, so `hc -w '%{num_redirects}' --digest` against a
+/// challenging server reported **1** for a request that went nowhere else.
+/// A cache hit is the same defect with the sign flipped.
+///
+/// So the count comes from the only place that knows: the redirect policy
+/// is asked once per `3xx` considered, and a hop happened exactly when it
+/// answered [`hclient::redirect::RedirectVerdict::Follow`]. Refusals by `Forbid`, by the hop
+/// limit, or by anything else are not counted, which is what makes the
+/// number *redirects followed* rather than *3xx seen*.
+///
+/// **The shared-counter objection does not apply here, and it is worth
+/// saying why**, because `hclient-proto`'s own doc explains at length that
+/// a policy cannot hold a hop counter: a policy lives inside `Client`'s
+/// `Arc`, shared by every clone and every request in flight, so an
+/// `AtomicU8` inside `Limit` would count for the life of the program. This
+/// one is installed with `RequestBuilder::redirect`, per request, and `hc`
+/// makes one request per invocation. The counter is therefore per
+/// operation, which is where per-request state belongs.
+#[derive(Debug)]
+pub struct Counting<P> {
+    inner: P,
+    seen: Arc<Mutex<Redirects>>,
+}
+
+/// What [`Counting`] saw. `Default` is a request that met no `3xx` at all.
+#[derive(Debug, Default, Clone)]
+pub struct Redirects {
+    /// Hops the policy allowed.
+    pub followed: u32,
+    /// Where the last `3xx` pointed, whether or not it was followed.
+    ///
+    /// curl's `%{redirect_url}` is the URL a request *would* have gone to
+    /// with `-L`, so it is populated on a refusal as well as on a hop —
+    /// which is the case a caller reaches for it in.
+    pub last_target: Option<String>,
+}
+
+impl<P> Counting<P> {
+    pub fn new(inner: P) -> (Self, Arc<Mutex<Redirects>>) {
+        let seen = Arc::new(Mutex::new(Redirects::default()));
+        (
+            Self {
+                inner,
+                seen: Arc::clone(&seen),
+            },
+            seen,
+        )
+    }
+}
+
+impl<P: hclient::redirect::RedirectPolicy> hclient::redirect::RedirectPolicy for Counting<P> {
+    fn follow(
+        &self,
+        hop: &hclient::redirect::ProposedRedirect<'_>,
+    ) -> hclient::redirect::RedirectVerdict {
+        let verdict = self.inner.follow(hop);
+        // A poisoned lock means a panic ran while it was held, which
+        // nothing here does; a lost count is better than a lost request.
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.last_target = Some(hop.to().to_string());
+            if matches!(verdict, hclient::redirect::RedirectVerdict::Follow(_)) {
+                seen.followed += 1;
+            }
+        }
+        verdict
     }
 }
