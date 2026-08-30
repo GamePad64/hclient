@@ -522,6 +522,125 @@ impl Display for ConnectionId {
     }
 }
 
+/// Which request an event belongs to, across every hop and every resend of
+/// one operation.
+///
+/// **`ConnectionId` answers a different question and neither replaces the
+/// other.** On a multiplexed HTTP/2 connection one id covers every request
+/// sharing it, so a `Head` naming a connection does not name *this*
+/// request; and one operation may span several connections, so a request
+/// is not identified by naming one. A hook joining a handshake to a span
+/// needs both.
+///
+/// **Minted once per operation by `hclient::Client`**, before the first
+/// send, and carried unchanged through redirects, retries, `425` replays
+/// and authentication legs — those are all the same piece of work, and a
+/// caller asked for one of them. Nothing below the client can mint it: a
+/// transport sees one `execute` per hop and cannot tell hop 2 of a chain
+/// from attempt 2 of a retry, which is the whole gap this closes.
+///
+/// **It is a number and never a trace context**, which is the rule that
+/// keeps it safe to put in `http::Extensions` beside `AllowEarlyData`:
+/// extensions are readable by any transport in the graph, including one
+/// this workspace did not write. A counter tells such a transport nothing;
+/// a `traceparent` would hand it a cross-service correlator. Propagation
+/// belongs to a transport decorator — `docs/otel-design.md` §3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RequestId(u64);
+
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+impl RequestId {
+    /// The id an event carries when it names no request.
+    ///
+    /// One producer, unlike [`ConnectionId::UNWATCHED`]'s two: a transport
+    /// driven directly, with no `Client` above it, has no extension to
+    /// read. It is the **understating** value and that direction is the
+    /// point — `reports_alpn`'s rule. A backend that forgets the setter
+    /// under-reports, costing a hook a join it cannot make; over-reporting
+    /// would attach one request's handshake to another's span, and there
+    /// is no third answer.
+    ///
+    /// [`RequestId::next`] starts at `1` and never returns it, so looking
+    /// it up in a table of live requests cannot hit one.
+    pub const UNIDENTIFIED: RequestId = RequestId(0);
+
+    /// The next id. `Relaxed`, for [`ConnectionId::next`]'s reason: this
+    /// counter orders nothing, it only has to hand out distinct numbers.
+    pub fn next() -> Self {
+        Self(NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// The number itself, for a log line.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl Display for RequestId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// The identity plus where in the operation this attempt sits, as it
+/// travels in a request's [`http::Extensions`].
+///
+/// **One type rather than two, and one insert per hop**: the three facts
+/// are never wanted apart — a hop number with no request is meaningless —
+/// and one insert is cheaper than two.
+///
+/// `#[non_exhaustive]` with a constructor beside it, which is
+/// `ClientCertRequest`'s pair and its reason: the attribute stops a reader
+/// breaking on a field added later, and the constructor stops the
+/// attribute locking out the crate that builds it, which is `hclient`
+/// rather than this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Attempt {
+    /// Which request. The same value for every hop and resend.
+    pub id: RequestId,
+    /// Redirect hops taken so far. `0` on the first send.
+    pub hop: u8,
+    /// Sends of **this hop** before this one — a retry, a `425` replay, an
+    /// authentication leg. `0` on the first, and it resets at each hop,
+    /// which is what makes the pair answer *which attempt of which hop*
+    /// rather than a single number that cannot.
+    pub resend: u16,
+}
+
+impl Attempt {
+    /// The first send of the first hop of `id`.
+    #[must_use]
+    pub fn new(id: RequestId) -> Self {
+        Self {
+            id,
+            hop: 0,
+            resend: 0,
+        }
+    }
+
+    /// The next hop of the same operation. `resend` starts again, because
+    /// it counts sends of a hop rather than of the request.
+    #[must_use]
+    pub fn next_hop(self) -> Self {
+        Self {
+            hop: self.hop.saturating_add(1),
+            resend: 0,
+            ..self
+        }
+    }
+
+    /// Another send of the same hop.
+    #[must_use]
+    pub fn resent(self) -> Self {
+        Self {
+            resend: self.resend.saturating_add(1),
+            ..self
+        }
+    }
+}
+
 /// A connection was established.
 #[derive(Debug)]
 #[non_exhaustive]

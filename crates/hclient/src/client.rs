@@ -992,6 +992,20 @@ impl Client {
         // worth it.
         let mut visited: Vec<http::Uri> = vec![hp.uri.clone()];
 
+        // **Minted once for the whole operation**, before the first send,
+        // and carried unchanged through redirects, retries, `425` replays
+        // and authentication legs — those are all one piece of work, and
+        // the caller asked for one of them. Nothing below this loop could
+        // mint it: a transport sees one `execute` per hop and cannot tell
+        // hop 2 of a chain from attempt 2 of a retry, which is the gap.
+        //
+        // Unconditional rather than gated on anything watching: it is one
+        // relaxed `fetch_add` per operation, beside a network round trip,
+        // and the alternative would be a second question `Client` has no
+        // way to ask — `Hooks::WATCHING` is the transport's.
+        let mut attempt_id =
+            hclient_core::unversioned::Attempt::new(hclient_core::unversioned::RequestId::next());
+
         loop {
             // Cookies are attached PER HOP, not once for the operation,
             // and re-derived rather than carried: `next_hop` clones the
@@ -1138,6 +1152,13 @@ impl Client {
                             },
                         };
 
+                        // One insert per send. `attempt` counts from 1
+                        // and `Attempt::resend` counts sends *before* this
+                        // one, so the first send of a hop is `resend: 0`.
+                        if attempt > 1 {
+                            attempt_id = attempt_id.resent();
+                        }
+                        hp.extensions.insert(attempt_id);
                         let outcome = self.send_hop(&hp, this).await;
                         let Some(policy) = policy.as_ref() else {
                             // No policy: the first outcome is the answer,
@@ -1280,6 +1301,10 @@ impl Client {
                         // whole of that attempt into `response_delay` and
                         // hand the entry an age it never had.
                         requested_at = self.cache_now();
+                        // A `425` replay is another send of the same hop,
+                        // so `resend` moves and the id does not.
+                        attempt_id = attempt_id.resent();
+                        retry.extensions.insert(attempt_id);
                         resp = self.send_hop(&retry, again).await?;
                     }
 
@@ -1328,6 +1353,11 @@ impl Client {
                             let mut next = hp.clone();
                             flow.authorize(&next.method, &next.uri, &mut next.headers);
                             requested_at = self.cache_now();
+                            // An authentication leg is a send of the same
+                            // hop too — the `425` branch's shape, which is
+                            // what this whole block is modelled on.
+                            attempt_id = attempt_id.resent();
+                            next.extensions.insert(attempt_id);
                             resp = self.send_hop(&next, again).await?;
                         }
                     }
@@ -1400,6 +1430,12 @@ impl Client {
                         return Ok((resp, hp.uri));
                     };
                     hp = next_hp;
+                    // A redirect is a new hop of the same operation, so
+                    // the id survives and `resend` starts again — it counts
+                    // sends of a hop rather than of the request, which is
+                    // what lets the pair answer *which attempt of which
+                    // hop* rather than a single number that cannot.
+                    attempt_id = attempt_id.next_hop();
                     body = next_body;
                 }
             }
