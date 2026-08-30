@@ -58,6 +58,7 @@
 //! reads only `supports_svcb()`.
 #![forbid(unsafe_code)]
 
+mod error;
 mod overrides;
 pub mod svcb;
 

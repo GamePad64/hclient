@@ -22,6 +22,8 @@
 //! free of a DNS codec: a consumer who only ever uses `IpLiteralOnly` does
 //! not link one.
 
+pub use crate::error::SvcbRecordError;
+
 use crate::SvcbEndpoint;
 use bytes::Bytes;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -131,27 +133,6 @@ impl RawParam {
             Self::Other(key) => *key,
         }
     }
-}
-
-/// The one way a well-decoded record can still be malformed as a *record*.
-///
-/// A single-variant enum rather than a bare `u16`, and its own type rather
-/// than a variant of some backend's error: every backend that decodes SVCB
-/// has a large error enum of its own describing how its transport can
-/// fail, and none of those failures can happen here — this function reads
-/// no bytes, opens no socket and calls no OS API. Each backend maps this
-/// into its own enum at the call site (`hclient-dns-system` into
-/// `SvcbLookupError::MandatoryKeyAbsent`, `hclient-dns-doh` into
-/// `DohError::MandatoryKeyAbsent`), which keeps their public taxonomies
-/// unchanged by the move.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum SvcbRecordError {
-    /// RFC 9460 §8: the record's `mandatory` list names a key the record
-    /// does not actually carry. Checked here rather than by a decoder,
-    /// because it is a statement about the record as a whole and not about
-    /// any one parameter's encoding.
-    #[error("SvcParamKey {key} is listed as mandatory but is not present in the record")]
-    MandatoryKeyAbsent { key: u16 },
 }
 
 /// One record, as an endpoint this client may act on.
