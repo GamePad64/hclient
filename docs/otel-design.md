@@ -106,37 +106,97 @@ needs two tests, neither covering the other — the precedent is
 `hclient-fetch`, where cancellation is pinned by exactly such a pair
 because a pump watching only the channel passes one and fails the other.
 
-## 5. Two things the decorator cannot know
+## 5. What the decorator can and cannot know — one absence closed
 
-Both are honest absences, and this workspace's rule is that an attribute
-whose value would be a guess is **omitted**, not guessed.
+**`http.request.resend_count` is computable now, and the obvious mapping
+is wrong.** When this document was written a decorator saw one `execute`
+per hop and could not tell hop 2 of a redirect chain from attempt 2 of a
+retry. `hclient_core::unversioned::Attempt { id, hop, resend }` now travels
+in the request's extensions, minted once per operation in `Client::run` and
+updated at all three send sites — the retry loop, the `425` replay and the
+authentication leg.
 
-**`http.request.resend_count` is not computable from below.** In
-`Client::run` the outer loop is hops — redirects and authentication legs —
-and the inner loop is retries of one hop. Both arrive at the transport
-identically: a fresh `execute` with a cloned request. Hop 2 of a redirect
-chain and attempt 2 of a retry are indistinguishable from where the
-decorator stands.
+So the decorator reads the value rather than computing it. But **it is
+`hop + resend`, not `resend`**, and that is measured rather than guessed.
+The registry's own words:
 
-*Closable cheaply:* `Client::run` puts `Attempt { hop: u8, resend: u8 }`
-into the request's extensions. Two lines, readable by anything below, and
-it fits the existing habit — `client.rs` already inserts and removes
-extensions per hop.
+> The ordinal number of request resending attempt (for any reason,
+> including redirects).
+>
+> The resend count SHOULD be updated each time an HTTP request gets resent
+> by the client, regardless of what was the cause of the resending (e.g.
+> redirection, authorization failure, 503 Server Unavailable, network
+> issues, or any other).
 
-**Connection attributes cannot be attached to a span.**
-`network.peer.address`, the TLS version, whether the connection was
-reused: all of it exists only in `Hooks`, and `Head` carries a
-`ConnectionId` rather than a request identity. On a multiplexed h2
-connection that id is not the address of *this* request. So even on
-`Native` there is nothing a decorator can correlate.
+Our two counters split the same total on a line OTel does not draw:
+`hop` counts redirects and `resend` counts everything else about one hop.
+Reading `resend` alone — the mapping the field names invite — reports `0`
+for the third hop of a redirect chain, which is exactly the case the
+attribute exists for. Both are kept as span fields of our own beside the
+standard one, because the split is real information that the sum destroys:
+*third send, first hop* and *first send, third hop* are different failures.
 
-*Closable two ways:* a request identity in the events, or hooks at the
-`Client` level. The second is larger and probably the more valuable —
-`Client` is currently not observable in any portable way at all.
+**Connection attributes are still not the decorator's, and are now
+joinable.** `network.peer.address` and `network.peer.port` live in
+`Connected`, which is a `Hooks` event, and `Head` carries a `ConnectionId`
+rather than a request identity — that was the second absence. Both events
+now carry a `RequestId` as well, so a hook and a span can be joined on a
+key. What that does **not** give is a decorator that fills the attributes
+itself: it would have to be the hook too. Three options, in increasing
+order of what they demand:
 
-Neither is required for a first version. A first version works without
-them and **under-reports**, which is the direction this workspace
-consistently chooses.
+1. **Leave them unset.** They are `Recommended`, not required, and this
+   workspace's rule is that an attribute whose value would be a guess is
+   omitted. A first version does this.
+2. **The caller installs a hook and joins.** Costs them the join and gives
+   them everything, including the TLS facts `Connected` carries that no
+   span field is defined for.
+3. **The crate offers a hook that feeds the decorator.** Possible, and it
+   is the shape to resist first: `fn hooks` exists on four backends of the
+   six types that could carry it, so a decorator that installed one would
+   work on some transports and silently not on others — a capability that
+   varies by backend, which is what `Capabilities` exists to make visible
+   rather than to hide.
+
+**One attribute has a capability to ask.** `network.protocol.version` is
+`Recommended`, and whether `Response::version()` means anything is exactly
+what `Capabilities::version_reported` answers — `hclient-fetch` and
+`hclient-wasi` report `false` because they neither select the version nor
+learn it. So the decorator reads the capability and sets the attribute only
+where it is true. That is the biconditional `Head::version` already
+established one seam over, reused rather than reinvented.
+
+## 5a. The attribute set, against what the seam actually gives
+
+Fetched from the specification rather than recalled. Requirement levels are
+OTel's; the right-hand column is ours.
+
+| attribute | level | where it comes from here |
+|---|---|---|
+| `http.request.method` | Required | the request |
+| `server.address`, `server.port` | Required | the URI, port defaulted by scheme |
+| `url.full` | Required | the URI, **with userinfo redacted** — the spec requires it and a span is a place credentials travel to a collector |
+| `http.response.status_code` | Cond. Required | the response |
+| `error.type` | Cond. Required | `ErrorKind`'s variant name, which is why that type is an enum |
+| `http.request.method_original` | Cond. Required | only when we normalise a method, which this client does not — so absent, and that is an answer |
+| `network.protocol.name` | Cond. Required | absent: it is required only when the protocol is **not** HTTP |
+| `http.request.resend_count` | Recommended | `Attempt`, as above |
+| `network.protocol.version` | Recommended | `Response::version()`, gated on `version_reported` |
+| `user_agent.original` | Recommended | the request headers |
+| `network.peer.address`, `.port` | Recommended | **not set** — see §5 |
+
+Span kind `CLIENT`. **Span name is `{method}`**, not `{method} {target}`:
+the spec allows the target only when it is low-cardinality, and an HTTP
+client has no route template — a URL path would put every distinct URL in
+the name and blow up the backend's cardinality, which is the failure the
+convention exists to prevent.
+
+**Status is `Error` for 4xx as well as 5xx**, which is a client-span rule
+and differs from the server side. It also differs from this crate's own
+`error_for_status`, deliberately: that method exists because a `404` is a
+normal answer for about half the requests ever made and the caller decides,
+where a span records what the exchange *was*. Two different questions, and
+the span is not the place to apply the caller's policy.
 
 ## 6. Baggage crosses an origin, and we cannot stop it here
 
@@ -205,15 +265,98 @@ A separate crate, `hclient-otel`, by the local test for a crate boundary:
 it holds a dependency that a feature would otherwise spread into every
 graph in the workspace.
 
-## 9. What a first version leaves out
+## 9. The crate: what is in it, and what each type owes
+
+```
+hclient-otel/
+  src/lib.rs        Instrumented<T>, the decorator and its Transport impls
+  src/attrs.rs      the request/response attribute set, sans-io
+  src/body.rs       SpanBody<B>, which ends the span
+  src/context.rs    reading the context, and propagate_when
+```
+
+**`Instrumented<T>`** wraps any `T: Transport` and implements `Transport`;
+it implements `SendTransport` where `T` does, by the one-line
+`Box::pin(self.execute(req))` every backend already writes — `Send` is
+inferred at a concrete type and proved nowhere.
+
+**`attrs.rs` is sans-io and holds every decision in §5a**, so the whole
+attribute set is testable with no socket, no collector and no clock. That
+is `hclient-proto`'s bargain applied one crate up, and it is what makes the
+`url.full` redaction and the `{method}` span name pinnable by unit tests
+rather than by reading a span in a fixture.
+
+**`SpanBody<B>`** ends the span on whichever comes first, the end of the
+body or `Drop`. §4 has the rule; what the crate owes is the **pair** of
+tests, because a `SpanBody` that ended only on `poll_frame` returning
+`None` passes the first and fails the second, and one that ended only on
+`Drop` passes the second and reports every duration as the caller's
+lifetime rather than the exchange's.
+
+## 10. What a test can pin without a collector
+
+The thing that makes this crate testable is that neither front needs a
+pipeline. With the `tracing` feature, a `tracing_subscriber` layer that
+records `(name, fields, close time)` into a `Vec` is thirty lines and gives
+every assertion in §5a. With the `otel` feature, `opentelemetry_sdk`'s
+in-memory exporter does the same.
+
+Four claims are worth a mutation each, because each would be silent:
+
+- **The span closes at the end of the body**, not at the head — mutate to
+  close in `execute` and the recorded duration stops depending on how long
+  the body took, which a fixture that delays its second frame detects.
+- **`resend_count` is `hop + resend`** — mutate to `resend` and a
+  three-hop redirect chain reports `0`. This is the mapping §5 says the
+  field names invite and the specification forbids.
+- **`url.full` is redacted** — mutate to the raw URI and a request to
+  `https://u:p@host/` puts a password in a span.
+- **The extension beats the ambient context** — mutate to prefer the
+  ambient one and a caller who crossed a task boundary gets the wrong
+  parent, which no assertion about *a* span being emitted would catch.
+
+**And one property is not a test but a build:** `hclient-otel` must
+compile for `wasm32-unknown-unknown` and `wasm32-wasip2`, because a client
+whose whole claim is one API everywhere should not grow an instrumenter
+that only exists on native. §8's measurement says it can — `opentelemetry`
+has no build script and no `-sys` crate — and `just check-targets` is where
+that belongs rather than in a paragraph.
+
+## 11. Build order, and where to stop
+
+1. `Instrumented<T>` with `attrs.rs` and the request-side attributes; span
+   opened and closed in `execute`. Wrong duration on purpose, and it is
+   the smallest thing that emits a span at all.
+2. `SpanBody<B>` and the pair of tests. Now the duration is right.
+3. Injection: ambient context, the extension override, `propagate_when`.
+4. `resend_count`, `network.protocol.version` and the capability gate.
+5. **Stop and check.** At this point the crate is useful and every
+   attribute it sets is one it can defend.
+6. Metrics, if wanted, as a separate surface — §12.
+
+## 12. What a first version leaves out
 
 - **Metrics** (`http.client.request.duration` and friends) — the same
-  data, a separate surface. After spans.
-- **Enrichment from `Hooks`** — wrong until a request identity exists in
-  the events; see §5.
-- **`resend_count`** — absent until `Attempt` is in the extensions.
+  data, a separate surface. After spans, and worth noting that the
+  duration a metric wants is the one §4 fixes: to the end of the body.
+- **Connection attributes**, `network.peer.address` and its port. §5 has
+  the three ways and the reason the tempting one is worst.
+- **A span per hop with a parent per operation.** OTel's model is one
+  client span per *request*, and a redirect is a resend rather than a
+  child — which is what `resend_count` counting redirects means. So the
+  chain is flat by the specification's own choice, and grouping it under
+  an operation span is a thing a *caller* may want and the convention does
+  not describe. `RequestId` is on every hop, so a caller who wants it can
+  build it; the crate does not decide for them.
+
+**Two entries left this list because the work under them landed.**
+`resend_count` was *absent until `Attempt` is in the extensions* and
+`Attempt` is now in the extensions; enrichment from `Hooks` was *wrong
+until a request identity exists in the events* and it now does. What
+replaced them is narrower and truer: the identity makes both computable,
+and only the second still needs a mechanism the crate has not got.
 
 A first version is: the decorator, injection from the context with an
-extension override, a span from `execute` to the end of the body, request
-and response attributes, `propagate_when`, and the rule about the
-exporter's client.
+extension override, a span from `execute` to the end of the body, the
+attribute set of §5a, `propagate_when`, and the rule about the exporter's
+client.
