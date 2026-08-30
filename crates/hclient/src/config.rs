@@ -1,5 +1,6 @@
 // `Timeouts` is defined in `hclient-core`: transports read it from
 // `http::Extensions`, and they don't depend on `hclient`.
+use crate::error::InvalidBaseUrl;
 pub use hclient_core::Timeouts;
 use hclient_core::{
     Capabilities, Error, ErrorKind, RedirectSupport, RequireVersion, UnsupportedCapability,
@@ -142,25 +143,6 @@ pub struct Config {
     /// field cannot be forgotten, and a field that appears and disappears
     /// takes that check into half the builds with it.
     pub cache: bool,
-}
-
-/// The base URL is unfit to resolve this request against.
-///
-/// `pub` and re-exported by the facade, not for looks: the caller must be
-/// able to tell this apart from any other `ErrorKind::Other` via
-/// `Error::source().downcast_ref::<InvalidBaseUrl>()` — the same trick
-/// `mock::QueueEmpty` uses. Both fields are public so the diagnostic names
-/// the specific pair, not just the fact.
-///
-/// `requested` is a `String`, not an `http::Uri`: resolution works on the
-/// STRING before parsing (see `effective_uri`), and exactly the references
-/// the base exists for aren't expressible as `http::Uri` at all.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("cannot resolve `{requested}` against base URL `{base}` (a base URL must be absolute)")]
-#[non_exhaustive]
-pub struct InvalidBaseUrl {
-    pub base: http::Uri,
-    pub requested: String,
 }
 
 /// The URI the request will actually go out on: `url`, resolved against

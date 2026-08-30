@@ -1,4 +1,5 @@
 use crate::client::Client;
+use crate::error::{ColonInUsername, ContentTypeIsNotOursToKeep};
 use std::error::Error as StdError;
 
 use crate::response::Response;
@@ -595,23 +596,3 @@ impl<'a> RequestBuilder<'a> {
         Ok(Response::new(resp, final_uri))
     }
 }
-
-/// A `multipart/form-data` body was set and so was a `Content-Type`.
-///
-/// The two cannot both stand: the header carries the boundary, so the
-/// caller's value would describe a body that is not there. Refusing names
-/// both, where overriding would lose the caller's header silently and
-/// deferring would send bytes no receiver can parse.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "a multipart body sets its own Content-Type, because the header carries the boundary — \
-     remove the Content-Type, or build the body with multipart::Form::encode and set both"
-)]
-pub struct ContentTypeIsNotOursToKeep;
-
-/// RFC 7617 §2 makes `:` the separator between a username and a password,
-/// so a username containing one is not representable — and encoding it
-/// anyway would make `("a:b", "")` and `("a", "b")` the same bytes.
-#[derive(Debug, thiserror::Error)]
-#[error("a Basic-auth username may not contain a colon")]
-pub struct ColonInUsername;

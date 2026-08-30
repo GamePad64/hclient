@@ -4,6 +4,7 @@
 //! the parsed header. Everything that can be decided from the header alone
 //! already was, in `parse.rs`.
 
+use crate::cookie::error::Rejected;
 use std::time::Duration;
 // `web_time`, not `std::time`, for the clock types. On every target but
 // `wasm32-unknown-unknown` it is a re-export of `std::time`, so this is
@@ -20,7 +21,7 @@ use super::matching::{
     canonical_host, default_path, domain_matches, is_ip_literal, is_secure_request, path_matches,
     request_path,
 };
-use super::parse::{ParseError, SameSite, SetCookie};
+use super::parse::{SameSite, SetCookie};
 use super::suffix::{BuiltinList, PublicSuffixList};
 
 /// RFC 6265bis §5.5: an expiry further out than this is capped to it.
@@ -132,87 +133,6 @@ impl Cookie {
     pub(super) fn is_expired(&self, now: SystemTime) -> bool {
         self.expires.is_some_and(|e| e <= now)
     }
-}
-
-/// Why a cookie was not stored — by [`CookieJar::store`] from a
-/// `Set-Cookie`, or by [`CookieJar::restore`](super::CookieJar::restore)
-/// from a saved [`CookieRecord`](super::CookieRecord).
-///
-/// Everything here is a refusal the RFC requires, and each one is a place a
-/// cookie would otherwise end up somewhere it does not belong. They are
-/// reported rather than swallowed because "the cookie silently did not
-/// arrive" is among the harder things to debug in an HTTP client.
-///
-/// **One error type for both entry points rather than two**, because
-/// they are the same refusals asked of two different inputs: §4.1.3's
-/// name prefixes, the public-suffix rule and [`Limits`] apply to a
-/// restored cookie exactly as they apply to a fresh one. The three
-/// variants only `restore` can produce are marked as such; the two only
-/// `store` can produce name a request that `restore` does not have.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum Rejected {
-    /// The header is not a cookie at all — see [`ParseError`].
-    #[error("malformed Set-Cookie: {0}")]
-    Malformed(#[from] ParseError),
-    /// The request URI has no host, so there is nothing to scope a cookie
-    /// to.
-    #[error("the request URI has no host")]
-    NoHost,
-    /// §5.7: the `Domain` attribute does not domain-match the request host.
-    /// The sibling-domain case (`Domain=example.com` from
-    /// `notexample.com`) lands here.
-    #[error("Domain={domain} does not match request host {host}")]
-    DomainMismatch { domain: String, host: String },
-    /// §5.7: the `Domain` attribute is a public suffix and is not the
-    /// request host itself — `Domain=co.uk`, which would put one cookie on
-    /// every registrant under `.uk`.
-    #[error("Domain={domain} is a public suffix")]
-    DomainIsPublicSuffix { domain: String },
-    /// The same refusal, from a build with no list to consult: this crate
-    /// without the `public-suffix` feature, or a jar built on
-    /// [`NoList`](super::NoList). Every `Domain` attribute is refused
-    /// there, so the cause is the build rather than the cookie.
-    #[error("Domain={domain} cannot be checked: this build has no public suffix list")]
-    NoPublicSuffixList { domain: String },
-    /// §5.7: a `Secure` cookie offered over a scheme that is not secure.
-    #[error("a Secure cookie was offered over a non-secure request")]
-    SecureOverInsecure,
-    /// §4.1.3: a `__Secure-` name without `Secure`, or over a non-secure
-    /// request.
-    #[error("the __Secure- prefix requires a Secure cookie over a secure request")]
-    SecurePrefix,
-    /// §4.1.3: a `__Host-` name that is not `Secure`, not host-only, or
-    /// not scoped to `/`.
-    #[error("the __Host- prefix requires Secure, no Domain, and Path=/")]
-    HostPrefix,
-    /// [`Limits::max_name_value_bytes`].
-    #[error("name and value are {bytes} bytes, over the {limit}-byte limit")]
-    TooLarge { bytes: usize, limit: usize },
-    /// [`restore`](super::CookieJar::restore) only: a record whose
-    /// `domain` is empty, or is nothing but the leading `.` §5.2.3 strips.
-    /// A `Set-Cookie` cannot reach this — an empty `Domain` attribute is
-    /// no attribute at all (§5.2.3) and the request host stands in.
-    #[error("the record has no domain")]
-    EmptyDomain,
-    /// [`restore`](super::CookieJar::restore) only: a record whose `path`
-    /// is not absolute. A `Set-Cookie` cannot reach this either — §5.2.4
-    /// makes such a `Path` unspecified and the default path stands in,
-    /// and there is no request here for a default to be derived from.
-    #[error("Path={path} is not absolute")]
-    RelativePath { path: String },
-    /// [`restore`](super::CookieJar::restore) only: a record scoped to an
-    /// IP literal that is **not** host-only.
-    ///
-    /// §5.7 makes an IP-literal host host-only unconditionally, so
-    /// [`store`](CookieJar::store) cannot produce this pair — and
-    /// §5.1.3's domain-match is not written to survive it. Measured:
-    /// `domain_matches("evil.1.2.3.4", "1.2.3.4")` is **true**, because
-    /// the IP test in that rule asks whether the *request host* is a
-    /// literal, and `evil.1.2.3.4` is an ordinary name. So the pair is a
-    /// cookie for every name ending in `.1.2.3.4`.
-    #[error("Domain={domain} is an IP literal, so the cookie must be host-only")]
-    IpDomainNotHostOnly { domain: String },
 }
 
 /// A cookie jar: parse, store, expire and hand back.

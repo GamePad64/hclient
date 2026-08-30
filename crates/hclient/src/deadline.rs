@@ -7,6 +7,7 @@
 //! promptly and then dribbles just under the `between_bytes` threshold
 //! runs unbounded. Nothing bounded the operation as a whole.
 
+use crate::error::TotalTimeoutElapsed;
 use crate::response::classify_body_error;
 use bytes::Bytes;
 use core::time::Duration;
@@ -18,17 +19,6 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-
-/// The source of an [`ErrorKind::Timeout`]`(`[`Phase::Total`]`)`.
-///
-/// A named type rather than a string, for the same reason
-/// [`crate::error::InvalidBaseUrl`] is one: a caller has to be able to tell this
-/// apart from any other timeout by
-/// `Error::source().downcast_ref::<TotalTimeoutElapsed>()`, and to read
-/// the bound that was actually in force.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("the whole operation exceeded its total timeout of {0:?}")]
-pub struct TotalTimeoutElapsed(pub Duration);
 
 /// The clock slot of a client that was never given a clock.
 ///

@@ -1,3 +1,6 @@
+#[cfg(feature = "charset")]
+pub(crate) use crate::error::CharsetError;
+pub(crate) use crate::error::UnexpectedStatus;
 use bytes::{Bytes, BytesMut};
 use hclient_core::{Error, ErrorKind};
 use hclient_proto::link::Links;
@@ -61,19 +64,6 @@ pub struct Response<B = crate::body::ClientBody> {
     /// itself. Terminality here is exactly the same: the error is handed
     /// back once, then it's the end of the stream.
     sealed: bool,
-}
-
-/// A `4xx` or `5xx` the caller asked to be told about.
-///
-/// Carries the URL as well as the status, because by the time a caller is
-/// looking at one they have usually stopped holding the response — and a
-/// chain of redirects means the URL that failed is not the one they typed.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("the server answered {status} for {url}")]
-#[non_exhaustive]
-pub struct UnexpectedStatus {
-    pub status: http::StatusCode,
-    pub url: http::Uri,
 }
 
 impl<B> Response<B> {
@@ -545,21 +535,6 @@ impl Collected {
     pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
         serde_json::from_slice(&self.body).map_err(|e| Error::new(ErrorKind::Decode, e))
     }
-}
-
-/// What [`Collected::text_with_charset`] could not do.
-#[cfg(feature = "charset")]
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum CharsetError {
-    /// The `charset` parameter named something the WHATWG Encoding
-    /// Standard has no encoding for.
-    #[error("the response declared `charset={label}`, which names no encoding")]
-    UnknownLabel { label: String },
-    /// The bytes are not a valid sequence in the charset that was used —
-    /// which is the declared one unless a byte order mark overrode it.
-    #[error("the response body is not valid {charset}")]
-    Malformed { charset: &'static str },
 }
 
 /// The `charset` parameter of a `Content-Type` value, if it has one.

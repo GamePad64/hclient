@@ -31,6 +31,7 @@
 //! A check at the head could only ever read `Content-Length`, which a
 //! server is free not to send and free to lie in.
 
+use crate::error::ResponseTooLarge;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -38,19 +39,6 @@ use std::task::{Context, Poll};
 use bytes::Buf;
 use hclient_core::{Error, ErrorKind};
 use http_body::{Body, Frame};
-
-/// The body yielded more bytes than the client's limit allowed.
-///
-/// Carries both numbers because the pair is what a caller acts on: the
-/// limit tells them what they asked for, and the count tells them how
-/// close the truth was to it.
-#[derive(Debug, thiserror::Error)]
-#[error("the response body exceeded the {limit}-byte limit (stopped at {seen})")]
-#[non_exhaustive]
-pub struct ResponseTooLarge {
-    pub limit: u64,
-    pub seen: u64,
-}
 
 // Hand-written, so that it carries **no `B: Debug` bound**. `#[derive]`
 // would add one, and after erasure the body in a real client is

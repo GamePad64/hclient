@@ -76,9 +76,11 @@
 
 mod date;
 mod directives;
+mod error;
 mod policy;
 mod store;
 
 pub use directives::{RequestDirectives, ResponseDirectives};
-pub use policy::{HttpCache, Limits, Lookup, NotStored, Storing};
+pub use error::NotStored;
+pub use policy::{HttpCache, Limits, Lookup, Storing};
 pub use store::{CacheStore, Key, MemoryStore, Selector, StoredResponse};

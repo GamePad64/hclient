@@ -21,6 +21,8 @@ use hclient_core::{Error, ErrorKind};
 use hclient_proto::lines::LineSplitter;
 use http_body::Body as HttpBody;
 
+pub use crate::error::LineTooLong;
+
 use crate::response::Response;
 
 /// The ceiling [`Response::lines`] applies to a single line.
@@ -36,19 +38,6 @@ use crate::response::Response;
 /// is not — see [`LineStream`] for why `ClientBuilder::response_limit`
 /// does not stand in for it.
 pub const DEFAULT_MAX_LINE: usize = 16 * 1024 * 1024;
-
-/// A single line was longer than the stream's bound.
-///
-/// Carries both numbers for [`crate::error::ResponseTooLarge`]'s reason:
-/// the limit is what the caller asked for and the count is how close the
-/// truth got to it.
-#[derive(Debug, thiserror::Error)]
-#[error("a single line exceeded the {limit}-byte limit (stopped at {seen})")]
-#[non_exhaustive]
-pub struct LineTooLong {
-    pub limit: usize,
-    pub seen: usize,
-}
 
 // Hand-written, so that it carries **no `B: Debug` bound** — the same
 // reason `Response` and `SseStream` write theirs out: after erasure the

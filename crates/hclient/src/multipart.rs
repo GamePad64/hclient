@@ -102,6 +102,8 @@
 //! [`RetryKind::ViaFactory`]: hclient_core::RetryKind::ViaFactory
 //! [`RetryKind::Impossible`]: hclient_core::RetryKind::Impossible
 
+pub use crate::error::{MultipartError, TrailersInAPart};
+
 use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::{Error, ErrorKind, RequestBody};
 use http_body::{Body, Frame, SizeHint};
@@ -109,75 +111,11 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// What can go wrong while turning a [`Form`] into bytes.
-///
-/// Every variant is a *build* failure: it is raised before a connection
-/// is opened, and reaches the caller out of `send()` like any other
-/// builder error.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum MultipartError {
-    /// The operating system would not supply randomness for a boundary.
-    ///
-    /// There is deliberately no fallback — see this module's
-    /// documentation on why a fixed boundary is the one value that must
-    /// never be emitted.
-    #[error("no entropy available for a multipart boundary: {0}")]
-    NoEntropy(#[from] getrandom::Error),
-
-    /// A caller-supplied boundary that RFC 2046 §5.1.1 does not allow:
-    /// empty, longer than 70 characters, ending in a space, or carrying a
-    /// character outside `bcharsnospace` plus space.
-    #[error("not an RFC 2046 boundary: {0:?}")]
-    InvalidBoundary(String),
-
-    /// A field name or file name carrying a C0 control byte other than
-    /// CR, LF or HTAB, or DEL.
-    ///
-    /// CR and LF are escaped (`%0D`, `%0A`); these have no escape any
-    /// receiver agrees on, and would corrupt the part's header block.
-    #[error(
-        "{field} contains control byte {byte:#04x}, which has no representation in a part header"
-    )]
-    ControlByte {
-        /// `"a field name"` or `"a file name"`.
-        field: &'static str,
-        /// The offending byte.
-        byte: u8,
-    },
-
-    /// A part's `Content-Type` is not a valid header value.
-    #[error("a part's Content-Type is not a valid header value: {0}")]
-    InvalidContentType(#[from] http::header::InvalidHeaderValue),
-
-    /// A part's body was a [`RequestBody::Rewindable`] whose factory kept
-    /// returning another one.
-    ///
-    /// The same bound, for the same reason, as `hclient-fetch`'s and
-    /// `hclient-wasi`'s: a factory that always rewinds to a factory would
-    /// otherwise unwrap for ever.
-    #[error(
-        "a part's RequestBody::Rewindable factory nested {MAX_REWIND_DEPTH} levels deep or more"
-    )]
-    RewindTooDeep,
-}
-
-/// A part's body yielded a trailers frame.
-///
-/// `multipart/form-data` has nowhere to put one: a part ends at the next
-/// delimiter and carries no trailer section. Dropping the frame would
-/// send a well-formed request missing data the caller supplied, so the
-/// body fails instead — the same call this workspace makes for undeclared
-/// HTTP/1 request trailers one crate over.
-#[derive(Debug, thiserror::Error)]
-#[error("a multipart part's body emitted trailers, which multipart/form-data cannot carry")]
-pub struct TrailersInAPart;
-
 /// The same constant, the same off-by-one and the same reason as
 /// `hclient-fetch`'s and `hclient-wasi`'s: this names how many times the
 /// loop inspects a body, so the deepest nest that resolves is
 /// `MAX_REWIND_DEPTH - 1`.
-const MAX_REWIND_DEPTH: u8 = 16;
+pub(crate) const MAX_REWIND_DEPTH: u8 = 16;
 
 /// A validated `multipart/form-data` boundary.
 ///

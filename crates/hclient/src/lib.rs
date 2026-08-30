@@ -160,6 +160,7 @@ pub mod cookie;
 mod deadline;
 mod decompress;
 pub mod erased;
+pub mod error;
 mod limit;
 pub mod lines;
 /// Mock transport and controllable timer, re-exported from `hclient-mock`.
@@ -209,26 +210,6 @@ pub use client::without_a_default_transport::DefaultTransportFeature;
 // and modules render before items, so the front page is now a handful of
 // names and these doors. Done before the first publish, because after it
 // every one of these paths is a promise.
-
-/// The failures, and the payloads [`crate::Error::source`] hands back.
-///
-/// [`crate::Error`] and [`crate::ErrorKind`] stay at the root: they are on
-/// every signature in the crate, and a door in front of them would be one
-/// every caller walks through immediately.
-pub mod error {
-    pub use crate::client::RedirectRefused;
-    pub use crate::config::InvalidBaseUrl;
-    pub use crate::deadline::TotalTimeoutElapsed;
-    pub use crate::decompress::DecodeFailed;
-    pub use crate::limit::ResponseTooLarge;
-    pub use crate::lines::LineTooLong;
-    pub use crate::request::{ColonInUsername, ContentTypeIsNotOursToKeep};
-    #[cfg(feature = "charset")]
-    pub use crate::response::CharsetError;
-    pub use crate::response::UnexpectedStatus;
-    pub use hclient_core::{Phase, UnsupportedCapability, VersionNotAvailable};
-    pub use hclient_proto::uri::UriError;
-}
 
 /// What a transport says it can do, and the `build()` gate that reads it.
 pub mod caps {

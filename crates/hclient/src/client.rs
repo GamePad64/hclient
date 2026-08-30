@@ -5,6 +5,7 @@ use crate::config::{
 };
 use crate::deadline::{Deadline, within};
 use crate::decompress::{self, Decompressed};
+use crate::error::{BadLocation, BodyVanishedBeforeRetry, RedirectRefused};
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
@@ -1755,6 +1756,21 @@ impl Client {
     }
 }
 
+/// Reads `Retry-After` into the pair [`Outcome::status`] wants.
+///
+/// The two `None`s are different and both are returned: *the header was
+/// absent* lets the backoff decide, where *the header was present and
+/// unreadable* stops the retry. Collapsing them would make a server
+/// naming an `HTTP-date` get retried on our own schedule, which is the
+/// one thing the header exists to prevent.
+fn read_retry_after(headers: &http::HeaderMap) -> (Option<Duration>, bool) {
+    let Some(raw) = headers.get(http::header::RETRY_AFTER) else {
+        return (None, false);
+    };
+    let parsed = raw.to_str().ok().and_then(retry_after_seconds);
+    (parsed, parsed.is_none())
+}
+
 /// The body a `425 Too Early` replay is sent with, or `None` when this
 /// request cannot honestly be sent a second time.
 ///
@@ -1778,30 +1794,6 @@ impl Client {
 /// idempotency judgement: the server asked for the repeat. Early data does,
 /// and this function is not the place to grow one — see the long comment at
 /// the call site.
-/// The body could not be rebuilt for a retry the policy had approved.
-///
-/// Unreachable while `replayable` gates every path that reaches it —
-/// it exists so that the impossible case is a typed error a caller can
-/// read rather than a panic in a client that had already worked.
-#[derive(Debug, thiserror::Error)]
-#[error("the request body could not be rebuilt for a retry")]
-struct BodyVanishedBeforeRetry;
-
-/// Reads `Retry-After` into the pair [`Outcome::status`] wants.
-///
-/// The two `None`s are different and both are returned: *the header was
-/// absent* lets the backoff decide, where *the header was present and
-/// unreadable* stops the retry. Collapsing them would make a server
-/// naming an `HTTP-date` get retried on our own schedule, which is the
-/// one thing the header exists to prevent.
-fn read_retry_after(headers: &http::HeaderMap) -> (Option<Duration>, bool) {
-    let Some(raw) = headers.get(http::header::RETRY_AFTER) else {
-        return (None, false);
-    };
-    let parsed = raw.to_str().ok().and_then(retry_after_seconds);
-    (parsed, parsed.is_none())
-}
-
 fn replay_for_too_early(snapshot: Option<&RequestBody>) -> Option<RequestBody> {
     match snapshot.map(|b| (b.retry_kind(), b)) {
         Some((RetryKind::Free | RetryKind::ViaFactory, b)) => b.rewind(),
@@ -2133,32 +2125,3 @@ pub(crate) mod without_a_default_transport {
         }
     }
 }
-
-/// A redirect policy refused a hop.
-///
-/// Raised beside the unresolvable-`Location` error, because both are
-/// `decide`'s answers
-/// turned into errors at the same place. It replaced `TooMany(u8)`, which
-/// could say only one of the things a policy can now refuse for.
-#[derive(Debug, thiserror::Error)]
-#[error("the redirect policy refused a {status} to {to} after {after_hops} hops: {why}")]
-#[non_exhaustive]
-pub struct RedirectRefused {
-    pub to: http::Uri,
-    pub status: http::StatusCode,
-    /// The policy's own words — `"redirect limit reached"`,
-    /// `"redirect leaves the origin"`, or whatever a caller's own policy
-    /// returned.
-    pub why: &'static str,
-    /// How many hops had already been taken.
-    ///
-    /// The client's fact rather than the policy's, which is why it is
-    /// here and not in the verdict: a `&'static str` cannot carry a
-    /// number without allocating, and *how far did this get* is true of
-    /// every refusal rather than only a limit.
-    pub after_hops: u8,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("Location header is not a resolvable URI")]
-struct BadLocation;

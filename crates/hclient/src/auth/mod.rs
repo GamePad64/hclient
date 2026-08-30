@@ -90,6 +90,10 @@
 //! this workspace spent the erasure work recovering. Stated here rather
 //! than discovered later.
 
+mod error;
+
+pub use error::TooManyLegs;
+
 #[cfg(feature = "digest-auth")]
 // **A submodule of the seam, because that is what it is**: `Digest` is one
 // scheme written on `Auth`/`AuthFlow` like any other, and it sat beside
@@ -184,11 +188,6 @@ pub type BoxedFlow = Box<dyn AuthFlow + Send>; // send-bound-exception: amendmen
 
 /// A scheme, as the client stores it — shared by every clone.
 pub type SharedAuth = std::sync::Arc<dyn Auth + Send + Sync>; // send-bound-exception: amendment-C12
-
-/// A flow ran out of legs.
-#[derive(Debug, thiserror::Error)]
-#[error("authentication did not finish in {MAX_LEGS} attempts")]
-pub struct TooManyLegs;
 
 /// RFC 7616 digest, as an [`Auth`].
 ///

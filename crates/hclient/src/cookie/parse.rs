@@ -13,6 +13,7 @@
 //! attributes newer than this crate.
 
 use super::date::parse_cookie_date;
+use crate::cookie::error::ParseError;
 
 /// A `Set-Cookie` header as parsed, before any of it has been checked
 /// against a request.
@@ -62,37 +63,6 @@ pub enum SameSite {
     Strict,
     Lax,
     None,
-}
-
-/// Why a `Set-Cookie` header is not a cookie at all.
-///
-/// Every variant here corresponds to an "ignore the set-cookie-string
-/// entirely" step in §5.2 — as opposed to the per-attribute failures, which
-/// are not errors and are simply dropped.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum ParseError {
-    /// §5.2 step 1: the name-value pair contains no `=`.
-    ///
-    /// Browsers historically accepted a bare `Set-Cookie: value` as a
-    /// nameless cookie; 6265bis removed that and so does this.
-    #[error("the name-value pair contains no `=`")]
-    NoNameValueSeparator,
-    /// §5.2 step 4: an empty name.
-    #[error("the cookie name is empty")]
-    EmptyName,
-    /// §5.2: a control character in the name or the value.
-    #[error("the cookie name or value contains a control character")]
-    ControlCharacter,
-    /// Not a rule of §5.2, and named as such: this crate stores names and
-    /// values as `String`, so a header that is not UTF-8 has nowhere to go.
-    ///
-    /// RFC 6265's own `cookie-octet` production is ASCII, so a conforming
-    /// server never trips this; a browser would keep the bytes. The trade
-    /// is deliberate — every other field here is a `str` and a `Vec<u8>`
-    /// pair of accessors for this one would leak into the whole public API.
-    #[error("the cookie name or value is not valid UTF-8")]
-    NonUtf8,
 }
 
 use winnow::combinator::{alt, terminated};

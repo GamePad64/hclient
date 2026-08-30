@@ -111,9 +111,10 @@
 // nothing in the signatures below changes.
 use web_time::SystemTime;
 
-use super::jar::{Cookie, CookieJar, MAX_EXPIRY, Rejected};
+use super::error::{ParseError, Rejected};
+use super::jar::{Cookie, CookieJar, MAX_EXPIRY};
 use super::matching::is_ip_literal;
-use super::parse::{ParseError, SameSite, is_ctl};
+use super::parse::{SameSite, is_ctl};
 use super::suffix::PublicSuffixList;
 
 /// One persistent cookie, as plain data: every fact [`CookieJar::restore`]

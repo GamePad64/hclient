@@ -61,13 +61,15 @@
 //!   one.
 
 mod date;
+mod error;
 mod jar;
 mod matching;
 mod parse;
 mod persist;
 mod suffix;
 
-pub use jar::{Cookie, CookieJar, Limits, Rejected};
-pub use parse::{ParseError, SameSite, SetCookie};
+pub use error::{ParseError, Rejected};
+pub use jar::{Cookie, CookieJar, Limits};
+pub use parse::{SameSite, SetCookie};
 pub use persist::CookieRecord;
 pub use suffix::{BuiltinList, NoList, PublicSuffixList};

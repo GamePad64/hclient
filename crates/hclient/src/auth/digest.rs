@@ -46,6 +46,7 @@
 //! algorithm a server offers, and it never chooses the algorithm — the
 //! server does, in the challenge.
 
+pub use crate::auth::error::DigestError;
 use std::fmt::Write as _;
 use winnow::ascii::{space0, space1};
 use winnow::combinator::{alt, delimited, opt, preceded, repeat, separated};
@@ -143,24 +144,6 @@ pub struct Challenge {
     /// credentials themselves were fine. Read by `Client` to tell a bad
     /// password from a stale nonce.
     pub stale: bool,
-}
-
-/// The challenge could not be answered.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DigestError {
-    /// No `WWW-Authenticate` value named `Digest` with an algorithm this
-    /// build implements.
-    #[error("the server offered no Digest challenge this client can answer")]
-    NoUsableChallenge,
-    /// A `Digest` challenge without `realm` or without `nonce`, which
-    /// RFC 7616 §3.3 makes required.
-    #[error("the Digest challenge is missing its `{parameter}`")]
-    MissingParameter { parameter: &'static str },
-    /// The server asked for `qop="auth-int"` and nothing else. See this
-    /// module's doc for why that is refused rather than approximated.
-    #[error("the server requires qop=auth-int, which needs the request body hashed")]
-    AuthIntUnsupported,
 }
 
 /// The one challenge to answer, out of everything the server sent.

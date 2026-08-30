@@ -1,4 +1,5 @@
 use crate::client::Client;
+use crate::error::{ReconnectExhausted, SseRejected};
 use std::error::Error as StdError;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -81,10 +82,6 @@ pub struct SseStream<B> {
     /// error) also sets `done`, but `fatal` stays `None` in that case.
     done: bool,
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("not an SSE stream: {0}")]
-struct SseRejected(&'static str);
 
 /// WHATWG's terminal rules for a (re)connection attempt, factored out of
 /// `SseStream::new` so [`Client::sse`]'s reconnect path shares exactly this
@@ -642,22 +639,6 @@ fn effective_delay(
     Backoff { base, ..*backoff }.delay(attempt, jitter)
 }
 
-/// Surfaced exactly once, via `next()`, when `Backoff::delay` returns
-/// `None` (the configured `max_attempts` is exhausted): "the stream ended"
-/// (a clean, un-reconnected EOF, or a terminal error) and "we gave up
-/// retrying" must be distinguishable, not two different shapes of silence.
-/// `downcast_ref::<ReconnectExhausted>()` on `Error::source()` is how a
-/// caller tells them apart — the same idiom as `mock::QueueEmpty` and
-/// `client::TooMany`.
-#[derive(Debug, thiserror::Error)]
-#[error("gave up reconnecting the SSE stream after {attempts} attempt(s)")]
-struct ReconnectExhausted {
-    /// How many reconnect attempts were actually made before giving up —
-    /// NOT `max_attempts` restated: `Backoff::max_attempts` is the ceiling,
-    /// this is what was observed, useful for a log line without re-reading
-    /// the configured policy.
-    attempts: u32,
-}
 /// Where a [`ReconnectingSseStream`] currently stands. `B` is
 /// [`crate::body::ClientBody`] — the SAME body type every (re)connection
 /// produces, since every (re)connection goes through the same `Client`,

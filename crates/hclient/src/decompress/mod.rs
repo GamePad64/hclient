@@ -71,6 +71,7 @@ mod deflate;
 #[cfg(feature = "zstd")]
 mod zstd;
 
+use crate::error::DecodeFailed;
 use decoder::Decoder;
 // The same `#[cfg]` its definition carries: `just features` builds each
 // coding alone, and an unconditional import of a `brotli`-gated constant
@@ -365,22 +366,6 @@ pub(crate) fn decoder_for(parts: &mut http::response::Parts, allowed: Decoders) 
     parts.headers.remove(http::header::CONTENT_ENCODING);
     parts.headers.remove(http::header::CONTENT_LENGTH);
     Some(decoder)
-}
-
-/// The response body did not decode as its `Content-Encoding` promised.
-///
-/// `pub` and re-exported for the same reason [`crate::error::TotalTimeoutElapsed`]
-/// and [`crate::error::InvalidBaseUrl`] are: a caller has to be able to tell this
-/// apart from every other `ErrorKind::Decode` — a body that is not valid
-/// gzip is a different problem from a body that is not valid UTF-8 — and
-/// `Error::source().downcast_ref::<DecodeFailed>()` is the way.
-#[derive(Debug, thiserror::Error)]
-#[error("the response body is not valid `{coding}` data")]
-pub struct DecodeFailed {
-    /// The coding that was attempted, as it appeared on the wire.
-    pub coding: &'static str,
-    #[source]
-    source: std::io::Error,
 }
 
 /// The response body with its `Content-Encoding` reversed.
