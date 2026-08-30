@@ -19,14 +19,14 @@
 //! to preserve (`ErrorKind` surviving `hyper::Error`, `wasi:http`'s
 //! `ErrorCode`, and so on — see `hclient-native/src/body.rs` and
 //! `hclient-wasi/src/body.rs` for the established precedent). This file
-//! does not repeat that: [`StreamRead`] (a rejected `read()`, the transport
-//! itself failing) is `ErrorKind::Body`; [`NotAByteChunk`] (the read
+//! does not repeat that: [`crate::error::StreamRead`] (a rejected `read()`, the transport
+//! itself failing) is `ErrorKind::Body`; [`crate::error::NotAByteChunk`] (the read
 //! SUCCEEDED, but what it handed back isn't bytes) is `ErrorKind::Decode` —
 //! the same category `hclient`'s `Response::text`/`Response::json` already
 //! use for "the bytes don't parse as promised". `tests/body.rs` proves both
 //! independently and proves they're distinct, not merely present.
 //!
-//! Neither typed cause reuses `convert::js_err`/`convert::JsError`: this
+//! Neither typed cause reuses `convert::js_err`/`error::JsError`: this
 //! file was written while another task was actively editing `convert.rs` in
 //! the same working tree, so rather than extract a
 //! shared helper out of a file mid-edit by someone else, the small
@@ -111,6 +111,7 @@
 //! `dropping_a_body_whose_read_will_never_answer_still_cancels` covers the
 //! half the pump introduced, and the two are a pair: a pump watching only
 //! the channel passes the first and fails the second.
+use crate::error::{NotAByteChunk, StreamRead};
 use bytes::Bytes;
 use futures_channel::{mpsc, oneshot};
 use futures_core::Stream;
@@ -124,34 +125,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasm_bindgen::JsCast;
 
-// ---------------------------------------------------------------------
-// Typed failure causes — see the module doc comment for why there are two,
-// not one, and which `ErrorKind` each carries.
-// ---------------------------------------------------------------------
-
-/// The underlying `ReadableStream` rejected a `read()` — the browser's own
-/// signal that the exchange didn't finish cleanly (a network failure, the
-/// connection closing before the promised length, an explicit upstream
-/// `controller.error()`). A transport failure, not a decode problem:
-/// `ErrorKind::Body`.
-#[derive(Debug, thiserror::Error)]
-#[error("reading the response body stream failed: {0}")]
-struct StreamRead(String);
-
-/// A `ReadableStream` chunk that isn't a `Uint8Array`. Every chunk a real
-/// `fetch()` response body produces IS one (`Response.body` is specified as
-/// a byte stream) — this is a defensive check against a stream that
-/// violates that (see `tests/body.rs`'s construction of one), not something
-/// ordinary network traffic can trigger. The READ succeeded — no rejection,
-/// nothing wrong with the transport — it's the SHAPE of what came back
-/// that's wrong: `ErrorKind::Decode`, the same category
-/// `hclient`'s `Response::text`/`Response::json` use for "these bytes don't
-/// parse as promised".
-#[derive(Debug, thiserror::Error)]
-#[error("a ReadableStream chunk from the response body was not a Uint8Array")]
-struct NotAByteChunk;
-
-/// Best-effort human-readable text for a `JsValue` a promise rejected with.
 /// A response body over `ReadableStream`.
 pub struct Body {
     inner: Inner,

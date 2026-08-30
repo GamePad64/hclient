@@ -12,6 +12,7 @@
 mod body;
 mod caps;
 mod convert;
+mod error;
 mod hooks;
 pub mod opts;
 mod promise;
@@ -752,10 +753,10 @@ impl<H: Hooks> Fetch<H> {
                 // nothing sent. `ErrorKind` stays `Connect` — that is still
                 // what happened, and a request that failed because the
                 // origin refused the connection reaches here identically.
-                // See `convert::StreamingBodyFetchFailed`.
+                // See `error::StreamingBodyFetchFailed`.
                 Error::new(
                     ErrorKind::Connect,
-                    convert::StreamingBodyFetchFailed(Error::new(ErrorKind::Connect, base)),
+                    crate::error::StreamingBodyFetchFailed(Error::new(ErrorKind::Connect, base)),
                 )
             } else {
                 Error::new(ErrorKind::Connect, base)

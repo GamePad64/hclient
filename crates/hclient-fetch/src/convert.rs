@@ -68,110 +68,15 @@
 //!    message survives where a human can read it (DevTools), and
 //!    `tests/convert.rs` drains the built `Request`'s own stream to pin the
 //!    policy at the layer that still has it.
+use crate::error::{
+    BadUrl, BodyNotAllowedForMethod, ForbiddenHeader, HeaderSilentlyDropped, JsError,
+    NonAsciiHeaderValue, RequestTrailersUnsupported,
+};
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use wasm_bindgen::{JsCast, JsValue};
-
-// ---------------------------------------------------------------------
-// Typed failure causes. Each is a distinct type, not a formatted string,
-// so `Error::source().downcast_ref` can recover the exact cause later —
-// the same reasoning `hclient_core::Error`'s own doc comment gives for why
-// it wraps a `dyn Error` rather than stringifying up front.
-// ---------------------------------------------------------------------
-
-#[derive(Debug, thiserror::Error)]
-#[error("fetch forbids setting the `{0}` header")]
-pub(crate) struct ForbiddenHeader(pub(crate) String);
-
-/// A header survived [`check_headers`] (it isn't one of the 14 names
-/// [`crate::FORBIDDEN_HEADERS`] lists) but the browser dropped it anyway
-/// when building the `Request` — almost certainly a `Sec-*`/`Proxy-*`
-/// prefixed name, or one of the ten other forbidden names that fixed array
-/// structurally can't carry (see its doc comment). Caught by
-/// [`verify_headers_survived`], never allowed to pass as a quiet success.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "the `{0}` header was accepted but the browser silently dropped it while building the \
-     request (not one of the names FORBIDDEN_HEADERS checks ahead of time — most likely a \
-     `Sec-`/`Proxy-`-prefixed name, which a fixed array cannot express)"
-)]
-pub(crate) struct HeaderSilentlyDropped(pub(crate) String);
-
-/// A header value with bytes that aren't valid ASCII text. `http::HeaderMap`
-/// allows opaque byte strings (`HeaderValue::from_bytes`); the Fetch API's
-/// `Headers.append` only takes a JS string, so this is a real, nameable
-/// limit of the backend, not an opaque `TypeError`.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "the value of header `{0}` is not valid ASCII text, which the Fetch API's `Headers` \
-     interface requires"
-)]
-pub(crate) struct NonAsciiHeaderValue(pub(crate) String);
-
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub(crate) struct BadUrl(pub(crate) String);
-
-/// Fetch throws a `TypeError` if a `GET`/`HEAD` request carries a body.
-/// Checked ahead of time so the caller gets a typed, specific error instead
-/// of `ErrorKind::Other` wrapping a browser-thrown `TypeError` string.
-#[derive(Debug, thiserror::Error)]
-#[error("a `{0}` request cannot carry a body — fetch forbids a body on GET and HEAD requests")]
-pub(crate) struct BodyNotAllowedForMethod(pub(crate) http::Method);
-
-// The rewind bound and its error moved to `hclient_core`: this crate,
-// `hclient-wasi` and `hclient-winhttp` had each picked 16, and two other
-// backends had no bound at all.
-
-#[derive(Debug, thiserror::Error)]
-#[error("javascript error: {0}")]
-pub(crate) struct JsError(pub(crate) String);
-
-/// A `fetch` carrying a `ReadableStream` request body failed, and the
-/// browser said only `TypeError: Failed to fetch`.
-///
-/// Wrapped around the underlying [`JsError`] rather than replacing it: the
-/// browser's own text stays readable, and this adds the one cause the
-/// browser structurally cannot report. Measured 2026-08-09 (Chrome 151,
-/// `docs/measurements/w6-request-streams/`): a stream body over an HTTP/1.1
-/// origin fails in ~3 ms with exactly that `TypeError`, before the stream is
-/// pulled and with nothing reaching the server — and the same value is what
-/// the Fetch Standard produces for a refused connection, with no `name`,
-/// `message` or property separating the two. A caller who reads this cannot
-/// tell which happened either; what changes is that the possibility is
-/// named at all.
-///
-/// Only attached where it is relevant — a request whose body actually was a
-/// stream (`Converted::streamed`). A failed `GET` does not get this text.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "{0} — this request carried a streaming body, which a browser will only send over HTTP/2; \
-     measured in Chrome, an HTTP/1.1 origin fails in milliseconds with exactly this error and \
-     nothing on the wire, and the browser reports a genuine network failure identically"
-)]
-pub(crate) struct StreamingBodyFetchFailed(#[source] pub(crate) Error);
-
-/// The caller's streaming request body produced a trailers frame.
-///
-/// `Capabilities::request_trailers` is `false` for this backend — fetch has
-/// no request trailers in any form (whatwg/fetch#772 proposes removing the
-/// response-side API too) — so there is nowhere to put them. Dropping them
-/// and sending the rest is the silent no-op this project forbids; the
-/// stream is errored instead, which fails the request.
-///
-/// Unlike every other cause in this file, this one cannot be raised before
-/// `to_web_request` returns: trailer frames arrive after the last data
-/// frame, by which point the browser owns the stream. The same shape, and
-/// the same reasoning, as the trailers guard `hclient-wasi` moved into its
-/// `Body` (see that crate's notes on duplex request bodies).
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "the streaming request body produced trailers, which fetch cannot send (this backend \
-     declares `request_trailers = false`)"
-)]
-pub(crate) struct RequestTrailersUnsupported;
 
 /// Turns a rejected JS promise/thrown value into our `Error`. This is the
 /// generic, honest fallback for a JS failure this file cannot classify any
@@ -555,7 +460,7 @@ pub(crate) fn to_web_request<H: hclient_core::unversioned::Hooks>(
 ///
 /// A struct rather than a `(Request, Option<AbortController>)` tuple, for
 /// one field: `streamed`. `execute` needs it to name the
-/// cause the browser hides (see [`StreamingBodyFetchFailed`]), and it
+/// cause the browser hides (see [`crate::error::StreamingBodyFetchFailed`]), and it
 /// cannot recompute it from the original `http::Request` — that has been
 /// consumed, and a `RequestBody::Rewindable` whose factory returns a
 /// `Streaming` looks like neither from the outside. Reading it back off the

@@ -151,6 +151,10 @@
 //! first and returns a typed error instead, so a caller learns its message
 //! did not go out.
 use crate::convert;
+use crate::error::{
+    BadSubprotocol, ConnectionLost, ConstructorRefused, HandshakeFailed, HeaderNotSendable,
+    NoAuthority, NotAMessage, NotOpen, SendRefused, UnsupportedScheme,
+};
 use bytes::Bytes;
 use futures_core::Stream;
 use futures_sink::Sink;
@@ -175,57 +179,6 @@ const SENDABLE: http::HeaderName = http::header::SEC_WEBSOCKET_PROTOCOL;
 /// peer's close frame carried an empty payload, which is exactly the case
 /// `tungstenite` reports to `hclient-native` as `Message::Close(None)`.
 const NO_STATUS_RECEIVED: u16 = 1005;
-
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "the browser's WebSocket cannot send a `{0}` header: `new WebSocket(url, protocols)` takes a \
-     URL and a subprotocol list, and nothing else reaches the handshake"
-)]
-struct HeaderNotSendable(http::HeaderName);
-
-#[derive(Debug, thiserror::Error)]
-#[error("a `{0}` value that is not visible ASCII cannot become a subprotocol")]
-struct BadSubprotocol(http::HeaderName);
-
-#[derive(Debug, thiserror::Error)]
-#[error("unsupported URI scheme for a WebSocket: {0:?} (expected ws, wss, http or https)")]
-struct UnsupportedScheme(String);
-
-#[derive(Debug, thiserror::Error)]
-#[error("a WebSocket URL needs a host: `{0}`")]
-struct NoAuthority(String);
-
-#[derive(Debug, thiserror::Error)]
-#[error("the browser refused to construct a WebSocket: {0}")]
-struct ConstructorRefused(String);
-
-/// The browser tells us a close code and nothing else — see the module
-/// doc's section on why there is no `onerror` handler to ask.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "the WebSocket handshake failed (close code {0}); a browser reports no reason for a failed \
-     WebSocket handshake, deliberately"
-)]
-struct HandshakeFailed(u16);
-
-#[derive(Debug, thiserror::Error)]
-#[error("the WebSocket closed without a close handshake (code {0})")]
-struct ConnectionLost(u16);
-
-#[derive(Debug, thiserror::Error)]
-#[error("a WebSocket message was neither a string nor an ArrayBuffer")]
-struct NotAMessage;
-
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "the WebSocket is not open (readyState {0}), and the browser would have discarded this \
-     message without reporting anything"
-)]
-struct NotOpen(u16);
-
-#[derive(Debug, thiserror::Error)]
-#[error("the browser refused to send on the WebSocket: {0}")]
-struct SendRefused(String);
 
 /// `ws`/`wss` are RFC 6455's schemes; `http`/`https` are accepted as the
 /// same two, for the reason [`WebSocketConnect::websocket`] gives and
