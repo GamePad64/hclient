@@ -67,6 +67,10 @@
 //! product; assert on `requests()` instead.
 #![forbid(unsafe_code)]
 
+mod error;
+
+pub use error::QueueEmpty;
+
 use bytes::Bytes;
 use hclient_core::unversioned::Transport;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind};
@@ -334,16 +338,6 @@ struct Shared {
     queue: Mutex<VecDeque<Queued>>,
     seen: Mutex<Vec<RecordedRequest>>,
 }
-
-/// Returned instead of a response when the mock's queue is empty.
-///
-/// `pub`, not a private type: a test must be able to tell this apart from
-/// any other `ErrorKind::Other` error via
-/// `Error::source().downcast_ref::<QueueEmpty>()`, rather than relying on
-/// this being the mock's only path to an error today.
-#[derive(Debug, thiserror::Error)]
-#[error("MockTransport: response queue is empty")]
-pub struct QueueEmpty;
 
 impl MockTransport {
     pub fn new() -> Self {
