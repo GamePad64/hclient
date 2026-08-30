@@ -43,8 +43,8 @@ mod parse;
 mod read;
 mod translate;
 
-pub use parse::ParseError;
-pub use translate::{SystemProxyRefused, http_proxies, http_proxies_lossy};
+pub use crate::error::{ParseError, SystemProxyRefused};
+pub use translate::{http_proxies, http_proxies_lossy};
 
 /// Which protocol a proxy speaks.
 ///

@@ -8,48 +8,8 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::{Error, ErrorKind};
 
+use crate::error::{Socks5HandshakeError, Socks5Refused};
 use crate::{Approach, Handshake, Step, take};
-
-/// RFC 1928 §6's `REP`, which is one byte and has no HTTP meaning at all.
-#[derive(Debug, thiserror::Error)]
-#[error("the SOCKS5 proxy refused with REP={rep:#04x} ({})", socks5_reply(*rep))]
-#[non_exhaustive]
-pub struct Socks5Refused {
-    pub rep: u8,
-}
-
-fn socks5_reply(rep: u8) -> &'static str {
-    match rep {
-        0x01 => "general failure",
-        0x02 => "connection not allowed by ruleset",
-        0x03 => "network unreachable",
-        0x04 => "host unreachable",
-        0x05 => "connection refused",
-        0x06 => "TTL expired",
-        0x07 => "command not supported",
-        0x08 => "address type not supported",
-        _ => "unassigned",
-    }
-}
-
-/// The proxy would not agree to any method we offered, or refused the
-/// credentials. `0xFF` is RFC 1928 §3's "no acceptable methods".
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum Socks5HandshakeError {
-    #[error("the SOCKS5 proxy accepted none of the authentication methods offered")]
-    NoAcceptableMethods,
-    #[error("the SOCKS5 proxy chose method {0:#04x}, which was not offered")]
-    UnofferedMethod(u8),
-    #[error("the SOCKS5 proxy rejected the username and password")]
-    BadCredentials,
-    #[error("the SOCKS5 proxy answered version {0} rather than 5")]
-    BadVersion(u8),
-    #[error("a SOCKS5 host name must be at most 255 bytes, this one is {0}")]
-    HostTooLong(usize),
-    #[error("a SOCKS5 username and password must each be at most 255 bytes")]
-    CredentialTooLong,
-}
 
 /// SOCKS5, RFC 1928, with the username/password sub-negotiation of
 /// RFC 1929.

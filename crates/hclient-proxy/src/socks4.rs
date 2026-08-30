@@ -14,53 +14,8 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::{Error, ErrorKind};
 
+use crate::error::{Socks4HandshakeError, Socks4Refused};
 use crate::{Approach, Handshake, Step, take};
-
-/// What a `USERID` or a host name cannot be.
-///
-/// `PartialEq` because `userid` hands one straight back rather than
-/// wrapping it, so a caller — and this crate's own tests — compares it.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Socks4HandshakeError {
-    /// The field is `NUL`-terminated and has no length prefix, so a `NUL`
-    /// inside it would end it early and the rest would be read as the
-    /// next field.
-    #[error("the SOCKS4 USERID contains a NUL, which terminates the field")]
-    NulInUserid,
-    /// The reply's first byte is not `0`. SOCKS4's reply carries a version
-    /// of **zero**, not four — a detail every implementation gets wrong
-    /// once.
-    #[error("the SOCKS4 proxy replied with VN={0:#04x}, where the protocol specifies 0x00")]
-    BadReplyVersion(u8),
-    /// A hostname too long for the field, which has no length prefix and
-    /// is `NUL`-terminated — so this is a bound on the whole request
-    /// rather than on a byte.
-    #[error("the host name is {0} bytes, past what a SOCKS4a request can carry")]
-    HostTooLong(usize),
-    /// A `NUL` in the hostname, for `NulInUserid`'s reason.
-    #[error("the host name contains a NUL, which terminates the field")]
-    NulInHost,
-}
-
-/// SOCKS4's `CD`, which is one byte and has no HTTP meaning at all.
-#[derive(Debug, thiserror::Error)]
-#[error("the SOCKS4 proxy refused with CD={cd} ({})", socks4_reply(*cd))]
-#[non_exhaustive]
-pub struct Socks4Refused {
-    pub cd: u8,
-}
-
-/// The four `CD` values the protocol defines, by name.
-fn socks4_reply(cd: u8) -> &'static str {
-    match cd {
-        90 => "request granted",
-        91 => "request rejected or failed",
-        92 => "rejected: identd unreachable from the proxy",
-        93 => "rejected: identd reported a different user",
-        _ => "unassigned",
-    }
-}
 
 /// SOCKS4 grants with `CD = 90`. Not `0`, unlike SOCKS5's `REP`.
 const SOCKS4_GRANTED: u8 = 90;

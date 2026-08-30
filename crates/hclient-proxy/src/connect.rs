@@ -18,30 +18,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::{Error, ErrorKind};
 use hclient_proto::head;
 
+use crate::error::{ConnectError, ProxyRefused};
 use crate::{Approach, Handshake, Step};
-
-/// The proxy refused the tunnel. Deliberately **not** a response: a `407`
-/// is the proxy's answer to us, not the origin's answer to the caller,
-/// and handing it back as one would report a refusal to connect as an
-/// HTTP result the caller could act on.
-#[derive(Debug, thiserror::Error)]
-#[error("the proxy refused CONNECT with {0}")]
-pub struct ProxyRefused(pub http::StatusCode);
-
-/// The proxy answered something that is not an HTTP response, or too much
-/// of one.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum ConnectError {
-    #[error("the proxy's answer to CONNECT is not an HTTP response head: {0}")]
-    Malformed(#[from] head::HeadError),
-    /// A head that never ends is a proxy holding the connection open at
-    /// our expense, and the bound is ours because HTTP states none.
-    #[error("the proxy's response head passed {0} bytes without ending")]
-    HeadTooLong(usize),
-    #[error("`{0}:{1}` cannot be written as an authority")]
-    BadAuthority(Box<str>, u16),
-}
 
 /// A response head this large is a proxy that has stopped answering and
 /// started talking. 64 KiB is `H1Opts`'s own default one crate over, and

@@ -22,66 +22,10 @@
 //! [`SystemProxies`] itself, which a caller can read and act on however
 //! they like.
 
+use crate::error::SystemProxyRefused;
+
 use super::{ProxyKind, Scheme, SystemProxies};
 use crate::{HttpConnect, Proxy, ProxyScheme};
-
-/// Why the system's configuration could not be installed on a transport
-/// as it stands.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum SystemProxyRefused {
-    /// The machine names a proxy whose protocol is not the one this call
-    /// installs.
-    ///
-    /// A transport holds one `P`, so a configuration naming both an HTTP
-    /// and a SOCKS proxy has no faithful reading here. Build the one you
-    /// want by hand — `Proxy::new(Socks5::new(), host, port)` — which
-    /// also makes the choice visible at the call site, where a rule of
-    /// ours would not be.
-    #[error(
-        "the system names a {kind:?} proxy at {host}:{port}, and this call installs HTTP proxies; \
-         a transport holds one proxy protocol, so build that one with `Proxy::new(..)`"
-    )]
-    MixedProtocols {
-        kind: ProxyKind,
-        host: Box<str>,
-        port: u16,
-    },
-    /// A bypass pattern this crate's matcher cannot express — a subnet,
-    /// or a wildcard that is not a leading `*.`.
-    ///
-    /// Honouring it approximately is what the matcher's own dialect
-    /// refuses to do (*a pattern in no accepted shape matches nothing
-    /// rather than approximately something*), and dropping it would put a
-    /// host the machine excluded back on the proxy.
-    #[error(
-        "the system's bypass list contains {0}, which this client's matcher cannot state exactly; \
-         read `SystemProxies` yourself and decide, rather than have this call guess"
-    )]
-    UnrepresentableBypass(Box<str>),
-    /// The machine's proxy is a **PAC script**, which decides per request
-    /// by running JavaScript, and nothing here runs one.
-    ///
-    /// Refused rather than ignored, and this is the sharpest of the four:
-    /// ignoring it means going **direct** on a machine whose owner routed
-    /// its traffic through a proxy — a policy violation, and on a network
-    /// where direct egress is blocked, a failure nobody can explain from
-    /// the client's side. `hclient-urlsession` honours it on Apple
-    /// platforms, because `URLSession` runs the script in the OS.
-    #[error(
-        "the machine's proxy is the auto-config script at {0}, which decides per request and \
-         which nothing here runs; on Apple platforms `hclient-urlsession` honours it in the OS, \
-         and otherwise name a proxy explicitly with `Proxy::new(..)`"
-    )]
-    PacScript(Box<str>),
-    /// A credential the machine named cannot become a header — a colon in
-    /// the username, or a byte no header value may carry.
-    ///
-    /// Installing the proxy without it would authenticate against
-    /// nothing and collect a `407` the caller could not explain.
-    #[error("the credential for the proxy at {host}:{port} cannot be sent as a header")]
-    UnusableCredential { host: Box<str>, port: u16 },
-}
 
 /// The HTTP proxies in `sys`, in the order they should be tried.
 ///

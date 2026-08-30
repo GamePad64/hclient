@@ -74,16 +74,21 @@
 use bytes::{Bytes, BytesMut};
 
 mod connect;
+mod error;
 mod proxy;
 mod socks4;
 mod socks5;
 #[cfg(feature = "system")]
 pub mod system;
 
-pub use connect::{ConnectError, HttpConnect, ProxyRefused};
+pub use connect::HttpConnect;
+pub use error::{
+    ConnectError, ProxyRefused, Socks4HandshakeError, Socks4Refused, Socks5HandshakeError,
+    Socks5Refused,
+};
 pub use proxy::{NoProxy, Proxy, ProxyScheme};
-pub use socks4::{Socks4, Socks4HandshakeError, Socks4Refused};
-pub use socks5::{Socks5, Socks5HandshakeError, Socks5Refused};
+pub use socks4::Socks4;
+pub use socks5::Socks5;
 
 /// What a proxy does for one origin, which is not the same question for
 /// the three protocols here.
