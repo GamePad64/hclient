@@ -304,47 +304,16 @@ mod foundation;
 /// this project exercises most.
 mod policy;
 
+mod error;
+
+pub use error::IdnError;
+
 #[cfg(not(any(idna_backend, icu_backend, foundation_backend)))]
 compile_error!(
     "hclient-idn needs at least one backend: `bundled` (the `idna` crate, the default) or \
      `system-icu` (the platform's own ICU), or both. With neither, `domain_to_ascii` could only \
      ever return `IdnError::NoImplementation`, which is a build nobody wants by accident."
 );
-
-/// What went wrong turning a domain into its A-label form.
-///
-/// Two variants because `hclient-proto` distinguishes two things a caller
-/// can do something about: [`NotAnIdn`](IdnError::NotAnIdn) maps to
-/// `UriError::NotAnIdn` ("this name is not usable"), and
-/// [`NoImplementation`](IdnError::NoImplementation) maps to
-/// `UriError::NonAsciiHost` ("this build cannot convert; send the A-label
-/// yourself"). Collapsing them would tell a user to fix their domain when
-/// the actual problem is the build they are running.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum IdnError {
-    /// UTS 46 rejected the name: a disallowed code point, a bidi or
-    /// joiner-context violation, invalid punycode under an `xn--` label,
-    /// or an ASCII character the WHATWG URL Standard forbids in a domain.
-    #[error("`{domain}` is not a usable internationalised domain name: UTS 46 rejected it")]
-    NotAnIdn {
-        /// The domain, as given.
-        domain: String,
-    },
-    /// This build has no IDN implementation that can run here: the
-    /// `bundled` feature is off, and no system ICU was found at run time.
-    /// The name itself may be perfectly valid.
-    #[error(
-        "`{domain}` needs IDN conversion and this build has none: it was built with \
-         `system-icu` and without `bundled`, and no system ICU library was found at run time. \
-         Enable the `bundled` feature, or supply the host in its A-label form — `münchen.de` \
-         is written `xn--mnchen-3ya.de`"
-    )]
-    NoImplementation {
-        /// The domain, as given.
-        domain: String,
-    },
-}
 
 /// Which implementation [`domain_to_ascii`] actually calls in this
 /// process.
