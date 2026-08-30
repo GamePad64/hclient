@@ -17,17 +17,7 @@ use objc2_foundation::{
 
 use crate::body::{Cancelling, UrlSessionBody};
 use crate::delegate::{Chunk, Delegate, Shared};
-
-/// What `URLSession` said went wrong, in Apple's own words.
-///
-/// `NSError`'s `localizedDescription` and nothing more: its `domain` and
-/// `code` are stable enough to match on, but mapping them onto this
-/// workspace's `ErrorKind` would be a second vocabulary invented at the
-/// boundary — the same reason `hclient-fetch` reports what the browser
-/// said rather than a translation of it.
-#[derive(Debug, thiserror::Error)]
-#[error("URLSession: {0}")]
-pub struct UrlSessionError(pub String);
+use crate::error::UrlSessionError;
 
 /// Apple's `URLSession` as a [`Transport`].
 #[derive(Debug)]
@@ -262,9 +252,12 @@ impl UrlSession {
     }
 }
 
-/// How deep a `Rewindable` factory may nest before this gives up.
-///
-// The rewind bound moved to `hclient_core::MAX_REWIND_DEPTH`.
+// How deep a `Rewindable` factory may nest before this gives up is no
+// longer this crate's number: the bound moved to
+// `hclient_core::MAX_REWIND_DEPTH`. The constant went and its doc comment
+// stayed, which left three lines of `///` attached to the item below —
+// found while moving this crate's error out, by the same clippy lint that
+// finds nothing while the orphan is followed by a blank line.
 
 /// The bytes to put on the request, or `None` for no body at all.
 ///

@@ -70,7 +70,9 @@
 
 mod body;
 mod delegate;
+mod error;
 mod session;
 
 pub use body::UrlSessionBody;
-pub use session::{UrlSession, UrlSessionError};
+pub use error::UrlSessionError;
+pub use session::UrlSession;

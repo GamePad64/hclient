@@ -9,7 +9,7 @@ use hclient_core::{Error, ErrorKind};
 use http_body::{Body, Frame};
 
 use crate::delegate::{Chunk, Shared};
-use crate::session::UrlSessionError;
+use crate::error::UrlSessionError;
 
 /// A streaming response body.
 ///
