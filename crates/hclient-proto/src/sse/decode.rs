@@ -1,3 +1,5 @@
+pub use crate::error::SseError;
+
 use super::LineSplitter;
 use core::time::Duration;
 use std::collections::VecDeque;
@@ -14,13 +16,6 @@ pub enum SseEvent {
     },
     Comment(String),
     Retry(Duration),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum SseError {
-    /// The raw event size limit was exceeded. Fatal and **not retried**.
-    #[error("SSE event exceeds {limit} bytes")]
-    EventTooLarge { limit: usize },
 }
 
 #[derive(Debug)]

@@ -80,68 +80,9 @@
 //! also keeps UTS 46's own ASCII lower-casing away from hosts that never
 //! asked for it.
 
-use http::Uri;
+pub use crate::error::UriError;
 
-/// Why a string could not be turned into an [`http::Uri`].
-///
-/// Both host-related variants exist in every build, whichever way the
-/// `idn` feature is set: a feature that changes the shape of a public type
-/// is not additive, and a caller matching on this enum should not have to
-/// be compiled twice to do it. Only which of the two can actually occur
-/// changes.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum UriError {
-    /// The base is not usable as a base: RFC 3986 §5.2.1 requires an
-    /// absolute URI, and there is nothing to resolve a relative reference
-    /// against.
-    #[error("`{base}` cannot be used as a base URL: a base needs a scheme and an authority")]
-    UnusableBase {
-        /// The offending base, as written.
-        base: String,
-    },
-    /// The host is not ASCII and **no IDN implementation ran on it**: the
-    /// name itself was never judged.
-    ///
-    /// Two causes, and the message names both because a caller cannot see
-    /// which applies. The `idn` feature is off, so there is no
-    /// implementation compiled in at all — this is the usual one. Or the
-    /// feature is on and `hclient-idn` reported
-    /// `IdnError::NoImplementation` (named without a link, because with
-    /// the feature off that crate is not in the build to link to), which
-    /// on a target whose backend is the platform's own — Windows, Apple —
-    /// means the OS did not supply one this process can use; targets that
-    /// take the bundled tables always have theirs.
-    ///
-    /// The way out is the same either way, which is why it is one variant
-    /// and not two: send the A-label.
-    #[error(
-        "`{host}` is not an ASCII host and no IDN implementation in this build converted it: \
-         either the `idn` feature of `hclient` is off (it is on by default), or it is on and \
-         this machine supplied no UTS 46 implementation `hclient-idn` could use. Supply the \
-         host in its A-label form instead — `münchen.de` is written `xn--mnchen-3ya.de`"
-    )]
-    NonAsciiHost {
-        /// The host, as written.
-        host: String,
-    },
-    /// The host is not ASCII and a UTS 46 implementation **ran and refused
-    /// it**. Only reachable with the `idn` feature on.
-    #[error("`{host}` is not a usable internationalised domain name: UTS 46 rejected it")]
-    NotAnIdn {
-        /// The host, as written.
-        host: String,
-    },
-    /// Everything `http::Uri` itself rejects, with its own error as the
-    /// source.
-    #[error("`{uri}` is not a valid URI")]
-    NotAUri {
-        /// The string that was parsed, after any IDNA conversion.
-        uri: String,
-        /// What `http::Uri` said about it.
-        source: http::uri::InvalidUri,
-    },
-}
+use http::Uri;
 
 /// Parses `s` as an [`http::Uri`], making it ASCII on the way: a
 /// non-ASCII host becomes its A-label (punycode) form, and non-ASCII

@@ -35,11 +35,13 @@
 //! that cannot invent a value. And **whitespace before the colon**, which
 //! §5 makes a `MUST` reject because it is the request-smuggling shape.
 
+pub use crate::error::HeadError;
+
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Version};
 use winnow::combinator::{alt, opt, preceded, repeat, terminated};
-use winnow::error::{ErrMode, Needed, ParserError};
-use winnow::stream::{Partial, Stream};
+use winnow::error::{ErrMode, Needed};
+use winnow::stream::Partial;
 use winnow::token::{literal, take_while};
 use winnow::{ModalResult, Parser};
 
@@ -49,48 +51,6 @@ pub struct ResponseHead {
     pub version: Version,
     pub status: StatusCode,
     pub headers: HeaderMap,
-}
-
-/// What the bytes were not.
-///
-/// Every variant is reachable from a real peer, which is why the parser
-/// carries this rather than winnow's `ContextError`: a caller of
-/// `hclient-proxy` meets these as the source of a connect failure, and
-/// *the proxy sent something that is not an HTTP response* is not an
-/// answer anybody can act on.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum HeadError {
-    #[error("the status line is not `HTTP/1.x SP <3 digits>`")]
-    MalformedStatusLine,
-    #[error("`{0}` is not a status code")]
-    BadStatus(Box<str>),
-    #[error("a header line is not `name: value`")]
-    MalformedHeader,
-    #[error("`{0}` is not a header name")]
-    BadHeaderName(Box<str>),
-    #[error("the value of `{0}` is not a header value")]
-    BadHeaderValue(Box<str>),
-    /// A continuation line — RFC 9112 §5.2's obs-fold.
-    #[error("obsolete line folding, which a client must reject rather than guess at")]
-    ObsFold,
-    /// A bare `LF` where the grammar writes `CRLF`.
-    #[error("a bare LF line terminator, where the grammar writes CRLF")]
-    BareLf,
-}
-
-/// The default failure, for a combinator that ran out of alternatives
-/// without one of the specific refusals above having fired.
-impl<I: Stream> ParserError<I> for HeadError {
-    type Inner = Self;
-
-    fn from_input(_: &I) -> Self {
-        Self::MalformedStatusLine
-    }
-
-    fn into_inner(self) -> Result<Self::Inner, Self> {
-        Ok(self)
-    }
 }
 
 /// Parse a response head out of `buf`.
