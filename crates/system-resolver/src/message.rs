@@ -19,6 +19,7 @@
 
 use crate::Record;
 use crate::error::{Error, MalformedAnswer};
+use crate::rdata::Parsed;
 use std::time::Duration;
 
 /// RFC 1035 §4.1.1.
@@ -157,20 +158,147 @@ pub(crate) fn records(msg: &[u8]) -> Result<Vec<Record>, Error> {
         let ttl = u32::from_be_bytes([fixed[4], fixed[5], fixed[6], fixed[7]]);
         let rdlength = usize::from(u16::from_be_bytes([fixed[8], fixed[9]]));
         at += 10;
-        let rdata = at
+        let end = at
             .checked_add(rdlength)
-            .and_then(|end| msg.get(at..end))
+            .filter(|end| *end <= msg.len())
             .ok_or_else(|| malformed(MalformedAnswer::RecordTruncated))?;
-        at += rdlength;
+        let rdata = expand_names(msg, rtype, at, end)?;
+        at = end;
         found.push(Record {
             name,
             rtype,
             class,
             ttl: Duration::from_secs(u64::from(ttl)),
-            rdata: rdata.to_vec(),
+            rdata,
         });
     }
     Ok(found)
+}
+
+/// Where a name sits inside the RDATA of a type that may compress one.
+///
+/// RFC 1035 §4.1.4 lets a name inside RDATA be a pointer into the rest of
+/// the message, and RFC 3597 §4 closes the list: **only the types defined
+/// alongside compression may use it**, so this table cannot grow with the
+/// registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameLayout {
+    /// The whole RDATA: `NS`, `MD`, `MF`, `CNAME`, `MB`, `MG`, `MR`, `PTR`.
+    One,
+    /// Two names and nothing else: `MINFO`, `RP`.
+    Two,
+    /// A 16-bit value then a name: `MX`, `AFSDB`, `RT`.
+    U16ThenOne,
+    /// RFC 1035 §3.3.13.
+    Soa,
+    /// RFC 2782. Its target is **not** supposed to be compressed — the type
+    /// postdates RFC 1035 — and it is here because senders do it anyway,
+    /// and because expanding a name that was never compressed is the
+    /// identity.
+    Srv,
+}
+
+fn name_layout(rtype: u16) -> Option<NameLayout> {
+    Some(match rtype {
+        2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 => NameLayout::One,
+        14 | 17 => NameLayout::Two,
+        15 | 18 | 21 => NameLayout::U16ThenOne,
+        6 => NameLayout::Soa,
+        33 => NameLayout::Srv,
+        _ => return None,
+    })
+}
+
+/// The record's RDATA with every name in it written out in full.
+///
+/// **A pointer is meaningless the moment the message is gone**, and this
+/// crate hands back records rather than messages — so RDATA that still
+/// carried one would be bytes a caller cannot read and cannot resolve. For
+/// a type with no name in it, or one whose names cannot be compressed,
+/// this is the octets as they arrived.
+///
+/// It is also what makes the two Windows paths agree. `DnsQuery_UTF8`
+/// hands over a parsed structure holding a name in full, so
+/// `sys/windows/parsed.rs` re-encodes it uncompressed; without this, the
+/// same record read through `DnsQueryRaw` would differ by exactly the
+/// compression the wire happened to use. The test comparing them found
+/// that on `NS` the first time it ran.
+fn expand_names(msg: &[u8], rtype: u16, at: usize, end: usize) -> Result<Vec<u8>, Error> {
+    let malformed = |reason| Error::Malformed(reason);
+    let verbatim = || {
+        msg.get(at..end)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| malformed(MalformedAnswer::RecordTruncated))
+    };
+    let Some(layout) = name_layout(rtype) else {
+        return verbatim();
+    };
+
+    // A fixed-width prefix, read before the names that follow it.
+    let numbers = match layout {
+        NameLayout::One | NameLayout::Two | NameLayout::Soa => 0,
+        NameLayout::U16ThenOne => 1,
+        NameLayout::Srv => 3,
+    };
+    let mut cursor = at;
+    let mut prefix = Vec::with_capacity(numbers * 2);
+    for _ in 0..numbers {
+        let pair: &[u8; 2] = msg
+            .get(cursor..cursor + 2)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| malformed(MalformedAnswer::RecordTruncated))?;
+        prefix.extend_from_slice(pair);
+        cursor += 2;
+    }
+
+    let (first, next) = read_name(msg, cursor)?;
+    cursor = next;
+    let parsed = match layout {
+        NameLayout::One => Parsed::Name(first),
+        NameLayout::Two => {
+            let (second, _) = read_name(msg, cursor)?;
+            Parsed::TwoNames(first, second)
+        }
+        NameLayout::U16ThenOne => {
+            Parsed::NumberAndName(u16::from_be_bytes([prefix[0], prefix[1]]), first)
+        }
+        NameLayout::Srv => Parsed::Srv {
+            priority: u16::from_be_bytes([prefix[0], prefix[1]]),
+            weight: u16::from_be_bytes([prefix[2], prefix[3]]),
+            port: u16::from_be_bytes([prefix[4], prefix[5]]),
+            target: first,
+        },
+        NameLayout::Soa => {
+            let (rname, after) = read_name(msg, cursor)?;
+            let counters: &[u8; 20] = msg
+                .get(after..after + 20)
+                .and_then(|s| s.try_into().ok())
+                .ok_or_else(|| malformed(MalformedAnswer::RecordTruncated))?;
+            let word = |i: usize| {
+                u32::from_be_bytes([
+                    counters[i * 4],
+                    counters[i * 4 + 1],
+                    counters[i * 4 + 2],
+                    counters[i * 4 + 3],
+                ])
+            };
+            Parsed::Soa {
+                mname: first,
+                rname,
+                serial: word(0),
+                refresh: word(1),
+                retry: word(2),
+                expire: word(3),
+                minimum: word(4),
+            }
+        }
+    };
+
+    // A name this crate read and cannot write back is a name no resolver
+    // reported — the encoder's bounds are RFC 1035's and the decoder
+    // enforces the same ones — so the octets as they arrived are the
+    // honest answer rather than a refusal of a record that is fine.
+    crate::rdata::encode(&parsed).map_or_else(verbatim, Ok)
 }
 
 /// The offset just past the name at `at`, without reading it.
@@ -460,6 +588,57 @@ mod tests {
             header_only(&hex("825d818000010003000000000000")),
             Err(Error::LengthUnavailable { ancount: 3 })
         );
+    }
+
+    /// **A compression pointer inside RDATA is expanded, not handed
+    /// over.** This is the shape `NS`, `CNAME`, `MX` and `SOA` really
+    /// arrive in — a pointer back into the question section — and a
+    /// pointer is meaningless the moment the message is gone, which for a
+    /// crate that hands back records is immediately.
+    ///
+    /// Found by running the two Windows calls against each other: the
+    /// parsed one has the name in full and the raw one had `c0 0c`.
+    #[test]
+    fn a_compressed_name_inside_rdata_is_written_out_in_full() {
+        let msg = hex(concat!(
+            "825d818000010001 0000 0000", // one question, one answer
+            "076578616d706c6503636f6d00", // example.com
+            "0002 0001",                  // NS IN
+            "c00c",                       // the owner, compressed
+            "0002 0001 0000012c",         // NS IN, ttl 300
+            "0005",                       // five octets of RDATA…
+            "026e73 c00c",                // …"ns" then a pointer
+        )
+        .replace(' ', "")
+        .as_str());
+        let found = records(&msg).expect("walks");
+        let record = found.first().expect("one answer");
+        assert_eq!(record.name, "example.com");
+        assert_eq!(
+            record.rdata,
+            hex("026e73076578616d706c6503636f6d00"),
+            "the pointer must have become the name it points at"
+        );
+    }
+
+    /// The control: a type with no name in its RDATA is handed over
+    /// untouched, pointer-shaped bytes and all. Without it, an
+    /// "expansion" that rewrote every record would pass the test above.
+    #[test]
+    fn rdata_with_no_name_in_it_is_handed_over_verbatim() {
+        let msg = hex(concat!(
+            "825d818000010001 0000 0000",
+            "076578616d706c6503636f6d00",
+            "0001 0001", // A IN
+            "c00c",
+            "0001 0001 0000012c",
+            "0004",
+            "c00cc00c", // four octets that look like
+        ) // two pointers and are an address
+        .replace(' ', "")
+        .as_str());
+        let found = records(&msg).expect("walks");
+        assert_eq!(found.first().expect("one answer").rdata, hex("c00cc00c"));
     }
 
     /// **The pair that says the two bounds are both load-bearing.** A

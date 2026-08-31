@@ -56,7 +56,7 @@ pub(crate) fn support() -> Support {
     if raw::available() {
         Support::Any
     } else {
-        Support::AnyExcept(parsed::PARSED_BY_WINDOWS)
+        Support::AnyExcept(parsed::unsupported())
     }
 }
 
@@ -76,23 +76,51 @@ pub(crate) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
 mod tests {
     use super::*;
 
-    /// **The Windows 10 path, exercised on a Windows 11 machine.**
+    /// Names and types with a record of each shape, so the comparison
+    /// below covers every re-encoder rather than the one type this
+    /// workspace happens to want.
+    ///
+    /// `HTTPS` (65) is in the list deliberately and is the odd one out: it
+    /// is the type Windows does **not** parse, so both paths hand back the
+    /// octets that arrived and it is the control that says an agreement
+    /// here is not simply two copies of the same synthesis.
+    const CASES: &[(&str, u16, &str)] = &[
+        ("cloudflare.com", 1, "A"),
+        ("cloudflare.com", 28, "AAAA"),
+        ("cloudflare.com", 2, "NS"),
+        ("cloudflare.com", 6, "SOA"),
+        ("cloudflare.com", 15, "MX"),
+        ("cloudflare.com", 16, "TXT"),
+        ("www.cloudflare.com", 5, "CNAME"),
+        ("_sip._udp.sip.voice.google.com", 33, "SRV"),
+        ("cloudflare.com", 43, "DS"),
+        ("cloudflare.com", 48, "DNSKEY"),
+        ("_443._tcp.good.dane.huque.com", 52, "TLSA"),
+        ("cloudflare.com", 65, "HTTPS"),
+    ];
+
+    /// **The Windows 10 path, exercised on a Windows 11 machine, one type
+    /// per shape.**
     ///
     /// On a machine that has `DnsQueryRaw`, [`support`] answers
     /// [`Support::Any`] and nothing else in this crate ever reaches
-    /// [`parsed::query`] — so the code for the platform this project cannot
-    /// get hold of would be the only code here that never runs. Calling it
-    /// directly is what makes that untrue.
+    /// [`parsed::query`] — so the code for the platform this project
+    /// cannot get hold of would be the only code here that never runs.
+    /// Calling it directly is what makes that untrue.
     ///
-    /// The two paths are compared against each other rather than against a
-    /// written expectation, which is the instrument the RDATA claim
-    /// already uses against Linux: an expectation written here could be
-    /// wrong in the same way twice. Only the RDATA is compared — the TTLs
-    /// are a resolver's countdown and differ between two calls a moment
-    /// apart.
+    /// **This is what makes the re-encoders checkable at all.** Each one
+    /// writes out the RDATA a wire would have carried, from a structure
+    /// Windows produced; here the wire's own octets are available for the
+    /// same name at the same moment, so the two are compared rather than
+    /// an expectation being written down. An expectation written by the
+    /// author of the encoder could be wrong in the same way twice.
     ///
-    /// Run on Windows 11 on 2026-09-01, where `support()` is `Any`: the
-    /// two agreed.
+    /// Only the RDATA is compared: TTLs are a resolver's countdown and
+    /// differ between two calls a moment apart. A name with no records of
+    /// a type is skipped rather than failed — what is published where is
+    /// not this crate's to promise — but the run reports how many types it
+    /// actually compared, so a day when every case goes missing does not
+    /// read as a pass.
     #[test]
     #[ignore = "needs a name server"]
     fn the_parsed_path_answers_the_same_rdata_as_the_raw_one() {
@@ -101,22 +129,34 @@ mod tests {
             // through every other test, so there is nothing here to add.
             return;
         };
-        let by_raw = query("cloudflare.com", 65).expect("the raw path answers");
-        let by_parsed = parsed::query("cloudflare.com", 65).expect("the parsed path answers");
 
         let bytes = |records: &[Record]| {
             let mut all: Vec<Vec<u8>> = records.iter().map(|r| r.rdata.clone()).collect();
             all.sort_unstable();
             all
         };
+
+        let mut compared = 0;
+        for (name, rtype, label) in CASES {
+            let Ok(by_raw) = query(name, *rtype) else {
+                continue;
+            };
+            if by_raw.is_empty() {
+                continue;
+            }
+            let by_parsed = parsed::query(name, *rtype)
+                .unwrap_or_else(|e| panic!("{label}: the parsed path refused: {e}"));
+            assert_eq!(
+                bytes(&by_raw),
+                bytes(&by_parsed),
+                "{label}: the two Windows calls disagree about the record's bytes"
+            );
+            compared += 1;
+        }
         assert!(
-            !by_raw.is_empty(),
-            "cloudflare.com publishes an HTTPS record"
-        );
-        assert_eq!(
-            bytes(&by_raw),
-            bytes(&by_parsed),
-            "the two Windows calls disagree about the record's bytes"
+            compared >= 6,
+            "only {compared} types had records to compare; this test proves \
+             nothing about the re-encoders when the fixtures go away"
         );
     }
 }

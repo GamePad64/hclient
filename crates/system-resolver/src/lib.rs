@@ -74,6 +74,13 @@ mod error;
 /// bounded by that.
 #[allow(dead_code, reason = "see this module's own note")]
 mod message;
+/// The mirror of [`message`]: it decodes a wire message into records, this
+/// encodes a record a platform took apart back into RDATA. Compiled and
+/// tested on every host for the same reason, and reached by **one**
+/// backend — the Windows path that has no `DnsQueryRaw` — which is the
+/// exact complement of the four that reach `message`.
+#[allow(dead_code, reason = "see `message`'s note; this is its mirror")]
+mod rdata;
 mod sys;
 
 pub use error::{Error, MalformedAnswer};
@@ -157,18 +164,25 @@ pub enum Support {
     /// Any type **except** these, each of which the platform parses into a
     /// structure of its own before this crate can see it.
     ///
-    /// **This is Windows, and it is a list rather than a `bool` because
-    /// the difference is enormous.** `DnsQuery_UTF8` fills in a
-    /// `DNS_RECORD` whose data union has no discriminator in the record;
-    /// which member is live is decided by the type, and a type the union
-    /// names arrives as that struct while a type it does not name arrives
-    /// as the record's own RDATA. So most of the registry — `CAA`,
-    /// `HTTPS`, `SSHFP`, `OPENPGPKEY`, `CERT`, `LOC`, `URI` — is
-    /// answerable on Windows exactly as it is anywhere else, and the
-    /// forty-three types Windows has taught itself are the exception.
+    /// **This is a Windows without `DnsQueryRaw`, and it is a list rather
+    /// than a `bool` because the difference is enormous.**
+    /// `DnsQuery_UTF8` fills in a `DNS_RECORD` whose data union has no
+    /// discriminator; a type the union names arrives as that structure,
+    /// and a type it does not name arrives as the record's own RDATA.
     ///
-    /// A `bool` here would have hidden that, and refusing all of Windows
-    /// would have hidden it further.
+    /// Most of the registry — `CAA`, `HTTPS`, `SSHFP`, `OPENPGPKEY`,
+    /// `CERT`, `LOC`, `URI` — is in the second group and works there
+    /// exactly as anywhere else. Of the forty-three in the first,
+    /// twenty-six are **re-encoded** from the structure back into RDATA,
+    /// which is why `A`, `AAAA`, `MX`, `TXT`, `SRV`, `SOA`, `NS`,
+    /// `CNAME`, `PTR`, `DS`, `DNSKEY` and `TLSA` are answerable too. What
+    /// is left here is seventeen: the DNSSEC signature and denial records,
+    /// protocol machinery like `OPT` and `TSIG`, `SVCB`, and Windows' own
+    /// `WINS` pair.
+    ///
+    /// A `bool` would have hidden all of that, and refusing the
+    /// forty-three would have refused essentially every record in
+    /// everyday use.
     AnyExcept(&'static [u16]),
     /// No backend on this target. [`lookup`] answers
     /// [`Error::Unsupported`] for every type, and says so here rather than

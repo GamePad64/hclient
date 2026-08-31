@@ -61,9 +61,13 @@ And the metadata says it from a second direction: `DNS_TYPE_HTTPS`,
 `DNS_TYPE_CERT` and `DNS_TYPE_LOC` all exist as constants with no union
 member, so it is the **union** that decides and not the constant list.
 
-That is why `Support::AnyExcept(&[..])` and not a `bool`: the exception is
-forty-three types, and everything else — most of the registry — works on
-Windows exactly as it does anywhere else.
+That is why `Support::AnyExcept(&[..])` and not a `bool`. And the
+forty-three are **not** the obscure types — they are `A`, `AAAA`, `MX`,
+`TXT`, `SRV`, `NS`, `SOA`, `CNAME`, `PTR`, `DS`, `DNSKEY`, `TLSA`,
+essentially every record in everyday use — so refusing them would have
+refused the reason anyone asks a system resolver at all. Twenty-six of
+them are read out of their structure and **written back into the RDATA
+the wire would have carried** instead; §4.1 has what is left.
 
 ## 3. `DnsQueryRaw`, and the three readings that decide its code
 
@@ -118,23 +122,47 @@ on the same machine and the same name: `the_parsed_path_answers_the_same_rdata_a
 compares the two and they agree. That is the strongest evidence available
 without the hardware, and it is not the same as having run it.
 
-### 4.1 What is not supported there, precisely
+### 4.1 The RDATA is synthesised, and what that costs
 
-- **The forty-three record types Windows parses into a structure of its
-  own.** They are refused **by name**, before a query, through
-  `Support::AnyExcept` — never guessed at, because handing a caller a
-  structure's bytes as though they were RDATA is the defect §2 describes.
-  The list is `A`, `NS`, `MD`, `MF`, `CNAME`, `SOA`, `MB`, `MG`, `MR`,
-  `NULL`, `WKS`, `PTR`, `HINFO`, `MINFO`, `MX`, `TXT`, `RP`, `AFSDB`,
-  `X25`, `ISDN`, `RT`, `SIG`, `KEY`, `AAAA`, `NXT`, `SRV`, `ATMA`,
-  `NAPTR`, `DNAME`, `OPT`, `DS`, `RRSIG`, `NSEC`, `DNSKEY`, `DHCID`,
-  `NSEC3`, `NSEC3PARAM`, `TLSA`, `SVCB`, `TKEY`, `TSIG`, `WINS`, `WINSR`
-  — written in the crate as the metadata's own constants rather than as
-  numbers, so a reader can check it against the union by name.
+For the twenty-six types the structure is read and written back out. What
+comes back is therefore **what Windows understood**, not the octets that
+arrived, and the differences are worth knowing before comparing one byte
+for byte:
+
+- **Names are written out in full.** On the wire a name inside RDATA may
+  be a compression pointer; there is nothing here to point into. This
+  crate does the same on the platforms that *do* hand over a message —
+  see §4.3, which is a finding of its own — so the two agree.
+- **Case is Windows'.** DNS names are case-insensitive and a resolver may
+  return either; nothing restores what the origin sent.
+- **A character-string cannot carry a NUL.** `TXT`, `HINFO`, `X25`,
+  `ISDN` and `NAPTR` strings come back as NUL-terminated C strings, so an
+  octet the RFCs permit is not representable — and a record containing one
+  is truncated by **Windows**, before this crate sees it.
+
+### 4.2 What is not supported there, precisely
+
+- **Seventeen record types**, refused **by name** and before a query
+  through `Support::AnyExcept` — never guessed at, because handing a
+  caller a structure's bytes as though they were RDATA is the defect §2
+  describes. They are `SIG` and `RRSIG`, which carry a signature over a
+  canonical form this crate would have to reproduce exactly or hand back a
+  record that fails validation; `NSEC`, `NXT`, `NSEC3` and `NSEC3PARAM`,
+  whose type bitmaps their structures do not expose as one; `SVCB`, a
+  parameter list with a union of its own — and `HTTPS`, the type this
+  workspace actually wants, is not parsed by Windows at all and arrives
+  raw; `OPT`, `TKEY` and `TSIG`, which are protocol machinery rather than
+  answers; and `WKS`, `ATMA`, `NULL`, `DHCID`, `WINS` and `WINSR`, which
+  have no consumer here.
+
+  The list is **derived** in the crate rather than written down — it is
+  the union's membership minus the types with a re-encoder — because a
+  third copy is a third thing to forget.
 - **Records of another type beside the answer.** A CNAME chain is visible
   on every platform that hands over a message and is not visible here:
   a `DNS_RECORD` of another type is a parsed structure of that type, and
-  this path has no RDATA for it to hand back.
+  this path would have to know that type's shape too. A caller that wants
+  it asks for `CNAME`.
 - **The header, and therefore `TC`.** A truncated answer is refused on the
   message platforms and is invisible here — whatever records the OS
   obtained come back with nothing saying the set is short. `NXDOMAIN` is
@@ -144,15 +172,33 @@ without the hardware, and it is not the same as having run it.
   reachable through `DNS_RECORD`, which is the same loss the crate takes
   deliberately everywhere (§1) rather than a Windows 10 one.
 
-### 4.2 What is not known about it
+### 4.3 The synthesis found a defect on the other four platforms
+
+The test comparing the two Windows calls failed the first time it ran, on
+`NS`: the wire said `03 6e 73 33 c0 0c` and the synthesis said
+`ns3.cloudflare.com` written out. The synthesis was right.
+
+**A compression pointer is meaningless the moment the message is gone**,
+and this crate hands back records rather than messages — so RDATA that
+still carried one was bytes a caller could neither read nor resolve. That
+was true on Linux, macOS, Android and Windows 11, for every type whose
+RDATA may hold a name: `NS`, `CNAME`, `PTR`, `SOA`, `MX`, `MINFO`, `RP`,
+`AFSDB`, `RT`, `SRV` and the rest of the RFC 1035 set — which RFC 3597 §4
+closes, so the table cannot grow with the registry.
+
+The walker expands them now, and the two Windows paths agree because both
+produce the same self-contained bytes. It was the platform this project
+has no machine for that made the defect visible on the four it does.
+
+### 4.4 What is not known about it
 
 - **Whether Windows 10 caches the types it returns as raw RDATA.** On
   Windows 11 the raw path preserves the cache, proven by packet count
   (§3.1). Windows 10 takes a different call and this has not been
   measured; it needs the hardware.
 - **Whether its union names fewer types than Windows 11's.** A later OS
-  knows more record types, not fewer, so the list in §4.1 is an **upper
-  bound** on what Windows 10 parses — which is the safe direction: a type
+  knows more record types, not fewer, so the refusal list in §4.2 is an
+  **upper bound** on what Windows 10 parses — which is the safe direction: a type
   Windows 10 hands over raw and this crate refuses costs a caller a
   fallback, where the reverse would cost it a wrong answer.
 - **Whether it is worth keeping at all.** Windows 10 is out of support, so

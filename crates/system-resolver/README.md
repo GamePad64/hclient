@@ -34,32 +34,46 @@ platform's convenience API will not return** — `HTTPS`, `SVCB`, `TLSA`,
 | Linux (glibc, musl) | `res_query` | any type |
 | macOS, iOS | `res_9_query` | any type |
 | Android ≥ 29 | `android_res_nquery` | any type |
-| Windows | `DnsQuery_UTF8` | any type **except** the 43 the OS parses |
+| Windows 11 / Server 2025 | `DnsQueryRaw` | any type |
+| older Windows | `DnsQuery_UTF8` | any type **except** 17 |
 
-`SUPPORT` answers it, and `SUPPORT.allows(rtype)` answers it for one type.
-A type this build cannot answer is refused **by name and before a query**,
-never guessed at.
+`support()` answers it, and `support().allows(rtype)` answers it for one
+type. A type this build cannot answer is refused **by name and before a
+query**, never guessed at.
+
+It is a function rather than a constant for one reason: on Windows the
+answer genuinely differs between two machines running the same binary.
 
 ### The Windows exception, which is the only interesting row
 
-`DnsQuery_UTF8` fills in a `DNS_RECORD` whose data union carries no
-discriminator. Which member is live is decided by the type, and the rule is
-readable from the Win32 metadata: a type the union **names** arrives as
-that structure, and a type it does not name arrives as the record's own
-**RDATA**. `DNS_TYPE_SVCB` is 64; `HTTPS` is 65 and the union names no
-member for it — so `HTTPS` works here exactly as it does everywhere else,
-and so do `CAA`, `CERT`, `LOC` and most of the registry.
+`DnsQueryRaw` hands over the wire message, so a Windows 11 behaves exactly
+like the four platforms above. It is resolved with `GetProcAddress`,
+because naming it as a linked symbol stops the binary from starting on a
+Windows that lacks it.
 
-Measured rather than read, on Windows 11: type 65 for `cloudflare.com`
+`DnsQuery_UTF8`, the fallback, fills in a `DNS_RECORD` whose data union
+carries no discriminator. Which member is live is decided by the type: a
+type the union **names** arrives as that structure, and a type it does not
+name arrives as the record's own **RDATA**. `DNS_TYPE_SVCB` is 64; `HTTPS`
+is 65 and the union names no member for it — so `HTTPS` works there
+exactly as everywhere else, and so do `CAA`, `CERT`, `LOC` and most of the
+registry.
+
+The forty-three the union does name are `A`, `AAAA`, `MX`, `TXT`, `SRV`,
+`NS`, `SOA`, `CNAME`, `PTR`, `DS`, `DNSKEY`, `TLSA` and thirty-one more —
+essentially every record in everyday use — so refusing them would refuse
+the reason anyone asks a system resolver at all. Twenty-six are read out
+of the structure and **written back into the RDATA the wire would have
+carried**; seventeen are refused by name. `Record::rdata` for one of those
+twenty-six is therefore what Windows *understood*, not the octets that
+arrived — names come back uncompressed, and case is Windows'.
+
+Measured rather than read, on Windows 11, where both calls exist: type 65
 comes back with `wDataLength = 61` and bytes that are SVCB wire format,
-byte-for-byte the RDATA that Linux's `res_query` reports for the same name.
-`MX` came back as a structure and `CAA` as RDATA, which is the rule
-separating in both directions.
-
-`DnsQueryRaw` would hand over the whole wire message and widen Windows to
-*any type*. It exists only on Windows 11 / Server 2025, so taking it means
-resolving the symbol at run time; that is the next step for this crate and
-it is not taken yet.
+byte-for-byte the RDATA that Linux's `res_query` reports for the same
+name; `MX` came back as a structure and `CAA` as RDATA, which is the rule
+separating in both directions; and the crate's own test compares the two
+Windows paths across a record of every shape and they agree.
 
 ## What it deliberately does not do
 
