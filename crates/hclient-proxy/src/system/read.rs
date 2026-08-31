@@ -312,6 +312,12 @@ pub(super) fn platform() -> Raw {
 /// `socksProxyHost` is read too, and named rather than dropped:
 /// `SystemProxies::from_parts` refuses a mixed configuration by name, and
 /// a SOCKS entry that never arrived could not be refused.
+///
+/// `#[cfg(any(target_os = "android", test))]` for the reason
+/// [`from_wininet`] above carries it: the rules are compiled where they
+/// are used and where they are tested, and nowhere else — without the
+/// `test` arm they would be dead code on every host that runs them.
+#[cfg(any(target_os = "android", test))]
 pub(super) fn from_jvm_properties(get: impl Fn(&str) -> Option<String>) -> Raw {
     let mut raw = Raw::default();
     for (key, host, port) in [
