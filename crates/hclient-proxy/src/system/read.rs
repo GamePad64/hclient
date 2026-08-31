@@ -1,5 +1,6 @@
 //! Where the settings come from — the environment, the Windows registry,
-//! the macOS dynamic store — and the shape they arrive in.
+//! the macOS dynamic store, Android's JVM properties — and the shape they
+//! arrive in.
 //!
 //! # The split this file is built around
 //!
@@ -8,8 +9,15 @@
 //! workspace is developed on, and one that turns what it said into
 //! [`Raw`], which is pure and is tested exhaustively on any host. The
 //! second is where every rule lives — `ProxyServer`'s `scheme=host:port`
-//! list, `ProxyOverride`'s `<local>`, which keys mean which scheme — so
-//! the untestable half holds no decisions.
+//! list, `ProxyOverride`'s `<local>`, `nonProxyHosts`' `|`, which keys
+//! mean which scheme — so the untestable half holds no decisions.
+//!
+//! Android is the sharpest case of that split and the reason to read it
+//! before adding a fourth platform: its settings are behind a **JVM**, so
+//! its untestable half is four JNI calls in `jvm.rs` and its testable
+//! half is [`from_jvm_properties`], which takes the lookup as a closure —
+//! `platform()` hands it JNI and a test hands it a table, and no rule
+//! under test can tell.
 //!
 //! That is the same discipline `hclient-dns-system` keeps between its
 //! `sys` module and its parsers, and it is why taking a third-party crate

@@ -4627,14 +4627,33 @@ exactly the two targets `hclient-idn` exists to keep those tables off —
 and it pulls a second `windows-sys` major through `winreg`. Written here
 over `windows-registry` and `system-configuration`, both of which expose
 **safe** APIs, the cost is: **nothing on Linux**, where the environment
-needs no crate at all; **+4** on Windows; **+6** on macOS. And two things
-`proxy_cfg` does not read at all are now read — the auto-config URL, and
-the platform's own SOCKS entry.
+needs no crate at all; **+4** on Windows; **+6** on macOS; **+9** on
+Android. And two things `proxy_cfg` does not read at all are now read —
+the auto-config URL, and the platform's own SOCKS entry.
+
+**Android is the dear one, and the reason is where its settings live.**
+Every other platform keeps them in a file, a registry or a dictionary a
+process can read; Android keeps them in **JVM system properties**, so
+reaching them means calling into managed code — `jni` and `ndk-context`,
+measured at 19 crates to 28, target-gated so no other build sees them.
+Those properties rather than anything else because `java.net`'s own
+`DefaultProxySelector` reads exactly them, which is what makes a proxy
+this client takes the proxy every other client in the process takes.
+An app that already carries `rustls-platform-verifier` has paid for the
+same handle, since reaching the Android trust store needs it too.
+
+That is also why the Android **backend** was weighed and not built: the
+`rustls-platform-verifier` measurement leaves system proxy and the
+cleartext policy as the whole of what a platform stack would add, and a
+reader is what a setting needs — the same conclusion `hclient-urlsession`
+reached from the other side when MDM roots turned out to be reachable
+without it.
 
 **Every rule is a pure function, and the OS-touching half holds no
-decisions.** `WinHttpGetIEProxyConfigForCurrentUser`'s registry keys and
-`SCDynamicStoreCopyProxies`'s dictionary are four lines each and cannot
-run on the platform this workspace is developed on; what they hand to
+decisions.** `WinHttpGetIEProxyConfigForCurrentUser`'s registry keys,
+`SCDynamicStoreCopyProxies`'s dictionary and Android's four JNI calls are
+a handful of lines each and cannot run on the platform this workspace is
+developed on; what they hand to
 `from_wininet` and to `from_parts` is data, and every rule — the
 `scheme=host:port` list, `<local>`, which key means which scheme, the
 `host:port` reading — is tested on any host. That is
