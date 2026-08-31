@@ -35,17 +35,31 @@
 /// caller one fallback, a capability that lies costs it a wrong
 /// connection.
 #[cfg(any(
-    all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
+    all(
+        target_os = "linux",
+        not(target_os = "android"),
+        any(target_env = "gnu", target_env = "musl")
+    ),
     target_vendor = "apple"
 ))]
 #[path = "res_query.rs"]
+mod imp;
+
+/// Android is `target_os = "android"` and **not** `target_os = "linux"`,
+/// so it does not reach the arm above by accident — but it is listed
+/// first anyway, because the reason it needs its own is not the cfg: the
+/// `res_*` family is not in the NDK's stable ABI, and
+/// `android_res_nquery` is. See `android.rs`.
+#[cfg(target_os = "android")]
+#[path = "android.rs"]
 mod imp;
 
 #[cfg(all(
     windows,
     not(any(
         all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
-        target_vendor = "apple"
+        target_vendor = "apple",
+        target_os = "android"
     ))
 ))]
 #[path = "windows.rs"]
@@ -54,6 +68,7 @@ mod imp;
 #[cfg(not(any(
     all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
     target_vendor = "apple",
+    target_os = "android",
     windows
 )))]
 #[path = "unsupported.rs"]

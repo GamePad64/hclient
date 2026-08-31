@@ -200,8 +200,12 @@ therefore `!Send` — an implementation choice, not a platform property.
 that cannot be observed false there.
 
 **C8 — a foreign-function boundary**, in
-`hclient-dns-system/src/sys/res_query.rs` and `.../sys/windows.rs`: one
-file per platform backend, and no `unsafe` anywhere else in the crate.
+`hclient-dns-system/src/sys/{res_query,windows,android}.rs`: one file per
+platform backend, and no `unsafe` anywhere else in the crate. Android is
+the third and is a backend of its own rather than a `cfg` on the first,
+because bionic's `res_*` family is not in the NDK's stable ABI —
+`android_res_nquery` is, and it is what the platform's own resolver work
+goes through.
 
 **C9 — the platform's UTS 46**, in `hclient-idn/src/icu/windows.rs` and
 nothing else. Not `icu/mod.rs` above it, not `lib.rs`, not a directory.

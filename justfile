@@ -404,6 +404,9 @@ check-targets:
     # in `read.rs` and is tested on this host — so a check for the target
     # is the whole of what keeps the JNI half honest.
     check -p hclient-proxy --target aarch64-linux-android --all-features --all-targets
+    # The Android resolver, for the same reason: `android_res_nquery` is
+    # declared here and called nowhere this host can run.
+    check -p hclient-dns-system --target aarch64-linux-android --all-features --all-targets
     # `--lib` and not `--all-targets` here, and the reason is a fact about
     # this crate's dev-dependencies rather than about wasm: `wait-timeout`
     # and `getrandom`'s host backend are host-only and do not build for

@@ -31,6 +31,7 @@ EXEMPT="hclient-fetch hclient-dns-system hclient-idn hclient-urlsession hclient-
 # `src`, which the spec already described it as not doing.
 ALLOWED="crates/hclient-fetch/src/promise.rs:amendment-C7
 crates/hclient-dns-system/src/sys/res_query.rs:amendment-C8
+crates/hclient-dns-system/src/sys/android.rs:amendment-C8
 crates/hclient-dns-system/src/sys/windows.rs:amendment-C8
 crates/hclient-idn/src/icu/windows.rs:amendment-C9
 crates/hclient-urlsession/src/delegate.rs:amendment-C11
