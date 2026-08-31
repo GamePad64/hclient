@@ -52,21 +52,29 @@ pub(crate) struct Header {
     pub(crate) ancount: u16,
 }
 
-/// The twelve-byte header, or the reason there is not one.
-pub(crate) fn read_header(msg: &[u8]) -> Result<Header, Error> {
-    let head: &[u8; HEADER_LEN] = msg
-        .get(..HEADER_LEN)
-        .and_then(|s| s.try_into().ok())
-        .ok_or(Error::Malformed(MalformedAnswer::HeaderTruncated {
-            got: msg.len(),
-        }))?;
-    Ok(Header {
-        is_response: head[2] & 0x80 != 0,
-        truncated: head[2] & 0x02 != 0,
-        rcode: head[3] & 0x0F,
-        qdcount: u16::from_be_bytes([head[4], head[5]]),
-        ancount: u16::from_be_bytes([head[6], head[7]]),
-    })
+impl TryFrom<&[u8]> for Header {
+    type Error = Error;
+
+    /// The twelve-byte header, or the reason there is not one.
+    ///
+    /// The whole message is taken rather than exactly twelve octets,
+    /// because the length that comes back short is the thing worth
+    /// reporting: `HeaderTruncated` names what did arrive.
+    fn try_from(msg: &[u8]) -> Result<Self, Self::Error> {
+        let head: &[u8; HEADER_LEN] = msg
+            .get(..HEADER_LEN)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(Error::Malformed(MalformedAnswer::HeaderTruncated {
+                got: msg.len(),
+            }))?;
+        Ok(Self {
+            is_response: head[2] & 0x80 != 0,
+            truncated: head[2] & 0x02 != 0,
+            rcode: head[3] & 0x0F,
+            qdcount: u16::from_be_bytes([head[4], head[5]]),
+            ancount: u16::from_be_bytes([head[6], head[7]]),
+        })
+    }
 }
 
 /// What a twelve-byte header on its own means, when that is all there is.
@@ -83,7 +91,7 @@ pub(crate) fn read_header(msg: &[u8]) -> Result<Header, Error> {
 /// records" would turn a broken platform into a client that quietly stops
 /// discovering anything.
 pub(crate) fn header_only(msg: &[u8]) -> Result<(), Error> {
-    let header = read_header(msg)?;
+    let header = Header::try_from(msg)?;
     if !header.is_response {
         return Err(Error::NoResponse);
     }
@@ -117,7 +125,7 @@ pub(crate) fn header_only(msg: &[u8]) -> Result<(), Error> {
 /// leads to, and dropping it here would hide from the caller that the
 /// answer is for a different name than the question.
 pub(crate) fn records(msg: &[u8]) -> Result<Vec<Record>, Error> {
-    let header = read_header(msg)?;
+    let header = Header::try_from(msg)?;
     if !header.is_response {
         return Err(Error::NoResponse);
     }
@@ -198,15 +206,29 @@ enum NameLayout {
     Srv,
 }
 
-fn name_layout(rtype: u16) -> Option<NameLayout> {
-    Some(match rtype {
-        2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 => NameLayout::One,
-        14 | 17 => NameLayout::Two,
-        15 | 18 | 21 => NameLayout::U16ThenOne,
-        6 => NameLayout::Soa,
-        33 => NameLayout::Srv,
-        _ => return None,
-    })
+/// What [`NameLayout::try_from`] answers for a type with no name in its
+/// RDATA — which is **most** types and the ordinary case, not a failure.
+///
+/// It is a named type rather than `()` so that the call site reads as the
+/// question it is asking. Nothing constructs it but the conversion, and
+/// nothing reads it: the one caller matches on `Ok` and treats everything
+/// else as *hand the octets over untouched*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NoNameInRdata;
+
+impl TryFrom<u16> for NameLayout {
+    type Error = NoNameInRdata;
+
+    fn try_from(rtype: u16) -> Result<Self, Self::Error> {
+        Ok(match rtype {
+            2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 => Self::One,
+            14 | 17 => Self::Two,
+            15 | 18 | 21 => Self::U16ThenOne,
+            6 => Self::Soa,
+            33 => Self::Srv,
+            _ => return Err(NoNameInRdata),
+        })
+    }
 }
 
 /// The record's RDATA with every name in it written out in full.
@@ -230,7 +252,7 @@ fn expand_names(msg: &[u8], rtype: u16, at: usize, end: usize) -> Result<Vec<u8>
             .map(<[u8]>::to_vec)
             .ok_or_else(|| malformed(MalformedAnswer::RecordTruncated))
     };
-    let Some(layout) = name_layout(rtype) else {
+    let Ok(layout) = NameLayout::try_from(rtype) else {
         return verbatim();
     };
 
@@ -447,7 +469,7 @@ mod tests {
 
     // ---- the twelve bytes, field by field ------------------------------
     //
-    // Everything else here reaches `read_header` through `records` or
+    // Everything else here reaches the conversion through `records` or
     // `header_only`, which can only observe it through an outcome; these
     // read the fields directly, because a header field that lands in the
     // wrong variable is invisible from a distance whenever some other
@@ -520,7 +542,7 @@ mod tests {
         #[case] bytes: Vec<u8>,
         #[case] expected: Header,
     ) {
-        assert_eq!(read_header(&bytes), Ok(expected));
+        assert_eq!(Header::try_from(&bytes[..]), Ok(expected));
     }
 
     /// Anything shorter than the fixed twelve octets is refused with the
@@ -531,7 +553,7 @@ mod tests {
     #[rstest::rstest]
     fn fewer_than_twelve_octets_is_never_a_header(#[values(0, 1, 6, 8, 11)] len: usize) {
         assert_eq!(
-            read_header(&vec![0u8; len]),
+            Header::try_from(&vec![0u8; len][..]),
             Err(Error::Malformed(MalformedAnswer::HeaderTruncated {
                 got: len
             }))
@@ -540,7 +562,7 @@ mod tests {
 
     #[test]
     fn exactly_twelve_octets_is_a_header() {
-        assert_matches!(read_header(&[0u8; 12]), Ok(_));
+        assert_matches!(Header::try_from(&[0u8; 12][..]), Ok(_));
     }
 
     /// **The header on its own is classified by the same rules**, which is
