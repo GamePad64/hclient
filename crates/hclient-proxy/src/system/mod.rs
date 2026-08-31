@@ -39,6 +39,8 @@
 
 use std::fmt;
 
+#[cfg(target_os = "android")]
+mod jvm;
 mod parse;
 mod read;
 mod translate;

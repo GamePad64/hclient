@@ -341,7 +341,7 @@ jobs:
       - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
-          targets: wasm32-unknown-unknown,wasm32-wasip2,aarch64-apple-darwin,x86_64-pc-windows-msvc
+          targets: wasm32-unknown-unknown,wasm32-wasip2,aarch64-apple-darwin,x86_64-pc-windows-msvc,aarch64-linux-android
           bins: just
       - shell: bash
         run: just check-targets

@@ -373,7 +373,12 @@ check-targets:
     set -uo pipefail
     # A missing target must fail rather than skip: a silent skip is the
     # defect this recipe exists to remove, one level up.
-    for t in wasm32-unknown-unknown wasm32-wasip2 aarch64-apple-darwin x86_64-pc-windows-msvc; do
+    # The list is one place, and the count below is derived from it: a
+    # figure written twice is a figure that drifts, which this workspace
+    # has fixed three times elsewhere. Adding a target here is the whole
+    # of adding one.
+    TARGETS="wasm32-unknown-unknown wasm32-wasip2 aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-linux-android"
+    for t in $TARGETS; do
       rustup target list --installed | grep -qx "$t" || {
         echo "::error::target $t is not installed — \`rustup target add $t\`. Skipping it would return exactly the blind spot this recipe covers."
         exit 1
@@ -394,6 +399,11 @@ check-targets:
     # The browser: the backend with its tests, and the facade over it —
     # the pair that broke.
     check -p hclient-fetch --target wasm32-unknown-unknown --all-targets
+    # Android's proxy reader, which is the one place in `hclient-proxy`
+    # that calls into a JVM. Nothing here runs on it — the pure half is
+    # in `read.rs` and is tested on this host — so a check for the target
+    # is the whole of what keeps the JNI half honest.
+    check -p hclient-proxy --target aarch64-linux-android --all-features --all-targets
     # `--lib` and not `--all-targets` here, and the reason is a fact about
     # this crate's dev-dependencies rather than about wasm: `wait-timeout`
     # and `getrandom`'s host backend are host-only and do not build for
@@ -481,7 +491,7 @@ check-targets:
       for f in "${failed[@]}"; do echo "  cargo check $f"; done
       exit 1
     fi
-    echo "cross-target check: $ran invocations, 4 targets, all clean"
+    echo "cross-target check: $ran invocations, $(echo $TARGETS | wc -w) targets, all clean"
 
 # the Transport acceptance: one source, no #[cfg], three targets
 build-three-targets:

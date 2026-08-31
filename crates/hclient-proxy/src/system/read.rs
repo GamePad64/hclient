@@ -290,7 +290,64 @@ pub(super) fn platform() -> Raw {
     raw
 }
 
-#[cfg(not(any(windows, target_vendor = "apple")))]
+// --- Android ------------------------------------------------------------
+
+/// The JVM system properties Android fills in from the active network's
+/// proxy settings, as [`Raw`].
+///
+/// **The pure half, and it holds every rule** — the untestable half is
+/// four JNI calls that fetch these five strings. `java.net`'s own
+/// `DefaultProxySelector` reads exactly these, which is what makes them
+/// the right source: a proxy this reads is the proxy every other client
+/// in the same process takes.
+///
+/// `socksProxyHost` is read too, and named rather than dropped:
+/// `SystemProxies::from_parts` refuses a mixed configuration by name, and
+/// a SOCKS entry that never arrived could not be refused.
+pub(super) fn from_jvm_properties(get: impl Fn(&str) -> Option<String>) -> Raw {
+    let mut raw = Raw::default();
+    for (key, host, port) in [
+        ("http", "http.proxyHost", "http.proxyPort"),
+        ("https", "https.proxyHost", "https.proxyPort"),
+        ("socks", "socksProxyHost", "socksProxyPort"),
+    ] {
+        let Some(h) = get(host)
+            .map(|h| h.trim().to_owned())
+            .filter(|h| !h.is_empty())
+        else {
+            continue;
+        };
+        // A missing port is the property's own absence rather than an
+        // error, and it is left absent here: `from_parts` already reads
+        // a bare host as the scheme's default port, which is the one
+        // place that rule is written.
+        let value = match get(port).and_then(|p| p.trim().parse::<u16>().ok()) {
+            Some(p) => format!("{h}:{p}"),
+            None => h,
+        };
+        raw.proxies.push((key.to_owned(), value));
+    }
+    // `http.nonProxyHosts` is `|`-separated, unlike `NO_PROXY`'s commas —
+    // the separator is Java's and so is the wildcard syntax. Splitting is
+    // all that happens here; whether a pattern can be honoured is
+    // `translate`'s question, and one it already asks for macOS.
+    if let Some(list) = get("http.nonProxyHosts") {
+        raw.bypass.extend(
+            list.split('|')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    raw
+}
+
+#[cfg(target_os = "android")]
+pub(super) fn platform() -> Raw {
+    from_jvm_properties(crate::system::jvm::system_property)
+}
+
+#[cfg(not(any(windows, target_vendor = "apple", target_os = "android")))]
 pub(super) fn platform() -> Raw {
     // No platform store to ask. The environment is the whole of it, which
     // is the same answer curl gives on these targets — and it has already
@@ -305,6 +362,21 @@ mod tests {
 
     fn env(vars: &[(&str, &str)]) -> Raw {
         from_pairs(vars.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())))
+    }
+
+    /// The JVM properties an Android device would have, as a lookup.
+    ///
+    /// A closure rather than a fixture type, because that is the seam:
+    /// `platform()` passes JNI and this passes a table, and the rules
+    /// under test cannot tell them apart — which is the whole reason the
+    /// untestable half is four calls long.
+    fn jvm(props: &[(&str, &str)]) -> Raw {
+        from_jvm_properties(|name| {
+            props
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| (*v).to_owned())
+        })
     }
 
     #[test]
@@ -437,5 +509,91 @@ mod tests {
         let raw = from_wininet(false, None, None, Some("http://w/p.pac"));
         assert!(!raw.is_empty());
         assert!(Raw::default().is_empty());
+    }
+
+    /// **Each scheme's pair becomes one entry**, which is the whole of
+    /// what this reader does.
+    #[test]
+    fn each_scheme_becomes_a_host_and_port() {
+        assert_eq!(
+            jvm(&[
+                ("http.proxyHost", "p.example"),
+                ("http.proxyPort", "8080"),
+                ("https.proxyHost", "s.example"),
+                ("https.proxyPort", "8443"),
+            ])
+            .proxies,
+            vec![
+                ("http".to_owned(), "p.example:8080".to_owned()),
+                ("https".to_owned(), "s.example:8443".to_owned()),
+            ]
+        );
+    }
+
+    /// **A host with no port is left without one**, rather than being
+    /// given 80 or 443 here.
+    ///
+    /// `from_parts` already reads a bare host as the scheme's default,
+    /// and that rule belongs in one place — this is `hclient-dns-system`'s
+    /// split applied to a port: the reader reports, the translator
+    /// decides.
+    #[test]
+    fn a_missing_or_unreadable_port_leaves_a_bare_host() {
+        assert_eq!(
+            jvm(&[("http.proxyHost", "p.example")]).proxies,
+            vec![("http".to_owned(), "p.example".to_owned())]
+        );
+        // Not a number, so not a port. Dropping the proxy instead would
+        // send traffic direct that the device routed.
+        assert_eq!(
+            jvm(&[("http.proxyHost", "p.example"), ("http.proxyPort", "-")]).proxies,
+            vec![("http".to_owned(), "p.example".to_owned())]
+        );
+    }
+
+    /// **A port with no host is nothing**, because a port cannot be
+    /// connected to on its own — and an entry built from it would be a
+    /// proxy at the empty host.
+    #[test]
+    fn a_port_without_a_host_is_not_an_entry() {
+        assert!(jvm(&[("http.proxyPort", "8080")]).proxies.is_empty());
+        // An empty or blank host is the same case: Android clears these
+        // by setting them empty rather than by removing them.
+        assert!(jvm(&[("http.proxyHost", "  ")]).proxies.is_empty());
+    }
+
+    /// **`socksProxyHost` is read and named**, not dropped.
+    ///
+    /// A transport holds one proxy protocol, so a device naming both is
+    /// refused by name in `from_parts` — and a SOCKS entry that never
+    /// reached it could not be refused. This is the reader's half of
+    /// `SystemProxyRefused::MixedProtocols`.
+    #[test]
+    fn a_socks_proxy_is_reported_rather_than_dropped() {
+        assert_eq!(
+            jvm(&[("socksProxyHost", "s.example"), ("socksProxyPort", "1080")]).proxies,
+            vec![("socks".to_owned(), "s.example:1080".to_owned())]
+        );
+    }
+
+    /// **`|`, not `,`.** The separator is Java's, and a reader that split
+    /// on commas would read one pattern where the device wrote three.
+    #[test]
+    fn non_proxy_hosts_split_on_the_bar() {
+        assert_eq!(
+            jvm(&[("http.nonProxyHosts", "localhost|127.*| *.example.com |")]).bypass,
+            vec![
+                "localhost".to_owned(),
+                "127.*".to_owned(),
+                "*.example.com".to_owned()
+            ]
+        );
+    }
+
+    /// Nothing set is nothing read, which is what lets the environment
+    /// keep its precedence on a device that has one.
+    #[test]
+    fn an_unconfigured_device_reads_as_empty() {
+        assert_eq!(jvm(&[]), Raw::default());
     }
 }

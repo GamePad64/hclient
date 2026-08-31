@@ -223,6 +223,22 @@ downcast to an untyped array and to no other, and its elements arrive as
 pointers with no safe way to read one. Checked in 0.9 and 0.10;
 `objc2-core-foundation` has the same wall one level up, at the dictionary.
 
+**C19 — Android keeps its proxy behind a JVM**, in
+`hclient-proxy/src/system/jvm.rs` and in one function. Android has no
+environment variable for a proxy and no registry: what it has is
+`System.getProperty("http.proxyHost")` and four neighbours, which the
+framework fills in from the active network and which `java.net`'s own
+`DefaultProxySelector` reads — so reading them is what makes this client
+agree with every other one in the process. Reaching them means calling
+into managed code, and `JavaVM::from_raw` over the pointer the
+application registered with `ndk_context` is the whole of the `unsafe`;
+the pointer is null-checked rather than trusted, and every other line in
+the file is `jni`'s safe API. **The file holds no rules** — which key is
+which scheme, how `nonProxyHosts` splits, what a missing port means are
+all in `read.rs`'s `from_jvm_properties`, a pure function tested on this
+workspace's own Linux hosts. That is C8's and C13's split kept for a
+third platform.
+
 Two things make this narrower than it looks. **The class is checked, not
 assumed**: the pointer is borrowed as a `CFType`, whose `downcast` compares
 the type id, so an array of something else yields nothing rather than a

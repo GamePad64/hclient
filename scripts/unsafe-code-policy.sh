@@ -37,6 +37,7 @@ crates/hclient-urlsession/src/delegate.rs:amendment-C11
 crates/hclient-urlsession/src/session.rs:amendment-C11
 crates/hclient-urlsession/src/websocket.rs:amendment-C11
 crates/hclient-proxy/src/system/read.rs:amendment-C13
+crates/hclient-proxy/src/system/jvm.rs:amendment-C19
 crates/hclient-tls-native-tls/src/stream.rs:amendment-C17
 crates/hclient-winhttp/src/sys.rs:amendment-C18"
 fail=0

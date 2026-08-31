@@ -19,7 +19,10 @@ default = []
 # is the only thing here that costs a third-party crate at all: the three
 # protocols carry none, which is why `hclient-native`'s `proxy` feature
 # still has no `dep:` line. What this one costs is four small crates on
-# Windows and three on macOS, and nothing anywhere else.
+# Windows, three on macOS, **nine on Android** — `jni` and `ndk-context`
+# with their own graph, measured at 19 crates to 28 — and nothing
+# anywhere else. Android is the dear one because it is the only platform
+# whose settings live behind a JVM rather than in a file or a registry.
 # Every entry is a TARGET-specific optional dependency, and naming them
 # all here unconditionally is correct rather than sloppy: a `dep:` that
 # names an optional dependency declared only under a `[target.'cfg(..)']`
@@ -27,6 +30,8 @@ default = []
 # arrangement `hclient`'s `default-transport` relies on.
 system = [
     "dep:windows-registry",
+    "dep:jni",
+    "dep:ndk-context",
     "dep:core-foundation",
     "dep:core-foundation-sys",
     "dep:system-configuration",
@@ -59,6 +64,16 @@ thiserror     = { workspace = true }
 # SOCKS entry.
 [target.'cfg(windows)'.dependencies]
 windows-registry = { version = "0.6", optional = true }
+
+# Android keeps its proxy in JVM system properties and nowhere a process
+# can read without a JVM, so this is the one platform whose reader needs
+# to call into managed code. `ndk-context` is the handle an application
+# registers once and which `rustls-platform-verifier` already requires on
+# this target, so an app that reaches the platform trust store has already
+# paid for it.
+[target.'cfg(target_os = "android")'.dependencies]
+jni         = { version = "0.21", optional = true }
+ndk-context = { version = "0.1", optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 core-foundation      = { version = "0.9", optional = true }
