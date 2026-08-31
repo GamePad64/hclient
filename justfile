@@ -545,8 +545,18 @@ fetch-under-wasm-threads:
     # `+atomics` that claim must stop compiling — `tests/promise.rs`'s
     # `future_is_send_on_the_default_target` is the assertion, and it is
     # required to FAIL here.
+    #
+    # **`--test promise`, not `--tests`, and that is a repair rather than a
+    # narrowing.** With every test target in one invocation, which target
+    # cargo reaches before the first error decides what is in the log —
+    # `hooks` and `websocket` are `!Send` under threads too, and when they
+    # fail first cargo may never compile `promise` at all. The check then
+    # reports that the failure was in the wrong file, having never given
+    # the right one a chance. It passed here and failed on CI from the same
+    # commit, which is what a race looks like from the outside; naming the
+    # one target removes it rather than making it less likely.
     log="$(mktemp)"
-    if RUSTFLAGS="$flags" cargo check -p hclient-fetch --tests $common > "$log" 2>&1; then
+    if RUSTFLAGS="$flags" cargo check -p hclient-fetch --test promise $common > "$log" 2>&1; then
       echo "::error::expected tests/promise.rs to be rejected under +atomics — the guarantee SingleThreaded<T> exists to provide is not being enforced"
       exit 1
     fi
@@ -1084,6 +1094,17 @@ docs:
     # two different compilations of two different files.
     targets=$(./scripts/docsrs-targets.sh)
     [ -n "$targets" ] || { echo "::error::no crate declares a docs.rs default-target — the query found nothing rather than a tidy tree"; exit 1; }
+    # A target that is not installed must say so, rather than reaching
+    # rustc and coming back as `can't find crate for core` — which is what
+    # it did on CI, from a recipe that was green here because this machine
+    # has every target. `check-targets` states the same rule one recipe
+    # over, and this is the second place that needed it.
+    while read -r crate target; do
+      rustup target list --installed | grep -qx "$target" || {
+        echo "::error::$crate documents for $target, which is not installed — \`rustup target add $target\`. Skipping it would publish a page nothing checked."
+        exit 1
+      }
+    done <<< "$targets"
     printf '%s\n' "$targets" | while read -r crate target; do
       echo "==> $crate for $target"
       RUSTDOCFLAGS="-D warnings" cargo doc -p "$crate" --target "$target" \

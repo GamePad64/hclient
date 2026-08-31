@@ -84,6 +84,14 @@ jobs:
           channel: stable
           components: rustfmt,clippy
           bins: just
+          # `just docs` below documents a crate for the target it declares
+          # in `[package.metadata.docs.rs]`, because that is the page a
+          # reader gets: `hclient-winhttp` and `hclient-urlsession` are
+          # `#![cfg(..)]`-ed to nothing on a host build, so documenting
+          # them here would check an empty file. Two targets, and the
+          # recipe now says so rather than failing as `can't find crate
+          # for core`.
+          targets: x86_64-pc-windows-msvc,aarch64-apple-darwin
       - run: just fmt-check
       - run: just lint
       # The rendered docs are this project's product and nothing checked
