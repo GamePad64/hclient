@@ -71,6 +71,7 @@ use core::ffi::c_void;
 use core::ptr::null_mut;
 use std::sync::OnceLock;
 use std::time::Duration;
+use windows_strings::PCSTR;
 use windows_sys::Win32::Foundation::{DNS_ERROR_RCODE_NAME_ERROR, ERROR_SUCCESS, WIN32_ERROR};
 use windows_sys::core::PSTR;
 // The long paths are imported rather than written inline, and that is not
@@ -492,10 +493,15 @@ unsafe fn flexible(first: *const u8, len: u16) -> Vec<u8> {
 /// `ptr` must be null or a NUL-terminated string the OS allocated.
 unsafe fn pstr(ptr: PSTR) -> Option<String> {
     // unsafe-code-exception: amendment-C8
-    // SAFETY: the caller's contract; `from_ptr` is reached only for a
-    // non-null pointer.
-    let bytes = unsafe { pstr_bytes(ptr) }?; // unsafe-code-exception: amendment-C8
-    String::from_utf8(bytes).ok()
+    let text = PCSTR::from_raw(ptr);
+    if text.is_null() {
+        return None;
+    }
+    // SAFETY: the caller's contract — `dnsapi` NUL-terminates the strings
+    // in a record it allocated, which is what `to_string` reads up to. It
+    // validates UTF-8 rather than replacing, which is the refusal this
+    // function's doc promises.
+    unsafe { text.to_string() }.ok() // unsafe-code-exception: amendment-C8
 }
 
 /// The same, as octets — for a character-string, which RFC 1035 §3.3 does
@@ -506,14 +512,14 @@ unsafe fn pstr(ptr: PSTR) -> Option<String> {
 /// As [`pstr`].
 unsafe fn pstr_bytes(ptr: PSTR) -> Option<Vec<u8>> {
     // unsafe-code-exception: amendment-C8
-    if ptr.is_null() {
+    let text = PCSTR::from_raw(ptr);
+    if text.is_null() {
         return None;
     }
     // SAFETY: non-null by the check above, and `dnsapi` NUL-terminates the
-    // strings in a record it allocated. The `CStr` borrows for this
-    // expression only.
-    let text = unsafe { core::ffi::CStr::from_ptr(ptr.cast()) }; // unsafe-code-exception: amendment-C8
-    Some(text.to_bytes().to_vec())
+    // strings in a record it allocated. The slice borrows for this
+    // expression only; the `Vec` owns its bytes.
+    Some(unsafe { text.as_bytes() }.to_vec()) // unsafe-code-exception: amendment-C8
 }
 
 /// The record's owner name, without a trailing dot; the root becomes the

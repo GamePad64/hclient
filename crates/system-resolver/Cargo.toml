@@ -41,6 +41,12 @@ windows-sys = { version = "0.61", features = [
     "Win32_NetworkManagement_Dns",
     "Win32_System_LibraryLoader",
 ] }
+# The strings on both sides of the boundary: the wide query name
+# `DnsQueryRaw` takes, and the narrow names `DnsQuery_UTF8` fills in. One
+# crate, depending on `windows-link` alone, and the reason is a defect
+# class rather than tidiness — see `sys/windows/raw.rs` on where the
+# terminating null lives.
+windows-strings = { version = "0.5", default-features = false }
 
 [dev-dependencies]
 assert_matches = { workspace = true }

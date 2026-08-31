@@ -3597,6 +3597,7 @@ dependencies = [
  "cfg-if",
  "rstest",
  "thiserror 2.0.20",
+ "windows-strings",
  "windows-sys 0.61.2",
 ]
 

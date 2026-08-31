@@ -227,8 +227,17 @@ has no machine for that made the defect visible on the four it does.
 | platform | crates added beyond `thiserror` and `cfg-if` |
 |---|---|
 | Linux, macOS, iOS | **0** — `libc` is not needed; the symbols are declared directly |
-| Windows | **0** — `windows-sys` with three features |
+| Windows | **3** — `windows-sys`, `windows-strings` and the `windows-link` they share |
 | Android | **0** — the NDK symbols are in `libandroid`, linked by name |
+
+`windows-strings` is there for a defect class rather than for tidiness.
+The wide name `DnsQueryRaw` takes was a `Vec<u16>` with a zero chained on
+the end, and losing that zero is not a compile error — it is a call that
+reads past the end of an allocation. An `HSTRING` keeps the terminator
+inside the allocation by construction, and an empty one still points at a
+null, so the root name needs no special case. On the other side, its
+`PCSTR::as_bytes` and `to_string` replace a hand-written `CStr` walk and a
+hand-written UTF-8 check. Eleven crates for a Windows build in total.
 
 No JNI: `android_res_nquery` is a C entry point, unlike Android's *proxy*
 settings, which live behind a JVM and cost `jni` + `ndk-context`. That

@@ -44,6 +44,7 @@ use std::sync::mpsc;
 // which strands the `unsafe-code-exception` marker three lines away from
 // the `unsafe` keyword and fails the `no-unsafe-code` job. Keeping each
 // such expression on one line keeps the marker where the job can see it.
+use windows_strings::HSTRING;
 use windows_sys::Win32::NetworkManagement::Dns::{
     DNS_PROTOCOL_TCP, DNS_QUERY_RAW_CANCEL, DNS_QUERY_RAW_REQUEST, DNS_QUERY_RAW_REQUEST_VERSION1,
     DNS_QUERY_RAW_RESULT, DNS_QUERY_RAW_RESULTS_VERSION1,
@@ -183,7 +184,18 @@ pub(super) fn query(api: &Api, name: &str, rtype: u16) -> Result<Vec<Record>, Er
     // Refused here for the same reason every other backend refuses here:
     // one answer for a name with no wire form, on every platform.
     query_name(name)?;
-    let mut wide: Vec<u16> = name.encode_utf16().chain(core::iter::once(0)).collect();
+    // **The terminating null is inside the allocation**, which
+    // `windows-strings` reserves — so this is an `LPCWSTR` by construction
+    // rather than by this file remembering to chain a zero, which is what
+    // the `Vec<u16>` here used to do. Losing that zero is not a compile
+    // error; it is a call that reads past the end of an allocation. An
+    // empty `HSTRING` still points at a null, deliberately, so the root
+    // name needs no special case.
+    //
+    // The local is what keeps the buffer alive across the call: written
+    // inline, `HSTRING::from(..).as_ptr()` would dangle before
+    // `DnsQueryRaw` ever saw it.
+    let wide = HSTRING::from(name);
 
     let (tx, rx) = mpsc::channel::<Answer>();
     let context = Box::into_raw(Box::new(tx));
@@ -193,7 +205,9 @@ pub(super) fn query(api: &Api, name: &str, rtype: u16) -> Result<Vec<Record>, Er
     let mut request: DNS_QUERY_RAW_REQUEST = unsafe { core::mem::zeroed() }; // unsafe-code-exception: amendment-C8
     request.version = DNS_QUERY_RAW_REQUEST_VERSION1;
     request.resultsVersion = DNS_QUERY_RAW_RESULTS_VERSION1;
-    request.dnsQueryName = wide.as_mut_ptr();
+    // `dnsQueryName` is typed `PWSTR` and the call only reads it — there
+    // is no out-parameter here and no documented mutation.
+    request.dnsQueryName = wide.as_ptr().cast_mut();
     request.dnsQueryType = rtype;
     request.queryCompletionCallback = Some(completed);
     request.queryContext = context.cast::<c_void>();
