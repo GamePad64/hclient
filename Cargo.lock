@@ -3590,6 +3590,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "system-resolver"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "assert_matches",
+ "rstest",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

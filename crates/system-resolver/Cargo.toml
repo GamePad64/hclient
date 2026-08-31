@@ -1,0 +1,55 @@
+[package]
+name = "system-resolver"
+version.workspace = true
+description = "Ask the machine's own DNS resolver for any record type, on Linux, macOS, iOS, Android and Windows"
+keywords     = ["dns", "resolver", "getaddrinfo", "res_query", "svcb"]
+categories   = ["network-programming", "os"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+# `default` is empty by design, as everywhere in this workspace — but this
+# crate has no features at all, so docs.rs would build the whole surface
+# regardless. The key is here for the same reason as its neighbours': a
+# feature added later must not silently drop out of the rendered docs.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+# Windows only. `DnsQuery_UTF8` and the `DNS_RECORD` list it fills in,
+# plus the `DnsQueryRaw` request and result *types* — the functions
+# themselves are deliberately never named as linked symbols, because
+# `windows-sys` emits them as `raw-dylib` imports and the loader resolves
+# imports at process start, so naming one stops the binary from running on
+# Windows 10. `Win32_System_LibraryLoader` is how they are reached instead.
+# `Win32_Foundation` is for the status codes the query returns; nothing
+# here uses a handle.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_Dns",
+    "Win32_System_LibraryLoader",
+] }
+
+[dev-dependencies]
+assert_matches = { workspace = true }
+rstest         = { workspace = true }
+
+# NOT `[lints] workspace = true`, for `hclient-dns-system`'s reason (spec
+# amendment C8): the workspace table sets `unsafe_code = "forbid"`, and
+# `forbid` cannot be relaxed from inside a crate (`E0453`). Every foreign
+# function this workspace calls for DNS now lives here, so this crate needs
+# `deny` — overridable by a scoped `#[allow]` with a marker on each site.
+#
+# `missing_debug_implementations` and `unexpected_cfgs` are restated
+# because opting out of the workspace table drops them along with
+# `unsafe_code`, and losing them silently is exactly the drift this
+# project spends review effort on elsewhere.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = [] }
