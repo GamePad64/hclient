@@ -18,6 +18,13 @@ readme = "README.md"
 all-features = true
 
 [dependencies]
+# `sys/mod.rs`'s four-way platform choice, and nothing else. Written as
+# plain `#[cfg]`s the arms have to be made mutually exclusive by hand,
+# which meant the target list appearing four times with three of them
+# negated; `cfg_if!` orders them instead. One crate with no dependencies of
+# its own, no build script and `no_std` — and already in the graph of any
+# build that has this workspace's runtimes.
+cfg-if    = "1"
 thiserror = { workspace = true }
 
 # Windows only. `DnsQuery_UTF8` and the `DNS_RECORD` list it fills in,

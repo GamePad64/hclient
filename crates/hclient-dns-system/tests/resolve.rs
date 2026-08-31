@@ -3,7 +3,7 @@
 //!
 //! **Why any of this is out here rather than in `src`.** The unit tests
 //! inside the crate reach the seams directly: `svcb::endpoints_from_answer`
-//! over byte vectors, `sys::classify_written` over lengths. What they
+//! over records. What they
 //! cannot see is whether those seams are still wired to the trait — a
 //! `lookup_svcb` that classified every failure as an empty stream would
 //! leave every one of them green. These start from `SystemDns::new` and
@@ -156,9 +156,9 @@ fn a_resolve_failure_keeps_the_name_in_its_message_and_the_io_error_in_its_sourc
 /// The pair `Resolve::supports_svcb` exists to keep honest, checked against
 /// behaviour rather than against a second copy of a `#[cfg]`.
 ///
-/// `sys::unsupported::lookup` ignores its argument and returns an empty
-/// result for every name, so it CANNOT produce this error; a real backend
-/// rejects an over-long name before it reaches the FFI. So a build that
+/// A build with no backend refuses every type before a name is even
+/// looked at, so it CANNOT produce this error; a build with one rejects an
+/// over-long name before it reaches the platform. So a build that
 /// claims `supports_svcb()` and answers this name with silence is a build
 /// whose capability is a lie, and a build that disclaims SVCB and answers
 /// it with an error has a backend it is not admitting to. Each branch

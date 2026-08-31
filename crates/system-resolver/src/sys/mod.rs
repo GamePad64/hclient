@@ -20,54 +20,53 @@
 
 use crate::error::Error;
 
-/// The Unix backend needs two things this crate cannot check for at
-/// run time: a `res_query` symbol to link against, and a libc whose
-/// resolver state is per-thread. The list is deliberately the set of
-/// targets whose behaviour was established rather than assumed — glibc and
-/// musl by reading the exported symbols out of the installed libraries,
-/// Apple by reading `libresolv.9.tbd`. Anything else gets the honest
-/// [`Support::None`], which is not a gap to be embarrassed about: an
-/// absent capability costs a caller one fallback, a capability that lies
-/// costs it a wrong answer.
-#[cfg(any(
-    all(
-        target_os = "linux",
-        not(target_os = "android"),
-        any(target_env = "gnu", target_env = "musl")
-    ),
-    target_vendor = "apple"
-))]
-#[path = "res_query.rs"]
-mod imp;
-
-/// Android is `target_os = "android"` and **not** `target_os = "linux"`,
-/// so it does not reach the arm above by accident — but it is listed
-/// first anyway, because the reason it needs its own module is not the
-/// cfg: the `res_*` family is not in the NDK's stable ABI, and
-/// `android_res_nquery` is.
-#[cfg(target_os = "android")]
-#[path = "android.rs"]
-mod imp;
-
-#[cfg(all(
-    windows,
-    not(any(
+// **`cfg_if!` rather than four `#[cfg]`s, and the reason is the drift this
+// module's own header is about.** Written as plain attributes, the arms
+// have to be made mutually exclusive by hand: the Unix one carried
+// `not(target_os = "android")`, the Windows one a `not(any(..))` of the
+// two before it, and the fallback a `not(any(..))` of all three. That is
+// the target list written **four** times, three of them negated, so adding
+// a platform meant editing four places correctly or silently compiling two
+// backends — or none.
+//
+// `cfg_if!` is `if`/`else if`/`else`: the arms are ordered, so each
+// condition states only its own targets and the fallback states nothing at
+// all. One crate, no dependencies of its own, no build script, and already
+// in any graph that has this workspace's runtimes.
+cfg_if::cfg_if! {
+    // Android first. It is `target_os = "android"` and **not**
+    // `target_os = "linux"`, so ordering is not what keeps it out of the
+    // arm below — it is first because the reason it needs its own module
+    // is not the cfg at all: the `res_*` family is not in the NDK's stable
+    // ABI, and `android_res_nquery` is.
+    if #[cfg(target_os = "android")] {
+        #[path = "android.rs"]
+        mod imp;
+    }
+    // The Unix backend needs two things this crate cannot check for at run
+    // time: a `res_query` symbol to link against, and a libc whose
+    // resolver state is per-thread. The list is deliberately the set of
+    // targets whose behaviour was established rather than assumed — glibc
+    // and musl by reading the exported symbols out of the installed
+    // libraries, Apple by reading `libresolv.9.tbd`.
+    else if #[cfg(any(
         all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
         target_vendor = "apple",
-        target_os = "android"
-    ))
-))]
-#[path = "windows/mod.rs"]
-mod imp;
-
-#[cfg(not(any(
-    all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
-    target_vendor = "apple",
-    target_os = "android",
-    windows
-)))]
-#[path = "unsupported.rs"]
-mod imp;
+    ))] {
+        #[path = "res_query.rs"]
+        mod imp;
+    } else if #[cfg(windows)] {
+        #[path = "windows/mod.rs"]
+        mod imp;
+    }
+    // Anything else gets the honest `Support::None`, which is not a gap to
+    // be embarrassed about: an absent capability costs a caller one
+    // fallback, where a capability that lies costs it a wrong answer.
+    else {
+        #[path = "unsupported.rs"]
+        mod imp;
+    }
+}
 
 pub(crate) use imp::{query, support};
 

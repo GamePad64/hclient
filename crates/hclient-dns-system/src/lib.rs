@@ -7,23 +7,25 @@
 //! **`getaddrinfo` still cannot return an HTTPS/SVCB record, and never
 //! will** — its result type is a list of `sockaddr`s. So SVCB does not
 //! come from `getaddrinfo` here; it comes from a second system call
-//! alongside it — `res_query(3)` on Unix, `DnsQuery_UTF8` on Windows. Both
-//! live behind the crate's foreign-function boundary in `sys`, the
-//! project's only `unsafe` outside `hclient-fetch` (spec amendment C8),
-//! and the two are not symmetric: `res_query` hands back a raw DNS
-//! response that still has to be decoded, while Windows hands back a
-//! record its DNS Client service has **already** parsed
-//! (`DNS_SVCB_DATA`), so no DNS bytes are read on that platform at all.
+//! alongside it, and **that call is `system-resolver`'s now**:
+//! `res_query(3)`, `android_res_nquery`, `DnsQueryRaw` and
+//! `DnsQuery_UTF8`, one seam over five platforms, `Vec<Record>` out.
 //!
-//! **Those bytes are decoded by `dns-message-parser`, not by hand.** That
-//! crate has no `unsafe` in its `src`, returns `DecodeResult` on every
-//! path rather than panicking, and terminates name decompression by
-//! recording visited offsets rather than by a hand-argued rule about
-//! pointer directions. `svcb` — this crate's own `#![forbid(unsafe_code)]`
-//! module — is left with the part a DNS decoder correctly declines to do:
-//! deciding, per RFC 9460, which decoded records a *client* may act on
-//! (§2.4/§2.5 modes and root targets, §8 `mandatory` semantics), and
-//! classifying what "no records" means.
+//! **What is left in this crate is the half that is about HTTPS records
+//! rather than about DNS**, and the split is why this crate has no
+//! `unsafe` in it at all any more. Its own boundary used to be the
+//! project's only `unsafe` outside `hclient-fetch` (spec amendment C8);
+//! that moved with the code.
+//!
+//! The RDATA a resolver reports is decoded by `dns-message-parser`, not by
+//! hand — a crate with no `unsafe` in its `src`, returning `DecodeResult`
+//! on every path rather than panicking, and terminating name
+//! decompression by recording visited offsets rather than by a
+//! hand-argued rule about pointer directions. `svcb` is left with the part
+//! a DNS decoder correctly declines to do: deciding, per RFC 9460, which
+//! decoded records a *client* may act on (§2.4/§2.5 modes and root
+//! targets, §8 `mandatory` semantics), and classifying what "no records"
+//! means.
 //!
 //! # glibc: what this crate needs, measured rather than assumed
 //!
@@ -51,8 +53,9 @@
 //! `res_query` at all. The effective floor of any glibc program is its
 //! build host's glibc, exactly as it always is.
 //!
-//! **The one requirement a packager can get wrong is at link time.**
-//! `sys/res_query.rs` puts `-lresolv` on the link line for
+//! **The one requirement a packager can get wrong is at link time**, and
+//! it arrives through `system-resolver` rather than from any file here.
+//! Its `res_query` backend puts `-lresolv` on the link line for
 //! `target_env = "gnu"`, so `libresolv.so` — the development symlink, not
 //! the runtime `.so.2` — must be installed to build, even on a glibc where
 //! the library contributes not one symbol to the result. musl gets no such
@@ -60,22 +63,24 @@
 //! and the symbol is inside `libc.a`; the reasoning for each target is in
 //! that file, beside the `#[cfg_attr]`s that carry it.
 //!
-//! **`supports_svcb()` says what this build can do, and nothing more.** It
-//! comes from the same `#[cfg]`-selected module that supplies the lookup,
-//! so the capability and the code behind it cannot drift apart; see `sys`
-//! for why that is structural rather than a convention. `true` on Linux
-//! (glibc or musl), Apple, and Windows; `false` everywhere else.
+//! **`supports_svcb()` says what this build can do, and nothing more.**
+//! It asks `system_resolver::support()` whether RR type 65 is answerable,
+//! so the capability and the code behind it are one statement rather than
+//! two that could drift. `true` on Linux (glibc or musl), Apple, Android
+//! and Windows; `false` everywhere else.
 //!
 //! A `true` over a lookup that cannot produce a record would be the exact
 //! defect class — a capability that lies — that the
 //! `Resolve::supports_svcb` doc comment in `hclient-dns` exists to
-//! prevent. Note the Windows answer is a compile-time constant *again*: an
-//! earlier backend there reached `DnsQueryRaw` through `GetProcAddress`,
-//! which made the honest answer depend on the machine, and this method was
-//! a function for exactly as long as that was true. It is a constant now
-//! because `DnsQuery_UTF8` is statically linked and its SVCB support goes
-//! back to Windows 10 — see `sys::windows`, including which part of that
-//! sentence is verified and which is taken on the project owner's word.
+//! prevent.
+//!
+//! **Windows resolves a symbol at run time again, and it does not change
+//! this answer.** `system-resolver` uses `DnsQueryRaw` where the machine
+//! has it and `DnsQuery_UTF8` where it does not, which is a genuine
+//! run-time choice — but type 65 is answerable through *both*, so what
+//! this method reports is still decided by the build. That is a fact about
+//! HTTPS records rather than about the platform, and it is why the test
+//! guarding this can still compare against a `cfg!`.
 //!
 //! **Both SVCB backends block too**, so `lookup_svcb` goes through the
 //! same `Blocking` capability as `lookup_ipv4`/`lookup_ipv6` and has the
@@ -110,19 +115,18 @@
 //! the `Resolve` trait already allows for it today (separate
 //! `lookup_ipv4`/`lookup_ipv6`, not one method returning both families at
 //! once), but `SystemDns` doesn't use that possibility yet.
-// `deny`, not `forbid`, and only since spec amendment C8: `forbid` cannot
-// be relaxed by a scoped `#[allow]` from inside the crate (`E0453`), and
-// `sys/res_query.rs` and `sys/windows.rs` each need exactly one such
-// `#[allow]` for their foreign declarations and calls. Every other module
-// keeps `#![forbid(unsafe_code)]` of its own — `svcb`, which parses the
-// untrusted bytes, and `sys::unsupported` — so the relaxation reaches one
-// file and no further. CI's `no-unsafe-code` job enforces that boundary
-// independently, path-scoped to that one file; see amendment C8.
-#![deny(unsafe_code)]
+// **`forbid` again, and the relaxation left with the code that needed
+// it.** This crate carried `deny` under spec amendment C8 because
+// `sys/res_query.rs` and `sys/windows.rs` each needed a scoped `#[allow]`
+// for their foreign declarations — and `forbid` cannot be relaxed from
+// inside a crate (`E0453`). Those files are `system-resolver`'s now, and
+// with them every `unsafe` this crate ever had. What is left talks to a
+// Rust API and a decoder, so the strongest form of the rule is available
+// again and is taken.
+#![forbid(unsafe_code)]
 
 mod error;
 mod svcb;
-mod sys;
 
 use futures_core::Stream;
 
@@ -241,7 +245,7 @@ impl<B: Blocking> Resolve for SystemDns<B> {
     /// items, so a target where the lookup cannot work reports `false`
     /// here without anyone having to remember to change it.
     fn supports_svcb(&self) -> bool {
-        sys::SUPPORTS_SVCB
+        system_resolver::support().allows(svcb::TYPE_HTTPS)
     }
 
     type Svcb<'a>
@@ -253,7 +257,7 @@ impl<B: Blocking> Resolve for SystemDns<B> {
     fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
         Box::pin({
             let owned = name.to_owned();
-            let fut = self.blocking.run(move || sys::lookup(&owned));
+            let fut = self.blocking.run(move || svcb::lookup(&owned));
             futures_util::stream::once(fut).flat_map(move |res| match res {
                 // An empty `Vec` here is a real answer — "asked, found none" —
                 // and becomes an empty stream, exactly like the `Resolve`
@@ -377,23 +381,29 @@ mod tests {
     }
 
     /// The capability must say what this build can actually do, and the
-    /// target list here is a deliberate SECOND copy of the one in `sys`.
-    /// The first copy decides which backend compiles; this one states, in
-    /// a place a reviewer reads, what that is expected to mean. Adding a
-    /// target to `sys` without touching this test fails on that target;
-    /// the two are meant to be edited together, and CI's three-OS matrix
-    /// exercises both answers.
+    /// target list here is a deliberate SECOND copy of the one in
+    /// `system_resolver::sys`. The first copy decides which backend
+    /// compiles; this one states, in a place a reviewer of *this* crate
+    /// reads, what that is expected to mean. Adding a target there without
+    /// touching this test fails on that target; the two are meant to be
+    /// edited together, and CI's three-OS matrix exercises both answers.
     ///
-    /// **Windows is asserted like every other target again, and the
-    /// history is worth a line.** An earlier Windows backend reached
-    /// `DnsQueryRaw` through `GetProcAddress`, which made the honest answer
-    /// depend on the machine rather than the build, and this test had to
-    /// exempt it. That backend was replaced by a static link to
-    /// `DnsQuery_UTF8` (see `sys::windows` for why), so the answer is
-    /// decided at compile time on every supported target and the exemption
-    /// is gone. If a future backend brings run-time detection back, this is
-    /// the test that has to change with it — deliberately, not by being
-    /// weakened until it passes.
+    /// **Windows resolves a symbol at run time again, and this test did
+    /// not have to change — which is the interesting part.** Its own
+    /// earlier note said that if run-time detection came back, this is the
+    /// test that would have to change with it. It came back:
+    /// `system-resolver` reaches `DnsQueryRaw` through `GetProcAddress`
+    /// where the machine has it and falls back to `DnsQuery_UTF8` where it
+    /// does not.
+    ///
+    /// The prediction was right about the mechanism and wrong about the
+    /// consequence. What that choice decides is which *types* are
+    /// answerable, and RR type 65 is answerable through both calls — it is
+    /// not one of the types Windows parses into a structure of its own. So
+    /// the capability this test guards is still decided by the build, and
+    /// a `cfg!` is still the honest comparison. A future backend that made
+    /// type 65 itself a run-time question is the one that would have to
+    /// change this — deliberately, not by being weakened until it passes.
     #[test]
     fn supports_svcb_is_cfg_accurate_rather_than_optimistic() {
         let expected = cfg!(any(

@@ -200,12 +200,25 @@ therefore `!Send` — an implementation choice, not a platform property.
 that cannot be observed false there.
 
 **C8 — a foreign-function boundary**, in
-`hclient-dns-system/src/sys/{res_query,windows,android}.rs`: one file per
-platform backend, and no `unsafe` anywhere else in the crate. Android is
-the third and is a backend of its own rather than a `cfg` on the first,
-because bionic's `res_*` family is not in the NDK's stable ABI —
-`android_res_nquery` is, and it is what the platform's own resolver work
-goes through.
+`system-resolver/src/sys/{res_query,android}.rs` and
+`system-resolver/src/sys/windows/{raw,parsed}.rs`: one file per platform
+call, and no `unsafe` anywhere else in the crate. Android is a backend of
+its own rather than a `cfg` on the first, because bionic's `res_*` family
+is not in the NDK's stable ABI — `android_res_nquery` is, and it is what
+the platform's own resolver work goes through.
+
+**Windows is two files rather than one**, and the split is what makes the
+naming rule pay here: `raw.rs` reaches `DnsQueryRaw` and `parsed.rs`
+reaches `DnsQuery_UTF8`, chosen at run time by `windows/mod.rs` — which
+has **no** `unsafe` in it at all and is not on this list, so the choice
+between two foreign calls is itself ordinary safe code.
+
+**This lived in `hclient-dns-system` until the platform calls moved.**
+That crate is an adapter now — records in, endpoints out — and carries no
+`unsafe` and no `deny`; it is back to the workspace's `forbid`. An
+amendment naming a file that has moved is the shape this project treats
+as worse than no amendment at all, which is why the exempt list is paths
+rather than crates.
 
 **C9 — the platform's UTS 46**, in `hclient-idn/src/icu/windows.rs` and
 nothing else. Not `icu/mod.rs` above it, not `lib.rs`, not a directory.

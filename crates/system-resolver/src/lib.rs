@@ -110,6 +110,36 @@ pub struct Record {
     pub rdata: Vec<u8>,
 }
 
+impl Record {
+    /// One record, for a caller building an answer rather than receiving
+    /// one — a test, or a double standing in for a resolver.
+    ///
+    /// **A `#[non_exhaustive]` struct cannot be built with a literal from
+    /// outside the crate that defines it**, so without this the type is a
+    /// wall to exactly the code that needs it most: this workspace has
+    /// already been caught once by a response type with no public
+    /// constructor, where a consumer wrote around the gap before finding
+    /// the test double that answered it. The constructor costs a line and
+    /// keeps the attribute's benefit, which is that a field added later is
+    /// not a compile error at every *reader*.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        rtype: u16,
+        class: u16,
+        ttl: Duration,
+        rdata: Vec<u8>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            rtype,
+            class,
+            ttl,
+            rdata,
+        }
+    }
+}
+
 /// `IN`, RFC 1035 §3.2.4 — the only class this crate asks for.
 pub const CLASS_IN: u16 = 1;
 
@@ -216,6 +246,49 @@ mod tests {
         assert!(Support::AnyExcept(&[1, 15]).allows(65));
         assert!(!Support::AnyExcept(&[1, 15]).allows(15));
         assert!(!Support::None.allows(65));
+    }
+
+    /// **Which backend this build selected, checked against a second copy
+    /// of the target list.**
+    ///
+    /// The first copy is `sys`'s `cfg_if!` and decides what compiles; this
+    /// one states, in a place a reviewer reads, what that is expected to
+    /// mean. It matters more since that selection became ordered arms: an
+    /// `if`/`else if` chain cannot compile two backends, but it can
+    /// silently fall through to the wrong one, and a build that quietly
+    /// answered `None` on Linux would pass every other test in this crate
+    /// — they all skip on a platform with no backend.
+    ///
+    /// CI's three-OS matrix is what makes this a check rather than a
+    /// comment.
+    #[test]
+    fn the_platform_this_was_built_for_selected_the_backend_it_should_have() {
+        let wire = cfg!(any(
+            target_os = "android",
+            all(
+                target_os = "linux",
+                any(target_env = "gnu", target_env = "musl")
+            ),
+            target_vendor = "apple",
+        ));
+        let windows = cfg!(windows) && !wire;
+        let got = support();
+        // Written as one computed verdict rather than as an `assert!` per
+        // arm: each of those compares a `cfg!` against a constant on the
+        // target that made it true, which clippy correctly calls a
+        // constant assertion. This one is over `support()`'s answer.
+        let agrees = match got {
+            // Windows is the only platform that can answer either, and
+            // which of the two is a fact about the machine rather than the
+            // build — so it is checked as *not `None`* and no further.
+            Support::Any => wire || windows,
+            Support::AnyExcept(_) => windows,
+            Support::None => !wire && !windows,
+        };
+        assert!(
+            agrees,
+            "this target expects wire={wire} windows={windows} and got {got:?}"
+        );
     }
 
     /// A refused type costs no query, and the refusal names the type

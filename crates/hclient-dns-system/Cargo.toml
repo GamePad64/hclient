@@ -32,6 +32,14 @@ hclient-core = { workspace = true }
 # wants `Resolve` — see that crate's `[features]` table.
 hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.2", features = ["codec"] }
 hclient-rt   = { path = "../hclient-rt",  version = "0.1.0-alpha.2" }
+# Every platform call this crate used to make. It owns `res_query`,
+# `android_res_nquery`, `DnsQueryRaw` and `DnsQuery_UTF8`, and hands back
+# records with their RDATA; what is left here is RFC 9460's client rules
+# over one of those records. Not optional and not target-gated: it compiles
+# on every target and answers `Support::None` where it has no backend,
+# which is what keeps `supports_svcb` a single statement rather than a
+# second copy of a `#[cfg]` list.
+system-resolver = { path = "../system-resolver", version = "0.1.0-alpha.2" }
 thiserror      = { workspace = true }
 
 [dev-dependencies]
@@ -39,32 +47,5 @@ assert_matches   = { workspace = true }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 rstest           = { workspace = true }
 
-# NOT `[lints] workspace = true`, for the same reason `hclient-fetch` isn't
-# (see amendment C7): the workspace table sets `unsafe_code = "forbid"`,
-# and `forbid` cannot be relaxed from inside a crate (`E0453`). This crate
-# carries the project's second and third `unsafe` files — the `res_query(3)`
-# declaration and call in `src/sys/res_query.rs`, and the `DnsQuery_UTF8`
-# record walk in `src/sys/windows.rs` — which need `deny`,
-# overridable by a scoped `#[allow]`, not `forbid`. See
-# `docs/exceptions.md`, amendment C8.
-#
-# `missing_debug_implementations` and `unexpected_cfgs` are restated here
-# because opting out of the workspace table drops them along with
-# `unsafe_code`, and losing them silently is exactly the drift this project
-# spends review effort on elsewhere.
-# Windows only. Supplies `DnsQuery_UTF8` and the `DNS_SVCB_DATA` family —
-# the record the OS has already parsed, which is why no DNS wire parsing
-# exists on the Windows path. Statically linked: `DnsQuery_UTF8` has been
-# present since Windows 2000, and its SVCB support since Windows 10. See
-# `src/sys/windows.rs` for which half of that is verified here and which is
-# taken on the project owner's word.
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_NetworkManagement_Dns",
-] }
-
-[lints.rust]
-unsafe_code                   = "deny"
-missing_debug_implementations = "warn"
-unexpected_cfgs               = { level = "warn", check-cfg = [] }
+[lints]
+workspace = true

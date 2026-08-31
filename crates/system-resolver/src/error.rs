@@ -18,7 +18,12 @@
 /// that decision is made. `MalformedAnswer` is handed back and read, never
 /// dispatched on, and a `_` arm there says *the answer was malformed some
 /// other way*, which is true.
-#[derive(Debug, thiserror::Error)]
+/// `PartialEq` is derived because a consumer's tests compare one of these
+/// against an expected value, and every field here is a plain number or a
+/// name. `Clone` is deliberately absent: nothing needs a second copy of a
+/// failure, and adding it would be a promise about a type that may yet
+/// carry a platform handle.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// The name has no wire form: over 255 octets, an empty label, a label
     /// over 63 octets, or an interior NUL.

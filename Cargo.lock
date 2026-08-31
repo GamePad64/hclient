@@ -1436,8 +1436,8 @@ dependencies = [
  "hclient-dns",
  "hclient-rt",
  "rstest",
+ "system-resolver",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3594,6 +3594,7 @@ name = "system-resolver"
 version = "0.1.0-alpha.2"
 dependencies = [
  "assert_matches",
+ "cfg-if",
  "rstest",
  "thiserror 2.0.20",
  "windows-sys 0.61.2",

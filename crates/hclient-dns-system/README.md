@@ -1,17 +1,30 @@
 # hclient-dns-system
 
-**`Resolve` over the platform resolver — `getaddrinfo`, `res_query`, `DnsQuery_UTF8`.**
+**`Resolve` over the platform resolver — `getaddrinfo` for addresses,
+[`system-resolver`](../system-resolver) for HTTPS records.**
 
 What most programs should use: it honours `/etc/hosts`, the search domain
 list, and whatever the OS has been configured to do. It also answers
 HTTPS/SVCB queries, which is what lets a connection be steered to h3 or to
 an alternative endpoint before it is opened.
 
+## What is in here and what is not
+
+The platform calls are not. `res_query`, `android_res_nquery`,
+`DnsQueryRaw` and `DnsQuery_UTF8` live in `system-resolver`, which hands
+back records with their RDATA; this crate applies RFC 9460's **client**
+rules to one of those records — AliasMode against ServiceMode, a root
+TargetName meaning the owner name, `mandatory` semantics — and wires the
+result into `Resolve`.
+
+That split is why this crate contains no `unsafe` at all.
+
 ## Building on Linux
 
 `libresolv.so` — the development symlink, not the runtime `.so.2` — must
-be installed on gnu targets: this crate puts `-lresolv` on the link line
-so that `res_query` is found on every glibc, and that is true even on
+be installed on gnu targets. The `-lresolv` comes from `system-resolver`
+rather than from any file here, so that `res_query` is found on every
+glibc, and that is true even on
 glibc 2.34 and later, where the symbol has moved into `libc.so.6` and the
 library contributes nothing to the result. On Debian and Ubuntu it comes
 with `libc6-dev`. musl needs nothing: the symbol is inside `libc.a`.

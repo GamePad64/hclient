@@ -54,14 +54,20 @@ use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 /// completion routine runs; see the header.
 const DNS_REQUEST_PENDING: i32 = 9506;
 
+// The three signatures, each with its marker on the line below rather than
+// trailing: `cargo fmt` wraps the first of them, and a trailing comment on
+// a line the formatter reflows is a marker this project has lost before.
 type DnsQueryRawFn =
     unsafe extern "system" fn(*const DNS_QUERY_RAW_REQUEST, *mut DNS_QUERY_RAW_CANCEL) -> i32;
+// unsafe-code-exception: amendment-C8
 type DnsQueryRawResultFreeFn = unsafe extern "system" fn(*const DNS_QUERY_RAW_RESULT);
+// unsafe-code-exception: amendment-C8
 /// What `GetProcAddress` hands back: a function pointer with no signature.
 /// Named so the two transmutes below can state both of their types, which
 /// is what makes them read as a pair of declarations rather than as a pair
 /// of assertions.
 type ProcAddress = unsafe extern "system" fn() -> isize;
+// unsafe-code-exception: amendment-C8
 
 /// The two entry points this path needs, or `None` on a Windows that has
 /// neither.
@@ -135,6 +141,7 @@ struct Answer {
 /// The completion routine. Runs on a thread pool thread the caller does not
 /// own, which is why everything it touches is owned or copied.
 unsafe extern "system" fn completed(ctx: *const c_void, result: *const DNS_QUERY_RAW_RESULT) {
+    // unsafe-code-exception: amendment-C8
     // SAFETY: `ctx` is the `Box` leaked by `query` and reclaimed here
     // exactly once — this routine runs once per query, and `query`
     // reclaims it itself only on the path where this routine provably does

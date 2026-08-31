@@ -20,7 +20,7 @@
 # is what the ALLOWED map below is for.
 set -uo pipefail
 
-EXEMPT="hclient-fetch hclient-dns-system hclient-idn hclient-urlsession hclient-proxy hclient-tls-native-tls hclient-winhttp"   # amendments C7, C8, C9, C11, C13, C17 and C18
+EXEMPT="hclient-fetch system-resolver hclient-idn hclient-urlsession hclient-proxy hclient-tls-native-tls hclient-winhttp"   # amendments C7, C8, C9, C11, C13, C17 and C18
 
 # The one file each amendment excuses, and the token it must be cited by.
 # A directory is never enough: "a marker that excuses a directory excuses
@@ -30,9 +30,10 @@ EXEMPT="hclient-fetch hclient-dns-system hclient-idn hclient-urlsession hclient-
 # the check accepted `amendment-C[78]` anywhere under an exempt crate's
 # `src`, which the spec already described it as not doing.
 ALLOWED="crates/hclient-fetch/src/promise.rs:amendment-C7
-crates/hclient-dns-system/src/sys/res_query.rs:amendment-C8
-crates/hclient-dns-system/src/sys/android.rs:amendment-C8
-crates/hclient-dns-system/src/sys/windows.rs:amendment-C8
+crates/system-resolver/src/sys/res_query.rs:amendment-C8
+crates/system-resolver/src/sys/android.rs:amendment-C8
+crates/system-resolver/src/sys/windows/parsed.rs:amendment-C8
+crates/system-resolver/src/sys/windows/raw.rs:amendment-C8
 crates/hclient-idn/src/icu/windows.rs:amendment-C9
 crates/hclient-urlsession/src/delegate.rs:amendment-C11
 crates/hclient-urlsession/src/session.rs:amendment-C11

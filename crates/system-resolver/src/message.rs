@@ -317,6 +317,151 @@ mod tests {
         );
     }
 
+    // ---- the twelve bytes, field by field ------------------------------
+    //
+    // Everything else here reaches `read_header` through `records` or
+    // `header_only`, which can only observe it through an outcome; these
+    // read the fields directly, because a header field that lands in the
+    // wrong variable is invisible from a distance whenever some other
+    // field happens to reject the message first.
+    //
+    // `assert_eq!` on a whole `Header` is safe here: it is five primitives
+    // with a derived `PartialEq`, so every field is genuinely compared.
+
+    /// `ID`, flags, and the four RFC 1035 §4.1.1 counts, written out so a
+    /// case below can put a value in one field and zero everywhere else.
+    fn header_bytes(flags_hi: u8, flags_lo: u8, qdcount: u16, ancount: u16) -> Vec<u8> {
+        let mut out = vec![0x12, 0x34, flags_hi, flags_lo];
+        out.extend_from_slice(&qdcount.to_be_bytes());
+        out.extend_from_slice(&ancount.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+        out.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
+        out
+    }
+
+    #[rstest::rstest]
+    // The header of the captured answer, so at least one case is a shape a
+    // resolver really produced rather than one this file invented.
+    #[case::a_real_answer(
+        hex(REAL_ANSWER)[..12].to_vec(),
+        Header { is_response: true, truncated: false, rcode: 0, qdcount: 1, ancount: 1 }
+    )]
+    // The buffer a platform zeroed and nothing was written into. Every
+    // field false or zero — and `is_response` false is the only thing that
+    // keeps it from reading as a perfectly good NOERROR answer with no
+    // records.
+    #[case::nothing_arrived(
+        vec![0u8; 12],
+        Header { is_response: false, truncated: false, rcode: 0, qdcount: 0, ancount: 0 }
+    )]
+    // `AA` without `QR`: only bit 0x80 means "response".
+    #[case::authoritative_but_not_a_response(
+        header_bytes(0x40, 0x00, 0, 0),
+        Header { is_response: false, truncated: false, rcode: 0, qdcount: 0, ancount: 0 }
+    )]
+    // `RD` is the neighbouring bit to `TC` and is set on nearly every real
+    // query; reading it as truncation would reject almost every answer.
+    #[case::recursion_desired_is_not_truncation(
+        header_bytes(0x01, 0x00, 0, 0),
+        Header { is_response: false, truncated: false, rcode: 0, qdcount: 0, ancount: 0 }
+    )]
+    #[case::truncated(
+        header_bytes(0x02, 0x00, 0, 0),
+        Header { is_response: false, truncated: true, rcode: 0, qdcount: 0, ancount: 0 }
+    )]
+    // RCODE shares its byte with `RA` and the `Z`/`AD`/`CD` bits, all of
+    // which are set here. Unmasked, this reads as RCODE 243 and NXDOMAIN
+    // stops being NXDOMAIN.
+    #[case::the_rcode_is_the_low_nibble_only(
+        header_bytes(0x82, 0xf3, 1, 0),
+        Header { is_response: true, truncated: true, rcode: 3, qdcount: 1, ancount: 0 }
+    )]
+    // ANCOUNT is bytes 6..8, big-endian. Swapping the pair gives 513 and
+    // reading QDCOUNT instead gives 1, so this one case rules out both.
+    #[case::ancount_is_the_third_count_and_network_order(
+        header_bytes(0x81, 0x80, 1, 258),
+        Header { is_response: true, truncated: false, rcode: 0, qdcount: 1, ancount: 258 }
+    )]
+    // The mirror image: a huge QDCOUNT with no answers must still be no
+    // answers.
+    #[case::a_large_qdcount_is_not_an_ancount(
+        header_bytes(0x81, 0x80, 0xffff, 0),
+        Header { is_response: true, truncated: false, rcode: 0, qdcount: 0xffff, ancount: 0 }
+    )]
+    fn the_header_reads_each_field_from_its_own_bits(
+        #[case] bytes: Vec<u8>,
+        #[case] expected: Header,
+    ) {
+        assert_eq!(read_header(&bytes), Ok(expected));
+    }
+
+    /// Anything shorter than the fixed twelve octets is refused with the
+    /// length it did have, and the boundary is exact: eleven is short,
+    /// twelve is a header. The bound guards five reads into the fixed
+    /// array, so an off-by-one here is a panic on a short answer rather
+    /// than a wrong value.
+    #[rstest::rstest]
+    fn fewer_than_twelve_octets_is_never_a_header(#[values(0, 1, 6, 8, 11)] len: usize) {
+        assert_eq!(
+            read_header(&vec![0u8; len]),
+            Err(Error::Malformed(MalformedAnswer::HeaderTruncated {
+                got: len
+            }))
+        );
+    }
+
+    #[test]
+    fn exactly_twelve_octets_is_a_header() {
+        assert_matches!(read_header(&[0u8; 12]), Ok(_));
+    }
+
+    /// **The header on its own is classified by the same rules**, which is
+    /// what `res_query`'s and Android's failure paths get: no length, so
+    /// nothing but the twelve octets can be trusted.
+    ///
+    /// `Ok(())` means *no records of this type* — the ordinary outcome
+    /// those calls report as a failure — and every other reading is an
+    /// error, kept apart because a caller acts differently on each.
+    #[rstest::rstest]
+    #[case::no_records("825d818000010000000000000000", None)]
+    #[case::nothing_arrived("000000000000000000000000", Some("NoResponse"))]
+    #[case::truncated("825d838000010000000000000000", Some("Truncated"))]
+    #[case::servfail("825d818200010000000000000000", Some("ResponseCode"))]
+    #[case::nxdomain("825d818300010000000000000000", Some("NameDoesNotExist"))]
+    #[case::claims_records("825d818000010001000000000000", Some("LengthUnavailable"))]
+    fn a_bare_header_is_classified_by_the_rules_the_whole_message_uses(
+        #[case] head: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        let got = header_only(&hex(head));
+        match expected {
+            None => assert_matches!(got, Ok(())),
+            // Compared by variant name rather than by shape, so the table
+            // above reads as the six distinct answers it is.
+            Some(name) => {
+                let err = got.expect_err("this header forbids an empty answer");
+                let rendered = format!("{err:?}");
+                assert!(
+                    rendered.starts_with(name),
+                    "expected {name}, got {rendered}"
+                );
+            }
+        }
+    }
+
+    /// **A header claiming answers is not a silent zero**, and this is the
+    /// case that would be one. `res_query` reports failure on a `NOERROR`
+    /// response only when the answer section is empty; a libc that broke
+    /// that would leave the records provably present and provably
+    /// unreadable, because the path that reports it returns no length.
+    #[test]
+    fn a_header_claiming_records_over_a_failed_call_names_how_many() {
+        assert_matches!(
+            header_only(&hex("825d818000010003000000000000")),
+            Err(Error::LengthUnavailable { ancount: 3 })
+        );
+    }
+
     /// **The pair that says the two bounds are both load-bearing.** A
     /// pointer to itself appends nothing, so the length limit never fires
     /// and only the jump budget ends it; a chain that appends a label per
