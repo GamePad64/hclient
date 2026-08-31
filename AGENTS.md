@@ -366,7 +366,7 @@ What is still missing is enumerated at the end of
 themselves the thing to check first: several entries on them were built
 after they were written.
 
-The mechanics are in place and were measured, not assumed. All **26**
+The mechanics are in place and were measured, not assumed. All **27**
 publishable crates carry `description`, `license` and `repository`; inter-crate dependencies
 carry `version` beside `path`, without which nothing here could be
 published at all. Three crates are `publish = false` —
@@ -3028,6 +3028,61 @@ part of `hclient-native`'s pool key — asserted rather than assumed,
 because the dangerous direction is a connection established without
 verification being handed to a client that asked for it.
 
+### The one claim this file marked as unverified was false, and it had shipped
+
+`hclient-dns-system/src/sys/windows.rs` read an HTTPS record as
+`DNS_SVCB_DATA` and dereferenced its `pszTargetName`. Its own header
+recorded the claim underneath that as **taken on the project owner's word,
+not verified here**, and named the exact consequence of it being wrong:
+the record's payload would be raw response bytes, and reading it as that
+struct would build a `PSTR` out of them.
+
+**Measured on a real Windows 11, and that is what was happening.**
+`DnsQuery_UTF8` for `cloudflare.com` type 65 reports `wDataLength = 61`
+and the union holds `0001 00 0001 0006 02 68 33 02 68 32 …` — SVCB wire
+format. `DNS_SVCB_DATA` is 32 bytes on x64 with `pszTargetName` at offset
+8; offset 8 there holds `h3`. The 61 octets are **byte-for-byte** the
+RDATA inside the `res_query` answer this repository had captured on Linux
+in v0.3 and kept as a test fixture ever since.
+
+**The rule is readable from the Win32 metadata and was confirmed in both
+directions.** A type named by `DNS_RECORDA`'s data union arrives parsed
+into that member; a type it does not name arrives as its own RDATA, with
+`wDataLength` its length. `MX` came back as a structure and `CAA` as
+RDATA; `DNS_TYPE_SVCB` is **64** while HTTPS is **65** and has no union
+member — and `DNS_TYPE_HTTPS`, `DNS_TYPE_CERT` and `DNS_TYPE_LOC` all
+exist as constants with no member, so it is the union that decides and not
+the constant list.
+
+**What made this reachable is the shape of the sentence, not the code.**
+Every other unverified claim in this workspace is about a third party's
+behaviour and is stated where the code depends on it; this one was too.
+The difference is that nothing could fail: the module compiled on every
+push, `cargo check --target x86_64-pc-windows-msvc` was clean, and the
+crate's own tests exercised the Unix path. **A file whose header says it
+has never been executed is not covered by any gate this project has** —
+which is *a check that cannot fail* met from the one direction that had
+never been named, where there is no check to break on purpose because
+there is no machine to break it on.
+
+The repair is not a test. It is `crates/system-resolver`: the platform
+calls moved out of `hclient-dns-system` into a crate of their own, where
+`Support::AnyExcept(&[..])` refuses the forty-three types Windows parses
+**by name and before a query**, and where Windows 11's `DnsQueryRaw` —
+resolved with `GetProcAddress`, because `windows-sys` emits it as a
+`raw-dylib` import and naming one stops a process from starting on Windows
+10 — hands over the wire message and makes that platform behave like the
+other four. `hclient-dns-system` is an adapter above it and carries no
+`unsafe` at all any more.
+
+**And the second half of the fix is the part worth copying.** The two
+Windows calls are compared against each other on a machine that has both:
+`the_parsed_path_answers_the_same_rdata_as_the_raw_one` runs
+`DnsQuery_UTF8` directly on Windows 11, where nothing else ever reaches
+it, because the code for the platform this project cannot get hold of
+would otherwise be the only code in the crate that never runs. That is the
+nearest thing to a Windows 10 gate that exists without a Windows 10.
+
 ### A crate was green in the workspace and did not build on its own
 
 `cargo check -p hclient-native --all-features --all-targets` failed with
@@ -4657,8 +4712,8 @@ developed on; what they hand to
 `from_wininet` and to `from_parts` is data, and every rule — the
 `scheme=host:port` list, `<local>`, which key means which scheme, the
 `host:port` reading — is tested on any host. That is
-`hclient-dns-system`'s split between `sys` and its parsers, applied
-again.
+`system-resolver`'s split between `sys` and its parsers, applied again —
+named for `hclient-dns-system` until those platform modules moved there.
 
 **Everything ambiguous is a named refusal rather than a quiet narrowing.**
 A transport holds one proxy protocol, so a machine naming a SOCKS proxy
@@ -4794,7 +4849,7 @@ reads a script the machine *names*, and a discovered one has no URL to
 report, so honouring it needs an answer `SystemProxies` has no shape for.
 Stated rather than fixed, and it is the under-claiming direction.
 
-The split is `hclient-dns-system`'s: every rule is
+The split is `system-resolver`'s: every rule is
 `hclient-proxy`'s and is tested on this workspace's own Linux hosts, the
 `URLSession` side is one expression, and the environment-exclusion is
 pinned by a test that re-runs the test binary as a **child process** with
@@ -5919,10 +5974,10 @@ workspace-wide `git ls-files | xargs sed -i` silently turns every licence
 link, and `CLAUDE.md`'s link to this file, into copies. Both renames this
 week did it. The tell is `git status`'s `T` (type change), not `M`, and the
 check that settles it is the **index**: `git ls-files -s | awk '$1=="120000"'`
-should count **two per publishable crate, plus one** for `CLAUDE.md` — 53
-today at 26 crates, and stated as a relationship rather than a number
+should count **two per publishable crate, plus one** for `CLAUDE.md` — 55
+today at 27 crates, and stated as a relationship rather than a number
 because it was written down as 59 at 29 crates and was wrong within the
-week. `just packaging` is the gate that does not go stale, because it
+week, and as 53 at 26 until `system-resolver` arrived. `just packaging` is the gate that does not go stale, because it
 asserts against the packaged file list. Restoring is one loop; noticing is
 the hard part, because a copy behaves identically until it drifts.
 
