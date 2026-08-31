@@ -298,7 +298,7 @@ fn expand_names(msg: &[u8], rtype: u16, at: usize, end: usize) -> Result<Vec<u8>
     // reported — the encoder's bounds are RFC 1035's and the decoder
     // enforces the same ones — so the octets as they arrived are the
     // honest answer rather than a refusal of a record that is fine.
-    crate::rdata::encode(&parsed).map_or_else(verbatim, Ok)
+    parsed.to_vec().map_or_else(verbatim, Ok)
 }
 
 /// The offset just past the name at `at`, without reading it.

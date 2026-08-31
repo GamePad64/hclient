@@ -64,7 +64,7 @@
 )]
 
 use crate::error::Error;
-use crate::rdata::{self, Parsed};
+use crate::rdata::Parsed;
 use crate::sys::query_name;
 use crate::{CLASS_IN, Record};
 use core::ffi::c_void;
@@ -326,7 +326,7 @@ pub(super) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
                 ttl: Duration::from_secs(u64::from(record.dwTtl)),
                 rdata: parsed
                     .as_ref()
-                    .and_then(rdata::encode)
+                    .and_then(Parsed::to_vec)
                     .ok_or_else(unreadable)?,
             });
         }

@@ -47,8 +47,9 @@
 //! easiest to get quietly wrong.
 //!
 //! On Windows 11 the answer is checked against the real thing: both calls
-//! exist there, so `sys/windows/mod.rs`'s test compares a synthesised RDATA with the
-//! octets `DnsQueryRaw` reports for the same name.
+//! exist there, so `sys/windows/mod.rs`'s test compares a synthesised
+//! RDATA with the octets `DnsQueryRaw` reports for the same name, over a
+//! record of every shape below.
 #![forbid(unsafe_code)]
 
 /// One record as Windows understood it, with every pointer already read
@@ -131,104 +132,106 @@ const MAX_WIRE_NAME_LEN: usize = 255;
 /// A character-string is a length octet and up to 255 octets.
 const MAX_STRING_LEN: usize = 255;
 
-/// The RDATA for a record of this shape, or `None` where the value cannot
-/// be one.
-///
-/// `None` is a refusal rather than a best effort: a name too long to
-/// encode or a string over 255 octets is not something a resolver can have
-/// reported, so producing shorter bytes would be inventing a record.
-pub(crate) fn encode(parsed: &Parsed) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    match parsed {
-        Parsed::Raw(bytes) => out.extend_from_slice(bytes),
-        Parsed::A(octets) => out.extend_from_slice(octets),
-        Parsed::Aaaa(octets) => out.extend_from_slice(octets),
-        Parsed::Name(name) => out.extend(wire_name(name)?),
-        Parsed::TwoNames(first, second) => {
-            out.extend(wire_name(first)?);
-            out.extend(wire_name(second)?);
-        }
-        Parsed::NumberAndName(number, name) => {
-            out.extend_from_slice(&number.to_be_bytes());
-            out.extend(wire_name(name)?);
-        }
-        Parsed::Strings(strings) => {
-            for string in strings {
-                out.extend(character_string(string)?);
+impl Parsed {
+    /// The RDATA for a record of this shape, or `None` where the value cannot
+    /// be one.
+    ///
+    /// `None` is a refusal rather than a best effort: a name too long to
+    /// encode or a string over 255 octets is not something a resolver can have
+    /// reported, so producing shorter bytes would be inventing a record.
+    pub(crate) fn to_vec(&self) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        match self {
+            Parsed::Raw(bytes) => out.extend_from_slice(bytes),
+            Parsed::A(octets) => out.extend_from_slice(octets),
+            Parsed::Aaaa(octets) => out.extend_from_slice(octets),
+            Parsed::Name(name) => out.extend(wire_name(name)?),
+            Parsed::TwoNames(first, second) => {
+                out.extend(wire_name(first)?);
+                out.extend(wire_name(second)?);
+            }
+            Parsed::NumberAndName(number, name) => {
+                out.extend_from_slice(&number.to_be_bytes());
+                out.extend(wire_name(name)?);
+            }
+            Parsed::Strings(strings) => {
+                for string in strings {
+                    out.extend(character_string(string)?);
+                }
+            }
+            Parsed::Soa {
+                mname,
+                rname,
+                serial,
+                refresh,
+                retry,
+                expire,
+                minimum,
+            } => {
+                out.extend(wire_name(mname)?);
+                out.extend(wire_name(rname)?);
+                for field in [serial, refresh, retry, expire, minimum] {
+                    out.extend_from_slice(&field.to_be_bytes());
+                }
+            }
+            Parsed::Srv {
+                priority,
+                weight,
+                port,
+                target,
+            } => {
+                for field in [priority, weight, port] {
+                    out.extend_from_slice(&field.to_be_bytes());
+                }
+                out.extend(wire_name(target)?);
+            }
+            Parsed::Naptr {
+                order,
+                preference,
+                flags,
+                service,
+                regexp,
+                replacement,
+            } => {
+                out.extend_from_slice(&order.to_be_bytes());
+                out.extend_from_slice(&preference.to_be_bytes());
+                out.extend(character_string(flags)?);
+                out.extend(character_string(service)?);
+                out.extend(character_string(regexp)?);
+                out.extend(wire_name(replacement)?);
+            }
+            Parsed::Tlsa {
+                usage,
+                selector,
+                matching,
+                data,
+            } => {
+                out.extend_from_slice(&[*usage, *selector, *matching]);
+                out.extend_from_slice(data);
+            }
+            Parsed::Ds {
+                key_tag,
+                algorithm,
+                digest_type,
+                digest,
+            } => {
+                out.extend_from_slice(&key_tag.to_be_bytes());
+                out.extend_from_slice(&[*algorithm, *digest_type]);
+                out.extend_from_slice(digest);
+            }
+            Parsed::Key {
+                flags,
+                protocol,
+                algorithm,
+                key,
+            } => {
+                out.extend_from_slice(&flags.to_be_bytes());
+                out.extend_from_slice(&[*protocol, *algorithm]);
+                out.extend_from_slice(key);
             }
         }
-        Parsed::Soa {
-            mname,
-            rname,
-            serial,
-            refresh,
-            retry,
-            expire,
-            minimum,
-        } => {
-            out.extend(wire_name(mname)?);
-            out.extend(wire_name(rname)?);
-            for field in [serial, refresh, retry, expire, minimum] {
-                out.extend_from_slice(&field.to_be_bytes());
-            }
-        }
-        Parsed::Srv {
-            priority,
-            weight,
-            port,
-            target,
-        } => {
-            for field in [priority, weight, port] {
-                out.extend_from_slice(&field.to_be_bytes());
-            }
-            out.extend(wire_name(target)?);
-        }
-        Parsed::Naptr {
-            order,
-            preference,
-            flags,
-            service,
-            regexp,
-            replacement,
-        } => {
-            out.extend_from_slice(&order.to_be_bytes());
-            out.extend_from_slice(&preference.to_be_bytes());
-            out.extend(character_string(flags)?);
-            out.extend(character_string(service)?);
-            out.extend(character_string(regexp)?);
-            out.extend(wire_name(replacement)?);
-        }
-        Parsed::Tlsa {
-            usage,
-            selector,
-            matching,
-            data,
-        } => {
-            out.extend_from_slice(&[*usage, *selector, *matching]);
-            out.extend_from_slice(data);
-        }
-        Parsed::Ds {
-            key_tag,
-            algorithm,
-            digest_type,
-            digest,
-        } => {
-            out.extend_from_slice(&key_tag.to_be_bytes());
-            out.extend_from_slice(&[*algorithm, *digest_type]);
-            out.extend_from_slice(digest);
-        }
-        Parsed::Key {
-            flags,
-            protocol,
-            algorithm,
-            key,
-        } => {
-            out.extend_from_slice(&flags.to_be_bytes());
-            out.extend_from_slice(&[*protocol, *algorithm]);
-            out.extend_from_slice(key);
-        }
+        Some(out)
     }
-    Some(out)
 }
 
 /// `example.com` as length-prefixed labels, or `None` for a name with no
@@ -331,7 +334,7 @@ mod tests {
         #[case] parsed: Parsed,
         #[case] expected: &str,
     ) {
-        assert_eq!(encode(&parsed).expect("encodable"), hex(expected));
+        assert_eq!(parsed.to_vec().expect("encodable"), hex(expected));
     }
 
     /// RFC 1035 §3.3.13, in full, because it is the one shape with two
@@ -339,7 +342,7 @@ mod tests {
     /// swapped with its neighbour and still look plausible.
     #[test]
     fn a_soa_carries_its_two_names_then_five_counters_in_order() {
-        let encoded = encode(&Parsed::Soa {
+        let encoded = Parsed::Soa {
             mname: "a.example".to_owned(),
             rname: "root.example".to_owned(),
             serial: 1,
@@ -347,7 +350,8 @@ mod tests {
             retry: 3,
             expire: 4,
             minimum: 5,
-        })
+        }
+        .to_vec()
         .expect("encodable");
         assert_eq!(
             encoded,
@@ -372,6 +376,6 @@ mod tests {
     #[case::name_over_255(Parsed::Name(vec!["abcdefgh"; 40].join(".")))]
     #[case::string_over_255(Parsed::Strings(vec![vec![b'x'; 256]]))]
     fn a_value_with_no_wire_form_is_refused(#[case] parsed: Parsed) {
-        assert_eq!(encode(&parsed), None);
+        assert_eq!(parsed.to_vec(), None);
     }
 }
