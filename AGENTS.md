@@ -5403,11 +5403,14 @@ where `http3` switches `tests/send_future.rs` off. `just test-no-default`
 runs this crate's suite under `--features http2`, which is where it is
 checked now — 282 tests.
 
-**What is left, re-measured on 2026-08-28 from outside the workspace —
-and three of the four rows this table used to carry were stale.** They
-were each written truthfully and then fixed by C15 and C16 without the
-table being re-read, which is this file's own rule about a claim being as
-perishable as the thing it describes, met once more.
+**What is left, re-measured from outside the workspace — and this table
+has now gone stale twice, the second time within hours of being
+corrected.** The first correction fixed three of four rows that C15 and
+C16 had quietly made true. The DoH row survived it, said `!Send`, and was
+fixed by `8eeb9e6` **the same day** — after which the row went on saying
+`!Send` for another week, and was quoted back into a design discussion as
+though it were a fact. A claim is as perishable as the thing it
+describes, and this file's own example of the rule is this paragraph.
 
 | what | measured | |
 |---|---|---|
@@ -5415,19 +5418,33 @@ perishable as the thing it describes, met once more.
 | `Native::execute`, plain | **`Send`** | |
 | `Native::execute` **with the `http3` arm installed** | **`Send`** | the bounds live on the opt-in `Native::http3`, amendment C15 — the row that used to say the blanket impl could not prove them |
 | `hclient-tower`'s `Service::call` future | **`Send`** | its `type Future` has declared `Send` since C16; the row saying it needs return type notation outlived the fix |
-| a transport whose resolver is `hclient-dns-doh::Doh` | **`!Send`** | `dyn Stream<Item = Result<SvcbEndpoint, Error>>` boxed plain, named by the compiler |
+| a transport whose resolver is `hclient-dns-doh::Doh` | **`Send`** | since `8eeb9e6`: `execute_send` names its future, so the streams are declared `Send` — and `tests/send.rs` asserts it |
 | `hclient-fetch` | `!Send` under `+atomics` by nature | a JS `WebSocket` belongs to the realm that made it |
 
-**So DoH is the one left, and the repair now exists where it did not.**
-The recorded reason — *DoH resolves through a generic `C: Transport`
-whose `execute` is an RPITIT, so its streams cannot be declared `Send`* —
-was true when it was written and stopped being true when `SendTransport`
-landed: `execute_send` hands back `BoxSendExchange`, a **named** type. A
-`Doh<C>` built on `C: SendTransport` could name its streams and infer the
-property, at the cost of narrowing the bound. That narrowing looks worse
-than it is — the case it excludes is a `Send` outer transport resolving
-through a `!Send` inner one, which nobody assembles — but it is a public
-narrowing and has not been made. Measured, not done.
+**So nothing is left, and the paragraph that stood here proposed a
+repair that had already been made.** It read: DoH resolves through a
+generic `C: Transport` whose `execute` is an RPITIT, so its streams
+cannot be declared `Send`; `SendTransport` would fix it at the cost of
+narrowing the bound; *measured, not done*. Every word was true when
+written and none of it after `8eeb9e6`, which made exactly that change —
+`C: SendTransport`, `execute_send`'s named `BoxSendExchange`, and two
+`Send` stream aliases.
+
+**The cost of leaving it was not the sentence, it was the decision it
+shaped.** Asked which seams this workspace still owes, this row was read
+off the table and reported as an open item — twice, in the same
+conversation, before anyone opened `tests/send.rs` and found its first
+line saying *this **was** the last `!Send` in the workspace*. A table is
+read where a test is not, which is an argument for the table naming the
+test rather than restating it.
+
+Re-measured from a scratch crate outside the workspace: `Client` and its
+request future, `Response`, `ClientBody`, `Collected`, `Error`,
+`Native::execute` with and without the h3 arm, `hclient-tower`'s
+`Service::call`, and `Doh`'s `lookup_ipv4`, `lookup_svcb` and the
+resolver itself — **all `Send`**. The only remaining row is
+`hclient-fetch` under `+atomics`, which is not a defect but a fact about
+a JS realm.
 
 Everything else that grep finds is a trait object whose trait already
 declares `Send` (quinn's `AsyncTimer`, `AsyncUdpSocket`, rustls'
