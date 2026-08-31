@@ -317,14 +317,7 @@ fn the_clients_redirect_policy_is_what_follows_the_hop() {
         .expect("build");
     let url = format!("http://127.0.0.1:{}/first", addr.port());
     let text = futures_executor::block_on(async {
-        client
-            .get(&url)
-            .send()
-            .await?
-            .collect()
-            .await?
-            .text()
-            .map_err(|e| e)
+        client.get(&url).send().await?.collect().await?.text()
     })
     .expect("the chain completes");
     assert_eq!(

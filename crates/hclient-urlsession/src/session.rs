@@ -22,7 +22,7 @@ use crate::error::UrlSessionError;
 /// Apple's `URLSession` as a [`Transport`].
 #[derive(Debug)]
 pub struct UrlSession {
-    session: Retained<NSURLSession>,
+    pub(crate) session: Retained<NSURLSession>,
     caps: Capabilities,
 }
 
@@ -234,12 +234,9 @@ impl UrlSession {
                 &NSString::from_str(name.as_str()),
             );
         }
-        match resolve_body(req.into_body())? {
-            Some(bytes) => {
-                let data = NSData::with_bytes(&bytes);
-                request.setHTTPBody(Some(&data));
-            }
-            None => {}
+        if let Some(bytes) = resolve_body(req.into_body())? {
+            let data = NSData::with_bytes(&bytes);
+            request.setHTTPBody(Some(&data));
         }
         let task = self.session.dataTaskWithRequest(&request);
         // The task-scoped delegate: `URLSessionTask.delegate` is a

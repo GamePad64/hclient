@@ -12,6 +12,14 @@ categories   = ["web-programming::http-client", "os::macos-apis"]
 # See the root Cargo.toml: `default` is near-empty here by design.
 [package.metadata.docs.rs]
 all-features = true
+# **Without this its docs.rs page is empty**, and that was true before
+# anything here needed it: the crate is `#![cfg(target_vendor = "apple")]`,
+# so a build for docs.rs's default target compiles nothing and publishes a
+# page with no items on it. `hclient-winhttp` carries the same line for
+# the same reason, and `just docs` documents every crate that declares one
+# for the target it declares — so this is also what puts this crate's
+# prose under a check at all.
+default-target = "aarch64-apple-darwin"
 
 [dependencies]
 hclient-core = { workspace = true }
@@ -32,6 +40,9 @@ thiserror    = { workspace = true }
 # host is unchanged by these two lines.
 futures-channel = { version = "0.3", default-features = false, features = ["std"] }
 futures-core    = { version = "0.3", default-features = false }
+# The `Sink` half of the WebSocket seam, which `hclient-core` already
+# names — so this costs no crate in any graph that has a client.
+futures-sink    = { workspace = true }
 objc2 = "0.6"
 block2 = "0.6"
 

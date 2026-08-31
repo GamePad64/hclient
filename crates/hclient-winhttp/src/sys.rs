@@ -38,12 +38,28 @@
 //! either way. [`Request::add_headers`] uses `WinHttpAddRequestHeaders`
 //! instead — a synchronous call that copies — so the send passes no
 //! header pointer at all and the question does not arise.
+//!
+//! # Wide strings
+//!
+//! Every WinHTTP call here takes an `LPCWSTR`, and every one of them gets
+//! a [`HSTRING`](windows_strings::HSTRING) bound to a local, passed as
+//! `.as_ptr()`. **The terminating null is inside the allocation**, which
+//! `windows-strings` reserves — so the pointer is an `LPCWSTR` by
+//! construction rather than by this file remembering to chain a zero,
+//! which is what a hand-rolled `Vec<u16>` helper here used to do. Losing
+//! that zero is not a compile error; it is a call that reads past the end
+//! of an allocation.
+//!
+//! The local is what keeps the buffer alive across the call, so an
+//! `HSTRING::from(..).as_ptr()` written inline would be a dangling
+//! pointer. Every site binds first.
 
 use crate::error::Win32Error;
 use std::ffi::c_void;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use windows_strings::HSTRING;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures_channel::mpsc;
@@ -62,22 +78,6 @@ const READ_BUF: usize = 16 * 1024;
 ///
 /// Every WinHTTP call that takes one here is synchronous and copies what
 /// it needs, so the `Vec` may die at the end of the statement.
-/// A `&str` as the null-terminated UTF-16 every WinHTTP call takes.
-///
-/// **`HSTRING` rather than a `Vec<u16>` with a zero chained on**, and the
-/// difference is where the terminator comes from: this crate used to add
-/// it, in a helper whose one job was not to forget — and losing it is not
-/// a compile error, it is a call that reads past the end of an
-/// allocation. `windows-strings` reserves the terminator inside the
-/// allocation, so `as_ptr()` on the slice is an `LPCWSTR` by
-/// construction.
-///
-/// The value must outlive the call: every caller binds it to a local and
-/// passes `.as_ptr()`, which is what keeps the buffer alive across the
-/// FFI boundary.
-fn wide(s: &str) -> windows_strings::HSTRING {
-    windows_strings::HSTRING::from(s)
-}
 
 /// What WinHTTP last told us, in the order it said it.
 #[derive(Debug)]
@@ -744,7 +744,7 @@ impl Session {
         reason = "WinHttpOpen and WinHttpSetStatusCallback"
     )]
     pub(crate) fn open(agent: &str) -> Result<Self, Win32Error> {
-        let agent = wide(agent);
+        let agent = HSTRING::from(agent);
         // SAFETY: `agent` is null-terminated and outlives the call, which
         // copies what it keeps; the two proxy parameters are the
         // documented nulls for an automatic access type.
@@ -790,7 +790,7 @@ impl Session {
         reason = "WinHttpConnect"
     )]
     pub(crate) fn connect(&self, host: &str, port: u16) -> Result<Connect, Win32Error> {
-        let host = wide(host);
+        let host = HSTRING::from(host);
         // SAFETY: the session handle is live for the borrow, and `host`
         // is null-terminated and copied by the call.
         let h = unsafe { w::WinHttpConnect((self.0).0, host.as_ptr(), port, 0) }; // unsafe-code-exception: amendment-C18
@@ -838,8 +838,8 @@ impl Connect {
         target: &str,
         secure: bool,
     ) -> Result<Request, Win32Error> {
-        let verb = wide(verb);
-        let target = wide(target);
+        let verb = HSTRING::from(verb);
+        let target = HSTRING::from(target);
         let flags = if secure { w::WINHTTP_FLAG_SECURE } else { 0 };
         // SAFETY: both strings are null-terminated and copied by the
         // call; the three nulls are the documented defaults for version,
@@ -998,7 +998,7 @@ impl Request {
         if crlf.is_empty() {
             return Ok(());
         }
-        let h = wide(crlf);
+        let h = HSTRING::from(crlf);
         // SAFETY: `h` is null-terminated; `u32::MAX` is WinHTTP's own
         // sentinel for "null-terminated, measure it yourself". The call
         // copies what it keeps.

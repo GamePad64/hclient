@@ -68,11 +68,37 @@
 //! the field, where a proxy carrying a bypass list still reports `true`.
 #![cfg(target_vendor = "apple")]
 
+//! # WebSocket
+//!
+//! [`UrlSessionWebSocket`] implements
+//! [`WebSocketConnect`](hclient_core::unversioned::WebSocketConnect) over
+//! `NSURLSessionWebSocketTask`, **in this crate** rather than one of its
+//! own: the rule that puts framing in a separate crate is about a
+//! dependency to keep out of other graphs, and this costs zero crates —
+//! the task is in the `objc2-foundation` feature already named here.
+//!
+//! **Three platforms now fit a seam shaped around the first.**
+//! `WebSocketConnect` hands over *messages* because that is all a browser
+//! can give; WinHTTP turned out to be the same shape and so is
+//! Foundation, which delivers an `NSURLSessionWebSocketMessage` and takes
+//! one back with the handshake, the masking and the ping/pong inside the
+//! system. Three implementations that share no code agreeing on the shape
+//! is what says the seam is not the browser's accident.
+//!
+//! Two details are Foundation's own and are handled rather than papered
+//! over: a task opens **lazily**, so the handshake's failure arrives
+//! through the first send or receive rather than from `websocket()`; and
+//! the peer's close arrives as a **failed receive** with the code on the
+//! task, which is read back and reported as
+//! [`Message::Close`](hclient_core::unversioned::Message::Close).
+
 mod body;
 mod delegate;
 mod error;
 mod session;
+mod websocket;
 
 pub use body::UrlSessionBody;
 pub use error::UrlSessionError;
 pub use session::UrlSession;
+pub use websocket::UrlSessionWebSocket;

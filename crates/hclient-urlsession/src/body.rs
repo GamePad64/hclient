@@ -15,7 +15,8 @@ use crate::error::UrlSessionError;
 ///
 /// It holds the task so that **dropping the body cancels the transfer**,
 /// which is `Transport::execute`'s own contract and what
-/// `Capabilities::cancel_on_drop` promises — see [`Cancelling`].
+/// `Capabilities::cancel_on_drop` promises — see `Cancelling` in
+/// `session.rs`, which is private.
 #[derive(Debug)]
 pub struct UrlSessionBody {
     shared: Arc<Shared>,

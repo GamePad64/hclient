@@ -207,7 +207,7 @@ file per platform backend, and no `unsafe` anywhere else in the crate.
 nothing else. Not `icu/mod.rs` above it, not `lib.rs`, not a directory.
 
 **C11 — Apple's Objective-C boundary**, in
-`hclient-urlsession/src/{delegate,session}.rs`. Every call into
+`hclient-urlsession/src/{delegate,session,websocket}.rs`. Every call into
 `URLSession` goes through `objc2`'s message send, where the selector,
 the argument types and the ownership convention are checked by nothing
 the compiler can see — `unsafe` is the medium rather than an

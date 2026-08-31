@@ -269,11 +269,17 @@ pub(super) fn platform() -> Raw {
         .and_then(|v| v.downcast::<CFArray>())
     {
         for ptr in list.get_all_values() {
+            // The attribute goes **above** the SAFETY comment, not
+            // between it and the `unsafe`: clippy's
+            // `undocumented_unsafe_blocks` wants the comment adjacent,
+            // and an attribute in the gap makes it invisible — a warning
+            // nobody saw, because clippy for this target is not something
+            // `just lint` runs.
+            #[allow(unsafe_code)] // unsafe-code-exception: amendment-C13
             // SAFETY: `ptr` is an element of a CFArray returned by
             // SCDynamicStoreCopyProxies, so it is a valid CF object owned
             // by that array, which outlives this borrow; the Get rule is
             // the right one for a borrow that does not outlive it.
-            #[allow(unsafe_code)] // unsafe-code-exception: amendment-C13
             let value = unsafe { CFType::wrap_under_get_rule(ptr as CFTypeRef) };
             // unsafe-code-exception: amendment-C13
             if let Some(s) = value.downcast::<CFString>() {
