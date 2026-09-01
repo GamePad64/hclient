@@ -31,14 +31,21 @@ pub enum IdnError {
         /// The domain, as given.
         domain: String,
     },
-    /// This build has no IDN implementation that can run here: the
-    /// `bundled` feature is off, and no system ICU was found at run time.
-    /// The name itself may be perfectly valid.
+    /// This build has an implementation it will not trust: the platform's
+    /// own UTS 46 was absent, or it answered the acceptance probe
+    /// differently from `idna`. The name itself may be perfectly valid.
+    ///
+    /// **The message named two features that no longer exist**, and the
+    /// first run of the Android backend is what surfaced it: every call
+    /// came back advising a reader to *enable the `bundled` feature*,
+    /// which had been replaced by `idna` and which would not have been
+    /// the cause anyway. A message is a claim like any other and goes
+    /// stale the same way.
     #[error(
-        "`{domain}` needs IDN conversion and this build has none: it was built with \
-         `system-icu` and without `bundled`, and no system ICU library was found at run time. \
-         Enable the `bundled` feature, or supply the host in its A-label form — `münchen.de` \
-         is written `xn--mnchen-3ya.de`"
+        "`{domain}` needs IDN conversion and this build has none it will trust: the platform's \
+         own UTS 46 was not found, or it disagreed with `idna` on the acceptance probe. Build \
+         with `--features idna` to carry the Unicode tables instead, or supply the host in its \
+         A-label form — `münchen.de` is written `xn--mnchen-3ya.de`"
     )]
     NoImplementation {
         /// The domain, as given.

@@ -13,22 +13,37 @@
 //! alternative is still one feature away — `--features idna` — for a build
 //! that would rather have the tables than the JVM call.
 //!
-//! # Two halves, and only one of them can be run here
+//! # It has been run, and the first run found it broken
 //!
-//! **This file has never been executed.** No runner in this project is an
-//! Android device, and `cargo check --target aarch64-linux-android`
-//! proves the JNI signatures type-check, not that they resolve. That is
-//! the shape `hclient-dns-system`'s Apple arm was in when every one of its
-//! live tests failed in ten milliseconds, and it is written down here
-//! rather than discovered later.
+//! This file was written from Android's documentation and type-checked
+//! for `aarch64-linux-android`, which proves the JNI signatures compile
+//! and not that they resolve — the state `hclient-dns-system`'s Apple arm
+//! was in when every one of its live tests failed in ten milliseconds.
 //!
-//! What limits the damage is the split this workspace applies to every
-//! platform module: the half that talks to the platform holds no
-//! decisions, and the half that holds decisions is tested on any host.
-//! Here the decision is [`IGNORED`] — which of ICU's error names this
-//! crate treats as *not fatal* — and `agrees_with_the_bit_mask` pins it
-//! against [`crate::icu::IGNORED_ERRORS`] on the machine you are reading this
-//! on.
+//! **It has since been executed on an emulator, API 35, and the first run
+//! refused every name.** Every JNI step was correct: the VM was
+//! registered, `android/icu/text/IDNA` resolved, `getUTS46Instance(0x3c)`
+//! returned an instance, and `nameToASCII` answered `xn--strae-oqa.de`
+//! for `straße.de`. What was wrong was one line of ours — see
+//! [`imp::Answer`]: the shared walk had been factored out of the ASCII
+//! direction and kept its closing check, *the answer must be ASCII*, so
+//! `nameToUnicode` refused every conversion it performed correctly. The
+//! acceptance probe's reverse half then failed, and the backend reported
+//! `NoImplementation` for every name.
+//!
+//! After the fix, thirteen cases agree with `idna` on the device:
+//! `straße.de` and `faß.de` non-transitionally, `EXAMPLE.COM`, `a..b`,
+//! `ä..de`, `a-.de`, `ab--cd.de`, the refusals of `xn--zzzz.test` and
+//! `a<b.com`, and all three reverse conversions.
+//!
+//! What limited the damage before that run is the split this workspace
+//! applies to every platform module: the half that talks to the platform
+//! holds no decisions, and the half that holds decisions is tested on any
+//! host. Here the decision is [`IGNORED`] — which of ICU's error names
+//! this crate treats as *not fatal* — and the device confirmed every one:
+//! `a..b` came back `[EMPTY_LABEL]`, `a-.de` `[TRAILING_HYPHEN]`,
+//! `ab--cd.de` `[HYPHEN_3_4]`, all forgiven and all matching `idna`, and
+//! `xn--zzzz.test` `[PUNYCODE]`, not forgiven.
 //!
 //! # Why the errors are read by name
 //!
@@ -133,7 +148,7 @@ mod imp {
     /// The A-label form of `domain`, or `None` if ICU4J refused it for a
     /// reason this crate treats as fatal.
     pub(crate) fn to_ascii(_a: &Android, domain: &str) -> Option<String> {
-        through("nameToASCII", domain)
+        through("nameToASCII", domain, Answer::MustBeAscii)
     }
 
     /// The U-label form, through `IDNA.nameToUnicode`.
@@ -143,12 +158,32 @@ mod imp {
     /// punycode decoder of ours: a name ICU will not convert back is one
     /// it did not consider legal going out either.
     pub(crate) fn to_unicode(_a: &Android, domain: &str) -> Option<String> {
-        through("nameToUnicode", domain)
+        through("nameToUnicode", domain, Answer::MayBeUnicode)
     }
 
-    /// Both directions, which differ by the method name and nothing else:
-    /// ICU4J gives them one signature.
-    fn through(method: &str, domain: &str) -> Option<String> {
+    /// What the answer is allowed to look like, which is the one thing
+    /// the two directions do **not** share.
+    ///
+    /// **This distinction cost the backend its first run.** `through` was
+    /// factored out of the ASCII direction and kept its closing check —
+    /// *the answer must be ASCII* — so `nameToUnicode` refused every
+    /// conversion it performed correctly, the acceptance probe's reverse
+    /// half failed, and the backend reported `NoImplementation` for every
+    /// name on a real device. Every JNI step was right; the check was the
+    /// ASCII direction's alone.
+    #[derive(Clone, Copy)]
+    enum Answer {
+        /// An A-label: ASCII, and free of denied bytes.
+        MustBeAscii,
+        /// A U-label: non-ASCII is the point of it. The deny list still
+        /// applies — a U-label carrying `%` is one punycode smuggled
+        /// through, which is `xn--%-0fa.de`'s case.
+        MayBeUnicode,
+    }
+
+    /// Both directions, which differ by the method name and by what the
+    /// answer may look like: ICU4J gives them one signature.
+    fn through(method: &str, domain: &str, answer: Answer) -> Option<String> {
         // Before the call, never after — the same rule and the same
         // reason as `apple.rs`: a denied byte here is one the platform
         // would consume as a delimiter, silently changing which host
@@ -202,11 +237,10 @@ mod imp {
                 .ok()?;
             let out: String = env.get_string(&JString::from(text)).ok()?.into();
 
-            // The same closing check `apple.rs` makes, for the same
-            // reason: what comes back has to be a host, and a
-            // conversion that did not happen shows up as a non-ASCII
-            // answer.
-            if !out.is_ascii() || out.bytes().any(crate::is_forbidden_domain_byte) {
+            if matches!(answer, Answer::MustBeAscii) && !out.is_ascii() {
+                return None;
+            }
+            if out.bytes().any(crate::is_forbidden_domain_byte) {
                 return None;
             }
             Some(out)

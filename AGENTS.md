@@ -3245,16 +3245,37 @@ fewer and a second divergence — Android refusing `-münchen.de` and
 already carries one such divergence, on Apple, as a recorded cost rather
 than a design.
 
-**It has never been run, and that is written where a reader meets it.**
-No runner in this project is an Android device. `check-targets` compiles
-the backend for `aarch64-linux-android` in both feature settings and
-`graph-idn-backend` asserts the tables stay off it, but a type-check is
-not an execution — which is the state `hclient-dns-system`'s Apple arm
-was in when every one of its live tests failed in ten milliseconds. What
-limits the damage is the split: the JNI walk holds no decision, and the
-decision it serves — which of ICU's errors are forgiven — is a constant
-beside a test that pins it against the Windows backend's bit mask on any
-host.
+**It has been run now, and the first run refused every name.** An
+emulator, API 35, no APK — a `cdylib` whose `JNI_OnLoad` registers the VM
+and one `app_process` invocation. None of the failure was JNI: the VM was
+registered, `android/icu/text/IDNA` resolved, `getUTS46Instance(0x3c)`
+returned an instance, and `nameToASCII` answered `xn--strae-oqa.de` for
+`straße.de`. The defect was one line of ours — the walk shared by both
+directions had been factored out of the ASCII one and kept its closing
+check, *the answer must be ASCII*, so `nameToUnicode` refused every
+conversion it performed correctly, the acceptance probe's reverse half
+failed, and the backend was rejected at first use.
+
+That is `hclient-dns-system`'s Apple arm a second time, with the same
+moral and a better ending: an arm that compiles is not an arm that runs,
+and the only way to know is to run it. The run also caught
+`NoImplementation`'s message advising a reader to *enable the `bundled`
+feature*, which had been replaced by `idna`.
+
+**Thirteen cases agree with `idna` on the device after the fix**,
+including every error name the backend forgives — `a..b` came back
+`[EMPTY_LABEL]`, `a-.de` `[TRAILING_HYPHEN]`, `ab--cd.de` `[HYPHEN_3_4]`,
+all forgiven and all matching — and the one it does not, `xn--zzzz.test`
+with `[PUNYCODE]`. The option constants were confirmed to be ICU4C's, so
+the crate's `0x3c` means the same thing in both.
+
+It is **not** a CI job: an emulator boot needs minutes and KVM, and what
+the run established is that the code is correct rather than that it will
+stay so. The cheaper half of staying so is already there —
+`check-targets` compiles the backend in both feature settings and
+`graph-idn-backend` asserts the tables stay off Android — and
+`.notes/android-idn-live.md` is the other half, a run anyone can repeat
+in ten minutes.
 
 **Two public functions**, `domain_to_ascii` and `domain_to_unicode`, plus
 the error their `Result` needs. Everything else — the option word, the
