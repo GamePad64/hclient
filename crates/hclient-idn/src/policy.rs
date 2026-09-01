@@ -541,20 +541,38 @@ mod tests {
     /// called exactly as [`crate::bundled`] calls it, with its own URL
     /// deny list. It answers `Ok` for all four:
     ///
-    /// | input | `idna` says | why a URL client must not use it |
+    /// | input | `idna` says | what this crate does with it |
     /// |---|---|---|
-    /// | `a..b` | `a..b` | an empty label is not a DNS label |
-    /// | `ä..de` | `xn--4ca..de` | the same, after conversion |
-    /// | `xn--xn--aaaaaaax*-nlw` | itself | a literal `*` in the answer |
-    /// | `"\u{ad}.\u{ad}"` | `.` | every label mapped away |
+    /// | `a..b` | `a..b` | refused — an empty label is not a DNS label |
+    /// | `ä..de` | `xn--4ca..de` | refused, the same after conversion |
+    /// | `xn--xn--aaaaaaax*-nlw` | itself | refused — a `*` in the answer |
+    /// | `"\u{ad}.\u{ad}"` | `.` | refused — every label mapped away |
     ///
     /// **So the layer is not divergence repair first.** UTS 46
-    /// conformance and *safe to put in a `Host` header* are different
-    /// questions: the standard leaves CheckHyphens, VerifyDnsLength and
-    /// empty labels to the caller, and `AsciiDenyList` screens the input
-    /// rather than the answer — which is how a `*` survives. Repairing
-    /// what ICU and Foundation do differently is a second and smaller
-    /// part of this file.
+    /// conformance and *what this client will put in a `Host` header* are
+    /// different questions: the standard leaves CheckHyphens,
+    /// VerifyDnsLength and empty labels to the caller, and
+    /// `AsciiDenyList` screens the input rather than the answer — which
+    /// is how a `*` survives. Repairing what ICU and Foundation do
+    /// differently is a second and smaller part of this file.
+    ///
+    /// **And nothing else in the graph would refuse them**, which is the
+    /// half a reader is most likely to assume otherwise. Measured against
+    /// the two crates that look like they should: `url::Url::parse` — the
+    /// WHATWG reference implementation in Rust — hands back `a..b`, `.`
+    /// and a host containing `*` as `Ok`, and `http::Uri`, which every
+    /// request in this workspace carries, accepts all of them too. Both
+    /// are conformant in doing so; the checks are the caller's, and this
+    /// crate is the caller.
+    ///
+    /// **What it does not cover is the ASCII path, deliberately.**
+    /// `hclient-proto::uri` sends a host here only when it is not already
+    /// ASCII, so `a..b` and `xn--…*…` reach a `Host` header unrefused
+    /// when they are typed that way — measured, not assumed. That is the
+    /// documented boundary rather than a hole: an all-ASCII host is not
+    /// an IDN question, and `url` and `http::Uri` agree by accepting it.
+    /// The rules below bite on the path where UTS 46 leaves the decision
+    /// to whoever called it.
     ///
     /// Written as a test rather than as a paragraph because the claim is
     /// about a dependency, and a claim about a dependency is exactly as
