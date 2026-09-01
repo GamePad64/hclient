@@ -41,6 +41,11 @@
 //! [`Error::NameDoesNotExist`] and `Ok(vec![])` are different values, and
 //! a caller that needs `AA` is doing something this crate is not for.
 //!
+//! **On Apple that one distinction is not available either**, because the
+//! daemon reports a missing name and a missing record type with the same
+//! code. It is documented on the variant rather than hidden behind an
+//! answer this crate would have had to invent.
+//!
 //! # [`Record::rdata`] is bytes and stays bytes
 //!
 //! Interpreting them belongs beside the consumer. A crate that also

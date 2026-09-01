@@ -43,15 +43,25 @@ cfg_if::cfg_if! {
         #[path = "android.rs"]
         mod imp;
     }
-    // The Unix backend needs two things this crate cannot check for at run
-    // time: a `res_query` symbol to link against, and a libc whose
-    // resolver state is per-thread. The list is deliberately the set of
-    // targets whose behaviour was established rather than assumed — glibc
-    // and musl by reading the exported symbols out of the installed
-    // libraries, Apple by reading `libresolv.9.tbd`.
-    else if #[cfg(any(
-        all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
-        target_vendor = "apple",
+    // Apple next, and it used to share the arm below. **It was moved out
+    // because `res_9_query` failed the second of that arm's two
+    // requirements**: measured on macOS 27, the same query answers 64/64
+    // serially and 12/64 from eight threads, so the resolver state there
+    // is shared rather than per-thread. `apple.rs` has the numbers and the
+    // second reason.
+    else if #[cfg(target_vendor = "apple")] {
+        #[path = "apple.rs"]
+        mod imp;
+    }
+    // The `res_query` backend needs two things this crate cannot check for
+    // at run time: the symbol to link against, and a libc whose resolver
+    // state is per-thread. The list is deliberately the set of targets
+    // whose behaviour was established rather than assumed — glibc and musl
+    // by reading the exported symbols out of the installed libraries, and
+    // now by running the crate's own concurrency case on both.
+    else if #[cfg(all(
+        target_os = "linux",
+        any(target_env = "gnu", target_env = "musl")
     ))] {
         #[path = "res_query.rs"]
         mod imp;

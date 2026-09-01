@@ -18,6 +18,7 @@
 /// that decision is made. `MalformedAnswer` is handed back and read, never
 /// dispatched on, and a `_` arm there says *the answer was malformed some
 /// other way*, which is true.
+///
 /// `PartialEq` is derived because a consumer's tests compare one of these
 /// against an expected value, and every field here is a plain number or a
 /// name. `Clone` is deliberately absent: nothing needs a second copy of a
@@ -63,6 +64,12 @@ pub enum Error {
     /// Deliberately **not** an empty answer: *no records of this type* and
     /// *no such name* send a caller in different directions, and a client
     /// that collapses them will retry a name that will never exist.
+    ///
+    /// **Not reachable on Apple platforms**, and that is the daemon's
+    /// limit rather than a gap here: `DNSServiceQueryRecord` reports both
+    /// cases as `kDNSServiceErr_NoSuchRecord` and carries no header to
+    /// read an rcode out of, so this crate answers the one it can stand
+    /// behind — no records. Measured on macOS 27.
     #[error("the name does not exist")]
     NameDoesNotExist,
 

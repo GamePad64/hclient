@@ -200,12 +200,20 @@ therefore `!Send` — an implementation choice, not a platform property.
 that cannot be observed false there.
 
 **C8 — a foreign-function boundary**, in
-`system-resolver/src/sys/{res_query,android}.rs` and
+`system-resolver/src/sys/{res_query,android,apple}.rs` and
 `system-resolver/src/sys/windows/{raw,parsed}.rs`: one file per platform
 call, and no `unsafe` anywhere else in the crate. Android is a backend of
 its own rather than a `cfg` on the first, because bionic's `res_*` family
 is not in the NDK's stable ABI — `android_res_nquery` is, and it is what
 the platform's own resolver work goes through.
+
+**Apple is a backend of its own for a measured reason rather than a
+declared one.** It shared `res_query.rs` until that call was run on a Mac:
+the same query answers 64/64 serially and 12/64 from eight threads, so the
+resolver state there is shared rather than per-thread, and a caller on a
+blocking pool was most of the way to failing. `apple.rs` calls
+`DNSServiceQueryRecord` instead — which also reaches the resolvers a VPN
+installs, where `res_9_query` does not.
 
 **Windows is two files rather than one**, and the split is what makes the
 naming rule pay here: `raw.rs` reaches `DnsQueryRaw` and `parsed.rs`

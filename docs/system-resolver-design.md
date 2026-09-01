@@ -15,14 +15,15 @@ believed and had shipped.
 | platform | call | what comes back |
 |---|---|---|
 | Linux (glibc, musl) | `res_query` | the wire message |
-| macOS, iOS | `res_9_query` | the wire message |
+| macOS, iOS | `DNSServiceQueryRecord` | **records, one per callback** |
 | Android ≥ 29 | `android_res_nquery` + `android_res_nresult` | the wire message |
 | Windows 11 / Server 2025 | `DnsQueryRaw` | the wire message |
 | Windows 10 | `DnsQuery_UTF8` | **records the OS has already taken apart** |
 
-Four and a half of the five hand over a message. Windows 10 does not, and
-the shape of the crate follows from that one row: the common type is
-**records**, because synthesising a message on Windows 10 would mean
+Three and a half of the five hand over a message. Windows 10 does not,
+and neither does Apple once the backend is the right one — so the shape of
+the crate follows from those rows: the common type is **records**, because
+synthesising a message where the platform never had one would mean
 inventing an rcode and flags nobody reported.
 
 ## 2. The Windows finding, which was a live defect
@@ -223,10 +224,12 @@ has no machine for that made the defect visible on the four it does.
   possible. It was the project owner's, and it reversed a conclusion this
   file's first draft had reached the other way.
 
-## 4.5 Apple answers from the primary resolver, which is less than promised
+## 4.5 Apple: `res_query` was the wrong call twice, and both are measured
 
-Read out of Apple's manual pages rather than measured, and it qualifies
-the row above.
+Read out of Apple's manual pages first, then executed on a macOS 27
+machine — and the running found a worse defect than the reading had.
+
+### 4.5.1 What the documentation said
 
 `resolver(5)` describes macOS as running several DNS *clients* with a
 "Super" meta-client routing between them by best domain match;
@@ -236,25 +239,70 @@ Configuration Database, about which "users of the DNS system should make
 no assumptions". `resolver(3)` — the page Apple ships for `res_query` —
 mentions none of it: `res_init()` "reads the configuration file",
 `res_query()` "sends it to the local server", `FILES` lists
-`/etc/resolv.conf` alone.
+`/etc/resolv.conf` alone. So a VPN's split-DNS resolvers and the
+per-domain ones in `/etc/resolver/` belong to the Super client, and that
+call does not consult them.
 
-So a VPN's split-DNS resolvers and the per-domain ones in `/etc/resolver/`
-belong to the Super client, and this backend does not consult them —
-which is exactly the case this crate's README sells it for. **The
-conclusion is composed from two pages rather than stated in either**, and
-the `resolver(3)` copy read is the stock BIND page as shipped, so it may
-not describe the current release.
+That conclusion is composed from two pages rather than stated in either,
+which is why it was worth executing.
 
-It also splits one machine's answers in two: `hclient-dns-system` takes
-addresses through `getaddrinfo`, which does go through the whole system
-configuration, and HTTPS records through `res_9_query`, which does not.
+### 4.5.2 What running it found, which is worse
 
-`DNSServiceQueryRecord` is the Mac-shaped answer, and Apple's own
-`dns_sd.h` shows it is this crate's shape almost field for field: the
-callback carries `rrtype`, `rrclass`, `rdlen`, "the raw rdata of the
-resource record", a TTL, and `interfaceIndex` — "the interface on which
-the query was resolved". Writing it means a second foreign-function path
-nobody here can execute, which is the risk §7 lists.
+**`res_9_query` cannot be used concurrently.** The same query, sixty-four
+times: **64/64** answered one after another and **12/64** from eight
+threads, 46 of the failures leaving the answer buffer untouched — the call
+returning before anything went out. `sys/mod.rs` names exactly this as one
+of the two things a `res_query` backend needs, "a libc whose resolver
+state is per-thread", and for Apple that half had been taken from
+`libresolv.9.tbd`, which shows a symbol exists and says nothing about its
+state.
+
+**It had never been executed.** This project has claimed Apple support
+since v0.3; the first run of its own live suite on a Mac failed all four
+tests, and passed under `--test-threads=1`. A caller runs these on a
+blocking pool, so two concurrent HTTPS lookups on a Mac were most of the
+way to failing while the capability said they would work.
+
+**And the split-DNS reading was right.** Asking the machine for its own
+`.local` name, type A — `.local` being a supplemental mDNS client every
+Mac has, per `scutil --dns`:
+
+| call | answer |
+|---|---|
+| `res_9_query` | failed, **rcode 3** from the primary nameserver |
+| `DNSServiceQueryRecord` | `172.21.0.151` |
+
+An ordinary unicast name is the control and both answer it.
+
+### 4.5.3 So the backend is `DNSServiceQueryRecord`
+
+Its callback is this crate's `Record` almost field for field — `rrtype`,
+`rrclass`, `rdlen`, "the raw rdata of the resource record", a TTL, the
+name, and `interfaceIndex`, "the interface on which the query was
+resolved". It hands over RDATA rather than a message, which is why Apple
+joins Windows in §1's table rather than the `res_query` platforms.
+
+**Two things about it are not in the header**, and both cost a wrong
+implementation before they were measured:
+
+- **`kDNSServiceFlagsReturnIntermediates` is what makes a negative answer
+  arrive at all.** Without it the daemon never reports that a name has no
+  record of the type asked for — nothing in four seconds. With
+  `kDNSServiceFlagsTimeout` instead, nothing until `kDNSServiceErr_Timeout`
+  at 30.0 s. With `ReturnIntermediates`, `kDNSServiceErr_NoSuchRecord` at
+  **1.2 ms**. The header describes that flag as being about intermediate
+  results in a CNAME chain.
+- **`kDNSServiceFlagsTimeout` suppresses the negative it is documented
+  only to bound**, so it is not passed and the wait is bounded by polling
+  the query's own socket instead.
+
+**One capability is lost and it is stated rather than papered over**:
+`NXDOMAIN` is not distinguishable on Apple. The daemon reports a missing
+name and a missing record type with one code, and there is no header to
+read an rcode out of, so a name that does not exist is an empty answer.
+`Error::NameDoesNotExist` says so on the variant, and the live test
+branches on the platform rather than accepting either answer — so a
+platform that *can* distinguish and quietly stopped still fails.
 
 ## 5. What was deliberately not done, each with the reason
 
@@ -295,13 +343,12 @@ are alike.
 
 ## 7. Still open
 
-- **A Mac on a VPN**, for §4.5: compare this crate's answer for a name in
-  a split-DNS zone against `scutil --dns` and against
-  `DNSServiceQueryRecord`. It decides whether the Apple backend is
-  rewritten, and it is the one measurement that would justify a second
-  never-executed foreign-function path.
-- **iOS.** `res_9_query` is in `libresolv` on both Apple platforms and the
-  same code compiles for both, but nothing here has been run on iOS.
+- **iOS.** `dns_sd.h` is available on both Apple platforms and the same
+  code compiles for both, but nothing here has been run on iOS. The
+  concurrency and split-DNS measurements in §4.5 are macOS 27's.
+- **A Mac actually on a VPN.** §4.5's split-DNS case was made with the
+  `.local` client every Mac has, which is the same shape and not the same
+  thing. Nothing is expected to differ; it has not been seen.
 - **A Windows 10 machine**, for §4.4.
 - **The BSDs and illumos.** The targets exist, this crate compiles for
   them today and answers `Support::None`, and adding one is a single arm

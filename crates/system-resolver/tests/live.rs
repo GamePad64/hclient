@@ -80,10 +80,23 @@ fn a_name_that_does_not_exist_is_not_an_empty_answer() {
     // crate, and the distinction it was written to check is exactly the
     // one it tripped over.
     let absent = lookup("definitely-not-here.invalid", TYPE_HTTPS);
-    assert!(
-        matches!(absent, Err(Error::NameDoesNotExist)),
-        "expected NXDOMAIN, got {absent:?}"
-    );
+    if cfg!(target_vendor = "apple") {
+        // **Apple cannot draw this distinction**, and the test says so
+        // rather than accepting either answer: `DNSServiceQueryRecord`
+        // reports a missing name and a missing record type with one code
+        // and carries no header to read an rcode out of. Written as a
+        // branch so that a platform which *can* distinguish and quietly
+        // stopped still fails here.
+        assert!(
+            matches!(absent, Ok(ref none) if none.is_empty()),
+            "expected an empty answer on Apple, got {absent:?}"
+        );
+    } else {
+        assert!(
+            matches!(absent, Err(Error::NameDoesNotExist)),
+            "expected NXDOMAIN, got {absent:?}"
+        );
+    }
 
     // The control, and the wildcard case above is what makes it worth
     // having: without it, a `lookup` that answered `NameDoesNotExist` for

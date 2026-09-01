@@ -30,6 +30,7 @@ EXEMPT="hclient-fetch system-resolver hclient-idn hclient-urlsession hclient-pro
 # the check accepted `amendment-C[78]` anywhere under an exempt crate's
 # `src`, which the spec already described it as not doing.
 ALLOWED="crates/hclient-fetch/src/promise.rs:amendment-C7
+crates/system-resolver/src/sys/apple.rs:amendment-C8
 crates/system-resolver/src/sys/res_query.rs:amendment-C8
 crates/system-resolver/src/sys/android.rs:amendment-C8
 crates/system-resolver/src/sys/windows/parsed.rs:amendment-C8

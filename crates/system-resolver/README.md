@@ -32,7 +32,7 @@ platform's convenience API will not return** — `HTTPS`, `SVCB`, `TLSA`,
 | platform | call | can be asked for |
 |---|---|---|
 | Linux (glibc, musl) | `res_query` | any type |
-| macOS, iOS | `res_9_query` | any type — but see below |
+| macOS, iOS | `DNSServiceQueryRecord` | any type |
 | Android ≥ 29 | `android_res_nquery` | any type |
 | Windows 11 / Server 2025 | `DnsQueryRaw` | any type |
 | older Windows | `DnsQuery_UTF8` | any type **except** 16 |
@@ -81,19 +81,29 @@ name; `MX` came back as a structure and `CAA` as RDATA; and the crate's
 own test compares the two Windows paths across a record of every shape,
 `SVCB` among them, and they agree.
 
-### The Apple caveat
+### Apple does not use `res_9_query`, and the reason is measured
 
-On macOS the query goes to the **primary** resolver, not through the
-router macOS puts in front of its several DNS clients — so a VPN's
-split-DNS zone and the per-domain configurations in `/etc/resolver/` are
-not consulted. That is read out of Apple's own `resolver(5)` and
-`resolver(3)`, composed from the two rather than stated in either, and it
-is the one place this crate does less than the paragraph above promises.
-`DNSServiceQueryRecord` is the API that would fix it; see
-`docs/system-resolver-design.md` §4.5.
+The obvious Apple backend is the same `res_query` the other Unixes use.
+It was, and it is not, because it fails twice on a real Mac.
 
-Addresses are unaffected — those come from `getaddrinfo`, which does go
-through the whole system configuration.
+**It cannot be used concurrently.** The same query, sixty-four times:
+64/64 answered one after another, **12/64 from eight threads**, with 46 of
+the failures leaving the answer buffer untouched. A caller that runs
+lookups on a blocking pool — which is what this crate's seam is for — was
+most of the way to failing.
+
+**And it answers from the wrong resolver.** macOS routes queries between
+several DNS clients; `/etc/resolv.conf` configures only the primary one.
+Asking the machine for its own `.local` name, which a supplemental mDNS
+client owns: `res_9_query` fails with rcode 3, `DNSServiceQueryRecord`
+returns the address. A VPN's split-DNS zone is the same shape.
+
+So this platform uses `DNSServiceQueryRecord`, whose callback carries
+`rrtype`, `rrclass`, `rdlen`, the raw rdata, a TTL and the interface the
+query was resolved on. One consequence is visible from outside:
+**`NXDOMAIN` is not distinguishable there** — the daemon reports a missing
+name and a missing record type with one code — so a name that does not
+exist is an empty answer rather than `Error::NameDoesNotExist`.
 
 ## What it deliberately does not do
 
