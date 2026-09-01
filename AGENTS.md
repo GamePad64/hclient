@@ -489,7 +489,11 @@ direction — a red nextest exits non-zero through the new pipe, and a run
 printing no `Summary` exits 1 naming itself.
 
 The claim below is stated as it stands, and it is the one to re-read once
-that is diagnosed.
+that is diagnosed. One data point has since arrived and it is not a
+diagnosis: the whole suite runs on a real Mac — macOS 27, arm64 — in
+**12.4 s**, so whatever wedges the runner is not something this tree does
+on every macOS. See the Apple resolver section for the run and for the
+one candidate it produced.
 
 There is also **no MSRV job in CI, deliberately**, and `rust-toolchain.toml`
 pins no version — it says `channel = "stable"`. A job checking a fixed
@@ -3082,6 +3086,57 @@ Windows calls are compared against each other on a machine that has both:
 it, because the code for the platform this project cannot get hold of
 would otherwise be the only code in the crate that never runs. That is the
 nearest thing to a Windows 10 gate that exists without a Windows 10.
+
+**The same shape was then found on a second platform, and there the code
+had never worked at all.** Apple's arm called `res_9_query`, on this
+workspace's word that it was `res_query` under another name, and on a
+borrowed Mac every one of the crate's live tests failed in ten
+milliseconds. The cause is that `res_query`'s state is per-thread and
+Apple's copy is not safe to enter from several at once: 12 successes in 64
+from eight threads. So the arm was not merely unverified in the Windows
+sense — it could not have served a client, and the whole of the evidence
+for it had been a table.
+
+It is `DNSServiceQueryRecord` now, which hands over RDATA per record and
+is routed by the daemon, so a Mac's supplemental resolvers — a VPN's
+split-DNS, `.local` over mDNS — are answered rather than missed. Two of
+its flags cost a wrong implementation before they were measured, and both
+are the opposite of what their names suggest: `kDNSServiceFlagsTimeout`
+**suppresses** the negative answer it is documented to bound, and
+`kDNSServiceFlagsReturnIntermediates` is what makes one arrive — 1.2 ms
+against nothing in four seconds. One capability is genuinely lost and is
+said on the variant rather than papered over: the daemon reports a missing
+name and a missing record type with one code, so `NameDoesNotExist` is
+unreachable on Apple, and the live test **branches on the platform**
+instead of accepting either answer, so a platform that could distinguish
+and quietly stopped still fails a line.
+
+**The acceptance is the whole tree rather than the crate**, because a
+crate passing alone says nothing about the adapter above it: `cargo
+nextest run --workspace --all-features` on macOS 27 is **2304 passed, 0
+failed in 12.4 s**, and `hclient-dns-system`'s own live test walks the
+whole path — the daemon's callback, this crate's `Record`, the SVCB
+envelope — to an endpoint advertising `h3`.
+
+**And the first attempt at that run failed for a reason that is a third
+argument for nextest.** macOS's default `ulimit -n` is **256** against
+Linux's 1024, and under `cargo test`, which runs a binary's tests as
+threads of one process, the suite died with `TooManyOpenFiles` in
+`hclient-native`'s fixtures. Under `cargo nextest run` the same tree
+passes **at that same 256**, because each test is its own process and no
+test's descriptors outlive it. Raising the limit is not the repair, which
+was checked rather than assumed: at 8192 under `cargo test` the
+descriptor failures give way to nine `hclient-otel` failures, since those
+tests each install a global tracer provider and, sharing one process,
+overwrite each other. Two symptoms, one runner. This is invisible on
+Linux, which is what makes it worth writing down beside the two reasons
+already here.
+
+It is **not** an answer to the macOS CI hang recorded above, and the
+distinction matters: this is arm64 hardware on macOS 27, where CI runs a
+GitHub-hosted runner of another version on another architecture. What it
+establishes is that the suite completes on a Mac at all, which nothing
+had shown before.
 
 ### A crate was green in the workspace and did not build on its own
 

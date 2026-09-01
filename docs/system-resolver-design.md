@@ -304,6 +304,58 @@ read an rcode out of, so a name that does not exist is an empty answer.
 branches on the platform rather than accepting either answer — so a
 platform that *can* distinguish and quietly stopped still fails.
 
+### 4.5.4 The acceptance run, and the third reason this workspace needs nextest
+
+Measured on macOS 27, arm64, rustc 1.98, against the workspace as it
+stands rather than against a standalone copy of this crate — because the
+crate passing on its own says nothing about the adapter above it. Every
+number below is one run of the tree.
+
+| what ran | result |
+|---|---|
+| `cargo nextest run --workspace --all-features` | **2304 passed, 0 failed**, 12.4 s |
+| `system-resolver`'s four live tests | pass, run in parallel |
+| `hclient-dns-system`'s `live_lookup_of_a_name_that_publishes_https_records` | passes — `lookup_svcb("cloudflare.com")` yields endpoints advertising `h3` |
+
+The last row is the one worth having: it is the whole path, from
+`DNSServiceQueryRecord`'s callback through this crate's `Record` and the
+adapter's SVCB envelope to an `SvcbEndpoint` a transport would act on.
+The two rows above it would both be green for a backend nothing consumed.
+
+**The first attempt at that run failed, and the cause is a fact about
+macOS rather than about this code.** Under `cargo test` — which runs the
+tests of one binary as threads of one process — the suite died with
+`Os { code: 24, kind: TooManyOpenFiles }` in `hclient-native`'s fixtures,
+and a neighbouring Alt-Svc test timed out behind it. macOS's default
+`ulimit -n` is **256**, where the Linux hosts this workspace is developed
+on give 1024 or more, so sockets belonging to tests that had already
+finished were still counted against the limit.
+
+Under `cargo nextest run` the same tree passes **at the default 256**, in
+the same 12 s: each test is its own process, so no test's descriptors
+outlive it. That is a third reason for the rule this repository already
+states twice — after *`cargo test` abandons the remaining binaries on the
+first failure* and *its per-binary result lines have to be summed by
+hand* — and it is the only one of the three that is invisible on Linux.
+
+**Raising the limit is not the repair, and it was checked in both
+directions**: at `ulimit -n 8192` under `cargo test` the file-descriptor
+failures go away and nine `hclient-otel` tests fail instead, because they
+each install a global tracer provider and, sharing one process, overwrite
+each other's. Both failures are the same defect in the runner rather than
+two defects in the tree, and both disappear under the runner this
+workspace mandates.
+
+**What this does not settle is the CI question**, and the difference is
+worth stating rather than eliding. `CLAUDE.md` records that
+`test (macos-latest)` never finished a run for twelve days and that the
+hang is still undiagnosed. This is the first evidence that the suite
+*completes* on macOS at all — but on macOS 27 on arm64 hardware, against
+this tree, where CI runs a GitHub-hosted runner of another version on
+another architecture. It narrows the question to that environment; it
+does not answer it, and the descriptor limit above is the nearest thing
+to a candidate this measurement produced.
+
 ## 5. What was deliberately not done, each with the reason
 
 - **No resolver of its own.** Then it would be `hickory`, which exists.
