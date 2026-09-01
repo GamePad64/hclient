@@ -1,50 +1,23 @@
 # hclient-dns-system
 
-**`Resolve` over the platform resolver — `getaddrinfo` for addresses,
-[`system-resolver`](../system-resolver) for HTTPS records.**
+`Resolve` over the platform's own resolver.
 
-What most programs should use: it honours `/etc/hosts`, the search domain
-list, and whatever the OS has been configured to do. It also answers
-HTTPS/SVCB queries, which is what lets a connection be steered to h3 or to
-an alternative endpoint before it is opened.
+Addresses come from `getaddrinfo`, and HTTPS/SVCB records come from
+[`system-resolver`](https://crates.io/crates/system-resolver), which asks
+the platform's resolver API directly. Both therefore see whatever the
+machine is configured to do — a VPN's split DNS, per-interface servers,
+Android's Private DNS — and use the system cache.
 
-## What is in here and what is not
+This is what `hclient`'s default transport uses. The SVCB records are what
+let it discover HTTP/3 without waiting for an `Alt-Svc` header on a
+previous response.
 
-The platform calls are not. `res_query`, `android_res_nquery`,
-`DnsQueryRaw` and `DnsQuery_UTF8` live in `system-resolver`, which hands
-back records with their RDATA; this crate applies RFC 9460's **client**
-rules to one of those records — AliasMode against ServiceMode, a root
-TargetName meaning the owner name, `mandatory` semantics — and wires the
-result into `Resolve`.
+`supports_svcb()` answers whether this build can ask for record type 65 at
+all, so a caller learns before spending a query rather than after. Not
+every platform can: see `system-resolver` for which and why.
 
-That split is why this crate contains no `unsafe` at all.
-
-The RDATA itself is decoded by [`domain`](https://crates.io/crates/domain),
-and it is chosen for its **granularity** rather than for anything else:
-`Https::parse` reads one record's octets, which is the shape a platform
-resolver hands over. A decoder that only reads whole messages costs this
-crate a synthetic DNS response built around every record — which is what
-it used to do.
-
-## Building on Linux
-
-`libresolv.so` — the development symlink, not the runtime `.so.2` — must
-be installed on gnu targets. The `-lresolv` comes from `system-resolver`
-rather than from any file here, so that `res_query` is found on every
-glibc, and that is true even on
-glibc 2.34 and later, where the symbol has moved into `libc.so.6` and the
-library contributes nothing to the result. On Debian and Ubuntu it comes
-with `libc6-dev`. musl needs nothing: the symbol is inside `libc.a`.
-
-**Supported minimum: glibc 2.34.** Older ones are expected to work — they
-link `res_query` out of `libresolv.so.2` instead, and gain a run-time
-dependency on it — and are not tested here. The crate's own module doc has
-the measurements.
-
-Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
-complete enough to build a new curl on, or a browser. See the repository
-for the whole shape, and `AGENTS.md` in it for why this piece is its own
-crate.
+Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
+HTTP client for native, browser and WASI targets.
 
 ## Licence
 

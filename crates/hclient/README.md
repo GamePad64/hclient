@@ -1,42 +1,13 @@
 # hclient
 
-**An HTTP client complete enough to build a new curl on — or a browser.**
-
-The same application code runs on a native socket, on `wasi:http`, on the
-browser's own `fetch` and on Apple's `URLSession`. The transport is swapped
-out, not buried under `#[cfg]`.
+A cross-platform async HTTP client. The same application code runs on a
+native socket, on `wasi:http`, on the browser's `fetch` and on Apple's
+`URLSession` — the transport is a type parameter at construction, not a
+`#[cfg]` inside your code.
 
 ```
 cargo add hclient --features default-transport
 ```
-
-**HTTP/2 and HTTP/3 are two more words in the same place**, and nothing
-else changes — `Client::new()` and every line after it are identical:
-
-```
-cargo add hclient --features default-transport,default-http2,default-http3
-```
-
-`default-http3` makes the default transport route by the origin's HTTPS
-record, the way a browser does: QUIC where the record advertises `h3`, TCP
-otherwise. It is off unless asked because Cargo unifies features — a
-default here would open UDP sockets for a caller who never said so.
-
-This is a **pre-release**, deliberately: six public types took a breaking
-change in the month before the first one, so the seams are young and
-saying so is the point. `0.1.0` follows when they stop moving.
-
-Note that `cargo add` selects a pre-release **today**, because there is no
-stable release for it to prefer — measured, not assumed. The moment
-`0.1.0` exists it takes that instead, and a pre-release needs asking for.
-So the version above is not a pin you have to type; it is what you will
-find in your `Cargo.toml` afterwards.
-
-That feature is what `Client::new()` needs, and it is **not** on by default
-on purpose: Cargo unifies features across a graph, so a default here would
-be a floor — a caller who asked for a small graph would get tokio and
-rustls anyway, because something else in the graph asked for them. The flag
-is the cost of not doing that to them. With it, this compiles as written:
 
 ```rust
 let client = hclient::Client::new()?;          // needs an ambient tokio runtime
@@ -46,126 +17,68 @@ let text = client.get("https://example.com")
     .text()?;
 ```
 
-The same two lines in a browser, on `wasm32-unknown-unknown`. `Client::new()`
-is infallible there, so there is no `?` on it — that is the only difference.
+The same two lines work in a browser on `wasm32-unknown-unknown`, where
+`Client::new()` is infallible, so there is no `?`.
 
-## `Client` names no type parameters
+`default-transport` is not a default feature. Cargo unifies features
+across a dependency graph, so a default here would be a floor: a crate
+that wanted a small graph would get tokio and rustls anyway because some
+other crate in the tree asked for them.
 
-```rust
-fn refresh(client: &hclient::Client) { /* .. */ }
+## HTTP/2 and HTTP/3
+
+```
+cargo add hclient --features default-transport,default-http2,default-http3
 ```
 
-That is the whole signature. The transport and the clock live behind an
-`Arc` inside, so a library taking a client does not restate its callee's
-bounds — this crate's own portable example lost four `where` lines and a
-type parameter to it. `Client` is `Clone` with `Arc` semantics and is
-`Send + Sync`.
+Nothing else in your code changes. `default-http3` makes the default
+transport pick a stack from the origin's HTTPS record, the way a browser
+does: QUIC where the record advertises `h3`, TCP otherwise. It is opt-in
+because a default that opens UDP sockets is a decision a caller should
+make.
 
-The price is one thing and it is stated here rather than discovered: **a
-response body is not `Send`**, so it cannot be moved into a
-`tokio::spawn`. One body type has to serve every backend, and the browser's
-holds a `dyn Stream` with no auto trait — declaring `Send` would not weaken
-the browser backend, it would exclude it. A caller who needs the concrete
-transport back, to spawn a body or to lend a `Native` to a WebSocket
-connector, asks with `Client::transport_as::<T>()`.
+## What is in it
 
-## No backend may claim a capability it does not have
+HTTP/1.1, HTTP/2 and HTTP/3; pooled connections and optional h2
+multiplexing; streaming request and response bodies, with full duplex on
+h3. Cookies, an RFC 9111 cache, redirects, decompression (gzip, deflate,
+brotli, zstd), proxies (HTTP `CONNECT`, SOCKS5, SOCKS4/4a), digest auth,
+`multipart/form-data` and server-sent events. Each of those is one
+implementation shared by every backend, so the behaviour does not change
+when you change transport.
 
-This is enforced rather than asked for. A cookie jar configured against a
-transport that keeps its own — the browser does — is an error at `build()`,
-not a value quietly dropped, and the same holds for a redirect policy
-against a backend that follows redirects internally, for response
-decompression, for a response cache, and for each timeout separately.
-`Capabilities` is read from the component that knows, never from a
-constant.
+WebSocket and WebTransport are separate crates behind their own traits, so
+a transport that cannot do them is a compile error rather than a runtime
+refusal.
 
-## What is behind the seams
+Almost everything is a feature and almost nothing is on by default. The
+defaults are `idn` and `public-suffix`.
 
-HTTP/1.1, HTTP/2 and HTTP/3 are all spoken; connections are pooled and h2
-can be multiplexed on request; request and response bodies stream, with
-real full duplex on h3. Cookies, an RFC 9111 cache, redirects,
-decompression (gzip, deflate, brotli, zstd), proxies (HTTP `CONNECT`,
-SOCKS5, SOCKS4/4a), digest auth, `multipart/form-data` and SSE are each one
-implementation shared by every backend, which is what makes "the same
-answers everywhere" more than a slogan.
+## Capabilities are checked at `build()`
 
-WebSocket and WebTransport are their own crates behind their own traits,
-deliberately: a transport that cannot do them should be a compile error
-rather than a runtime refusal.
+A transport reports what it supports, and `ClientBuilder::build()` refuses
+a setting the transport cannot honour rather than ignoring it. Setting a
+cookie jar on the browser backend is an error, because the browser keeps
+its own and would store every `Set-Cookie` twice.
 
-Almost everything is a feature and almost nothing is on by default — a
-build should carry nothing it did not ask for. `default` here is `idn`
-and `public-suffix`.
+## Version
 
-## `Client::new()` honours the machine's proxy
+This is a pre-release. Six public types took a breaking change in the
+month before the first one, so the seams are still moving and saying so is
+the point. `0.1.0` follows when they stop.
 
-`HTTP_PROXY` and `HTTPS_PROXY` where the environment names them, the
-registry on Windows, the dynamic store on macOS — read once, at
-construction, with no feature to turn on and no call to make. A client
-that ignored them would be the one program on the machine that does, and
-a port from curl or reqwest would silently start going direct.
-
-**`default_transport()` does not**, and the asymmetry is deliberate: it
-is the seam for *configuring* a transport, and a step that silently
-installed a proxy would change what the calls after it do — `unix_socket`
-refuses when a proxy is configured, so the same chain would fail on
-machines that happen to have an `HTTP_PROXY` and not on others. The
-convenience constructor is the good citizen; the seam does exactly what it
-is told. A caller who wants both writes it:
-
-```rust
-let transport = hclient::default_transport()?.system_proxy()?;
-```
-
-The difference between those two lines and the constructor is what
-happens to a configuration this client cannot express in full — a PAC
-script, or a machine naming a SOCKS proxy as well. `system_proxy()`
-**refuses**, naming it, because its caller asked and can decide.
-`Client::new()` **installs what it can**, because a constructor that
-refused would be a client that will not start on a network with WPAD,
-which is a worse answer than proxying what we can. A machine with a PAC
-script and a static proxy beside it gets the static one — WinINET's own
-fallback, not an invention of ours.
-
-**Two ways to turn it off**, answering different questions.
-
-At build time, `system-proxy` is a default feature — a *positive* one, so
-dropping it is the ordinary contract:
-
-```toml
-hclient = { version = "0.1", default-features = false, features = ["default-transport"] }
-```
-
-A feature that turned proxying *off* would have been the wrong shape:
-Cargo unifies features, so one crate in a dependency tree could have
-taken it away from every other. This way round, the crate that wants it
-off says so about its own build — and note that unification still means a
-different crate asking for hclient's defaults turns it back on for the
-graph, which is Cargo's contract rather than this crate's choice.
-
-At run time, build the client over the seam that reads nothing:
-
-```rust
-let client = hclient::Client::builder(hclient::default_transport()?).build()?;
-```
-
-`system-proxy` sits in `default` and `default-transport` does not, which
-is only expressible because the feature reaches the transport *weakly*
-(`hclient-native?/system-proxy`): a build with no native transport — the
-browser, WASI, or your own — is untouched by it and pays nothing.
-Proxying explicitly needs the `proxy` feature.
+`cargo add` picks the pre-release today because there is no stable release
+to prefer. Once `0.1.0` exists it takes that instead.
 
 ## Related crates
 
-`hclient-native` (TCP, TLS, h1/h2, and h3 behind a feature),
-`hclient-fetch`, `hclient-wasi`, `hclient-urlsession`; `hclient-proxy`
-(the proxy protocols, sans-io, and the OS's own settings); runtimes
-`hclient-rt-tokio`, `-smol`, `-embassy`; TLS `hclient-tls-rustls`,
-`-native-tls`; resolvers `hclient-dns-system`, `-doh`, `-hickory`.
-
-See the [repository](https://github.com/GamePad64/hclient), and `AGENTS.md`
-in it for why each piece is there — every seam records the argument that
-produced it and the measurement that settled it.
+Transports: `hclient-native`, `hclient-fetch`, `hclient-wasi`,
+`hclient-urlsession`, `hclient-winhttp`, `hclient-mock`.
+Runtimes: `hclient-rt-tokio`, `hclient-rt-smol`.
+TLS: `hclient-tls-rustls`, `hclient-tls-native-tls`.
+Resolvers: `hclient-dns-system`, `hclient-dns-doh`, `hclient-dns-hickory`.
+Also `hclient-tower`, `hclient-tungstenite`, `hclient-webtransport`,
+`hclient-otel`, and the `hc` command-line client in `hclient-cli`.
 
 ## Licence
 
