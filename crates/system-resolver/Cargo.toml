@@ -1,6 +1,19 @@
 [package]
 name = "system-resolver"
-version.workspace = true
+# **Its own version, and the reason is that a shared one cannot leave
+# pre-release.** Every crate here rides `[workspace.package].version`,
+# which is `0.1.0-alpha.N` because six public surfaces moved in a week —
+# and inside a pre-release every step is a major one, so `cargo
+# semver-checks` skips all 254 of its lints and reports success. Measured:
+# `0.1.0-alpha.2 -> 0.1.0-alpha.2` and `0.1.0-alpha.2 -> 0.1.0` both run
+# **0 checks**; `0.1.0 -> 0.1.1` runs 196. So the guarantee this crate can
+# offer is not bought by versioning separately — it is bought by leaving
+# pre-release, and versioning separately is what makes that possible
+# without promising the same of a family that is still moving.
+#
+# This crate is the one that can afford it: five public names, and a use
+# outside HTTP entirely.
+version = "0.1.0"
 description = "Ask the machine's own DNS resolver for any record type, on Linux, macOS, iOS, Android and Windows"
 keywords     = ["dns", "resolver", "getaddrinfo", "res_query", "svcb"]
 categories   = ["network-programming", "os"]
@@ -16,6 +29,14 @@ readme = "README.md"
 # feature added later must not silently drop out of the rendered docs.
 [package.metadata.docs.rs]
 all-features = true
+
+# The other half of the literal version above: `cargo-release` groups
+# crates by this name, so this one bumps and publishes on its own cadence
+# while everything named `hclient` moves together. Both lines are needed —
+# a literal version with no group would still be dragged to the family's
+# number on the next `cargo release`.
+[package.metadata.release]
+shared-version = "system-resolver"
 
 [dependencies]
 # `sys/mod.rs`'s four-way platform choice, and nothing else. Written as

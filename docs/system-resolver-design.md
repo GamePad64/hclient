@@ -395,6 +395,16 @@ are alike.
 
 ## 7. Still open
 
+- **`just semver` is not called by CI, and it cannot be until `0.1.0` is
+  on crates.io.** cargo-semver-checks takes its baseline from the registry
+  and there is nothing there yet — measured, `system-resolver not found in
+  registry`. A job would be red for the absence of a release rather than
+  for a defect, and a red job nobody can fix is how a check gets ignored.
+  This is deliberately the recurring defect of *a recipe nothing calls*,
+  accepted for as long as it has no subject, and it is written here rather
+  than only in the justfile because this list is what gets read. The day
+  the crate is published it is one line in the `lint` job.
+
 - **iOS.** `dns_sd.h` is available on both Apple platforms and the same
   code compiles for both, but nothing here has been run on iOS. The
   concurrency and split-DNS measurements in §4.5 are macOS 27's.

@@ -1044,6 +1044,54 @@ release-check: ci packaging package-build release-pending
 release-pending:
     ./scripts/release-pending.sh
 
+# the compatibility promise, for the one crate that is in a position to make one
+semver rev="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # **Only `system-resolver`, and that is the finding rather than a first
+    # step.** Every other crate here rides `[workspace.package].version`,
+    # which is a pre-release — and inside a pre-release every step is a
+    # major one, so cargo-semver-checks skips every lint it has and reports
+    # success. Measured on this crate, 0.50.0: `0.1.0-alpha.2 ->
+    # 0.1.0-alpha.2` runs **0 checks of 254**, `0.1.0-alpha.2 -> 0.1.0`
+    # also runs **0**, and `0.1.0 -> 0.1.1` runs **196**. A job over the
+    # whole family would therefore be green for a tree in which every
+    # promise had been broken.
+    #
+    # `rev` is for a check against a point in history — `just semver
+    # v0.1.0`. With no argument the baseline is the newest release on
+    # crates.io, which is the question that matters: what a caller who
+    # already typed `cargo add system-resolver` is holding.
+    if ! command -v cargo-semver-checks >/dev/null; then
+      echo "::error::cargo-semver-checks is not installed, so this check could not run — and a check that could not run must not pass"
+      exit 1
+    fi
+    args=(check-release -p system-resolver --color never)
+    if [ -n "{{rev}}" ]; then args+=(--baseline-rev "{{rev}}"); fi
+    rc=0
+    out="$(cargo semver-checks "${args[@]}" 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    if [ "$rc" -ne 0 ]; then
+      # Its own report is above and names the lint and the item; adding a
+      # summary of ours would be a second statement of one fact.
+      exit "$rc"
+    fi
+    # **The half a zero exit does not cover.** A run that executed nothing
+    # prints `0 checks: 0 pass, 254 skip`, says `no semver update
+    # required`, and exits zero — which is this project's recurring defect
+    # met once more, a check that cannot fail. So the count is read, and a
+    # zero is a failure that names its own cause.
+    ran="$(printf '%s\n' "$out" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) checks:.*/\1/p' | tail -1)"
+    if [ -z "$ran" ]; then
+      echo "::error::no \`N checks:\` line in the output — cargo-semver-checks changed its report and this gate is reading nothing"
+      exit 1
+    fi
+    if [ "$ran" -eq 0 ]; then
+      echo "::error::every lint was skipped, so this proved nothing: the baseline and the current version differ by a major step, where breaking is permitted"
+      exit 1
+    fi
+    echo "semver: $ran checks ran against the baseline"
+
 # rustdoc warnings, which nothing checked until publishing made them visible
 docs:
     #!/usr/bin/env bash

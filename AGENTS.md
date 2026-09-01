@@ -405,6 +405,32 @@ which crates changed, and knowing means a step that can be forgotten,
 where publishing everything cannot forget. The cost is 23 uploads for a
 one-line fix, which for crates this size is cosmetic.
 
+**One crate is outside that policy now, and what buys the exception is a
+measurement rather than a preference.** `system-resolver` carries its own
+version and its own `cargo-release` group — `shared-version` takes a
+string, so a named subset is the mechanism rather than something invented
+for it. The reason is that a shared version cannot leave pre-release while
+any member still needs to, and **inside a pre-release `cargo
+semver-checks` checks nothing**: measured against 0.50.0, both
+`0.1.0-alpha.2 -> 0.1.0-alpha.2` and `0.1.0-alpha.2 -> 0.1.0` execute **0
+of its 254 lints**, because a major step permits breaking — while `0.1.0
+-> 0.1.1` executes 196 and caught a breaking change on the first try. So a
+compatibility job over the family would be green for a tree in which every
+promise had been broken, which is *a check that cannot fail* with the
+subject changed. `just semver` is the gate, and it fails closed on a run
+that executed nothing as well as on one that failed, because
+cargo-semver-checks prints `0 checks` beside `no semver update required`
+and exits zero.
+
+The cost is the question the policy existed to remove, coming back for one
+crate: nothing here publishes it, and nothing will notice if a bump is
+forgotten. It is the crate that can afford the trade — five public names,
+none of which moved in the week that moved six of the family's, and a use
+outside HTTP entirely. `just versions-agree` is what keeps the split
+honest: it compared every requirement against `[workspace.package]`'s
+version, which was one statement only while every crate shared it, and it
+resolves each requirement to the crate it names now.
+
 **What guarantees the set resolves is the requirement, not the matching
 numbers** — and that was written here as a reassurance, which is exactly
 where it went wrong. The published `hclient` 0.1.0-alpha.2 asks

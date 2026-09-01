@@ -119,9 +119,16 @@ unexpected_cfgs   = { level = "warn", check-cfg = [] }
 # configuration that quietly ignores a typo is the shape this project
 # refuses everywhere else.
 [workspace.metadata.release]
-# One version for all 30 crates, which is what `version.workspace = true`
-# already says; this is the release tool being told the same thing.
-shared-version = true
+# **A named group rather than `true`, and the name is what allows an
+# exception without inventing a mechanism for one.** `shared-version`
+# takes a bool or a string, and a string makes a *subset* that versions
+# together — so this is still "one version for the whole family", said in
+# a way that lets `system-resolver` say a different one. Everything
+# inheriting `version.workspace = true` is in this group by naming it;
+# nothing opts out by accident, because a crate leaves only by writing
+# its own literal version and its own group, which is two deliberate
+# lines rather than a missing one.
+shared-version = "hclient"
 # **`upgrade`, and `fix` was here for a policy this workspace does not
 # have.** `fix` touches a dependent's requirement only when the new
 # version stops satisfying it, which keeps `hclient` asking for

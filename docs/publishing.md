@@ -247,8 +247,13 @@ there is a hard parse error, not a silent no-op** — checked on purpose
 before writing it, because a release configuration that ignores a typo is
 the shape this project refuses everywhere else.
 
-- `shared-version = true` — all 23 crates carry `version.workspace = true`,
-  and this tells the tool the same thing.
+- `shared-version = "hclient"` — a named group rather than `true`. Every
+  crate carrying `version.workspace = true` names this group and moves
+  together, exactly as `true` used to say; what the name buys is that
+  `system-resolver` can name a *different* one. It leaves by writing two
+  deliberate lines — its own literal version and its own group — rather
+  than by a missing one, so nothing drops out of the family by accident.
+  §5.1 is why one crate does that.
 - `consolidate-commits = true` — one commit for the bump, not thirty.
 - `allow-branch = ["main"]` — the default is every branch except `HEAD`,
   which would let a release happen from a feature branch.
@@ -344,6 +349,52 @@ this one removes two explanations a reader would otherwise need.
 Both artefacts fall out of one shared version number, which is the trade
 `[workspace.package].version` was chosen for: 23 hand-maintained numbers
 could drift, and one cannot.
+
+### 5.1 The one crate outside the group, and what buys the exception
+
+`system-resolver` versions on its own — `0.1.0` where the family is at
+`0.1.0-alpha.2`, its own `shared-version` group, its own publish.
+
+**The reason is not that it changes at a different rate.** It is that a
+shared version cannot leave pre-release while any member of the family
+still needs to, and *inside a pre-release `cargo semver-checks` checks
+nothing at all.* Measured on this crate against 0.50.0:
+
+| baseline -> current | how the tool classifies it | lints executed |
+|---|---|---|
+| not published | — | **error**: no baseline in the registry |
+| `0.1.0-alpha.2` -> `0.1.0-alpha.2` | `no change; assume major` | **0** of 254 |
+| `0.1.0-alpha.2` -> `0.1.0` | `major change` | **0** of 254 |
+| `0.1.0` -> `0.1.1` | `minor change` | **196**, and one caught a breaking change |
+
+A major step permits breaking, so there is nothing to check — and every
+step inside `0.1.0-alpha.N` is a major step. So a compatibility gate over
+the family would be green for a tree in which every promise had been
+broken, which is this project's *check that cannot fail* with the subject
+changed. The exception is what gives one crate a baseline worth checking
+against; `just semver` is the gate, and it fails closed on a run that
+executed nothing as well as on a run that failed.
+
+**Why this crate and not another.** Its surface is five names —
+`Record`, `Support`, `Error`, `lookup`, `support` — none of which took a
+change in the week that moved six of the family's, and its use is outside
+HTTP entirely. The rest of the family is where the churn is, and the
+`0.1.0-alpha` series exists precisely to hold it.
+
+**What the exception costs**, said plainly because §5's whole argument is
+that selecting crates is a question one can forget to answer: for this one
+crate the question comes back. It is not published by `cargo release
+<level>` with the others; it is bumped and published deliberately, and
+nothing in this repository will notice if that is skipped. That is the
+trade for a crate that can make a promise while its neighbours cannot.
+
+`just versions-agree` is what keeps the split honest. It used to compare
+every requirement against `[workspace.package].version`, which was one
+statement only while every crate shared it; it resolves each requirement
+to the crate it names and compares against **that** crate's version now.
+The old rule is what the new one implies for every member of the group,
+and the exception needs no entry in a list — a list of exceptions being a
+second place to remember, and the one that rots.
 
 ## 5a. Knowing which crates have unreleased changes
 
