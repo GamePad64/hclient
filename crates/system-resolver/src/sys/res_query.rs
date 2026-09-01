@@ -36,11 +36,34 @@ const HEADER_LEN: usize = 12;
 //   required on old. On glibc 2.43 that library still exports 66
 //   functions, among them `ns_name_uncompress` and `inet_net_pton`; what
 //   moved out of it is the `res_*` family, which is all this crate wanted.
-// - musl defines `res_query` as a strong symbol inside `libc.a`, and
-//   Rust's self-contained musl sysroot ships **no `libresolv.a` at all**
-//   (checked: the directory holds `libc.a` and `libunwind.a` and nothing
-//   else). A `#[link(name = "resolv")]` here would fail to link, so musl
-//   gets none.
+//
+//   **`__res_query` is the same code and cannot be linked, which is worth
+//   recording because the idea is a good one.** Measured on glibc 2.43:
+//   `__res_query@GLIBC_2.2.5` and `res_query@@GLIBC_2.34` are both at
+//   address `0x1586d0` — one function, two names — so asking for the
+//   first would record a dependency on `GLIBC_2.2.5` where the second
+//   records `GLIBC_2.34`. It does not link. The single `@` is the whole
+//   story: `__res_query` is a **compat** symbol, not the default version,
+//   and a plain `link_name` binds only to a default one. rust-lld says so
+//   in as many words — *did you mean: `__res_query@GLIBC_2.2.5`*.
+//
+//   **The `libc` crate's `link_name = "__res_init"` is not the precedent
+//   it looks like.** That one is `__res_init@@GLIBC_2.2.5`, double `@@`,
+//   and glibc exports no plain `res_init` at all — so the prefix there is
+//   the only name, not an older one. Two symbols in one family, opposite
+//   answers.
+//
+//   Reaching the compat version needs a `.symver` directive through
+//   `global_asm!`, per architecture, and buys nothing here: a Rust binary
+//   built on this host already needs `GLIBC_2.39` through the standard
+//   library — measured on this crate's own test binary — so the floor is
+//   somebody else's either way.
+// - musl defines `res_query` as a strong symbol inside `libc.a` and has
+//   **no `__res_query` at all** — checked with `nm` on Rust's
+//   self-contained sysroot. That sysroot also ships **no `libresolv.a`**
+//   (the directory holds `libc.a` and `libunwind.a` and nothing else), so
+//   a `#[link(name = "resolv")]` here would fail to link and musl gets
+//   none.
 // - Apple exports only the BIND9-prefixed name: `libresolv.9.tbd` lists
 //   `_res_9_query` and no plain `_res_query`. C code gets there through
 //   `#define res_query res_9_query` in `<resolv.h>`; Rust has no
