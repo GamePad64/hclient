@@ -95,7 +95,7 @@ pub(crate) fn is_fatal_by_name<'a>(mut errors: impl Iterator<Item = &'a str>) ->
 }
 
 #[cfg(android_backend)]
-pub(crate) use imp::{Android, convert, find};
+pub(crate) use imp::{Android, find, to_ascii, to_unicode};
 
 /// The name every backend module exports, so that `lib.rs` can select one
 /// with `cfg_select!` and then name no platform at all.
@@ -112,12 +112,6 @@ mod imp {
     /// the backend has the same shape as the other two.
     #[derive(Debug)]
     pub(crate) struct Android;
-
-    impl Android {
-        pub(crate) fn name(&self) -> &str {
-            "android.icu.text.IDNA (ICU4J, over JNI)"
-        }
-    }
 
     /// `Some` where a JVM is registered and `android.icu.text.IDNA`
     /// resolves.
@@ -138,7 +132,23 @@ mod imp {
 
     /// The A-label form of `domain`, or `None` if ICU4J refused it for a
     /// reason this crate treats as fatal.
-    pub(crate) fn convert(_a: &Android, domain: &str) -> Option<String> {
+    pub(crate) fn to_ascii(_a: &Android, domain: &str) -> Option<String> {
+        through("nameToASCII", domain)
+    }
+
+    /// The U-label form, through `IDNA.nameToUnicode`.
+    ///
+    /// **The same instance, the same options and the same error names**,
+    /// which is why the reverse direction is ICU4J's here rather than a
+    /// punycode decoder of ours: a name ICU will not convert back is one
+    /// it did not consider legal going out either.
+    pub(crate) fn to_unicode(_a: &Android, domain: &str) -> Option<String> {
+        through("nameToUnicode", domain)
+    }
+
+    /// Both directions, which differ by the method name and nothing else:
+    /// ICU4J gives them one signature.
+    fn through(method: &str, domain: &str) -> Option<String> {
         // Before the call, never after — the same rule and the same
         // reason as `apple.rs`: a denied byte here is one the platform
         // would consume as a delimiter, silently changing which host
@@ -170,7 +180,7 @@ mod imp {
 
             env.call_method(
                 &idna,
-                "nameToASCII",
+                method,
                 "(Ljava/lang/CharSequence;Ljava/lang/StringBuilder;Landroid/icu/text/IDNA$Info;)\
                  Ljava/lang/StringBuilder;",
                 &[

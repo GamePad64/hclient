@@ -215,14 +215,14 @@ fn the_bundled_oracle_answers_what_the_corpus_pins_for_it() {
 #[cfg(any(icu_backend, apple_backend))]
 #[test]
 fn the_platform_answers_what_the_corpus_pins_on_every_row() {
-    let Some(lib) = testing::platform_name() else {
+    if !testing::has_platform() {
         println!(
-            "no system ICU on this machine — the platform column of all {} rows was NOT \
-             measured here. See `the_platform_column_is_not_silently_empty`.",
+            "no platform backend accepted on this machine — the platform column of all {} rows \
+             was NOT measured here. See `the_platform_column_is_not_silently_empty`.",
             CORPUS.len()
         );
         return;
-    };
+    }
     let mut wrong = Vec::new();
     for case in CORPUS {
         let got = testing::platform(case.input)
@@ -240,7 +240,7 @@ fn the_platform_answers_what_the_corpus_pins_on_every_row() {
         };
         if got.as_deref() != want {
             wrong.push(format!(
-                "  {}: expected {:?}, {lib} said {:?}",
+                "  {}: expected {:?}, the platform said {:?}",
                 label(case),
                 want,
                 got
@@ -249,12 +249,12 @@ fn the_platform_answers_what_the_corpus_pins_on_every_row() {
     }
     assert!(
         wrong.is_empty(),
-        "{} of {} corpus rows answered differently than pinned, against {lib}:\n{}",
+        "{} of {} corpus rows answered differently than pinned, against the platform:\n{}",
         wrong.len(),
         CORPUS.len(),
         wrong.join("\n")
     );
-    println!("all {} rows measured against {lib}", CORPUS.len());
+    println!("all {} rows measured against the platform", CORPUS.len());
 }
 
 /// The behaviour difference, bounded. Everything not on the list must
@@ -291,9 +291,9 @@ fn the_divergences_from_idna_are_exactly_the_documented_ones() {
 #[test]
 fn the_platform_column_is_not_silently_empty() {
     let required = std::env::var_os("HCLIENT_IDN_REQUIRE_PLATFORM").is_some();
-    match testing::platform_name() {
-        Some(lib) => println!("platform column measured against {lib}"),
-        None => assert!(
+    match testing::has_platform() {
+        true => println!("platform column measured against this target's own UTS 46"),
+        false => assert!(
             !required,
             "HCLIENT_IDN_REQUIRE_PLATFORM is set, so this machine is supposed to have a system \
              ICU — and no library was found. Every platform-column row above passed by not \
@@ -304,32 +304,24 @@ fn the_platform_column_is_not_silently_empty() {
     }
 }
 
-/// **What answered is named, and the name is the platform's.**
+/// **The gate ran and passed**, which is what the removed name test was
+/// really asking.
 ///
-/// This test used to compare a reported `Backend` variant against the
-/// compiled-in one, and the distinction it guarded is gone: `lib.rs`
-/// selects one backend *module* with `cfg_select!`, so "which backend
-/// this build has" and "which backend answered" are the same fact and
-/// cannot drift. What is still worth asserting is that the gate ran and
-/// the implementation says who it is — a `None` here means the
-/// acceptance probe rejected the platform, which is the failure this
-/// corpus exists to notice.
+/// It used to compare the reported backend's name against the
+/// compiled-in one. Two things emptied it: `cfg_select!` selects one
+/// backend *module*, so "which backend this build has" and "which
+/// answered" became the same fact, and `Handle::name` went with the four
+/// strings nothing branched on. What is left is the question that still
+/// has two answers — did the acceptance probe accept — and a `None` here
+/// means it did not, which is the failure this corpus exists to notice.
 #[cfg(any(icu_backend, apple_backend))]
 #[test]
-fn the_platform_that_answers_names_itself() {
-    let name = testing::platform_name().expect(
-        "the platform backend was compiled in and refused the acceptance probe, so this build \
-         answers nothing at all",
-    );
-    let expected = if cfg!(icu_backend) {
-        "icuuc"
-    } else {
-        "Foundation"
-    };
+fn the_platform_backend_passed_its_acceptance_probe() {
     assert!(
-        name.contains(expected),
-        "the compiled-in backend and the one that answered disagree: `{name}` does not name \
-         `{expected}`"
+        testing::has_platform(),
+        "the platform backend was compiled in and refused the acceptance probe, so this build \
+         answers nothing at all — both directions are gated, so the reverse getter is as \
+         likely a cause as the forward one"
     );
 }
 
@@ -377,10 +369,10 @@ fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_diffe
             "the A-label keeps the quote, which RFC 3986's reg_name forbids",
         ),
     ];
-    let Some(lib) = testing::platform_name() else {
+    if !testing::has_platform() {
         println!("no platform backend accepted here — nothing to compare");
         return;
-    };
+    }
     let mut wrong = Vec::new();
     for (input, why) in STRICTER {
         let oracle = idna_says(input);
@@ -388,10 +380,10 @@ fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_diffe
             .expect("the backend was found a line ago")
             .ok()
             .map(Cow::into_owned);
-        println!("  {input:?} ({why}): `idna` {oracle:?}, {lib} {ours:?}");
+        println!("  {input:?} ({why}): `idna` {oracle:?}, the platform {ours:?}");
         if ours.is_some() && ours != oracle {
             wrong.push(format!(
-                "  {input:?}: `idna` says {oracle:?} and {lib} says {ours:?} — a THIRD host, \
+                "  {input:?}: `idna` says {oracle:?} and the platform says {ours:?} — a THIRD host, \
                  not a refusal"
             ));
         }
@@ -421,7 +413,7 @@ fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_diffe
 /// and the file stayed green.
 #[test]
 fn the_public_entry_point_answers_the_corpus() {
-    if hclient_idn::testing::platform_name().is_none() {
+    if !hclient_idn::testing::has_platform() {
         println!("no implementation in this build on this machine — nothing to answer with");
         return;
     }
@@ -533,7 +525,7 @@ fn the_seam_the_fuzzer_uses_is_the_same_layer_the_backends_use() {
 fn converting_an_already_converted_name_changes_nothing(
     #[values("münchen.de", "straße.de", "例え.テスト", "EXAMPLE.COM", "مثال.إختبار")] input: &str,
 ) {
-    if hclient_idn::testing::platform_name().is_none() {
+    if !hclient_idn::testing::has_platform() {
         println!("no implementation in this build on this machine — nothing to be idempotent");
         return;
     }
@@ -573,7 +565,7 @@ fn converting_an_already_converted_name_changes_nothing(
 fn windows_icu_answers_on_a_thread_with_no_com_apartment() {
     let answer = std::thread::spawn(|| {
         (
-            hclient_idn::testing::platform_name(),
+            hclient_idn::testing::has_platform(),
             hclient_idn::domain_to_ascii("straße.de").map(Cow::into_owned),
         )
     })
@@ -581,7 +573,7 @@ fn windows_icu_answers_on_a_thread_with_no_com_apartment() {
     .expect("the conversion thread must not panic");
 
     assert!(
-        answer.0.is_some_and(|n| n.contains("icuuc")),
+        answer.0,
         "on Windows the platform backend is a load-time import, so `None` here means \
          `uidna_openUTS46` failed on a thread with no COM apartment — i.e. `CoInitializeEx` IS \
          required after all, and `icu/windows.rs` has to call it or this crate has to stop \

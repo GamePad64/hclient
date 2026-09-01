@@ -40,12 +40,6 @@ pub(crate) struct Bundled;
 /// with `cfg_select!` and then name no platform at all.
 pub(crate) type Handle = Bundled;
 
-impl Bundled {
-    pub(crate) fn name(&self) -> &str {
-        "idna (bundled Unicode tables, compiled_data)"
-    }
-}
-
 /// Always `Some`: the tables are in the binary.
 pub(crate) fn find() -> Option<Bundled> {
     Some(Bundled)
@@ -57,8 +51,22 @@ pub(crate) fn find() -> Option<Bundled> {
 /// [`crate::is_forbidden_domain_byte`] states and the same one the other
 /// backends apply by hand — they have to, because neither Foundation nor
 /// ICU takes a deny list.
-pub(crate) fn convert(_b: &Bundled, domain: &str) -> Option<String> {
+pub(crate) fn to_ascii(_b: &Bundled, domain: &str) -> Option<String> {
     idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL)
         .ok()
         .map(Cow::into_owned)
+}
+
+/// The U-label form, through `idna::domain_to_unicode`.
+///
+/// That function hands back an answer *and* a `Result`, and the answer is
+/// a best effort even when the errors are non-empty — so the errors are
+/// what decides here, not the string. This crate has no bit mask to
+/// forgive them with on this path, unlike the two ICU backends: `idna`
+/// reports an opaque `Errors`, so any error at all is a refusal, which is
+/// the safe direction and the one the round-trip in
+/// `policy::to_unicode_over` would enforce anyway.
+pub(crate) fn to_unicode(_b: &Bundled, domain: &str) -> Option<String> {
+    let (unicode, result) = idna::domain_to_unicode(domain);
+    result.ok().map(|()| unicode)
 }

@@ -243,22 +243,31 @@ fn decode_punycode(payload: &str) -> Option<String> {
 ///    answer with an `xn--` label nothing examined. The result was an
 ///    accept followed by a refuse — and the second parse is the one a
 ///    **redirect hop** makes. See [`to_ascii_inner`].
-pub(crate) fn to_ascii_over(
-    convert: &dyn Fn(&str) -> Option<String>,
+#[cfg(test)]
+fn to_ascii_over_for_test(
+    to_ascii: &dyn Fn(&str) -> Option<String>,
     domain: &str,
 ) -> Option<String> {
-    to_ascii_inner(&convert, domain, true)
+    to_ascii_over(to_ascii, &|_| None, domain)
+}
+
+pub(crate) fn to_ascii_over(
+    to_ascii: &dyn Fn(&str) -> Option<String>,
+    _to_unicode: &dyn Fn(&str) -> Option<String>,
+    domain: &str,
+) -> Option<String> {
+    to_ascii_inner(&to_ascii, domain, true)
 }
 
 /// Every ACE label in `lower` decoded to the label it stands for, with
 /// everything else passed through — UTS 46 ToUnicode, over a name that
 /// mapping has already made ASCII.
 ///
-/// **Shared by both directions**, and that is what makes them agree by
-/// construction rather than by two implementations being kept in step:
-/// [`to_ascii_inner`] runs this to get the Unicode form it hands the
-/// backend, and [`to_unicode_over`] runs it on the answer that came back.
-/// A label this refuses is a label neither direction will emit.
+/// **This is the ToASCII path's own step**, not the reverse direction:
+/// [`to_ascii_inner`] runs it to get the Unicode form it hands the
+/// backend. The reverse is the *platform's* — see [`to_unicode_over`] —
+/// because a punycode decoder of ours would answer where the platform
+/// would have refused, and the crate's whole claim is that the two agree.
 /// UTS 46 **ToUnicode**, over the same backend and the same rules as
 /// [`to_ascii_over`].
 ///
@@ -285,11 +294,23 @@ pub(crate) fn to_ascii_over(
 /// therefore have had three implementations and one hole, where this has
 /// one implementation and no hole.
 pub(crate) fn to_unicode_over(
-    convert: &dyn Fn(&str) -> Option<String>,
+    to_ascii: &dyn Fn(&str) -> Option<String>,
+    to_unicode: &dyn Fn(&str) -> Option<String>,
     domain: &str,
 ) -> Option<String> {
-    let ascii = to_ascii_inner(&convert, domain, true)?;
-    decode_ace_labels(&ascii)
+    let ascii = to_ascii_inner(&to_ascii, domain, true)?;
+    let unicode = to_unicode(&ascii)?;
+    // **The answer has to re-encode to what it was decoded from**, and
+    // that is what makes an unverified platform getter safe to use. This
+    // is step 6 in the other direction: a backend whose reverse hands
+    // back something else — a percent-encoded host from the wrong Apple
+    // getter, say — produces a refusal here rather than a name nobody
+    // asked for. It also costs nothing on a name with no ACE label, where
+    // the two strings are the same one.
+    if to_ascii_inner(&to_ascii, &unicode, true)? != ascii {
+        return None;
+    }
+    Some(unicode)
 }
 
 fn decode_ace_labels(lower: &str) -> Option<String> {
@@ -511,7 +532,7 @@ mod tests {
     /// The policy over a backend that answers everything correctly. Any
     /// difference from [`idna_says`] is the policy's own.
     fn over_idna(domain: &str) -> Option<String> {
-        to_ascii_over(&idna_says, domain)
+        to_ascii_over_for_test(&idna_says, domain)
     }
 
     /// **UTS 46 maps before it looks for an ACE label, and this layer used
@@ -621,7 +642,7 @@ mod tests {
     }
 
     fn over_foundation(domain: &str) -> Option<String> {
-        to_ascii_over(&foundation_model, domain)
+        to_ascii_over_for_test(&foundation_model, domain)
     }
 
     /// The inputs `tests/differential.rs` pins, plus the ones this module
@@ -815,7 +836,7 @@ mod tests {
         });
         let mut checked = 0usize;
         for name in plain {
-            let got = to_ascii_over(
+            let got = to_ascii_over_for_test(
                 &|asked| {
                     panic!("the platform was asked about {asked:?} for the ASCII name {name:?}")
                 },
@@ -1127,7 +1148,7 @@ mod tests {
             other => idna_says(other),
         };
         assert_eq!(
-            to_ascii_over(&transitional, "xn--strae-oqa.de"),
+            to_ascii_over_for_test(&transitional, "xn--strae-oqa.de"),
             None,
             "the platform re-encoded the decoded label to a different A-label and was believed"
         );
@@ -1143,7 +1164,7 @@ mod tests {
     #[test]
     fn a_backend_that_rewrites_an_ascii_label_is_refused() {
         let liar = |_: &str| Some("xn--mnchen-3ya.com".to_owned());
-        assert_eq!(to_ascii_over(&liar, "münchen.de"), None);
+        assert_eq!(to_ascii_over_for_test(&liar, "münchen.de"), None);
     }
 
     /// And a backend that changed how many labels there are. A code point
@@ -1152,9 +1173,9 @@ mod tests {
     #[test]
     fn a_backend_that_changes_the_label_count_is_refused() {
         let splitter = |_: &str| Some("xn--mnchen-3ya.de.extra".to_owned());
-        assert_eq!(to_ascii_over(&splitter, "münchen.de"), None);
+        assert_eq!(to_ascii_over_for_test(&splitter, "münchen.de"), None);
         let joiner = |_: &str| Some("xn--mnchen-3ya".to_owned());
-        assert_eq!(to_ascii_over(&joiner, "münchen.de"), None);
+        assert_eq!(to_ascii_over_for_test(&joiner, "münchen.de"), None);
     }
 
     #[test]
@@ -1257,7 +1278,7 @@ mod tests {
             "xn--%-0fa.de",
         ] {
             assert_eq!(
-                to_ascii_over(
+                to_ascii_over_for_test(
                     &|asked| panic!("the platform was asked about {asked:?}"),
                     input
                 ),
@@ -1274,9 +1295,9 @@ mod tests {
     fn a_denied_byte_the_platform_produced_is_refused() {
         assert_eq!(over_idna("a\u{ff0f}b.de"), None);
         let sloppy = |_: &str| Some("a/b.de".to_owned());
-        assert_eq!(to_ascii_over(&sloppy, "aüb.de"), None);
+        assert_eq!(to_ascii_over_for_test(&sloppy, "aüb.de"), None);
         let not_ascii = |_: &str| Some("aüb.de".to_owned());
-        assert_eq!(to_ascii_over(&not_ascii, "aüb.de"), None);
+        assert_eq!(to_ascii_over_for_test(&not_ascii, "aüb.de"), None);
     }
 
     // ── The differential, over generated input ──────────────────────────

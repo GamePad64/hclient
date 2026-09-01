@@ -46,7 +46,8 @@
 
 use super::{FIRST_TRY, U_BUFFER_OVERFLOW_ERROR, U_ZERO_ERROR, UIDNA_INFO_SIZE, accept, options};
 use windows_sys::Win32::Globalization::{
-    UIDNA, UIDNAInfo, uidna_close, uidna_nameToASCII_UTF8, uidna_openUTS46,
+    UErrorCode, UIDNA, UIDNAInfo, uidna_close, uidna_nameToASCII_UTF8, uidna_nameToUnicodeUTF8,
+    uidna_openUTS46,
 };
 
 /// The generated struct, asserted against the size the removed ELF
@@ -104,7 +105,24 @@ impl Drop for Handle {
     }
 }
 
-pub(crate) fn convert(_icu: &Icu, domain: &str) -> Option<String> {
+/// The two ICU entry points have one signature, so the conversion below
+/// is written once and handed whichever is wanted.
+///
+/// `uidna_nameToASCII_UTF8` and `uidna_nameToUnicodeUTF8` are declared by
+/// `windows-sys` from Microsoft's own metadata, so this alias transcribes
+/// nothing: it names a shape the generator produced.
+type Entry = unsafe extern "C" fn(
+    // unsafe-code-exception: amendment-C9
+    *const UIDNA,
+    windows_sys::core::PCSTR,
+    i32,
+    windows_sys::core::PCSTR,
+    i32,
+    *mut UIDNAInfo,
+    *mut UErrorCode,
+) -> i32;
+
+fn through(entry: Entry, domain: &str) -> Option<String> {
     let len = i32::try_from(domain.len()).ok()?;
 
     let mut status = U_ZERO_ERROR;
@@ -141,7 +159,7 @@ pub(crate) fn convert(_icu: &Icu, domain: &str) -> Option<String> {
         // sound.
         let written = unsafe {
             // unsafe-code-exception: amendment-C9
-            uidna_nameToASCII_UTF8(
+            entry(
                 handle.0,
                 domain.as_ptr(),
                 len,
@@ -165,4 +183,20 @@ pub(crate) fn convert(_icu: &Icu, domain: &str) -> Option<String> {
         return accept(&buf, written, info.errors, status);
     }
     None
+}
+
+/// The A-label form, through `uidna_nameToASCII_UTF8`.
+pub(crate) fn to_ascii(_icu: &Icu, domain: &str) -> Option<String> {
+    through(uidna_nameToASCII_UTF8, domain)
+}
+
+/// The U-label form, through `uidna_nameToUnicodeUTF8`.
+///
+/// **The same ICU, the same options and the same error mask**, which is
+/// the whole reason the reverse direction is the platform's here rather
+/// than a punycode decoder of ours: a name ICU will not convert back is
+/// one it did not consider legal going out either, and asking it twice
+/// keeps the two answers on one implementation.
+pub(crate) fn to_unicode(_icu: &Icu, domain: &str) -> Option<String> {
+    through(uidna_nameToUnicodeUTF8, domain)
 }

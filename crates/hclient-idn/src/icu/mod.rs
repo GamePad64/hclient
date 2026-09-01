@@ -319,7 +319,7 @@ pub(crate) fn accept(buf: &[u8], written: i32, errors: u32, status: i32) -> Opti
 /// transitional pair correctly, and one gate is what keeps them from
 /// drifting into four.
 #[cfg(icu_backend)]
-pub(crate) use imp::{convert, find};
+pub(crate) use imp::{find, to_ascii, to_unicode};
 
 /// The handle this backend hands back, under the name every backend uses.
 #[cfg(icu_backend)]

@@ -419,6 +419,30 @@ pub(crate) fn accepts(convert: impl Fn(&str) -> Option<String>) -> bool {
         .all(|(input, want)| convert(input).as_deref() == Some(*want))
 }
 
+/// The same probe pair read the other way: an A-label in, the Unicode
+/// name out.
+///
+/// **This is what lets a platform getter be used before anyone has run
+/// it.** `apple.rs`'s `to_unicode` reads `NSURLComponents::host` on an
+/// argument from Apple's documentation and no machine here can execute
+/// it; a build where that getter is not what the argument says fails this
+/// and answers `IdnError::NoImplementation`, which is a refusal rather
+/// than a wrong name. The forward half has always been gated this way and
+/// for the same reason — see `macos_getter_that_returns_the_a_label`.
+#[cfg_attr(
+    not(any(icu_backend, apple_backend, android_backend)),
+    allow(
+        dead_code,
+        reason = "only a platform backend has anything to gate, but the POLICY is \
+                  platform-independent and so are its tests"
+    )
+)]
+pub(crate) fn accepts_back(convert: impl Fn(&str) -> Option<String>) -> bool {
+    PROBES
+        .iter()
+        .all(|(want, input)| convert(input).as_deref() == Some(*want))
+}
+
 /// The one gate every backend passes, and the handle it hands back.
 ///
 /// **One `OnceLock` and one probe for all four**, where the ICU module
@@ -436,7 +460,18 @@ fn selected() -> Option<&'static platform::Handle> {
     use std::sync::OnceLock;
     static SELECTED: OnceLock<Option<platform::Handle>> = OnceLock::new();
     SELECTED
-        .get_or_init(|| platform::find().filter(|h| accepts(|input| platform::convert(h, input))))
+        .get_or_init(|| {
+            platform::find().filter(|h| {
+                // **Both directions, and the reverse half is what makes an
+                // unverified platform getter safe.** A backend that converts
+                // out correctly and hands back something else on the way in
+                // is refused here rather than at the call that would have
+                // used its answer — which is the case `apple.rs`'s
+                // `to_unicode` is written under, since nobody here has a Mac.
+                accepts(|input| platform::to_ascii(h, input))
+                    && accepts_back(|input| platform::to_unicode(h, input))
+            })
+        })
         .as_ref()
 }
 
@@ -485,7 +520,8 @@ pub fn domain_to_unicode(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 /// pair of directions is the thing being abstracted over, and `PolicyFn`
 /// says that where the written-out signature says only that something
 /// takes a closure.
-type PolicyFn = fn(&dyn Fn(&str) -> Option<String>, &str) -> Option<String>;
+type PolicyFn =
+    fn(&dyn Fn(&str) -> Option<String>, &dyn Fn(&str) -> Option<String>, &str) -> Option<String>;
 
 /// The dispatch both directions share.
 ///
@@ -498,11 +534,15 @@ fn over(domain: &str, policy: PolicyFn) -> Result<Cow<'_, str>, IdnError> {
     let handle = selected().ok_or_else(|| IdnError::NoImplementation {
         domain: domain.to_owned(),
     })?;
-    policy(&|input| platform::convert(handle, input), domain)
-        .map(Cow::Owned)
-        .ok_or_else(|| IdnError::NotAnIdn {
-            domain: domain.to_owned(),
-        })
+    policy(
+        &|input| platform::to_ascii(handle, input),
+        &|input| platform::to_unicode(handle, input),
+        domain,
+    )
+    .map(Cow::Owned)
+    .ok_or_else(|| IdnError::NotAnIdn {
+        domain: domain.to_owned(),
+    })
 }
 
 /// What the differential corpus in `tests/differential.rs` needs and
@@ -583,13 +623,18 @@ pub mod testing {
         Some(super::domain_to_ascii(domain))
     }
 
-    /// What answered, for a report that names it rather than saying "the
-    /// platform" — `icuuc.dll (windows-sys, load-time import)`,
-    /// `Foundation NSURL (objc2-foundation, safe bindings)`,
-    /// `android.icu.text.IDNA (ICU4J, over JNI)`.
+    /// Whether a backend was selected at all — the difference between
+    /// "the corpus checked the platform column" and "the corpus silently
+    /// checked nothing".
+    ///
+    /// **It used to hand back the implementation's name and no longer
+    /// does.** `Handle::name` was four strings nothing branched on: the
+    /// crate reports which backend answered nowhere else, and a test that
+    /// wanted the name was really asking whether the gate had passed. One
+    /// `bool` says that; four `impl` blocks said it four times.
     #[must_use]
-    pub fn platform_name() -> Option<&'static str> {
-        super::selected().map(super::platform::Handle::name)
+    pub fn has_platform() -> bool {
+        super::selected().is_some()
     }
 
     /// The crate's own layer, over a conversion the caller supplies.
@@ -607,7 +652,7 @@ pub mod testing {
     /// See `fuzz/fuzz_targets/idn_policy_vs_idna.rs`.
     #[must_use]
     pub fn policy_over(convert: impl Fn(&str) -> Option<String>, domain: &str) -> Option<String> {
-        super::policy::to_ascii_over(&convert, domain)
+        super::policy::to_ascii_over(&convert, &|_| None, domain)
     }
 }
 

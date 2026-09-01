@@ -3258,22 +3258,38 @@ host.
 
 **Two public functions**, `domain_to_ascii` and `domain_to_unicode`, plus
 the error their `Result` needs. Everything else — the option word, the
-error mask, the deny list, the backend report — became `pub(crate)` or
-moved behind the `#[doc(hidden)] testing` seam the differential corpus
-and the fuzz targets already used.
+error mask, the deny list — became `pub(crate)` or moved behind the
+`#[doc(hidden)] testing` seam the differential corpus and the fuzz
+targets already used. `Handle::name` went with them and is not replaced:
+four strings, one per backend, that nothing branched on, and the one test
+that read a name was really asking whether the acceptance gate had
+passed. `testing::has_platform()` is that question with one answer.
 
-**`domain_to_unicode` is the ASCII direction with one more step, and that
-order is the design.** The name is converted to its A-label form first,
-through the platform and every rule this crate has, and only then are the
-ACE labels decoded by the punycode decoder `policy.rs` already carried.
-Two things fall out that no per-backend implementation gives: the two
-directions accept exactly the same names, so a caller cannot be handed a
-Unicode form for a host the other direction would refuse to contact; and
-*which* name is legal stays the platform's answer rather than this
-layer's. It also has no hole — ICU has `uidna_nameToUnicodeUTF8` and
-ICU4J has `nameToUnicode`, but Apple's Foundation exposes no way back at
-all, so writing this per backend would have been three implementations
-and one refusal.
+**`domain_to_unicode` is the ASCII direction with one more step, and both
+steps are the platform's.** The name is converted to its A-label form
+first, through every rule this crate has, and then the *backend* is asked
+for the Unicode form — `uidna_nameToUnicodeUTF8` on Windows,
+`IDNA.nameToUnicode` on Android, `idna::domain_to_unicode` in the bundled
+build, and `NSURLComponents::host` on Apple. The answer must then
+re-encode to what it was decoded from, which is step 6 run backwards.
+
+**Apple has a way back and this file said it did not**, for one commit.
+`NSURL::host` hands out the A-label — that is asserted on `macos-latest`
+on every push — and `NSURLComponents` splits the same host into
+`encodedHost`, which is that A-label, and `host`, which is the decoded
+form. The naming misleads exactly as the existing macOS test's doc
+comment records: for an IDN the *encoded* getter is the ASCII one. Nobody
+here has a Mac, so the getter is not trusted: the acceptance probe now
+runs **in both directions**, so a build where `NSURLComponents::host` is
+not what Apple documents fails the gate and answers
+`NoImplementation` — a refusal — rather than a plausible wrong name. That
+is the shape the forward getter was chosen under.
+
+**And the round-trip is not ceremony**, which one measurement settles:
+`idna::domain_to_unicode("xn--%-0fa.de")` answers `"%ä.de"` with **no
+error at all**, and `%` is a forbidden domain code point. A reverse
+direction taken at face value hands a caller a name this client must not
+send.
 
 **`cfg_select!` selects a module, which is the shape this file measured
 as the macro's paying side.** Each backend module exports `find`,

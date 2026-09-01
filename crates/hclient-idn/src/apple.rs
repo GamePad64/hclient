@@ -123,7 +123,7 @@
 //! that wrote it; the workspace `test` job's `macos-latest` leg runs it on
 //! every push, and everything above marked *measured* comes from that.
 
-use objc2_foundation::{NSString, NSURL};
+use objc2_foundation::{NSString, NSURL, NSURLComponents};
 
 /// Nothing to carry: Foundation is part of the OS and is linked, so there
 /// is no handle and no library to keep alive. The type exists so the
@@ -135,12 +135,6 @@ pub(crate) struct Foundation;
 /// with `cfg_select!` and then name no platform at all.
 pub(crate) type Handle = Foundation;
 
-impl Foundation {
-    pub(crate) fn name(&self) -> &str {
-        "Foundation NSURL (objc2-foundation, safe bindings)"
-    }
-}
-
 /// Always `Some`: Foundation cannot be absent on an Apple target. The
 /// acceptance gate in `lib.rs` is what decides whether it is *usable*.
 pub(crate) fn find() -> Option<Foundation> {
@@ -150,7 +144,7 @@ pub(crate) fn find() -> Option<Foundation> {
 /// The A-label form of `domain`, or `None` if Foundation would not parse
 /// it — which, for the reasons in the module docs, is the only failure
 /// signal there is.
-pub(crate) fn convert(_f: &Foundation, domain: &str) -> Option<String> {
+pub(crate) fn to_ascii(_f: &Foundation, domain: &str) -> Option<String> {
     // Consequence 1: before the parser, never after. A denied byte here
     // is one Foundation would consume as a delimiter, silently changing
     // which host comes back. `crate::policy` scans too, and gets here
@@ -171,6 +165,39 @@ pub(crate) fn convert(_f: &Foundation, domain: &str) -> Option<String> {
     // `NSString` is lossless, so anything non-ASCII here means the
     // conversion did not happen.
     if !host.is_ascii() || host.bytes().any(crate::is_forbidden_domain_byte) {
+        return None;
+    }
+    Some(host)
+}
+
+/// The U-label form, through `NSURLComponents::host`.
+///
+/// **Foundation has a way back and this crate said it did not.** The
+/// forward direction reads `NSURL::host`, which hands out the A-label —
+/// asserted on `macos-latest` on every push by
+/// `macos_getter_that_returns_the_a_label`, whose failure message names
+/// the other two readings. `NSURLComponents` splits the same host into
+/// `encodedHost`, which is that A-label, and `host`, which is the decoded
+/// form. The naming misleads in exactly the way that test's doc comment
+/// records: for an IDN the *encoded* getter is the ASCII one.
+///
+/// **Nobody here has an Apple machine, so this is not trusted.** It is
+/// gated by the same acceptance probe the forward direction is, run in
+/// reverse: a build whose `NSURLComponents::host` is not what this
+/// paragraph claims fails the probe and answers
+/// `IdnError::NoImplementation` — a refusal — rather than a plausible
+/// wrong name. That is the shape the forward getter was chosen under and
+/// the reason its own doc gives: a wrong getter here produces a
+/// percent-encoded host, which would not announce itself.
+pub(crate) fn to_unicode(_f: &Foundation, domain: &str) -> Option<String> {
+    if domain.bytes().any(crate::is_forbidden_domain_byte) {
+        return None;
+    }
+    let text = NSString::from_str(&format!("https://{domain}/"));
+    let host = NSURLComponents::componentsWithString(&text)?
+        .host()?
+        .to_string();
+    if host.bytes().any(crate::is_forbidden_domain_byte) {
         return None;
     }
     Some(host)
