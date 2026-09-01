@@ -1,15 +1,33 @@
-//! `res_query(3)` — Linux (glibc, musl) and FreeBSD.
+//! `res_query(3)` — musl and FreeBSD.
 //!
 //! The whole of the foreign-function boundary is [`query`]: it hands back
 //! an owned buffer, and everything above it is safe code that walks bytes.
 //!
+//! # Who is here, and who left
+//!
+//! **glibc is not**, and the reason is a documented one rather than a
+//! measured one: `resolver(3)` calls the traditional interfaces
+//! non-thread-safe and lists only the `res_n*` family as `MT-Safe`. This
+//! crate is called from a blocking pool, so that property is the whole
+//! game — `sys/res_nquery.rs` is glibc's backend and says the rest.
+//!
+//! **musl is here because there is nowhere else to go**, measured with
+//! `nm` on Rust's self-contained sysroot: it exports `res_query`,
+//! `res_search`, `res_querydomain` and **no `res_nquery` at all**. There
+//! is no `res_n*` family on musl to move to, and its resolver keeps no
+//! `_res` between calls.
+//!
+//! **FreeBSD is here because its own manual says the opposite of
+//! glibc's** — *"This implementation of the resolver is thread-safe"*,
+//! with `_res` described as *"the per-thread version"*. It exports only
+//! the prefixed `__res_nquery`, so moving would add a `link_name` and a
+//! second `__res_state` question for a guarantee the platform already
+//! states.
+//!
 //! **Apple used to be here and is not**, which this header went on
 //! claiming after it stopped being true: `res_9_query` was measured
 //! unusable from more than one thread, and that platform moved to
-//! `sys/apple.rs`. What is left of the argument that used to fill this
-//! header — that the call answers from the primary resolver rather than
-//! from a Mac's supplemental clients — is recorded where it decided
-//! something, in `apple.rs` and in the design note.
+//! `sys/apple.rs`.
 
 #![allow(
     unsafe_code, // unsafe-code-exception: amendment-C8
@@ -87,7 +105,6 @@ const HEADER_LEN: usize = 12;
 //   apply.
 //
 // Apple is no longer in this list; `sys/apple.rs` is why.
-#[cfg_attr(all(target_os = "linux", target_env = "gnu"), link(name = "resolv"))]
 unsafe extern "C" {
     // unsafe-code-exception: amendment-C8
     fn res_query(

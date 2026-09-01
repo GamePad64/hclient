@@ -53,23 +53,30 @@ cfg_if::cfg_if! {
         #[path = "apple.rs"]
         mod imp;
     }
-    // The `res_query` backend needs two things this crate cannot check for
-    // at run time: the symbol to link against, and a libc whose resolver
-    // state is per-thread. The list is deliberately the set of targets
-    // whose behaviour was established rather than assumed — glibc and musl
-    // by reading the exported symbols out of the installed libraries, and
-    // by running `concurrent_lookups_all_answer_where_a_serial_burst_does`
-    // on both, which is the test that names this requirement.
+    // **glibc has a backend of its own, and the split is documentation
+    // rather than measurement.** Both backends below need the same two
+    // things this crate cannot check for at run time — a symbol to link
+    // against, and a resolver state that is not shared between threads —
+    // and glibc is the one libc here that *documents* its traditional
+    // interface as failing the second: `resolver(3)` calls `res_init()`
+    // and `res_query()` non-thread-safe in as many words and lists only
+    // the `res_n*` family as `MT-Safe`. This crate is called from a
+    // blocking pool, so that is the property everything rests on, and the
+    // arm follows the document rather than the observation.
     //
-    // **That second clause was here before the test was**, which is this
-    // workspace's own defect met inside the sentence stating the rule: the
-    // crate contained no threaded case at all, and the property Apple's
-    // arm failed was asserted by nothing. It names the test now, so the
-    // claim is exactly as perishable as the check behind it.
-    else if #[cfg(all(
-        target_os = "linux",
-        any(target_env = "gnu", target_env = "musl")
-    ))] {
+    // `res_nquery.rs` says what that cost: no struct layout, one
+    // initialisation per thread, and one fact — that `__res_state()` is
+    // per-thread — moved from *assumed* to *asserted by a test*.
+    else if #[cfg(all(target_os = "linux", target_env = "gnu"))] {
+        #[path = "res_nquery.rs"]
+        mod imp;
+    }
+    // **musl stays on `res_query` because there is nowhere to move to**,
+    // measured rather than assumed: `nm` on Rust's self-contained sysroot
+    // finds `res_query`, `res_search` and `res_querydomain`, and **zero**
+    // `res_nquery`. There is no `res_n*` family on musl, and its resolver
+    // keeps no `_res` between calls for one to be needed.
+    else if #[cfg(all(target_os = "linux", target_env = "musl"))] {
         #[path = "res_query.rs"]
         mod imp;
     }
@@ -81,7 +88,7 @@ cfg_if::cfg_if! {
     // - *the symbol*: `lib/libc/resolv/Symbol.map` exports `res_query` and
     //   `__res_query`, each under `FBSD_1.0`, so the plain name links out
     //   of `libc` with no `link_name` and no `-lresolv`. Read out of the
-    //   exported symbols, which is exactly how glibc and musl were
+    //   exported symbols, which is exactly how the two arms above were
     //   settled — and it fails **loudly**, at link, if it is ever wrong.
     // - *the per-thread state*: `resolver(3)` says *"This implementation
     //   of the resolver is thread-safe"* and calls `_res` *"the per-thread
@@ -92,7 +99,8 @@ cfg_if::cfg_if! {
     //
     // So this arm is added on the owner's decision with that gap named
     // rather than papered over. What closes it is one command on a FreeBSD
-    // machine, and it is the same command that established the arm above:
+    // machine, and it is the same command that established the two arms
+    // above:
     // `cargo test -p system-resolver --test live -- --ignored`, whose
     // `concurrent_lookups_all_answer_where_a_serial_burst_does` is written
     // for exactly this question. Until somebody runs it, this row is the
