@@ -146,7 +146,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: moonrepo/setup-rust@v1
         with:
-          channel: "1.85.0"
+          channel: "1.95.0"
           bins: just
       - name: the one crate with a fixed floor builds and passes on it
         run: just msrv

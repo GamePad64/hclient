@@ -1080,10 +1080,10 @@ msrv:
     # claim with nothing behind it, which is the defect this repository
     # records against itself four times over.
     #
-    # The floor is edition 2024's and nothing else in this crate: every
-    # dependency's own `rust-version` is below it — `cfg-if` 1.32,
-    # `thiserror` 1.71, `windows-sys` 1.71, `windows-strings` 1.82.
-    FLOOR="1.85.0"
+    # The floor is `core::cfg_select!`'s and nothing else in this crate:
+    # every dependency's own `rust-version` is below it — `thiserror`
+    # 1.71, `windows-sys` 1.71, `windows-strings` 1.82.
+    FLOOR="1.95.0"
     # Read from the manifest rather than written twice: a figure in two
     # places is a figure that drifts, which is this file's own recurring
     # defect. The recipe fails if the two disagree rather than silently

@@ -109,10 +109,11 @@
 //!
 //! The third row is the shape to watch for, and it is not a defect in that
 //! crate — a decoder written for messages reasonably expects a record's
-//! header. What it costs a caller is building one, and `hclient-dns-system`
-//! is a worked example: it wraps these records in a synthetic message and
-//! hands that to `Dns::decode`, because it wanted that crate for other
-//! reasons.
+//! header. What it costs a caller is building one, and this workspace paid
+//! it: `hclient-dns-system` used to wrap these records in a synthetic
+//! message, ninety lines whose whole purpose was to be taken apart again
+//! by the next call. It is on `domain` now, which parses a bare field, so
+//! the envelope has no subject.
 //!
 //! Any other crate is judged by the same question, which is worth asking
 //! before the download: *can it be handed a type and some octets?* A
@@ -394,6 +395,10 @@ impl Support {
     /// The empty range is written once, here, rather than at each site
     /// that means it — `1..=0` reads as a mistake everywhere except beside
     /// this sentence.
+    #[allow(
+        clippy::reversed_empty_ranges,
+        reason = "an empty range is the point: `1..=0` is how *no type at all* is spelled, and the constructor exists so that it is written once, here, beside the sentence saying so"
+    )]
     pub(crate) fn none() -> Self {
         Self {
             range: 1..=0,

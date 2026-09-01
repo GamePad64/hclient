@@ -20,26 +20,29 @@
 
 use crate::error::Error;
 
-// **`cfg_if!` rather than four `#[cfg]`s, and the reason is the drift this
-// module's own header is about.** Written as plain attributes, the arms
-// have to be made mutually exclusive by hand: the Unix one carried
+// **`cfg_select!` rather than six `#[cfg]`s, and the reason is the drift
+// this module's own header is about.** Written as plain attributes, the
+// arms have to be made mutually exclusive by hand: the Unix one carried
 // `not(target_os = "android")`, the Windows one a `not(any(..))` of the
-// two before it, and the fallback a `not(any(..))` of all three. That is
-// the target list written **four** times, three of them negated, so adding
-// a platform meant editing four places correctly or silently compiling two
-// backends — or none.
+// ones before it, and the fallback a `not(any(..))` of all of them. That
+// is the target list written **six** times, five of them negated, so
+// adding a platform meant editing six places correctly or silently
+// compiling two backends — or none.
 //
-// `cfg_if!` is `if`/`else if`/`else`: the arms are ordered, so each
-// condition states only its own targets and the fallback states nothing at
-// all. One crate, no dependencies of its own, no build script, and already
-// in any graph that has this workspace's runtimes.
-cfg_if::cfg_if! {
+// `cfg_select!` is ordered like a `match`: each arm states only its own
+// targets and the `_` fallback states nothing at all. It is `core`'s and
+// stable since **1.95**, which is where this crate's compiler floor now
+// comes from — measured, 1.94 rejects it as an unstable library feature.
+// It replaced `cfg-if`, whose whole job this was, and the trade is one
+// crate out of the lockfile against ten releases of compiler reach;
+// `Cargo.toml` says so where the floor is declared.
+core::cfg_select! {
     // Android first. It is `target_os = "android"` and **not**
     // `target_os = "linux"`, so ordering is not what keeps it out of the
     // arm below — it is first because the reason it needs its own module
     // is not the cfg at all: the `res_*` family is not in the NDK's stable
     // ABI, and `android_res_nquery` is.
-    if #[cfg(target_os = "android")] {
+    target_os = "android" => {
         #[path = "android.rs"]
         mod imp;
     }
@@ -49,7 +52,7 @@ cfg_if::cfg_if! {
     // serially and 12/64 from eight threads, so the resolver state there
     // is shared rather than per-thread. `apple.rs` has the numbers and the
     // second reason.
-    else if #[cfg(target_vendor = "apple")] {
+    target_vendor = "apple" => {
         #[path = "apple.rs"]
         mod imp;
     }
@@ -75,10 +78,7 @@ cfg_if::cfg_if! {
     //
     // Both are run by `concurrent_lookups_all_answer_where_a_serial_burst_does`,
     // which is the outcome-shaped half of the same question.
-    else if #[cfg(all(
-        target_os = "linux",
-        any(target_env = "gnu", target_env = "musl")
-    ))] {
+    all(target_os = "linux", any(target_env = "gnu", target_env = "musl")) => {
         #[path = "res_query.rs"]
         mod imp;
     }
@@ -107,17 +107,18 @@ cfg_if::cfg_if! {
     // for exactly this question. Until somebody runs it, this row is the
     // best-supported unrun arm in the crate — which is a rank, not a
     // guarantee.
-    else if #[cfg(target_os = "freebsd")] {
+    target_os = "freebsd" => {
         #[path = "res_query.rs"]
         mod imp;
-    } else if #[cfg(windows)] {
+    }
+    windows => {
         #[path = "windows/mod.rs"]
         mod imp;
     }
-    // Anything else gets the honest an empty [`Support`], which is not a gap to
+    // Anything else gets an honestly empty `Support`, which is not a gap to
     // be embarrassed about: an absent capability costs a caller one
     // fallback, where a capability that lies costs it a wrong answer.
-    else {
+    _ => {
         #[path = "unsupported.rs"]
         mod imp;
     }

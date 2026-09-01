@@ -12,7 +12,7 @@
 //! cargo nextest run -p system-resolver --run-ignored all
 //! ```
 
-use system_resolver::{Error, Support, lookup, support};
+use system_resolver::{Error, lookup, support};
 
 /// RFC 9460 §14.1. Chosen because it is the type this workspace actually
 /// depends on, and because it is answerable on every platform here — on
@@ -133,7 +133,10 @@ fn a_name_that_does_not_exist_is_not_an_empty_answer() {
         TYPE_HINFO
     };
     let present = lookup("www.cloudflare.com", absent_type).expect("the name exists");
-    assert!(present.is_empty(), "no records of type {absent_type} at this name");
+    assert!(
+        present.is_empty(),
+        "no records of type {absent_type} at this name"
+    );
 }
 
 /// RFC 1035 §3.2.2. The type that separates the two Windows calls: it is
@@ -147,7 +150,7 @@ const TYPE_A: u16 = 1;
 /// Windows paths is live, which nothing else here can.
 ///
 /// **It is written as a biconditional rather than as a match on the
-/// answer**, and that is what the struct made possible: [`Support`]'s
+/// answer**, and that is what the struct made possible: `Support`'s
 /// fields are crate-private, so a caller has exactly one question to ask —
 /// *may I ask for this type* — and this asserts that `lookup` agrees with
 /// it, for every type, in both directions. The old shape was one arm per

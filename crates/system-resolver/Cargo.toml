@@ -25,18 +25,26 @@ edition.workspace = true
 # compatibility matrix, and it costs a crate meant to be used from outside
 # thirteen releases of reach.
 #
-# Measured rather than picked. On 1.85.0: `cargo check --all-targets`
-# builds and `cargo test` passes 62 unit tests and the doctest. Every
-# dependency's own floor is below it — `cfg-if` 1.32, `thiserror` 1.71,
-# `windows-sys` 1.71, `windows-strings` 1.82 — so the binding constraint
-# is **edition 2024**, which is 1.85 and nothing else in this crate.
+# Measured rather than picked, and the number moved once. It was 1.85,
+# edition 2024's floor, until `sys/mod.rs` traded `cfg-if` for `core`'s
+# own `cfg_select!` — stable in **1.95**, and 1.94 rejects it as an
+# unstable library feature, so the two were checked rather than looked up.
+# Every dependency's own floor is below that (`thiserror` 1.71,
+# `windows-sys` 1.71, `windows-strings` 1.82), which makes `cfg_select!`
+# the single binding constraint.
+#
+# **The trade is stated because it goes the wrong way on this crate's own
+# argument.** `cfg-if` is one crate with no dependencies of its own and a
+# 1.32 floor, and it is already in nearly every graph; dropping it buys a
+# line out of the lockfile and costs ten releases of the reach that this
+# crate left the family's shared MSRV to keep.
 #
 # `just msrv` is what keeps this from being a claim with nothing behind
 # it, and the workspace's argument against an MSRV job does not reach
 # here: that argument is that a pinned job restates a *moving* promise
 # more staleley than the manifest does. This promise does not move, so the
 # job is its only statement rather than a second one.
-rust-version = "1.85.0"
+rust-version = "1.95.0"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
@@ -57,13 +65,6 @@ all-features = true
 shared-version = "system-resolver"
 
 [dependencies]
-# `sys/mod.rs`'s four-way platform choice, and nothing else. Written as
-# plain `#[cfg]`s the arms have to be made mutually exclusive by hand,
-# which meant the target list appearing four times with three of them
-# negated; `cfg_if!` orders them instead. One crate with no dependencies of
-# its own, no build script and `no_std` — and already in the graph of any
-# build that has this workspace's runtimes.
-cfg-if    = "1"
 thiserror = { workspace = true }
 
 # Windows only. `DnsQuery_UTF8` and the `DNS_RECORD` list it fills in,
