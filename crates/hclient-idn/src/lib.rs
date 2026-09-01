@@ -307,12 +307,24 @@ mod error;
 
 pub use error::IdnError;
 
-#[cfg(not(any(idna_backend, icu_backend, foundation_backend)))]
-compile_error!(
-    "hclient-idn needs at least one backend: `bundled` (the `idna` crate, the default) or \
-     `system-icu` (the platform's own ICU), or both. With neither, `domain_to_ascii` could only \
-     ever return `IdnError::NoImplementation`, which is a build nobody wants by accident."
-);
+// The rule is *at least one backend*, and `cfg_select!` lets it be
+// written as the three positives it is rather than as one negation of
+// all of them. Adding a fourth backend is an arm here, where before it
+// was an edit inside a `not(any(..))` that no compiler would notice
+// being forgotten.
+core::cfg_select! {
+    idna_backend => {}
+    icu_backend => {}
+    foundation_backend => {}
+    _ => {
+        compile_error!(
+            "hclient-idn needs at least one backend: `bundled` (the `idna` crate, the default) \
+             or `system-icu` (the platform's own ICU), or both. With neither, `domain_to_ascii` \
+             could only ever return `IdnError::NoImplementation`, which is a build nobody wants \
+             by accident."
+        );
+    }
+}
 
 /// Which implementation [`domain_to_ascii`] actually calls in this
 /// process.
@@ -589,10 +601,15 @@ pub fn backend() -> Backend {
     if foundation_backend().is_some() {
         return Backend::SystemFoundation;
     }
-    #[cfg(idna_backend)]
-    return Backend::Bundled;
-    #[cfg(not(idna_backend))]
-    Backend::None
+    // The tail is the only compile-time choice in this function — the two
+    // arms above are *runtime* probes — and it used to be a pair,
+    // `#[cfg(idna_backend)]` beside `#[cfg(not(idna_backend))]`. That is
+    // the same condition written twice, once negated, which is exactly
+    // what `cfg_select!` exists to stop drifting apart.
+    core::cfg_select! {
+        idna_backend => { Backend::Bundled }
+        _ => { Backend::None }
+    }
 }
 
 /// The bundled path: the exact call `hclient-proto` used to make itself,
@@ -747,15 +764,27 @@ pub mod testing {
     /// As [`super::domain_to_ascii`].
     #[cfg(any(icu_backend, foundation_backend))]
     pub fn platform(domain: &str) -> Option<Result<Cow<'_, str>, IdnError>> {
-        #[cfg(icu_backend)]
-        {
-            super::icu::library()?;
-            Some(super::system_icu_to_ascii(domain))
-        }
-        #[cfg(foundation_backend)]
-        {
-            super::foundation_backend()?;
-            Some(super::foundation_to_ascii(domain))
+        // **Two `#[cfg]` blocks in a row is a body that depends on the
+        // two never being set together**, and nothing here says so:
+        // `build.rs` picks one, and a build that set both would put two
+        // expressions where one belongs. `cfg_select!` makes the
+        // exclusion the macro's rather than the build script's.
+        //
+        // **No `_` arm, deliberately.** Both platforms are named, so a
+        // third backend arriving is *none of the predicates in this
+        // `cfg_select` evaluated to true* at this line rather than a
+        // silent routing into Foundation's body. The item's own
+        // `#[cfg(any(..))]` above is what keeps that from firing on a
+        // target with no platform backend at all.
+        core::cfg_select! {
+            icu_backend => {
+                super::icu::library()?;
+                Some(super::system_icu_to_ascii(domain))
+            }
+            foundation_backend => {
+                super::foundation_backend()?;
+                Some(super::foundation_to_ascii(domain))
+            }
         }
     }
 
@@ -765,13 +794,11 @@ pub mod testing {
     #[cfg(any(icu_backend, foundation_backend))]
     #[must_use]
     pub fn platform_name() -> Option<&'static str> {
-        #[cfg(icu_backend)]
-        {
-            super::icu::library_name()
-        }
-        #[cfg(foundation_backend)]
-        {
-            super::foundation_backend().map(super::foundation::Foundation::name)
+        core::cfg_select! {
+            icu_backend => { super::icu::library_name() }
+            foundation_backend => {
+                super::foundation_backend().map(super::foundation::Foundation::name)
+            }
         }
     }
 
