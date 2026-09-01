@@ -9,11 +9,11 @@
 //! two situations apart without inspecting the stream. Both of those are
 //! what this file checks.
 
-use std::assert_matches;
 use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::Error;
 use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
+use std::assert_matches;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 

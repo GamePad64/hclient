@@ -7,11 +7,11 @@
 //! whether one family's stream had to be driven for the other to finish.
 //! The tests below refuse to collect for exactly that reason.
 
-use std::assert_matches;
 use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
 use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
+use std::assert_matches;
 use std::cell::Cell;
 use std::error::Error as StdError;
 use std::net::{IpAddr, Ipv4Addr};

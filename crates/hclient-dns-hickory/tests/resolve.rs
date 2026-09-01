@@ -10,7 +10,6 @@
 //! CNAME chasing and record filtering all still run, and the only thing
 //! faked is the answer that arrives from the wire.
 
-use std::assert_matches;
 use futures_util::StreamExt;
 use futures_util::stream;
 use hclient_core::ErrorKind;
@@ -27,6 +26,7 @@ use hickory_resolver::proto::rr::rdata::svcb::{Alpn, SvcParamKey, SvcParamValue}
 use hickory_resolver::proto::rr::rdata::{A, AAAA, CNAME, HTTPS, SVCB, TXT};
 use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
 use hickory_resolver::{ConnectionProvider, PoolContext, Resolver};
+use std::assert_matches;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;

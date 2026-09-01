@@ -16,10 +16,10 @@
 use futures_executor::block_on;
 use std::time::{Duration, SystemTime};
 
-use std::assert_matches;
 use bytes::Bytes;
 use hclient::cache::{CacheStore, HttpCache, Limits, Lookup, NotStored, StoredResponse};
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use std::assert_matches;
 
 /// A wall-clock instant. Far enough from the epoch that `Date` headers in
 /// the corpus below are ordinary-looking dates rather than 1970.

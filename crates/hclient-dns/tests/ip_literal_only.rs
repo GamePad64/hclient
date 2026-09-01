@@ -13,12 +13,12 @@
 //! Both directions live in one case table below, so the two are read
 //! together rather than in separate tests that can drift apart.
 
-use std::assert_matches;
 use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
 use hclient_dns::{IpLiteralOnly, Resolve, ResolvedAddr};
 use rstest::rstest;
+use std::assert_matches;
 use std::net::IpAddr;
 
 type Answer = Result<ResolvedAddr, Error>;
@@ -47,7 +47,8 @@ fn check(got: &[Answer], expect: Expect, input: &str) {
             };
             assert_eq!(
                 a.addr,
-                want.parse::<IpAddr>().expect("test data is a valid address"),
+                want.parse::<IpAddr>()
+                    .expect("test data is a valid address"),
                 "`{input}` must resolve to itself"
             );
             assert_eq!(
@@ -67,7 +68,8 @@ fn check(got: &[Answer], expect: Expect, input: &str) {
                 panic!("`{input}` is not a literal and must yield one error; got {got:?}")
             };
             assert_eq!(
-                *e.kind(), ErrorKind::Resolve,
+                *e.kind(),
+                ErrorKind::Resolve,
                 "the caller must classify this without substring-matching on Display: {e}"
             );
             assert!(

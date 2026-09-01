@@ -16,9 +16,9 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use std::assert_matches;
 use hclient::cookie::{BuiltinList, Cookie, CookieJar, PublicSuffixList, Rejected};
 use http::{HeaderValue, Uri};
+use std::assert_matches;
 
 fn now() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(1_700_000_000)

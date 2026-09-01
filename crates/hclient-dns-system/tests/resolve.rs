@@ -17,7 +17,6 @@
 //! the one test in this crate that genuinely needs it is `#[ignore]`d in
 //! `src/lib.rs`.
 
-use std::assert_matches;
 use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
@@ -25,6 +24,7 @@ use hclient_dns::{Resolve, ResolvedAddr};
 use hclient_dns_system::SystemDns;
 use hclient_rt::{Blocking, Cancelled};
 use rstest::rstest;
+use std::assert_matches;
 use std::error::Error as _;
 use std::net::IpAddr;
 

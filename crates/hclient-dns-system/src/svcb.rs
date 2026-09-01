@@ -261,8 +261,8 @@ mod wire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::assert_matches;
     use rstest::rstest;
+    use std::assert_matches;
     use std::time::Duration;
     use system_resolver::Record;
     // Named here rather than at the top of the file since the RFC 9460

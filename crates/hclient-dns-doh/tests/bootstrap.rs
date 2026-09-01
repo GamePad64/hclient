@@ -9,13 +9,13 @@
 
 mod support;
 
-use std::assert_matches;
 use hclient_dns::IpLiteralOnly;
 use hclient_dns_doh::{Doh, EndpointError};
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use rstest::rstest;
+use std::assert_matches;
 
 fn transport() -> Native<Tokio, NoTls, IpLiteralOnly> {
     Native::new(Tokio, NoTls, IpLiteralOnly)
