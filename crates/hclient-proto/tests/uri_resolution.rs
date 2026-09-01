@@ -194,10 +194,13 @@ const CORPUS: &[Case] = &[
     Case { base: "https://example.test/", reference: "https://u:p@münchen.de/x", ours: WithIdn("https://u:p@xn--mnchen-3ya.de/x"), url_says: Some("https://u:p@xn--mnchen-3ya.de/x") },
     Case { base: "https://example.test/", reference: "//münchen.de/x", ours: WithIdn("https://xn--mnchen-3ya.de/x"), url_says: Some("https://xn--mnchen-3ya.de/x") },
     Case { base: "https://example.test/", reference: "https://xn--zzzz.test/x", ours: Always(Some("https://xn--zzzz.test/x")), url_says: None },
-    // `Always(None)`, and not `WithIdn`: `hclient-idn` refuses an empty
-    // label on every backend, so the answer no longer depends on whether
-    // the Unicode tables are compiled in. See the divergence list.
-    Case { base: "https://example.test/", reference: "https://ä..de/x", ours: Always(None), url_says: Some("https://xn--4ca..de/x") },
+    // **This row moved onto the oracle**, which is the direction a
+    // divergence list should shrink in. It used to be `Always(None)`,
+    // because `hclient-idn` refused an empty label on every backend — a
+    // rule of that crate's own, not `idna`'s. That crate is a
+    // smaller-binary `idna` and nothing more now, so the answer is
+    // `idna`'s, which is `url`'s, which is this row.
+    Case { base: "https://example.test/", reference: "https://ä..de/x", ours: WithIdn("https://xn--4ca..de/x"), url_says: Some("https://xn--4ca..de/x") },
     Case { base: "https://example.test/", reference: "https://münchen.de/ä", ours: WithIdn("https://xn--mnchen-3ya.de/%C3%A4"), url_says: Some("https://xn--mnchen-3ya.de/%C3%A4") },
     // Non-ASCII outside the host: percent-encoded UTF-8, never punycode.
     // These need no `idn` feature — nothing here is a domain name.
@@ -218,14 +221,21 @@ const CORPUS: &[Case] = &[
 /// divergence nobody decided on cannot slip in, and one that gets fixed
 /// cannot stay listed.
 ///
-/// With `idn` on this is the RFC-versus-WHATWG list plus **one entry that
-/// is ours by decision**: a host with an empty label. `url` and `idna`
-/// convert `ä..de`, Apple's Foundation refuses it, and a name that
-/// resolves on two of this project's three platforms and not the third is
-/// the thing `hclient-idn` exists to prevent — so it is refused on all
-/// three. An empty label is not a legal DNS label, so nothing reachable is
-/// given up. Every other U-label in the corpus still resolves to exactly
-/// the A-label `url` produced.
+/// With `idn` on this is the RFC-versus-WHATWG list and **nothing else**.
+/// It carried one more entry until `hclient-idn` stopped answering
+/// questions about URLs: a host with an empty label, `ä..de`, which that
+/// crate refused on every backend by a rule of its own. It is a
+/// smaller-binary `idna` and nothing more now, so it converts what `idna`
+/// converts, which is what `url` converts — and the row moved onto the
+/// oracle rather than beside it.
+///
+/// The divergence that removing it *could* have introduced is Apple's:
+/// Foundation refuses `ä..de` where `idna` and Windows' ICU convert it,
+/// so the same name is answered on two of this project's platforms and
+/// not the third. That is a fact about Foundation, measured and recorded
+/// in `hclient-idn`'s differential corpus, and it is that crate's to
+/// report rather than this one's to paper over — which is the whole of
+/// what changed.
 #[cfg(feature = "idn")]
 #[rustfmt::skip]
 const DIVERGENCES: &[(&str, &str)] = &[
@@ -241,7 +251,6 @@ const DIVERGENCES: &[(&str, &str)] = &[
     ("https://example.test/api/", "https:v1"),
     ("https://example.test/api/", "HTTPS://Other.TEST/x"),
     ("https://example.test/", "https://xn--zzzz.test/x"),
-    ("https://example.test/", "https://ä..de/x"),
     ("https://example.test/api/", "https://EXAMPLE.test/café"),
 ];
 
@@ -269,7 +278,6 @@ const DIVERGENCES: &[(&str, &str)] = &[
     ("https://example.test/", "https://u:p@münchen.de/x"),
     ("https://example.test/", "//münchen.de/x"),
     ("https://example.test/", "https://xn--zzzz.test/x"),
-    ("https://example.test/", "https://ä..de/x"),
     ("https://example.test/", "https://münchen.de/ä"),
     ("https://example.test/api/", "https://EXAMPLE.test/café"),
 ];

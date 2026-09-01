@@ -26,7 +26,7 @@
 //!
 //! Its name is older than the second backend and is kept: the column is
 //! one column, and it being one column is the point — the same rows are
-//! the acceptance for both platforms, and `src/policy.rs` is what makes
+//! the acceptance for both platforms, and the acceptance probe is what makes
 //! that possible, because it takes over everything the two do
 //! differently. The one family where they are expected to differ is not
 //! in the table at all; see
@@ -228,16 +228,11 @@ fn the_platform_answers_what_the_corpus_pins_on_every_row() {
         let got = testing::platform(case.input)
             .expect("the library was found a line ago; it cannot be gone now")
             .ok();
-        // `testing::platform` is the platform backend **through this
-        // crate's policy**, so the policy's own rule applies before the
-        // column does — the third test in this file to need that line, and
-        // the one Linux cannot check: with no system ICU this test returns
-        // at the top, so the row was green here and red on `macos-latest`.
-        let want = if refused_by_policy(case.input) {
-            None
-        } else {
-            case.icu_says
-        };
+        // `testing::platform` is the platform backend and nothing else
+        // now — the policy layer that used to sit in front of it, and
+        // whose rule had to be applied here before the column could be
+        // compared, is gone. So the column is the expectation directly.
+        let want = case.icu_says;
         if got.as_deref() != want {
             wrong.push(format!(
                 "  {}: expected {:?}, the platform said {:?}",
@@ -334,7 +329,7 @@ fn the_platform_backend_passed_its_acceptance_probe() {
 /// masks. `idna` accepts every one of them, and Apple's Foundation —
 /// whose `shouldAllow(_:encodeToASCII: true)` in `URLParser+ICU.swift`
 /// allows no error bit at all, `allowedErrors = 0` — is expected to refuse
-/// them. Nothing in `policy.rs` can repair that: Foundation answers nil
+/// them. Nothing in this crate can repair that: Foundation answers nil
 /// rather than a reason, which is `foundation.rs`'s consequence 3, and the
 /// six bits are exactly the ones this crate has to ignore to agree with
 /// `idna`.
@@ -419,13 +414,13 @@ fn the_public_entry_point_answers_the_corpus() {
     }
     let mut wrong = Vec::new();
     for case in CORPUS {
-        // The layer's own rule comes first and is the same on every
-        // backend — which is the point of it, and now true of the bundled
-        // path too. Before that path went through the policy this arm was
-        // unnecessary on Linux and the divergence was live.
-        let want = if refused_by_policy(case.input) {
-            None
-        } else if cfg!(any(icu_backend, apple_backend)) {
+        // **No layer's rule comes first any more.** The backend's answer
+        // is the crate's answer, so what a row expects is what that
+        // target's implementation says — `icu_says` where the platform
+        // answers, `idna_says` where the bundled crate does. The rows
+        // themselves never moved; it was this crate that used to differ
+        // from them.
+        let want = if cfg!(any(icu_backend, apple_backend)) {
             case.icu_says
         } else {
             case.idna_says
@@ -467,50 +462,36 @@ fn the_public_entry_point_answers_the_corpus() {
 /// function.
 /// The one place the layer is **not** transparent, by rule.
 ///
-/// A label that is empty and is not the single trailing root is refused
-/// whatever a backend says, because `idna` and Windows's ICU convert
-/// `ä..de` and Apple's Foundation refuses it — a name reachable on two of
-/// this project's three platforms and not the third, which is the thing
-/// `hclient-idn` exists to prevent. `policy.rs`'s
-/// `refuses_an_empty_label_but_not_the_trailing_root` pins the rule; this
-/// is the same rule, stated where the corpus needs it.
+/// **This crate answers what `idna` answers, with no layer in between**,
+/// which is the whole of its contract: the same conversion, from
+/// whatever UTS 46 the platform already carries, for a smaller binary.
 ///
-/// The corpus rows themselves are unchanged and still record what the
-/// **backends** answer, which is what they are for — it is our layer that
-/// now differs from them, on exactly these inputs.
-fn refused_by_policy(name: &str) -> bool {
-    // All four separators — see `testing::LABEL_SEPARATORS`. The corpus
-    // rows that trip this rule are ASCII today, so `'.'` alone would pass
-    // here and be wrong the day one is not.
-    let sep = hclient_idn::testing::LABEL_SEPARATORS;
-    let n = name.split(sep).count();
-    name.split(sep)
-        .enumerate()
-        .any(|(i, l)| l.is_empty() && i + 1 < n)
-}
-
+/// The test that used to sit here asserted the opposite — that a layer of
+/// this crate's own refused six of the corpus's inputs that `idna`
+/// accepts, `a..b` and `ä..de` among them. That layer is gone. It was
+/// URL validation, and answering *may this host be contacted* is not
+/// this crate's question: neither `url::Url` nor `http::Uri` refuses
+/// those names either, and both are conformant in accepting them.
 #[test]
-fn the_seam_the_fuzzer_uses_is_the_same_layer_the_backends_use() {
+fn the_public_entry_point_answers_what_idna_answers() {
     let mut wrong = Vec::new();
     for case in CORPUS {
-        let got = hclient_idn::testing::policy_over(idna_says, case.input);
-        let want = if refused_by_policy(case.input) {
-            None
-        } else {
-            case.idna_says
-        };
-        if got.as_deref() != want {
+        let got = hclient_idn::domain_to_ascii(case.input)
+            .map(std::borrow::Cow::into_owned)
+            .ok();
+        if got.as_deref() != case.idna_says {
             wrong.push(format!(
-                "  {}: over `idna` the layer said {:?}, expected {:?}",
+                "  {}: this crate said {:?}, `idna` said {:?}",
                 label(case),
                 got,
-                want
+                case.idna_says
             ));
         }
     }
     assert!(
         wrong.is_empty(),
-        "{} of {} rows changed when the policy layer was put in front of `idna` itself:\n{}",
+        "{} of {} corpus rows differ from `idna`, and this crate exists to differ from it in \
+         binary size and in nothing else:\n{}",
         wrong.len(),
         CORPUS.len(),
         wrong.join("\n")

@@ -1278,19 +1278,15 @@ fuzz-smoke:
     ( cd crates/hclient-proto/fuzz && \
       cargo fuzz run --target "$host" sse -- -max_total_time=60 && \
       cargo fuzz run --target "$host" sse_accounting -- -max_total_time=30 -max_len=256 ) || exit 1
-    # `hclient-idn`'s own safe layer — the deny list, the error mask, the
-    # ASCII/A-label handling — which sits in front of every backend and so is
-    # worth fuzzing on a Linux runner even though Linux has no platform
-    # backend. The first is deliberately NOT differential against `idna`:
-    # with the bundled backend `domain_to_ascii` IS `idna::domain_to_ascii_cow`,
-    # so that comparison could not fail. The second IS, because
-    # `testing::policy_over` takes the backend as an argument, so handing it
-    # `idna` cancels `idna` out of both sides and leaves only this crate's
-    # code — the hand-written RFC 3492 decoder in src/policy.rs, sixty lines
-    # of arithmetic in the path that decides which host is contacted.
-    ( cd crates/hclient-idn/fuzz && \
-      cargo fuzz run --target "$host" idn_policy -- -max_total_time=45 -max_len=512 && \
-      cargo fuzz run --target "$host" idn_policy_vs_idna -- -max_total_time=45 -max_len=512 ) || exit 1
+    # **`hclient-idn` has no fuzz targets any more**, and the reason is
+    # its definition rather than a maintenance decision: it is a
+    # smaller-binary `idna` with no layer of its own, so on the Linux
+    # runner any fuzzer uses, the bundled backend **is** `idna`. A
+    # differential target would compare `idna` with itself and an
+    # idempotence target would measure `idna`'s — checks that cannot fail.
+    # What they were aimed at is whether Foundation and ICU answer what
+    # `idna` answers, and only Windows and macOS can be asked that;
+    # `crates/hclient-idn/tests/differential.rs` asks them on every push.
 
 # ── invariants no build can express ─────────────────────────────────────
 

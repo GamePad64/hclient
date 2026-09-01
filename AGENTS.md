@@ -3265,31 +3265,63 @@ four strings, one per backend, that nothing branched on, and the one test
 that read a name was really asking whether the acceptance gate had
 passed. `testing::has_platform()` is that question with one answer.
 
-**`domain_to_unicode` is the ASCII direction with one more step, and both
-steps are the platform's.** The name is converted to its A-label form
-first, through every rule this crate has, and then the *backend* is asked
-for the Unicode form — `uidna_nameToUnicodeUTF8` on Windows,
-`IDNA.nameToUnicode` on Android, `idna::domain_to_unicode` in the bundled
-build, and `NSURLComponents::host` on Apple. The answer must then
-re-encode to what it was decoded from, which is step 6 run backwards.
+**`domain_to_unicode` is the platform's reverse direction**, like the
+forward one: `uidna_nameToUnicodeUTF8` on Windows,
+`IDNA.nameToUnicode` on Android, `idna::domain_to_unicode` in the
+bundled build, and `NSURLComponents::host` on Apple — where `NSURL::host`
+hands out the A-label and `NSURLComponents` splits the same host into
+`encodedHost`, which is that A-label, and `host`, which is decoded. The
+naming misleads exactly as the existing macOS test's doc comment records:
+for an IDN the *encoded* getter is the ASCII one. Nobody here has a Mac,
+so the acceptance probe runs in **both** directions and a build where
+that getter is not what Apple documents answers `NoImplementation`
+instead of a plausible wrong name.
 
-**Apple has a way back and this file said it did not**, for one commit.
-`NSURL::host` hands out the A-label — that is asserted on `macos-latest`
-on every push — and `NSURLComponents` splits the same host into
-`encodedHost`, which is that A-label, and `host`, which is the decoded
-form. The naming misleads exactly as the existing macOS test's doc
-comment records: for an IDN the *encoded* getter is the ASCII one. Nobody
-here has a Mac, so the getter is not trusted: the acceptance probe now
-runs **in both directions**, so a build where `NSURLComponents::host` is
-not what Apple documents fails the gate and answers
-`NoImplementation` — a refusal — rather than a plausible wrong name. That
-is the shape the forward getter was chosen under.
+### And then the policy layer was deleted, because the crate is not a URL validator
 
-**And the round-trip is not ceremony**, which one measurement settles:
-`idna::domain_to_unicode("xn--%-0fa.de")` answers `"%ä.de"` with **no
-error at all**, and `%` is a forbidden domain code point. A reverse
-direction taken at face value hands a caller a name this client must not
-send.
+`hclient-idn` is a smaller-binary `idna` — the same answers, from
+whatever UTS 46 the platform already carries — and it had grown a layer
+of its own that made it **stricter** than `idna` on six of twenty-two
+probed inputs, `a..b` and `ä..de` among them. Answering *may this host be
+contacted* is not this crate's question, and the layer is gone: 1,565
+lines with its tests, and the dispatch now calls the backend directly.
+
+**Two measurements settle that it was the layer's mistake rather than a
+service.** Neither `url::Url::parse` — the WHATWG reference
+implementation in Rust — nor `http::Uri`, which every request in this
+workspace carries, refuses any of those names; both are conformant in
+accepting them, since the URL Standard's forbidden-domain set excludes
+`*` and domain-to-ASCII without `beStrict` checks neither empty labels
+nor DNS length. And `hclient-proto`'s own consumer already said so in
+prose: *this is still literally `idna::domain_to_ascii_cow(host,
+AsciiDenyList::URL)`* — which the layer had quietly stopped being true
+of.
+
+**Removing it moved a divergence onto the oracle rather than off it.**
+`tests/uri_resolution.rs` compares 96 pairs against `url`, and its
+`DIVERGENCES` list carried one entry that was ours by decision:
+`https://ä..de/x`. It is gone from the list, the row now pins `url`'s own
+answer, and what is left is the RFC-versus-WHATWG set and nothing else.
+
+**Both fuzz targets went with it**, and for the crate's definition rather
+than for maintenance: on the Linux runner any fuzzer uses, the bundled
+backend *is* `idna`, so a differential target compares `idna` with itself
+and an idempotence target measures `idna`'s. What they were aimed at —
+whether Foundation and ICU answer what `idna` answers — only Windows and
+macOS can be asked, and `tests/differential.rs` asks them on every push.
+
+**What survives is the acceptance probe, and it is the whole contract.**
+A backend is used only after answering the transitional pair the way
+`idna` does, in both directions; one that does not is refused, and the
+crate reports `NoImplementation` rather than a different host. That is
+what makes "same answers, smaller binary" a measurement instead of a
+hope.
+
+One property was lost and is `idna`'s own: the two directions do not
+accept the same names. `domain_to_ascii` takes `AsciiDenyList::URL` and
+refuses `a<b.com`; `idna::domain_to_unicode` takes no deny list and
+answers it. A test asserted they agree, and it passed only while the
+layer forced both through one path.
 
 **`cfg_select!` selects a module, which is the shape this file measured
 as the macro's paying side.** Each backend module exports `find`,

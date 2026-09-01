@@ -336,9 +336,6 @@ core::cfg_select! {
 /// layer is platform-independent, everything in it is decided against
 /// `idna` (a dev-dependency everywhere), and gating it away on Linux
 /// would take its tests and its fuzz target with it — on the one runner
-/// this project exercises most.
-mod policy;
-
 mod error;
 
 pub use error::IdnError;
@@ -358,6 +355,14 @@ pub use error::IdnError;
 ///
 /// [forbidden domain code point]: https://url.spec.whatwg.org/#forbidden-domain-code-point
 #[must_use]
+#[cfg_attr(
+    not(any(apple_backend, android_backend)),
+    allow(
+        dead_code,
+        reason = "only the backends that take no deny list of their own apply this — `idna` \
+                  and ICU have one — but the constant and its test are platform-independent"
+    )
+)]
 pub(crate) const fn is_forbidden_domain_byte(b: u8) -> bool {
     matches!(
         b,
@@ -489,7 +494,7 @@ fn selected() -> Option<&'static platform::Handle> {
 /// [`IdnError::NoImplementation`] if this build has an implementation it
 /// will not trust — see `selected`.
 pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    over(domain, policy::to_ascii_over)
+    over(domain, platform::to_ascii)
 }
 
 /// Converts `domain` to its Unicode (U-label) form — UTS 46 ToUnicode.
@@ -498,19 +503,17 @@ pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 /// label comes back lower-cased and otherwise unchanged, which is what
 /// ToUnicode does rather than a shortcut.
 ///
-/// **It accepts exactly the names [`domain_to_ascii`] accepts**, because
-/// it is that function with one more step: the name is converted to its
-/// A-label form first, through the platform and every rule this crate
-/// has, and only then are the ACE labels decoded. So a caller cannot be
-/// handed a Unicode form for a host the other direction would refuse to
-/// contact — see `policy::to_unicode_over` for why that order is the
-/// design rather than an implementation detail.
+/// **It is the platform's own reverse direction**, not a punycode
+/// decoder of this crate's: `uidna_nameToUnicodeUTF8` on Windows,
+/// `IDNA.nameToUnicode` on Android, `idna::domain_to_unicode` in the
+/// bundled build, `NSURLComponents::host` on Apple. So it answers what
+/// `idna` answers, which is the whole of what this crate promises.
 ///
 /// # Errors
 ///
 /// As [`domain_to_ascii`].
 pub fn domain_to_unicode(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    over(domain, policy::to_unicode_over)
+    over(domain, platform::to_unicode)
 }
 
 /// One of the two entry points in [`policy`], as a value the dispatch can
@@ -520,29 +523,24 @@ pub fn domain_to_unicode(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 /// pair of directions is the thing being abstracted over, and `PolicyFn`
 /// says that where the written-out signature says only that something
 /// takes a closure.
-type PolicyFn =
-    fn(&dyn Fn(&str) -> Option<String>, &dyn Fn(&str) -> Option<String>, &str) -> Option<String>;
+type Direction = fn(&platform::Handle, &str) -> Option<String>;
 
 /// The dispatch both directions share.
 ///
-/// `policy` is the entry point — [`policy::to_ascii_over`] or
-/// `policy::to_unicode_over` — and the closure is the selected
-/// backend's conversion. Written once because the alternative is the same
-/// four-way match twice, and the second copy is where a backend goes to
-/// be forgotten.
-fn over(domain: &str, policy: PolicyFn) -> Result<Cow<'_, str>, IdnError> {
+/// `direction` is the selected backend's own conversion — `to_ascii` or
+/// `to_unicode` — and there is nothing between it and the caller. That is
+/// the crate's whole contract: **the same answer `idna` gives, from
+/// whatever UTS 46 the platform already carries**, and the acceptance
+/// probe in [`selected`] is what enforces it.
+fn over(domain: &str, direction: Direction) -> Result<Cow<'_, str>, IdnError> {
     let handle = selected().ok_or_else(|| IdnError::NoImplementation {
         domain: domain.to_owned(),
     })?;
-    policy(
-        &|input| platform::to_ascii(handle, input),
-        &|input| platform::to_unicode(handle, input),
-        domain,
-    )
-    .map(Cow::Owned)
-    .ok_or_else(|| IdnError::NotAnIdn {
-        domain: domain.to_owned(),
-    })
+    direction(handle, domain)
+        .map(Cow::Owned)
+        .ok_or_else(|| IdnError::NotAnIdn {
+            domain: domain.to_owned(),
+        })
 }
 
 /// What the differential corpus in `tests/differential.rs` needs and
@@ -572,57 +570,6 @@ pub mod testing {
     use super::IdnError;
     use std::borrow::Cow;
 
-    /// UTS 46's four label separators, for a test or a fuzz target that
-    /// has to split a domain the way this crate does.
-    ///
-    /// **Data, deliberately, and not the rule.** The policy refuses a
-    /// domain with an empty label that is not the single trailing root,
-    /// and a caller checking that rule writes it out itself — sharing the
-    /// rule would make every such check a tautology over the
-    /// implementation. Sharing the character set is safe because it is
-    /// four codepoints with no logic in them, and `policy.rs`'s
-    /// `the_label_separators_are_exactly_these_four` is what pins it.
-    ///
-    /// The alternative was hard-coding them at each site, and the fuzzer
-    /// showed what that costs: a helper splitting on `'.'` alone missed
-    /// `"．"` — a fullwidth full stop, which is one of the four.
-    pub const LABEL_SEPARATORS: [char; 4] = super::policy::LABEL_SEPARATORS;
-
-    /// The deny list, for a fuzz target that has to say which byte it
-    /// expects a refusal for.
-    ///
-    /// It was `pub` at the crate root until the surface became the two
-    /// conversion functions; it is here now for the reason everything
-    /// else in this module is — a test seam with no stability promise,
-    /// rather than something a client is meant to reach for.
-    #[must_use]
-    pub const fn is_forbidden_domain_byte(b: u8) -> bool {
-        super::is_forbidden_domain_byte(b)
-    }
-    /// The platform implementation — whichever this target has — or
-    /// `None` if it was not accepted, which is the difference between
-    /// "the corpus checked the platform column" and "the corpus silently
-    /// checked nothing".
-    ///
-    /// # Errors
-    /// As [`super::domain_to_ascii`].
-    /// The platform implementation — whichever this target has — or
-    /// `None` if it was not accepted, which is the difference between
-    /// "the corpus checked the platform column" and "the corpus silently
-    /// checked nothing".
-    ///
-    /// **One name for every backend and no `#[cfg]` at all now**, where
-    /// this used to be a pair of arms choosing between Windows and Apple:
-    /// `lib.rs` names one `platform` module, so the differential corpus
-    /// asks the same question on all four targets.
-    ///
-    /// # Errors
-    /// As [`super::domain_to_ascii`].
-    pub fn platform(domain: &str) -> Option<Result<Cow<'_, str>, IdnError>> {
-        super::selected()?;
-        Some(super::domain_to_ascii(domain))
-    }
-
     /// Whether a backend was selected at all — the difference between
     /// "the corpus checked the platform column" and "the corpus silently
     /// checked nothing".
@@ -637,22 +584,16 @@ pub mod testing {
         super::selected().is_some()
     }
 
-    /// The crate's own layer, over a conversion the caller supplies.
+    /// The platform's answer for `domain`, for the differential corpus.
     ///
-    /// This is what makes the layer fuzzable **differentially**, which
-    /// `domain_to_ascii` is not: on a target with the bundled backend that
-    /// function *is* `idna::domain_to_ascii_cow`, so comparing it with
-    /// `idna` compares `idna` with itself. Hand `idna` in here as the
-    /// backend instead and the only thing left in the comparison is this
-    /// crate's own code — the deny list, the case folding, the ASCII
-    /// short-circuit and a hand-written RFC 3492 decoder, which is the
-    /// riskiest thing in the crate because it sits in the path that
-    /// decides which host is contacted.
+    /// The same call [`super::domain_to_ascii`] makes — there is nothing
+    /// between them any more — kept as a name of its own so the corpus
+    /// can say *the platform column* and mean it.
     ///
-    /// See `fuzz/fuzz_targets/idn_policy_vs_idna.rs`.
-    #[must_use]
-    pub fn policy_over(convert: impl Fn(&str) -> Option<String>, domain: &str) -> Option<String> {
-        super::policy::to_ascii_over(&convert, &|_| None, domain)
+    /// # Errors
+    /// As [`super::domain_to_ascii`].
+    pub fn platform(domain: &str) -> Option<Result<Cow<'_, str>, IdnError>> {
+        has_platform().then(|| super::domain_to_ascii(domain))
     }
 }
 
@@ -784,18 +725,25 @@ mod tests {
         assert_eq!(domain_to_unicode("EXAMPLE.COM").unwrap(), "example.com");
     }
 
-    /// **Both directions refuse the same names**, which is why
-    /// `domain_to_unicode` is built on `domain_to_ascii` rather than
-    /// beside it: a caller must not be handed a Unicode form for a host
-    /// the other direction would not contact.
+    /// **The two directions do not accept the same names, and that is
+    /// `idna`'s property rather than a defect of this crate's.**
+    ///
+    /// `domain_to_ascii` takes `AsciiDenyList::URL` and refuses
+    /// `a<b.com`; `idna::domain_to_unicode` takes no deny list at all and
+    /// answers it. A test here asserted they agree, and it passed only
+    /// while a layer of this crate's own forced both through one path —
+    /// which is the URL validation that no longer belongs here.
+    ///
+    /// So the assertion is the difference rather than the agreement: this
+    /// crate is a smaller-binary `idna` and inherits its shape, including
+    /// the parts a caller might not expect.
     #[test]
-    fn the_two_directions_accept_the_same_names() {
-        for name in ["a<b.com", "ä..de", "xn--zzzz.test"] {
-            assert_eq!(
-                domain_to_ascii(name).is_ok(),
-                domain_to_unicode(name).is_ok(),
-                "the two directions disagree about `{name}`"
-            );
-        }
+    fn the_deny_list_is_the_ascii_direction_s_alone_as_it_is_in_idna() {
+        assert!(domain_to_ascii("a<b.com").is_err());
+        assert!(
+            domain_to_unicode("a<b.com").is_ok(),
+            "`idna::domain_to_unicode` takes no deny list, so neither does this — a caller who \
+             needs one applies it where the host is used, which is what `hclient-proto::uri` does"
+        );
     }
 }
