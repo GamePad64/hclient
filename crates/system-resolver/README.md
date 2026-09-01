@@ -32,7 +32,7 @@ platform's convenience API will not return** — `HTTPS`, `SVCB`, `TLSA`,
 | platform | call | can be asked for |
 |---|---|---|
 | Linux (glibc, musl) | `res_query` | any type |
-| macOS, iOS | `res_9_query` | any type |
+| macOS, iOS | `res_9_query` | any type — but see below |
 | Android ≥ 29 | `android_res_nquery` | any type |
 | Windows 11 / Server 2025 | `DnsQueryRaw` | any type |
 | older Windows | `DnsQuery_UTF8` | any type **except** 16 |
@@ -80,6 +80,20 @@ byte-for-byte the RDATA that Linux's `res_query` reports for the same
 name; `MX` came back as a structure and `CAA` as RDATA; and the crate's
 own test compares the two Windows paths across a record of every shape,
 `SVCB` among them, and they agree.
+
+### The Apple caveat
+
+On macOS the query goes to the **primary** resolver, not through the
+router macOS puts in front of its several DNS clients — so a VPN's
+split-DNS zone and the per-domain configurations in `/etc/resolver/` are
+not consulted. That is read out of Apple's own `resolver(5)` and
+`resolver(3)`, composed from the two rather than stated in either, and it
+is the one place this crate does less than the paragraph above promises.
+`DNSServiceQueryRecord` is the API that would fix it; see
+`docs/system-resolver-design.md` §4.5.
+
+Addresses are unaffected — those come from `getaddrinfo`, which does go
+through the whole system configuration.
 
 ## What it deliberately does not do
 

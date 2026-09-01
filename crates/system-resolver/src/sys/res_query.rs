@@ -2,6 +2,53 @@
 //!
 //! The whole of the foreign-function boundary is [`query`]: it hands back
 //! an owned buffer, and everything above it is safe code that walks bytes.
+//!
+//! # On Apple this answers from the primary resolver, and that is less
+//! # than this crate promises
+//!
+//! **Read out of Apple's own manual pages, and worth knowing before
+//! trusting an answer from a Mac on a VPN.** macOS does not have one
+//! resolver configuration; `resolver(5)` describes several DNS *clients*
+//! and a router between them:
+//!
+//! - `/etc/resolv.conf` "contains configuration for the default (or
+//!   `primary`) DNS resolver client";
+//! - "A special meta-client, known as the `Super` DNS client acts as a
+//!   router for DNS queries", choosing by the best match between the name
+//!   asked about and the names of all known clients;
+//! - client configurations "are not limited to file storage" and may live
+//!   "in the System Configuration Database", so "users of the DNS system
+//!   should make no assumptions about the source of the configuration
+//!   data."
+//!
+//! `resolver(3)` — the page Apple ships for these very routines — mentions
+//! none of that: `res_init()` "reads the configuration file", `res_query()`
+//! "constructs a query, sends it to the local server", and its `FILES`
+//! section lists `/etc/resolv.conf` and nothing else.
+//!
+//! **So the split-DNS resolvers a VPN installs, and the per-domain ones in
+//! `/etc/resolver/`, are the Super client's and this call does not consult
+//! them.** That is a conclusion composed from two pages rather than a
+//! sentence in either, and it is stated that way on purpose: Apple
+//! documents no explicit "res_query bypasses supplemental resolvers", and
+//! the `resolver(3)` copy read is the stock BIND page as shipped, so it
+//! may not describe the current release.
+//!
+//! It also makes this crate's two halves disagree on one machine:
+//! `hclient-dns-system` takes addresses through `getaddrinfo`, which does
+//! go through the system's whole configuration, and HTTPS records through
+//! here, which does not — so on a split-DNS Mac the two can ask different
+//! servers about one name.
+//!
+//! **The Mac-shaped answer is `DNSServiceQueryRecord`**, whose callback
+//! hands over `rrtype`, `rrclass`, `rdlen`, "the raw rdata of the resource
+//! record", a TTL and `interfaceIndex` — "the interface on which the query
+//! was **resolved**" — which is this crate's `Record` almost field for
+//! field, and which is routed by mDNSResponder rather than by one server
+//! list. It is not written, and what would settle the decision is one
+//! measurement nobody here can make: a Mac on a VPN with a split-DNS
+//! domain, comparing this backend against `scutil --dns` and against
+//! `DNSServiceQueryRecord` for a name in that zone.
 
 #![allow(
     unsafe_code, // unsafe-code-exception: amendment-C8

@@ -223,6 +223,39 @@ has no machine for that made the defect visible on the four it does.
   possible. It was the project owner's, and it reversed a conclusion this
   file's first draft had reached the other way.
 
+## 4.5 Apple answers from the primary resolver, which is less than promised
+
+Read out of Apple's manual pages rather than measured, and it qualifies
+the row above.
+
+`resolver(5)` describes macOS as running several DNS *clients* with a
+"Super" meta-client routing between them by best domain match;
+`/etc/resolv.conf` is "configuration for the default (or `primary`) DNS
+resolver client", and client configurations may live in the System
+Configuration Database, about which "users of the DNS system should make
+no assumptions". `resolver(3)` — the page Apple ships for `res_query` —
+mentions none of it: `res_init()` "reads the configuration file",
+`res_query()` "sends it to the local server", `FILES` lists
+`/etc/resolv.conf` alone.
+
+So a VPN's split-DNS resolvers and the per-domain ones in `/etc/resolver/`
+belong to the Super client, and this backend does not consult them —
+which is exactly the case this crate's README sells it for. **The
+conclusion is composed from two pages rather than stated in either**, and
+the `resolver(3)` copy read is the stock BIND page as shipped, so it may
+not describe the current release.
+
+It also splits one machine's answers in two: `hclient-dns-system` takes
+addresses through `getaddrinfo`, which does go through the whole system
+configuration, and HTTPS records through `res_9_query`, which does not.
+
+`DNSServiceQueryRecord` is the Mac-shaped answer, and Apple's own
+`dns_sd.h` shows it is this crate's shape almost field for field: the
+callback carries `rrtype`, `rrclass`, `rdlen`, "the raw rdata of the
+resource record", a TTL, and `interfaceIndex` — "the interface on which
+the query was resolved". Writing it means a second foreign-function path
+nobody here can execute, which is the risk §7 lists.
+
 ## 5. What was deliberately not done, each with the reason
 
 - **No resolver of its own.** Then it would be `hickory`, which exists.
@@ -262,6 +295,24 @@ are alike.
 
 ## 7. Still open
 
+- **A Mac on a VPN**, for §4.5: compare this crate's answer for a name in
+  a split-DNS zone against `scutil --dns` and against
+  `DNSServiceQueryRecord`. It decides whether the Apple backend is
+  rewritten, and it is the one measurement that would justify a second
+  never-executed foreign-function path.
 - **iOS.** `res_9_query` is in `libresolv` on both Apple platforms and the
   same code compiles for both, but nothing here has been run on iOS.
-- **A Windows 10 machine**, for §4.2.
+- **A Windows 10 machine**, for §4.4.
+- **The BSDs and illumos.** The targets exist, this crate compiles for
+  them today and answers `Support::None`, and adding one is a single arm
+  in `sys/mod.rs`'s `cfg_if!`. What is missing is the establishing:
+  `libc`'s own `link_name` table points at `__res_init` for FreeBSD,
+  DragonFly, Cygwin and Haiku, which suggests the `__res_` prefix — but
+  §2's whole lesson is that a table is not a measurement, and the glibc
+  finding below shows the two names in that family need not behave alike.
+  An honest `Support::None` costs a caller one fallback; a wrong guess
+  costs a wrong answer.
+- **WASI is not open and never will be.** `wasi:sockets/ip-name-lookup`
+  offers `resolve-addresses` and nothing else — names to addresses, no
+  record type at all — so the absence there is structural rather than
+  unfinished.
