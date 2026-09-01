@@ -27,13 +27,34 @@
 //! narrow and real: **the platform's answers, for types the platform's
 //! convenience API will not return.**
 //!
+//! # Platforms, backends and what each costs
+//!
+//! | target | what is called | [`support()`] | what is not available there |
+//! |---|---|---|---|
+//! | Linux (glibc, musl) | `res_query` | [`Support::Any`] | the header — see the next section |
+//! | Android >= 29 | `android_res_nquery` + `android_res_nresult` | [`Support::Any`] | the header |
+//! | macOS, iOS | `DNSServiceQueryRecord` | [`Support::Any`] | the header, **and** [`Error::NameDoesNotExist`] |
+//! | Windows 11, Server 2025 | `DnsQueryRaw` | [`Support::Any`] | the header |
+//! | Windows 10 | `DnsQuery_UTF8` | [`Support::AnyExcept`], 16 types | the header, sibling records, and see [Windows 10](#windows-10) |
+//! | anything else | nothing at all | [`Support::None`] | every lookup is [`Error::Unsupported`] |
+//!
+//! **The last two Windows rows are one binary**, which is why
+//! [`support()`] is a function and not a constant: `DnsQueryRaw` is
+//! resolved at run time, so a build does not know which of the two it is
+//! until it runs. Every other row is decided by the target.
+//!
+//! **No row costs a dependency for the call itself.** The Unix symbols are
+//! declared where they are used; Windows uses `windows-sys` and
+//! `windows-strings`, which no other target resolves.
+//!
 //! # The answer is records, not a message
 //!
-//! Four of the five platforms hand over a whole DNS message; Windows hands
-//! over a list it has already taken apart. Making the message the common
-//! type would mean synthesising one on Windows out of records that carry
-//! no header — inventing an rcode and flags nobody reported. Records are
-//! what all five genuinely have.
+//! Three of the six rows above hand over a whole DNS message. Windows 10
+//! hands over a list it has already taken apart, and so does Apple's
+//! daemon, one record per callback. Making the message the common type
+//! would mean synthesising one on those two out of records that carry no
+//! header — inventing an rcode and flags nobody reported. Records are what
+//! every row genuinely has.
 //!
 //! What is lost is the header: `AA`, `TC` and the rcode as such. The loss
 //! is stated rather than worked around — a caller that needs to tell
@@ -52,24 +73,124 @@
 //! decoded records would need a type per RFC and would make every consumer
 //! wait for the one it needs.
 //!
+//! **Every name inside `rdata` is written out in full, on every target**,
+//! and that is what makes a bare RDATA field decodable at all: a
+//! compression pointer (RFC 1035 §4.1.4) points at an offset in the
+//! message it arrived in, and a record that has left its message has
+//! nothing to point into. So the pointers are resolved before a record is
+//! handed over. A caller who compares these octets against a packet
+//! capture will see that difference and no other.
+//!
+//! ## What to decode them with
+//!
+//! What is wanted is a crate that parses RDATA **given its type**, which
+//! is a narrower thing than parsing a message — and the difference is the
+//! whole of the choice. Read off each crate's published documentation
+//! rather than recalled:
+//!
+//! | crate | entry point | what it takes |
+//! |---|---|---|
+//! | [`hickory-proto`] 0.26 | `RData::read(&mut BinDecoder, RecordType, Restrict<u16>)` | a bare RDATA field — the direct fit |
+//! | [`domain`] 0.12 | `AllRecordData::parse_rdata(Rtype, &mut Parser)` | a bare RDATA field — the direct fit |
+//! | [`dns-message-parser`] 0.9 | `RR::decode(Bytes)` | a **whole record**: name, type, class, TTL and length first |
+//!
+//! The third row is the shape to watch for, and it is not a defect in that
+//! crate — a decoder written for messages reasonably expects a record's
+//! header. What it costs a caller is building one, and `hclient-dns-system`
+//! is a worked example: it wraps these records in a synthetic message and
+//! hands that to `Dns::decode`, because it wanted that crate for other
+//! reasons.
+//!
+//! Any other crate is judged by the same question, which is worth asking
+//! before the download: *can it be handed a type and some octets?* A
+//! decoder that can only start at a message header is usable and is one
+//! envelope more expensive.
+//!
+//! [`hickory-proto`]: https://docs.rs/hickory-proto
+//! [`domain`]: https://docs.rs/domain
+//! [`dns-message-parser`]: https://docs.rs/dns-message-parser
+//!
+//! # Windows 10
+//!
+//! The one target where [`support()`] does not answer [`Support::Any`],
+//! and the one where the answer is a **run-time** fact rather than a
+//! build-time one. `DnsQueryRaw` arrived in Windows 11 and hands over the
+//! wire message; Windows 10 has only `DnsQuery_UTF8`, which hands over
+//! records the OS has already taken apart. The same binary is
+//! [`Support::Any`] on one and [`Support::AnyExcept`] on the other.
+//!
+//! **The newer call is resolved with `GetProcAddress` rather than named as
+//! an import**, and that is not caution about a missing function: naming
+//! one that a machine does not export stops the **process** from starting
+//! at all, so a binary importing `DnsQueryRaw` would not run on Windows 10
+//! — including the half of it that has nothing to do with DNS.
+//!
+//! ## What is refused, and why it is a list
+//!
+//! `DnsQuery_UTF8` fills in a `DNS_RECORD` whose data union carries **no
+//! discriminator**. A type the union does not name arrives as the record's
+//! own RDATA and needs nothing; a type it names *may* arrive as that
+//! structure instead — `SVCB` is the measured counterexample, and reading
+//! one as the other is a wrong pointer rather than a wrong answer.
+//!
+//! So the union's members are answered by reading the structure and
+//! writing RDATA back out: twenty-six of them, which is why `A`, `AAAA`,
+//! `MX`, `TXT`, `SRV`, `SOA`, `NS`, `CNAME`, `PTR`, `DS`, `DNSKEY` and
+//! `TLSA` work here as anywhere. **Sixteen are refused by name** through
+//! [`Support::AnyExcept`], before a query is spent: the DNSSEC signature
+//! and denial records, whose canonical forms this crate would have to
+//! reproduce exactly; protocol machinery — `OPT`, `TKEY`, `TSIG`; and
+//! `WKS`, `ATMA`, `NULL`, `DHCID`, `WINS`, `WINSR`. Most of the registry
+//! is in neither group and simply arrives as RDATA, `CAA`, `HTTPS`,
+//! `SVCB`, `SSHFP`, `OPENPGPKEY`, `CERT`, `LOC` and `URI` among them.
+//!
+//! The list is **derived** from the union's membership minus the types
+//! with a re-encoder, rather than written out a third time.
+//!
+//! ## What the answers themselves cost
+//!
+//! For a re-encoded type the octets are *what Windows understood*, not
+//! what arrived, and three differences follow. Case is Windows' own — DNS
+//! names are case-insensitive and nothing restores what the origin sent.
+//! A character-string cannot carry a NUL, because `TXT`, `HINFO`, `X25`,
+//! `ISDN` and `NAPTR` strings arrive as C strings — an octet the RFCs
+//! permit, truncated by **Windows** before this crate sees it. Names
+//! written out in full is the third, and it is not a Windows 10 property:
+//! every target does it, for the reason above.
+//!
+//! Two things are missing rather than altered. **Records of another type
+//! beside the answer** — a CNAME chain is visible wherever a message is —
+//! because a `DNS_RECORD` of another type is that type's structure and
+//! this path would have to know its shape too; ask for `CNAME` directly.
+//! And **`TC`**: a truncated answer is refused where the header is
+//! readable and is invisible here, so whatever records the OS obtained
+//! come back with nothing saying the set is short. [`Error::NameDoesNotExist`]
+//! survives, because the API reports it as a status of its own.
+//!
+//! ## It is best-effort, and that is a statement about evidence
+//!
+//! There is no Windows 10 machine behind this crate and none in its CI.
+//! What stands in for one is that `DnsQuery_UTF8` is present on Windows 11
+//! as well and *was* executed there, against `DnsQueryRaw` on the same
+//! machine and the same name, with the two answers compared octet for
+//! octet. That is the strongest evidence available without the hardware
+//! and it is not the same as having run it.
+//!
 //! # Blocking
 //!
 //! Every platform call here blocks. A caller that needs otherwise runs
 //! this where blocking is allowed; that is what a runtime's blocking pool
 //! is for.
 //!
-//! # What each platform can be asked
-//!
-//! [`support()`] answers it, and the answer is not the same everywhere —
-//! see [`Support`] for the Windows case, which is the only interesting
-//! one and the reason this crate has that type at all.
 
 #![doc(html_no_source)]
 
 mod error;
-/// Compiled and tested on every host, and reached by four of the five
-/// backends: Windows hands over records it has already taken apart, so
-/// nothing there walks a message.
+/// Compiled and tested on every host, and reached by **three** of the five
+/// backends — `res_query`, Android's pair and `DnsQueryRaw`. The other two
+/// hand over records that were taken apart before this crate saw them, so
+/// nothing there walks a message: Windows 10's `DnsQuery_UTF8`, and
+/// Apple's daemon, which calls back once per record.
 ///
 /// The allowance is `sys`'s, for `sys`'s reason — a build compiles exactly
 /// one backend, and narrowing this to the ones that walk a message would
@@ -82,8 +203,13 @@ mod message;
 /// The mirror of [`message`]: it decodes a wire message into records, this
 /// encodes a record a platform took apart back into RDATA. Compiled and
 /// tested on every host for the same reason, and reached by **one**
-/// backend — the Windows path that has no `DnsQueryRaw` — which is the
-/// exact complement of the four that reach `message`.
+/// backend — the Windows path that has no `DnsQueryRaw`.
+///
+/// It is not the complement of the three that reach [`message`], and the
+/// gap is Apple: that daemon hands over RDATA already, so it needs neither
+/// module. Reading the two counts as a partition is the mistake this
+/// sentence exists to stop, and it was one this crate's own docs made for
+/// as long as Apple's arm was `res_query`.
 #[allow(dead_code, reason = "see `message`'s note; this is its mirror")]
 mod rdata;
 mod sys;
@@ -169,26 +295,18 @@ pub enum Support {
     /// Any type **except** these, each of which the platform parses into a
     /// structure of its own before this crate can see it.
     ///
-    /// **This is a Windows without `DnsQueryRaw`, and it is a list rather
-    /// than a `bool` because the difference is enormous.**
-    /// `DnsQuery_UTF8` fills in a `DNS_RECORD` whose data union has no
-    /// discriminator; a type the union does not name arrives as the
-    /// record's own RDATA, and one it names *may* arrive as that
-    /// structure — `SVCB` is the measured counterexample.
+    /// **This is a Windows without `DnsQueryRaw`**, and today it is the
+    /// only producer. Which sixteen types, and why those, is the crate
+    /// root's [Windows 10](crate#windows-10) section — said once there
+    /// rather than twice.
     ///
-    /// Most of the registry — `CAA`, `HTTPS`, `SVCB`, `SSHFP`,
-    /// `OPENPGPKEY`, `CERT`, `LOC`, `URI` — is in the second group and
-    /// works there exactly as anywhere else. Of the forty-two in the
-    /// first, twenty-six are **re-encoded** from the structure back into
-    /// RDATA, which is why `A`, `AAAA`, `MX`, `TXT`, `SRV`, `SOA`, `NS`,
-    /// `CNAME`, `PTR`, `DS`, `DNSKEY` and `TLSA` are answerable too. What
-    /// is left here is sixteen: the DNSSEC signature and denial records,
-    /// protocol machinery like `OPT` and `TSIG`, and Windows' own `WINS`
-    /// pair.
-    ///
-    /// A `bool` would have hidden all of that, and refusing the whole
-    /// first group would have refused essentially every record in
-    /// everyday use.
+    /// **What belongs here is why it is a list and not a `bool`**, because
+    /// that is a fact about this type: the refused set is sixteen against
+    /// a registry that mostly arrives untouched, so a `bool` would have
+    /// reported a platform that answers `A`, `HTTPS`, `MX`, `TXT` and
+    /// `CAA` as one that answers nothing. It is `&'static [u16]` rather
+    /// than an enum for the reason [`Record::rtype`] is a number: the
+    /// registry gains entries.
     AnyExcept(&'static [u16]),
     /// No backend on this target. [`lookup`] answers
     /// [`Error::Unsupported`] for every type, and says so here rather than
@@ -215,11 +333,10 @@ impl Support {
 /// What this build can be asked for; see [`Support`].
 ///
 /// **A function rather than a constant, because on Windows the answer is
-/// genuinely a run-time one.** `DnsQueryRaw` arrived in Windows 11 and
-/// hands over the wire message, which makes that machine [`Support::Any`];
-/// a Windows 10 running the same binary has only `DnsQuery_UTF8` and is
-/// [`Support::AnyExcept`]. Everywhere else this is decided by the build and
-/// the call is free.
+/// genuinely a run-time one** — one binary, two answers, depending on
+/// whether the machine it is running on exports `DnsQueryRaw`. The crate
+/// root's [Windows 10](crate#windows-10) section is why. Everywhere else
+/// this is decided by the build and the call is free.
 ///
 /// The answer is resolved once and cached: it cannot change while the
 /// process runs.
