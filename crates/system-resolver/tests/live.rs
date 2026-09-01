@@ -19,8 +19,13 @@ use system_resolver::{Error, Support, lookup, support};
 /// Windows it is not one of the types the OS parses into a struct.
 const TYPE_HTTPS: u16 = 65;
 /// RFC 8659 §4.1. The control for the Windows rule from the other side: no
-/// `DNS_TYPE_CAA` exists in the Win32 metadata at all.
+/// `DNS_TYPE_CAA` exists in the Win32 metadata at all — and, at 257, the
+/// type that put musl's ceiling on the map.
 const TYPE_CAA: u16 = 257;
+/// RFC 1035 §3.3.2. Stands in for `CAA` where a build's ceiling refuses
+/// 257: a type nothing publishes, which is what a *this name has none of
+/// these* control needs.
+const TYPE_HINFO: u16 = 13;
 
 #[test]
 #[ignore = "needs a name server"]
@@ -51,6 +56,20 @@ fn an_https_record_comes_back_as_svcb_wire_format() {
 #[test]
 #[ignore = "needs a name server"]
 fn a_caa_record_comes_back_as_its_own_rdata() {
+    // **musl cannot ask for it at all**, and the refusal is what this test
+    // asserts there rather than being skipped: `Support::UpTo(255)` puts
+    // 257 on the wrong side of the line, and the whole point of answering
+    // a bound instead of `Any` is that a caller is told before a query is
+    // spent. A skip would leave that unchecked on the one platform where
+    // it happens.
+    if !support().allows(TYPE_CAA) {
+        assert!(matches!(
+            lookup("cloudflare.com", TYPE_CAA),
+            Err(Error::UnsupportedType { rtype: TYPE_CAA })
+        ));
+        return;
+    }
+
     let found = lookup("cloudflare.com", TYPE_CAA).expect("the lookup succeeds");
     assert!(!found.is_empty(), "cloudflare.com publishes CAA records");
     for record in &found {
@@ -101,8 +120,20 @@ fn a_name_that_does_not_exist_is_not_an_empty_answer() {
     // The control, and the wildcard case above is what makes it worth
     // having: without it, a `lookup` that answered `NameDoesNotExist` for
     // everything would pass the assertion above.
-    let present = lookup("www.cloudflare.com", TYPE_CAA).expect("the name exists");
-    assert!(present.is_empty(), "no CAA at this name");
+    //
+    // The type has to be one this build can ask for *and* one this name
+    // does not have, so it is `CAA` where that is answerable and `HINFO`
+    // where it is not — musl refuses 257 before a query, which would make
+    // the control assert the wrong thing. RFC 1035 §3.3.2's `HINFO` is a
+    // type essentially nothing publishes, which is exactly what a control
+    // for *the name exists and has none of these* needs.
+    let absent_type = if support().allows(TYPE_CAA) {
+        TYPE_CAA
+    } else {
+        TYPE_HINFO
+    };
+    let present = lookup("www.cloudflare.com", absent_type).expect("the name exists");
+    assert!(present.is_empty(), "no records of type {absent_type} at this name");
 }
 
 /// RFC 1035 §3.2.2. The type that separates the two Windows calls: it is
@@ -132,6 +163,23 @@ fn support_and_lookup_agree_about_a_type_that_separates_the_two_windows_calls() 
             assert!(matches!(
                 lookup("cloudflare.com", TYPE_A),
                 Err(Error::UnsupportedType { rtype: TYPE_A })
+            ));
+        }
+        Support::UpTo(highest) => {
+            // `A` is under any plausible ceiling, so it answers exactly as
+            // it does on `Any` — the ceiling itself is what needs an
+            // assertion, because nothing else in this file would notice if
+            // it moved.
+            let found = lookup("cloudflare.com", TYPE_A).expect("A is answerable");
+            assert!(!found.is_empty(), "cloudflare.com has A records");
+            assert!(found.iter().all(|r| r.rdata.len() == 4), "an IPv4 address");
+            assert!(
+                TYPE_CAA > highest,
+                "a ceiling that admits CAA is not the one this arm is written for"
+            );
+            assert!(matches!(
+                lookup("cloudflare.com", TYPE_CAA),
+                Err(Error::UnsupportedType { rtype: TYPE_CAA })
             ));
         }
         Support::None => {

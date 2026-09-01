@@ -377,7 +377,7 @@ check-targets:
     # figure written twice is a figure that drifts, which this workspace
     # has fixed three times elsewhere. Adding a target here is the whole
     # of adding one.
-    TARGETS="wasm32-unknown-unknown wasm32-wasip2 aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-linux-android x86_64-unknown-freebsd"
+    TARGETS="wasm32-unknown-unknown wasm32-wasip2 aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-linux-android x86_64-unknown-freebsd x86_64-unknown-linux-musl"
     for t in $TARGETS; do
       rustup target list --installed | grep -qx "$t" || {
         echo "::error::target $t is not installed — \`rustup target add $t\`. Skipping it would return exactly the blind spot this recipe covers."
@@ -417,6 +417,14 @@ check-targets:
     # and a live test that does not compile establishes nothing.
     check -p system-resolver --target x86_64-unknown-freebsd --all-features --all-targets
     check -p hclient-dns-system --target x86_64-unknown-freebsd --all-features --all-targets
+    # musl, which is a **different backend from glibc** in this crate and
+    # was built by nothing until a ceiling shipped inside it: its
+    # `res_query` refuses a type number above 255, so `Support::Any` was a
+    # capability that lied, and neither the workspace run nor any gate here
+    # compiled the arm that says so. `--all-targets` because the live tests
+    # are where the ceiling is asserted.
+    check -p system-resolver --target x86_64-unknown-linux-musl --all-features --all-targets
+    check -p hclient-dns-system --target x86_64-unknown-linux-musl --all-features --all-targets
     # `--lib` and not `--all-targets` here, and the reason is a fact about
     # this crate's dev-dependencies rather than about wasm: `wait-timeout`
     # and `getrandom`'s host backend are host-only and do not build for

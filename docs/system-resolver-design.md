@@ -477,6 +477,78 @@ push for a platform nothing here can run, with one difference in its
 favour — the live suite that would establish it already exists and names
 the question.
 
+## 4.7 The two Linux libcs turned out to be two platforms
+
+Asked whether `res_query` is safe to call the way this crate calls it, and
+the answer split glibc from musl twice over — once on thread safety, once
+on what can be asked at all.
+
+### 4.7.1 glibc documents it unsafe, and the implementation disagrees
+
+`resolver(3)`: *"The traditional resolver interfaces such as `res_init()`
+and `res_query()` use some static (global) state stored in the `_res`
+structure, rendering these functions non-thread-safe"*, and its
+`ATTRIBUTES` table lists **only** the `res_n*` family as `MT-Safe`.
+
+The implementation says otherwise, measured three ways on this host:
+
+- `__res_state()` returns a **distinct pointer per thread** — nine threads,
+  nine addresses;
+- disassembled out of the shipped `libc.so.6`, `res_query` is
+  `__resolv_context_get` → `__res_context_query` → `__resolv_context_put`,
+  and `__resolv_context_get` reads through **`%fs:`**, the thread-local
+  segment;
+- the crate's own concurrency burst answers 64/64 from eight threads.
+
+So on glibc 2.43 the "global state" of the sentence is thread-local, and
+the wording is inherited from the BIND-era API rather than describing this
+libc.
+
+**The backend moved to `res_nquery` anyway, and what that is worth is
+worth stating precisely.** It is glibc's documented `MT-Safe` entry and it
+costs no struct layout — `_res` is `(*__res_state())`, that symbol links,
+and the pointer is passed through and never dereferenced. It costs one
+initialisation per thread: a fresh thread's state answers `-1` until
+`__res_ninit`, and **re-initialising an initialised state leaks**, 1660
+KiB over 200 000 calls, so the init sits behind a thread-local flag.
+
+What it does **not** buy is a weaker assumption. `res_nquery(__res_state(),
+..)` is handed the very object `res_query` would have fetched itself, so
+both rest on the same per-thread fact. The honest gain is that the fact is
+now named and **asserted** —
+`glibc_hands_each_thread_its_own_resolver_state` checks it directly rather
+than through the outcome of a burst, which is the difference between
+catching Apple's defect and being lucky about it. The only route that
+would rest on the documented contract alone is a state of this crate's
+own, and that needs the layout `libc` declines to declare.
+
+### 4.7.2 musl cannot be asked for a type above 255
+
+Found by running the live suite on `x86_64-unknown-linux-musl`, where two
+of five tests failed — both on `CAA`. Probed against glibc as the control,
+one host, one name, one moment:
+
+| type | musl | glibc |
+|---|---|---|
+| 1 `A`, 28 `AAAA`, 65 `HTTPS`, 255 `ANY` | answers | answers |
+| **257 `CAA`** | **−1** | **515 octets** |
+
+So the boundary is the call's, not the network's and not any one type's:
+musl's `res_query` will not carry a type number above 255.
+
+**`Support::Any` was therefore a capability that lies**, which is the
+defect this crate was written to remove one platform over — and it had
+shipped, invisible because nothing in CI builds for musl and the live
+tests are `#[ignore]`d. `Support::UpTo(255)` is the answer, and it is a
+**bound rather than a list** because [`AnyExcept`]'s list would be 65 279
+entries; the types it costs are ones callers ask for, `CAA` at 257 and
+`URI` at 256.
+
+Adding a variant to a deliberately exhaustive enum is a breaking change,
+and it was free exactly once — before `0.1.0`. It also worked as designed:
+the compiler named every reader that had to decide, which is what that
+enum's doc comment says it is for.
+
 ## 5. What was deliberately not done, each with the reason
 
 - **No resolver of its own.** Then it would be `hickory`, which exists.

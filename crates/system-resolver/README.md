@@ -31,7 +31,8 @@ platform's convenience API will not return** — `HTTPS`, `SVCB`, `TLSA`,
 
 | platform | call | can be asked for |
 |---|---|---|
-| Linux (glibc, musl) | `res_query` | any type |
+| Linux, glibc | `res_nquery` | any type |
+| Linux, musl | `res_query` | any type **up to 255** — `CAA` and `URI` are above it |
 | macOS, iOS | `DNSServiceQueryRecord` | any type |
 | Android ≥ 29 | `android_res_nquery` | any type |
 | FreeBSD | `res_query` | any type — compiled, never run |

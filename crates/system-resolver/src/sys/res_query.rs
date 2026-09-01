@@ -40,9 +40,24 @@ use crate::message;
 use crate::{CLASS_IN, Record};
 use core::ffi::{c_char, c_int, c_uchar};
 
-/// The wire message is what comes back, so any type at all can be asked
-/// for — including one this crate, this libc and the reader have never
-/// heard of.
+/// The wire message is what comes back, so on FreeBSD any type at all can
+/// be asked for — including one this crate, this libc and the reader have
+/// never heard of.
+///
+/// **musl answers a bound instead, and it is measured rather than read.**
+/// Against glibc on one host, one name, one moment: `CAA` (257) comes back
+/// as 515 octets through glibc and `-1` through musl, while `A`, `AAAA`,
+/// `HTTPS` and `ANY` (255) answer through both. So musl's `res_query` will
+/// not carry a type number above 255, and saying `Any` here would be the
+/// *capability that lies* this crate exists to prevent — with `CAA` and
+/// `URI` on the wrong side of it, which are types callers actually ask
+/// for.
+#[cfg(target_env = "musl")]
+pub(crate) fn support() -> crate::Support {
+    crate::Support::UpTo(255)
+}
+
+#[cfg(not(target_env = "musl"))]
 pub(crate) fn support() -> crate::Support {
     crate::Support::Any
 }

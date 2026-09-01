@@ -31,7 +31,8 @@
 //!
 //! | target | what is called | [`support()`] | what is not available there |
 //! |---|---|---|---|
-//! | Linux (glibc, musl) | `res_query` | [`Support::Any`] | the header — see the next section |
+//! | Linux, glibc | `res_nquery` | [`Support::Any`] | the header — see the next section |
+//! | Linux, musl | `res_query` | [`Support::UpTo`]`(255)` | the header, **and every type above 255** |
 //! | Android >= 29 | `android_res_nquery` + `android_res_nresult` | [`Support::Any`] | the header |
 //! | FreeBSD | `res_query` | [`Support::Any`] | the header — and see the note below |
 //! | macOS, iOS | `DNSServiceQueryRecord` | [`Support::Any`] | the header, **and** [`Error::NameDoesNotExist`] |
@@ -320,6 +321,27 @@ pub enum Support {
     /// than an enum for the reason [`Record::rtype`] is a number: the
     /// registry gains entries.
     AnyExcept(&'static [u16]),
+    /// Any type whose number is at most this, **inclusive**, and no type
+    /// above it.
+    ///
+    /// **This is musl, and it is a fact about the call rather than about
+    /// any one type.** Measured against glibc on the same host, the same
+    /// name and the same moment: `CAA` (257) answers 515 octets through
+    /// glibc and `-1` through musl, while `A`, `AAAA`, `HTTPS` and `ANY`
+    /// (255) answer through both. musl's `res_query` will not carry a type
+    /// number above 255.
+    ///
+    /// **A bound rather than a list, because the list is 65 279 long.**
+    /// [`AnyExcept`] carries the refused types by name, which is right
+    /// where they are a handful chosen by a platform's parser; here what
+    /// is refused is everything above a line, and enumerating it would be
+    /// a `&'static [u16]` larger than this crate.
+    ///
+    /// The types it costs are real ones a caller asks for — `CAA` is 257,
+    /// `URI` 256 — so this is not a corner of the registry nobody visits.
+    ///
+    /// [`AnyExcept`]: Support::AnyExcept
+    UpTo(u16),
     /// No backend on this target. [`lookup`] answers
     /// [`Error::Unsupported`] for every type, and says so here rather than
     /// looking like a network failure at the call site.
@@ -337,6 +359,7 @@ impl Support {
         match self {
             Self::Any => true,
             Self::AnyExcept(parsed) => !parsed.contains(&rtype),
+            Self::UpTo(highest) => rtype <= highest,
             Self::None => false,
         }
     }
@@ -375,7 +398,9 @@ pub fn lookup(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
     if !support().allows(rtype) {
         return Err(match support() {
             Support::None => Error::Unsupported,
-            Support::Any | Support::AnyExcept(_) => Error::UnsupportedType { rtype },
+            Support::Any | Support::AnyExcept(_) | Support::UpTo(_) => {
+                Error::UnsupportedType { rtype }
+            }
         });
     }
     sys::query(name, rtype)
@@ -414,14 +439,16 @@ mod tests {
     fn the_platform_this_was_built_for_selected_the_backend_it_should_have() {
         let wire = cfg!(any(
             target_os = "android",
-            all(
-                target_os = "linux",
-                any(target_env = "gnu", target_env = "musl")
-            ),
+            all(target_os = "linux", target_env = "gnu"),
             target_os = "freebsd",
             target_vendor = "apple",
         ));
-        let windows = cfg!(windows) && !wire;
+        // musl hands over a message like the others and still cannot be
+        // asked for every type, so it is its own row rather than part of
+        // `wire`: what separates the arms here is the *answer*, not the
+        // shape of what the platform returns.
+        let capped = cfg!(all(target_os = "linux", target_env = "musl"));
+        let windows = cfg!(windows) && !wire && !capped;
         let got = support();
         // Written as one computed verdict rather than as an `assert!` per
         // arm: each of those compares a `cfg!` against a constant on the
@@ -433,11 +460,12 @@ mod tests {
             // build — so it is checked as *not `None`* and no further.
             Support::Any => wire || windows,
             Support::AnyExcept(_) => windows,
-            Support::None => !wire && !windows,
+            Support::UpTo(_) => capped,
+            Support::None => !wire && !windows && !capped,
         };
         assert!(
             agrees,
-            "this target expects wire={wire} windows={windows} and got {got:?}"
+            "this target expects wire={wire} capped={capped} windows={windows} and got {got:?}"
         );
     }
 
