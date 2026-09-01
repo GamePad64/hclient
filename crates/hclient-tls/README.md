@@ -1,18 +1,14 @@
 # hclient-tls
 
-**The TLS seam: `TlsConnect`, `TlsIdentity`, and `NoTls`.**
+The TLS traits for `hclient`: `TlsConnect`, `TlsIdentity` and `NoTls`.
 
-One method — handshake and wrap in a single step, because no caller
-anywhere wants one without the other. `reports_alpn` is defaulted `false`
-so a backend that cannot read the negotiated protocol back cannot leave the
-client speaking HTTP/1 into an h2 connection. `NoTls` is the third choice:
-no TLS stack at all, where `https://` fails at connect with a typed error
-rather than a claim.
+`NoTls` is a real choice, not a placeholder: it is for builds with no room
+for a TLS stack, where `https://` fails at connect with a typed error
+rather than silently going plaintext. Implement `TlsConnect` to use a TLS
+library `hclient` does not ship a backend for.
 
-Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
-complete enough to build a new curl on, or a browser. See the repository
-for the whole shape, and `AGENTS.md` in it for why this piece is its own
-crate.
+Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
+HTTP client for native, browser and WASI targets.
 
 ## Licence
 

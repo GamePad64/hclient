@@ -1,18 +1,13 @@
 # hclient-webtransport
 
-**WebTransport sessions over a `quinn::Connection`.**
+WebTransport sessions over a `quinn::Connection`.
 
-`Session::connect`, `open_bi`, datagrams, many sessions on one connection,
-and a clean close that can be told apart from a session that vanished. 48
-crates, and `quinn` arrives with no `ring`, which is the visible
-consequence of owning no endpoint. The close capsule is 59 lines here
-because the three crates whose names promise it do not have it — measured,
-not assumed.
+`Session::connect`, `open_bi`, datagrams, and clean close through RFC
+9297's capsule. It takes a connection from outside rather than dialling
+one itself, so it adds no QUIC endpoint of its own.
 
-Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
-complete enough to build a new curl on, or a browser. See the repository
-for the whole shape, and `AGENTS.md` in it for why this piece is its own
-crate.
+Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
+HTTP client for native, browser and WASI targets.
 
 ## Licence
 

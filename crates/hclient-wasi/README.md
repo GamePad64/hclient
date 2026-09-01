@@ -1,16 +1,13 @@
 # hclient-wasi
 
-**`Transport` over `wasi:http` 0.3, for `wasm32-wasip2`.**
+`Transport` over `wasi:http` 0.3, for `wasm32-wasip2`.
 
-No tokio in the graph at all — 27 crates total, machine-checked. Proven
-under a real `wasmtime` host rather than in theory, and a `wasi:http` host
-rejecting a request option becomes a typed error rather than a silently
-dropped setting, which is held in place by a static-analysis rule in CI.
+The host does the networking, so nothing here opens a socket and the graph
+contains no tokio, hyper or h2. Request options the host rejects become
+errors rather than being silently dropped.
 
-Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
-complete enough to build a new curl on, or a browser. See the repository
-for the whole shape, and `AGENTS.md` in it for why this piece is its own
-crate.
+Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
+HTTP client for native, browser and WASI targets.
 
 ## Licence
 

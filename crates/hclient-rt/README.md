@@ -1,18 +1,15 @@
 # hclient-rt
 
-**The async-runtime seams: `TcpConnect`, `Timer`, `UdpBind`, `Spawn`, `Blocking`.**
+Runtime traits for `hclient`: `TcpConnect`, `Timer`, `UdpBind`, `Spawn`
+and `Blocking`.
 
-Five small traits so a transport can be written once and run on tokio, on
-smol, on embassy, or on a bare `futures` executor with no reactor at all.
-None of them demands `Send`. `TcpConnect::APPLIES` is the shape worth
-copying: a constant defaulted to the *understating* value, read by the layer
-above to decide whether to even ask — an understated capability costs a
-named error, an overstated one costs a silently unapplied option.
+Five small traits, so a transport can be written once and run on tokio, on
+smol, on embassy, or on a bare `futures` executor with no reactor. None of
+them requires `Send`. Implement them to run `hclient` on a runtime it does
+not ship support for.
 
-Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
-complete enough to build a new curl on, or a browser. See the repository
-for the whole shape, and `AGENTS.md` in it for why this piece is its own
-crate.
+Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
+HTTP client for native, browser and WASI targets.
 
 ## Licence
 

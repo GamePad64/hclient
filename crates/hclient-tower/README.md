@@ -1,14 +1,13 @@
 # hclient-tower
 
-**A `tower::Service` adapter, in both directions.**
+A `tower::Service` adapter for `hclient`, in both directions.
 
-So this client fits a stack that already speaks that vocabulary — and so a
-`tower` stack can sit underneath the client as its transport.
+Wrap a `Client` as a `Service`, or wrap a `Service` as a `Transport`. The
+second direction is what lets you drive a real `hclient::Client` against an
+`axum::Router` in-process, with no socket and no port.
 
-Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
-complete enough to build a new curl on, or a browser. See the repository
-for the whole shape, and `AGENTS.md` in it for why this piece is its own
-crate.
+Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
+HTTP client for native, browser and WASI targets.
 
 ## Licence
 

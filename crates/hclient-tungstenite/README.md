@@ -1,28 +1,14 @@
 # hclient-tungstenite
 
-**WebSocket over `hclient-native`, with `tungstenite` framing.**
+WebSocket over `hclient-native`, with `tungstenite` framing.
 
-The name has no `-ws-` in it on purpose. Every other `hclient-<seam>-<impl>`
-name here — `hclient-tls-rustls`, `hclient-dns-doh`, `hclient-rt-tokio` —
-names a seam crate that exists, and each of those exists to hold a
-dependency `hclient-core` must not have. The WebSocket trait pair holds
-none: it is 161 lines over `futures_core` and `futures_sink`, so it lives
-in `hclient-core` and an `hclient-ws` would be a crate with nothing to
-carry. A name promising one would promise a crate this workspace's own rule
-forbids.
+`Tungstenite::new(&native).websocket(request)` borrows a transport that a
+`Client` may already own. It is a separate crate so that switching
+WebSocket on does not put `tungstenite` into every build that uses the
+transport.
 
-Its own crate and its own trait pair — `WebSocketConnect` for what a
-backend implements, `WebSocket` for the message channel — so a transport
-that cannot do WebSocket is a **compile error** rather than a runtime
-`Unsupported`. The seam is message-oriented on purpose: "hand back the
-socket after the 101" is implementable by exactly one of the four backends
-here, and the three it shuts out include the browser. RFC 6455 ping/pong
-liveness is available and off by default.
-
-Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
-complete enough to build a new curl on, or a browser. See the repository
-for the whole shape, and `AGENTS.md` in it for why this piece is its own
-crate.
+Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
+HTTP client for native, browser and WASI targets.
 
 ## Licence
 

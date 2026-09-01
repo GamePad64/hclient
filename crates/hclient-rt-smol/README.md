@@ -1,16 +1,12 @@
 # hclient-rt-smol
 
-**`hclient-rt` over smol / `async-io`.**
+`hclient-rt` implemented over smol and `async-io`.
 
-The second runtime, and it exists to prove the seam is real rather than
-decorative: the same generic transport code runs under it on a bare
-`futures_executor::block_on`, with no spawn and no tokio reactor anywhere in
-its path. CI runs both.
+Use it if your program is built on smol rather than tokio. It also works
+on a bare `futures_executor::block_on` with no spawning.
 
-Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
-complete enough to build a new curl on, or a browser. See the repository
-for the whole shape, and `AGENTS.md` in it for why this piece is its own
-crate.
+Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
+HTTP client for native, browser and WASI targets.
 
 ## Licence
 
