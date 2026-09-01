@@ -3320,13 +3320,24 @@ the conclusion does not follow: unicode-rs is **126 KiB larger** than the
 ICU one in a stripped binary. A count of crates is not a count of bytes,
 which is the same lesson this file draws about vendored source.
 
-**148 KiB is the whole of what `hclient-idn` buys**, on Windows, Apple
-and Android; on Linux and wasm it changes nothing at all, because there
-the bundled crate *is* the backend. Against `hc`'s default build at
-5.2 MiB that is 2.8% — not the reason anyone would keep it. Against a
-client built for a phone or a small container, where the tables are one
-of the larger single items and the platform already ships a UTS 46, it is
-the reason.
+**And on Android it is measured on the real target rather than by
+proxy**, now that there is an NDK to link with. The same `cdylib` the
+live run used, `opt-level = "z"`, fat LTO, `panic = "abort"`, stripped:
+
+| target | platform backend | `--features idna` | saved |
+|---|---|---|---|
+| `aarch64-linux-android` | 304.5 KiB | 443.5 KiB | **139.0 KiB — 31%** |
+| `x86_64-linux-android` | 334.9 KiB | 478.3 KiB | **143.3 KiB — 30%** |
+
+**A third of the library.** That is the number the crate lives or dies
+by, and it is a share rather than an absolute because the denominator is
+what a small native library actually weighs: 139 KiB against `hc`'s
+5.2 MiB is 2.8% and not worth a crate, but against 443 KiB of `.so`
+shipped per ABI it is the largest single item in it. `aarch64` is the ABI
+almost every real device takes.
+
+On Linux and wasm it changes nothing at all, because there the bundled
+crate *is* the backend.
 
 What it costs is now small enough to weigh against that: **726 lines of
 code** across four backends, an acceptance probe and two public
