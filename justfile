@@ -1286,7 +1286,7 @@ fuzz-smoke:
 # ── invariants no build can express ─────────────────────────────────────
 
 # the text scans, together
-invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs versions-agree ci-mirrors-just
+invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs no-crate-for-what-std-does versions-agree ci-mirrors-just
 
 # the ast-grep rules, their own corpus tests, and a fail-closed glob check
 ast-grep:
@@ -1307,6 +1307,11 @@ unsafe-policy:
 # every error type lives in a file named `error.rs`
 errors-in-error-rs:
     ./scripts/errors-live-in-error-rs.sh
+
+# no crate for a job `core` or `std` now does itself — `cfg-if` and
+# `assert_matches`, each with the macro that replaced it
+no-crate-for-what-std-does:
+    ./scripts/no-crate-for-what-std-does.sh
 
 # every in-workspace requirement names the workspace version
 versions-agree:

@@ -6360,6 +6360,53 @@ second is why `SeamTimer` had no field docs and read as a style choice.
 Nothing is lost by writing them `//` where the fields are private, since
 rustdoc does not render those anyway.
 
+### No crate for a job the standard library now does, and the gate is not `cargo deny`
+
+`cfg-if` and `assert_matches` are gone — `core::cfg_select!` (stable
+1.95) and `std::assert_matches!` (stable 1.96) replace them, at 98 call
+sites for the second. Neither crate is banned for anything it did: both
+are small, well made, and were the right answer when they were taken.
+What changed is underneath them, so each now buys a name that `core`
+already exports.
+
+**The gate reads the manifests rather than the resolved graph, and
+`cargo deny` was tried before it was rejected.** It is already wired into
+`just supply-chain` and its `[bans]` table has a `use-instead` field that
+says exactly what this rule wants to say. Both entries were written and
+run, and the result separates the two crates:
+
+- `assert_matches` is **not in the resolved graph at all**, so the entry
+  is silent and means precisely *nobody here may declare it*;
+- `cfg-if` fails at once — `error[banned]: crate 'cfg-if = 1.0.4' is
+  explicitly banned` — because it arrives through **nineteen**
+  third-party parents: `ring`, `sha2`, `js-sys`, `openssl`,
+  `encoding_rs`, `getrandom`, `chacha20`, `parking_lot_core` and the
+  rest, not one of them ours.
+
+`wrappers` would take the second case at the price of a list of somebody
+else's parents that goes stale on their next release. But the reason to
+reject the tool is not that one crate is awkward: **`[bans]` reads what a
+build resolves, and this rule is about what this workspace declares.**
+The quiet entry is quiet by luck — the day any dependency takes up
+`assert_matches`, the identical entry starts failing for something nobody
+here did, which is `cfg-if` today arriving early. A check that cries wolf
+gets silenced, which this file treats as the mirror of a check that
+cannot fail.
+
+So `scripts/no-crate-for-what-std-does.sh` reads every dependency table
+in every workspace manifest — `dev-` and `build-` included, their
+`[target.<cfg>]` forms, and the root's `[workspace.dependencies]`, where a
+re-entry would most likely be staged. `tomllib` rather than `grep`,
+because `system-resolver`'s own manifest argues about `cfg-if` in prose
+for a paragraph and a grep cannot tell an argument from a dependency. A
+renamed dependency is caught by its `package` key. Checked in three
+failing directions: a plain dependency, a renamed dev-dependency, and a
+run over zero manifests, which fails closed.
+
+The message names the replacement and the release that made it possible,
+which is the one idea worth taking from `cargo deny`: a reader who meets
+the refusal is told what to write instead of being told no.
+
 ### Every error type lives in a file called `error.rs`
 
 A reader asking *what can this crate refuse* had to read the crate. Error
