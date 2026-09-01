@@ -89,12 +89,12 @@ use core::ffi::{c_char, c_int, c_uchar};
 /// for.
 #[cfg(target_env = "musl")]
 pub(crate) fn support() -> crate::Support {
-    crate::Support::UpTo(255)
+    crate::Support::up_to(255)
 }
 
 #[cfg(not(target_env = "musl"))]
 pub(crate) fn support() -> crate::Support {
-    crate::Support::Any
+    crate::Support::any()
 }
 
 /// Comfortably larger than an EDNS0 UDP answer, so the common case takes

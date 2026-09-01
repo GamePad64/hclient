@@ -17,7 +17,7 @@
 //!
 //! `DnsQuery_UTF8` has been present since Windows 2000 and hands back
 //! records the OS has already taken apart, so it can only answer for the
-//! types the OS does *not* parse — [`Support::AnyExcept`], which is most of
+//! types the OS does *not* parse — the excepted list, which is most of
 //! the registry. [`parsed`] has the rule and the measurement behind it.
 //!
 //! # The detection has to be dynamic, and that is not a style choice
@@ -38,7 +38,7 @@
 //! so an `unsafe` block added HERE fails the build exactly as it would in
 //! any other crate.
 //!
-//! [`Support::AnyExcept`]: crate::Support::AnyExcept
+//! the excepted list: crate::Support::AnyExcept
 
 mod parsed;
 mod raw;
@@ -54,9 +54,9 @@ use crate::{Record, Support};
 /// between two machines running the same binary.
 pub(crate) fn support() -> Support {
     if raw::available() {
-        Support::Any
+        Support::any()
     } else {
-        Support::AnyExcept(parsed::unsupported())
+        Support::any_except(parsed::unsupported())
     }
 }
 
@@ -109,7 +109,7 @@ mod tests {
     /// per shape.**
     ///
     /// On a machine that has `DnsQueryRaw`, [`support`] answers
-    /// [`Support::Any`] and nothing else in this crate ever reaches
+    /// **every type** and nothing else in this crate ever reaches
     /// [`parsed::query`] — so the code for the platform this project
     /// cannot get hold of would be the only code here that never runs.
     /// Calling it directly is what makes that untrue.
@@ -130,11 +130,13 @@ mod tests {
     #[test]
     #[ignore = "needs a name server"]
     fn the_parsed_path_answers_the_same_rdata_as_the_raw_one() {
-        let Support::Any = support() else {
-            // A machine with no `DnsQueryRaw` reaches `parsed::query`
-            // through every other test, so there is nothing here to add.
+        // A machine with no `DnsQueryRaw` reaches `parsed::query` through
+        // every other test, so there is nothing here to add. An empty
+        // `except` is what says this machine has the raw call, which is
+        // the same discriminator `support` itself uses one function up.
+        if !support().except.is_empty() {
             return;
-        };
+        }
 
         let bytes = |records: &[Record]| {
             let mut all: Vec<Vec<u8>> = records.iter().map(|r| r.rdata.clone()).collect();

@@ -29,7 +29,7 @@ use core::ffi::{c_char, c_int, c_uint};
 /// The wire message is what comes back, so any type at all can be asked
 /// for.
 pub(crate) fn support() -> crate::Support {
-    crate::Support::Any
+    crate::Support::any()
 }
 
 /// RFC 1035 §4.1.1.

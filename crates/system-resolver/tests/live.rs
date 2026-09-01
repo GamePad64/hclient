@@ -146,48 +146,59 @@ const TYPE_A: u16 = 1;
 /// capability lies — and this is also how the suite says which of the two
 /// Windows paths is live, which nothing else here can.
 ///
-/// Both directions are asserted, and that matters more than it looks:
-/// under `AnyExcept` the earlier tests would pass on either path, because
-/// `HTTPS` and `CAA` are answerable on both. Type A is the discriminator.
+/// **It is written as a biconditional rather than as a match on the
+/// answer**, and that is what the struct made possible: [`Support`]'s
+/// fields are crate-private, so a caller has exactly one question to ask —
+/// *may I ask for this type* — and this asserts that `lookup` agrees with
+/// it, for every type, in both directions. The old shape was one arm per
+/// variant, which had to be edited on the day musl's ceiling arrived and
+/// would have to be again.
+///
+/// The types are chosen so that no platform answers the same for all
+/// three: `A` is the one Windows 10 parses and refuses, `CAA` is above
+/// musl's ceiling, and `HTTPS` is answerable everywhere there is a backend
+/// at all.
 #[test]
 #[ignore = "needs a name server"]
-fn support_and_lookup_agree_about_a_type_that_separates_the_two_windows_calls() {
-    match support() {
-        Support::Any => {
-            let found = lookup("cloudflare.com", TYPE_A).expect("A is answerable");
-            assert!(!found.is_empty(), "cloudflare.com has A records");
-            assert!(found.iter().all(|r| r.rdata.len() == 4), "an IPv4 address");
-        }
-        Support::AnyExcept(parsed) => {
-            assert!(parsed.contains(&TYPE_A), "A is a type Windows parses");
-            assert!(matches!(
-                lookup("cloudflare.com", TYPE_A),
-                Err(Error::UnsupportedType { rtype: TYPE_A })
-            ));
-        }
-        Support::UpTo(highest) => {
-            // `A` is under any plausible ceiling, so it answers exactly as
-            // it does on `Any` — the ceiling itself is what needs an
-            // assertion, because nothing else in this file would notice if
-            // it moved.
-            let found = lookup("cloudflare.com", TYPE_A).expect("A is answerable");
-            assert!(!found.is_empty(), "cloudflare.com has A records");
-            assert!(found.iter().all(|r| r.rdata.len() == 4), "an IPv4 address");
+fn support_and_lookup_agree_about_every_type_that_separates_a_platform() {
+    let caps = support();
+    let mut answerable = 0;
+
+    for rtype in [TYPE_A, TYPE_CAA, TYPE_HTTPS] {
+        let got = lookup("cloudflare.com", rtype);
+        if caps.allows(rtype) {
+            answerable += 1;
+            // **`Ok` and not merely *not refused by name*.** The weaker
+            // assertion was written first and a mutation walked past it:
+            // dropping musl's ceiling makes `allows` say yes while the
+            // call answers `-1`, which is `NoResponse` — neither
+            // `UnsupportedType` nor `Unsupported`, so the weaker form
+            // passed. A permitted type has to actually answer, and *no
+            // records of this type* is `Ok(vec![])` on every platform
+            // here, so this excludes nothing a resolver could legitimately
+            // say.
             assert!(
-                TYPE_CAA > highest,
-                "a ceiling that admits CAA is not the one this arm is written for"
+                got.is_ok(),
+                "{rtype} is allowed and did not answer: {got:?}"
             );
-            assert!(matches!(
-                lookup("cloudflare.com", TYPE_CAA),
-                Err(Error::UnsupportedType { rtype: TYPE_CAA })
-            ));
+        } else {
+            assert!(
+                matches!(
+                    got,
+                    Err(Error::UnsupportedType { rtype: named }) if named == rtype
+                ) || matches!(got, Err(Error::Unsupported)),
+                "{rtype} is not allowed and was not refused by name: {got:?}"
+            );
         }
-        Support::None => {
-            assert!(matches!(
-                lookup("cloudflare.com", TYPE_A),
-                Err(Error::Unsupported)
-            ));
-        }
+    }
+
+    // The control, and it is what keeps the loop above from passing on a
+    // build that allows nothing: a backend that exists answers at least
+    // `HTTPS`, which is the type this whole crate was written for.
+    if caps.allows(TYPE_HTTPS) {
+        assert!(answerable >= 1, "a build with a backend answers something");
+        let found = lookup("cloudflare.com", TYPE_HTTPS).expect("HTTPS is answerable");
+        assert!(!found.is_empty(), "cloudflare.com publishes HTTPS records");
     }
 }
 
@@ -243,9 +254,11 @@ fn answered() -> bool {
 #[test]
 #[ignore = "needs a name server"]
 fn concurrent_lookups_all_answer_where_a_serial_burst_does() {
-    if support() == Support::None {
-        // Nothing to establish about a build with no backend; the test
-        // above already pins that `lookup` refuses on one.
+    if !support().allows(TYPE_HTTPS) {
+        // Nothing to establish about a build with no backend — and asking
+        // through `allows` rather than for a named variant is the whole
+        // point of the type: this file is outside the crate, so the fields
+        // are not its to read.
         return;
     }
 

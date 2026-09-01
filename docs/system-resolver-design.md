@@ -547,18 +547,55 @@ one host, one name, one moment:
 So the boundary is the call's, not the network's and not any one type's:
 musl's `res_query` will not carry a type number above 255.
 
-**`Support::Any` was therefore a capability that lies**, which is the
-defect this crate was written to remove one platform over — and it had
+**Claiming every type was therefore a capability that lies**, which is
+the defect this crate was written to remove one platform over — and it had
 shipped, invisible because nothing in CI builds for musl and the live
-tests are `#[ignore]`d. `Support::UpTo(255)` is the answer, and it is a
-**bound rather than a list** because [`AnyExcept`]'s list would be 65 279
-entries; the types it costs are ones callers ask for, `CAA` at 257 and
-`URI` at 256.
+tests are `#[ignore]`d.
 
-Adding a variant to a deliberately exhaustive enum is a breaking change,
-and it was free exactly once — before `0.1.0`. It also worked as designed:
-the compiler named every reader that had to decide, which is what that
-enum's doc comment says it is for.
+### 4.7.3 And the enum became a struct, which is where the answer belongs
+
+The first repair added a fourth variant, `UpTo(255)`. It worked, and it
+made the shape of the type the question: an enum of four cases had grown a
+case the first time a platform answered something new, and there was no
+reason to think that was the last one.
+
+`Support` is now a range and a hole-punch —
+`{ range: RangeInclusive<u16>, except: &'static [u16] }`, both fields
+crate-private — and the four answers are three shapes of one thing: every
+type is the full range with nothing excepted, every type up to 255 is a
+shorter range, every type but sixteen is the full range with a list, and
+nothing at all is an empty range. A fifth platform with a stranger answer
+is a different pair of values rather than a different type. The two halves
+compose, which the enum could not express, and a test asserts it although
+no platform answers that way today — that is what keeps the fields
+independent rather than a tagged union in a struct's clothes.
+
+**What is lost is exhaustiveness, and it is worth naming because this
+crate had leaned on it.** A new variant used to be a compile error at
+every reader, which is exactly how `UpTo` was caught — the compiler listed
+the four readers that had to decide. What replaces it is that there is now
+**one** reader path: the fields are crate-private, so a caller has one
+question, `allows(rtype)`, and cannot come to depend on how the answer is
+stored. Outside the crate there is nothing to be exhaustive about.
+
+The live suite followed the type. `support_and_lookup_agree_about_every_type_that_separates_a_platform`
+is a **biconditional over three types** — `A`, which Windows 10 parses and
+refuses; `CAA`, above musl's ceiling; `HTTPS`, answerable wherever there
+is a backend — where it used to be one arm per variant, edited on the day
+the ceiling arrived and due for editing again.
+
+**Its first draft was too weak and a mutation walked past it.** Asserting
+*an allowed type is not refused by name* passes when the ceiling is
+dropped, because musl then answers `-1`, which is `NoResponse` — neither
+`UnsupportedType` nor `Unsupported`. It asserts `Ok` now, which excludes
+nothing a resolver could legitimately say, since *no records of this type*
+is `Ok(vec![])` everywhere here. Verified: with the ceiling removed the
+weak form left this test green and three neighbours red; the strong form
+takes all four.
+
+Adding a variant to a deliberately exhaustive enum was a breaking change
+and so is replacing the enum, and both were free exactly once — before
+`0.1.0`.
 
 ## 5. What was deliberately not done, each with the reason
 

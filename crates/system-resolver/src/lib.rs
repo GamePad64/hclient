@@ -31,14 +31,14 @@
 //!
 //! | target | what is called | [`support()`] | what is not available there |
 //! |---|---|---|---|
-//! | Linux, glibc | `res_query` | [`Support::Any`] | the header — see the next section |
-//! | Linux, musl | `res_query` | [`Support::UpTo`]`(255)` | the header, **and every type above 255** |
-//! | Android >= 29 | `android_res_nquery` + `android_res_nresult` | [`Support::Any`] | the header |
-//! | FreeBSD | `res_query` | [`Support::Any`] | the header — and see the note below |
-//! | macOS, iOS | `DNSServiceQueryRecord` | [`Support::Any`] | the header, **and** [`Error::NameDoesNotExist`] |
-//! | Windows 11, Server 2025 | `DnsQueryRaw` | [`Support::Any`] | the header |
-//! | Windows 10 | `DnsQuery_UTF8` | [`Support::AnyExcept`], 16 types | the header, sibling records, and see [Windows 10](#windows-10) |
-//! | anything else | nothing at all | [`Support::None`] | every lookup is [`Error::Unsupported`] |
+//! | Linux, glibc | `res_query` | **every type** | the header — see the next section |
+//! | Linux, musl | `res_query` | every type **up to 255** | the header, **and every type above 255** |
+//! | Android >= 29 | `android_res_nquery` + `android_res_nresult` | **every type** | the header |
+//! | FreeBSD | `res_query` | **every type** | the header — and see the note below |
+//! | macOS, iOS | `DNSServiceQueryRecord` | **every type** | the header, **and** [`Error::NameDoesNotExist`] |
+//! | Windows 11, Server 2025 | `DnsQueryRaw` | **every type** | the header |
+//! | Windows 10 | `DnsQuery_UTF8` | every type **but sixteen** | the header, sibling records, and see [Windows 10](#windows-10) |
+//! | anything else | nothing at all | **nothing at all** | every lookup is [`Error::Unsupported`] |
 //!
 //! **The last two Windows rows are one binary**, which is why
 //! [`support()`] is a function and not a constant: `DnsQueryRaw` is
@@ -125,12 +125,12 @@
 //!
 //! # Windows 10
 //!
-//! The one target where [`support()`] does not answer [`Support::Any`],
+//! The one target where [`support()`] does not answer **every type**,
 //! and the one where the answer is a **run-time** fact rather than a
 //! build-time one. `DnsQueryRaw` arrived in Windows 11 and hands over the
 //! wire message; Windows 10 has only `DnsQuery_UTF8`, which hands over
 //! records the OS has already taken apart. The same binary is
-//! [`Support::Any`] on one and [`Support::AnyExcept`] on the other.
+//! **every type** on one and the excepted list on the other.
 //!
 //! **The newer call is resolved with `GetProcAddress` rather than named as
 //! an import**, and that is not caution about a missing function: naming
@@ -150,7 +150,7 @@
 //! writing RDATA back out: twenty-six of them, which is why `A`, `AAAA`,
 //! `MX`, `TXT`, `SRV`, `SOA`, `NS`, `CNAME`, `PTR`, `DS`, `DNSKEY` and
 //! `TLSA` work here as anywhere. **Sixteen are refused by name** through
-//! [`Support::AnyExcept`], before a query is spent: the DNSSEC signature
+//! the excepted list, before a query is spent: the DNSSEC signature
 //! and denial records, whose canonical forms this crate would have to
 //! reproduce exactly; protocol machinery — `OPT`, `TKEY`, `TSIG`; and
 //! `WKS`, `ATMA`, `NULL`, `DHCID`, `WINS`, `WINSR`. Most of the registry
@@ -296,72 +296,119 @@ pub const CLASS_IN: u16 = 1;
 
 /// What this build can be asked for.
 ///
-/// Deliberately **exhaustive**, unlike [`Record`] above: this is branched
-/// on, so a fourth answer must be a compile error at every reader rather
-/// than something a `_` arm quietly mishandles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Support {
-    /// Any type at all. The platform hands over the wire message and this
-    /// crate walks it, so a type nobody has heard of is as answerable as
-    /// `A`.
-    Any,
-    /// Any type **except** these, each of which the platform parses into a
+/// **A range with holes punched in it, rather than an enum of cases**, and
+/// that is a reading of what the platforms actually answer rather than a
+/// preference. The four answers are three shapes of one thing: *every
+/// type* is the full range with nothing excepted; *every type up to 255*
+/// is a shorter range; *every type but these sixteen* is the full range
+/// with a list; *nothing at all* is an empty range.
+///
+/// The enum this replaced had to grow a variant the day musl's ceiling was
+/// measured. This cannot: a platform with a stranger answer is a different
+/// pair of values rather than a different type.
+///
+/// **The fields are crate-private and [`allows`](Support::allows) is the
+/// whole of the public surface**, which is what makes that safe to say — a
+/// caller asks whether a type is answerable and cannot come to depend on
+/// how the answer is stored. What the enum had and this does not is
+/// exhaustiveness: a new variant used to be a compile error at every
+/// reader, which is how `UpTo` was caught. What replaces it is that there
+/// is now exactly one reader path, so there is nothing to be exhaustive
+/// about.
+///
+/// `Clone` and not `Copy`, because [`RangeInclusive`] is not `Copy` — it
+/// is also an iterator.
+///
+/// [`RangeInclusive`]: core::ops::RangeInclusive
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Support {
+    /// The type numbers this build will carry, **inclusive at both ends**.
+    /// An empty range is *no backend on this target at all*.
+    pub(crate) range: core::ops::RangeInclusive<u16>,
+    /// Types inside [`range`](Support::range) the platform still cannot
+    /// answer with RDATA, each because it parses that type into a
     /// structure of its own before this crate can see it.
+    ///
+    /// `&'static [u16]` rather than an enum for the reason
+    /// [`Record::rtype`] is a number: the registry gains entries. It is
+    /// sixteen long at most today, and it is **derived** where it is
+    /// produced rather than written down, so it cannot drift from the
+    /// list it is the complement of.
+    pub(crate) except: &'static [u16],
+}
+
+/// Each backend builds exactly one of these, and a build compiles exactly
+/// one backend — so on any single target most of these constructors are
+/// unused. Narrowing them by `#[cfg]` would restate `sys`'s target list a
+/// second time, which is the drift that module's single `cfg_if!` exists
+/// to prevent.
+#[allow(dead_code, reason = "see this impl's own note")]
+impl Support {
+    /// Every type in the registry, including ones nobody has heard of.
+    ///
+    /// The platform hands over the wire message and this crate walks it,
+    /// so a type it does not model is as answerable as `A`.
+    pub(crate) fn any() -> Self {
+        Self {
+            range: 0..=u16::MAX,
+            except: &[],
+        }
+    }
+
+    /// Every type up to `highest`, inclusive, and none above it.
+    ///
+    /// **This is musl, and it is a fact about the call rather than about
+    /// any one type.** Measured against glibc on one host, one name and
+    /// one moment: `CAA` (257) answers 515 octets through glibc and `-1`
+    /// through musl, while `A`, `AAAA`, `HTTPS` and `ANY` (255) answer
+    /// through both. The types it costs are ones callers ask for — `CAA`
+    /// at 257, `URI` at 256 — so this is not a corner of the registry
+    /// nobody visits.
+    pub(crate) fn up_to(highest: u16) -> Self {
+        Self {
+            range: 0..=highest,
+            except: &[],
+        }
+    }
+
+    /// Every type but these.
     ///
     /// **This is a Windows without `DnsQueryRaw`**, and today it is the
     /// only producer. Which sixteen types, and why those, is the crate
     /// root's [Windows 10](crate#windows-10) section — said once there
-    /// rather than twice.
-    ///
-    /// **What belongs here is why it is a list and not a `bool`**, because
-    /// that is a fact about this type: the refused set is sixteen against
-    /// a registry that mostly arrives untouched, so a `bool` would have
-    /// reported a platform that answers `A`, `HTTPS`, `MX`, `TXT` and
-    /// `CAA` as one that answers nothing. It is `&'static [u16]` rather
-    /// than an enum for the reason [`Record::rtype`] is a number: the
-    /// registry gains entries.
-    AnyExcept(&'static [u16]),
-    /// Any type whose number is at most this, **inclusive**, and no type
-    /// above it.
-    ///
-    /// **This is musl, and it is a fact about the call rather than about
-    /// any one type.** Measured against glibc on the same host, the same
-    /// name and the same moment: `CAA` (257) answers 515 octets through
-    /// glibc and `-1` through musl, while `A`, `AAAA`, `HTTPS` and `ANY`
-    /// (255) answer through both. musl's `res_query` will not carry a type
-    /// number above 255.
-    ///
-    /// **A bound rather than a list, because the list is 65 279 long.**
-    /// [`AnyExcept`] carries the refused types by name, which is right
-    /// where they are a handful chosen by a platform's parser; here what
-    /// is refused is everything above a line, and enumerating it would be
-    /// a `&'static [u16]` larger than this crate.
-    ///
-    /// The types it costs are real ones a caller asks for — `CAA` is 257,
-    /// `URI` 256 — so this is not a corner of the registry nobody visits.
-    ///
-    /// [`AnyExcept`]: Support::AnyExcept
-    UpTo(u16),
-    /// No backend on this target. [`lookup`] answers
-    /// [`Error::Unsupported`] for every type, and says so here rather than
-    /// looking like a network failure at the call site.
-    None,
-}
+    /// rather than twice. What belongs here is why it is a list and not a
+    /// `bool`: the refused set is sixteen against a registry that mostly
+    /// arrives untouched, so a `bool` would have reported a platform that
+    /// answers `A`, `HTTPS`, `MX`, `TXT` and `CAA` as one that answers
+    /// nothing.
+    pub(crate) fn any_except(except: &'static [u16]) -> Self {
+        Self {
+            range: 0..=u16::MAX,
+            except,
+        }
+    }
 
-impl Support {
+    /// No backend on this target: [`lookup`] answers [`Error::Unsupported`]
+    /// for every type.
+    ///
+    /// The empty range is written once, here, rather than at each site
+    /// that means it — `1..=0` reads as a mistake everywhere except beside
+    /// this sentence.
+    pub(crate) fn none() -> Self {
+        Self {
+            range: 1..=0,
+            except: &[],
+        }
+    }
+
     /// Whether [`lookup`] can be asked for `rtype` on this build.
     ///
     /// Asking anyway is not undefined — it is [`Error::UnsupportedType`],
     /// naming the type. This exists so a caller can choose a different
     /// route before spending a query rather than after.
     #[must_use]
-    pub fn allows(self, rtype: u16) -> bool {
-        match self {
-            Self::Any => true,
-            Self::AnyExcept(parsed) => !parsed.contains(&rtype),
-            Self::UpTo(highest) => rtype <= highest,
-            Self::None => false,
-        }
+    pub fn allows(&self, rtype: u16) -> bool {
+        self.range.contains(&rtype) && !self.except.contains(&rtype)
     }
 }
 
@@ -395,12 +442,18 @@ pub fn support() -> Support {
 /// Otherwise whatever the platform reported, or [`Error::Malformed`] if
 /// what came back is not a DNS answer this crate can walk.
 pub fn lookup(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
-    if !support().allows(rtype) {
-        return Err(match support() {
-            Support::None => Error::Unsupported,
-            Support::Any | Support::AnyExcept(_) | Support::UpTo(_) => {
-                Error::UnsupportedType { rtype }
-            }
+    let caps = support();
+    if !caps.allows(rtype) {
+        // **An empty range is the whole build refusing, anything else is
+        // this one type**, and the two are different errors because a
+        // caller does different things with them: one reaches for another
+        // resolver, the other for another record. Reading it off the range
+        // rather than off a variant is what the struct buys — there is one
+        // question and one place that answers it.
+        return Err(if caps.range.is_empty() {
+            Error::Unsupported
+        } else {
+            Error::UnsupportedType { rtype }
         });
     }
     sys::query(name, rtype)
@@ -410,16 +463,44 @@ pub fn lookup(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
 mod tests {
     use super::*;
 
-    /// The three answers are not interchangeable, and each has a caller
-    /// that acts differently on it. Written as a table so a fourth variant
-    /// arrives here as a compile error, which is what the enum being
-    /// exhaustive is for.
+    /// Each shape the platforms actually produce, and the boundary of
+    /// every one of them.
+    ///
+    /// **The boundaries are what this is for.** A range is inclusive at
+    /// both ends and an off-by-one there would be a type answerable on one
+    /// build and refused on the next, which is invisible from any single
+    /// platform — so 255 and 256 are both asserted, and so is the type
+    /// exactly on the excepted list beside the one just past it.
     #[test]
     fn support_answers_for_a_type_rather_than_for_the_platform() {
-        assert!(Support::Any.allows(65));
-        assert!(Support::AnyExcept(&[1, 15]).allows(65));
-        assert!(!Support::AnyExcept(&[1, 15]).allows(15));
-        assert!(!Support::None.allows(65));
+        assert!(Support::any().allows(65));
+        assert!(Support::any().allows(u16::MAX));
+
+        assert!(Support::any_except(&[1, 15]).allows(65));
+        assert!(!Support::any_except(&[1, 15]).allows(15));
+
+        assert!(Support::up_to(255).allows(255), "inclusive at the top");
+        assert!(!Support::up_to(255).allows(256));
+        assert!(Support::up_to(255).allows(0), "and at the bottom");
+
+        assert!(!Support::none().allows(65));
+        assert!(!Support::none().allows(0), "an empty range holds nothing");
+    }
+
+    /// **The two halves compose**, which the enum could not express: a
+    /// build could be bounded *and* have a parsed-type list, and nothing
+    /// in the type says otherwise. No platform answers this today, and
+    /// asserting it is what keeps the fields independent rather than a
+    /// tagged union wearing a struct's clothes.
+    #[test]
+    fn a_ceiling_and_an_exception_list_are_independent() {
+        let both = Support {
+            range: 0..=255,
+            except: &[15],
+        };
+        assert!(both.allows(1));
+        assert!(!both.allows(15), "excepted below the ceiling");
+        assert!(!both.allows(257), "above the ceiling and not excepted");
     }
 
     /// **Which backend this build selected, checked against a second copy
@@ -454,14 +535,25 @@ mod tests {
         // arm: each of those compares a `cfg!` against a constant on the
         // target that made it true, which clippy correctly calls a
         // constant assertion. This one is over `support()`'s answer.
-        let agrees = match got {
-            // Windows is the only platform that can answer either, and
-            // which of the two is a fact about the machine rather than the
-            // build — so it is checked as *not `None`* and no further.
-            Support::Any => wire || windows,
-            Support::AnyExcept(_) => windows,
-            Support::UpTo(_) => capped,
-            Support::None => !wire && !windows && !capped,
+        //
+        // The three shapes are read off the fields rather than off a
+        // variant, which is the same reading `lookup` makes: an empty
+        // range is *no backend*, a non-empty `except` is Windows 10's
+        // parsed list, and a range short of `u16::MAX` is musl's ceiling.
+        // Windows is the only platform that can answer either of two, and
+        // which is a fact about the machine rather than the build, so it
+        // is checked as *not empty* and no further.
+        let nothing = got.range.is_empty();
+        let excepts = !got.except.is_empty();
+        let bounded = !nothing && *got.range.end() < u16::MAX;
+        let agrees = if nothing {
+            !wire && !windows && !capped
+        } else if excepts {
+            windows
+        } else if bounded {
+            capped
+        } else {
+            wire || windows
         };
         assert!(
             agrees,
@@ -475,12 +567,13 @@ mod tests {
     /// record was asked for.
     #[test]
     fn a_type_this_build_cannot_ask_for_is_refused_by_name() {
-        let Support::AnyExcept(parsed) = support() else {
-            // On a platform that answers `Any` or `None` there is nothing
-            // to refuse by type; the other two cases are asserted above.
+        let caps = support();
+        let Some(&rtype) = caps.except.first() else {
+            // On a build whose `except` is empty there is no type to
+            // refuse *by name* — a ceiling refuses by number and an empty
+            // range refuses everything, and both are asserted above.
             return;
         };
-        let rtype = *parsed.first().expect("the list is not empty");
         assert!(matches!(
             lookup("example.com", rtype),
             Err(Error::UnsupportedType { rtype: got }) if got == rtype

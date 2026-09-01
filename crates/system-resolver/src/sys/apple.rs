@@ -104,7 +104,7 @@ use std::time::{Duration, Instant};
 /// The wire message never appears, but every type can still be asked for:
 /// the daemon hands over one record at a time with its RDATA.
 pub(crate) fn support() -> crate::Support {
-    crate::Support::Any
+    crate::Support::any()
 }
 
 /// An opaque handle to one query, from `dns_sd.h`.

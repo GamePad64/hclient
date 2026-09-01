@@ -114,7 +114,7 @@ cfg_if::cfg_if! {
         #[path = "windows/mod.rs"]
         mod imp;
     }
-    // Anything else gets the honest `Support::None`, which is not a gap to
+    // Anything else gets the honest an empty [`Support`], which is not a gap to
     // be embarrassed about: an absent capability costs a caller one
     // fallback, where a capability that lies costs it a wrong answer.
     else {

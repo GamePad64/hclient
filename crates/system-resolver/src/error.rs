@@ -38,21 +38,21 @@ pub enum Error {
         name: String,
     },
 
-    /// This build has no backend at all — see [`Support::None`].
+    /// This build has no backend at all — see **nothing at all**.
     ///
-    /// [`Support::None`]: crate::Support::None
+    /// **nothing at all**: crate::Support::None
     #[error("no system resolver backend on this target")]
     Unsupported,
 
     /// This build cannot be asked for this type — see
-    /// [`Support::AnyExcept`].
+    /// the excepted list.
     ///
     /// Costs no query. The platform would have answered *something*; what
     /// it would not have answered is RDATA, and handing a caller a
     /// platform structure's bytes as though they were RDATA is the failure
     /// this refusal exists to prevent.
     ///
-    /// [`Support::AnyExcept`]: crate::Support::AnyExcept
+    /// the excepted list: crate::Support::AnyExcept
     #[error("this build cannot return RR type {rtype}: the platform parses it into a structure")]
     UnsupportedType {
         /// The type that was asked for.
