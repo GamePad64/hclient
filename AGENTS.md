@@ -6407,6 +6407,49 @@ The message names the replacement and the release that made it possible,
 which is the one idea worth taking from `cargo deny`: a reader who meets
 the refusal is told what to write instead of being told no.
 
+### `cfg_select!` pays for a module and charges for a function body
+
+`system-resolver`'s `sys/mod.rs` took it first, `hclient-idn` second —
+four sites there where a condition had been written twice, once negated:
+the *at least one backend* guard, `backend()`'s tail, and the two
+`testing` functions whose bodies were two `#[cfg]` blocks in a row,
+mutually exclusive only because `build.rs` says so. Both `testing` arms
+are written with **two positive arms and no `_`**, so a third platform
+backend is *none of the predicates in this `cfg_select` evaluated to
+true* at the line that would have been wrong, rather than a silent
+routing into Foundation's body.
+
+**Then the workspace was swept for the same shape, and the sweep is worth
+more than the conversions.** Seventeen sites write a condition twice with
+one negated. Thirteen are a single feature — `#[cfg(feature = "cookies")]`
+beside `#[cfg(not(feature = "cookies"))]` — where the pair is already
+minimal and symmetric and a macro would be five lines for two attributes.
+Two more are `#[cfg(unix)]`/`#[cfg(not(unix))]`. `hclient-otel`'s enum
+variants and `decompress`'s match arms cannot be selected by this macro
+at all, and their features are **additive**, so an ordered select would be
+the wrong shape twice over. `client.rs`'s default-transport gate repeats
+its condition for a reason written beside it — *the branch a reader is
+standing in should say what it excludes.*
+
+**Two conversions were built, measured and reverted**, and that is the
+rule. `ecn_is_really_on` in both UDP runtimes is a six-platform list
+written twice, the second time negated — the textbook case — and
+`hclient-proxy`'s `platform()` is the same with three. Both were
+converted and both were undone, because **rustfmt does not descend into a
+macro arm**: checked in the failing direction by mangling the indentation
+inside a converted arm and watching `cargo fmt --check` stay green over
+it. So the conversion silently removes 17 lines from `just fmt-check`'s
+reach in the first case and about 150 in the second — and the second is
+platform code nobody on this host compiles, which is exactly where
+formatting drift would go unnoticed longest.
+
+So the line is what an arm *contains*: a module declaration
+(`sys/mod.rs`), a short expression or an empty block (`hclient-idn`, 25
+lines in total and eleven of them a `compile_error!` string) is on the
+paying side; a function body is on the charging side. A check that
+quietly stops covering code is this file's recurring defect with the
+subject changed.
+
 ### Every error type lives in a file called `error.rs`
 
 A reader asking *what can this crate refuse* had to read the crate. Error
