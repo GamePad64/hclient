@@ -43,6 +43,7 @@ system-resolver = { path = "../system-resolver", version = "0.1.0-alpha.2" }
 thiserror      = { workspace = true }
 
 [dev-dependencies]
+const-hex      = { workspace = true }
 assert_matches   = { workspace = true }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 rstest           = { workspace = true }

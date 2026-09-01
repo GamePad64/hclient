@@ -414,11 +414,12 @@ mod tests {
     use super::*;
     use assert_matches::assert_matches;
 
+    /// Test vectors are written as hex. `const_hex` rather than a
+    /// hand-rolled loop: the crate is already in this workspace's graph,
+    /// its error names which character was wrong, and an odd number of
+    /// digits is a refusal rather than a silently short vector.
     fn hex(text: &str) -> Vec<u8> {
-        (0..text.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex"))
-            .collect()
+        const_hex::decode(text).expect("a test vector must be hex")
     }
 
     /// A real answer, captured through `res_query` on Linux for

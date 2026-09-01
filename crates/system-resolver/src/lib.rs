@@ -167,21 +167,22 @@ pub enum Support {
     /// **This is a Windows without `DnsQueryRaw`, and it is a list rather
     /// than a `bool` because the difference is enormous.**
     /// `DnsQuery_UTF8` fills in a `DNS_RECORD` whose data union has no
-    /// discriminator; a type the union names arrives as that structure,
-    /// and a type it does not name arrives as the record's own RDATA.
+    /// discriminator; a type the union does not name arrives as the
+    /// record's own RDATA, and one it names *may* arrive as that
+    /// structure — `SVCB` is the measured counterexample.
     ///
-    /// Most of the registry — `CAA`, `HTTPS`, `SSHFP`, `OPENPGPKEY`,
-    /// `CERT`, `LOC`, `URI` — is in the second group and works there
-    /// exactly as anywhere else. Of the forty-three in the first,
-    /// twenty-six are **re-encoded** from the structure back into RDATA,
-    /// which is why `A`, `AAAA`, `MX`, `TXT`, `SRV`, `SOA`, `NS`,
+    /// Most of the registry — `CAA`, `HTTPS`, `SVCB`, `SSHFP`,
+    /// `OPENPGPKEY`, `CERT`, `LOC`, `URI` — is in the second group and
+    /// works there exactly as anywhere else. Of the forty-two in the
+    /// first, twenty-six are **re-encoded** from the structure back into
+    /// RDATA, which is why `A`, `AAAA`, `MX`, `TXT`, `SRV`, `SOA`, `NS`,
     /// `CNAME`, `PTR`, `DS`, `DNSKEY` and `TLSA` are answerable too. What
-    /// is left here is seventeen: the DNSSEC signature and denial records,
-    /// protocol machinery like `OPT` and `TSIG`, `SVCB`, and Windows' own
-    /// `WINS` pair.
+    /// is left here is sixteen: the DNSSEC signature and denial records,
+    /// protocol machinery like `OPT` and `TSIG`, and Windows' own `WINS`
+    /// pair.
     ///
-    /// A `bool` would have hidden all of that, and refusing the
-    /// forty-three would have refused essentially every record in
+    /// A `bool` would have hidden all of that, and refusing the whole
+    /// first group would have refused essentially every record in
     /// everyday use.
     AnyExcept(&'static [u16]),
     /// No backend on this target. [`lookup`] answers

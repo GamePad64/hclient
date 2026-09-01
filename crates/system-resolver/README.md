@@ -35,7 +35,7 @@ platform's convenience API will not return** — `HTTPS`, `SVCB`, `TLSA`,
 | macOS, iOS | `res_9_query` | any type |
 | Android ≥ 29 | `android_res_nquery` | any type |
 | Windows 11 / Server 2025 | `DnsQueryRaw` | any type |
-| older Windows | `DnsQuery_UTF8` | any type **except** 17 |
+| older Windows | `DnsQuery_UTF8` | any type **except** 16 |
 
 `support()` answers it, and `support().allows(rtype)` answers it for one
 type. A type this build cannot answer is refused **by name and before a
@@ -53,27 +53,33 @@ Windows that lacks it.
 
 `DnsQuery_UTF8`, the fallback, fills in a `DNS_RECORD` whose data union
 carries no discriminator. Which member is live is decided by the type: a
-type the union **names** arrives as that structure, and a type it does not
-name arrives as the record's own **RDATA**. `DNS_TYPE_SVCB` is 64; `HTTPS`
-is 65 and the union names no member for it — so `HTTPS` works there
-exactly as everywhere else, and so do `CAA`, `CERT`, `LOC` and most of the
-registry.
+type the union does **not** name arrives as the record's own **RDATA**,
+and one it names *may* arrive as that structure. So `HTTPS`, `CAA`,
+`CERT`, `LOC` and most of the registry work there exactly as everywhere
+else.
 
-The forty-three the union does name are `A`, `AAAA`, `MX`, `TXT`, `SRV`,
-`NS`, `SOA`, `CNAME`, `PTR`, `DS`, `DNSKEY`, `TLSA` and thirty-one more —
-essentially every record in everyday use — so refusing them would refuse
-the reason anyone asks a system resolver at all. Twenty-six are read out
-of the structure and **written back into the RDATA the wire would have
-carried**; seventeen are refused by name. `Record::rdata` for one of those
-twenty-six is therefore what Windows *understood*, not the octets that
-arrived — names come back uncompressed, and case is Windows'.
+The forty-two this crate knows the OS parses are `A`, `AAAA`, `MX`, `TXT`,
+`SRV`, `NS`, `SOA`, `CNAME`, `PTR`, `DS`, `DNSKEY`, `TLSA` and thirty
+more — essentially every record in everyday use — so refusing them would
+refuse the reason anyone asks a system resolver at all. Twenty-six are
+read out of the structure and **written back into the RDATA the wire
+would have carried**; sixteen are refused by name. `Record::rdata` for one
+of those twenty-six is therefore what Windows *understood*, not the octets
+that arrived — names come back uncompressed, and case is Windows'.
+
+**The union names one type it does not parse**, which is worth knowing
+before trusting the metadata: `DNS_SVCB_DATA` exists and RR type 64
+arrives as RDATA anyway. `SVCB` therefore works exactly as `HTTPS` does,
+and the crate checks `wDataLength` against the structure it would be
+rather than trusting the table — anything that does not fit is handed over
+as RDATA.
 
 Measured rather than read, on Windows 11, where both calls exist: type 65
 comes back with `wDataLength = 61` and bytes that are SVCB wire format,
 byte-for-byte the RDATA that Linux's `res_query` reports for the same
-name; `MX` came back as a structure and `CAA` as RDATA, which is the rule
-separating in both directions; and the crate's own test compares the two
-Windows paths across a record of every shape and they agree.
+name; `MX` came back as a structure and `CAA` as RDATA; and the crate's
+own test compares the two Windows paths across a record of every shape,
+`SVCB` among them, and they agree.
 
 ## What it deliberately does not do
 

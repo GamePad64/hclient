@@ -298,12 +298,12 @@ mod tests {
     /// RFC 9461's `dohpath`: real, registered, and not acted on here.
     const KEY_DOHPATH: u16 = 7;
 
+    /// Test vectors are written as hex. `const_hex` rather than a
+    /// hand-rolled loop: the crate is already in this workspace's graph,
+    /// its error names which character was wrong, and an odd number of
+    /// digits is a refusal rather than a silently short vector.
     fn hex(s: &str) -> Vec<u8> {
-        assert!(s.len().is_multiple_of(2), "hex needs whole bytes");
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex digit"))
-            .collect()
+        const_hex::decode(s).expect("a test vector must be hex")
     }
 
     /// A name in RFC 1035 §3.1 label form. `""` is the root.

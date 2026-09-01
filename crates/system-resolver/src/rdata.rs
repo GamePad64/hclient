@@ -2,7 +2,7 @@
 //!
 //! # Why this exists at all
 //!
-//! `DnsQuery_UTF8` parses forty-three record types into structures of
+//! `DnsQuery_UTF8` parses forty-two record types into structures of
 //! their own, and those are **not** the types nobody asks for — they are
 //! `A`, `AAAA`, `MX`, `TXT`, `SRV`, `NS`, `SOA`, `CNAME`, `PTR`, `DS`,
 //! `DNSKEY`, `TLSA`, essentially every record in everyday use. A Windows
@@ -33,9 +33,8 @@
 //!   containing one is truncated **by Windows** before this code sees it,
 //!   which is why this is stated rather than checked.
 //! - **A type the OS parsed and this module cannot re-encode is refused**,
-//!   by name and before a query. That is a shorter list than the
-//!   forty-three, and it is in `parsed.rs` beside the one this module
-//!   answers for.
+//!   by name and before a query. That is sixteen of the forty-two, and
+//!   the list is in `parsed.rs` beside the one this module answers for.
 //!
 //! # Why this file has no `unsafe` in it
 //!
@@ -272,11 +271,12 @@ mod tests {
     use super::*;
     use rstest::rstest;
 
+    /// Test vectors are written as hex. `const_hex` rather than a
+    /// hand-rolled loop: the crate is already in this workspace's graph,
+    /// its error names which character was wrong, and an odd number of
+    /// digits is a refusal rather than a silently short vector.
     fn hex(text: &str) -> Vec<u8> {
-        (0..text.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex"))
-            .collect()
+        const_hex::decode(text).expect("a test vector must be hex")
     }
 
     /// Every shape against the octets its RFC prints, written out by hand

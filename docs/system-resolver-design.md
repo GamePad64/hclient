@@ -61,13 +61,27 @@ And the metadata says it from a second direction: `DNS_TYPE_HTTPS`,
 `DNS_TYPE_CERT` and `DNS_TYPE_LOC` all exist as constants with no union
 member, so it is the **union** that decides and not the constant list.
 
-That is why `Support::AnyExcept(&[..])` and not a `bool`. And the
-forty-three are **not** the obscure types — they are `A`, `AAAA`, `MX`,
-`TXT`, `SRV`, `NS`, `SOA`, `CNAME`, `PTR`, `DS`, `DNSKEY`, `TLSA`,
-essentially every record in everyday use — so refusing them would have
-refused the reason anyone asks a system resolver at all. Twenty-six of
-them are read out of their structure and **written back into the RDATA
-the wire would have carried** instead; §4.1 has what is left.
+**But the second half is necessary and not sufficient, and that cost a
+crash.** `DNS_SVCB_DATA` exists, and RR type 64 arrives as RDATA anyway —
+measured on `_dns.resolver.arpa`: `wDataLength` 22 and 44 against a
+structure of 32 octets, with SVCB wire format in the union. It was found
+by implementing a re-encoder for `SVCB` on the strength of the union
+alone, without measuring the one type it was being written for, and
+watching the cross-path test die with an access violation. That is the
+defect §2 describes, reintroduced by trusting a table.
+
+So the table is **checked rather than trusted**: `wDataLength` is compared
+against the structure it would be, and anything that does not fit is
+handed over as RDATA. For the eight fixed-size shapes the check is exact
+and would have caught `SVCB` on its own.
+
+`Support::AnyExcept(&[..])` and not a `bool`, then. The forty-two types
+the OS really parses are **not** the obscure ones — `A`, `AAAA`, `MX`,
+`TXT`, `SRV`, `NS`, `SOA`, `CNAME`, `PTR`, `DS`, `DNSKEY`, `TLSA` — so
+refusing them would have refused the reason anyone asks a system resolver
+at all. Twenty-six are read out of their structure and **written back into
+the RDATA the wire would have carried**; §4.2 has the sixteen that are
+not. `SVCB` is on neither list: it arrives raw, exactly as `HTTPS` does.
 
 ## 3. `DnsQueryRaw`, and the three readings that decide its code
 
@@ -142,18 +156,20 @@ for byte:
 
 ### 4.2 What is not supported there, precisely
 
-- **Seventeen record types**, refused **by name** and before a query
+- **Sixteen record types**, refused **by name** and before a query
   through `Support::AnyExcept` — never guessed at, because handing a
   caller a structure's bytes as though they were RDATA is the defect §2
   describes. They are `SIG` and `RRSIG`, which carry a signature over a
   canonical form this crate would have to reproduce exactly or hand back a
   record that fails validation; `NSEC`, `NXT`, `NSEC3` and `NSEC3PARAM`,
-  whose type bitmaps their structures do not expose as one; `SVCB`, a
-  parameter list with a union of its own — and `HTTPS`, the type this
-  workspace actually wants, is not parsed by Windows at all and arrives
-  raw; `OPT`, `TKEY` and `TSIG`, which are protocol machinery rather than
-  answers; and `WKS`, `ATMA`, `NULL`, `DHCID`, `WINS` and `WINSR`, which
-  have no consumer here.
+  whose type bitmaps their structures do not expose as one; `OPT`, `TKEY`
+  and `TSIG`, which are protocol machinery rather than answers; and `WKS`,
+  `ATMA`, `NULL`, `DHCID`, `WINS` and `WINSR`, which have no consumer
+  here.
+
+  `SVCB` is **not** among them, and neither is `HTTPS`: both arrive as
+  RDATA and need nothing. That `SVCB` does, despite its union member, is
+  §2.1's correction.
 
   The list is **derived** in the crate rather than written down — it is
   the union's membership minus the types with a re-encoder — because a

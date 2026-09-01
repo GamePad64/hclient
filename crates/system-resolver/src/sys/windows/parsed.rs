@@ -5,14 +5,29 @@
 //!
 //! `DnsQuery_UTF8` fills in a `DNS_RECORDA` whose `Data` is a union with
 //! **no discriminator**. Which member is live is decided by `wType`, and
-//! the rule is readable from the Win32 metadata:
+//! half the rule is readable from the Win32 metadata:
 //!
-//! - a type the union **names** — forty-three of them — arrives parsed
-//!   into that member, with `wDataLength` the size of the structure;
 //! - a type the union **does not name** arrives as the record's own
-//!   **RDATA**, with `wDataLength` its length.
+//!   **RDATA**, with `wDataLength` its length;
+//! - a type the union **names** *may* arrive parsed into that member,
+//!   with `wDataLength` the size of the structure — **and may not**.
 //!
-//! # The forty-three are not the obscure ones, which is why they are
+//! **The second half is necessary and not sufficient, which this module
+//! learned the hard way.** `DNS_SVCB_DATA` exists, and RR type 64 arrives
+//! as RDATA anyway: measured on `_dns.resolver.arpa`, `wDataLength` 22 and
+//! 44 against a structure of 32 octets, with SVCB wire format in the
+//! union. Reading it as the structure crashed — which is the original
+//! defect this crate was written to fix, reintroduced by trusting a table
+//! where a measurement was owed.
+//!
+//! So the table is **checked rather than trusted**: [`Shape::fits`]
+//! compares `wDataLength` against the structure it would be, and anything
+//! that does not fit is handed over as RDATA. For the eight fixed-size
+//! shapes that is exact and would have caught `SVCB` on its own; for the
+//! four with a flexible array it is a floor, and those are the four this
+//! module has measured directly.
+//!
+//! # The forty-two are not the obscure ones, which is why they are
 //! # re-encoded rather than refused
 //!
 //! They are `A`, `AAAA`, `MX`, `TXT`, `SRV`, `NS`, `SOA`, `CNAME`, `PTR`,
@@ -23,7 +38,7 @@
 //! [`crate::rdata`] does the writing, and says what a synthesised RDATA is
 //! and is not.
 //!
-//! Seventeen are still refused, by name and before a query, and
+//! Sixteen are still refused, by name and before a query, and
 //! [`unsupported`] says which and why. A refusal is a thing a caller can
 //! act on; handing back a structure's bytes as though they were RDATA is
 //! the defect the measurement below found already shipped.
@@ -103,8 +118,15 @@ enum Shape {
     Key,
 }
 
-/// Every type named by `DNS_RECORDA`'s data union, and therefore every
-/// type that does **not** arrive as RDATA.
+/// Every type this platform is known to parse into a structure of its own
+/// — the types that do **not** arrive as RDATA.
+///
+/// **Derived from `DNS_RECORDA`'s data union and corrected where a
+/// measurement disagreed.** The union is where the list comes from and is
+/// not the last word: `DNS_SVCB_DATA` exists and RR type 64 arrives as
+/// RDATA regardless, so `SVCB` is absent here despite being a member.
+/// That is the one exception found so far, and the `fits` check above is
+/// what keeps a second one from being a crash rather than a wrong answer.
 ///
 /// **Written as the metadata's own constants rather than as numbers**, so
 /// a reader can check the list against the union by name and a value
@@ -156,7 +178,6 @@ const PARSED_BY_WINDOWS: &[u16] = {
         d::DNS_TYPE_NSEC3,
         d::DNS_TYPE_NSEC3PARAM,
         d::DNS_TYPE_TLSA,
-        d::DNS_TYPE_SVCB,
         d::DNS_TYPE_TKEY,
         d::DNS_TYPE_TSIG,
         d::DNS_TYPE_WINS,
@@ -199,6 +220,39 @@ const SYNTHESISED: &[(u16, Shape)] = {
     ]
 };
 
+impl Shape {
+    /// Whether `wDataLength` is what this structure would report.
+    ///
+    /// **The check the `SVCB` crash cost.** A structure's `wDataLength` is
+    /// its own size; RDATA's is the record's length, and the two agree
+    /// only by coincidence. Where they disagree the payload is not the
+    /// structure, whatever the union says, and RDATA is what it is.
+    ///
+    /// Exact for a fixed-size structure. For one ending in a flexible
+    /// array — `TXT`, `TLSA`, `DS`, `DNSKEY` — the fixed part is a floor
+    /// and the rest is the count the structure itself reports, so the
+    /// check is weaker there. Those four are the ones measured directly on
+    /// a real machine, which is what stands in for it.
+    fn fits(self, len: u16) -> bool {
+        use windows_sys::Win32::NetworkManagement::Dns as d;
+        let len = usize::from(len);
+        match self {
+            Self::A => len == size_of::<d::DNS_A_DATA>(),
+            Self::Aaaa => len == size_of::<d::DNS_AAAA_DATA>(),
+            Self::Name => len == size_of::<d::DNS_PTR_DATAA>(),
+            Self::TwoNames => len == size_of::<d::DNS_MINFO_DATAA>(),
+            Self::NumberAndName => len == size_of::<d::DNS_MX_DATAA>(),
+            Self::Soa => len == size_of::<d::DNS_SOA_DATAA>(),
+            Self::Srv => len == size_of::<d::DNS_SRV_DATAA>(),
+            Self::Naptr => len == size_of::<d::DNS_NAPTR_DATAA>(),
+            Self::Strings => len >= size_of::<d::DNS_TXT_DATAA>(),
+            Self::Tlsa => len >= size_of::<d::DNS_TLSA_DATA>(),
+            Self::Ds => len >= size_of::<d::DNS_DS_DATA>(),
+            Self::Key => len >= size_of::<d::DNS_KEY_DATA>(),
+        }
+    }
+}
+
 /// The shape a type arrives in, or `None` where this path cannot answer.
 fn shape_of(rtype: u16) -> Option<Shape> {
     SYNTHESISED
@@ -217,12 +271,17 @@ fn shape_of(rtype: u16) -> Option<Shape> {
 /// signature over a canonical form this module would have to reproduce
 /// exactly or hand back a record that fails validation; **`NSEC`, `NXT`,
 /// `NSEC3` and `NSEC3PARAM`** carry type bitmaps their structures do not
-/// expose as one; **`SVCB`** is a parameter list whose union is tagged per
-/// parameter, so it is a re-encoder of its own — and `HTTPS`, the type
-/// this workspace actually wants, is not parsed by Windows at all and
-/// arrives raw. **`OPT`, `TKEY` and `TSIG`** are protocol machinery rather
-/// than answers; **`WKS`, `ATMA`, `NULL`, `DHCID`, `WINS` and `WINSR`**
-/// have either no consumer here or no wire form worth guessing at.
+/// expose as one; **`OPT`, `TKEY` and `TSIG`** are protocol machinery
+/// rather than answers; and **`WKS`, `ATMA`, `NULL`, `DHCID`, `WINS` and
+/// `WINSR`** have either no consumer here or no wire form worth guessing
+/// at.
+///
+/// **`SVCB` is not on it and needs no re-encoder either**, which is not
+/// what the union suggested: `DNS_SVCB_DATA` exists and RR type 64
+/// arrives as RDATA regardless — measured, and the measurement is why
+/// this module now checks `wDataLength` rather than trusting the table.
+/// So `SVCB` works on this path exactly as its sibling `HTTPS` does, and
+/// for the same reason.
 pub(super) fn unsupported() -> &'static [u16] {
     static LIST: OnceLock<Vec<u16>> = OnceLock::new();
     LIST.get_or_init(|| {
@@ -348,6 +407,10 @@ pub(super) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
 /// a different type's bytes as pointers.
 unsafe fn read_union(record: &DNS_RECORDA, shape: Option<Shape>) -> Option<Parsed> {
     // unsafe-code-exception: amendment-C8
+    // The table says which member *would* be live; this says whether the
+    // payload is that size. A type the union names and the OS hands over
+    // raw fails here and is read as RDATA, which is what it is.
+    let shape = shape.filter(|shape| shape.fits(record.wDataLength));
     let Some(shape) = shape else {
         // Not a type the union names, so the union IS the RDATA and
         // `wDataLength` is its length. **The one length this path trusts,
@@ -561,9 +624,11 @@ mod tests {
             assert!(PARSED_BY_WINDOWS.contains(&parsed), "type {parsed}");
             assert!(shape_of(parsed).is_some(), "type {parsed}");
         }
-        // Measured as RDATA. `65` is the one this workspace depends on and
-        // `257` is the control that has no `DNS_TYPE_` constant at all.
-        for raw in [65u16, 257] {
+        // Measured as RDATA. `65` is the one this workspace depends on,
+        // `257` is the control with no `DNS_TYPE_` constant at all, and
+        // `64` is the one the union names and the OS hands over raw
+        // anyway — the case that cost a crash.
+        for raw in [64u16, 65, 257] {
             assert!(!PARSED_BY_WINDOWS.contains(&raw), "type {raw}");
             assert!(shape_of(raw).is_none(), "type {raw}");
         }
@@ -586,7 +651,6 @@ mod tests {
             d::DNS_TYPE_DHCID,
             d::DNS_TYPE_NSEC3,
             d::DNS_TYPE_NSEC3PARAM,
-            d::DNS_TYPE_SVCB,
             d::DNS_TYPE_TKEY,
             d::DNS_TYPE_TSIG,
             d::DNS_TYPE_WINS,

@@ -97,6 +97,12 @@ mod tests {
         ("cloudflare.com", 48, "DNSKEY"),
         ("_443._tcp.good.dane.huque.com", 52, "TLSA"),
         ("cloudflare.com", 65, "HTTPS"),
+        // RFC 9462's discovery name, and the only place a `SVCB` record is
+        // reliably published. It is the sharpest case in the table: a
+        // non-root target, an `alpn` list, and `key7` — so it exercises the
+        // name encoder, a character-string list and an unmodelled key at
+        // once, against the only shape whose union is tagged per element.
+        ("_dns.resolver.arpa", 64, "SVCB"),
     ];
 
     /// **The Windows 10 path, exercised on a Windows 11 machine, one type

@@ -49,6 +49,7 @@ windows-sys = { version = "0.61", features = [
 windows-strings = { version = "0.5", default-features = false }
 
 [dev-dependencies]
+const-hex      = { workspace = true }
 assert_matches = { workspace = true }
 rstest         = { workspace = true }
 
