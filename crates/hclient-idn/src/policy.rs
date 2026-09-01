@@ -244,10 +244,105 @@ fn decode_punycode(payload: &str) -> Option<String> {
 ///    accept followed by a refuse — and the second parse is the one a
 ///    **redirect hop** makes. See [`to_ascii_inner`].
 pub(crate) fn to_ascii_over(
-    convert: impl Fn(&str) -> Option<String>,
+    convert: &dyn Fn(&str) -> Option<String>,
     domain: &str,
 ) -> Option<String> {
     to_ascii_inner(&convert, domain, true)
+}
+
+/// Every ACE label in `lower` decoded to the label it stands for, with
+/// everything else passed through — UTS 46 ToUnicode, over a name that
+/// mapping has already made ASCII.
+///
+/// **Shared by both directions**, and that is what makes them agree by
+/// construction rather than by two implementations being kept in step:
+/// [`to_ascii_inner`] runs this to get the Unicode form it hands the
+/// backend, and [`to_unicode_over`] runs it on the answer that came back.
+/// A label this refuses is a label neither direction will emit.
+/// UTS 46 **ToUnicode**, over the same backend and the same rules as
+/// [`to_ascii_over`].
+///
+/// **It is the ASCII direction with one more step, deliberately.** The
+/// name is converted to its A-label form first — which runs every check
+/// this crate has, including the backend's own mapping and step 6's
+/// round-trip — and only then are the ACE labels decoded. Two things fall
+/// out of that order and neither is free any other way:
+///
+/// - **the two directions accept exactly the same names**, so a caller
+///   cannot be handed a Unicode form for a host `domain_to_ascii` would
+///   refuse to contact;
+/// - **the answer is the platform's**, not this layer's. Punycode is
+///   reversible arithmetic and this crate can do it anywhere, but *which*
+///   name is legal is UTS 46's question and the backend's answer.
+///
+/// The cost is one extra backend call for a name that has an ACE label
+/// and no other, which is a conversion nobody's DNS lookup will notice.
+///
+/// **No platform ToUnicode entry point is used, and that is the point.**
+/// ICU has `uidna_nameToUnicodeUTF8` and ICU4J has `nameToUnicode`, but
+/// Apple's Foundation exposes no way back at all — `NSURL` hands out the
+/// A-label and nothing decodes it. A per-backend implementation would
+/// therefore have had three implementations and one hole, where this has
+/// one implementation and no hole.
+pub(crate) fn to_unicode_over(
+    convert: &dyn Fn(&str) -> Option<String>,
+    domain: &str,
+) -> Option<String> {
+    let ascii = to_ascii_inner(&convert, domain, true)?;
+    decode_ace_labels(&ascii)
+}
+
+fn decode_ace_labels(lower: &str) -> Option<String> {
+    let mut unicode = String::with_capacity(lower.len());
+    for (nth, label) in lower.split(is_label_separator).enumerate() {
+        if nth > 0 {
+            unicode.push('.');
+        }
+        // **`is_ascii` first, and the order is UTS 46's rather than a
+        // guard.** §4 maps before it looks for an ACE label, so `xn--` is
+        // only meaningful on a label that mapping has already made ASCII.
+        // A label carrying a character that *maps* to ASCII — a fullwidth
+        // `ｗ`, say — is a valid ACE label after mapping and nonsense
+        // before it, and punycode is defined over ASCII, so decoding it
+        // here could only fail. This crate has no mapper of its own; the
+        // backend is the mapper, so such a label is pushed through
+        // untouched and the backend does the whole of §4 on it.
+        //
+        // Found by the fuzzer, on
+        // `xn--qqqqqqqqqqHJJJJJJ'ｗJJJJJJJJJJJi-0dJd`: this layer answered
+        // `None` where `idna` answered the ACE form. Substituting the
+        // mapped `w` by hand makes both answer the same string, which is
+        // what identified the ordering rather than the characters.
+        match label.strip_prefix(ACE_PREFIX).filter(|_| label.is_ascii()) {
+            Some(payload) => {
+                let decoded = decode_punycode(payload)?;
+                // `is_ascii` is true of the empty string too, which is the
+                // `xn--` and `xn---` case. A separator inside a decoded
+                // label is UTS 46's `UIDNA_ERROR_LABEL_HAS_DOT`: it cannot
+                // be `.`, which is a basic code point and so unreachable
+                // here, but it can be one of the other three.
+                if decoded.is_ascii() || decoded.contains(is_label_separator) {
+                    return None;
+                }
+                // **A denied byte can be smuggled through punycode**, and
+                // the check that used to catch this sat on the whole
+                // assembled name with a comment saying it "cannot fire".
+                // It could: `xn--%-0fa.de` decodes to `%ä`, because a
+                // literal `%` rides in the basic-code-point half that
+                // punycode preserves verbatim. So the check belongs here,
+                // on the decoded label, and not on the name — on the name
+                // it also refused a forbidden character that **mapping
+                // removes**, which is the `">\u{338}"` case the fuzzer
+                // found. Narrowing it is what lets both be right.
+                if decoded.bytes().any(is_forbidden_domain_byte) {
+                    return None;
+                }
+                unicode.push_str(&decoded);
+            }
+            None => unicode.push_str(label),
+        }
+    }
+    Some(unicode)
 }
 
 /// [`to_ascii_over`], with step 6 switchable.
@@ -302,55 +397,7 @@ fn to_ascii_inner<F: Fn(&str) -> Option<String>>(
         return None;
     }
 
-    let mut unicode = String::with_capacity(lower.len());
-    for (nth, label) in lower.split(is_label_separator).enumerate() {
-        if nth > 0 {
-            unicode.push('.');
-        }
-        // **`is_ascii` first, and the order is UTS 46's rather than a
-        // guard.** §4 maps before it looks for an ACE label, so `xn--` is
-        // only meaningful on a label that mapping has already made ASCII.
-        // A label carrying a character that *maps* to ASCII — a fullwidth
-        // `ｗ`, say — is a valid ACE label after mapping and nonsense
-        // before it, and punycode is defined over ASCII, so decoding it
-        // here could only fail. This crate has no mapper of its own; the
-        // backend is the mapper, so such a label is pushed through
-        // untouched and the backend does the whole of §4 on it.
-        //
-        // Found by the fuzzer, on
-        // `xn--qqqqqqqqqqHJJJJJJ'ｗJJJJJJJJJJJi-0dJd`: this layer answered
-        // `None` where `idna` answered the ACE form. Substituting the
-        // mapped `w` by hand makes both answer the same string, which is
-        // what identified the ordering rather than the characters.
-        match label.strip_prefix(ACE_PREFIX).filter(|_| label.is_ascii()) {
-            Some(payload) => {
-                let decoded = decode_punycode(payload)?;
-                // `is_ascii` is true of the empty string too, which is the
-                // `xn--` and `xn---` case. A separator inside a decoded
-                // label is UTS 46's `UIDNA_ERROR_LABEL_HAS_DOT`: it cannot
-                // be `.`, which is a basic code point and so unreachable
-                // here, but it can be one of the other three.
-                if decoded.is_ascii() || decoded.contains(is_label_separator) {
-                    return None;
-                }
-                // **A denied byte can be smuggled through punycode**, and
-                // the check that used to catch this sat on the whole
-                // assembled name with a comment saying it "cannot fire".
-                // It could: `xn--%-0fa.de` decodes to `%ä`, because a
-                // literal `%` rides in the basic-code-point half that
-                // punycode preserves verbatim. So the check belongs here,
-                // on the decoded label, and not on the name — on the name
-                // it also refused a forbidden character that **mapping
-                // removes**, which is the `">\u{338}"` case the fuzzer
-                // found. Narrowing it is what lets both be right.
-                if decoded.bytes().any(is_forbidden_domain_byte) {
-                    return None;
-                }
-                unicode.push_str(&decoded);
-            }
-            None => unicode.push_str(label),
-        }
-    }
+    let unicode = decode_ace_labels(&lower)?;
 
     // Reachable only when no label was an ACE label, because a decoded one
     // is non-ASCII by the check above.
@@ -464,7 +511,7 @@ mod tests {
     /// The policy over a backend that answers everything correctly. Any
     /// difference from [`idna_says`] is the policy's own.
     fn over_idna(domain: &str) -> Option<String> {
-        to_ascii_over(idna_says, domain)
+        to_ascii_over(&idna_says, domain)
     }
 
     /// **UTS 46 maps before it looks for an ACE label, and this layer used
@@ -574,7 +621,7 @@ mod tests {
     }
 
     fn over_foundation(domain: &str) -> Option<String> {
-        to_ascii_over(foundation_model, domain)
+        to_ascii_over(&foundation_model, domain)
     }
 
     /// The inputs `tests/differential.rs` pins, plus the ones this module
@@ -769,7 +816,7 @@ mod tests {
         let mut checked = 0usize;
         for name in plain {
             let got = to_ascii_over(
-                |asked| {
+                &|asked| {
                     panic!("the platform was asked about {asked:?} for the ASCII name {name:?}")
                 },
                 name,
@@ -1080,7 +1127,7 @@ mod tests {
             other => idna_says(other),
         };
         assert_eq!(
-            to_ascii_over(transitional, "xn--strae-oqa.de"),
+            to_ascii_over(&transitional, "xn--strae-oqa.de"),
             None,
             "the platform re-encoded the decoded label to a different A-label and was believed"
         );
@@ -1096,7 +1143,7 @@ mod tests {
     #[test]
     fn a_backend_that_rewrites_an_ascii_label_is_refused() {
         let liar = |_: &str| Some("xn--mnchen-3ya.com".to_owned());
-        assert_eq!(to_ascii_over(liar, "münchen.de"), None);
+        assert_eq!(to_ascii_over(&liar, "münchen.de"), None);
     }
 
     /// And a backend that changed how many labels there are. A code point
@@ -1105,9 +1152,9 @@ mod tests {
     #[test]
     fn a_backend_that_changes_the_label_count_is_refused() {
         let splitter = |_: &str| Some("xn--mnchen-3ya.de.extra".to_owned());
-        assert_eq!(to_ascii_over(splitter, "münchen.de"), None);
+        assert_eq!(to_ascii_over(&splitter, "münchen.de"), None);
         let joiner = |_: &str| Some("xn--mnchen-3ya".to_owned());
-        assert_eq!(to_ascii_over(joiner, "münchen.de"), None);
+        assert_eq!(to_ascii_over(&joiner, "münchen.de"), None);
     }
 
     #[test]
@@ -1211,7 +1258,7 @@ mod tests {
         ] {
             assert_eq!(
                 to_ascii_over(
-                    |asked| panic!("the platform was asked about {asked:?}"),
+                    &|asked| panic!("the platform was asked about {asked:?}"),
                     input
                 ),
                 None,
@@ -1227,9 +1274,9 @@ mod tests {
     fn a_denied_byte_the_platform_produced_is_refused() {
         assert_eq!(over_idna("a\u{ff0f}b.de"), None);
         let sloppy = |_: &str| Some("a/b.de".to_owned());
-        assert_eq!(to_ascii_over(sloppy, "aüb.de"), None);
+        assert_eq!(to_ascii_over(&sloppy, "aüb.de"), None);
         let not_ascii = |_: &str| Some("aüb.de".to_owned());
-        assert_eq!(to_ascii_over(not_ascii, "aüb.de"), None);
+        assert_eq!(to_ascii_over(&not_ascii, "aüb.de"), None);
     }
 
     // ── The differential, over generated input ──────────────────────────

@@ -131,6 +131,10 @@ use objc2_foundation::{NSString, NSURL};
 #[derive(Debug)]
 pub(crate) struct Foundation;
 
+/// The name every backend module exports, so that `lib.rs` can select one
+/// with `cfg_select!` and then name no platform at all.
+pub(crate) type Handle = Foundation;
+
 impl Foundation {
     pub(crate) fn name(&self) -> &str {
         "Foundation NSURL (objc2-foundation, safe bindings)"

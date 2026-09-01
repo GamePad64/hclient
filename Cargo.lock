@@ -1479,6 +1479,8 @@ name = "hclient-idn"
 version = "0.1.0-alpha.2"
 dependencies = [
  "idna",
+ "jni 0.21.1",
+ "ndk-context",
  "objc2-foundation",
  "rstest",
  "thiserror 2.0.20",

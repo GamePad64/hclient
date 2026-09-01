@@ -2,9 +2,18 @@
 //! platform's own UTS 46 implementation where the platform has one, and
 //! the bundled `idna` crate where it does not.
 //!
-//! One function's worth of surface: [`domain_to_ascii`]. [`backend`] says
-//! which implementation answered, and is resolved by the same cell the
-//! conversion uses, so the two cannot drift apart.
+//! **Two functions, and that is the whole surface**:
+//! [`domain_to_ascii`] and [`domain_to_unicode`], plus the [`IdnError`]
+//! their `Result` needs. Which implementation answers is decided by the
+//! target and, where the target has a choice, by the one feature this
+//! crate has — `idna`, off by default, which forces the bundled tables
+//! everywhere.
+//!
+//! Four backends, one shape: Apple's Foundation, Windows' `icuuc.dll`,
+//! Android's `android.icu.text.IDNA` over JNI, and the `idna` crate,
+//! which is what the ELF unixes and wasm get because there is nothing
+//! else there to ask. `lib.rs` names the selected one `platform` and
+//! nothing past that line names an operating system.
 //!
 //! # Why this crate exists — and on Linux it is no longer the size
 //!
@@ -66,8 +75,8 @@
 //! - **the corpus.** `tests/differential.rs` pins both implementations'
 //!   answers on 40 rows; that is what makes "the platform agrees" a
 //!   measurement rather than a hope, and it is shared by every target.
-//! - **a typed error and an honest [`Backend`]**, instead of a `bool`
-//!   from a conversion that silently did something else.
+//! - **a typed error**, instead of a `bool` from a conversion that
+//!   silently did something else.
 //!
 //! One alternative was measured and rejected rather than argued about:
 //! pinning `idna_adapter` to 1.1.0 (the unicode-rs backend) is one
@@ -95,8 +104,8 @@
 //! | `IgnoreInvalidPunycode` | false | always off in `idna`, not configurable |
 //!
 //! Every one of those seven has to be reproduced on the platform side, and
-//! only two of them are ICU *options*. The rest are [`IGNORED_ERRORS`] and
-//! [`is_forbidden_domain_byte`] below — safe Rust with tests around it,
+//! only two of them are ICU *options*. The rest are `IGNORED_ERRORS` and
+//! `is_forbidden_domain_byte` below — safe Rust with tests around it,
 //! deliberately kept out of the files that carry the `unsafe`.
 //!
 //! # The trap, measured rather than reasoned about
@@ -113,14 +122,14 @@
 //!   default options agrees with IDNA2003 on exactly the inputs where it
 //!   matters. Measured here against system ICU 78.2 on Linux:
 //!
-//!   | input | `uidna_openUTS46(0)` | `uidna_openUTS46(`[`OPTIONS`]`)` | `idna` |
+//!   | input | `uidna_openUTS46(0)` | `uidna_openUTS46(``OPTIONS``)` | `idna` |
 //!   |---|---|---|---|
 //!   | `straße.de` | `strasse.de` | `xn--strae-oqa.de` | `xn--strae-oqa.de` |
 //!   | `faß.de` | `fass.de` | `xn--fa-hia.de` | `xn--fa-hia.de` |
 //!
 //!   The function is named for the standard it is being asked *not* to
 //!   follow, so nothing about the call site invites suspicion of the flag.
-//!   That is why [`OPTIONS`] is a named constant with the bits spelled out
+//!   That is why `OPTIONS` is a named constant with the bits spelled out
 //!   one per line, and why the corpus in `tests/differential.rs` opens
 //!   with those two rows.
 //!
@@ -159,7 +168,7 @@
 //!   `swift-foundation`'s `URLParser+ICU.swift` opens its handle with
 //!   `UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ |
 //!   UIDNA_NONTRANSITIONAL_TO_UNICODE | UIDNA_NONTRANSITIONAL_TO_ASCII` —
-//!   bit for bit [`OPTIONS`], arrived at independently, which is the best
+//!   bit for bit `OPTIONS`, arrived at independently, which is the best
 //!   corroboration that constant will ever get.
 //!
 //!   **It needs no `unsafe` at all**, and so no spec amendment, where the
@@ -199,7 +208,7 @@
 //!   back as the host `ample.com` and `ex/ample.com` as `ex` — a
 //!   wrong-origin generator if an unvalidated string is handed to it.
 //!   Every input in that family carries a byte from the forbidden-domain
-//!   set, so [`is_forbidden_domain_byte`] run *before* `new URL()`
+//!   set, so `is_forbidden_domain_byte` run *before* `new URL()`
 //!   removes all of them; the check already exists here, for the other
 //!   platform. One divergence would remain and is a decision rather than
 //!   a bug to route around: browsers accept invalid punycode (`xn--a.de`)
@@ -286,11 +295,38 @@
 
 use std::borrow::Cow;
 
-#[cfg(icu_backend)]
+// Four backends, one shape: each module exports `find`, `convert` and a
+// `Handle` whose `name()` says what answered. Which one is compiled is
+// `build.rs`'s single cfg, and the alias below is the only place in this
+// crate that names a platform — everything past it says `platform::`.
+//
+// **`cfg_select!` rather than four `#[cfg]` aliases**, and the arms are
+// module selections, which is where this workspace measured the macro to
+// pay: a `use` line loses nothing to rustfmt, where a function body inside
+// an arm loses all of it. There is no `_` arm because `build.rs` emits
+// exactly one of these four and a fifth backend must be a compile error
+// here rather than a silent fall-through.
+// Unconditional, like `android`: it holds ICU's vocabulary — the option
+// bits, the error mask, the acceptance rule — which both ICU backends
+// share, and only its Windows binding is gated inside.
 mod icu;
 
-#[cfg(foundation_backend)]
-mod foundation;
+// Unconditional: only its JNI half is gated, and the half that holds the
+// decision — which ICU errors are forgiven — is tested on every host.
+mod android;
+
+#[cfg(apple_backend)]
+mod apple;
+
+#[cfg(idna_backend)]
+mod bundled;
+
+core::cfg_select! {
+    idna_backend => { use bundled as platform; }
+    apple_backend => { use apple as platform; }
+    icu_backend => { use icu as platform; }
+    android_backend => { use android as platform; }
+}
 
 /// This crate's own layer, shared by every backend and reached through
 /// all of them — see the module docs for what it takes over and why.
@@ -307,177 +343,6 @@ mod error;
 
 pub use error::IdnError;
 
-// The rule is *at least one backend*, and `cfg_select!` lets it be
-// written as the three positives it is rather than as one negation of
-// all of them. Adding a fourth backend is an arm here, where before it
-// was an edit inside a `not(any(..))` that no compiler would notice
-// being forgotten.
-core::cfg_select! {
-    idna_backend => {}
-    icu_backend => {}
-    foundation_backend => {}
-    _ => {
-        compile_error!(
-            "hclient-idn needs at least one backend: `bundled` (the `idna` crate, the default) \
-             or `system-icu` (the platform's own ICU), or both. With neither, `domain_to_ascii` \
-             could only ever return `IdnError::NoImplementation`, which is a build nobody wants \
-             by accident."
-        );
-    }
-}
-
-/// Which implementation [`domain_to_ascii`] actually calls in this
-/// process.
-///
-/// Not "which feature is enabled" — with `bundled` and `system-icu` both
-/// on, the answer depends on whether a system ICU was found, which is a
-/// property of the machine. A capability that reports a compile-time guess
-/// where the truth is a run-time fact is the "capability that lies" defect
-/// this project has caught elsewhere; [`backend`] reads the same resolved
-/// cell the conversion reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Backend {
-    /// The platform's own ICU, found and loaded at run time, and the only
-    /// implementation in this build — `system-icu` without `bundled`.
-    /// Nothing cross-checks it, which is the price of not carrying the
-    /// tables; the load-time acceptance probe in `icu.rs` is the only
-    /// guard, and it is a behaviour floor rather than a Unicode-version
-    /// floor.
-    SystemIcu,
-    /// Apple's Foundation, through `NSURL`. Linked, like the ICU
-    /// backend, and for the same reason: it arrives with the OS rather
-    /// than with whatever the user installed. Unlike the ICU backend it
-    /// needs no `unsafe` at all — see `foundation.rs`.
-    SystemFoundation,
-    /// The bundled `idna` crate and its Unicode tables.
-    Bundled,
-    /// Neither: `system-icu` without `bundled`, on a machine with no ICU.
-    /// Every call returns [`IdnError::NoImplementation`].
-    None,
-}
-
-// ── The six ICU option bits, from `unicode/uidna.h` ─────────────────────
-//
-// Spelled out rather than imported, because the crate that would supply
-// them does not exist: `rust_icu_sys` 5.7.0's `BINDGEN_SOURCE_MODULES`
-// does not include `uidna`, and its function allow-list has no
-// `uidna_.*` — checked in the published source, not inferred.
-
-/// `UIDNA_USE_STD3_RULES`. **Deliberately not set**: it restricts ASCII to
-/// letters/digits/hyphen, which rejects the underscore that appears in
-/// `_dmarc`-style pseudo-hosts, while *allowing* `%` and `<` — so it is
-/// neither a superset nor a subset of the WHATWG deny list this crate has
-/// to reproduce. [`is_forbidden_domain_byte`] does that job instead.
-#[allow(
-    dead_code,
-    reason = "documented as not set; named so the reader can see it was considered"
-)]
-pub const UIDNA_USE_STD3_RULES: u32 = 0x0002;
-
-/// `UIDNA_CHECK_BIDI`. `idna` applies CheckBidi unconditionally — it is
-/// not one of its configurable flags — so this must be on to match.
-pub const UIDNA_CHECK_BIDI: u32 = 0x0004;
-
-/// `UIDNA_CHECK_CONTEXTJ`. Same story: `idna`'s CheckJoiners is always
-/// true, so ZWJ/ZWNJ context rules have to be on here too.
-pub const UIDNA_CHECK_CONTEXTJ: u32 = 0x0008;
-
-/// `UIDNA_NONTRANSITIONAL_TO_ASCII`. **The bit this whole crate turns on.**
-pub const UIDNA_NONTRANSITIONAL_TO_ASCII: u32 = 0x0010;
-
-/// `UIDNA_NONTRANSITIONAL_TO_UNICODE`. Set together with its sibling: this
-/// crate only converts to ASCII today, but a handle opened with a
-/// half-transitional option set would answer differently the moment
-/// anything calls `nameToUnicode` on it, and that is not a difference
-/// worth leaving lying around.
-pub const UIDNA_NONTRANSITIONAL_TO_UNICODE: u32 = 0x0020;
-
-/// `UIDNA_CHECK_CONTEXTO`. **Deliberately not set**: UTS 46 makes ContextO
-/// optional and `idna` does not implement it, so setting it would reject
-/// names the bundled path accepts.
-#[allow(
-    dead_code,
-    reason = "documented as not set; named so the reader can see it was considered"
-)]
-pub const UIDNA_CHECK_CONTEXTO: u32 = 0x0040;
-
-/// The option word passed to `uidna_openUTS46`. `0x3c`.
-///
-/// **`UIDNA_DEFAULT` is 0 and 0 is transitional** — see the crate docs for
-/// the measurement. Four bits, each justified on its own constant above.
-///
-/// **Independently arrived at by Apple, which is the best corroboration
-/// available for a number like this.** `swift-foundation`'s
-/// `Sources/FoundationInternationalization/URLParser+ICU.swift` (`struct
-/// UIDNAHookICU`) opens its own handle with
-/// `UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ |
-/// UIDNA_NONTRANSITIONAL_TO_UNICODE | UIDNA_NONTRANSITIONAL_TO_ASCII` —
-/// the same four bits, in a URL parser solving the same problem, written
-/// by people with no connection to this one.
-///
-/// They then diverge from us on the *errors*, which is exactly why
-/// [`IGNORED_ERRORS`] is a separate decision and not a footnote:
-/// `shouldAllow(_:encodeToASCII: true)` sets `allowedErrors = 0`, so
-/// Apple's `URL` refuses a name on any bit at all, the six this crate
-/// masks included.
-///
-/// **`a..b` and `ab--cd.com` are NOT examples of this**, and
-/// `macos-latest` measures both as accepted. The reason is one level up
-/// and is the whole of `foundation.rs`'s first
-/// section: those two are all-ASCII, so Foundation's IDNA hook never runs
-/// on them and there is no `errors` word to be strict about. The
-/// divergence is real, but its inputs are names with a non-ASCII label
-/// *and* one of those defects — `-münchen.de`, `münchen..de`,
-/// `ab--cd.münchen`.
-pub const OPTIONS: u32 = UIDNA_NONTRANSITIONAL_TO_ASCII
-    | UIDNA_NONTRANSITIONAL_TO_UNICODE
-    | UIDNA_CHECK_BIDI
-    | UIDNA_CHECK_CONTEXTJ;
-
-// ── The `UIDNAInfo.errors` bits this crate ignores ──────────────────────
-//
-// ICU has no options for CheckHyphens or VerifyDnsLength: it always runs
-// both checks and reports them as bits. `idna`, called the way
-// `hclient-proto` calls it, has both OFF. So agreement is not a matter of
-// options alone — the six bits below have to be masked out of ICU's
-// answer, or every one of `a..b`, `-lead.de`, `ab--cd.com`, a 64-byte
-// label and a 254-byte name would be rejected by the platform path and
-// accepted by the bundled one.
-
-const UIDNA_ERROR_EMPTY_LABEL: u32 = 0x0001;
-const UIDNA_ERROR_LABEL_TOO_LONG: u32 = 0x0002;
-const UIDNA_ERROR_DOMAIN_NAME_TOO_LONG: u32 = 0x0004;
-const UIDNA_ERROR_LEADING_HYPHEN: u32 = 0x0008;
-const UIDNA_ERROR_TRAILING_HYPHEN: u32 = 0x0010;
-const UIDNA_ERROR_HYPHEN_3_4: u32 = 0x0020;
-
-/// The `UIDNAInfo.errors` bits that do **not** make a name unusable here.
-///
-/// The first three are _VerifyDnsLength=false_, the last three are
-/// _CheckHyphens=false_. Nothing else is masked: a disallowed code point,
-/// a leading combining mark, bad punycode, a dot inside a decoded label,
-/// an invalid ACE label, a bidi violation or a ContextJ violation all
-/// stand, because `idna` rejects all of those too.
-pub const IGNORED_ERRORS: u32 = UIDNA_ERROR_EMPTY_LABEL
-    | UIDNA_ERROR_LABEL_TOO_LONG
-    | UIDNA_ERROR_DOMAIN_NAME_TOO_LONG
-    | UIDNA_ERROR_LEADING_HYPHEN
-    | UIDNA_ERROR_TRAILING_HYPHEN
-    | UIDNA_ERROR_HYPHEN_3_4;
-
-/// Whether ICU's `UIDNAInfo.errors` word means "reject this name".
-///
-/// Lives here, in safe tested code, and not in `icu.rs`, for the same
-/// reason `sys::classify_written` lives outside the FFI file in
-/// `hclient-dns-system`: this is a *decision about what the answer means*,
-/// and it is worth more as ordinary Rust with tests around it than as one
-/// more line inside an `unsafe` block.
-#[must_use]
-pub const fn is_fatal(errors: u32) -> bool {
-    errors & !IGNORED_ERRORS != 0
-}
-
 /// The WHATWG URL Standard's [forbidden domain code point] set, as `idna`
 /// spells it: `AsciiDenyList::new(true, "%#/:<>?@[\\]^|")` — the explicit
 /// list plus, from `deny_glyphless`, U+0020 SPACE and below and U+007F
@@ -493,7 +358,7 @@ pub const fn is_fatal(errors: u32) -> bool {
 ///
 /// [forbidden domain code point]: https://url.spec.whatwg.org/#forbidden-domain-code-point
 #[must_use]
-pub const fn is_forbidden_domain_byte(b: u8) -> bool {
+pub(crate) const fn is_forbidden_domain_byte(b: u8) -> bool {
     matches!(
         b,
         0x00..=0x20
@@ -542,7 +407,7 @@ pub(crate) const PROBES: [(&str, &str); 2] = [
 /// `straße.de` right and `faß.de` wrong is not one to trust with the
 /// rest.
 #[cfg_attr(
-    not(any(icu_backend, foundation_backend)),
+    not(any(icu_backend, apple_backend, android_backend)),
     allow(
         dead_code,
         reason = "only a platform backend has anything to gate, but the POLICY is                   platform-independent and so are its tests — gating it away here would stop                   them running on the one target CI exercises most"
@@ -552,6 +417,27 @@ pub(crate) fn accepts(convert: impl Fn(&str) -> Option<String>) -> bool {
     PROBES
         .iter()
         .all(|(input, want)| convert(input).as_deref() == Some(*want))
+}
+
+/// The one gate every backend passes, and the handle it hands back.
+///
+/// **One `OnceLock` and one probe for all four**, where the ICU module
+/// kept its own and the two platform backends had theirs written out in
+/// `lib.rs`. Three copies of a gate is three chances for one of them to
+/// stop asking; the modules are interchangeable now, so the gate can be
+/// too.
+///
+/// `None` means this build has an implementation it will not trust — a
+/// Windows with no `icuuc.dll`, an Android process with no JVM, an ICU
+/// that answered the transitional pair wrongly. Every caller turns that
+/// into [`IdnError::NoImplementation`], which is a refusal rather than a
+/// wrong host.
+fn selected() -> Option<&'static platform::Handle> {
+    use std::sync::OnceLock;
+    static SELECTED: OnceLock<Option<platform::Handle>> = OnceLock::new();
+    SELECTED
+        .get_or_init(|| platform::find().filter(|h| accepts(|input| platform::convert(h, input))))
+        .as_ref()
 }
 
 /// Converts `domain` to its ASCII (A-label) form.
@@ -565,140 +451,54 @@ pub(crate) fn accepts(convert: impl Fn(&str) -> Option<String>) -> bool {
 /// # Errors
 ///
 /// [`IdnError::NotAnIdn`] if UTS 46 rejects the name, and
-/// [`IdnError::NoImplementation`] if this build has no implementation that
-/// can run here — see [`Backend`].
+/// [`IdnError::NoImplementation`] if this build has an implementation it
+/// will not trust — see `selected`.
 pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    match backend() {
-        #[cfg(icu_backend)]
-        Backend::SystemIcu => system_icu_to_ascii(domain),
-        #[cfg(foundation_backend)]
-        Backend::SystemFoundation => foundation_to_ascii(domain),
-        #[cfg(idna_backend)]
-        Backend::Bundled => bundled_to_ascii(domain),
-        Backend::None => Err(IdnError::NoImplementation {
-            domain: domain.to_owned(),
-        }),
-        #[allow(
-            unreachable_patterns,
-            reason = "the arms above are feature-gated, so which variants are constructible \
-                      changes with the feature set; this arm is dead in some of them"
-        )]
-        other => unreachable!("{other:?} is not reachable in this feature set"),
-    }
+    over(domain, policy::to_ascii_over)
 }
 
-/// Which implementation answers in this process — see [`Backend`].
+/// Converts `domain` to its Unicode (U-label) form — UTS 46 ToUnicode.
 ///
-/// Cheap after the first call: the library search behind `system-icu`
-/// happens once, in a `OnceLock`.
-#[must_use]
-pub fn backend() -> Backend {
-    #[cfg(icu_backend)]
-    if icu::library().is_some() {
-        return Backend::SystemIcu;
-    }
-    #[cfg(foundation_backend)]
-    if foundation_backend().is_some() {
-        return Backend::SystemFoundation;
-    }
-    // The tail is the only compile-time choice in this function — the two
-    // arms above are *runtime* probes — and it used to be a pair,
-    // `#[cfg(idna_backend)]` beside `#[cfg(not(idna_backend))]`. That is
-    // the same condition written twice, once negated, which is exactly
-    // what `cfg_select!` exists to stop drifting apart.
-    core::cfg_select! {
-        idna_backend => { Backend::Bundled }
-        _ => { Backend::None }
-    }
+/// `xn--mnchen-3ya.de` comes back as `münchen.de`. A name with no ACE
+/// label comes back lower-cased and otherwise unchanged, which is what
+/// ToUnicode does rather than a shortcut.
+///
+/// **It accepts exactly the names [`domain_to_ascii`] accepts**, because
+/// it is that function with one more step: the name is converted to its
+/// A-label form first, through the platform and every rule this crate
+/// has, and only then are the ACE labels decoded. So a caller cannot be
+/// handed a Unicode form for a host the other direction would refuse to
+/// contact — see `policy::to_unicode_over` for why that order is the
+/// design rather than an implementation detail.
+///
+/// # Errors
+///
+/// As [`domain_to_ascii`].
+pub fn domain_to_unicode(domain: &str) -> Result<Cow<'_, str>, IdnError> {
+    over(domain, policy::to_unicode_over)
 }
 
-/// The bundled path: the exact call `hclient-proto` used to make itself,
-/// so a target that resolves to this backend answers what that crate
-/// answered before it took this one — byte for byte, and measured that
-/// way rather than argued.
-#[cfg(idna_backend)]
-fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    // **Through the policy, like the other two**, and it was the one that
-    // was not. It called `idna::domain_to_ascii_cow` directly, so on Linux
-    // and wasm the shared policy never ran — which is the ICU path's own
-    // argument left unapplied: *"the alternative is two statements of one
-    // contract and the newer one is always the one that rots."*
-    //
-    // What it cost was the divergence this crate exists to prevent.
-    // `ä..de` converted here and was refused by Foundation, so the same
-    // host was reachable on Linux and Windows and not on macOS — and the
-    // empty-label rule added to `policy::to_ascii_over` fixed nothing
-    // until this line, because the rule was in a layer this path skipped.
-    // Measured, not assumed: the `uri_resolution` corpus stayed green on
-    // Linux across that change, which is what said the layer was being
-    // bypassed.
-    policy::to_ascii_over(
-        |unicode| {
-            idna::domain_to_ascii_cow(unicode.as_bytes(), idna::AsciiDenyList::URL)
-                .ok()
-                .map(Cow::into_owned)
-        },
-        domain,
-    )
-    .map(Cow::Owned)
-    .ok_or_else(|| IdnError::NotAnIdn {
-        domain: domain.to_owned(),
-    })
-}
+/// One of the two entry points in [`policy`], as a value the dispatch can
+/// take: [`policy::to_ascii_over`] or `policy::to_unicode_over`.
+///
+/// A named type because clippy asks for one, and it earns the name — the
+/// pair of directions is the thing being abstracted over, and `PolicyFn`
+/// says that where the written-out signature says only that something
+/// takes a closure.
+type PolicyFn = fn(&dyn Fn(&str) -> Option<String>, &str) -> Option<String>;
 
-/// The ICU path: the shared policy, with ICU as its conversion.
+/// The dispatch both directions share.
 ///
-/// ICU would answer every one of [`policy::to_ascii_over`]'s six steps correctly
-/// on its own — it is a UTS 46 implementation, and the corpus measured
-/// that on a real `windows-latest` runner before this policy existed. It
-/// goes through the policy anyway, because the alternative is two
-/// statements of one contract and the newer one is always the one that
-/// rots. What the Windows corpus run now checks is that the shared policy
-/// left ICU's answers alone.
-///
-/// Two consequences worth naming. An all-ASCII name no longer reaches
-/// `uidna_nameToASCII_UTF8` at all — step 4 answers it — so the `unsafe`
-/// boundary is crossed for fewer inputs than before. And the input deny
-/// scan is back after having been measured redundant and deleted: it is
-/// redundant *for ICU*, and it is not redundant for a policy that hands a
-/// decoded label onward.
-#[cfg(icu_backend)]
-fn system_icu_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    policy::to_ascii_over(icu::name_to_ascii, domain)
-        .map(Cow::Owned)
-        .ok_or_else(|| IdnError::NotAnIdn {
-            domain: domain.to_owned(),
-        })
-}
-
-/// Foundation, gated once per process on the same probe pair the ICU
-/// backend uses.
-///
-/// The gate matters more here than it looks. A wrong getter (see
-/// `foundation.rs`, consequence 4) produces a *plausible* answer — a
-/// percent-encoded host rather than an A-label — so the failure would not
-/// announce itself. `straße.de` does.
-#[cfg(foundation_backend)]
-fn foundation_backend() -> Option<&'static foundation::Foundation> {
-    use std::sync::OnceLock;
-    static F: OnceLock<Option<foundation::Foundation>> = OnceLock::new();
-    F.get_or_init(|| foundation::find().filter(|f| accepts(|input| foundation::convert(f, input))))
-        .as_ref()
-}
-
-/// The Foundation path: the same shared policy, with Foundation as its
-/// conversion.
-///
-/// Foundation reaches a UTS 46 implementation only for a host that is not
-/// ASCII — which is the one question [`policy::to_ascii_over`] asks a backend, and
-/// the reason the three rows that failed on `macos-latest` were all
-/// all-ASCII ones.
-#[cfg(foundation_backend)]
-fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    let f = foundation_backend().ok_or_else(|| IdnError::NoImplementation {
+/// `policy` is the entry point — [`policy::to_ascii_over`] or
+/// `policy::to_unicode_over` — and the closure is the selected
+/// backend's conversion. Written once because the alternative is the same
+/// four-way match twice, and the second copy is where a backend goes to
+/// be forgotten.
+fn over(domain: &str, policy: PolicyFn) -> Result<Cow<'_, str>, IdnError> {
+    let handle = selected().ok_or_else(|| IdnError::NoImplementation {
         domain: domain.to_owned(),
     })?;
-    policy::to_ascii_over(|unicode| foundation::convert(f, unicode), domain)
+    policy(&|input| platform::convert(handle, input), domain)
         .map(Cow::Owned)
         .ok_or_else(|| IdnError::NotAnIdn {
             domain: domain.to_owned(),
@@ -707,7 +507,7 @@ fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 
 /// What the differential corpus in `tests/differential.rs` needs and
 /// [`domain_to_ascii`] deliberately will not give it: the platform backend
-/// by name, the resolved [`Backend`], and this crate's own policy layer
+/// by name, and this crate's own policy layer
 /// over a conversion the caller supplies.
 ///
 /// **There is no `bundled` here, and there cannot usefully be one.** It
@@ -718,7 +518,7 @@ fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 /// rather than reasoned: `cargo check -p hclient-idn --all-features`, i.e.
 /// every backend feature requested at once, emits exactly one
 /// `rustc-cfg` per target — `idna_backend` on `x86_64-unknown-linux-gnu`,
-/// `icu_backend` on `x86_64-pc-windows-msvc`, `foundation_backend` on
+/// `icu_backend` on `x86_64-pc-windows-msvc`, `apple_backend` on
 /// `aarch64-apple-darwin`, and never two. Making `idna` available beside a
 /// platform backend would buy the comparison back at the price of the ICU
 /// tables on Windows and macOS, which is the saving this crate exists for.
@@ -729,7 +529,8 @@ fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 /// it.
 #[doc(hidden)]
 pub mod testing {
-    use super::Backend;
+    use super::IdnError;
+    use std::borrow::Cow;
 
     /// UTS 46's four label separators, for a test or a fuzz target that
     /// has to split a domain the way this crate does.
@@ -746,67 +547,49 @@ pub mod testing {
     /// showed what that costs: a helper splitting on `'.'` alone missed
     /// `"．"` — a fullwidth full stop, which is one of the four.
     pub const LABEL_SEPARATORS: [char; 4] = super::policy::LABEL_SEPARATORS;
-    #[cfg(any(icu_backend, foundation_backend))]
-    use super::IdnError;
-    #[cfg(any(icu_backend, foundation_backend))]
-    use std::borrow::Cow;
 
+    /// The deny list, for a fuzz target that has to say which byte it
+    /// expects a refusal for.
+    ///
+    /// It was `pub` at the crate root until the surface became the two
+    /// conversion functions; it is here now for the reason everything
+    /// else in this module is — a test seam with no stability promise,
+    /// rather than something a client is meant to reach for.
+    #[must_use]
+    pub const fn is_forbidden_domain_byte(b: u8) -> bool {
+        super::is_forbidden_domain_byte(b)
+    }
     /// The platform implementation — whichever this target has — or
     /// `None` if it was not accepted, which is the difference between
     /// "the corpus checked the platform column" and "the corpus silently
     /// checked nothing".
     ///
-    /// One name for both backends on purpose: `tests/differential.rs`
-    /// then contains no `#[cfg]` choosing between Windows and Apple, and
-    /// the same 40 rows are the acceptance for both.
+    /// # Errors
+    /// As [`super::domain_to_ascii`].
+    /// The platform implementation — whichever this target has — or
+    /// `None` if it was not accepted, which is the difference between
+    /// "the corpus checked the platform column" and "the corpus silently
+    /// checked nothing".
+    ///
+    /// **One name for every backend and no `#[cfg]` at all now**, where
+    /// this used to be a pair of arms choosing between Windows and Apple:
+    /// `lib.rs` names one `platform` module, so the differential corpus
+    /// asks the same question on all four targets.
     ///
     /// # Errors
     /// As [`super::domain_to_ascii`].
-    #[cfg(any(icu_backend, foundation_backend))]
     pub fn platform(domain: &str) -> Option<Result<Cow<'_, str>, IdnError>> {
-        // **Two `#[cfg]` blocks in a row is a body that depends on the
-        // two never being set together**, and nothing here says so:
-        // `build.rs` picks one, and a build that set both would put two
-        // expressions where one belongs. `cfg_select!` makes the
-        // exclusion the macro's rather than the build script's.
-        //
-        // **No `_` arm, deliberately.** Both platforms are named, so a
-        // third backend arriving is *none of the predicates in this
-        // `cfg_select` evaluated to true* at this line rather than a
-        // silent routing into Foundation's body. The item's own
-        // `#[cfg(any(..))]` above is what keeps that from firing on a
-        // target with no platform backend at all.
-        core::cfg_select! {
-            icu_backend => {
-                super::icu::library()?;
-                Some(super::system_icu_to_ascii(domain))
-            }
-            foundation_backend => {
-                super::foundation_backend()?;
-                Some(super::foundation_to_ascii(domain))
-            }
-        }
+        super::selected()?;
+        Some(super::domain_to_ascii(domain))
     }
 
     /// What answered, for a report that names it rather than saying "the
     /// platform" — `icuuc.dll (windows-sys, load-time import)`,
-    /// `Foundation NSURL (objc2-foundation, safe bindings)`.
-    #[cfg(any(icu_backend, foundation_backend))]
+    /// `Foundation NSURL (objc2-foundation, safe bindings)`,
+    /// `android.icu.text.IDNA (ICU4J, over JNI)`.
     #[must_use]
     pub fn platform_name() -> Option<&'static str> {
-        core::cfg_select! {
-            icu_backend => { super::icu::library_name() }
-            foundation_backend => {
-                super::foundation_backend().map(super::foundation::Foundation::name)
-            }
-        }
-    }
-
-    /// Re-exported so a test can assert the selected backend without
-    /// duplicating the feature logic.
-    #[must_use]
-    pub fn selected() -> Backend {
-        super::backend()
+        super::selected().map(super::platform::Handle::name)
     }
 
     /// The crate's own layer, over a conversion the caller supplies.
@@ -824,69 +607,13 @@ pub mod testing {
     /// See `fuzz/fuzz_targets/idn_policy_vs_idna.rs`.
     #[must_use]
     pub fn policy_over(convert: impl Fn(&str) -> Option<String>, domain: &str) -> Option<String> {
-        super::policy::to_ascii_over(convert, domain)
+        super::policy::to_ascii_over(&convert, domain)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_option_word_is_non_transitional_and_nothing_is_transitional_about_it() {
-        assert_eq!(
-            OPTIONS, 0x3c,
-            "OPTIONS changed; the bits are 0x10|0x20|0x04|0x08"
-        );
-        assert_ne!(
-            OPTIONS, 0,
-            "UIDNA_DEFAULT is 0 and 0 is transitional — see the crate docs"
-        );
-        assert_eq!(
-            OPTIONS & UIDNA_NONTRANSITIONAL_TO_ASCII,
-            UIDNA_NONTRANSITIONAL_TO_ASCII,
-            "the one bit that decides whether `straße.de` becomes `strasse.de` or `xn--strae-oqa.de`"
-        );
-        assert_eq!(
-            OPTIONS & UIDNA_NONTRANSITIONAL_TO_UNICODE,
-            UIDNA_NONTRANSITIONAL_TO_UNICODE
-        );
-        assert_eq!(OPTIONS & UIDNA_CHECK_BIDI, UIDNA_CHECK_BIDI);
-        assert_eq!(OPTIONS & UIDNA_CHECK_CONTEXTJ, UIDNA_CHECK_CONTEXTJ);
-        assert_eq!(
-            OPTIONS & UIDNA_USE_STD3_RULES,
-            0,
-            "STD3 is a different set from the WHATWG deny list, not a stricter one"
-        );
-        assert_eq!(
-            OPTIONS & UIDNA_CHECK_CONTEXTO,
-            0,
-            "`idna` does not implement ContextO, so neither may this"
-        );
-    }
-
-    #[test]
-    fn the_ignored_error_bits_are_exactly_check_hyphens_and_verify_dns_length() {
-        assert_eq!(IGNORED_ERRORS, 0x3f);
-        // VerifyDnsLength=false.
-        assert!(!is_fatal(UIDNA_ERROR_EMPTY_LABEL));
-        assert!(!is_fatal(UIDNA_ERROR_LABEL_TOO_LONG));
-        assert!(!is_fatal(UIDNA_ERROR_DOMAIN_NAME_TOO_LONG));
-        // CheckHyphens=false.
-        assert!(!is_fatal(UIDNA_ERROR_LEADING_HYPHEN));
-        assert!(!is_fatal(UIDNA_ERROR_TRAILING_HYPHEN));
-        assert!(!is_fatal(UIDNA_ERROR_HYPHEN_3_4));
-        // Everything else stands. 0x0040 LEADING_COMBINING_MARK, 0x0080
-        // DISALLOWED, 0x0100 PUNYCODE, 0x0200 LABEL_HAS_DOT, 0x0400
-        // INVALID_ACE_LABEL, 0x0800 BIDI, 0x1000 CONTEXTJ, 0x2000/0x4000
-        // CONTEXTO.
-        for bit in [
-            0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000,
-        ] {
-            assert!(is_fatal(bit), "0x{bit:04x} must not be masked away");
-        }
-        assert!(!is_fatal(0), "a clean answer is a clean answer");
-    }
 
     #[test]
     fn the_deny_list_is_the_whatwg_set_and_not_std3() {
@@ -979,12 +706,51 @@ mod tests {
     #[cfg(idna_backend)]
     #[test]
     fn the_bundled_path_is_the_call_hclient_proto_makes_today() {
-        assert_eq!(bundled_to_ascii("münchen.de").unwrap(), "xn--mnchen-3ya.de");
-        assert_eq!(bundled_to_ascii("straße.de").unwrap(), "xn--strae-oqa.de");
-        assert_eq!(bundled_to_ascii("EXAMPLE.COM").unwrap(), "example.com");
+        assert_eq!(domain_to_ascii("münchen.de").unwrap(), "xn--mnchen-3ya.de");
+        assert_eq!(domain_to_ascii("straße.de").unwrap(), "xn--strae-oqa.de");
+        assert_eq!(domain_to_ascii("EXAMPLE.COM").unwrap(), "example.com");
         assert!(matches!(
-            bundled_to_ascii("a<b.com"),
+            domain_to_ascii("a<b.com"),
             Err(IdnError::NotAnIdn { .. })
         ));
+    }
+
+    /// **The two directions are one another's inverse on a name that has
+    /// an ACE label**, which is the property `domain_to_unicode` exists
+    /// for and the one a caller will assume.
+    #[test]
+    fn to_unicode_undoes_to_ascii() {
+        assert_eq!(
+            domain_to_unicode("xn--mnchen-3ya.de").unwrap(),
+            "münchen.de"
+        );
+        assert_eq!(domain_to_unicode("münchen.de").unwrap(), "münchen.de");
+        assert_eq!(
+            domain_to_ascii(&domain_to_unicode("xn--strae-oqa.de").unwrap()).unwrap(),
+            "xn--strae-oqa.de"
+        );
+    }
+
+    /// A name with no ACE label comes back lower-cased and otherwise
+    /// untouched — ToUnicode's answer rather than a shortcut, and the
+    /// control that says the decoder is not being reached for every name.
+    #[test]
+    fn an_ascii_name_is_its_own_unicode_form_lower_cased() {
+        assert_eq!(domain_to_unicode("EXAMPLE.COM").unwrap(), "example.com");
+    }
+
+    /// **Both directions refuse the same names**, which is why
+    /// `domain_to_unicode` is built on `domain_to_ascii` rather than
+    /// beside it: a caller must not be handed a Unicode form for a host
+    /// the other direction would not contact.
+    #[test]
+    fn the_two_directions_accept_the_same_names() {
+        for name in ["a<b.com", "ä..de", "xn--zzzz.test"] {
+            assert_eq!(
+                domain_to_ascii(name).is_ok(),
+                domain_to_unicode(name).is_ok(),
+                "the two directions disagree about `{name}`"
+            );
+        }
     }
 }

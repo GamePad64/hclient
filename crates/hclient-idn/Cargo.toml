@@ -1,16 +1,15 @@
 [package]
 name = "hclient-idn"
 version.workspace = true
-description = "IDN (UTS 46) domain-to-ASCII for hclient, through the platform's own ICU where there is one"
+description = "IDN (UTS 46) domain-to-ASCII and back, through whatever UTS 46 the platform already carries"
 keywords     = ["hclient", "idn", "uts46", "punycode", "idna"]
 categories   = ["internationalization", "encoding"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Turns the `platform` feature into `icu_backend`/`idna_backend` by
-# target, and refuses a feature combination the target cannot satisfy. The
-# target predicate lives there and in the two `[target.…]` tables below,
+# Turns the `idna` feature and the target into exactly one backend cfg.
+# The target predicate lives there and in the `[target.…]` tables below,
 # and nowhere else.
 build = "build.rs"
 
@@ -25,10 +24,32 @@ all-features = true
 [dependencies]
 thiserror = { workspace = true }
 
-# Both backends are optional AND target-scoped, and that is what makes one
-# default mean different things on different targets. Cargo features
-# cannot vary by target; dependencies can, so the target tables are where
-# the variation has to live.
+# **`idna` is declared twice, and the pair is the whole feature design.**
+# Optional here, so `--features idna` reaches every target; unconditional
+# in the `[target.…]` table further down, so an ELF unix or a wasm build
+# takes it whether the feature is on or not — there is no system UTS 46 to
+# reach for on those, and `build.rs` picks `idna_backend` for them either
+# way.
+#
+# The consequence worth knowing: on Apple, Windows and Android the feature
+# is the only thing that pulls the Unicode tables in, and keeping them off
+# those three is what this crate is for.
+#
+# `default-features = false` plus the two features named explicitly is
+# copied from `hclient-proto`'s manifest for the reason it gives there: a
+# future change to `idna`'s defaults must not silently change what is in
+# this graph.
+[dependencies.idna]
+version = "1.1"
+optional = true
+default-features = false
+features = ["std", "compiled_data"]
+
+# The platform backends are target-scoped and **not optional**, which is
+# what changed when three features became one. There is no longer a switch
+# that could turn one off on the target that needs it: with `idna` on, the
+# backend is `idna` everywhere and these sit unused in a Windows or Apple
+# graph, which costs a manifest line and no code.
 
 # Windows: `icuuc.dll` is linked, not resolved, because its ICU is built
 # with `U_DISABLE_RENAMING` and the exports are unsuffixed. `windows-sys`
@@ -54,11 +75,9 @@ thiserror = { workspace = true }
 # Unicode version nobody chose and nothing reports — and for IDN a Unicode
 # difference is a different host. That is a correctness risk taken on for
 # a size saving, on the one platform where the version is not ours to
-# know. Linux now takes the bundled tables, like macOS and wasm.
+# know. Linux takes the bundled tables instead.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", optional = true, features = [
-    "Win32_Globalization",
-] }
+windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 
 # Apple: Foundation, which is part of the OS and linked, so it meets the
 # same "static, OS-versioned ABI" rule Windows does — by a different
@@ -66,25 +85,36 @@ windows-sys = { version = "0.61", optional = true, features = [
 #
 # **This is the only platform backend that needs no `unsafe` at all**, and
 # therefore no spec amendment: every `objc2-foundation` call in
-# `src/foundation.rs` is a safe function, measured by a draft that wrapped
-# them and drew ten `unnecessary unsafe block` warnings. `objc2` encodes
+# `src/apple.rs` is a safe function, measured by a draft that wrapped them
+# and drew ten `unnecessary unsafe block` warnings. `objc2` encodes
 # message sends, retain/release and nullability in its types, so what is
 # left is ordinary Rust over `Option`.
 [target.'cfg(target_vendor = "apple")'.dependencies]
-objc2-foundation = { version = "0.3", optional = true, default-features = false, features = [
+objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSString",
     "NSURL",
 ] }
 
-# Everywhere else — Linux and other ELF unixes, wasm.
-[target.'cfg(not(any(windows, target_vendor = "apple")))'.dependencies]
-# The same call `hclient-proto` makes today, so this backend is exactly
-# current behaviour. `default-features = false` plus the two features
-# named explicitly is copied from `hclient-proto`'s manifest for the
-# reason it gives there: a future change to `idna`'s defaults must not
-# silently change what is in this graph.
-idna = { version = "1.1", optional = true, default-features = false, features = [
+# Android reaches UTS 46 through the JVM, because that is where Android
+# keeps it: `android.icu.text.IDNA` is ICU4J, shipped with the platform
+# since API 24, and the NDK exposes no C entry point for it. `jni` +
+# `ndk-context` is the pair `hclient-proxy` takes to read the system proxy
+# settings, for the same reason — the thing being read lives behind
+# managed code.
+#
+# The alternative is the bundled tables, which is the ~1.9 MB of ICU data
+# this crate exists to keep off a mobile target.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+# Everywhere else — Linux and the other ELF unixes, wasm. Unconditional,
+# unlike the optional declaration at the top of this file: these targets
+# have no system UTS 46, so the bundled crate is the backend with the
+# feature and without it.
+[target.'cfg(not(any(windows, target_vendor = "apple", target_os = "android")))'.dependencies]
+idna = { version = "1.1", default-features = false, features = [
     "std",
     "compiled_data",
 ] }
@@ -95,42 +125,42 @@ rstest = { workspace = true }
 # plays for `hclient-proto`'s `tests/uri_resolution.rs`. The whole claim
 # of this crate is that the platform agrees with `idna`, and that
 # comparison has to be possible on the very targets where `idna` is NOT a
-# normal dependency, which is all the ones that have a system ICU. As a
+# normal dependency, which is every target that has a system UTS 46. As a
 # dev-dependency it reaches no downstream build: `cargo tree -e normal`
-# for this crate has no `idna` on Linux or Windows, with or without any
-# feature, and the CI job checks exactly that.
+# for this crate has no `idna` on Windows or Android, with the feature off,
+# and the CI job checks exactly that.
 idna = { version = "1.1", default-features = false, features = [
     "std",
     "compiled_data",
 ] }
 
+# **One feature, and it is off by default.** `idna` forces the bundled
+# crate and its Unicode tables on every target; without it each platform
+# answers from what it already carries, and only the ELF unixes and wasm
+# fall back to `idna`, because there is nothing else there to ask.
+#
+# It is out of `default` for this workspace's own reason: Cargo unifies
+# features across a graph, so a default here would be a **floor**, and one
+# careless crate in a dependency tree would put the ICU tables into every
+# Windows, Apple and Android build in it — the three platforms this crate
+# was written to keep them off.
+#
+# It replaced `platform`/`bundled`/`system-icu`/`foundation`, four
+# switches whose combinations could select two backends at once or none.
+# One forcing switch is a total function from (feature, target) to a
+# backend, which is why `build.rs` now emits exactly one cfg and
+# `src/lib.rs` has no `compile_error!` left to carry.
 [features]
-# Resolved by target in `build.rs`, not by the person building: the
-# platform's own UTS 46 where the target has a statically linkable one
-# (Windows' `icuuc.dll`, Apple's Foundation), the bundled tables
-# everywhere else. Same principle as
-# `hclient`'s `DefaultTransport` — the default is a fact about the target,
-# rather than a choice that can be got wrong.
-default = ["platform"]
-platform = ["dep:idna", "dep:windows-sys", "dep:objc2-foundation"]
-
-# Force one backend, for a build that wants it regardless of the default.
-# Each is only satisfiable on the targets whose table above declares the
-# dependency — `system-icu` off Windows has no `windows-sys` to enable.
-# `src/lib.rs`'s `compile_error!` names the case where that leaves no
-# backend at all.
-bundled = ["dep:idna"]
-system-icu = ["dep:windows-sys"]
-foundation = ["dep:objc2-foundation"]
+default = []
+idna = ["dep:idna"]
 
 # NOT `[lints] workspace = true`, for the same reason `hclient-fetch`
 # (amendment C7) and `hclient-dns-system` (amendment C8) are not: the
 # workspace table sets `unsafe_code = "forbid"`, and `forbid` cannot be
-# relaxed from inside a crate (`E0453`). This crate carries the project's
-# fourth `unsafe` file — the ICU calls in `src/icu/windows.rs` — which
-# need `deny`, overridable by a scoped `#[allow]`,
-# not `forbid`. See
-# `docs/exceptions.md`, amendment C9.
+# relaxed from inside a crate (`E0453`). This crate carries `unsafe` in
+# `src/icu/windows.rs` (amendment C9) and in `src/android.rs` (amendment
+# C19's shape, `JavaVM::from_raw`), which need `deny`, overridable by a
+# scoped `#[allow]`, not `forbid`. See `docs/exceptions.md`.
 #
 # `missing_debug_implementations` and `unexpected_cfgs` are restated here
 # because opting out of the workspace table drops them along with

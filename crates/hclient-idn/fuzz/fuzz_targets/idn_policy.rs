@@ -52,7 +52,7 @@ fuzz_target!(|data: &[u8]| {
     );
 
     // Property 2 — the one that decides which host gets contacted.
-    if let Some(bad) = first.bytes().find(|b| hclient_idn::is_forbidden_domain_byte(*b)) {
+    if let Some(bad) = first.bytes().find(|b| hclient_idn::testing::is_forbidden_domain_byte(*b)) {
         panic!(
             "domain_to_ascii returned a host containing the forbidden domain byte \
              {bad:#04x} for input {domain:?}: {first:?}"

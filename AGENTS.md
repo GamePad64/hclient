@@ -3196,6 +3196,104 @@ GitHub-hosted runner of another version on another architecture. What it
 establishes is that the suite completes on a Mac at all, which nothing
 had shown before.
 
+### `hclient-idn` has four backends, two functions and one feature
+
+Android joined, `foundation.rs` became `apple.rs`, and the four features
+became one. The shape that came out is worth more than any of the three
+changes.
+
+**One feature, `idna`, off by default, and it *forces* rather than
+selects.** With it on, every target answers through the bundled crate and
+its Unicode tables; with it off, each platform answers from what it
+already carries — Foundation on Apple, `icuuc.dll` on Windows,
+`android.icu.text.IDNA` on Android, and the bundled crate on the ELF
+unixes and wasm, because there is nothing else there to ask. Linux takes
+`idna` either way, which is why the switch is a forcing one: on the one
+target where the answer does not change, the feature buys nothing.
+
+It replaced `platform`/`bundled`/`system-icu`/`foundation`, whose
+combinations could select two backends at once or none — `build.rs`
+carried the `if`s and `lib.rs` carried a `compile_error!` for the empty
+case. The new rule is a total function from (feature, target) to one
+backend, so exactly one cfg comes out, the `compile_error!` has no
+subject, and `just features` stopped excluding this crate: the exclusion
+existed because isolating one of four features was a build the crate
+deliberately refused.
+
+Measured, `cargo tree -e normal`, unique crates:
+
+| target | without `idna` | with |
+|---|---|---|
+| Linux | 33 | 33 |
+| Windows | **9** | 35 |
+| Apple | **11** | 37 |
+| Android | **21** | 46 |
+
+**Android reaches UTS 46 through the JVM, and the reason it is worth two
+crates is the twenty-five it keeps out.** `android.icu.text.IDNA` is
+ICU4J — the same ICU the Windows backend calls, the same option bits
+under the same names — and the NDK exposes no C entry point for it, so
+`jni` + `ndk-context` is the way in, exactly as `hclient-proxy` reaches
+the system proxy settings. Amendment C19 covers both files now.
+
+**The errors are read by name, and that is the one place the two ICUs
+differ in shape.** ICU4C reports `UIDNAInfo.errors` as a bit word and
+ICU4J reports `IDNA.Info.getErrors()` as an `EnumSet`, which cannot be
+masked. Reading `hasErrors()` instead would have been three JNI calls
+fewer and a second divergence — Android refusing `-münchen.de` and
+`ab--cd.münchen` where Windows and Linux accept them — and this crate
+already carries one such divergence, on Apple, as a recorded cost rather
+than a design.
+
+**It has never been run, and that is written where a reader meets it.**
+No runner in this project is an Android device. `check-targets` compiles
+the backend for `aarch64-linux-android` in both feature settings and
+`graph-idn-backend` asserts the tables stay off it, but a type-check is
+not an execution — which is the state `hclient-dns-system`'s Apple arm
+was in when every one of its live tests failed in ten milliseconds. What
+limits the damage is the split: the JNI walk holds no decision, and the
+decision it serves — which of ICU's errors are forgiven — is a constant
+beside a test that pins it against the Windows backend's bit mask on any
+host.
+
+**Two public functions**, `domain_to_ascii` and `domain_to_unicode`, plus
+the error their `Result` needs. Everything else — the option word, the
+error mask, the deny list, the backend report — became `pub(crate)` or
+moved behind the `#[doc(hidden)] testing` seam the differential corpus
+and the fuzz targets already used.
+
+**`domain_to_unicode` is the ASCII direction with one more step, and that
+order is the design.** The name is converted to its A-label form first,
+through the platform and every rule this crate has, and only then are the
+ACE labels decoded by the punycode decoder `policy.rs` already carried.
+Two things fall out that no per-backend implementation gives: the two
+directions accept exactly the same names, so a caller cannot be handed a
+Unicode form for a host the other direction would refuse to contact; and
+*which* name is legal stays the platform's answer rather than this
+layer's. It also has no hole — ICU has `uidna_nameToUnicodeUTF8` and
+ICU4J has `nameToUnicode`, but Apple's Foundation exposes no way back at
+all, so writing this per backend would have been three implementations
+and one refusal.
+
+**`cfg_select!` selects a module, which is the shape this file measured
+as the macro's paying side.** Each backend module exports `find`,
+`convert` and a `Handle`, so `lib.rs` names one `platform` and nothing
+past that line names an operating system: one `OnceLock`, one acceptance
+probe, one dispatch shared by both directions. Three copies of that gate
+existed before — the ICU module had its own and the two platform
+backends had theirs written out in `lib.rs` — which is three chances for
+one of them to stop asking. There is no `_` arm, so a fifth backend is a
+compile error at the alias rather than a silent fall-through.
+
+**The UIDNA constants moved into `icu`, and the second ICU backend is
+why.** They were the crate root's while Windows was the only caller;
+Android reads the same option word and forgives the same errors, so the
+vocabulary belongs to the thing the two share. That made `mod icu`
+unconditional with only its Windows binding gated — and drew the line the
+move exposed: `UIDNA_*` and `IGNORED_ERRORS` are *what ICU decides* and
+compile everywhere, where `U_ZERO_ERROR`, `UIDNAInfo`'s size and the
+first-try buffer are *how one binding asks* and are gated with it.
+
 ### The decoder was chosen for its granularity, and the wrong one cost ninety lines
 
 `hclient-dns-system` decodes HTTPS records with **`domain`** rather than

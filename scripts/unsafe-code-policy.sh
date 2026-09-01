@@ -36,6 +36,7 @@ crates/system-resolver/src/sys/android.rs:amendment-C8
 crates/system-resolver/src/sys/windows/parsed.rs:amendment-C8
 crates/system-resolver/src/sys/windows/raw.rs:amendment-C8
 crates/hclient-idn/src/icu/windows.rs:amendment-C9
+crates/hclient-idn/src/android.rs:amendment-C19
 crates/hclient-urlsession/src/delegate.rs:amendment-C11
 crates/hclient-urlsession/src/session.rs:amendment-C11
 crates/hclient-urlsession/src/websocket.rs:amendment-C11

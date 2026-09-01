@@ -248,7 +248,26 @@ downcast to an untyped array and to no other, and its elements arrive as
 pointers with no safe way to read one. Checked in 0.9 and 0.10;
 `objc2-core-foundation` has the same wall one level up, at the dictionary.
 
-**C19 — Android keeps its proxy behind a JVM**, in
+**C19 — Android keeps two things behind a JVM**, and the amendment
+covers both files that reach for them: `hclient-proxy/src/system/jvm.rs`
+and `hclient-idn/src/android.rs`.
+
+The second is UTS 46. `android.icu.text.IDNA` has shipped with the
+platform since API 24 and is the same ICU `hclient-idn` calls through
+`icuuc.dll` on Windows — the same option bits, the same error names — but
+the NDK exposes no C entry point for it, so JNI is the only way in. The
+`unsafe` is the same single line as the proxy reader's,
+`JavaVM::from_raw` over the `ndk_context` pointer, null-checked rather
+than trusted, and every other line is `jni`'s safe API. The split is the
+same too: the file holds no decision, because the one decision — which of
+ICU's errors this crate forgives — is `IGNORED` beside a test that pins
+it against the Windows backend's bit mask on any host. **What it does not
+have is a run**: no runner in this project is an Android device, so the
+file type-checks for `aarch64-linux-android` in `just check-targets` and
+has never been executed, which is stated in its own module doc rather
+than left to be discovered.
+
+The first is the proxy, in
 `hclient-proxy/src/system/jvm.rs` and in one function. Android has no
 environment variable for a proxy and no registry: what it has is
 `System.getProperty("http.proxyHost")` and four neighbours, which the

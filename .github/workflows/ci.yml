@@ -312,13 +312,22 @@ jobs:
   # The whole claim of `hclient-idn` is that the platform's ICU answers
   # what the bundled `idna` crate answers.
   #
-  # **Two targets have a platform backend, and Linux is not one of them.**
-  # The rule is "static linkage against an ABI the OS versions for us":
-  # Windows' `icuuc.dll` through `windows-sys`, and Apple's Foundation
-  # through `objc2-foundation`. The ELF `dlopen` backend was removed — on
-  # Linux the ICU version is a property of the user's machine that nobody
-  # chose and nothing reports, and for IDN a Unicode difference is a
-  # different host — so Linux and wasm take the bundled tables.
+  # **Three targets have a platform backend, and Linux is not one of
+  # them.** The rule is "the OS already carries a UTS 46 and versions it
+  # for us": Windows' `icuuc.dll` through `windows-sys`, Apple's
+  # Foundation through `objc2-foundation`, and Android's
+  # `android.icu.text.IDNA` over JNI. The ELF `dlopen` backend was
+  # removed — on Linux the ICU version is a property of the user's machine
+  # that nobody chose and nothing reports, and for IDN a Unicode
+  # difference is a different host — so Linux and wasm take the bundled
+  # tables, which is also what `--features idna` forces everywhere.
+  #
+  # **Android is checked from the Linux leg and is never run**, because no
+  # runner here is a device: `graph-idn-backend` asserts the tables stay
+  # off it and the JNI binding arrives, and `check-targets` compiles the
+  # backend for `aarch64-linux-android` in both feature settings. What
+  # nothing here can do is execute it, which `src/android.rs` says in its
+  # own first paragraph.
   #
   # The platform column of `tests/differential.rs` does not compile at all
   # where there is no platform backend, which is why

@@ -483,6 +483,15 @@ check-targets:
     # compiled fine throughout.
     check -p hclient-idn --target x86_64-pc-windows-msvc --all-features --all-targets
     check -p hclient-idn --target aarch64-apple-darwin --all-features --all-targets
+    # **Android is here and nowhere else.** No runner in this project is an
+    # Android device, so `src/android.rs` has never been executed; what a
+    # cross-check proves is that the JNI signatures and the class names
+    # type-check, which is the difference between a backend that is unrun
+    # and one that does not build. Both settings of the feature, because
+    # the target has two shapes: `android.icu.text.IDNA` without it and the
+    # bundled tables with it.
+    check -p hclient-idn --target aarch64-linux-android --all-targets
+    check -p hclient-idn --target aarch64-linux-android --all-features --all-targets
     # macOS's transport half, mirroring the Windows line above: the
     # library carries `cfg(unix)` and a test build cannot be checked from
     # here, because `ring` needs an assembler for the target.
@@ -1670,16 +1679,36 @@ graph-idn-backend:
       ./scripts/tree-guard.sh absent '^(libloading|windows-sys|objc2-foundation) ' \
         "hclient-idn on Linux pulls in a loader or a platform binding — the ELF dlopen backend was removed on purpose, see the crate docs" \
         -- -p hclient-idn --all-features
+      # Android is checked from here because no runner in this project is
+      # one, and the graph is a fact about the manifest rather than about
+      # the device: without the feature the tables stay off and the JVM
+      # binding is what arrives, with it the tables come back. That pair
+      # is the whole meaning of the feature, on the target where it costs
+      # the most.
+      ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
+        "the default hclient-idn build for Android pulls in idna/ICU — android.icu.text.IDNA is the backend there, and the tables are what this crate keeps off a phone" \
+        -- -p hclient-idn --target aarch64-linux-android
+      ./scripts/tree-guard.sh present '^jni ' \
+        "hclient-idn for Android links no jni, so android.icu.text.IDNA is unreachable and the backend is not compiled in at all" \
+        -- -p hclient-idn --target aarch64-linux-android
+      ./scripts/tree-guard.sh present '^idna ' \
+        "--features idna does not bring the bundled tables to Android, so the forcing switch does not force" \
+        -- -p hclient-idn --target aarch64-linux-android --features idna
     else
       ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
         "the default hclient-idn build on this target pulls in idna/ICU — the whole point of a platform backend is that the OS supplies the tables" \
         -- -p hclient-idn
-      ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
-        "--all-features drags idna back into hclient-idn on a target with a platform backend" \
-        -- -p hclient-idn --all-features
       ./scripts/tree-guard.sh present '^(windows-sys|objc2-foundation) ' \
         "hclient-idn on this target links neither windows-sys nor objc2-foundation, so no platform backend is compiled in at all" \
         -- -p hclient-idn
+      # **The opposite of what this line used to say**, and the change is
+      # the feature's meaning rather than a relaxation. `--all-features`
+      # is `--features idna`, which exists precisely to force the bundled
+      # tables everywhere; asserting their absence under it would be
+      # asserting that the one switch this crate has does nothing.
+      ./scripts/tree-guard.sh present '^idna ' \
+        "--features idna does not bring the bundled tables to a target with a platform backend, so the forcing switch does not force" \
+        -- -p hclient-idn --all-features
     fi
 
 # `cargo hack --each-feature` enumerates combinations instead of listing
@@ -1743,8 +1772,13 @@ check-each-crate:
 features:
     #!/usr/bin/env bash
     set -euo pipefail
+    # `hclient-idn` is back in, and the exclusion's reason is gone rather
+    # than waived: it needed at least one backend and said so with a
+    # `compile_error!`, so isolating one of its four features was a build
+    # it deliberately refused. It has one feature now — `idna`, a forcing
+    # switch — and every setting of it compiles on every target.
     cargo hack --workspace \
-        --exclude hclient-idn --exclude hclient-rt-embassy \
+        --exclude hclient-rt-embassy \
         --each-feature --no-dev-deps check
     # And the POWERSET over the four response codings, which
     # `--each-feature` does not reach: it builds each feature on its own,

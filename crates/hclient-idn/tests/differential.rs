@@ -61,7 +61,7 @@
 // `Cow` import, which left `testing::` unresolved at five sites and `Cow`
 // imported twice. Neither is visible on Linux, where every use of both is
 // inside a function this same `cfg` removes.
-#[cfg(any(icu_backend, foundation_backend))]
+#[cfg(any(icu_backend, apple_backend))]
 use hclient_idn::testing;
 use rstest::rstest;
 use std::borrow::Cow;
@@ -212,7 +212,7 @@ fn the_bundled_oracle_answers_what_the_corpus_pins_for_it() {
 
 /// The claim. Every row's platform answer, measured against what was
 /// pinned when the row was written.
-#[cfg(any(icu_backend, foundation_backend))]
+#[cfg(any(icu_backend, apple_backend))]
 #[test]
 fn the_platform_answers_what_the_corpus_pins_on_every_row() {
     let Some(lib) = testing::platform_name() else {
@@ -287,7 +287,7 @@ fn the_divergences_from_idna_are_exactly_the_documented_ones() {
 /// CI sets `HCLIENT_IDN_REQUIRE_PLATFORM=1` on the runners that are meant
 /// to have one. Locally it is unset and this test passes while saying so,
 /// which is the honest answer on a machine that genuinely has no ICU.
-#[cfg(any(icu_backend, foundation_backend))]
+#[cfg(any(icu_backend, apple_backend))]
 #[test]
 fn the_platform_column_is_not_silently_empty() {
     let required = std::env::var_os("HCLIENT_IDN_REQUIRE_PLATFORM").is_some();
@@ -304,71 +304,32 @@ fn the_platform_column_is_not_silently_empty() {
     }
 }
 
-/// `backend()` must report what actually answers, not what the features
-/// hoped for. A `SystemIcu` over a library that is not there, or a
-/// `Bundled` while ICU is doing the work, is the "capability that lies"
-/// this project keeps catching.
-/// Both platform variants are here, and the arm asserts two things rather
-/// than one: that a backend was actually accepted at run time, and that
-/// the variant names the backend *this build compiled in*. The second is
-/// what makes the variant mean something — without it a `SystemFoundation`
-/// reported by a Windows build would pass, and "the reported backend is
-/// the one that answers" would only be checking that some backend
-/// answered.
+/// **What answered is named, and the name is the platform's.**
 ///
-/// The wildcard arm below stays, and it is not decoration: [`Backend`] is
-/// `#[non_exhaustive]` and this is a different crate, so a variant added
-/// tomorrow lands there. It has already done its job once — `Backend`
-/// gained `SystemFoundation` and this test said so by name.
-#[cfg(any(icu_backend, foundation_backend))]
+/// This test used to compare a reported `Backend` variant against the
+/// compiled-in one, and the distinction it guarded is gone: `lib.rs`
+/// selects one backend *module* with `cfg_select!`, so "which backend
+/// this build has" and "which backend answered" are the same fact and
+/// cannot drift. What is still worth asserting is that the gate ran and
+/// the implementation says who it is — a `None` here means the
+/// acceptance probe rejected the platform, which is the failure this
+/// corpus exists to notice.
+#[cfg(any(icu_backend, apple_backend))]
 #[test]
-fn the_reported_backend_is_the_one_that_answers() {
-    use hclient_idn::Backend;
-    let reported = testing::selected();
-    let has_platform = testing::platform_name().is_some();
-    match reported {
-        Backend::SystemIcu | Backend::SystemFoundation => {
-            // Which backend this build actually compiled in. The two cfgs
-            // are mutually exclusive — a target's tables in `Cargo.toml`
-            // supply one dependency or the other — so one `if` says it.
-            const COMPILED_IN: Backend = if cfg!(icu_backend) {
-                Backend::SystemIcu
-            } else {
-                Backend::SystemFoundation
-            };
-            assert_eq!(
-                reported, COMPILED_IN,
-                "reports {reported:?} in a build that compiled in {COMPILED_IN:?} — \
-                 `backend()`'s resolution and `build.rs`'s target predicate have drifted apart"
-            );
-            assert!(
-                has_platform,
-                "reports {reported:?} while nothing was accepted — on both platforms the backend \
-                 is linked rather than searched for, so the only way to get here is the \
-                 acceptance gate having refused it on `straße.de`, and then `None` is the honest \
-                 answer"
-            );
-        }
-        Backend::None => assert!(
-            !has_platform,
-            "reports None while a platform backend was accepted — this build has no bundled \
-             fallback, so `None` and a live backend at once is a straight contradiction"
-        ),
-        Backend::Bundled => panic!(
-            "reports Bundled in a build compiled with a platform backend and no `idna` at all: \
-             the tables are not here to fall back to"
-        ),
-        other => {
-            panic!("a new Backend variant, {other:?}, with nothing here deciding what it means")
-        }
-    }
-    // And the public entry point agrees: `backend()` claiming a platform
-    // while `domain_to_ascii` cannot convert would be the same lie told
-    // one level down.
-    assert_eq!(
-        has_platform,
-        hclient_idn::domain_to_ascii("münchen.de").as_deref() == Ok("xn--mnchen-3ya.de"),
-        "`backend()` and `domain_to_ascii` disagree about whether this build can convert"
+fn the_platform_that_answers_names_itself() {
+    let name = testing::platform_name().expect(
+        "the platform backend was compiled in and refused the acceptance probe, so this build \
+         answers nothing at all",
+    );
+    let expected = if cfg!(icu_backend) {
+        "icuuc"
+    } else {
+        "Foundation"
+    };
+    assert!(
+        name.contains(expected),
+        "the compiled-in backend and the one that answered disagree: `{name}` does not name \
+         `{expected}`"
     );
 }
 
@@ -397,7 +358,7 @@ fn the_reported_backend_is_the_one_that_answers() {
 /// Every row prints what actually happened, so the macOS and Windows runs
 /// *report* which of the two it was instead of leaving it to be predicted
 /// from Apple's source.
-#[cfg(any(icu_backend, foundation_backend))]
+#[cfg(any(icu_backend, apple_backend))]
 #[test]
 fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_differently() {
     const STRICTER: &[(&str, &str)] = &[
@@ -460,7 +421,7 @@ fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_diffe
 /// and the file stayed green.
 #[test]
 fn the_public_entry_point_answers_the_corpus() {
-    if hclient_idn::backend() == hclient_idn::Backend::None {
+    if hclient_idn::testing::platform_name().is_none() {
         println!("no implementation in this build on this machine — nothing to answer with");
         return;
     }
@@ -472,7 +433,7 @@ fn the_public_entry_point_answers_the_corpus() {
         // unnecessary on Linux and the divergence was live.
         let want = if refused_by_policy(case.input) {
             None
-        } else if cfg!(any(icu_backend, foundation_backend)) {
+        } else if cfg!(any(icu_backend, apple_backend)) {
             case.icu_says
         } else {
             case.idna_says
@@ -572,7 +533,7 @@ fn the_seam_the_fuzzer_uses_is_the_same_layer_the_backends_use() {
 fn converting_an_already_converted_name_changes_nothing(
     #[values("münchen.de", "straße.de", "例え.テスト", "EXAMPLE.COM", "مثال.إختبار")] input: &str,
 ) {
-    if hclient_idn::backend() == hclient_idn::Backend::None {
+    if hclient_idn::testing::platform_name().is_none() {
         println!("no implementation in this build on this machine — nothing to be idempotent");
         return;
     }
@@ -612,16 +573,15 @@ fn converting_an_already_converted_name_changes_nothing(
 fn windows_icu_answers_on_a_thread_with_no_com_apartment() {
     let answer = std::thread::spawn(|| {
         (
-            hclient_idn::backend(),
+            hclient_idn::testing::platform_name(),
             hclient_idn::domain_to_ascii("straße.de").map(Cow::into_owned),
         )
     })
     .join()
     .expect("the conversion thread must not panic");
 
-    assert_eq!(
-        answer.0,
-        hclient_idn::Backend::SystemIcu,
+    assert!(
+        answer.0.is_some_and(|n| n.contains("icuuc")),
         "on Windows the platform backend is a load-time import, so `None` here means \
          `uidna_openUTS46` failed on a thread with no COM apartment — i.e. `CoInitializeEx` IS \
          required after all, and `icu/windows.rs` has to call it or this crate has to stop \
@@ -655,7 +615,7 @@ fn windows_icu_answers_on_a_thread_with_no_com_apartment() {
 /// makes `backend()` report `None` — no conversion at all — rather than a
 /// plausible wrong host. This test exists to turn that safe failure into
 /// a named one.
-#[cfg(all(target_os = "macos", foundation_backend))]
+#[cfg(all(target_os = "macos", apple_backend))]
 #[test]
 fn macos_getter_that_returns_the_a_label() {
     use objc2_foundation::{NSString, NSURL, NSURLComponents};
@@ -699,7 +659,7 @@ fn macos_getter_that_returns_the_a_label() {
 /// Separate from the corpus because it needs no backend to be *selected*
 /// — it interrogates Foundation directly — so it still reports something
 /// useful on a machine where the gate has refused.
-#[cfg(all(target_os = "macos", foundation_backend))]
+#[cfg(all(target_os = "macos", apple_backend))]
 #[test]
 fn macos_foundation_is_non_transitional_like_idna() {
     use objc2_foundation::{NSString, NSURL};
