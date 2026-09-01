@@ -58,7 +58,14 @@ cfg_if::cfg_if! {
     // state is per-thread. The list is deliberately the set of targets
     // whose behaviour was established rather than assumed — glibc and musl
     // by reading the exported symbols out of the installed libraries, and
-    // now by running the crate's own concurrency case on both.
+    // by running `concurrent_lookups_all_answer_where_a_serial_burst_does`
+    // on both, which is the test that names this requirement.
+    //
+    // **That second clause was here before the test was**, which is this
+    // workspace's own defect met inside the sentence stating the rule: the
+    // crate contained no threaded case at all, and the property Apple's
+    // arm failed was asserted by nothing. It names the test now, so the
+    // claim is exactly as perishable as the check behind it.
     else if #[cfg(all(
         target_os = "linux",
         any(target_env = "gnu", target_env = "musl")

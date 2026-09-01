@@ -356,6 +356,49 @@ another architecture. It narrows the question to that environment; it
 does not answer it, and the descriptor limit above is the nearest thing
 to a candidate this measurement produced.
 
+## 4.6 The requirement nothing asserted, and why the runner hid it
+
+`sys/mod.rs` has said since the crate existed that a `res_query` backend
+needs two things — a symbol to link against, and **a libc whose resolver
+state is per-thread** — and its own comment claimed the second had been
+established "by running the crate's own concurrency case". There was no
+such case. Measured: `thread::spawn` appeared nowhere in the crate.
+
+So the property Apple's arm failed, and the only property that
+distinguishes a usable `res_query` platform from an unusable one, was
+asserted by nothing at all. It was found by a hand-written probe that
+lives in no repository, and the sentence describing that probe as a test
+of this crate's had been in the source ever since.
+
+**The runner is what made it invisible.** This workspace runs `cargo
+nextest`, which gives each test its own process — so the four live tests
+"running in parallel" are parallel *processes*, and share no resolver
+state by construction. A suite that looked concurrent exercised nothing
+concurrent. That is the third distinct thing nextest's process isolation
+has done in this workspace, after hiding a file-descriptor limit on macOS
+and separating global tracer providers, and the first where it cost
+coverage rather than saved it.
+
+`concurrent_lookups_all_answer_where_a_serial_burst_does` is the repair:
+eight threads, eight queries each, the same 64 as the probe that found the
+Apple defect. It spawns its own threads rather than relying on the runner,
+for the reason above.
+
+**The serial burst is a control rather than a warm-up.** 64 one at a time,
+then 64 from eight threads, and the two assertions say different things: a
+serial failure means the machine cannot resolve, and only a serial pass
+beside a concurrent failure is evidence about the backend. Both were
+checked in the failing direction by mutation — dropping the concurrent
+half's answers gives *64/64 one at a time and 0/64 from 8 threads*, and
+dropping the serial half's gives *this machine cannot resolve rather than
+cannot resolve concurrently*.
+
+Run on both targets the arm claims: `x86_64-unknown-linux-gnu` and
+`x86_64-unknown-linux-musl`, passing on each. It is `#[ignore]`d with the
+other live tests, and it is the instrument any further platform is
+established with — the symbol a backend links against fails loudly, and
+this property fails quietly, which is what it did.
+
 ## 5. What was deliberately not done, each with the reason
 
 - **No resolver of its own.** Then it would be `hickory`, which exists.
@@ -412,15 +455,38 @@ are alike.
   `.local` client every Mac has, which is the same shape and not the same
   thing. Nothing is expected to differ; it has not been seen.
 - **A Windows 10 machine**, for §4.4.
-- **The BSDs and illumos.** The targets exist, this crate compiles for
-  them today and answers `Support::None`, and adding one is a single arm
-  in `sys/mod.rs`'s `cfg_if!`. What is missing is the establishing:
-  `libc`'s own `link_name` table points at `__res_init` for FreeBSD,
-  DragonFly, Cygwin and Haiku, which suggests the `__res_` prefix — but
-  §2's whole lesson is that a table is not a measurement, and the glibc
-  finding below shows the two names in that family need not behave alike.
-  An honest `Support::None` costs a caller one fallback; a wrong guess
-  costs a wrong answer.
+- **FreeBSD is the one worth doing, and what it needs is a machine.**
+  Its manual documents `res_query` in **libc** — `-lc`, no separate
+  `libresolv` — and says the thing that matters in as many words: *"This
+  implementation of the resolver is thread-safe"*, with `_res` described as
+  *"the per-thread version"*. That is strictly better evidence than Apple's
+  arm ever had, which was `libresolv.9.tbd` showing a symbol exists and
+  saying nothing about its state (§4.5.2). It is still documentation, and
+  §4.5.1 is why that is not the end of it.
+
+  Two unknowns remain and they cost differently. **The symbol name** —
+  `libc` maps `res_init` to `__res_init` on FreeBSD, and this project has
+  already measured on glibc that `__res_init` being linkable says nothing
+  about `__res_query`, which exists there only as a non-linkable compat
+  symbol. That one fails at link, loudly, and anyone with the machine
+  settles it in minutes. **The per-thread claim** fails quietly and
+  intermittently, which is exactly the Apple defect, and §4.6's test is
+  what settles it.
+
+- **The reentrant family is not a shortcut, measured.** `res_nquery` with
+  a caller-owned state would make the per-thread question moot — and
+  `libc` 0.2.189 declares **one** resolver function, `res_init`, and **no**
+  `res_state` struct on any platform. So that route means declaring a C
+  structure whose layout differs between libcs, where a mismatch is silent
+  memory corruption rather than a compile error. The loud unknown is
+  preferable to the quiet one.
+
+- **illumos, OpenBSD, NetBSD, Haiku, Redox, AIX, QNX.** The targets exist
+  and answer `Support::None`. None carries deployment weight for an HTTP
+  client, and each carries the same unestablished-arm risk for it. An
+  honest `Support::None` costs a caller one fallback; a wrong guess costs
+  a wrong answer. OpenHarmony (`target_env = "ohos"`, a musl-based Linux)
+  is the cheapest of them and is equally unestablished.
 - **WASI is not open and never will be.** `wasi:sockets/ip-name-lookup`
   offers `resolve-addresses` and nothing else — names to addresses, no
   record type at all — so the absence there is structural rather than

@@ -142,3 +142,87 @@ fn support_and_lookup_agree_about_a_type_that_separates_the_two_windows_calls() 
         }
     }
 }
+
+/// How many threads and how many queries each: the shape of the
+/// measurement that found the Apple defect, so a platform that fails the
+/// same way fails the same number.
+const THREADS: usize = 8;
+const PER_THREAD: usize = 8;
+
+/// One query, answered or not. Deliberately narrow — this test counts
+/// answers and says nothing about which, because the tests above already
+/// pin the content and a second copy of that would rot.
+///
+/// [`TYPE_HTTPS`] rather than [`TYPE_A`], and the difference is Windows 10:
+/// `A` is one of the forty-three types that platform parses, so a burst of
+/// them would be [`Error::UnsupportedType`] there rather than evidence
+/// about threads.
+fn answered() -> bool {
+    matches!(lookup("cloudflare.com", TYPE_HTTPS), Ok(ref found) if !found.is_empty())
+}
+
+/// **The requirement `sys/mod.rs` names, asserted for the first time.**
+/// That module says a `res_query` backend needs "a libc whose resolver
+/// state is per-thread", and until this test nothing checked it: the
+/// property was established by reading exported symbols, which is how
+/// Apple's arm shipped for two verticals unable to serve a client —
+/// **64/64 answered serially and 12/64 from eight threads**, measured on
+/// macOS 27, with 46 of the failures returning before anything went out.
+///
+/// **Why threads at all, when every call here blocks.** Because a blocking
+/// call is run on a blocking *pool*. `hclient-dns-system` wraps each of
+/// `Resolve`'s three methods in its own `Blocking::run`, and a single
+/// request asks for A, AAAA and the HTTPS record at once — so three of
+/// these are in flight on three pool threads before a connection is
+/// opened, and a server handling many requests has many more. Concurrency
+/// is not a thing a caller opts into here; it is the ordinary shape, and
+/// it is what made the Apple defect a failure rather than a curiosity.
+///
+/// **The serial burst is the control**, and it is what keeps this from
+/// blaming threads for a resolver that is simply down: only a serial pass
+/// beside a concurrent failure is evidence about the backend, and the
+/// message says which half broke so a reader does not have to guess.
+///
+/// **`cargo test`, not just nextest.** nextest runs each test in its own
+/// process, so tests running "in parallel" are parallel *processes* and
+/// exercise nothing about shared state — which is why the four tests above
+/// passing concurrently says nothing here, and why this one spawns its own
+/// threads instead of relying on the runner.
+///
+/// This is also the instrument any new platform is established with. The
+/// symbol a backend links against fails loudly; this property fails
+/// quietly, and quietly is what it did.
+#[test]
+#[ignore = "needs a name server"]
+fn concurrent_lookups_all_answer_where_a_serial_burst_does() {
+    if support() == Support::None {
+        // Nothing to establish about a build with no backend; the test
+        // above already pins that `lookup` refuses on one.
+        return;
+    }
+
+    let total = THREADS * PER_THREAD;
+    let serial = (0..total).filter(|_| answered()).count();
+
+    let concurrent: usize = std::thread::scope(|scope| {
+        let running: Vec<_> = (0..THREADS)
+            .map(|_| scope.spawn(|| (0..PER_THREAD).filter(|_| answered()).count()))
+            .collect();
+        running
+            .into_iter()
+            .map(|t| t.join().expect("a lookup thread panicked"))
+            .sum()
+    });
+
+    assert_eq!(
+        serial, total,
+        "{serial}/{total} answered one at a time, so this machine cannot \
+         resolve rather than cannot resolve concurrently"
+    );
+    assert_eq!(
+        concurrent, total,
+        "{serial}/{total} answered one at a time and {concurrent}/{total} from \
+         {THREADS} threads: this platform's resolver state is shared, and a \
+         caller running these on a blocking pool loses answers"
+    );
+}
