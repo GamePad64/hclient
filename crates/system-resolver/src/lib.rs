@@ -31,7 +31,7 @@
 //!
 //! | target | what is called | [`support()`] | what is not available there |
 //! |---|---|---|---|
-//! | Linux, glibc | `res_nquery` | [`Support::Any`] | the header — see the next section |
+//! | Linux, glibc | `res_query` | [`Support::Any`] | the header — see the next section |
 //! | Linux, musl | `res_query` | [`Support::UpTo`]`(255)` | the header, **and every type above 255** |
 //! | Android >= 29 | `android_res_nquery` + `android_res_nresult` | [`Support::Any`] | the header |
 //! | FreeBSD | `res_query` | [`Support::Any`] | the header — and see the note below |

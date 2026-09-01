@@ -1,28 +1,63 @@
-//! `res_query(3)` — musl and FreeBSD.
+//! `res_query(3)` — glibc, musl and FreeBSD.
 //!
 //! The whole of the foreign-function boundary is [`query`]: it hands back
 //! an owned buffer, and everything above it is safe code that walks bytes.
 //!
-//! # Who is here, and who left
+//! # glibc calls this documented non-thread-safe, and the implementation
+//! # disagrees
 //!
-//! **glibc is not**, and the reason is a documented one rather than a
-//! measured one: `resolver(3)` calls the traditional interfaces
-//! non-thread-safe and lists only the `res_n*` family as `MT-Safe`. This
-//! crate is called from a blocking pool, so that property is the whole
-//! game — `sys/res_nquery.rs` is glibc's backend and says the rest.
+//! `resolver(3)`: *"The traditional resolver interfaces such as
+//! `res_init()` and `res_query()` use some static (global) state stored in
+//! the `_res` structure, rendering these functions non-thread-safe"*, and
+//! its `ATTRIBUTES` table lists **only** the `res_n*` family as `MT-Safe`.
+//! This crate is called from a blocking pool, so that property is the one
+//! everything here rests on — `sys/mod.rs` names it as one of two
+//! requirements.
+//!
+//! Measured three ways on glibc 2.43, and they agree against the sentence:
+//!
+//! - `__res_state()` returns a **distinct pointer per thread** — nine
+//!   threads, nine addresses;
+//! - disassembled out of the shipped `libc.so.6`, `res_query` is
+//!   `__resolv_context_get` -> `__res_context_query` ->
+//!   `__resolv_context_put`, and `__resolv_context_get` reads through
+//!   `%fs:`, the thread-local segment;
+//! - the live suite's concurrency burst answers 64 of 64 from eight
+//!   threads.
+//!
+//! So the "global state" of that sentence is thread-local here, and the
+//! wording is inherited from the BIND-era API rather than describing this
+//! libc.
+//!
+//! **`res_nquery` was built as the alternative and then withdrawn, because
+//! it buys no weaker assumption.** It is glibc's documented `MT-Safe`
+//! entry, it needs no struct layout — `_res` is `(*__res_state())`, that
+//! symbol links, and the pointer is never dereferenced — and it costs one
+//! initialisation per thread, since a fresh thread's state answers `-1`
+//! until `__res_ninit` while re-initialising an initialised one **leaks**,
+//! 1660 KiB over 200 000 calls. What settled it is that
+//! `res_nquery(__res_state(), ..)` is handed **the very object**
+//! `res_query` fetches itself, so both stand on the same per-thread fact:
+//! the documented entry documents the other half. The route that would
+//! rest on the contract alone is a state of this crate's own, and that
+//! needs the layout `libc` declines to declare on any platform.
+//!
+//! What is kept from the exercise is the part with teeth:
+//! [`tests::glibc_hands_each_thread_its_own_resolver_state`] asserts that
+//! fact directly instead of through the outcome of a burst — which is the
+//! difference between catching Apple's defect and being lucky about it.
+//!
+//! # The other two
 //!
 //! **musl is here because there is nowhere else to go**, measured with
 //! `nm` on Rust's self-contained sysroot: it exports `res_query`,
-//! `res_search`, `res_querydomain` and **no `res_nquery` at all**. There
-//! is no `res_n*` family on musl to move to, and its resolver keeps no
-//! `_res` between calls.
+//! `res_search`, `res_querydomain` and **no `res_nquery` at all**, and its
+//! resolver keeps no `_res` between calls for one to be needed. What it
+//! does have is a ceiling — see [`support`].
 //!
-//! **FreeBSD is here because its own manual says the opposite of
-//! glibc's** — *"This implementation of the resolver is thread-safe"*,
-//! with `_res` described as *"the per-thread version"*. It exports only
-//! the prefixed `__res_nquery`, so moving would add a `link_name` and a
-//! second `__res_state` question for a guarantee the platform already
-//! states.
+//! **FreeBSD's own manual says the opposite of glibc's** — *"This
+//! implementation of the resolver is thread-safe"*, with `_res` described
+//! as *"the per-thread version"*.
 //!
 //! **Apple used to be here and is not**, which this header went on
 //! claiming after it stopped being true: `res_9_query` was measured
@@ -120,6 +155,7 @@ const HEADER_LEN: usize = 12;
 //   apply.
 //
 // Apple is no longer in this list; `sys/apple.rs` is why.
+#[cfg_attr(all(target_os = "linux", target_env = "gnu"), link(name = "resolv"))]
 unsafe extern "C" {
     // unsafe-code-exception: amendment-C8
     fn res_query(
@@ -186,5 +222,77 @@ pub(crate) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
             }
             Written::TooLarge => return Err(Error::AnswerTooLarge),
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+mod tests {
+    use core::ffi::c_void;
+
+    unsafe extern "C" {
+        // unsafe-code-exception: amendment-C8
+        fn __res_state() -> *mut c_void;
+    }
+
+    /// **The requirement `sys/mod.rs` names, asserted at its cause rather
+    /// than through its symptom.**
+    ///
+    /// That module says this backend needs "a libc whose resolver state is
+    /// per-thread", and the live suite checks it the way a caller would
+    /// feel it — a burst of concurrent lookups that all have to answer.
+    /// That is an outcome, and an outcome can be right for the wrong
+    /// reason: a shared state under a light load loses nothing most of the
+    /// time, which is exactly how Apple's arm passed a reading and failed
+    /// a run.
+    ///
+    /// This asserts the fact itself, and it is the one thing this module
+    /// takes on trust on glibc — where the manual says the opposite, so
+    /// there is no contract to fall back on and a check is the whole of
+    /// the evidence. See this module's header for the other two
+    /// measurements that agree with it, and for why moving to `res_nquery`
+    /// would not have removed the assumption.
+    #[test]
+    fn glibc_hands_each_thread_its_own_resolver_state() {
+        const THREADS: usize = 8;
+
+        // SAFETY: `__res_state` takes nothing, returns this thread's state
+        // pointer, and is never dereferenced here — the value is compared
+        // as an address and nothing more.
+        let here = unsafe {
+            // unsafe-code-exception: amendment-C8
+            __res_state()
+        } as usize;
+
+        let elsewhere: Vec<usize> = std::thread::scope(|scope| {
+            let running: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        // SAFETY: as above.
+                        let statp = unsafe {
+                            // unsafe-code-exception: amendment-C8
+                            __res_state()
+                        };
+                        statp as usize
+                    })
+                })
+                .collect();
+            running
+                .into_iter()
+                .map(|t| t.join().expect("a thread panicked"))
+                .collect()
+        });
+
+        let distinct: std::collections::BTreeSet<usize> = elsewhere.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            THREADS,
+            "{THREADS} threads got {} distinct resolver states: glibc is sharing one, \
+             so the way this crate calls the resolver is a data race",
+            distinct.len()
+        );
+        assert!(
+            !distinct.contains(&here),
+            "a spawned thread got the same resolver state as this one"
+        );
     }
 }

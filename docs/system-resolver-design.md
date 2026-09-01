@@ -504,23 +504,34 @@ So on glibc 2.43 the "global state" of the sentence is thread-local, and
 the wording is inherited from the BIND-era API rather than describing this
 libc.
 
-**The backend moved to `res_nquery` anyway, and what that is worth is
-worth stating precisely.** It is glibc's documented `MT-Safe` entry and it
-costs no struct layout — `_res` is `(*__res_state())`, that symbol links,
-and the pointer is passed through and never dereferenced. It costs one
-initialisation per thread: a fresh thread's state answers `-1` until
-`__res_ninit`, and **re-initialising an initialised state leaks**, 1660
-KiB over 200 000 calls, so the init sits behind a thread-local flag.
+**A `res_nquery` backend was built for glibc and then withdrawn**, and
+the withdrawal is the finding rather than the building. It works: it is
+glibc's documented `MT-Safe` entry, it needs no struct layout — `_res` is
+`(*__res_state())`, that symbol links, and the pointer is passed through
+and never dereferenced — and it costs one initialisation per thread, since
+a fresh thread's state answers `-1` until `__res_ninit` while
+re-initialising an initialised one **leaks**, 1660 KiB over 200 000 calls.
+All measured, and all beside the point.
 
-What it does **not** buy is a weaker assumption. `res_nquery(__res_state(),
-..)` is handed the very object `res_query` would have fetched itself, so
-both rest on the same per-thread fact. The honest gain is that the fact is
-now named and **asserted** —
-`glibc_hands_each_thread_its_own_resolver_state` checks it directly rather
-than through the outcome of a burst, which is the difference between
-catching Apple's defect and being lucky about it. The only route that
-would rest on the documented contract alone is a state of this crate's
-own, and that needs the layout `libc` declines to declare.
+What settled it is that `res_nquery(__res_state(), ..)` is handed **the
+very object** `res_query` fetches itself. Both stand on the same
+per-thread fact, so the documented entry point documents the other half:
+`res_nquery` is `MT-Safe` *given a state per thread*, and where that state
+comes from is exactly what is not documented. Taking it would have bought
+the appearance of following the manual while resting on the same
+undocumented property, behind more machinery — a second module, three
+symbols instead of one, a thread-local, and a leak to avoid. The only
+route that would rest on the contract alone is a state of this crate's
+own, and that needs the layout `libc` declines to declare on any platform.
+
+**What is kept is the part with teeth.**
+`glibc_hands_each_thread_its_own_resolver_state` asserts the fact directly
+rather than through the outcome of a burst, which is the difference
+between catching Apple's defect and being lucky about it — and it guards
+whichever entry point the crate calls, because they share the state it
+checks. Where a platform documents the property (FreeBSD) the test is a
+confirmation; on glibc, where the manual says the opposite, it is the
+whole of the evidence.
 
 ### 4.7.2 musl cannot be asked for a type above 255
 

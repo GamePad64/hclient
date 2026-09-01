@@ -53,30 +53,32 @@ cfg_if::cfg_if! {
         #[path = "apple.rs"]
         mod imp;
     }
-    // **glibc has a backend of its own, and the split is documentation
-    // rather than measurement.** Both backends below need the same two
-    // things this crate cannot check for at run time — a symbol to link
-    // against, and a resolver state that is not shared between threads —
-    // and glibc is the one libc here that *documents* its traditional
-    // interface as failing the second: `resolver(3)` calls `res_init()`
-    // and `res_query()` non-thread-safe in as many words and lists only
-    // the `res_n*` family as `MT-Safe`. This crate is called from a
-    // blocking pool, so that is the property everything rests on, and the
-    // arm follows the document rather than the observation.
+    // The `res_query` backend needs two things this crate cannot check for
+    // at run time: the symbol to link against, and a libc whose resolver
+    // state is per-thread. Both are established rather than assumed for
+    // each target in this arm, and the *way* they are established differs
+    // between the two libcs, which is worth knowing before adding a third.
     //
-    // `res_nquery.rs` says what that cost: no struct layout, one
-    // initialisation per thread, and one fact — that `__res_state()` is
-    // per-thread — moved from *assumed* to *asserted by a test*.
-    else if #[cfg(all(target_os = "linux", target_env = "gnu"))] {
-        #[path = "res_nquery.rs"]
-        mod imp;
-    }
-    // **musl stays on `res_query` because there is nowhere to move to**,
-    // measured rather than assumed: `nm` on Rust's self-contained sysroot
-    // finds `res_query`, `res_search` and `res_querydomain`, and **zero**
-    // `res_nquery`. There is no `res_n*` family on musl, and its resolver
-    // keeps no `_res` between calls for one to be needed.
-    else if #[cfg(all(target_os = "linux", target_env = "musl"))] {
+    // - **musl**: the symbols out of `nm` on Rust's self-contained
+    //   sysroot, which also says there is no `res_nquery` there to prefer;
+    //   its resolver keeps no `_res` between calls for one to be needed.
+    //   What it does have is a ceiling — see `res_query.rs`'s `support`.
+    // - **glibc**: the symbols the same way, and the per-thread state
+    //   against its own documentation, which says the opposite.
+    //   `resolver(3)` calls this interface non-thread-safe; measured, the
+    //   state is thread-local three ways over, and
+    //   `glibc_hands_each_thread_its_own_resolver_state` is what keeps
+    //   that from being a belief. `res_query.rs`'s header has the
+    //   measurements, and why moving to the documented `res_nquery` was
+    //   built and withdrawn — it is handed the same object, so it removes
+    //   no assumption.
+    //
+    // Both are run by `concurrent_lookups_all_answer_where_a_serial_burst_does`,
+    // which is the outcome-shaped half of the same question.
+    else if #[cfg(all(
+        target_os = "linux",
+        any(target_env = "gnu", target_env = "musl")
+    ))] {
         #[path = "res_query.rs"]
         mod imp;
     }
@@ -88,7 +90,7 @@ cfg_if::cfg_if! {
     // - *the symbol*: `lib/libc/resolv/Symbol.map` exports `res_query` and
     //   `__res_query`, each under `FBSD_1.0`, so the plain name links out
     //   of `libc` with no `link_name` and no `-lresolv`. Read out of the
-    //   exported symbols, which is exactly how the two arms above were
+    //   exported symbols, which is exactly how the arm above was
     //   settled — and it fails **loudly**, at link, if it is ever wrong.
     // - *the per-thread state*: `resolver(3)` says *"This implementation
     //   of the resolver is thread-safe"* and calls `_res` *"the per-thread
@@ -99,8 +101,7 @@ cfg_if::cfg_if! {
     //
     // So this arm is added on the owner's decision with that gap named
     // rather than papered over. What closes it is one command on a FreeBSD
-    // machine, and it is the same command that established the two arms
-    // above:
+    // machine, and it is the same command that established the arm above:
     // `cargo test -p system-resolver --test live -- --ignored`, whose
     // `concurrent_lookups_all_answer_where_a_serial_burst_does` is written
     // for exactly this question. Until somebody runs it, this row is the
