@@ -111,6 +111,28 @@ jobs:
       - name: every crate builds from its own published tarball
         run: just package-build
 
+  # `system-resolver` is the one crate here with a compiler floor of its
+  # own — every other member rides the workspace's "MSRV is the latest
+  # stable", which this repository deliberately has no job for, because a
+  # pinned job restates a *moving* promise more staleley than the manifest
+  # does. That argument does not reach a fixed floor: here the job is the
+  # promise's only statement rather than a second copy of one, and without
+  # it `rust-version = "1.85.0"` is a claim with nothing behind it.
+  #
+  # Its own job rather than a step in `lint`, because it needs a second
+  # toolchain and installing one would have to be a `run:` — which
+  # `ci-mirrors-just` forbids from being anything but a recipe call.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: "1.85.0"
+          bins: just
+      - name: the one crate with a fixed floor builds and passes on it
+        run: just msrv
+
   sse-complexity-guard:
     runs-on: ubuntu-latest
     steps:

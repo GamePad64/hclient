@@ -1,7 +1,7 @@
 # system-resolver
 
 **Ask the machine's own resolver for any DNS record type — Linux, macOS,
-iOS, Android and Windows.**
+iOS, Android, FreeBSD and Windows.**
 
 ```rust
 // RR type 65, HTTPS (RFC 9460 §14.1).

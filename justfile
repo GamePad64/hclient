@@ -1062,6 +1062,65 @@ release-check: ci packaging package-build release-pending
 release-pending:
     ./scripts/release-pending.sh
 
+# the one crate with a fixed compiler floor, built on it
+msrv:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # **`system-resolver` alone, because it is the only crate here with a
+    # floor to check.** Every other member says `rust-version.workspace =
+    # true`, and this workspace's policy is that the MSRV *is the latest
+    # stable* — a moving promise, already stated by the toolchain CI runs
+    # on, and a job pinning a version would be a second statement of it
+    # that goes stale while looking maintained. That argument is in
+    # `AGENTS.md` and it stands.
+    #
+    # It does not reach this crate. Its floor is a **fixed** version, so a
+    # job checking that version is the promise's only statement rather
+    # than a staler copy of one. Without it `rust-version = "1.85.0"` is a
+    # claim with nothing behind it, which is the defect this repository
+    # records against itself four times over.
+    #
+    # The floor is edition 2024's and nothing else in this crate: every
+    # dependency's own `rust-version` is below it — `cfg-if` 1.32,
+    # `thiserror` 1.71, `windows-sys` 1.71, `windows-strings` 1.82.
+    FLOOR="1.85.0"
+    # Read from the manifest rather than written twice: a figure in two
+    # places is a figure that drifts, which is this file's own recurring
+    # defect. The recipe fails if the two disagree rather than silently
+    # checking the wrong one.
+    DECLARED="$(grep -m1 '^rust-version = ' crates/system-resolver/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+    if [ "$DECLARED" != "$FLOOR" ]; then
+      echo "::error::system-resolver declares rust-version $DECLARED and this recipe checks $FLOOR — one of the two moved without the other"
+      exit 1
+    fi
+    if ! rustup toolchain list | grep -q "^$FLOOR"; then
+      echo "::error::toolchain $FLOOR is not installed — \`rustup toolchain install $FLOOR\`. Skipping it would return exactly the blind spot this recipe covers."
+      exit 1
+    fi
+    # `--ignore-rust-version` is required and is not a loophole: the
+    # *workspace* manifest still declares the family's floor, and cargo
+    # refuses the whole build on the higher number before it ever looks at
+    # this crate's own. What is being checked is the crate, which carries
+    # the lower one.
+    failed=0
+    echo "==> cargo +$FLOOR check -p system-resolver --all-targets"
+    cargo "+$FLOOR" check -p system-resolver --all-targets --ignore-rust-version --color never || failed=1
+    echo "==> cargo +$FLOOR test -p system-resolver"
+    out="$(cargo "+$FLOOR" test -p system-resolver --ignore-rust-version --color never 2>&1)" || failed=1
+    printf '%s\n' "$out"
+    # Fails closed on a run that tested nothing: a suite compiled and not
+    # run, and a tidy tree, print the same summary otherwise.
+    ran="$(printf '%s\n' "$out" | grep -c '^test result: ok\.')"
+    if [ "$ran" -lt 2 ]; then
+      echo "::error::only $ran test binaries reported a result on $FLOOR — a green run over nothing is the defect this recipe exists for"
+      exit 1
+    fi
+    if [ "$failed" -ne 0 ]; then
+      echo "::error::system-resolver does not build or pass its tests on its declared floor, $FLOOR"
+      exit 1
+    fi
+    echo "msrv: system-resolver builds and passes $ran test binaries on $FLOOR"
+
 # the compatibility promise, for the one crate that is in a position to make one
 semver rev="":
     #!/usr/bin/env bash

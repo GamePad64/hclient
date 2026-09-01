@@ -491,6 +491,17 @@ older toolchain, so if you pin an older Rust, pin an older `hclient` with it.
 In exchange nothing here carries version-shim code, and there is no MSRV
 matrix to maintain.
 
+**One crate is outside that too, and it is the same crate and the same
+argument as the shared version.** `system-resolver` declares
+`rust-version = "1.85.0"` literally. The policy above buys the *family* no
+shim code and no matrix, and it costs a crate meant to be used from
+outside thirteen releases of reach for nothing — measured rather than
+assumed: on 1.85.0 it builds `--all-targets` and passes its 62 unit tests
+and its doctest, and every dependency's own floor is below that
+(`cfg-if` 1.32, `thiserror` 1.71, `windows-sys` 1.71, `windows-strings`
+1.82). What binds it is **edition 2024**, which is 1.85 and nothing else
+in that crate.
+
 **And the three-platform promise was not being kept, which is worth
 knowing before the next argument leans on it.** For twelve days — every
 `ci.yml` run the API still holds, back to 2026-08-09 — `test
@@ -521,15 +532,26 @@ diagnosis: the whole suite runs on a real Mac — macOS 27, arm64 — in
 on every macOS. See the Apple resolver section for the run and for the
 one candidate it produced.
 
-There is also **no MSRV job in CI, deliberately**, and `rust-toolchain.toml`
-pins no version — it says `channel = "stable"`. A job checking a fixed
-version would be a second statement of the same promise, staler than the
-first, and it is the one people would trust: the moment stable moves past
-the pin, that job goes on passing while checking a toolchain nobody
-supports. The whole test suite already runs on stable on three platforms,
-which is the promise, so the pin would add a way to be wrong and no way to
-be right.
+There is also **no MSRV job in CI for the family, deliberately**, and
+`rust-toolchain.toml` pins no version — it says `channel = "stable"`. A job
+checking a fixed version would be a second statement of the same promise,
+staler than the first, and it is the one people would trust: the moment
+stable moves past the pin, that job goes on passing while checking a
+toolchain nobody supports. The whole test suite already runs on stable on
+three platforms, which is the promise, so the pin would add a way to be
+wrong and no way to be right.
 
+**And that argument does not reach the one crate with a fixed floor**,
+which is why `just msrv` exists and has a job of its own. The objection
+above is that a pinned job restates a **moving** promise more staleley
+than the manifest does; `system-resolver`'s promise does not move, so the
+job is its only statement rather than a second copy of one — and without
+it `rust-version = "1.85.0"` would be a claim with nothing behind it,
+which is the defect this file records against itself four times over. The
+recipe reads the floor **out of the manifest** rather than carrying a
+second copy, and refuses when the two disagree; both halves were checked
+in the failing direction, by moving the manifest's number and by adding a
+`let`-chain, which needs 1.88.
 **Two TLS backends, both behind the same `TlsConnect` seam.**
 `hclient-tls-rustls` is the default: memory-safe, and it behaves the same on
 every platform. `hclient-tls-native-tls` uses the platform's own stack —
