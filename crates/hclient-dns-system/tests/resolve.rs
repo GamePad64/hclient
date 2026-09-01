@@ -17,7 +17,7 @@
 //! the one test in this crate that genuinely needs it is `#[ignore]`d in
 //! `src/lib.rs`.
 
-use assert_matches::assert_matches;
+use std::assert_matches;
 use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};

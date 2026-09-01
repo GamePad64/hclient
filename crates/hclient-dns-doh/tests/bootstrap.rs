@@ -9,7 +9,7 @@
 
 mod support;
 
-use assert_matches::assert_matches;
+use std::assert_matches;
 use hclient_dns::IpLiteralOnly;
 use hclient_dns_doh::{Doh, EndpointError};
 use hclient_native::Native;

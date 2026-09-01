@@ -53,7 +53,6 @@ thiserror    = { workspace = true }
 # comment in `lib.rs`.
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 futures-util     = { version = "0.3", default-features = false, features = ["std"] }
-assert_matches   = { workspace = true }
 rstest           = { workspace = true }
 thiserror        = { workspace = true }
 

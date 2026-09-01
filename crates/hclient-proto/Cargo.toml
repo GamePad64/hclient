@@ -78,7 +78,6 @@ hclient-idn = { workspace = true, optional = true }
 proptest = { workspace = true }
 url      = { workspace = true }
 rstest   = { workspace = true }
-assert_matches = { workspace = true }
 
 [lints]
 workspace = true

@@ -96,7 +96,7 @@ pub(crate) enum SvcbLookupError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_matches::assert_matches;
+    use std::assert_matches;
     use rstest::rstest;
 
     /// Every variant, once, so the tables below can range over all of them

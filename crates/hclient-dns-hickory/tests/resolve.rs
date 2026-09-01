@@ -10,7 +10,7 @@
 //! CNAME chasing and record filtering all still run, and the only thing
 //! faked is the answer that arrives from the wire.
 
-use assert_matches::assert_matches;
+use std::assert_matches;
 use futures_util::StreamExt;
 use futures_util::stream;
 use hclient_core::ErrorKind;

@@ -25,26 +25,35 @@ edition.workspace = true
 # compatibility matrix, and it costs a crate meant to be used from outside
 # thirteen releases of reach.
 #
-# Measured rather than picked, and the number moved once. It was 1.85,
-# edition 2024's floor, until `sys/mod.rs` traded `cfg-if` for `core`'s
-# own `cfg_select!` — stable in **1.95**, and 1.94 rejects it as an
-# unstable library feature, so the two were checked rather than looked up.
-# Every dependency's own floor is below that (`thiserror` 1.71,
-# `windows-sys` 1.71, `windows-strings` 1.82), which makes `cfg_select!`
-# the single binding constraint.
+# Measured rather than picked, and the number has moved twice. It was
+# 1.85, edition 2024's floor; then 1.95, when `sys/mod.rs` traded `cfg-if`
+# for `core::cfg_select!`; and now 1.96, where `std::assert_matches!`
+# became stable. Both were checked in both directions rather than looked
+# up: 1.94 rejects `cfg_select!` and 1.95 rejects `assert_matches!`, each
+# as an unstable library feature. Every dependency's own floor is far
+# below (`thiserror` 1.71, `windows-sys` 1.71, `windows-strings` 1.82).
 #
-# **The trade is stated because it goes the wrong way on this crate's own
-# argument.** `cfg-if` is one crate with no dependencies of its own and a
-# 1.32 floor, and it is already in nearly every graph; dropping it buys a
-# line out of the lockfile and costs ten releases of the reach that this
-# crate left the family's shared MSRV to keep.
+# Two things about this number are worth knowing before it moves again.
+#
+# It is one release stricter than a consumer needs. `assert_matches!` is
+# used only inside `#[cfg(test)]`, which cargo does not build for a
+# dependency, so the crate itself still compiles on 1.95 for anyone
+# depending on it. Declaring the higher number is the under-claiming
+# direction, which is the rule this workspace applies everywhere, and it
+# keeps `just msrv` able to run the tests rather than only check them.
+#
+# And the trade has now gone the wrong way twice on this crate's own
+# argument, which is that it left the family's shared MSRV to keep reach.
+# `cfg-if` and `assert_matches` are each one small crate with a low floor;
+# dropping them buys two lines out of the lockfile and has cost eleven
+# releases of compiler reach.
 #
 # `just msrv` is what keeps this from being a claim with nothing behind
 # it, and the workspace's argument against an MSRV job does not reach
 # here: that argument is that a pinned job restates a *moving* promise
 # more staleley than the manifest does. This promise does not move, so the
 # job is its only statement rather than a second one.
-rust-version = "1.95.0"
+rust-version = "1.96.0"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
@@ -90,7 +99,6 @@ windows-strings = { version = "0.5", default-features = false }
 
 [dev-dependencies]
 const-hex      = { workspace = true }
-assert_matches = { workspace = true }
 rstest         = { workspace = true }
 
 # NOT `[lints] workspace = true`, for `hclient-dns-system`'s reason (spec

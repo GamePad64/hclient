@@ -30,7 +30,6 @@ hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.2", features 
 thiserror      = { workspace = true }
 
 [dev-dependencies]
-assert_matches   = { workspace = true }
 rstest           = { workspace = true }
 # The tests drive this resolver through a REAL transport against a real
 # loopback server, rather than through a mock: the claims being made are

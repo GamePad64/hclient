@@ -577,7 +577,6 @@ hclient-fetch = { path = "../hclient-fetch", version = "0.1.0-alpha.2", optional
 static_assertions = { workspace = true }
 # The cookie and cache suites, moved in with their modules.
 rstest         = { workspace = true }
-assert_matches = { workspace = true }
 # Two independent oracles for both `date.rs` files, dev-only. `httpdate`
 # is the incumbent HTTP-date parser and answers the *format* question —
 # which strings are accepted at all — where the corpus answers the

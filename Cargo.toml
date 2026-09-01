@@ -88,7 +88,6 @@ hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0-alpha.2" }
 hclient-idn   = { path = "crates/hclient-idn",   version = "0.1.0-alpha.2" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
-assert_matches = "1.5"
 hclient       = { path = "crates/hclient",       version = "0.1.0-alpha.2" }
 
 [workspace.lints.rust]

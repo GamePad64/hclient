@@ -541,7 +541,7 @@ fn pop_segment(out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_matches::assert_matches;
+    use std::assert_matches;
 
     fn uri(s: &str) -> Uri {
         s.parse().unwrap()

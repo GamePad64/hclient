@@ -14,7 +14,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use assert_matches::assert_matches;
+use std::assert_matches;
 use hclient::cookie::{CookieJar, Limits, NoList, Rejected};
 use http::{HeaderValue, Uri};
 

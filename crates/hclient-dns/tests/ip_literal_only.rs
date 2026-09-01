@@ -13,7 +13,7 @@
 //! Both directions live in one case table below, so the two are read
 //! together rather than in separate tests that can drift apart.
 
-use assert_matches::assert_matches;
+use std::assert_matches;
 use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
@@ -41,7 +41,10 @@ enum Expect {
 
 fn check(got: &[Answer], expect: Expect, input: &str) {
     match expect {
-        Expect::Addr(want) => assert_matches!(got, [Ok(a)] => {
+        Expect::Addr(want) => {
+            let [Ok(a)] = got else {
+                panic!("`{input}` must resolve to exactly one address; got {got:?}")
+            };
             assert_eq!(
                 a.addr,
                 want.parse::<IpAddr>().expect("test data is a valid address"),
@@ -52,14 +55,17 @@ fn check(got: &[Answer], expect: Expect, input: &str) {
                 "a literal is not a DNS answer and must not carry a TTL that would let \
                  a cache expire it"
             );
-        }),
+        }
         Expect::NoRecords => assert!(
             got.is_empty(),
             "a literal of the other family has no record of this type, and that is an \
              answer rather than a failure — erroring (or inventing an address) here would \
              make every literal connection report something it did not observe; got {got:?}"
         ),
-        Expect::NotALiteral => assert_matches!(got, [Err(e)] => {
+        Expect::NotALiteral => {
+            let [Err(e)] = got else {
+                panic!("`{input}` is not a literal and must yield one error; got {got:?}")
+            };
             assert_eq!(
                 *e.kind(), ErrorKind::Resolve,
                 "the caller must classify this without substring-matching on Display: {e}"
@@ -69,7 +75,7 @@ fn check(got: &[Answer], expect: Expect, input: &str) {
                 "the error must name what could not be resolved, or the caller cannot tell \
                  which of several names failed: {e}"
             );
-        }),
+        }
     }
 }
 
@@ -130,10 +136,14 @@ fn a_name_is_refused_by_both_families_and_never_answered_with_silence(#[case] na
         ("A", drain(resolver.lookup_ipv4(name))),
         ("AAAA", drain(resolver.lookup_ipv6(name))),
     ] {
-        assert_matches!(got.as_slice(), [Err(e)] => {
-            assert_eq!(*e.kind(), ErrorKind::Resolve, "{family} for `{name}`: {e}");
-        }, "{family} for `{name}` must yield an error, not an empty stream: an empty \
-            stream means \"asked, found nothing\" and this resolver never asked");
+        let [Err(e)] = got.as_slice() else {
+            panic!(
+                "{family} for `{name}` must yield an error, not an empty stream: an \
+                 empty stream means \"asked, found nothing\" and this resolver never \
+                 asked; got {got:?}"
+            )
+        };
+        assert_eq!(*e.kind(), ErrorKind::Resolve, "{family} for `{name}`: {e}");
     }
 }
 

@@ -146,12 +146,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "assert_matches"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
-
-[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1302,7 +1296,6 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 name = "hclient"
 version = "0.1.0-alpha.2"
 dependencies = [
- "assert_matches",
  "brotli",
  "brotli-decompressor",
  "bytes",
@@ -1394,7 +1387,6 @@ dependencies = [
 name = "hclient-dns"
 version = "0.1.0-alpha.2"
 dependencies = [
- "assert_matches",
  "bytes",
  "dns-message-parser",
  "futures-core",
@@ -1409,7 +1401,6 @@ dependencies = [
 name = "hclient-dns-doh"
 version = "0.1.0-alpha.2"
 dependencies = [
- "assert_matches",
  "bytes",
  "dns-message-parser",
  "futures-core",
@@ -1432,7 +1423,6 @@ dependencies = [
 name = "hclient-dns-hickory"
 version = "0.1.0-alpha.2"
 dependencies = [
- "assert_matches",
  "bytes",
  "futures-core",
  "futures-executor",
@@ -1448,7 +1438,6 @@ dependencies = [
 name = "hclient-dns-system"
 version = "0.1.0-alpha.2"
 dependencies = [
- "assert_matches",
  "const-hex",
  "domain",
  "futures-core",
@@ -1489,7 +1478,6 @@ dependencies = [
 name = "hclient-idn"
 version = "0.1.0-alpha.2"
 dependencies = [
- "assert_matches",
  "idna",
  "objc2-foundation",
  "rstest",
@@ -1573,7 +1561,6 @@ dependencies = [
 name = "hclient-proto"
 version = "0.1.0-alpha.2"
 dependencies = [
- "assert_matches",
  "base64 0.23.1",
  "bytes",
  "form_urlencoded",
@@ -3621,7 +3608,6 @@ dependencies = [
 name = "system-resolver"
 version = "0.1.0"
 dependencies = [
- "assert_matches",
  "const-hex",
  "rstest",
  "thiserror 2.0.20",

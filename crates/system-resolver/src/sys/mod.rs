@@ -212,7 +212,7 @@ pub(crate) fn classify_written(written: usize, buf_len: usize) -> Written {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_matches::assert_matches;
+    use std::assert_matches;
 
     #[test]
     fn a_length_strictly_inside_the_buffer_is_a_complete_answer() {

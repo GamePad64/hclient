@@ -7,7 +7,7 @@
 //! whether one family's stream had to be driven for the other to finish.
 //! The tests below refuse to collect for exactly that reason.
 
-use assert_matches::assert_matches;
+use std::assert_matches;
 use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};

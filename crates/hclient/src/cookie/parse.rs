@@ -240,7 +240,7 @@ fn to_utf8(bytes: &[u8]) -> Result<String, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_matches::assert_matches;
+    use std::assert_matches;
 
     fn parse(s: &str) -> SetCookie {
         SetCookie::parse(s.as_bytes()).expect("should parse")

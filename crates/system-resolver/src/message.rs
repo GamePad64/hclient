@@ -412,7 +412,7 @@ fn read_name(msg: &[u8], at: usize) -> Result<(String, usize), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_matches::assert_matches;
+    use std::assert_matches;
 
     /// Test vectors are written as hex. `const_hex` rather than a
     /// hand-rolled loop: the crate is already in this workspace's graph,

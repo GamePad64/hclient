@@ -91,7 +91,6 @@ idna = { version = "1.1", optional = true, default-features = false, features = 
 
 [dev-dependencies]
 rstest = { workspace = true }
-assert_matches = { workspace = true }
 # **The oracle, and deliberately a dev-dependency** — the same role `url`
 # plays for `hclient-proto`'s `tests/uri_resolution.rs`. The whole claim
 # of this crate is that the platform agrees with `idna`, and that

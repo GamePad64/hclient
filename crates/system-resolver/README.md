@@ -82,7 +82,7 @@ cargo test -- --ignored
 
 ## Minimum Rust version
 
-1.95.
+1.96.
 
 ## License
 

@@ -16,7 +16,7 @@
 use futures_executor::block_on;
 use std::time::{Duration, SystemTime};
 
-use assert_matches::assert_matches;
+use std::assert_matches;
 use bytes::Bytes;
 use hclient::cache::{CacheStore, HttpCache, Limits, Lookup, NotStored, StoredResponse};
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -93,7 +93,9 @@ fn age_of(e: &StoredResponse) -> u64 {
 #[test]
 fn a_fresh_entry_is_served_without_a_request() {
     let mut c = cache_with(&[("cache-control", "max-age=60")], b"hello");
-    let hit = assert_matches!(look(&mut c, &req(&[]), t(30)), Lookup::Hit(e) => e);
+    let Lookup::Hit(hit) = look(&mut c, &req(&[]), t(30)) else {
+        panic!("expected a cache hit")
+    };
     assert_eq!(hit.body().as_ref(), b"hello");
     assert_eq!(hit.status(), StatusCode::OK);
 }
@@ -101,7 +103,9 @@ fn a_fresh_entry_is_served_without_a_request() {
 #[test]
 fn the_served_response_carries_the_age_it_has_actually_reached() {
     let mut c = cache_with(&[("cache-control", "max-age=60")], b"x");
-    let hit = assert_matches!(look(&mut c, &req(&[]), t(30)), Lookup::Hit(e) => e);
+    let Lookup::Hit(hit) = look(&mut c, &req(&[]), t(30)) else {
+        panic!("expected a cache hit")
+    };
     assert_eq!(age_of(&hit), 30);
 }
 
@@ -259,7 +263,9 @@ fn a_response_to_an_authenticated_request_is_stored_and_keyed_on_the_credential(
         t(0),
     );
 
-    let hit = assert_matches!(look(&mut c, &alice, t(10)), Lookup::Hit(e) => e);
+    let Lookup::Hit(hit) = look(&mut c, &alice, t(10)) else {
+        panic!("expected a cache hit")
+    };
     assert_eq!(hit.body().as_ref(), b"alice");
     assert_matches!(
         look(&mut c, &bob, t(10)),
@@ -411,7 +417,9 @@ fn the_most_recently_received_matching_variant_is_the_one_served() {
     put(&mut c, &a, &parts(200, fields), b"first", t(0));
     put(&mut c, &b, &parts(200, fields), b"second", t(10));
     assert_eq!(block_on(c.store_ref().len()), 2);
-    let hit = assert_matches!(look(&mut c, &a, t(20)), Lookup::Hit(e) => e);
+    let Lookup::Hit(hit) = look(&mut c, &a, t(20)) else {
+        panic!("expected a cache hit")
+    };
     assert_eq!(hit.body().as_ref(), b"first");
 }
 
@@ -534,7 +542,9 @@ fn both_validators_are_offered_when_both_are_stored() {
         ],
         b"x",
     );
-    let conditions = assert_matches!(look(&mut c, &req(&[]), t(1)), Lookup::Revalidate { conditions, .. } => conditions);
+    let Lookup::Revalidate { conditions, .. } = look(&mut c, &req(&[]), t(1)) else {
+        panic!("expected a revalidation")
+    };
     assert_eq!(
         conditions,
         vec![
@@ -560,10 +570,9 @@ fn a_304_freshens_the_entry_and_updates_the_fields_it_carries() {
         ],
         b"body",
     );
-    let (key, stale) = assert_matches!(
-        look(&mut c, &req(&[]), t(60)),
-        Lookup::Revalidate { key, stale, .. } => (key, stale)
-    );
+    let Lookup::Revalidate { key, stale, .. } = look(&mut c, &req(&[]), t(60)) else {
+        panic!("expected a revalidation")
+    };
     let served = block_on(c.revalidated(
         &key,
         stale,
@@ -601,10 +610,9 @@ fn a_304_does_not_relabel_the_stored_bytes() {
         ],
         b"gzip",
     );
-    let (key, stale) = assert_matches!(
-        look(&mut c, &req(&[]), t(1)),
-        Lookup::Revalidate { key, stale, .. } => (key, stale)
-    );
+    let Lookup::Revalidate { key, stale, .. } = look(&mut c, &req(&[]), t(1)) else {
+        panic!("expected a revalidation")
+    };
     let served = block_on(c.revalidated(
         &key,
         stale,
@@ -632,10 +640,9 @@ fn a_304_does_not_relabel_the_stored_bytes() {
 #[test]
 fn a_non_304_answer_to_a_revalidation_removes_the_stale_variant() {
     let mut c = cache_with(&[("cache-control", "max-age=10"), ("etag", "\"v1\"")], b"x");
-    let (key, stale) = assert_matches!(
-        look(&mut c, &req(&[]), t(60)),
-        Lookup::Revalidate { key, stale, .. } => (key, stale)
-    );
+    let Lookup::Revalidate { key, stale, .. } = look(&mut c, &req(&[]), t(60)) else {
+        panic!("expected a revalidation")
+    };
     block_on(c.superseded(&key, &stale));
     assert_eq!(block_on(c.store_ref().len()), 0);
     assert_matches!(
@@ -756,7 +763,9 @@ fn the_corpus_date_constant_names_the_instant_the_tests_call_t0() {
         b"x",
         t(0),
     );
-    let hit = assert_matches!(look(&mut c, &req(&[]), t(40)), Lookup::Hit(e) => e);
+    let Lookup::Hit(hit) = look(&mut c, &req(&[]), t(40)) else {
+        panic!("expected a cache hit")
+    };
     assert_eq!(
         age_of(&hit),
         40,

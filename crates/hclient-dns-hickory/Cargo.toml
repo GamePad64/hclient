@@ -22,7 +22,6 @@ hclient-core     = { workspace = true }
 hclient-dns      = { path = "../hclient-dns", version = "0.1.0-alpha.2" }
 
 [dev-dependencies]
-assert_matches   = { workspace = true }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 rstest           = { workspace = true }
 tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
