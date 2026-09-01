@@ -533,6 +533,62 @@ fn ascii_labels_survived(lower: &str, ascii: &str) -> bool {
 #[cfg(test)]
 mod tests {
 
+    /// **Why this layer exists, in four inputs, and not one of them is
+    /// about a platform disagreeing with another.**
+    ///
+    /// The oracle is `idna` — the most conforming UTS 46 implementation
+    /// available and the one this crate is measured against everywhere —
+    /// called exactly as [`crate::bundled`] calls it, with its own URL
+    /// deny list. It answers `Ok` for all four:
+    ///
+    /// | input | `idna` says | why a URL client must not use it |
+    /// |---|---|---|
+    /// | `a..b` | `a..b` | an empty label is not a DNS label |
+    /// | `ä..de` | `xn--4ca..de` | the same, after conversion |
+    /// | `xn--xn--aaaaaaax*-nlw` | itself | a literal `*` in the answer |
+    /// | `"\u{ad}.\u{ad}"` | `.` | every label mapped away |
+    ///
+    /// **So the layer is not divergence repair first.** UTS 46
+    /// conformance and *safe to put in a `Host` header* are different
+    /// questions: the standard leaves CheckHyphens, VerifyDnsLength and
+    /// empty labels to the caller, and `AsciiDenyList` screens the input
+    /// rather than the answer — which is how a `*` survives. Repairing
+    /// what ICU and Foundation do differently is a second and smaller
+    /// part of this file.
+    ///
+    /// Written as a test rather than as a paragraph because the claim is
+    /// about a dependency, and a claim about a dependency is exactly as
+    /// perishable as the check behind it: an `idna` that starts refusing
+    /// one of these fails here, and the rule it makes redundant can then
+    /// be removed on evidence.
+    #[test]
+    fn the_oracle_itself_answers_ok_for_names_this_client_must_not_send() {
+        let idna_says = |u: &str| {
+            idna::domain_to_ascii_cow(u.as_bytes(), idna::AsciiDenyList::URL)
+                .ok()
+                .map(std::borrow::Cow::into_owned)
+        };
+        for input in ["a..b", "ä..de", "xn--xn--aaaaaaax*-nlw", "\u{ad}.\u{ad}"] {
+            assert!(
+                idna_says(input).is_some(),
+                "`idna` now refuses {input:?} on its own — this layer's rule for it may be \
+                 redundant, which is a deletion to make on this evidence rather than a \
+                 paragraph to update"
+            );
+            // **Through the public entry point, not through this
+            // module.** Asserting on `to_ascii_over` would pin the layer
+            // and leave the dispatch free: removing the layer from
+            // `lib.rs` altogether would keep such a test green. Measured
+            // — that is exactly what happened to the first draft of this
+            // test.
+            assert_eq!(
+                crate::domain_to_ascii(input).ok(),
+                None,
+                "{input:?} reaches a caller as a host to contact"
+            );
+        }
+    }
+
     /// **A backend whose reverse direction hands back a different name is
     /// refused, and this is how a rule about a platform gets a test on a
     /// machine that is not one.**
