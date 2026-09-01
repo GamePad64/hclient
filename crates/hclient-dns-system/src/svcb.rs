@@ -1,32 +1,43 @@
-//! RFC 9460 client semantics over a decoded DNS message.
+//! RFC 9460 client semantics over a decoded HTTPS record.
 //!
-//! **The wire parsing is not done here.** `dns-message-parser` decodes the
-//! response — a crate with no `unsafe` anywhere in its `src`, whose
-//! decoder returns `DecodeResult` on every path and whose name
-//! decompression terminates by tracking visited offsets in a `HashSet`
-//! (`decode/domain_name.rs`, `EndlessRecursion` / `MaxRecursion`). That
-//! removes the highest-risk code this crate would otherwise have
-//! contained: hand-rolled bounds checks over attacker-chosen bytes. What
-//! is left in this module is the part a DNS decoder correctly refuses to
-//! do — deciding, per RFC 9460, which of the decoded records a *client*
-//! may act on, and what the shape of "no records" is.
+//! **The wire parsing is not done here.** `domain` decodes the record —
+//! NLnet Labs', `no_std`-capable, and chosen over `dns-message-parser`
+//! for one reason above the rest: [`Https::parse`] takes a parser over
+//! **one record's RDATA**, which is the only shape `system-resolver` can
+//! hand over on all five of its platforms. The previous decoder exposed
+//! decoding at the message level alone, so this module used to build a
+//! synthetic DNS response around every record it wanted read — ninety
+//! lines of header, question section and length-prefixed names, written
+//! only to be taken apart again by the next call.
+//!
+//! What is left in this module is the part a DNS decoder correctly
+//! refuses to do — deciding, per RFC 9460, which of the decoded records a
+//! *client* may act on, and what the shape of "no records" is.
 //!
 //! Verified against the same byte vectors that used to test the
-//! hand-written parser, because the question they answer has only moved,
-//! not gone away: a truncated answer, an `RDLENGTH` that overruns the
-//! message, and a compression-pointer cycle all still have to become an
-//! `Err` here rather than a panic or a hang. See the tests at the bottom —
-//! they now assert about *this crate's* behaviour when the decoder
-//! refuses, which is exactly the seam that could still be got wrong.
+//! hand-written parser and then the envelope, because the question they
+//! answer has only moved, not gone away: a truncated record and an
+//! RDLENGTH that overruns still have to become an `Err` here rather than
+//! a panic or a hang.
 //!
-//! **What is still parsed by hand, and why it has to be.** The twelve-byte
-//! header, in `read_header`. `res_query` reports the ordinary "this name
-//! has no HTTPS record" case as a *failure*, and on that path it returns
-//! no length — so all that can be trusted is the fixed-size header, and
-//! `Dns::decode` cannot read one on its own (measured: given exactly
-//! twelve bytes it fails with "not enough bytes ... offset 13", because it
-//! goes on to look for the question section). Twenty lines of bit
-//! twiddling with tests around them is the whole of it.
+//! **Three things the change bought, each pinned by a test below.** An
+//! AliasMode record carrying SvcParams is now *ignored* per §2.4.1
+//! instead of rejecting the whole RRSet, which this crate had recorded as
+//! a deliberate divergence and which the shared client rules had always
+//! implemented correctly and never been reached with. An RRSet larger
+//! than a DNS message can frame is answered rather than refused, because
+//! the 65535-octet limit was the envelope's and never the resolver's. And
+//! a compression pointer inside RDATA — which §2.2 forbids and a
+//! non-conformant sender may still write — can now only reach this
+//! record's own octets, where before it was resolved against a message
+//! this crate had assembled out of several.
+//!
+//! **What is no longer parsed by hand: everything.** The twelve-byte
+//! header this module used to read went with `res_query` when the
+//! platform calls moved to `system-resolver`, and the envelope went with
+//! the decoder that needed one.
+//!
+//! [`Https::parse`]: domain::rdata::svcb::Https::parse
 #![forbid(unsafe_code)]
 
 use crate::error::SvcbLookupError;
@@ -57,7 +68,7 @@ pub(crate) const TYPE_HTTPS: u16 = 65;
 /// lookup twice, and only one of those is this stream's business.
 pub(crate) fn lookup(name: &str) -> Result<Vec<SvcbEndpoint>, SvcbLookupError> {
     match system_resolver::lookup(name, TYPE_HTTPS) {
-        Ok(records) => endpoints_from_records(name, &records),
+        Ok(records) => endpoints_from_records(&records),
         Err(system_resolver::Error::NameDoesNotExist) => Ok(Vec::new()),
         // A build with no backend answers `Unsupported`, and it is an
         // error here rather than an empty answer for the reason
@@ -107,33 +118,25 @@ pub(crate) fn endpoint_from_binding(
 
 /// Turning the records a resolver reported into endpoints.
 ///
-/// **This crate no longer talks to a resolver.** `system-resolver` does
-/// that — five platforms, one seam, `Vec<Record>` out — and what is left
-/// here is the half that is about HTTPS records rather than about DNS: RFC
-/// 9460's client rules, and the one step that gets a record's RDATA to a
-/// decoder that can read it.
+/// **This crate no longer talks to a resolver, and it no longer builds a
+/// DNS message either.** `system-resolver` does the first — five
+/// platforms, one seam, `Vec<Record>` out — and `domain` does the second:
+/// [`Https::parse`] takes a parser over one record's RDATA, which is the
+/// shape a resolver hands over. What is left here is the half that is
+/// about HTTPS records rather than about DNS: RFC 9460's client rules.
 mod wire {
     use super::endpoint_from_binding;
     use crate::error::SvcbLookupError;
-    use bytes::Bytes;
-    use dns_message_parser::Dns;
-    use dns_message_parser::rr::RR;
+    use domain::base::iana::SvcParamKey;
+    use domain::dep::octseq::{Octets, parse::Parser};
+    use domain::rdata::svcb::Https;
+    use domain::rdata::svcb::value::AllValues;
     use hclient_dns::SvcbEndpoint;
-    use hclient_dns::svcb::binding_from_decoded;
+    use hclient_dns::svcb::{RawBinding, RawParam};
     use system_resolver::Record;
 
-    /// RFC 1035 §4.1.1.
-    const HEADER_LEN: usize = 12;
-    /// RR type 65 (RFC 9460 §14.1) and class `IN` (RFC 1035 §3.2.4).
+    /// RR type 65 (RFC 9460 §14.1).
     const TYPE_HTTPS: u16 = 65;
-    const CLASS_IN: u16 = 1;
-    /// RFC 1035 §2.3.4 — a label is at most 63 octets and a wire-form name
-    /// at most 255, the terminating zero included.
-    const MAX_LABEL_LEN: usize = 63;
-    const MAX_WIRE_NAME_LEN: usize = 255;
-    /// A DNS message is framed by a 16-bit length field over TCP, so it
-    /// cannot exceed this.
-    const MAX_MESSAGE: usize = 65535;
 
     /// The endpoints in `records`, by RFC 9460's client rules.
     ///
@@ -145,132 +148,113 @@ mod wire {
     /// An empty `Vec` is *there are no usable HTTPS records*, which
     /// includes a record the client rules refuse; every `Err` is a record
     /// that could not be read at all.
+    ///
+    /// **RFC 9460 §2.2 — "If any RRs are malformed, the client MUST reject
+    /// the entire RRSet" — is the `?` in the loop**, and it is worth
+    /// naming because it used to be somebody else's. `Dns::decode` failed
+    /// the whole message on one bad record, so the rule was obeyed by a
+    /// property of the decoder rather than by a line here. Reading records
+    /// one at a time means the rule has to be stated, and stating it is
+    /// what makes it testable: keeping the records that happened to parse
+    /// would let anyone able to inject one malformed record steer a client
+    /// onto whichever ones survived.
     pub(crate) fn endpoints_from_records(
-        question: &str,
         records: &[Record],
     ) -> Result<Vec<SvcbEndpoint>, SvcbLookupError> {
-        let https: Vec<&Record> = records.iter().filter(|r| r.rtype == TYPE_HTTPS).collect();
-        if https.is_empty() {
-            return Ok(Vec::new());
-        }
-        let msg = response_from_records(question, &https)?;
-
-        // `Bytes::copy_from_slice` rather than a move: the decoder wants an
-        // owned buffer and this is the only allocation the decode path
-        // adds, once per lookup.
-        let dns = Dns::decode(Bytes::copy_from_slice(&msg)).map_err(SvcbLookupError::Malformed)?;
-
-        // RFC 9460 §2.2: "If any RRs are malformed, the client MUST reject
-        // the entire RRSet and fall back to non-SVCB connection
-        // establishment." That is what the `?` above already does, and it
-        // is worth naming: `Dns::decode` fails the whole message on one bad
-        // record, so there is no path here that keeps the records that
-        // happened to parse. Keeping them would let anyone able to inject
-        // one malformed record steer a client onto whichever ones survived.
         let mut found = Vec::new();
-        for rr in &dns.answers {
-            if let RR::HTTPS(binding) = rr
-                && let Some(endpoint) = endpoint_from_binding(&binding_from_decoded(binding))?
-            {
+        for record in records.iter().filter(|r| r.rtype == TYPE_HTTPS) {
+            if let Some(endpoint) = endpoint_from_binding(&binding_from_rdata(record)?)? {
                 found.push(endpoint);
             }
         }
         Ok(found)
     }
 
-    /// A DNS response message whose answer section is `records`.
+    /// One record's RDATA, read as an HTTPS record and reduced to the form
+    /// every backend in this workspace produces.
     ///
-    /// **This exists so that one decoder reads every SVCB record this crate
-    /// acts on.** `system-resolver` hands over RDATA, because that is the
-    /// only shape all five of its platforms have; `dns-message-parser`
-    /// decodes messages, because that is what a DNS decoder does. Writing
-    /// an SVCB parser here to bridge them would put bounds checks over
-    /// attacker-chosen bytes back into this repository, which is the one
-    /// thing this crate has always refused. So the bytes are wrapped in the
-    /// envelope they arrived without.
+    /// **The bytes are parsed where they arrive, and that is narrower than
+    /// what came before.** RFC 9460 §2.2 requires SVCB TargetName to be
+    /// sent uncompressed; a non-conformant sender's compression pointer is
+    /// resolved against the parser's octets, and those are this record's
+    /// own RDATA and nothing else — so the only bytes a pointer can reach
+    /// are the ones already being decoded. The envelope this replaced had
+    /// to argue that same point about a message it had assembled out of
+    /// several records.
     ///
-    /// The encoding direction is not attacker-facing: every field written
-    /// here is this crate's own constant, the resolver's own TTL, or a
-    /// length checked before it is written.
-    ///
-    /// **Compression pointers inside `rdata` are the one thing that does
-    /// not survive re-enveloping, and they gain an attacker nothing.** RFC
-    /// 9460 §2.2 requires SVCB TargetName to be sent uncompressed; a
-    /// non-conformant sender's pointer would be resolved against *this*
-    /// message rather than the original, and the only bytes it can reach
-    /// that anyone but this function chose are the RDATA already being
-    /// decoded — which is to say, a name the sender could equally have
-    /// written out in full. Anything else it reaches is refused by the
-    /// decoder, and §2.2's own rule is that one malformed record rejects
-    /// the whole RRSet.
-    ///
-    /// The question section names `question` because a real response
-    /// carries one; nothing downstream reads it, and it is written so the
-    /// message is one a decoder has no reason to treat as a special case.
-    fn response_from_records(
-        question: &str,
-        records: &[&Record],
-    ) -> Result<Vec<u8>, SvcbLookupError> {
-        let unusable = |name: &str| SvcbLookupError::NameNotUsable {
-            name: name.to_owned(),
-        };
-        let ancount = u16::try_from(records.len()).map_err(|_| SvcbLookupError::AnswerTooLarge)?;
+    /// The owner name and the TTL are the resolver's, taken off the
+    /// `Record` rather than off the wire, because they are what the
+    /// platform reported rather than what the RDATA carries.
+    fn binding_from_rdata(record: &Record) -> Result<RawBinding, SvcbLookupError> {
+        let mut parser = Parser::from_ref(record.rdata.as_slice());
+        let https = Https::parse(&mut parser).map_err(SvcbLookupError::Malformed)?;
 
-        let mut msg = Vec::with_capacity(HEADER_LEN + 64 * records.len());
-        // RFC 1035 §4.1.1: ID, then `QR` set with every other flag clear
-        // and RCODE 0, then the four section counts.
-        msg.extend_from_slice(&0u16.to_be_bytes());
-        msg.extend_from_slice(&0x8000u16.to_be_bytes());
-        msg.extend_from_slice(&1u16.to_be_bytes());
-        msg.extend_from_slice(&ancount.to_be_bytes());
-        msg.extend_from_slice(&0u16.to_be_bytes());
-        msg.extend_from_slice(&0u16.to_be_bytes());
-
-        msg.extend_from_slice(&wire_name(question).ok_or_else(|| unusable(question))?);
-        msg.extend_from_slice(&TYPE_HTTPS.to_be_bytes());
-        msg.extend_from_slice(&CLASS_IN.to_be_bytes());
-
-        for record in records {
-            let rdlength =
-                u16::try_from(record.rdata.len()).map_err(|_| SvcbLookupError::AnswerTooLarge)?;
-            // A TTL beyond 32 bits is not one a resolver reported; it is
-            // saturated rather than refused, because the record is
-            // otherwise fine and a shorter lifetime is the safe direction.
-            let ttl = u32::try_from(record.ttl.as_secs()).unwrap_or(u32::MAX);
-            msg.extend_from_slice(&wire_name(&record.name).ok_or_else(|| unusable(&record.name))?);
-            msg.extend_from_slice(&TYPE_HTTPS.to_be_bytes());
-            msg.extend_from_slice(&CLASS_IN.to_be_bytes());
-            msg.extend_from_slice(&ttl.to_be_bytes());
-            msg.extend_from_slice(&rdlength.to_be_bytes());
-            msg.extend_from_slice(&record.rdata);
+        let mut params = Vec::new();
+        for value in https.params().iter_all() {
+            params.push(raw_param(value.map_err(SvcbLookupError::Malformed)?));
         }
 
-        if msg.len() > MAX_MESSAGE {
-            return Err(SvcbLookupError::AnswerTooLarge);
-        }
-        Ok(msg)
+        Ok(RawBinding {
+            priority: https.priority(),
+            owner: record.name.trim_end_matches('.').to_owned(),
+            // `Display` for a name writes the root as the empty string,
+            // which is exactly what `RawBinding::target` documents it
+            // means — so there is no special case here, and the
+            // `trim_end_matches` is for every other name.
+            target: https.target().to_string().trim_end_matches('.').to_owned(),
+            params,
+            ttl: Some(record.ttl),
+        })
     }
 
-    /// `example.com` as length-prefixed labels, or `None` for a name that
-    /// has no wire form — an empty label, one over 63 octets, or a name
-    /// whose whole encoding exceeds 255.
+    /// One decoded SvcParam, in `RawParam`'s vocabulary.
     ///
-    /// Built into its own buffer rather than appended to the message, so a
-    /// refusal cannot leave half a name behind in it.
-    fn wire_name(name: &str) -> Option<Vec<u8>> {
-        let name = name.strip_suffix('.').unwrap_or(name);
-        let mut out = Vec::with_capacity(name.len() + 2);
-        if !name.is_empty() {
-            for label in name.split('.') {
-                if label.is_empty() || label.len() > MAX_LABEL_LEN {
-                    return None;
-                }
-                out.push(u8::try_from(label.len()).ok()?);
-                out.extend_from_slice(label.as_bytes());
+    /// **The three keys `domain` models and this workspace does not become
+    /// `Other`, and that is load-bearing rather than tidy.** `dohpath`
+    /// (7), `ohttp` (8) and `tls-supported-groups` (9) are real,
+    /// registered, and acted on nowhere here; `RawParam::Other` is what
+    /// RFC 9460 §8's `mandatory` check reads to refuse a record that makes
+    /// one of them mandatory. Dropping them instead would let such a
+    /// record through as usable.
+    ///
+    /// **`Unknown` is not only "a key nobody models".** `AllValues`
+    /// answers it for a known key whose value did not parse as that key —
+    /// measured, `domain` yields an `Err` from the iterator for the shapes
+    /// this crate can produce, but the fallback exists — so a key inside
+    /// [`RECOGNISED_KEYS`] arriving as `Unknown` is a malformed record
+    /// wearing a recognised number. It is refused by the caller for that
+    /// reason rather than reported as an unmodelled key.
+    ///
+    /// [`RECOGNISED_KEYS`]: hclient_dns::svcb
+    fn raw_param<Octs: Octets>(value: AllValues<Octs>) -> RawParam {
+        match value {
+            AllValues::Mandatory(keys) => {
+                RawParam::Mandatory(keys.iter().map(SvcParamKey::to_int).collect())
             }
+            AllValues::Alpn(alpn) => {
+                RawParam::Alpn(alpn.iter().map(|p| p.as_ref().to_vec()).collect())
+            }
+            AllValues::NoDefaultAlpn(_) => RawParam::NoDefaultAlpn,
+            AllValues::Port(port) => RawParam::Port(port.port()),
+            // RFC 9460 §7.3's ECHConfigList, **including the redundant
+            // two-octet length prefix**, which is the form `RawParam::Ech`
+            // is documented to carry and the form rustls parses: the
+            // SvcParamValue for key 5 *is* the ECHConfigList, and `domain`
+            // wraps the value's octets without stripping anything.
+            AllValues::Ech(ech) => RawParam::Ech(ech.as_slice().to_vec()),
+            AllValues::Ipv4Hint(hint) => RawParam::Ipv4Hint(hint.iter().collect()),
+            AllValues::Ipv6Hint(hint) => RawParam::Ipv6Hint(hint.iter().collect()),
+            // The key numbers are named rather than written: `domain`
+            // keeps the `SvcParamValue` trait that carries `key()`
+            // private, so a value of one of these types cannot be asked
+            // for its own key from outside the crate.
+            AllValues::DohPath(_) => RawParam::Other(SvcParamKey::DOHPATH.to_int()),
+            AllValues::Ohttp(_) => RawParam::Other(SvcParamKey::OHTTP.to_int()),
+            AllValues::TlsSupportedGroups(_) => {
+                RawParam::Other(SvcParamKey::TLS_SUPPORTED_GROUPS.to_int())
+            }
+            AllValues::Unknown(unknown) => RawParam::Other(unknown.key().to_int()),
         }
-        out.push(0);
-        (out.len() <= MAX_WIRE_NAME_LEN).then_some(out)
     }
 }
 
@@ -278,7 +262,6 @@ mod wire {
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
-    use dns_message_parser::rr::ServiceParameter;
     use rstest::rstest;
     use std::time::Duration;
     use system_resolver::Record;
@@ -334,9 +317,7 @@ mod tests {
 
     /// The records a resolver reported, as `system-resolver` hands them
     /// over — which is what a backend gives this crate now, so it is what
-    /// a test gives it too. The envelope that gets them to a decoder is
-    /// the crate's own step and is exercised by every call below rather
-    /// than mocked out.
+    /// a test gives it too.
     fn response(_qname: &str, answers: &[(&str, u16, Vec<u8>)]) -> Vec<Record> {
         answers
             .iter()
@@ -364,36 +345,41 @@ mod tests {
     }
 
     fn endpoints(records: Vec<Record>) -> Result<Vec<SvcbEndpoint>, SvcbLookupError> {
-        endpoints_from_records("example.com", &records)
+        endpoints_from_records(&records)
     }
 
-    // ---- the dependency's one sharp edge -------------------------------
+    // ---- what the decoder does not let a test get wrong -------------
 
-    /// **`ServiceParameter`'s `PartialEq` compares only the key number.**
-    /// This is not a guess about upstream, it is asserted here so that the
-    /// day it changes, this test fails and the reason the rest of this
-    /// module avoids `assert_eq!` on whole variants can be revisited
-    /// deliberately rather than found again by accident.
+    /// **`domain` derives no `PartialEq` on `AllValues` at all**, which
+    /// closes by construction the trap the previous decoder had to be
+    /// pinned against: `dns-message-parser`'s `ServiceParameter` compared
+    /// and hashed by key number alone, so `assert_eq!(param,
+    /// ServiceParameter::ALPN { alpn_ids: vec!["h2"] })` passed without
+    /// checking a single value, and two tests here existed to say so.
     ///
-    /// The consequence is the point: any test written as `assert_eq!(param,
-    /// ServiceParameter::ALPN { alpn_ids: vec!["h2"] })` passes **without
-    /// checking a single value** — it looks like it compares the ALPN list
-    /// and actually compares the number `1`. Every assertion in this module
-    /// therefore reaches into the extracted `SvcbEndpoint` fields
-    /// (`alpn`, `port`, `ipv4hint`, `ech_config_list`), which are ordinary
-    /// `Vec`s and `Option`s with ordinary equality.
+    /// The style those tests bought is kept — every assertion below
+    /// reaches into the extracted [`SvcbEndpoint`] fields, which are
+    /// ordinary `Vec`s and `Option`s — and it is now the style rather than
+    /// a defence. This test is what says the hazard cannot come back
+    /// silently: a `PartialEq` added upstream makes the commented line
+    /// compile, and a decoder swapped for one that has it fails here.
     #[test]
-    fn service_parameter_equality_ignores_values_which_is_why_tests_assert_on_fields() {
-        let h2 = ServiceParameter::ALPN {
-            alpn_ids: vec!["h2".to_owned()],
-        };
-        let h3 = ServiceParameter::ALPN {
-            alpn_ids: vec!["h3".to_owned()],
-        };
-        assert_eq!(
-            h2, h3,
-            "upstream compares SvcParamKey numbers only — if this ever fails, upstream fixed \
-             its PartialEq and the field-by-field style in this module can be revisited"
+    fn a_decoded_parameter_cannot_be_compared_at_all_so_a_test_cannot_be_fooled_by_one() {
+        // Uncommenting this must not compile. `AllValues` derives `Debug`
+        // and `Clone` and nothing else, so there is no equality to be
+        // wrong about — which is the assertion, made the only way a type
+        // property can be made from inside a test that must still build.
+        //   let _ = |a: AllValues<&[u8]>, b: AllValues<&[u8]>| a == b;
+        //
+        // What is checkable at run time is that the values this crate
+        // does compare are the extracted ones, and that two ALPN lists
+        // differing only in content really do come out different.
+        let h2 = one_record(1, "", &[(KEY_ALPN, vec![2, b'h', b'2'])]);
+        let h3 = one_record(1, "", &[(KEY_ALPN, vec![2, b'h', b'3'])]);
+        assert_ne!(
+            endpoints(h2).expect("decodes"),
+            endpoints(h3).expect("decodes"),
+            "two records differing only inside a parameter must differ after decoding, or              every assertion in this module is comparing key numbers"
         );
     }
 
@@ -454,21 +440,28 @@ mod tests {
         assert!(got[0].alpn.is_empty() && got[0].port.is_none());
     }
 
-    /// Pins a divergence from RFC 9460, so it is a known cost rather than a
-    /// surprise. §2.4.1 says recipients MUST *ignore* SvcParams found in an
-    /// AliasMode record — i.e. the record stays usable. The decoder reads
-    /// SvcParams only when `priority != 0`, so such a record leaves bytes
-    /// unconsumed and fails the whole message instead.
-    ///
-    /// Accepted, for two reasons worth stating: it only triggers for a
-    /// server already violating §2.4.1's "SHOULD be empty", and it fails
-    /// safe — the RRSet is rejected and the caller falls back to non-SVCB,
-    /// rather than connecting somewhere on a record nobody agrees about.
-    /// If this test ever fails, upstream started honouring §2.4.1 and
+    /// **The divergence from RFC 9460 that used to be pinned here is
+    /// gone, and the test that pinned it named this exact outcome.**
+    /// §2.4.1 says a recipient MUST *ignore* SvcParams found in an
+    /// AliasMode record — the record stays usable. `dns-message-parser`
+    /// read SvcParams only when `priority != 0`, so such a record left
+    /// bytes unconsumed and failed the whole message; this crate accepted
+    /// that as a fail-safe divergence and wrote down what would end it:
+    /// *"if this test ever fails, upstream started honouring §2.4.1 and
     /// `endpoint_from_binding`'s AliasMode branch becomes reachable with
-    /// real parameters for the first time.
+    /// real parameters for the first time."*
+    ///
+    /// It failed on the first run after the decoder changed. Upstream did
+    /// nothing; the record is read by a decoder that parses SvcParams
+    /// whatever the priority says, and the shared client rules — which had
+    /// implemented §2.4.1 correctly all along — finally get to apply it.
+    ///
+    /// So the assertion is the MUST rather than the divergence, and it
+    /// discriminates all three possible behaviours: rejecting the record
+    /// fails the `expect`, applying the params fails the last two lines,
+    /// and ignoring them is what passes.
     #[test]
-    fn an_aliasmode_record_carrying_params_is_rejected_by_the_decoder() {
+    fn an_aliasmode_records_params_are_ignored_rather_than_applied_or_rejected() {
         let msg = one_record(
             0,
             "alias.example.com",
@@ -477,11 +470,17 @@ mod tests {
                 (KEY_PORT, vec![0x01, 0xbb]),
             ],
         );
-        let err = endpoints(msg).expect_err("stricter than RFC 9460 §2.4.1, deliberately");
-        assert_matches!(
-            err,
-            SvcbLookupError::Malformed(_),
-            "expected the decoder to refuse the unconsumed params"
+        let got = endpoints(msg).expect("RFC 9460 §2.4.1: ignore the params, keep the record");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].priority, 0, "priority 0 is what marks AliasMode");
+        assert_eq!(got[0].target, "alias.example.com");
+        assert!(
+            got[0].alpn.is_empty(),
+            "§2.4.1 makes ignoring an AliasMode record's SvcParams a MUST, and an `h2` here              would be one applied"
+        );
+        assert_eq!(
+            got[0].port, None,
+            "the same MUST, read through the parameter whose effect a caller would notice              first: a port of 443 taken from an alias record redirects the connection"
         );
     }
 
@@ -953,33 +952,7 @@ mod tests {
         }
     }
 
-    /// The other half of the sharp edge at the top of this module:
-    /// `ServiceParameter` hashes by key as well as comparing by it, so a
-    /// `HashSet` of them — which is what the decoder returns
-    /// (`ServiceBinding::parameters`) — holds at most one parameter per
-    /// key, and a set-based assertion proves nothing about a value either.
-    #[test]
-    fn service_parameter_hashes_by_key_so_a_set_of_them_holds_one_per_key() {
-        use std::collections::HashSet;
-
-        let mut set = HashSet::new();
-        set.insert(ServiceParameter::ALPN {
-            alpn_ids: vec!["h2".to_owned()],
-        });
-        set.insert(ServiceParameter::ALPN {
-            alpn_ids: vec!["h3".to_owned()],
-        });
-        assert_eq!(
-            set.len(),
-            1,
-            "upstream hashes SvcParamKey numbers only — if this ever fails, upstream fixed \
-             its Hash impl and the field-by-field style in this module can be revisited"
-        );
-    }
-
-    // ---- re-enveloping the records of an RDATA-only backend ------------
-
-    // ---- the envelope, which is this crate's own step -------------------
+    // ---- a record as a resolver hands it over ---------------------------
 
     /// The 61 RDATA octets of `cloudflare.com`'s HTTPS record, exactly as
     /// a resolver reports them.
@@ -995,8 +968,8 @@ mod tests {
         "000000000000000000681084e5260647000000000000000000681085e5",
     );
 
-    /// One record, enveloped and decoded — the whole of this crate below
-    /// its `Resolve` impl.
+    /// One record, decoded — the whole of this crate below its `Resolve`
+    /// impl.
     fn from_rdata(
         owner: &str,
         ttl: u32,
@@ -1009,7 +982,7 @@ mod tests {
             Duration::from_secs(u64::from(ttl)),
             rdata,
         );
-        endpoints_from_records(owner, std::slice::from_ref(&record))
+        endpoints_from_records(std::slice::from_ref(&record))
     }
 
     /// **A real record, end to end.** The values are written out rather
@@ -1029,14 +1002,14 @@ mod tests {
         assert_eq!(endpoint.ttl, Some(Duration::from_secs(300)));
     }
 
-    /// The resolver's own remaining lifetime survives the envelope. It is
-    /// on the record rather than in the RDATA, so it is the one field the
-    /// envelope has to carry by hand — which is what makes it worth its
-    /// own test.
+    /// **The TTL is not in the RDATA**, so it is the one field of the
+    /// binding that has to be read off the `Record` and carried across by
+    /// hand — which is what makes it worth its own test whichever decoder
+    /// is underneath.
     #[test]
-    fn an_enveloped_record_carries_the_resolvers_own_ttl() {
-        let found = from_rdata("cloudflare.com", 45, hex(REAL_HTTPS_RDATA))
-            .expect("an enveloped record decodes");
+    fn a_records_endpoint_carries_the_resolvers_own_ttl() {
+        let found =
+            from_rdata("cloudflare.com", 45, hex(REAL_HTTPS_RDATA)).expect("the record decodes");
         assert_eq!(
             found.first().expect("one endpoint").ttl,
             Some(Duration::from_secs(45))
@@ -1053,27 +1026,20 @@ mod tests {
         assert_matches!(refused, Err(SvcbLookupError::Malformed(_)));
     }
 
-    /// A name with no wire form is refused by name rather than encoded
-    /// into something shorter. RFC 1035 §2.3.4 bounds a label at 63
-    /// octets; nothing a resolver reports can exceed it, which is why this
-    /// is a guard and is tested rather than assumed.
-    #[rstest]
-    #[case::over_long_label(&"a".repeat(64))]
-    #[case::empty_label("a..b")]
-    fn an_owner_with_no_wire_form_is_refused(#[case] owner: &str) {
-        let refused = from_rdata(owner, 300, hex(REAL_HTTPS_RDATA));
-        assert_matches!(
-            refused,
-            Err(SvcbLookupError::NameNotUsable { name }) if name == owner
-        );
-    }
-
-    /// More records than a DNS message can frame is a refusal, not a
-    /// truncation: the envelope has nowhere to put what does not fit, and
-    /// quietly dropping records would hand a caller a narrower RRSet than
-    /// the resolver actually found.
+    /// **An RRSet far larger than a DNS message could carry is answered
+    /// rather than refused**, which is the capability the envelope cost.
+    /// This test is the previous one inverted: the same thousand records
+    /// used to exceed the 65535 octets a message is framed by, and
+    /// `AnswerTooLarge` was this crate's own refusal for a limit that was
+    /// never the resolver's. Reading RDATA one record at a time, the limit
+    /// has no subject — a platform that hands over a thousand records
+    /// hands over a thousand endpoints.
+    ///
+    /// The variant went with it. Nothing else raised it, and an error
+    /// nothing can raise is worse than no error, because a caller writes a
+    /// match arm for a case that cannot happen.
     #[test]
-    fn more_records_than_a_dns_message_can_frame_are_refused() {
+    fn an_rrset_too_large_for_a_dns_message_is_answered_rather_than_refused() {
         let one = Record::new(
             "example.com",
             TYPE_HTTPS,
@@ -1082,9 +1048,11 @@ mod tests {
             hex(REAL_HTTPS_RDATA),
         );
         let many = vec![one; 1000];
-        assert_matches!(
-            endpoints_from_records("example.com", &many),
-            Err(SvcbLookupError::AnswerTooLarge)
+        assert_eq!(
+            endpoints_from_records(&many)
+                .expect("a large RRSet decodes")
+                .len(),
+            1000
         );
     }
 
@@ -1108,7 +1076,7 @@ mod tests {
             Duration::from_secs(300),
             svcb_rdata(1, "", &[]),
         );
-        let found = endpoints_from_records("example.com", &[cname, https]).expect("decodes");
+        let found = endpoints_from_records(&[cname, https]).expect("decodes");
         assert_eq!(found.len(), 1);
     }
 
@@ -1124,9 +1092,6 @@ mod tests {
             Duration::from_secs(300),
             vec![0x00],
         );
-        assert_eq!(
-            endpoints_from_records("example.com", &[cname]),
-            Ok(Vec::new())
-        );
+        assert_eq!(endpoints_from_records(&[cname]), Ok(Vec::new()));
     }
 }

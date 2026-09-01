@@ -14,23 +14,43 @@ repository.workspace = true
 all-features = true
 
 [dependencies]
-bytes        = { workspace = true }
-# The DNS wire decoder. Chosen over hand-rolled parsing after reading its
-# source: no `unsafe` anywhere in its `src`, `DecodeResult` on every path
-# rather than panics, and name decompression that terminates by tracking
-# visited offsets in a `HashSet` instead of trusting a "pointers must point
-# backwards" rule. It moves the riskiest code in this crate — bounds checks
-# over attacker-chosen bytes — out of this repository entirely.
-dns-message-parser = "0.9"
+# **No `bytes` here any more.** It was a direct dependency for one call —
+# `Bytes::copy_from_slice`, handing the synthetic message to a decoder that
+# took an owned buffer. `domain` parses from a borrowed slice, so the
+# allocation and the dependency both went with the envelope.
+# The RDATA decoder, and the reason it is this one is that it decodes
+# **RDATA** — `Https::parse` takes a parser over one record's octets, where
+# `dns-message-parser` exposes decoding at the message level only. That
+# difference is worth 90 lines here: this crate used to build a synthetic
+# DNS response around every record it wanted read, because
+# `system-resolver` hands over the only shape all five platforms have and
+# the decoder wanted the shape none of them has.
+#
+# `default-features = false` deliberately: `std` costs `hashbrown` and
+# `foldhash` for a map nothing on this path builds, and `rand` is for a
+# query id this crate never mints. Nothing here needs either.
+#
+# The cost was measured against the alternative rather than argued.
+# `hickory-proto` 0.26 also decodes RDATA directly and depends on `url`
+# **unconditionally** — for `caa.rs` and one error variant, a record type
+# nothing here asks about — so it arrives with `idna` and the zerovec
+# family: 28 crates to 68 here, and `hclient` with `default-transport` on
+# Windows 69 to 105, putting back the Unicode machinery `hclient-idn`
+# exists to keep off that platform. `domain` costs three crates, brings no
+# `url` and no ICU, and is `no_std`-capable.
+domain = { version = "0.12", default-features = false }
 futures-core = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core = { workspace = true }
-# `codec`: the `ServiceBinding` -> `RawBinding` conversion and the RFC 9460
-# client semantics over it, which used to live in this crate's `svcb.rs` and
-# moved when `hclient-dns-doh` became a third backend applying the same
-# rules. The feature is what keeps the decoder out of a build that only
-# wants `Resolve` — see that crate's `[features]` table.
-hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.2", features = ["codec"] }
+# **Without `codec`**, which is what the decoder change bought back: that
+# feature exists to carry `binding_from_decoded`, the
+# `dns-message-parser`-shaped half of the conversion, and this crate now
+# builds its `RawBinding` from a `domain` record instead. What stayed
+# shared is the half that is shared — `RawBinding`, `RawParam` and RFC
+# 9460's client rules over them are behind no feature, because they name
+# no decoder. `hclient-dns-doh` still asks for `codec`; it decodes whole
+# messages, which is what that decoder is for.
+hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.2" }
 hclient-rt   = { path = "../hclient-rt",  version = "0.1.0-alpha.2" }
 # Every platform call this crate used to make. It owns `res_query`,
 # `android_res_nquery`, `DnsQueryRaw` and `DnsQuery_UTF8`, and hands back

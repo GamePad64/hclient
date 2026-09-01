@@ -17,11 +17,12 @@
 //! project's only `unsafe` outside `hclient-fetch` (spec amendment C8);
 //! that moved with the code.
 //!
-//! The RDATA a resolver reports is decoded by `dns-message-parser`, not by
-//! hand — a crate with no `unsafe` in its `src`, returning `DecodeResult`
-//! on every path rather than panicking, and terminating name
-//! decompression by recording visited offsets rather than by a
-//! hand-argued rule about pointer directions. `svcb` is left with the part
+//! The RDATA a resolver reports is decoded by `domain`, not by hand, and
+//! it is decoded **as RDATA**: `Https::parse` reads one record's octets,
+//! which is the only shape all five platforms below have. The decoder
+//! this replaced read whole messages and nothing smaller, so this crate
+//! used to assemble a synthetic DNS response around every record it
+//! wanted read. `svcb` is left with the part
 //! a DNS decoder correctly declines to do: deciding, per RFC 9460, which
 //! decoded records a *client* may act on (§2.4/§2.5 modes and root
 //! targets, §8 `mandatory` semantics), and classifying what "no records"

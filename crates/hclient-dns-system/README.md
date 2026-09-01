@@ -19,6 +19,13 @@ result into `Resolve`.
 
 That split is why this crate contains no `unsafe` at all.
 
+The RDATA itself is decoded by [`domain`](https://crates.io/crates/domain),
+and it is chosen for its **granularity** rather than for anything else:
+`Https::parse` reads one record's octets, which is the shape a platform
+resolver hands over. A decoder that only reads whole messages costs this
+crate a synthetic DNS response built around every record — which is what
+it used to do.
+
 ## Building on Linux
 
 `libresolv.so` — the development symlink, not the runtime `.so.2` — must

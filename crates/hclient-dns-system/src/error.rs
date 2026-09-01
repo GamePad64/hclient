@@ -53,12 +53,14 @@ pub(crate) struct ResolveFailed(pub(crate) String, #[source] pub(crate) std::io:
 /// same name reports the missing name in its own stream where a caller is
 /// actually looking for it.
 ///
-/// `Clone` and `Eq` are deliberately absent. `Malformed` carries
-/// `dns_message_parser::DecodeError`, which is `Debug + PartialEq + Error`
-/// and neither. Flattening the decoder's error into a `String` to recover
-/// those two derives was rejected: it would break the `source()` chain
-/// that lets a caller reach the real cause without parsing a message,
-/// which is what `hclient_core::Error` is built around.
+/// `Clone` and `Eq` are deliberately absent, and after the decoder change
+/// only one variant still owes them: `domain::base::wire::ParseError` is
+/// `Clone + Copy + Eq`, where its predecessor was neither, so what is left
+/// is `Resolver`. Flattening a source into a `String` to recover the two
+/// derives was rejected then and is rejected now: it would break the
+/// `source()` chain that lets a caller reach the real cause without
+/// parsing a message, which is what `hclient_core::Error` is built
+/// around.
 ///
 /// `Malformed` and `Resolver` carry `#[source]` explicitly and not
 /// `#[from]`: an automatic conversion would make `?` compile anywhere in
@@ -69,29 +71,20 @@ pub(crate) struct ResolveFailed(pub(crate) String, #[source] pub(crate) std::io:
 /// silently truncates the chain a caller downcasts through.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub(crate) enum SvcbLookupError {
-    /// The name has no wire form — an empty label, one over 63 octets, or
-    /// a whole name over 255. A caller bug or a hostile input, never a
-    /// resolver problem.
-    #[error("`{name}` cannot be used as a DNS query name")]
-    NameNotUsable { name: String },
     /// The system resolver could not answer. Its own error is the
     /// `#[source]`, because the vocabulary is the platform's and this
     /// crate has no better word for a timeout than the one the platform
     /// used.
     #[error("the system resolver could not answer: {0}")]
     Resolver(#[source] system_resolver::Error),
-    /// The records the resolver reported do not fit in a DNS message, so
-    /// they cannot be handed to a decoder that reads one. Raised by the
-    /// envelope in `svcb::wire`, which is the only place in this crate
-    /// that builds a message.
-    #[error("answer exceeds the largest possible DNS message")]
-    AnswerTooLarge,
-    /// The record arrived and the decoder refused it. RFC 9460 §2.2
-    /// requires rejecting the whole RRSet in that case, which is what
-    /// `Dns::decode` failing already gives — one bad record fails the
-    /// message, so no half-parsed RRSet reaches a caller.
+    /// The record arrived and the decoder refused it — its RDATA is not
+    /// an HTTPS record, or one of its SvcParams is not what its key says
+    /// it is. RFC 9460 §2.2 requires rejecting the whole RRSet in that
+    /// case, and since the decoder now reads one record at a time that
+    /// rule is a line in `svcb::wire` rather than a property of a
+    /// message-level decoder.
     #[error("malformed answer: {0}")]
-    Malformed(#[source] dns_message_parser::DecodeError),
+    Malformed(#[source] domain::base::wire::ParseError),
     /// RFC 9460 §8: the record's `mandatory` list names a key the record
     /// does not actually carry. Checked here rather than by the decoder,
     /// because it is a statement about the record as a whole and not about
@@ -111,30 +104,25 @@ mod tests {
     /// warning rather than as silently untested.
     fn one_of_every_variant() -> Vec<SvcbLookupError> {
         vec![
-            SvcbLookupError::NameNotUsable {
-                name: "host.example".to_owned(),
-            },
             SvcbLookupError::Resolver(system_resolver::Error::ResponseCode { rcode: 2 }),
-            SvcbLookupError::AnswerTooLarge,
             SvcbLookupError::Malformed(a_decode_error()),
             SvcbLookupError::MandatoryKeyAbsent { key: 3 },
         ]
     }
 
-    /// A real `DecodeError`, obtained the only way one can be: by handing
+    /// A real `ParseError`, obtained the only way one can be: by handing
     /// the decoder something it refuses.
-    fn a_decode_error() -> dns_message_parser::DecodeError {
-        dns_message_parser::Dns::decode(bytes::Bytes::from_static(&[0u8; 3]))
-            .expect_err("three bytes are not a DNS message")
+    fn a_decode_error() -> domain::base::wire::ParseError {
+        use domain::dep::octseq::parse::Parser;
+        domain::rdata::svcb::Https::parse(&mut Parser::from_ref(&[0xffu8; 3][..]))
+            .expect_err("three 0xff octets are not an HTTPS record")
     }
 
     /// Each message has to carry the one value that tells it from another
     /// instance of the SAME variant. A `#[error]` string that drops its
     /// interpolation still reads plausibly in a log and leaves a reader
-    /// unable to say which name, which resolver failure, or which key was
-    /// involved.
+    /// unable to say which resolver failure or which key was involved.
     #[rstest]
-    #[case::the_name(SvcbLookupError::NameNotUsable { name: "bad\u{0}host".to_owned() }, "bad\u{0}host")]
     #[case::the_resolvers_own_words(
         SvcbLookupError::Resolver(system_resolver::Error::ResponseCode { rcode: 5 }),
         "5"
@@ -188,7 +176,7 @@ mod tests {
                     let source = error.source().expect("the decoder's error stays reachable");
                     assert!(
                         source
-                            .downcast_ref::<dns_message_parser::DecodeError>()
+                            .downcast_ref::<domain::base::wire::ParseError>()
                             .is_some(),
                         "a caller downcasts to the decoder's error, so `#[source]` has to \
                          point at it and not at some wrapper: got `{source}`"

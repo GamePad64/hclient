@@ -774,6 +774,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c13d25dfb29edf328c7eb4ebb24838ade355272d685ba0402b8751567c3dde2"
+dependencies = [
+ "domain-macros",
+ "jiff",
+ "octseq",
+]
+
+[[package]]
+name = "domain-macros"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e68f247cb4e380bcdf44c1e27d7d046cbb321c4ab4a01271a51dfb19326b6b0e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1427,9 +1449,8 @@ name = "hclient-dns-system"
 version = "0.1.0-alpha.2"
 dependencies = [
  "assert_matches",
- "bytes",
  "const-hex",
- "dns-message-parser",
+ "domain",
  "futures-core",
  "futures-executor",
  "futures-util",
@@ -2609,6 +2630,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "octseq"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "182eab3e1cd9cdc0ecf1ce3342d9844f3dc7d098f0694569bfdf327b612d69fd"
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3595,7 +3622,6 @@ name = "system-resolver"
 version = "0.1.0"
 dependencies = [
  "assert_matches",
- "cfg-if",
  "const-hex",
  "rstest",
  "thiserror 2.0.20",
