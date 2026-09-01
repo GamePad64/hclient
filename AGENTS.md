@@ -3277,6 +3277,42 @@ so the acceptance probe runs in **both** directions and a build where
 that getter is not what Apple documents answers `NoImplementation`
 instead of a plausible wrong name.
 
+### Is the crate worth it, or should this just be `idna`? Measured: 148 KiB
+
+Its whole justification is binary weight, and that had never been
+weighed — the figures in this file were crate counts and megabytes of
+*vendored source*, neither of which is what ships. Measured on one
+program that converts one name, `opt-level = "z"`, fat LTO,
+`panic = "abort"`, stripped:
+
+| build | binary |
+|---|---|
+| a stand-in with no tables | 287.6 KiB |
+| `idna` with `compiled_data` | **435.5 KiB** |
+| the same with `idna_adapter` pinned to 1.1.0, the unicode-rs backend | **561.2 KiB** |
+
+**So `idna` costs 148 KiB, and the cheap alternative to this crate is not
+cheaper.** This file has recorded for two verticals that pinning
+`idna_adapter` to the unicode-rs backend is *one `cargo update`, needs no
+code and collapses the graph to 11 crates*. The crate count is right and
+the conclusion does not follow: unicode-rs is **126 KiB larger** than the
+ICU one in a stripped binary. A count of crates is not a count of bytes,
+which is the same lesson this file draws about vendored source.
+
+**148 KiB is the whole of what `hclient-idn` buys**, on Windows, Apple
+and Android; on Linux and wasm it changes nothing at all, because there
+the bundled crate *is* the backend. Against `hc`'s default build at
+5.2 MiB that is 2.8% — not the reason anyone would keep it. Against a
+client built for a phone or a small container, where the tables are one
+of the larger single items and the platform already ships a UTS 46, it is
+the reason.
+
+What it costs is now small enough to weigh against that: **726 lines of
+code** across four backends, an acceptance probe and two public
+functions, after the policy layer went. Before it went the crate was
+2,700 lines and answered a question that was not its own, and the honest
+verdict then would have been different.
+
 ### And then the policy layer was deleted, because the crate is not a URL validator
 
 `hclient-idn` is a smaller-binary `idna` — the same answers, from
