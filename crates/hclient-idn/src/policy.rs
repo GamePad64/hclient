@@ -460,6 +460,22 @@ fn to_ascii_inner<F: Fn(&str) -> Option<String>>(
     // formality: it is the second pass a **redirect hop** makes, so a name
     // this crate accepted once would be refused the next time it was seen.
     // Found by the fuzzer, in under a minute, on exactly that input.
+    // **Measured dead, and left standing with the measurement beside
+    // it.** Ten guards in this file were each replaced with a no-op in
+    // turn: six died on the suite, and this one survived — not because no
+    // test covers its case, but because nothing reaches it.
+    // `ascii_labels_survived` above refuses `"\u{ad}.\u{ad}"` and
+    // `"\u{200b}.de"` first, with `idna` as the backend *and* with a
+    // permissive model of ICU that maps the ignorables away and refuses
+    // nothing. Removing both this and step 6 changes neither answer.
+    //
+    // It is not deleted here, because "nothing reaches it on the one
+    // backend this host has" is a weaker statement than "nothing reaches
+    // it": the whole point of this layer is the two implementations no
+    // runner here can execute. What the measurement does establish is
+    // that its recorded justification — *the fuzzer found this in under a
+    // minute* — no longer reproduces, so a deletion needs a macOS or
+    // Windows run rather than another argument.
     if has_empty_label(&ascii) {
         return None;
     }
@@ -516,6 +532,30 @@ fn ascii_labels_survived(lower: &str, ascii: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A soft hyphen inside a label is mapped away and the label
+    /// survives**, which is the positive half of the ignorable-code-point
+    /// question and the one this file had no test for.
+    ///
+    /// Its negative half — a label that *becomes* empty — is refused, and
+    /// a mutation run says the guard that reads `has_empty_label` on the
+    /// answer is not what refuses it: `ascii_labels_survived` above gets
+    /// there first, on every backend and on a permissive model of one.
+    /// That is recorded beside the guard rather than acted on here.
+    #[test]
+    fn a_name_whose_labels_survive_mapping_is_answered() {
+        let oracle = |u: &str| {
+            idna::domain_to_ascii_cow(u.as_bytes(), idna::AsciiDenyList::URL)
+                .ok()
+                .map(std::borrow::Cow::into_owned)
+        };
+        assert_eq!(
+            to_ascii_over_for_test(&oracle, "m\u{ad}\u{fc}nchen.de").as_deref(),
+            Some("xn--mnchen-3ya.de"),
+            "a soft hyphen INSIDE a label is mapped away and the label survives; only a label \
+             that becomes empty is the subject of the rule above"
+        );
+    }
     use super::*;
     use std::borrow::Cow;
 
