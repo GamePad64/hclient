@@ -533,6 +533,67 @@ fn ascii_labels_survived(lower: &str, ascii: &str) -> bool {
 #[cfg(test)]
 mod tests {
 
+    /// **A backend whose reverse direction hands back a different name is
+    /// refused, and this is how a rule about a platform gets a test on a
+    /// machine that is not one.**
+    ///
+    /// The mutation run that prompted this found four guards in this file
+    /// that no test could kill. Three of them are divergence repairs
+    /// whose subject is ICU or Foundation, and no runner here is either —
+    /// so the instrument is a *model*: a closure that behaves the way the
+    /// platform would if the assumption behind it were wrong. This one
+    /// models the failure `apple.rs` is written under, since nobody here
+    /// has a Mac to disprove `NSURLComponents::host` with.
+    ///
+    /// Two arms, and they fail for different reasons, which is why both
+    /// are here. A reverse that hands back a percent-encoded host is
+    /// caught by the deny list before this guard is reached — two
+    /// independent defences. A reverse that hands back a *legal but
+    /// different* name is caught by nothing else: with the round-trip
+    /// removed, `xn--mnchen-3ya.de` comes back as `example.com`.
+    #[test]
+    fn a_reverse_direction_that_answers_a_different_name_is_refused() {
+        let to_ascii = |u: &str| {
+            idna::domain_to_ascii_cow(u.as_bytes(), idna::AsciiDenyList::URL)
+                .ok()
+                .map(std::borrow::Cow::into_owned)
+        };
+        assert_eq!(
+            to_unicode_over(
+                &to_ascii,
+                &|_| Some("example.com".to_owned()),
+                "xn--mnchen-3ya.de"
+            ),
+            None,
+            "a backend that decodes one name into another must not be believed — this is the \
+             wrong-getter case `apple.rs` is gated against, and the round-trip is what catches it"
+        );
+        assert_eq!(
+            to_unicode_over(
+                &to_ascii,
+                &|_| Some("%C3%BCnchen.de".to_owned()),
+                "xn--mnchen-3ya.de"
+            ),
+            None,
+            "the percent-encoded host is refused by the deny list before the round-trip, which \
+             is a second defence rather than the same one twice"
+        );
+        assert_eq!(
+            to_unicode_over(
+                &to_ascii,
+                &|u: &str| {
+                    let (s, r) = idna::domain_to_unicode(u);
+                    r.ok().map(|()| s)
+                },
+                "xn--mnchen-3ya.de"
+            )
+            .as_deref(),
+            Some("münchen.de"),
+            "the control: an honest reverse direction is answered, so the two refusals above \
+             are about the answer rather than about the guard refusing everything"
+        );
+    }
+
     /// **A soft hyphen inside a label is mapped away and the label
     /// survives**, which is the positive half of the ignorable-code-point
     /// question and the one this file had no test for.
