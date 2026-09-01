@@ -17,11 +17,12 @@ believed and had shipped.
 | Linux (glibc, musl) | `res_query` | the wire message |
 | macOS, iOS | `DNSServiceQueryRecord` | **records, one per callback** |
 | Android ≥ 29 | `android_res_nquery` + `android_res_nresult` | the wire message |
+| FreeBSD | `res_query` | the wire message — **compiled, never run**, §4.7 |
 | Windows 11 / Server 2025 | `DnsQueryRaw` | the wire message |
 | Windows 10 | `DnsQuery_UTF8` | **records the OS has already taken apart** |
 
-Three and a half of the five hand over a message. Windows 10 does not,
-and neither does Apple once the backend is the right one — so the shape of
+Four of the six hand over a message. Windows 10 does not, and neither
+does Apple once the backend is the right one — so the shape of
 the crate follows from those rows: the common type is **records**, because
 synthesising a message where the platform never had one would mean
 inventing an rcode and flags nobody reported.
@@ -399,6 +400,83 @@ other live tests, and it is the instrument any further platform is
 established with — the symbol a backend links against fails loudly, and
 this property fails quietly, which is what it did.
 
+## 4.7 FreeBSD: added on decision, with the unrun half named
+
+The arm exists — `sys/mod.rs` routes `target_os = "freebsd"` to
+`res_query.rs`, the same module Linux uses. It was added at the project
+owner's request after the case against adding it was put and heard, and
+what follows is the record of which half is established and which is not,
+because that distinction is the whole of what this file is for.
+
+### 4.7.1 The symbol: established, and it fails loudly
+
+`lib/libc/resolv/Symbol.map` in the FreeBSD source exports **both**
+`res_query` and `__res_query`, each under `FBSD_1.0`. Two things follow.
+The plain name links, so no `link_name` is needed. And the library is
+`libc` — the map lives under `lib/libc`, and `resolver(3)` says the same
+from the other side, *"Standard C Library (libc, -lc)"* — so no
+`-lresolv`, which FreeBSD does not ship as a separate library anyway.
+
+**The glibc trap has no counterpart here.** On glibc, `__res_query` is a
+non-default compat symbol at the same address as `res_query` and does not
+link by that name (§ the note in `res_query.rs`); on FreeBSD each name
+appears in exactly one version node, so neither is a compat alias of the
+other.
+
+**This is the same class of evidence Linux and musl were settled with** —
+exported symbols, read rather than assumed — and it is strictly better
+than `libc`'s own `link_name` table, which covers `res_init` alone and
+would have suggested the `__res_` prefix for a reason that does not apply.
+
+It is also the cheap half: a wrong symbol is a **link error**, so the
+first person to build for the target finds it in seconds.
+
+### 4.7.2 The per-thread state: read, not run
+
+`resolver(3)` states it in the platform's own words — *"This
+implementation of the resolver is thread-safe, but it will not function
+properly if the programmer attempts to declare his or her own `_res`
+structure in an attempt to replace the per-thread version referred to by
+that macro"* — and adds that `res_init()` returns -1 *"in a threaded
+program if per-thread storage could not be allocated"*.
+
+That is better than anything Apple's arm ever had, whose entire evidence
+was `libresolv.9.tbd` showing a symbol exists (§4.5.2). It is still a
+manual page, and §4.5.1 is this file's record of a manual page being
+right about what it said and silent about what mattered.
+
+**What would settle it is one command on a FreeBSD machine**, and it is
+the command that established the Linux arm:
+
+```
+cargo test -p system-resolver --test live -- --ignored
+```
+
+`concurrent_lookups_all_answer_where_a_serial_burst_does` (§4.6) is
+written for this question and no other.
+
+### 4.7.3 What was actually run here, and what those runs do not prove
+
+| what | result |
+|---|---|
+| `cargo check -p system-resolver --all-features --all-targets --target x86_64-unknown-freebsd` | clean |
+| the same for `hclient-dns-system` | clean |
+| both wired into `just check-targets` | 20 invocations over 6 targets, clean |
+| that gate broken on purpose — a `#[cfg(target_os = "freebsd")]` compile error | fails, naming the invocation |
+| `cargo build -p system-resolver --tests --target x86_64-unknown-freebsd` | **fails at `-lexecinfo`** |
+
+The last row is the honest boundary. There is no FreeBSD sysroot on this
+host, so the link dies fetching a system library and never reaches symbol
+resolution — it therefore says **nothing** about `res_query`, in either
+direction. A `cargo check` does not link at all, and an rlib does not
+either, which is why `cargo build -p system-resolver` succeeding proves
+less than it looks like it does.
+
+So the arm's position is exactly `hclient-winhttp`'s: compiled on every
+push for a platform nothing here can run, with one difference in its
+favour — the live suite that would establish it already exists and names
+the question.
+
 ## 5. What was deliberately not done, each with the reason
 
 - **No resolver of its own.** Then it would be `hickory`, which exists.
@@ -455,23 +533,12 @@ are alike.
   `.local` client every Mac has, which is the same shape and not the same
   thing. Nothing is expected to differ; it has not been seen.
 - **A Windows 10 machine**, for §4.4.
-- **FreeBSD is the one worth doing, and what it needs is a machine.**
-  Its manual documents `res_query` in **libc** — `-lc`, no separate
-  `libresolv` — and says the thing that matters in as many words: *"This
-  implementation of the resolver is thread-safe"*, with `_res` described as
-  *"the per-thread version"*. That is strictly better evidence than Apple's
-  arm ever had, which was `libresolv.9.tbd` showing a symbol exists and
-  saying nothing about its state (§4.5.2). It is still documentation, and
-  §4.5.1 is why that is not the end of it.
-
-  Two unknowns remain and they cost differently. **The symbol name** —
-  `libc` maps `res_init` to `__res_init` on FreeBSD, and this project has
-  already measured on glibc that `__res_init` being linkable says nothing
-  about `__res_query`, which exists there only as a non-linkable compat
-  symbol. That one fails at link, loudly, and anyone with the machine
-  settles it in minutes. **The per-thread claim** fails quietly and
-  intermittently, which is exactly the Apple defect, and §4.6's test is
-  what settles it.
+- **A FreeBSD machine.** The arm is in (§4.7); its symbol is established
+  and its per-thread claim is read rather than run, which is the same
+  shape of gap that let Apple's arm ship unusable, and it is the only
+  unrun half of any arm this crate ships. One live run settles it:
+  `cargo test -p system-resolver --test live -- --ignored` on the
+  machine.
 
 - **The reentrant family is not a shortcut, measured.** `res_nquery` with
   a caller-owned state would make the per-thread question moot — and

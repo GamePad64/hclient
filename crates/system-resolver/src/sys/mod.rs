@@ -72,6 +72,35 @@ cfg_if::cfg_if! {
     ))] {
         #[path = "res_query.rs"]
         mod imp;
+    }
+    // **FreeBSD, on the same module and in an arm of its own, because its
+    // evidence is not the same evidence.** Both requirements above are
+    // answered, and only one of them is answered the way the arm above
+    // answers it:
+    //
+    // - *the symbol*: `lib/libc/resolv/Symbol.map` exports `res_query` and
+    //   `__res_query`, each under `FBSD_1.0`, so the plain name links out
+    //   of `libc` with no `link_name` and no `-lresolv`. Read out of the
+    //   exported symbols, which is exactly how glibc and musl were
+    //   settled — and it fails **loudly**, at link, if it is ever wrong.
+    // - *the per-thread state*: `resolver(3)` says *"This implementation
+    //   of the resolver is thread-safe"* and calls `_res` *"the per-thread
+    //   version"*. That is a claim in the platform's own words, where
+    //   Apple's arm had only a symbol list that says nothing about state —
+    //   but it is **read rather than run**, and this crate exists partly
+    //   because a manual page was wrong about a Mac.
+    //
+    // So this arm is added on the owner's decision with that gap named
+    // rather than papered over. What closes it is one command on a FreeBSD
+    // machine, and it is the same command that established the arm above:
+    // `cargo test -p system-resolver --test live -- --ignored`, whose
+    // `concurrent_lookups_all_answer_where_a_serial_burst_does` is written
+    // for exactly this question. Until somebody runs it, this row is the
+    // best-supported unrun arm in the crate — which is a rank, not a
+    // guarantee.
+    else if #[cfg(target_os = "freebsd")] {
+        #[path = "res_query.rs"]
+        mod imp;
     } else if #[cfg(windows)] {
         #[path = "windows/mod.rs"]
         mod imp;

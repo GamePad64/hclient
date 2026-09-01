@@ -1,54 +1,15 @@
-//! `res_query(3)` — Linux (glibc, musl), macOS and iOS.
+//! `res_query(3)` — Linux (glibc, musl) and FreeBSD.
 //!
 //! The whole of the foreign-function boundary is [`query`]: it hands back
 //! an owned buffer, and everything above it is safe code that walks bytes.
 //!
-//! # On Apple this answers from the primary resolver, and that is less
-//! # than this crate promises
-//!
-//! **Read out of Apple's own manual pages, and worth knowing before
-//! trusting an answer from a Mac on a VPN.** macOS does not have one
-//! resolver configuration; `resolver(5)` describes several DNS *clients*
-//! and a router between them:
-//!
-//! - `/etc/resolv.conf` "contains configuration for the default (or
-//!   `primary`) DNS resolver client";
-//! - "A special meta-client, known as the `Super` DNS client acts as a
-//!   router for DNS queries", choosing by the best match between the name
-//!   asked about and the names of all known clients;
-//! - client configurations "are not limited to file storage" and may live
-//!   "in the System Configuration Database", so "users of the DNS system
-//!   should make no assumptions about the source of the configuration
-//!   data."
-//!
-//! `resolver(3)` — the page Apple ships for these very routines — mentions
-//! none of that: `res_init()` "reads the configuration file", `res_query()`
-//! "constructs a query, sends it to the local server", and its `FILES`
-//! section lists `/etc/resolv.conf` and nothing else.
-//!
-//! **So the split-DNS resolvers a VPN installs, and the per-domain ones in
-//! `/etc/resolver/`, are the Super client's and this call does not consult
-//! them.** That is a conclusion composed from two pages rather than a
-//! sentence in either, and it is stated that way on purpose: Apple
-//! documents no explicit "res_query bypasses supplemental resolvers", and
-//! the `resolver(3)` copy read is the stock BIND page as shipped, so it
-//! may not describe the current release.
-//!
-//! It also makes this crate's two halves disagree on one machine:
-//! `hclient-dns-system` takes addresses through `getaddrinfo`, which does
-//! go through the system's whole configuration, and HTTPS records through
-//! here, which does not — so on a split-DNS Mac the two can ask different
-//! servers about one name.
-//!
-//! **The Mac-shaped answer is `DNSServiceQueryRecord`**, whose callback
-//! hands over `rrtype`, `rrclass`, `rdlen`, "the raw rdata of the resource
-//! record", a TTL and `interfaceIndex` — "the interface on which the query
-//! was **resolved**" — which is this crate's `Record` almost field for
-//! field, and which is routed by mDNSResponder rather than by one server
-//! list. It is not written, and what would settle the decision is one
-//! measurement nobody here can make: a Mac on a VPN with a split-DNS
-//! domain, comparing this backend against `scutil --dns` and against
-//! `DNSServiceQueryRecord` for a name in that zone.
+//! **Apple used to be here and is not**, which this header went on
+//! claiming after it stopped being true: `res_9_query` was measured
+//! unusable from more than one thread, and that platform moved to
+//! `sys/apple.rs`. What is left of the argument that used to fill this
+//! header — that the call answers from the primary resolver rather than
+//! from a Mac's supplemental clients — is recorded where it decided
+//! something, in `apple.rs` and in the design note.
 
 #![allow(
     unsafe_code, // unsafe-code-exception: amendment-C8
@@ -111,15 +72,24 @@ const HEADER_LEN: usize = 12;
 //   (the directory holds `libc.a` and `libunwind.a` and nothing else), so
 //   a `#[link(name = "resolv")]` here would fail to link and musl gets
 //   none.
-// - Apple exports only the BIND9-prefixed name: `libresolv.9.tbd` lists
-//   `_res_9_query` and no plain `_res_query`. C code gets there through
-//   `#define res_query res_9_query` in `<resolv.h>`; Rust has no
-//   preprocessor, so the mapping is spelled out with `link_name`.
+// - FreeBSD exports **both** names from `libc`: `lib/libc/resolv/Symbol.map`
+//   lists `res_query` and `__res_query`, each under `FBSD_1.0`. So the
+//   plain name links, no `link_name` is needed, and neither is
+//   `-lresolv` — there is no separate resolver library, which
+//   `resolver(3)` states from the other side as *"Standard C Library
+//   (libc, -lc)"*. Each name appears in exactly one version node, so the
+//   glibc trap above — a prefixed name existing only as a non-default
+//   compat alias — has no counterpart here.
+//
+//   Read out of the source's own symbol map rather than from `libc`'s
+//   `link_name` table, which covers `res_init` alone and would have
+//   suggested the `__res_` prefix for a reason that turns out not to
+//   apply.
+//
+// Apple is no longer in this list; `sys/apple.rs` is why.
 #[cfg_attr(all(target_os = "linux", target_env = "gnu"), link(name = "resolv"))]
-#[cfg_attr(target_vendor = "apple", link(name = "resolv"))]
 unsafe extern "C" {
     // unsafe-code-exception: amendment-C8
-    #[cfg_attr(target_vendor = "apple", link_name = "res_9_query")]
     fn res_query(
         dname: *const c_char,
         class: c_int,

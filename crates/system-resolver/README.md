@@ -34,6 +34,7 @@ platform's convenience API will not return** — `HTTPS`, `SVCB`, `TLSA`,
 | Linux (glibc, musl) | `res_query` | any type |
 | macOS, iOS | `DNSServiceQueryRecord` | any type |
 | Android ≥ 29 | `android_res_nquery` | any type |
+| FreeBSD | `res_query` | any type — compiled, never run |
 | Windows 11 / Server 2025 | `DnsQueryRaw` | any type |
 | older Windows | `DnsQuery_UTF8` | any type **except** 16 |
 

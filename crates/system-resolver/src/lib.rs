@@ -33,6 +33,7 @@
 //! |---|---|---|---|
 //! | Linux (glibc, musl) | `res_query` | [`Support::Any`] | the header — see the next section |
 //! | Android >= 29 | `android_res_nquery` + `android_res_nresult` | [`Support::Any`] | the header |
+//! | FreeBSD | `res_query` | [`Support::Any`] | the header — and see the note below |
 //! | macOS, iOS | `DNSServiceQueryRecord` | [`Support::Any`] | the header, **and** [`Error::NameDoesNotExist`] |
 //! | Windows 11, Server 2025 | `DnsQueryRaw` | [`Support::Any`] | the header |
 //! | Windows 10 | `DnsQuery_UTF8` | [`Support::AnyExcept`], 16 types | the header, sibling records, and see [Windows 10](#windows-10) |
@@ -46,6 +47,17 @@
 //! **No row costs a dependency for the call itself.** The Unix symbols are
 //! declared where they are used; Windows uses `windows-sys` and
 //! `windows-strings`, which no other target resolves.
+//!
+//! **The FreeBSD row has never been run, and it is the only one that says
+//! so.** Its symbol is established the way Linux's was — `res_query` is
+//! exported from `libc` under `FBSD_1.0`, so it links with no `link_name`
+//! and no `-lresolv` — and that half fails loudly if it is wrong. What is
+//! read rather than run is the property everything else here depends on:
+//! `resolver(3)` calls the implementation thread-safe and `_res` per-thread,
+//! and a manual page saying so is what Apple's arm also had before it was
+//! measured and moved. `concurrent_lookups_all_answer_where_a_serial_burst_does`
+//! is written for exactly that question; running the live suite on a
+//! FreeBSD machine is what would settle it.
 //!
 //! # The answer is records, not a message
 //!
@@ -406,6 +418,7 @@ mod tests {
                 target_os = "linux",
                 any(target_env = "gnu", target_env = "musl")
             ),
+            target_os = "freebsd",
             target_vendor = "apple",
         ));
         let windows = cfg!(windows) && !wire;

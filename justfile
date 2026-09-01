@@ -377,7 +377,7 @@ check-targets:
     # figure written twice is a figure that drifts, which this workspace
     # has fixed three times elsewhere. Adding a target here is the whole
     # of adding one.
-    TARGETS="wasm32-unknown-unknown wasm32-wasip2 aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-linux-android"
+    TARGETS="wasm32-unknown-unknown wasm32-wasip2 aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-linux-android x86_64-unknown-freebsd"
     for t in $TARGETS; do
       rustup target list --installed | grep -qx "$t" || {
         echo "::error::target $t is not installed — \`rustup target add $t\`. Skipping it would return exactly the blind spot this recipe covers."
@@ -407,6 +407,16 @@ check-targets:
     # The Android resolver, for the same reason: `android_res_nquery` is
     # declared here and called nowhere this host can run.
     check -p hclient-dns-system --target aarch64-linux-android --all-features --all-targets
+    # FreeBSD, whose arm was added on the owner's decision with its own
+    # gap named: the symbol is established out of `lib/libc/resolv/Symbol.map`
+    # and the per-thread claim is read from `resolver(3)` rather than run,
+    # because nothing here is a FreeBSD machine. So this is the only gate
+    # that arm has until somebody runs the live suite on one — the same
+    # position `hclient-winhttp` is in, further down. `--all-targets`
+    # because the live test is where the unrun half would be established,
+    # and a live test that does not compile establishes nothing.
+    check -p system-resolver --target x86_64-unknown-freebsd --all-features --all-targets
+    check -p hclient-dns-system --target x86_64-unknown-freebsd --all-features --all-targets
     # `--lib` and not `--all-targets` here, and the reason is a fact about
     # this crate's dev-dependencies rather than about wasm: `wait-timeout`
     # and `getrandom`'s host backend are host-only and do not build for
