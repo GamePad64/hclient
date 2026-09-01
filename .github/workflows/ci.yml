@@ -83,7 +83,11 @@ jobs:
         with:
           channel: stable
           components: rustfmt,clippy
-          bins: just
+          # `cargo-semver-checks` for the step at the end of this job. The
+          # recipe refuses when it is absent rather than skipping, so a
+          # runner that failed to install it goes red here with a name
+          # that says so.
+          bins: just,cargo-semver-checks
           # `just docs` below documents a crate for the target it declares
           # in `[package.metadata.docs.rs]`, because that is the page a
           # reader gets: `hclient-winhttp` and `hclient-urlsession` are
@@ -110,6 +114,20 @@ jobs:
       # sits on disk. It stops before the upload; nothing here publishes.
       - name: every crate builds from its own published tarball
         run: just package-build
+      # `system-resolver` 0.1.0 is on crates.io as of 2026-09-01, which is
+      # what gives this a baseline to compare against — it was recorded as
+      # unrunnable until then, since cargo-semver-checks fetches the newest
+      # release and there was none. It is the one crate here that can be
+      # checked at all: everything else rides a `0.1.0-alpha.N`, where a
+      # major step is permitted and all 254 lints are skipped.
+      #
+      # Measured on the day it was wired: a working tree at the published
+      # number is `no change; assume minor` and runs **196** checks, so
+      # this asks the right question on every push — *has anything
+      # breaking landed since the last release* — rather than only at
+      # release time.
+      - name: the one published crate has not broken its promise
+        run: just semver
 
   # `system-resolver` is the one crate here with a compiler floor of its
   # own — every other member rides the workspace's "MSRV is the latest

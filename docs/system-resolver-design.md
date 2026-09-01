@@ -634,17 +634,34 @@ settings, which live behind a JVM and cost `jni` + `ndk-context`. That
 asymmetry is worth knowing before assuming the two Android integrations
 are alike.
 
-## 7. Still open
+## 6.1 The compatibility gate, which is live now
 
-- **`just semver` is not called by CI, and it cannot be until `0.1.0` is
-  on crates.io.** cargo-semver-checks takes its baseline from the registry
-  and there is nothing there yet — measured, `system-resolver not found in
-  registry`. A job would be red for the absence of a release rather than
-  for a defect, and a red job nobody can fix is how a check gets ignored.
-  This is deliberately the recurring defect of *a recipe nothing calls*,
-  accepted for as long as it has no subject, and it is written here rather
-  than only in the justfile because this list is what gets read. The day
-  the crate is published it is one line in the `lint` job.
+`system-resolver` 0.1.0 reached crates.io on 2026-09-01, and that is what
+gave `just semver` a baseline: cargo-semver-checks fetches the newest
+release, and until there was one the recipe could only report
+`system-resolver not found in registry`. It was recorded here as a
+deliberate instance of *a recipe nothing calls*, accepted for as long as
+it had no subject. It has one, and it is a step in the `lint` job.
+
+**What makes it worth running on every push rather than at release time
+is a classification that had to be measured**, because the earlier
+reading of it was about a different case. A working tree sitting at the
+**published** number — `0.1.0 -> 0.1.0` — is *"no change; assume minor"*
+and runs **196** checks. The pre-release pair this document records two
+sections up, `0.1.0-alpha.2 -> 0.1.0-alpha.2`, is *"assume major"* and
+runs **0**: a major step permits breaking, and every step inside a
+pre-release is a major step. So the vacuum belongs to the pre-release
+rather than to equal versions, and a stable crate is checked from the
+moment it is published without a version bump or a `--release-type` flag.
+
+Verified against the published crate rather than a git baseline: marking
+`Error` as `#[non_exhaustive]` takes the recipe to exit 100, naming
+`enum_marked_non_exhaustive` and the item. The fail-closed half — a run
+that executes nothing prints `0 checks` beside `no semver update
+required` and exits zero — is unchanged and is what the recipe reads the
+count for.
+
+## 7. Still open
 
 - **iOS.** `dns_sd.h` is available on both Apple platforms and the same
   code compiles for both, but nothing here has been run on iOS. The

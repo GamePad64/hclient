@@ -422,6 +422,16 @@ that executed nothing as well as on one that failed, because
 cargo-semver-checks prints `0 checks` beside `no semver update required`
 and exits zero.
 
+**It is a step in the `lint` job as of the first publish**, and the thing
+that made that possible is narrower than *the crate is stable*: a working
+tree at the **published** number is `no change; assume minor` and runs
+**196** checks, where the pre-release pair above is `assume major` and
+runs none. So the vacuum belongs to the pre-release rather than to equal
+version numbers, and the gate asks *has anything breaking landed since
+the last release* on every push rather than only at release time.
+Verified against the published crate: marking `Error` `#[non_exhaustive]`
+exits 100 naming the lint and the item.
+
 The cost is the question the policy existed to remove, coming back for one
 crate: nothing here publishes it, and nothing will notice if a bump is
 forgotten. It is the crate that can afford the trade — five public names,
