@@ -12,10 +12,20 @@ workflow does and a task runner does not. What it may not carry is a decision:
 a flag, a filterset, a grep over output, a threshold. Those live in the
 justfile, where they can be run.
 
-Two ways to fail, both fail closed:
+A third rule, about a symmetry one field over: **a target a recipe names is
+a target the job running it installs.** `check-targets` refuses a target
+that is not installed rather than skipping it — skipping would leave the
+job green while checking a subset — so the two lists have to agree, and
+until this check existed nothing said so. They drifted the day
+`system-resolver` grew a FreeBSD arm and a musl finding: the recipe went to
+seven targets, the workflow stayed at five, and the push was red for a
+reason that had nothing to do with the code in it.
+
+Three ways to fail, all fail closed:
 
   * a `run:` that is not a `just` call, and is not in EXCEPTIONS below;
-  * a `just` call naming a recipe the justfile does not have.
+  * a `just` call naming a recipe the justfile does not have;
+  * a `--target` in the justfile that no job installs.
 
 And two ways the check itself refuses to be vacuous: finding no `run:` steps
 at all is an error (a parse that silently matched nothing would pass forever),
@@ -88,6 +98,31 @@ def steps():
             yield job, step.get("name") or f"step #{i}", step["run"]
 
 
+def targets() -> tuple[set[str], set[str]]:
+    """The targets the justfile cross-compiles for, and the ones CI installs.
+
+    The workflow side is every `targets:` a `setup-rust` step carries, unioned
+    across jobs rather than matched job by job: which job installs what is the
+    workflow's business, and what must not happen is a target nobody installs.
+    """
+    wanted = set(re.findall(r"--target[= ]([A-Za-z0-9_.-]+)", (ROOT / "justfile").read_text()))
+    installed: set[str] = set()
+    doc = yaml.safe_load(CI.read_text(encoding="utf-8"))
+    for body in doc["jobs"].values():
+        for step in body.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            spec = (step.get("with") or {}).get("targets")
+            if isinstance(spec, str):
+                installed |= {t.strip() for t in spec.split(",") if t.strip()}
+    if not wanted:
+        sys.exit(
+            "::error::the justfile names no `--target` at all — this half of the check "
+            "parsed nothing and would pass forever"
+        )
+    return wanted, installed
+
+
 def main() -> int:
     known = recipes()
     seen: set[tuple[str, str]] = set()
@@ -137,6 +172,14 @@ def main() -> int:
             "nothing and would pass forever"
         )
 
+    wanted, installed = targets()
+    for missing in sorted(wanted - installed):
+        problems.append(
+            f"the justfile names `--target {missing}` and no job in ci.yml installs it — "
+            f"`check-targets` refuses an uninstalled target rather than skipping it, so "
+            f"the run fails rather than silently checking a subset"
+        )
+
     if problems:
         for p in problems:
             print(f"::error::{p}")
@@ -144,7 +187,8 @@ def main() -> int:
 
     print(
         f"ci.yml mirrors the justfile: {calls} `just` calls across "
-        f"{len(seen)} run steps, {len(EXCEPTIONS)} exceptions"
+        f"{len(seen)} run steps, {len(EXCEPTIONS)} exceptions; "
+        f"{len(wanted)} cross-compilation targets, all installed by a job"
     )
     return 0
 
