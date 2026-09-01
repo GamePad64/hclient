@@ -148,6 +148,15 @@ jobs:
         with:
           channel: "1.96.0"
           bins: just
+      # **Every floor the manifests declare, derived rather than listed.**
+      # `just msrv` finds the crates that carry their own `rust-version`
+      # and checks each on its own toolchain, so a second such crate — or
+      # a floor that moves — needs no edit here. The recipe refuses a
+      # floor whose toolchain is missing rather than skipping it, which is
+      # what makes this step load-bearing instead of decorative.
+      - name: install every declared floor
+        shell: bash
+        run: just msrv-toolchains
       - name: the one crate with a fixed floor builds and passes on it
         run: just msrv
 

@@ -405,9 +405,10 @@ which crates changed, and knowing means a step that can be forgotten,
 where publishing everything cannot forget. The cost is 23 uploads for a
 one-line fix, which for crates this size is cosmetic.
 
-**One crate is outside that policy now, and what buys the exception is a
-measurement rather than a preference.** `system-resolver` carries its own
-version and its own `cargo-release` group — `shared-version` takes a
+**Two crates are outside that policy now, and what buys the exception is
+a measurement rather than a preference.** `system-resolver` and
+`hclient-idn` carry their own versions and their own `cargo-release`
+groups — `shared-version` takes a
 string, so a named subset is the mechanism rather than something invented
 for it. The reason is that a shared version cannot leave pre-release while
 any member still needs to, and **inside a pre-release `cargo
@@ -3297,6 +3298,56 @@ for an IDN the *encoded* getter is the ASCII one. Nobody here has a Mac,
 so the acceptance probe runs in **both** directions and a build where
 that getter is not what Apple documents answers `NoImplementation`
 instead of a plausible wrong name.
+
+### `hclient-idn` leaves the shared version too, and the gates derive their own lists
+
+It is published like `system-resolver`: its own version, its own
+`cargo-release` group, its own compiler floor, independent of the
+family's release. Nothing in it depends on `hclient`'s mechanisms — two
+public functions, an error type, and a use outside HTTP entirely — and
+`cargo tree -i` names `hclient-proto` as its only in-workspace consumer.
+
+**The version goes to `0.1.0` for the reason `system-resolver`'s did.**
+The crate is already on crates.io at `0.1.0-alpha.2`, and inside a
+pre-release `cargo semver-checks` executes none of its lints, because
+every step out of one is a major step. Leaving pre-release is what gives
+the gate a subject; versioning separately is what lets this crate do that
+without promising the same of a family whose seams are still moving.
+
+**Its floor is 1.95.0, measured rather than picked**: 1.94 rejects
+`core::cfg_select!` as an unstable library feature and 1.95 accepts it,
+so that macro is the single binding constraint — every dependency's own
+floor is far below (`thiserror` 1.31, `windows-sys` 1.71,
+`objc2-foundation` 1.71, `idna` 1.57) and edition 2024's 1.85 is lower
+still. On 1.95.0 it builds `--all-targets` and passes its tests.
+
+**What is new is that neither gate names a crate any more.** `just msrv`
+finds every manifest that declares a literal `rust-version` — the same
+gesture that takes a crate out of the shared version — and checks each on
+its own toolchain, and `just msrv-toolchains` installs the floors it
+finds, so the workflow carries no copy of them either. `just semver`
+finds every crate whose `[package.metadata.release] shared-version` names
+itself, asks crates.io for its newest version, and sorts it into one of
+three: no release at all, a **pre-release baseline** where no lint can
+run and that is not a defect, or a stable baseline where checks are
+required. A third such crate is covered by both the day it writes those
+two lines, and the pre-release exemption ends by itself the day a stable
+version is published — because both read the registry and the manifests
+rather than a list.
+
+**And the count is now per crate rather than in total**, which is the
+half that would otherwise have gone quietly wrong: 196 checks from one
+crate and zero from another add up to a green run over a crate nothing
+examined. Today it reports `196 checks across 1 crate(s) with a stable
+baseline`, and names `hclient-idn(0.1.0-alpha.2)` as the pre-release
+whose lints could not run.
+
+Two smaller things the wiring cost, both worth knowing. `[ -n "$x" ] &&
+echo …` exits a recipe under `set -euo pipefail` whenever `$x` is empty,
+which is the common case and killed the gate silently. And two manifests
+align their `name` with their neighbours — `name         = "…"` — so a
+`^name = "` pattern matched neither, which under `set -e` stopped the
+loop after the first candidate rather than skipping two.
 
 ### Is the crate worth it, or should this just be `idna`? Measured: 148 KiB
 

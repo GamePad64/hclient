@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-idn"
-version = "0.1.0-alpha.2"
+version = "0.1.0"
 dependencies = [
  "idna",
  "jni 0.21.1",

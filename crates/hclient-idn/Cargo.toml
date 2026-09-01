@@ -1,11 +1,39 @@
 [package]
 name = "hclient-idn"
-version.workspace = true
+# **Its own version, and the reason is `system-resolver`'s.** Every crate
+# in the family rides `[workspace.package].version`, which is a
+# pre-release because the family's seams are still moving — and inside a
+# pre-release `cargo semver-checks` executes none of its lints, because
+# every step is a major one. So the guarantee this crate can offer is not
+# bought by versioning separately; it is bought by leaving pre-release,
+# and versioning separately is what lets it do that without promising the
+# same of a family that is not ready.
+#
+# It is a crate that can afford it: two public functions, an error type,
+# and a use outside HTTP entirely — nothing here depends on `hclient`'s
+# mechanisms, and `cargo tree -i` names `hclient-proto` as its only
+# in-workspace consumer.
+version = "0.1.0"
 description = "IDN (UTS 46) domain-to-ASCII and back, through whatever UTS 46 the platform already carries"
 keywords     = ["hclient", "idn", "uts46", "punycode", "idna"]
 categories   = ["internationalization", "encoding"]
 edition.workspace = true
-rust-version.workspace = true
+# **Its own floor, for the reason it carries its own version.** The
+# family's policy is "MSRV is the latest stable", which buys it no shim
+# code and no matrix and costs a crate meant to be used from outside its
+# reach. This one is meant to be used from outside.
+#
+# Measured rather than picked: 1.94 rejects `core::cfg_select!` as an
+# unstable library feature and 1.95 accepts it, so that macro is the
+# single binding constraint — every dependency's own floor is below it
+# (`thiserror` 1.31, `windows-sys` 1.71, `objc2-foundation` 1.71, `idna`
+# 1.57), and edition 2024's 1.85 is lower still. On 1.95.0 the crate
+# builds `--all-targets` and passes its tests.
+#
+# `just msrv` is what keeps this from being a claim with nothing behind
+# it, and it reads the floor out of this line rather than carrying a
+# second copy.
+rust-version = "1.95.0"
 license.workspace = true
 repository.workspace = true
 # Turns the `idna` feature and the target into exactly one backend cfg.
@@ -20,6 +48,12 @@ build = "build.rs"
 # See the root Cargo.toml: `default` is near-empty here by design.
 [package.metadata.docs.rs]
 all-features = true
+
+# The other half of leaving the shared version: `shared-version` takes a
+# string, so a named group is a *subset* that versions together. This
+# crate is a group of one.
+[package.metadata.release]
+shared-version = "hclient-idn"
 
 [dependencies]
 thiserror = { workspace = true }

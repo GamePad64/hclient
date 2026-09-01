@@ -1071,6 +1071,28 @@ release-check: ci packaging package-build release-pending
 release-pending:
     ./scripts/release-pending.sh
 
+# install a toolchain for every floor a crate declares, for `msrv`
+#
+# **The list is the manifests', like the recipe below.** A crate leaves
+# the family's "MSRV is the latest stable" by writing its own literal
+# `rust-version`, and that line is the only statement of its floor — so
+# the toolchain to install is derived from it rather than named in the
+# workflow, where it would be a second copy that goes stale the day a
+# floor moves.
+#
+# `msrv` refuses a floor whose toolchain is missing rather than skipping
+# it, which is what makes this worth a recipe: forget to run it and the
+# check fails loudly instead of quietly testing nothing.
+msrv-toolchains:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    floors="$(grep -h '^rust-version = "' crates/*/Cargo.toml | sed 's/.*"\(.*\)".*/\1/' | sort -u)"
+    [ -n "$floors" ] || { echo "::error::no crate declares its own rust-version, so this installed nothing — which reads the same as a tidy tree"; exit 1; }
+    for f in $floors; do
+      echo "==> rustup toolchain install $f"
+      rustup toolchain install "$f" --profile minimal --no-self-update
+    done
+
 # the one crate with a fixed compiler floor, built on it
 msrv:
     #!/usr/bin/env bash
@@ -1092,43 +1114,58 @@ msrv:
     # The floor is `std::assert_matches!`'s, with `core::cfg_select!` one
     # release below it; every dependency's own `rust-version` is far below
     # both — `thiserror` 1.71, `windows-sys` 1.71, `windows-strings` 1.82.
-    FLOOR="1.96.0"
-    # Read from the manifest rather than written twice: a figure in two
-    # places is a figure that drifts, which is this file's own recurring
-    # defect. The recipe fails if the two disagree rather than silently
-    # checking the wrong one.
-    DECLARED="$(grep -m1 '^rust-version = ' crates/system-resolver/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
-    if [ "$DECLARED" != "$FLOOR" ]; then
-      echo "::error::system-resolver declares rust-version $DECLARED and this recipe checks $FLOOR — one of the two moved without the other"
-      exit 1
-    fi
-    if ! rustup toolchain list | grep -q "^$FLOOR"; then
-      echo "::error::toolchain $FLOOR is not installed — \`rustup toolchain install $FLOOR\`. Skipping it would return exactly the blind spot this recipe covers."
-      exit 1
-    fi
-    # `--ignore-rust-version` is required and is not a loophole: the
-    # *workspace* manifest still declares the family's floor, and cargo
-    # refuses the whole build on the higher number before it ever looks at
-    # this crate's own. What is being checked is the crate, which carries
-    # the lower one.
+    # **The crate list is derived, not written.** A crate has its own floor
+    # exactly when its manifest declares a literal `rust-version` instead
+    # of inheriting the family's, which is the same two-line gesture that
+    # takes it out of the shared version — so a third such crate is
+    # covered here the day it writes those lines, with no edit to this
+    # recipe and no chance of one being forgotten.
+    #
+    # The floor itself is read from each manifest rather than restated
+    # here. There used to be a second copy and a check that the two
+    # agreed; one statement needs no such check, which is the better half
+    # of the same idea.
+    crates=""
+    while read -r manifest; do
+      floor="$(grep -m1 '^rust-version = "' "$manifest" | sed 's/.*"\(.*\)".*/\1/')"
+      [ -n "$floor" ] || continue
+      name="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+      crates="$crates$name:$floor "
+    done < <(ls crates/*/Cargo.toml)
+    [ -n "$crates" ] || { echo "::error::no crate declares its own rust-version — this recipe found nothing to check, which reads the same as a tidy tree"; exit 1; }
     failed=0
-    echo "==> cargo +$FLOOR check -p system-resolver --all-targets"
-    cargo "+$FLOOR" check -p system-resolver --all-targets --ignore-rust-version --color never || failed=1
-    echo "==> cargo +$FLOOR test -p system-resolver"
-    out="$(cargo "+$FLOOR" test -p system-resolver --ignore-rust-version --color never 2>&1)" || failed=1
-    printf '%s\n' "$out"
-    # Fails closed on a run that tested nothing: a suite compiled and not
-    # run, and a tidy tree, print the same summary otherwise.
-    ran="$(printf '%s\n' "$out" | grep -c '^test result: ok\.')"
-    if [ "$ran" -lt 2 ]; then
-      echo "::error::only $ran test binaries reported a result on $FLOOR — a green run over nothing is the defect this recipe exists for"
-      exit 1
-    fi
-    if [ "$failed" -ne 0 ]; then
-      echo "::error::system-resolver does not build or pass its tests on its declared floor, $FLOOR"
-      exit 1
-    fi
-    echo "msrv: system-resolver builds and passes $ran test binaries on $FLOOR"
+    checked=0
+    for entry in $crates; do
+      name="${entry%%:*}"; FLOOR="${entry##*:}"
+      if ! rustup toolchain list | grep -q "^$FLOOR"; then
+        echo "::error::toolchain $FLOOR is not installed, and $name declares it — \`rustup toolchain install $FLOOR\`. Skipping it would return exactly the blind spot this recipe covers."
+        exit 1
+      fi
+      # `--ignore-rust-version` is required and is not a loophole: the
+      # *workspace* manifest still declares the family's floor, and cargo
+      # refuses the whole build on the higher number before it ever looks
+      # at this crate's own. What is being checked is the crate, which
+      # carries the lower one.
+      echo "==> cargo +$FLOOR check -p $name --all-targets"
+      cargo "+$FLOOR" check -p "$name" --all-targets --ignore-rust-version --color never || failed=1
+      echo "==> cargo +$FLOOR test -p $name"
+      out="$(cargo "+$FLOOR" test -p "$name" --ignore-rust-version --color never 2>&1)" || failed=1
+      printf '%s\n' "$out"
+      # Fails closed on a run that tested nothing: a suite compiled and not
+      # run, and a tidy tree, print the same summary otherwise.
+      ran="$(printf '%s\n' "$out" | grep -c '^test result: ok\.')"
+      if [ "$ran" -lt 2 ]; then
+        echo "::error::only $ran test binaries reported a result for $name on $FLOOR — a green run over nothing is the defect this recipe exists for"
+        exit 1
+      fi
+      if [ "$failed" -ne 0 ]; then
+        echo "::error::$name does not build or pass its tests on its declared floor, $FLOOR"
+        exit 1
+      fi
+      checked=$((checked + 1))
+      echo "msrv: $name builds and passes $ran test binaries on $FLOOR"
+    done
+    echo "msrv: $checked crate(s) with a floor of their own, each checked on it"
 
 # the compatibility promise, for the one crate that is in a position to make one
 semver rev="":
@@ -1152,7 +1189,61 @@ semver rev="":
       echo "::error::cargo-semver-checks is not installed, so this check could not run — and a check that could not run must not pass"
       exit 1
     fi
-    args=(check-release -p system-resolver --color never)
+    # **The crates are derived, and so is whether each is publishable
+    # yet.** A crate is gated here exactly when it carries its own
+    # `[package.metadata.release] shared-version` — the same two-line
+    # gesture that gives it its own version and its own floor — and only
+    # once crates.io has it, because before the first publish there is no
+    # baseline and cargo-semver-checks can only report *not found in
+    # registry*.
+    #
+    # Deriving both is what keeps this from going stale in either
+    # direction: a second independently-versioned crate is gated the day
+    # it is published, with no edit here, and an unpublished one does not
+    # turn the gate red for a reason that is not a defect.
+    published=""
+    pending=""
+    vacuum=""
+    while read -r manifest; do
+      # `name *=` rather than `name =`: two manifests align the value
+      # with their neighbours, and a pattern that missed them killed this
+      # loop under `set -e` rather than skipping them — found by the loop
+      # stopping after the first candidate.
+      name="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+      [ -n "$name" ] || { echo "::error::$manifest declares no package name"; exit 1; }
+      grep -q "^shared-version = \"$name\"" "$manifest" || continue
+      latest="$(curl -sS -H "User-Agent: hclient semver gate (gamepad64@gmail.com)" \
+                  "https://crates.io/api/v1/crates/$name" \
+                | sed -n 's/.*"max_version":"\([^"]*\)".*/\1/p')"
+      if [ -z "$latest" ]; then
+        pending="$pending $name"
+      elif printf '%s' "$latest" | grep -q -- '-'; then
+        # **The published baseline is a pre-release, so nothing can be
+        # checked against it and that is not a defect.** Every step out of
+        # a pre-release is a major one, where breaking is permitted, so
+        # cargo-semver-checks skips all of its lints — measured against
+        # this very workspace. The exemption ends by itself the day a
+        # stable version is published, because this reads the registry
+        # rather than a list.
+        vacuum="$vacuum $name($latest)"
+      else
+        published="$published $name"
+      fi
+    done < <(ls crates/*/Cargo.toml)
+    # `if` rather than `[ .. ] && echo`: under `set -e` that idiom exits
+    # the recipe when the variable is empty, which is the common case.
+    if [ -n "$pending" ]; then
+      echo "semver: not on crates.io yet, so no baseline at all:$pending"
+    fi
+    if [ -n "$vacuum" ]; then
+      echo "semver: baseline is a pre-release, where every step is major and no lint runs:$vacuum"
+    fi
+    if [ -z "$published" ]; then
+      echo "::error::no independently-versioned crate has a stable release, so this gate checked nothing — which reads the same as a clean run"
+      exit 1
+    fi
+    args=(check-release --color never)
+    for name in $published; do args+=(-p "$name"); done
     if [ -n "{{rev}}" ]; then args+=(--baseline-rev "{{rev}}"); fi
     rc=0
     out="$(cargo semver-checks "${args[@]}" 2>&1)" || rc=$?
@@ -1167,16 +1258,31 @@ semver rev="":
     # required`, and exits zero — which is this project's recurring defect
     # met once more, a check that cannot fail. So the count is read, and a
     # zero is a failure that names its own cause.
-    ran="$(printf '%s\n' "$out" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) checks:.*/\1/p' | tail -1)"
-    if [ -z "$ran" ]; then
+    # **Read per crate rather than in total**, because an aggregate hides
+    # exactly the case this half exists for: one crate's 196 checks and
+    # another's zero add up to a green run over a crate nothing examined.
+    counts="$(printf '%s\n' "$out" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) checks:.*/\1/p')"
+    if [ -z "$counts" ]; then
       echo "::error::no \`N checks:\` line in the output — cargo-semver-checks changed its report and this gate is reading nothing"
       exit 1
     fi
-    if [ "$ran" -eq 0 ]; then
-      echo "::error::every lint was skipped, so this proved nothing: the baseline and the current version differ by a major step, where breaking is permitted"
+    n=0
+    total=0
+    for c in $counts; do
+      n=$((n + 1))
+      total=$((total + c))
+      if [ "$c" -eq 0 ]; then
+        echo "::error::one crate had every lint skipped, so it proved nothing: a stable baseline and a major step, where breaking is permitted"
+        exit 1
+      fi
+    done
+    want=0
+    for _ in $published; do want=$((want + 1)); done
+    if [ "$n" -ne "$want" ]; then
+      echo "::error::$want crate(s) were asked about and $n report line(s) came back — the gate and the tool disagree about what was checked"
       exit 1
     fi
-    echo "semver: $ran checks ran against the baseline"
+    echo "semver: $total checks across $n crate(s) with a stable baseline"
 
 # rustdoc warnings, which nothing checked until publishing made them visible
 docs:
