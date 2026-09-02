@@ -2,6 +2,20 @@
 //! platform's own UTS 46 implementation where the platform has one, and
 //! the bundled `idna` crate where it does not.
 //!
+//! **This crate stands alone.** It depends on nothing from `hclient` — no
+//! runtime, no transport, no HTTP types — and it is versioned and
+//! released independently of that family, on its own compiler floor. The
+//! prefix is where it lives, not what it needs: use it in anything that
+//! has to turn a Unicode domain into its A-label form.
+//!
+//! ```
+//! # fn main() -> Result<(), hclient_idn::IdnError> {
+//! assert_eq!(hclient_idn::domain_to_ascii("münchen.de")?, "xn--mnchen-3ya.de");
+//! assert_eq!(hclient_idn::domain_to_unicode("xn--mnchen-3ya.de")?, "münchen.de");
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! **Two functions, and that is the whole surface**:
 //! [`domain_to_ascii`] and [`domain_to_unicode`], plus the [`IdnError`]
 //! their `Result` needs. Which implementation answers is decided by the
