@@ -29,75 +29,54 @@
 //! else there to ask. `lib.rs` names the selected one `platform` and
 //! nothing past that line names an operating system.
 //!
-//! # Why this crate exists — and on Linux it is no longer the size
+//! # Why this crate exists, and what it is worth
 //!
-//! Two corrections to the usual justification, in order of how much they
-//! change it.
+//! One number, measured on the target rather than on disk. The `idna`
+//! crate compiles the Unicode tables into your binary; this crate takes
+//! UTS 46 from what the platform already carries instead. The same
+//! `cdylib` converting one name, `opt-level = "z"`, fat LTO,
+//! `panic = "abort"`, stripped:
 //!
-//! **First, the number.** `hclient-proto`'s `idn` feature pulls `idna` →
-//! `idna_adapter` → `icu_normalizer` + `icu_properties`, and the figure
-//! this project has repeated for that — "roughly 1.9 MB" — is **vendored
-//! source on disk, not bytes in a binary**. ICU4X stores its tables as
-//! compressed tries and the linker keeps only what is referenced.
-//! Measured on a binary that reads a domain from stdin so the call cannot
-//! be folded away (`opt-level = "z"`, LTO, `panic = abort`, `strip`,
-//! x86-64 Linux), the tables cost **128,784 B of `.rodata`** in a
-//! 448,184 B binary of 31 crates — not 1.9 MB.
+//! | target | this crate | with `--features idna` | saved |
+//! |---|---|---|---|
+//! | `aarch64-linux-android` | 304.5 KiB | 443.5 KiB | **139.0 KiB — 31%** |
+//! | `x86_64-linux-android` | 334.9 KiB | 478.3 KiB | **143.3 KiB — 30%** |
 //!
-//! **Second, and this is the one that changed the crate's purpose: on
-//! Linux there is now no saving at all.** An ELF backend existed, reached
-//! `libicuuc.so.NN` through `dlopen`, and did save it — 306,568 B and 10
-//! crates, `.rodata` down to 23,864 B. It was removed deliberately, and
-//! the reason is written out under *Which platform* below: on Linux the
+//! **A third of a small native library, per ABI.** That is the share
+//! rather than the absolute, and the share is the honest figure: 139 KiB
+//! against a 5 MiB desktop binary is under 3% and no reason to take a
+//! dependency, while against 443 KiB of `.so` shipped per ABI it is the
+//! largest single item in it. `aarch64` is the ABI almost every device
+//! takes.
+//!
+//! **On Linux and wasm it saves nothing, and that is stated first rather
+//! than buried.** There is no system UTS 46 to reach for on those, so the
+//! backend *is* the `idna` crate and the only cost is this crate itself —
+//! measured at +736 bytes and, in `hclient-proto`'s own graph, one crate.
+//! An ELF backend existed and did save it, reaching `libicuuc.so.NN`
+//! through `dlopen`; it was removed deliberately, because on Linux the
 //! ICU version is a property of the user's machine that nobody chose and
 //! nothing reports, and for IDN a Unicode version difference is a
-//! different host. Measured after the removal, same harness:
+//! different host.
 //!
-//! | build, x86-64 Linux | binary | `.rodata` | crates |
-//! |---|---|---|---|
-//! | `idna` called directly — what `hclient-proto` compiled before it took this crate | 448,184 B | 128,784 B | 31 |
-//! | this crate, default | 448,920 B | 129,144 B | 34 |
+//! **Windows and Apple are unmeasured**, and are recorded as such rather
+//! than estimated: no machine that produced this crate has an MSVC linker
+//! or an Apple one, and `x86_64-pc-windows-gnu` cannot link `windows-sys`
+//! without `x86_64-w64-mingw32-dlltool`. The Android figure is the one
+//! that has been taken on the real target.
 //!
-//! **+736 bytes and +3 crates, for the same answer.** That is the honest
-//! accounting on Linux, and it is stated first rather than buried: there
-//! is no size saving on this platform.
+//! The often-repeated "roughly 1.9 MB" for `idna`'s tables is **vendored
+//! source on disk, not bytes in a binary**: ICU4X stores them as
+//! compressed tries and the linker keeps only what is referenced. On
+//! x86-64 Linux they are 128,784 B of `.rodata` in a 448,184 B binary.
 //!
-//! The +3 is this harness's, not every caller's: it is `hclient-idn`,
-//! `thiserror` and `thiserror-impl`, and a graph that already had
-//! `thiserror` pays only the first. In `hclient-proto`'s own `cargo tree
-//! -e normal` the `idn` feature went from **36 unique crates to 37**.
-//!
-//! The saving survives only where a platform ICU is linked statically
-//! against an OS-versioned ABI, which today means Windows alone. Its
-//! magnitude there is **unverified**: measuring it needs a Windows
-//! linker, and none produced this crate. What would settle it is the
-//! same stdin harness built on a `windows-latest` runner.
-//!
-//! So what is the crate for, on the two targets where it saves nothing?
-//! Three things it does that a direct `idna` call does not:
-//!
-//! - **one seam and one policy point.** The option word, the error mask
-//!   and the deny list are decided once, here, instead of at each call
-//!   site — and they are the three things the *Contract* section below
-//!   shows are easy to get individually wrong. `policy.rs` is the rest of
-//!   it, and it earned its own file the hard way: the two platform
-//!   backends turn out to answer a *different question* — Windows' ICU is
-//!   a UTS 46 implementation, Apple's Foundation is a URL parser that
-//!   calls one, and only for a host that is not ASCII. Everything
-//!   decidable from ASCII alone is decided there, once, rather than
-//!   repaired per platform.
-//! - **the corpus.** `tests/differential.rs` pins both implementations'
-//!   answers on 40 rows; that is what makes "the platform agrees" a
-//!   measurement rather than a hope, and it is shared by every target.
-//! - **a typed error**, instead of a `bool` from a conversion that
-//!   silently did something else.
-//!
-//! One alternative was measured and rejected rather than argued about:
-//! pinning `idna_adapter` to 1.1.0 (the unicode-rs backend) is one
-//! `cargo update`, needs no code and collapses the graph to 11 crates —
-//! but it **doubles** the Unicode data, 128,784 B of `.rodata` to
-//! 257,936 B, and runs a Unicode version behind ICU4X, which for IDN is a
-//! different host rather than a cosmetic difference.
+//! One alternative was measured and is worse. Pinning `idna_adapter` to
+//! 1.1.0 — the unicode-rs backend — is one `cargo update`, needs no code
+//! and collapses the graph to 11 crates, and this workspace recommended
+//! it for two verticals on that basis. In a stripped binary it is
+//! **126 KiB larger** than the ICU one, and it runs a Unicode version
+//! behind, which for IDN is a different host rather than a cosmetic
+//! difference. A count of crates is not a count of bytes.
 //!
 //! # The contract: this is `idna::domain_to_ascii_cow(_, AsciiDenyList::URL)`
 //!
@@ -147,115 +126,76 @@
 //!   one per line, and why the corpus in `tests/differential.rs` opens
 //!   with those two rows.
 //!
-//! # Which platform, and what it costs
+//! # Which platform answers
 //!
-//! Two platform backends, and one rule decides who gets one: **static
-//! linkage against an ABI the OS versions for us.** Windows and Apple
-//! qualify by different routes; Linux does not, and the ELF `dlopen`
-//! backend that once lived here was removed for that reason (see
-//! `icu/mod.rs`). They are otherwise nothing alike:
+//! Four backends and one module alias. `lib.rs` selects one with
+//! `cfg_select!` and names no operating system past that line; each
+//! exports `find`, `to_ascii`, `to_unicode` and a `Handle`.
 //!
-//! - **Windows** — `icuuc.dll`, **linked** through `windows-sys`, whose
-//!   `Win32_Globalization` already declares `uidna_openUTS46`,
-//!   `uidna_nameToASCII_UTF8`, `uidna_close`, `UIDNAInfo` and every
-//!   `UIDNA_*` constant, generated from Microsoft's Win32 metadata. So
-//!   nothing is transcribed by hand here and `src/icu/windows.rs` has no
-//!   `extern` block at all. This works because Windows' ICU is built with
-//!   `U_DISABLE_RENAMING` and its exports are *unsuffixed* — a correction
-//!   to this project's own design note, which said the opposite; that is
-//!   a fact about Linux.
+//! | target | backend | `unsafe` |
+//! |---|---|---|
+//! | Windows | `icuuc.dll`, linked through `windows-sys` | amendment C9 |
+//! | Apple | Foundation, `NSURL` and `NSURLComponents` | none |
+//! | Android | `android.icu.text.IDNA` (ICU4J) over JNI | amendment C19 |
+//! | Linux, other ELF unixes, wasm | the `idna` crate | none |
 //!
-//!   The cost is real and is not hedged: `windows-link` emits a
-//!   `raw-dylib` **load-time** import, so a Windows without `icuuc.dll` —
-//!   10 before 1703, and Server 2016 — does not fall back, the process
-//!   fails to start. The floor is therefore **Windows 10 1703 / Server
-//!   2019**, stated rather than degraded to.
-//! - **Linux and other ELF unixes** — `libicuuc.so.NN`, **resolved at run
-//!   time**, because here the symbols *and* the soname carry the version
-//!   (`uidna_openUTS46_78`) and there is nothing stable to link. Having to
-//!   do that buys the graceful behaviour the Windows side gives up: a
-//!   machine with no ICU gets an ordinary miss. It is also what makes this
-//!   crate's central claim *testable on a Linux CI runner* rather than
-//!   only on Windows.
-//! - **macOS — Foundation, and it is the cheapest backend of the three.**
-//!   `URL(string:)` converts a Unicode host to its A-label, and
-//!   `swift-foundation`'s `URLParser+ICU.swift` opens its handle with
-//!   `UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ |
-//!   UIDNA_NONTRANSITIONAL_TO_UNICODE | UIDNA_NONTRANSITIONAL_TO_ASCII` —
-//!   bit for bit `OPTIONS`, arrived at independently, which is the best
-//!   corroboration that constant will ever get.
+//! **Windows.** `windows-sys`' `Win32_Globalization` already declares
+//! `uidna_openUTS46`, `uidna_nameToASCII_UTF8`, `uidna_nameToUnicodeUTF8`,
+//! `uidna_close`, `UIDNAInfo` and every `UIDNA_*` constant, generated from
+//! Microsoft's Win32 metadata, so nothing is transcribed by hand and
+//! `src/icu/windows.rs` has no `extern` block at all. This works because
+//! Windows' ICU is built with `U_DISABLE_RENAMING` and its exports are
+//! unsuffixed. The cost is not hedged: `windows-link` emits a `raw-dylib`
+//! **load-time** import, so a Windows without `icuuc.dll` — 10 before
+//! 1703, and Server 2016 — does not fall back, the process fails to
+//! start. The floor is **Windows 10 1703 / Server 2019**, stated rather
+//! than degraded to.
 //!
-//!   **It needs no `unsafe` at all**, and so no spec amendment, where the
-//!   Windows backend needs C9: every `objc2-foundation` call is a safe
-//!   function, measured by a draft that wrapped them and drew ten
-//!   `unnecessary unsafe block` warnings. That is the cheapest reason to
-//!   keep it.
+//! **Apple.** `swift-foundation`'s `URLParser+ICU.swift` opens its handle
+//! with `UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ |
+//! UIDNA_NONTRANSITIONAL_TO_UNICODE | UIDNA_NONTRANSITIONAL_TO_ASCII` —
+//! bit for bit the option word below, arrived at independently, which is
+//! the best corroboration that constant will ever get. It needs no
+//! `unsafe` at all: every `objc2-foundation` call is a safe function,
+//! measured by a draft that wrapped them and drew ten `unnecessary unsafe
+//! block` warnings. The catch is that Foundation converts as a side
+//! effect of *parsing a URL*, so it answers only for a host that is not
+//! already ASCII, and the reverse direction is `NSURLComponents::host`
+//! where the forward one is `NSURL::host` — the *encoded* getter being
+//! the ASCII one, which is the opposite of what the names suggest.
 //!
-//!   The catch is that Foundation converts as a **side effect of parsing a
-//!   whole URL**, which costs four things — a host that changes where the
-//!   URL ends, a scheme the caller could otherwise supply, no error
-//!   channel, and two getters that disagree. Each is closed rather than
-//!   hoped away; see `foundation.rs`. `libicucore.dylib`, Apple's own ICU,
-//!   stays out of reach: no headers, symbols documented as not for
-//!   third-party linking, and since Big Sur not on disk to `dlopen`.
+//! **Android.** ICU4J, the same ICU the Windows backend calls, under the
+//! same option bits and the same error names — but the NDK exposes no C
+//! entry point, so the way in is JNI. It has been executed on a device,
+//! API 35, and the first run refused every name: the walk shared by both
+//! directions had kept the ASCII direction's closing check. Thirteen
+//! cases agree with `idna` there now, including every error name the
+//! backend forgives.
 //!
-//!   **A fifth cost, and it is the one the first live run found: the hook
-//!   only runs when the host is not ASCII.** An ASCII host passes RFC 3986
-//!   `reg_name` validation and is copied into the URL verbatim, so nothing
-//!   lower-cases it, nothing decodes an `xn--` label in it, and an empty
-//!   host is a parse failure rather than the empty name. `policy.rs` takes
-//!   all of that over, for both backends rather than for this one; see its
-//!   module docs for the three corpus rows that measured it.
-//! - **wasm** — no dynamic loader and no system ICU, so the bundled path
-//!   today. But **the browser is a platform IDN implementation**, and on
-//!   the evidence it is the best one of the lot: `new URL(…).hostname` in
-//!   Chrome 151 agrees with `idna` on all twelve probes tried, including
-//!   `straße.de` → `xn--strae-oqa.de`, and it independently pins three
-//!   rows of the contract table above (`-lead.de` passes, so
-//!   _CheckHyphens=false_; `a..b` passes, so _VerifyDnsLength=false_;
-//!   `١٢٣.com` throws, so _CheckBidi=true_). `web-sys` is already in
-//!   `hclient-fetch`'s graph, so it costs no new crate — and it needs no
-//!   `unsafe` at all, unlike every other platform path here.
-//!
-//!   Not implemented, and one precondition is why it must
-//!   not be done casually: `URL` is a *parser*, so `ex@ample.com` comes
-//!   back as the host `ample.com` and `ex/ample.com` as `ex` — a
-//!   wrong-origin generator if an unvalidated string is handed to it.
-//!   Every input in that family carries a byte from the forbidden-domain
-//!   set, so `is_forbidden_domain_byte` run *before* `new URL()`
-//!   removes all of them; the check already exists here, for the other
-//!   platform. One divergence would remain and is a decision rather than
-//!   a bug to route around: browsers accept invalid punycode (`xn--a.de`)
-//!   where `idna` rejects it — _IgnoreInvalidPunycode_, `false` in the
-//!   table above and effectively `true` in a browser. Firefox and Safari
-//!   are **unverified**; this project already has one Chrome/Safari split
-//!   recorded in `Capabilities`, so they need the same probe under
-//!   `wasm-pack test --headless` before any of this is believed.
+//! **Everything else** takes the bundled crate, which is also what
+//! `--features idna` forces everywhere.
 //!
 //! # Features
 //!
-//! | features | behaviour |
+//! One, and it is off by default.
+//!
+//! | feature | behaviour |
 //! |---|---|
-//! | `platform` (default) | **resolved by target**: the platform's ICU on Windows and ELF unixes, the `idna` crate on macOS, wasm and anything else |
-//! | `bundled` | the `idna` crate explicitly, on a target that has no system ICU; a compile error naming the target on one that does |
-//! | `system-icu` | Windows' `icuuc.dll` explicitly; a no-op on a target that has no such dependency |
-//! | `foundation` | Apple's Foundation explicitly; likewise |
-//! | neither | a `compile_error!`, not a silently useless crate |
+//! | *(none)* | the platform's own UTS 46 where the target has one, the `idna` crate where it does not |
+//! | `idna` | **forces** the bundled crate and its Unicode tables on every target |
 //!
-//! The two backends are **never both compiled in**, and that is a
-//! consequence rather than a preference: cargo features are
-//! target-independent while dependencies are not, so the target tables in
-//! `Cargo.toml` are the only place the choice can vary — and a table
-//! either supplies `idna` for this target or does not. Asking for the
-//! backend this target has no dependency for is a `cargo::error` from
-//! `build.rs` naming the target, not a feature that silently does
-//! nothing.
+//! It *forces* rather than selects, which is why there is one switch and
+//! not four: on Linux and wasm the answer does not change with it, so a
+//! selector would have a setting that buys nothing, and `build.rs` turns
+//! (feature, target) into exactly one backend cfg. The four it replaced —
+//! `platform`, `bundled`, `system-icu`, `foundation` — had combinations
+//! that selected two backends at once or none, and the crate carried a
+//! `compile_error!` for the empty case.
 //!
-//! **Comparing the two therefore happens in the tests, not at run time.**
-//! `idna` is a dev-dependency, so `tests/differential.rs` can call it
-//! directly as the oracle on exactly the targets where it is *not* a
-//! normal dependency — which is the only place the comparison is worth
-//! making.
+//! **Comparing the two happens in the tests, not at run time.** `idna` is
+//! a dev-dependency, so `tests/differential.rs` calls it directly as the
+//! oracle on exactly the targets where it is *not* a normal dependency —
+//! which is the only place the comparison is worth making.
 //!
 //! # The risk that is left, named rather than buried
 //!
@@ -571,11 +511,15 @@ fn over(domain: &str, direction: Direction) -> Result<Cow<'_, str>, IdnError> {
 /// every backend feature requested at once, emits exactly one
 /// `rustc-cfg` per target — `idna_backend` on `x86_64-unknown-linux-gnu`,
 /// `icu_backend` on `x86_64-pc-windows-msvc`, `apple_backend` on
-/// `aarch64-apple-darwin`, and never two. Making `idna` available beside a
-/// platform backend would buy the comparison back at the price of the ICU
-/// tables on Windows and macOS, which is the saving this crate exists for.
-/// [`testing::policy_over`] is the differential seam that does work, and
-/// `fuzz/fuzz_targets/idn_policy_vs_idna.rs` is what uses it.
+/// `aarch64-apple-darwin`, `android_backend` on `aarch64-linux-android`,
+/// and never two. Making `idna` available beside a platform backend would
+/// buy the comparison back at the price of the ICU tables on the three
+/// platforms this crate exists to keep them off.
+///
+/// So the comparison lives where the two implementations are both
+/// reachable: `tests/differential.rs` calls `idna` as a dev-dependency
+/// and the platform through `testing::platform`, on the targets that have
+/// one.
 ///
 /// Not a public API: no stability promise, and nothing in the client calls
 /// it.
