@@ -1017,7 +1017,7 @@ line: `Native` keeping the impl and delegating the framing costs a caller
 (`Tungstenite::new(client.transport()).websocket(req)`) — and leaves the
 defect exactly where it was, since the impl needs `tungstenite` and would
 put the feature straight back on the transport. It borrows rather than
-owns, unlike `Selecting`, because `Native` is not `Clone` and
+owns, unlike the QUIC arm, because `Native` is not `Clone` and
 `Client::builder` takes its transport by value: owning would cost either a
 second transport with a second pool or a `Transport` impl on a type that
 sends no requests. `hclient-fetch` is untouched by all of this and needs
@@ -1593,9 +1593,9 @@ code path the bound property requires to be absent. Half a retry would be
 the rule with an exception.
 
 **The first customer is Alt-Svc's negative half**, not the race — the
-reverse of the order both were written in. `Selecting` asks `H3` to
+reverse of the order both were written in. the transport asks its QUIC arm to
 *connect*; where that fails it records the origin in
-`hclient_select::H3Failures` and routes the request — untouched, unsent,
+`hclient_native::H3Failures` and routes the request — untouched, unsent,
 never handed to a transport — over TCP. So the fallback is not
 request-level retry and needs no `retry_kind()` condition:
 `hclient-native`'s own sentence is true of it verbatim, *this is not a
@@ -1710,7 +1710,7 @@ advertisement, which is the mutation that rule exists to fail.
 own SHOULD on *"when information about network state is available"*, and to
 a `Transport` it is not: a cache surviving a laptop's move between networks
 advertises an alt-authority that was reachable somewhere else. So nothing is
-persisted, and `Selecting::network_changed()` is the only entry point —
+persisted, and `Native::network_changed()` is the only entry point —
 public, for the caller who can see what the transport cannot. Until it is
 called every entry behaves as `persist=1`, which is the unsafe direction and
 is said where the setter is.
@@ -1719,8 +1719,8 @@ is said where the setter is.
 reading to establish that it was missing rather than misplaced:
 `hclient-native`'s `NegativeCache` is a different fact — a TCP connect
 through a discovered endpoint failed — and it never sees an h3 attempt,
-because when `Selecting` routes to `H3` the native transport is not called
-at all. `hclient_select::H3Failures` is the memory that was owed; the
+because when the transport routes to its QUIC arm the TCP path is not called
+at all. `hclient_native::H3Failures` is the memory that was owed; the
 **staged connect** is what unblocked it, and the section below is that.
 
 `.notes/v04-w1-acceptance.md` §7 and §9 say what the race would need and what
@@ -1796,6 +1796,54 @@ not the only possibility. Nineteen mutations applied, nineteen killed; the
 first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
+
+### A seam review, and what a scan of thirty-five traits found
+
+Asked to review the architecture and the seams. The inventory is
+reassuring and the two findings are both of one kind.
+
+**The shapes are consistent where it matters.** `Transport` keeps an
+RPITIT, so nothing can demand `Send` of it and `hclient-rt-embassy` can
+exist; every seam beneath it — `Resolve`, `TcpConnect`, `TlsConnect`,
+`Blocking`, `Timer` — carries **associated future types**, so each
+implementor answers for its own auto traits. The exceptions are the two
+newest, `StagedConnect` and `Prefetch`, which are written as RPITITs, and
+the cost of that was measured rather than assumed: it is why the QUIC arm
+reaches `Native` through `http3::arm`'s erasure, and the erasure is
+`Send` anyway.
+
+**Every defaulted constant has the reader it was designed for**, which is
+the `UpgradeSupport` question asked of the pattern that replaced it:
+`reports_alpn` is read by `may_speak_h2`, `applies_ech` by the connector,
+`SUPPORTS_UNIX` by `unix_socket`, `presents_client_certs` by both
+capability tables. None is a distinction with one reachable side.
+
+**Three of thirty-five traits are named in no test**, and all three are
+the erasure traits — `BoxedTransport`, `BoxedTimer`, `ErasedInstant` —
+which every `Client` test exercises without naming.
+
+**The first finding was a claim with no check**, and it is the row this
+file has gone stale on before: `Native::execute` is `Send` with the h3
+arm installed, written down since amendment C15 and asked of the compiler
+by nothing, because `send_future.rs` builds the arm-less stack.
+`h3_send_future.rs` asks it now, and discriminates seven of the ten
+`Send` declarations in `http3/arm.rs`.
+
+**The second was a name.** Two traits called `StagedConnect` lived in one
+crate — one per stack, which was one per *crate* until `hclient-h3`
+folded in at `f4dfe48`. The root already exported the h3 one as
+`H3StagedConnect`, so the surface was unambiguous and the definition was
+not; the definition took the exported name.
+
+**And this section's own subject matter was stale in four places.** The
+transport that chooses between the stacks was `Selecting` in
+`hclient-select` when it was written, and both dissolved into
+`hclient-native` with the same commit: `H3Failures` is
+`hclient_native::H3Failures`, `network_changed` is `Native`'s, and there
+is no type called `Selecting` anywhere in the workspace. Four sentences
+here named one or the other. That is the defect this file records against
+itself in every other section, found by asking a scan which traits exist
+rather than by reading.
 
 ### `embedded-nal-async` is the right seam for later and blocked twice now
 
