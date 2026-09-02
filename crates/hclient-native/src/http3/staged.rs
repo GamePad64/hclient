@@ -21,7 +21,7 @@
 //! `connect: Some(C)` can be made to wait `2C`. *"A bound a server can
 //! double is not a bound"*, one crate over.
 //!
-//! [`StagedConnect::exchange`] here is handed a resolved address, a
+//! [`H3StagedConnect::exchange`] here is handed a resolved address, a
 //! checked-out connection and an h3 `SendRequest`. It resolves nothing,
 //! looks in no pool and dials nothing, so the bound is not ignored by it —
 //! it is absent from it.
@@ -64,7 +64,7 @@
 //! # There is no `Prepared` on this side, and that is not an omission
 //!
 //! `hclient-h3` makes no HTTPS-record lookup at all, so there is nothing
-//! for a `Prefetch` to save and nothing for [`StagedConnect::connect`] to
+//! for a `Prefetch` to save and nothing for [`H3StagedConnect::connect`] to
 //! take but the request itself.
 
 use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
@@ -77,6 +77,21 @@ use std::sync::Arc;
 
 /// A transport whose connect can be asked for on its own, and whose answer
 /// can then be spent on exactly one request.
+///
+/// **Named `H3StagedConnect` rather than `StagedConnect`, and the reason
+/// is that the two crates became one.** It was one trait per crate when
+/// `hclient-h3` was a crate; since it folded into this one there were two
+/// traits of the same name in one crate, told apart only by which module
+/// a reader was standing in — and the crate root had already worked
+/// around it, exporting this one as `StagedConnect as H3StagedConnect`.
+/// A definition whose name differs from the name it is exported under is
+/// a thing `grep` lies about, so the definition took the exported name.
+///
+/// `Staged` and `Refused` beside it still carry the `as` rename, and that
+/// is deliberate rather than half-finished: they are this trait's payload
+/// types, named inside its own signature where no ambiguity exists, and
+/// the associated type `Staged` on the trait below would collide with a
+/// struct called `H3Staged` in exactly the way this rename was undoing.
 ///
 /// The same shape `hclient_native::StagedConnect` has, declared separately
 /// rather than shared: a trait is declared by the crate that implements
@@ -91,7 +106,7 @@ use std::sync::Arc;
 /// and `hclient-fetch` declares `timeouts.connect = false` because
 /// `AbortSignal` is one deadline for the whole exchange; a
 /// `Transport::connect` would be `Unsupported` for two of four backends.
-pub trait StagedConnect: Transport {
+pub trait H3StagedConnect: Transport {
     /// A connection this transport made or found, together with the
     /// request it was made for.
     ///
@@ -203,7 +218,7 @@ type SendStaging<'a, S> = std::pin::Pin<Box<dyn Future<Output = Result<S, Refuse
 type SendExchange<'a, B> =
     std::pin::Pin<Box<dyn Future<Output = Result<http::Response<B>, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 
-impl<R, T, D, H> StagedConnect for H3<R, T, D, H>
+impl<R, T, D, H> H3StagedConnect for H3<R, T, D, H>
 where
     R: H3Runtime,
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
@@ -213,7 +228,7 @@ where
     // Nameable, which is the point: `H3`'s own handshake is `Send` when
     // its resolver's answers are, and the associated types let that be
     // said. A resolver that cannot — `hclient-dns-doh` — leaves this
-    // `H3` without a `StagedConnect`, which is narrower than the arm
+    // `H3` without a `H3StagedConnect`, which is narrower than the arm
     // being `!Send` for everybody.
     Self: Sync,                // send-bound-exception: amendment-C15
     Staged<R, H>: Send,        // send-bound-exception: amendment-C15

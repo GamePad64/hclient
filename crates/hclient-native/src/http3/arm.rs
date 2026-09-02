@@ -6,7 +6,7 @@
 //! `H3`'s own declaration carries no where-clause, so naming the type
 //! costs nothing. The cost is in `impl Transport for Native`: routing to a
 //! concrete `H3<R, T, D>` means calling into it, which pulls
-//! `H3<R, T, D>: StagedConnect` into that impl's where-clause — and from
+//! `H3<R, T, D>: H3StagedConnect` into that impl's where-clause — and from
 //! there `R: UdpBind + Spawn<QuinnTask> + Send + Sync + 'static` and
 //! `T: QuicTlsConnect`, **unconditionally**, because Cargo's features are
 //! additive. `Native<Embassy, NoTls, IpLiteralOnly>` would stop compiling
@@ -18,7 +18,7 @@
 //!
 //! # Two traits, because the handle outlives the call that made it
 //!
-//! `StagedConnect::exchange` takes `&self` **and** the handle, so an
+//! `H3StagedConnect::exchange` takes `&self` **and** the handle, so an
 //! erased handle has to carry the transport it came from. That is
 //! [`StagedOver`], and it is why [`BoxedStaged`] exists rather than the
 //! handle being a `Box<dyn Any>` the connector downcasts: a downcast can
@@ -31,10 +31,10 @@
 //! lifetime its trait does not have. `BoxExchange<'static>` there is a
 //! borrow-check error, which is the check that the borrow is real — so a
 //! handle cannot outlive the `&self` that produced it, which is exactly
-//! the contract `StagedConnect` already has and the reason this is safe
+//! the contract `H3StagedConnect` already has and the reason this is safe
 //! to erase at all.
 
-use crate::http3::{Refused, StagedConnect};
+use crate::http3::{H3StagedConnect, Refused};
 use bytes::Bytes;
 use hclient_core::Error as CoreError;
 use hclient_core::RequestBody;
@@ -91,12 +91,12 @@ type Staging<'a> = Pin<
 /// one sits in cannot opt out — the alternative is a hand-written `Debug`
 /// for a struct with a dozen fields, which drifts. `H3` derives it.
 ///
-/// Blanket-implemented over every [`StagedConnect`], so `hclient-h3`
+/// Blanket-implemented over every [`H3StagedConnect`], so `hclient-h3`
 /// implements nothing for it — the same arrangement
 /// `hclient_core::unversioned::erased::BoxedTransport` has, and for the
 /// same reason: a seam a backend has to opt into is a seam backends forget.
 pub(crate) trait BoxedStagedConnect: Debug {
-    /// [`StagedConnect::connect`], boxed.
+    /// [`H3StagedConnect::connect`], boxed.
     ///
     /// `Refused` carries the request back untouched, which is the whole
     /// reason the staged pair exists rather than `execute`: a QUIC connect
@@ -108,7 +108,7 @@ pub(crate) trait BoxedStagedConnect: Debug {
 /// A connection staged by a [`BoxedStagedConnect`], with one thing left to
 /// do to it.
 pub(crate) trait BoxedStaged<'a> {
-    /// [`StagedConnect::exchange`], boxed. Takes `Box<Self>` because a
+    /// [`H3StagedConnect::exchange`], boxed. Takes `Box<Self>` because a
     /// staged connection is spent exactly once.
     ///
     /// The `'a` is the transport's, carried on the trait rather than left
@@ -121,14 +121,14 @@ pub(crate) trait BoxedStaged<'a> {
 
 /// The transport and the handle together, which is what makes the handle
 /// erasable: `exchange` needs both and the caller holds neither.
-struct StagedOver<'a, T: StagedConnect> {
+struct StagedOver<'a, T: H3StagedConnect> {
     transport: &'a T,
     staged: T::Staged,
 }
 
 impl<T> BoxedStagedConnect for T
 where
-    T: StagedConnect<Error = CoreError> + Debug + Sync + 'static, // send-bound-exception: amendment-C15
+    T: H3StagedConnect<Error = CoreError> + Debug + Sync + 'static, // send-bound-exception: amendment-C15
     for<'a> T::Connecting<'a>: Send, // send-bound-exception: amendment-C15
     for<'a> T::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
     T::Body: 'static,
@@ -149,9 +149,9 @@ where
 
 impl<'a, T> BoxedStaged<'a> for StagedOver<'a, T>
 where
-    T: StagedConnect<Error = CoreError> + Sync, // send-bound-exception: amendment-C15
-    for<'b> T::Exchanging<'b>: Send,            // send-bound-exception: amendment-C15
-    T::Staged: Send,                            // send-bound-exception: amendment-C15
+    T: H3StagedConnect<Error = CoreError> + Sync, // send-bound-exception: amendment-C15
+    for<'b> T::Exchanging<'b>: Send,              // send-bound-exception: amendment-C15
+    T::Staged: Send,                              // send-bound-exception: amendment-C15
     T::Body: http_body::Body<Data = Bytes, Error = CoreError> + Send + 'static, // send-bound-exception: amendment-C12
 {
     fn exchange_boxed(self: Box<Self>) -> SendExchange<'a> {

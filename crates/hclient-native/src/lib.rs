@@ -91,7 +91,7 @@ pub use http3::{
 /// Nothing needs polymorphism between them: the routing owns both
 /// concretely.
 #[cfg(feature = "http3")]
-pub use http3::{Refused as H3Refused, Staged as H3Staged, StagedConnect as H3StagedConnect};
+pub use http3::{H3StagedConnect, Refused as H3Refused, Staged as H3Staged};
 #[cfg(feature = "http3")]
 mod race;
 #[cfg(feature = "http3")]
@@ -1905,12 +1905,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     #[cfg(feature = "http3")]
     pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
     where
-        crate::http3::H3<R, T, D>: crate::http3::StagedConnect<Error = Error> + Debug,
+        crate::http3::H3<R, T, D>: crate::http3::H3StagedConnect<Error = Error> + Debug,
         <crate::http3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
             http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
-        <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
-        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
-        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
+        <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
+        for<'a> <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
         crate::http3::H3<R, T, D>: Sync, // send-bound-exception: amendment-C15
         R: Send + Sync + 'static,        // send-bound-exception: amendment-C12
         T: Send + Sync + 'static,        // send-bound-exception: amendment-C12

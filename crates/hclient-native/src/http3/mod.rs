@@ -85,7 +85,7 @@ pub use crate::http3::runtime::QuinnTask;
 pub use body::H3Body;
 pub use error::{ConnectTimedOut, RequestTrailersNotSent, UnknownRequestBodyFrame};
 
-pub use staged::{Refused, Staged, StagedConnect};
+pub use staged::{H3StagedConnect, Refused, Staged};
 
 use bytes::Bytes;
 use hclient_core::unversioned::{
@@ -1176,7 +1176,7 @@ where
     type Error = Error;
 
     /// `H3::stage` then `H3::finish` — the same two halves
-    /// [`crate::http3::StagedConnect`] hands a caller separately, in one call.
+    /// [`crate::http3::H3StagedConnect`] hands a caller separately, in one call.
     ///
     /// One sequencing with two entry points, for `Native::run`'s reason:
     /// the alternative is two orders of the same steps, and the two would
@@ -1261,7 +1261,7 @@ where
 }
 
 /// The `Send` half of the seam. Its bounds are the ones
-/// `StagedConnect for H3` already carries, for the same reason and named
+/// `H3StagedConnect for H3` already carries, for the same reason and named
 /// the same way: this backend's exchange crosses a thread exactly when
 /// its runtime's and its resolver's answers do.
 impl<R, T, D, H> hclient_core::unversioned::SendTransport for H3<R, T, D, H>
