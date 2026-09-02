@@ -1,11 +1,12 @@
-//! `supports_svcb()` is `true`, and a record proves it by round-tripping.
+//! `supports(rtype::HTTPS)` is `true`, and a record proves it by
+//! round-tripping.
 //!
 //! This is the claim the crate exists for: §W3 opens with *"it is the
 //! answer for every platform whose system resolver cannot ask for an HTTPS
 //! record, which is Windows 10, wasm, and anything behind a stub resolver
 //! that drops type 65."* A capability that over-claims costs a caller a
 //! wrong decision, and this codebase has caught that four times — so
-//! `supports_svcb()` returning `true` is not asserted on its own anywhere
+//! `supports` returning `true` is not asserted on its own anywhere
 //! in this file. Every test that reads it also puts an HTTPS record on the
 //! wire and checks what came out the other end.
 //!
@@ -16,7 +17,7 @@
 mod support;
 
 use futures_util::StreamExt;
-use hclient_dns::{Resolve, SvcbEndpoint};
+use hclient_dns::{Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -34,7 +35,7 @@ const KEY_IPV6HINT: u16 = 6;
 /// RFC 9461's `dohpath`: real, registered, and acted on by nothing here.
 const KEY_DOHPATH: u16 = 7;
 
-type Item = Result<SvcbEndpoint, hclient_core::Error>;
+type Item = Result<hclient_dns::Record, hclient_core::Error>;
 
 fn doh(server: &Server) -> Doh<Native<Tokio, NoTls, hclient_dns::IpLiteralOnly>> {
     Doh::pinned(
@@ -44,8 +45,16 @@ fn doh(server: &Server) -> Doh<Native<Tokio, NoTls, hclient_dns::IpLiteralOnly>>
     .expect("a loopback literal endpoint")
 }
 
+/// The HTTPS record a `Record` carries, for the assertions below.
+fn https(record: &hclient_dns::Record) -> &hclient_dns::SvcbEndpoint {
+    record
+        .rdata
+        .https()
+        .expect("a type 65 query answers an HTTPS record")
+}
+
 async fn endpoints(server: &Server, name: &str) -> Vec<Item> {
-    doh(server).lookup_svcb(name).collect().await
+    doh(server).lookup(name, rtype::HTTPS).collect().await
 }
 
 /// An `alpn` SvcParamValue: each id length-prefixed with one byte
@@ -74,7 +83,7 @@ fn ech(payload: &[u8]) -> Vec<u8> {
 /// parameters `SvcbEndpoint` can hold, put on the wire by a server that
 /// knows nothing about this crate, and read back field by field.
 ///
-/// A resolver that answered `supports_svcb() == true` and returned nothing
+/// A resolver that answered `supports(HTTPS) == true` and returned nothing
 /// fails here. So does one that returns endpoints with empty fields.
 #[tokio::test]
 async fn a_service_mode_record_round_trips_every_field_svcbendpoint_holds() {
@@ -107,25 +116,29 @@ async fn a_service_mode_record_round_trips_every_field_svcbendpoint_holds() {
     assert_eq!(found.len(), 1, "expected one endpoint, got {found:?}");
     let e = found[0].as_ref().expect("an endpoint, not an error");
 
-    assert_eq!(e.priority, 1);
-    assert_eq!(e.target, "svc.example.net");
+    assert_eq!(https(e).priority, 1);
+    assert_eq!(https(e).target, "svc.example.net");
     assert_eq!(e.ttl, Some(std::time::Duration::from_secs(3600)));
-    assert_eq!(e.alpn, vec![b"h3".to_vec(), b"h2".to_vec()]);
-    assert_eq!(e.port, Some(8443));
-    assert_eq!(e.ipv4hint, vec![Ipv4Addr::new(192, 0, 2, 1)]);
+    assert_eq!(https(e).alpn, vec![b"h3".to_vec(), b"h2".to_vec()]);
+    assert_eq!(https(e).port, Some(8443));
+    assert_eq!(https(e).ipv4hint, vec![Ipv4Addr::new(192, 0, 2, 1)]);
     assert_eq!(
-        e.ipv6hint,
+        https(e).ipv6hint,
         vec!["2001:db8::1".parse::<Ipv6Addr>().expect("v6")]
     );
     // RFC 9460 §7.3's redundant length prefix survives, because that is
     // the form `rustls::EchConfig` parses.
     assert_eq!(
-        e.ech_config_list.as_deref(),
+        e.rdata
+            .https()
+            .expect("an https answer")
+            .ech_config_list
+            .as_deref(),
         Some(&[0x00, 0x03, 0xab, 0xcd, 0xef][..])
     );
 
     // Read only after the record above proved the capability is real.
-    assert!(doh(&server).supports_svcb());
+    assert!(doh(&server).supports(rtype::HTTPS));
 }
 
 /// RFC 9460 §2.5: a ServiceMode TargetName of `.` means the record's own
@@ -139,7 +152,13 @@ async fn a_service_mode_record_with_a_root_target_takes_its_owner_name() {
     ));
     let found = endpoints(&server, "example.com").await;
     assert_eq!(
-        found[0].as_ref().expect("an endpoint").target,
+        found[0]
+            .as_ref()
+            .expect("an endpoint")
+            .rdata
+            .https()
+            .expect("an https answer")
+            .target,
         "example.com"
     );
 }
@@ -171,7 +190,13 @@ async fn a_record_making_dohpath_mandatory_is_ignored_and_the_usable_one_is_kept
     let found = endpoints(&server, "example.com").await;
     assert_eq!(found.len(), 1, "expected the unusable record to be dropped");
     assert_eq!(
-        found[0].as_ref().expect("an endpoint").target,
+        found[0]
+            .as_ref()
+            .expect("an endpoint")
+            .rdata
+            .https()
+            .expect("an https answer")
+            .target,
         "usable.example"
     );
 }
@@ -197,14 +222,14 @@ async fn a_mandatory_key_the_record_does_not_carry_is_an_error() {
 }
 
 /// No HTTPS record for a name that exists. An answer, so an empty stream —
-/// and with `supports_svcb() == true` that empty stream unambiguously
+/// and with `supports(HTTPS) == true` that empty stream unambiguously
 /// means "asked, found none", which is the whole reason the two methods
 /// have to be overridden together.
 #[tokio::test]
 async fn a_name_with_no_https_record_is_an_empty_stream_not_an_error() {
     let server = Server::answering(noerror("example.com", TYPE_HTTPS, &[]));
     assert!(endpoints(&server, "example.com").await.is_empty());
-    assert!(doh(&server).supports_svcb());
+    assert!(doh(&server).supports(rtype::HTTPS));
 }
 
 #[tokio::test]
@@ -215,7 +240,7 @@ async fn nxdomain_for_an_https_query_is_also_an_empty_stream() {
 
 /// A DoH failure on an SVCB lookup is an error, never an empty stream —
 /// and specifically never routed to a fallback resolver, because a
-/// fallback that reports `supports_svcb() == false` would answer "there
+/// fallback that reports `supports(HTTPS) == false` would answer "there
 /// are none" to a question it never asked.
 #[tokio::test]
 async fn a_failed_svcb_lookup_is_an_error_even_with_a_fallback_configured() {
@@ -226,7 +251,7 @@ async fn a_failed_svcb_lookup_is_an_error_even_with_a_fallback_configured() {
     .expect("endpoint")
     .with_fallback(hclient_dns::IpLiteralOnly);
 
-    let found: Vec<Item> = doh.lookup_svcb("example.com").collect().await;
+    let found: Vec<Item> = doh.lookup("example.com", rtype::HTTPS).collect().await;
     assert_eq!(found.len(), 1);
     found[0].as_ref().expect_err("expected an error");
 }
@@ -234,7 +259,7 @@ async fn a_failed_svcb_lookup_is_an_error_even_with_a_fallback_configured() {
 /// **The record's own lifetime reaches the caller, and it is read off the
 /// wire rather than defaulted.**
 ///
-/// `SvcbEndpoint::ttl` is what makes a cache of HTTPS records honest —
+/// `Record::ttl` is what makes a cache of HTTPS records honest —
 /// without it, a consumer wanting one has to invent a lifetime for
 /// somebody else's answer, which is the reason `hclient-native`'s
 /// discovery has no cache. The value was always on the wire; it simply

@@ -6,13 +6,13 @@
 //! carried as opaque octets that reach `rustls` and the ALPN negotiator
 //! unchanged. The tests below are written from the consumer's side of the
 //! trait — a record that only survives being constructed, and not being
-//! streamed out of `lookup_svcb` and read, would be no use to anyone.
+//! streamed out of `lookup` and read, would be no use to anyone.
 
 use bytes::Bytes;
 use futures_util::StreamExt;
 use hclient_core::Error;
-use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 /// A resolver that hands back exactly the records it was built with, so
@@ -21,46 +21,47 @@ use std::time::Duration;
 struct Canned(Vec<SvcbEndpoint>);
 
 impl Resolve for Canned {
-    type Ipv4<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    type Records<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
-        Box::pin(futures_util::stream::empty())
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA | rtype::HTTPS)
     }
-    type Ipv6<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
-    where
-        Self: 'a;
 
-    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::empty())
-    }
-    fn supports_svcb(&self) -> bool {
-        true
-    }
-    type Svcb<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
-        Box::pin({
-            futures_util::stream::iter(self.0.clone().into_iter().map(Ok).collect::<Vec<_>>())
-        })
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin(futures_util::stream::empty()),
+            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            rtype::HTTPS => Box::pin({
+                futures_util::stream::iter(
+                    self.0
+                        .clone()
+                        .into_iter()
+                        .map(|e| Ok(Record::new(RData::Https(e))))
+                        .collect::<Vec<_>>(),
+                )
+            }),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 
 fn served(records: Vec<SvcbEndpoint>) -> Vec<SvcbEndpoint> {
     let resolver = Canned(records);
-    futures_executor::block_on(resolver.lookup_svcb("example.com").collect::<Vec<_>>())
-        .into_iter()
-        .collect::<Result<_, _>>()
-        .expect("Canned never fails")
+    futures_executor::block_on(
+        resolver
+            .lookup("example.com", rtype::HTTPS)
+            .collect::<Vec<_>>(),
+    )
+    .into_iter()
+    .map(|r| match r.expect("Canned never fails").rdata {
+        RData::Https(e) => e,
+        other => panic!("an HTTPS query answered {other:?}"),
+    })
+    .collect()
 }
 
 fn endpoint(target: &str) -> SvcbEndpoint {
@@ -220,10 +221,8 @@ fn port_and_address_hints_survive_so_the_target_need_not_be_resolved_again() {
 /// them at compile time and observing nothing.
 #[test]
 fn a_resolved_address_and_an_endpoint_can_be_moved_to_another_thread_and_compared() {
-    let addr = ResolvedAddr {
-        addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
-        ttl: Some(Duration::from_secs(30)),
-    };
+    let addr =
+        Record::new(RData::A(Ipv4Addr::new(192, 0, 2, 1))).ttl(Some(Duration::from_secs(30)));
     let mut record = endpoint("svc.example");
     record.ech_config_list = Some(Bytes::from_static(b"\xfe\x0d"));
 

@@ -134,7 +134,7 @@ async fn an_origin_with_no_record_is_served_over_tcp() {
 ///
 /// It is holding a record that offers `h3`, so a transport that read the
 /// stream without first reading the capability would choose QUIC here.
-/// `Resolve::supports_svcb` exists precisely to keep "cannot ask" and
+/// `Resolve::supports` exists precisely to keep "cannot ask" and
 /// "asked and found nothing" apart, and this is the arm where the
 /// difference is visible.
 #[tokio::test(flavor = "multi_thread")]

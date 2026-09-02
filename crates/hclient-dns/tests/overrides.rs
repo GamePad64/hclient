@@ -2,7 +2,7 @@
 //! decisions rather than mechanics.
 
 use futures_util::StreamExt;
-use hclient_dns::{IpLiteralOnly, Overrides, Resolve, ResolvedAddr};
+use hclient_dns::{IpLiteralOnly, Overrides, Record, Resolve, rtype};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 fn v4(a: [u8; 4]) -> IpAddr {
@@ -11,9 +11,9 @@ fn v4(a: [u8; 4]) -> IpAddr {
 
 fn collect_v4<D: Resolve>(d: &D, name: &str) -> Vec<IpAddr> {
     futures_executor::block_on(async {
-        d.lookup_ipv4(name)
+        d.lookup(name, rtype::A)
             .filter_map(|r| async { r.ok() })
-            .map(|r: ResolvedAddr| r.addr)
+            .filter_map(|r: Record| async move { r.rdata.addr() })
             .collect()
             .await
     })
@@ -21,9 +21,9 @@ fn collect_v4<D: Resolve>(d: &D, name: &str) -> Vec<IpAddr> {
 
 fn collect_v6<D: Resolve>(d: &D, name: &str) -> Vec<IpAddr> {
     futures_executor::block_on(async {
-        d.lookup_ipv6(name)
+        d.lookup(name, rtype::AAAA)
             .filter_map(|r| async { r.ok() })
-            .map(|r: ResolvedAddr| r.addr)
+            .filter_map(|r: Record| async move { r.rdata.addr() })
             .collect()
             .await
     })
@@ -116,8 +116,8 @@ fn a_second_entry_for_one_host_replaces_the_first() {
 fn svcb_is_the_resolver_underneath_s_answer_untouched() {
     let dns = Overrides::new(IpLiteralOnly).host("example.com", [v4([203, 0, 113, 7])]);
     assert_eq!(
-        dns.supports_svcb(),
-        IpLiteralOnly.supports_svcb(),
+        dns.supports(rtype::HTTPS),
+        IpLiteralOnly.supports(rtype::HTTPS),
         "the capability is reported by whoever can actually answer it",
     );
 }

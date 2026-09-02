@@ -158,7 +158,7 @@ async fn an_origin_that_publishes_no_record_is_not_asked_about_twice() {
 //
 // `Selecting` took a resolver of its own, separate from the two members',
 // so "the connector could not ask" and "this transport can" were two
-// facts. There is one resolver now, so `supports_svcb() == false` sends
+// facts. There is one resolver now, so `supports(HTTPS) == false` sends
 // the request to the advertisement tier before discovery is reached at
 // all — the arm this test covered has no way in.
 //

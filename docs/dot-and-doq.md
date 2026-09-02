@@ -257,7 +257,9 @@ port, fails identically. The two controls are what make that readable.
 ### 3.3 And the seam's own feature survives the change of transport
 
 An `Resolve` backend is not much use here if it loses HTTPS/SVCB — that is
-what `hclient-dns-hickory` exists for. **Executed**, `lookup_svcb` over DoT:
+what `hclient-dns-hickory` exists for. **Executed**, an HTTPS lookup over
+DoT — the capture below is verbatim from the run, and the method it names
+was `lookup_svcb` before the seam collapsed to one `lookup(name, rtype)`:
 
 ```
 supports_svcb = true

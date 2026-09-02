@@ -14,7 +14,7 @@
 //!
 //! It calls `connect::connect`, and the reason is a defect that is easy to
 //! write twice. Resolving by hand — `.filter_map(|r| async { r.ok() })`
-//! over `Resolve::lookup_ipv4`/`lookup_ipv6`, then synthesizing an
+//! over `Resolve::lookup` for each family, then synthesizing an
 //! `ErrorKind::Resolve` if both streams came out empty — discards every
 //! resolver error, `ErrorKind::Cancelled` among them. Conflating *the
 //! resolver failed* with *the runtime is shutting down* breaks a circuit
@@ -3022,9 +3022,9 @@ pub trait Prefetch: Transport {
     /// The reason recorded here was that an HTTPS record carries no TTL,
     /// so a cache would have to invent a lifetime for someone else's
     /// answer — which is how a resolver's cache and ours drift apart. That
-    /// was true of [`SvcbEndpoint`](hclient_dns::SvcbEndpoint) and never
-    /// of the wire: the lifetime was always on the record, and it is
-    /// carried now. What is left is the ordinary work of a cache — a key,
+    /// was true of the type this crate used to receive and never of the
+    /// wire: the lifetime was always on the record, and
+    /// [`Record::ttl`](hclient_dns::Record::ttl) carries it now. What is left is the ordinary work of a cache — a key,
     /// a bound, and an answer to what `network_changed()` means for an
     /// entry — none of which is written, so this still remembers nothing.
     ///
@@ -4000,9 +4000,7 @@ where
     T::Stream<R::Stream>: 'static + Send,        // send-bound-exception: amendment-C16
     for<'a> T::Handshake<'a, R::Stream>: Send,   // send-bound-exception: amendment-C16
     D: Resolve + Sync + Send,                    // send-bound-exception: amendment-C16
-    for<'a> D::Ipv4<'a>: Send,                   // send-bound-exception: amendment-C16
-    for<'a> D::Ipv6<'a>: Send,                   // send-bound-exception: amendment-C16
-    for<'a> D::Svcb<'a>: Send,                   // send-bound-exception: amendment-C16
+    for<'a> D::Records<'a>: Send,                // send-bound-exception: amendment-C16
     H: Hooks + Clone + Unpin + Sync + Send,      // send-bound-exception: amendment-C16
     P: crate::proxy::Handshake + Clone + Sync + Send, // send-bound-exception: amendment-C16
 {

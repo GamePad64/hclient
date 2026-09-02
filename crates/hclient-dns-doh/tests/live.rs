@@ -61,7 +61,7 @@ mod support;
 use futures_util::StreamExt;
 use hclient_core::RequestBody;
 use hclient_core::unversioned::Transport;
-use hclient_dns::{IpLiteralOnly, Resolve, ResolvedAddr, SvcbEndpoint};
+use hclient_dns::{IpLiteralOnly, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_dns_doh::{Doh, DohError};
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -260,7 +260,7 @@ fn chain(e: &dyn StdError) -> String {
     out
 }
 
-fn expect_addrs(items: Vec<Result<ResolvedAddr, hclient_core::Error>>) -> Vec<ResolvedAddr> {
+fn expect_addrs(items: Vec<Result<Record, hclient_core::Error>>) -> Vec<hclient_dns::Record> {
     items
         .into_iter()
         .map(|i| i.unwrap_or_else(|e| panic!("a live lookup failed: {}", chain(&e))))
@@ -297,9 +297,9 @@ fn is_a_lost_packet(e: &hclient_core::Error) -> bool {
 }
 
 /// A lookup, up to [`ATTEMPTS`] times, retrying only a lost packet.
-async fn lookup_v4(ep: Endpoint, name: &str) -> Vec<Result<ResolvedAddr, hclient_core::Error>> {
+async fn lookup_v4(ep: Endpoint, name: &str) -> Vec<Result<Record, hclient_core::Error>> {
     for attempt in 1..=ATTEMPTS {
-        let got: Vec<_> = doh(ep).lookup_ipv4(name).collect().await;
+        let got: Vec<_> = doh(ep).lookup(name, rtype::A).collect().await;
         match got.as_slice() {
             [Err(e)] if is_a_lost_packet(e) && attempt < ATTEMPTS => {
                 eprintln!(
@@ -317,9 +317,12 @@ async fn lookup_v4(ep: Endpoint, name: &str) -> Vec<Result<ResolvedAddr, hclient
 }
 
 /// The same, for HTTPS records.
-async fn lookup_svcb(ep: Endpoint, name: &str) -> Vec<Result<SvcbEndpoint, hclient_core::Error>> {
+async fn lookup_svcb(
+    ep: Endpoint,
+    name: &str,
+) -> Vec<Result<hclient_dns::Record, hclient_core::Error>> {
     for attempt in 1..=ATTEMPTS {
-        let got: Vec<_> = doh(ep).lookup_svcb(name).collect().await;
+        let got: Vec<_> = doh(ep).lookup(name, rtype::HTTPS).collect().await;
         match got.as_slice() {
             [Err(e)] if is_a_lost_packet(e) && attempt < ATTEMPTS => {
                 eprintln!(
@@ -646,6 +649,12 @@ async fn a_real_https_record_parses_and_every_field_agrees_with_dig() {
         let endpoints: Vec<SvcbEndpoint> = got
             .into_iter()
             .map(|i| i.unwrap_or_else(|e| panic!("live SVCB lookup failed: {}", chain(&e))))
+            .map(|r| {
+                r.rdata
+                    .https()
+                    .cloned()
+                    .expect("type 65 answers an HTTPS record")
+            })
             .collect();
         assert_eq!(
             endpoints.len(),
@@ -1205,7 +1214,10 @@ async fn both_operators_return_the_addresses_this_suite_is_already_talking_to() 
     for ep in OPERATORS {
         let Some(ep) = live(NAME, ep) else { return };
         let v4 = expect_addrs(lookup_v4(ep, "one.one.one.one").await);
-        let addrs: Vec<IpAddr> = v4.iter().map(|a| a.addr).collect();
+        let addrs: Vec<IpAddr> = v4
+            .iter()
+            .map(|a| a.rdata.addr().expect("an address answer"))
+            .collect();
         assert!(
             addrs.contains(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))),
             "{} resolved one.one.one.one to {addrs:?}, which does not include the address this \

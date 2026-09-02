@@ -9,7 +9,7 @@
 
 use hclient_core::unversioned::Transport;
 use hclient_core::{ErrorKind, Phase, RequestBody, Timeouts};
-use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
+use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_native::{Native, ResolveTimedOut};
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
@@ -31,49 +31,33 @@ use std::time::{Duration, Instant};
 struct Answering(Option<Duration>);
 
 impl Resolve for Answering {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
-    }
-
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            let d = self.0;
-            futures_util::stream::once(async move {
-                match d {
-                    Some(d) => tokio::time::sleep(d).await,
-                    None => std::future::pending::<()>().await,
-                }
-                Ok(ResolvedAddr {
-                    addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                    ttl: None,
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
+    }
+
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                let d = self.0;
+                futures_util::stream::once(async move {
+                    match d {
+                        Some(d) => tokio::time::sleep(d).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                    Ok(Record::new(RData::from(IpAddr::V4(Ipv4Addr::LOCALHOST))))
                 })
-            })
-        })
-    }
-    /// Empty rather than slow: RFC 8305 races the families and a v6 answer
-    /// that never comes is what a v4-only host looks like. Making both
-    /// slow would put the scheduler's Resolution Delay in the measurement.
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::empty())
+            }),
+            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 
@@ -83,41 +67,31 @@ impl Resolve for Answering {
 struct Failing;
 
 impl Resolve for Failing {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
-    }
-
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            futures_util::stream::once(async {
-                Err(hclient_core::Error::new(
-                    ErrorKind::Resolve,
-                    std::io::Error::other("no such host"),
-                ))
-            })
-        })
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
     }
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
 
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::empty())
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                futures_util::stream::once(async {
+                    Err(hclient_core::Error::new(
+                        ErrorKind::Resolve,
+                        std::io::Error::other("no such host"),
+                    ))
+                })
+            }),
+            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 
@@ -263,45 +237,31 @@ fn a_resolver_that_fails_reports_the_failure_rather_than_the_bound() {
 struct Hinting(u16);
 
 impl Resolve for Hinting {
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin(futures_util::stream::once(std::future::pending()))
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA | rtype::HTTPS)
     }
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
 
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::empty())
-    }
-    fn supports_svcb(&self) -> bool {
-        true
-    }
-    type Svcb<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        Box::pin({
-            futures_util::stream::once(std::future::ready(Ok(SvcbEndpoint::new(
-                1,
-                "example.invalid".to_string(),
-            )
-            .port(Some(self.0))
-            .ipv4hint(vec![Ipv4Addr::LOCALHOST]))))
-        })
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin(futures_util::stream::once(std::future::pending())),
+            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            rtype::HTTPS => Box::pin({
+                futures_util::stream::once(std::future::ready(Ok(Record::new(RData::Https(
+                    SvcbEndpoint::new(1, "example.invalid".to_string())
+                        .port(Some(self.0))
+                        .ipv4hint(vec![Ipv4Addr::LOCALHOST]),
+                )))))
+            }),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 

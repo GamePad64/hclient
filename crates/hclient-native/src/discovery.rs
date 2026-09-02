@@ -3,7 +3,7 @@
 //!
 //! `hclient_dns::SvcbEndpoint` has carried `alpn`, `port`, `ipv4hint`,
 //! `ipv6hint` and `ech_config_list` since v0.2, and `Resolve::
-//! supports_svcb` has said which resolvers can answer. Nothing consumed
+//! supports` has said which resolvers can answer. Nothing consumed
 //! any of it: [`crate::connect`]'s module doc said so in its own words and
 //! passed `ech: None`. This module is what consumes it, and
 //! [`crate::connect::connect`] is its only caller.
@@ -42,11 +42,11 @@
 //! - **A non-default port is excluded** because the record we would be
 //!   holding is the wrong one. RFC 9460 §9.5 puts the record for a
 //!   non-default port under a prefixed name (`_8443._https.example.com`),
-//!   and `Resolve::lookup_svcb` is handed the origin host, so what comes
+//!   and `Resolve::lookup` is handed the origin host, so what comes
 //!   back is the default-port record. Applying it to `https://host:8443/`
 //!   would be applying one service's parameters to another's. This
 //!   connector does not construct the prefixed name: it would then have to
-//!   decide what `lookup_ipv4`/`lookup_ipv6` are asked for (the prefixed
+//!   decide what the A and AAAA lookups are asked for (the prefixed
 //!   name has no addresses), and that is a resolver-facing question the
 //!   `Resolve` seam does not answer today.
 //!
@@ -91,7 +91,7 @@
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use hclient_dns::{Resolve, SvcbEndpoint};
+use hclient_dns::{RData, Resolve, SvcbEndpoint, rtype};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -288,9 +288,15 @@ where
     D: Resolve,
 {
     let mut best: Option<SvcbEndpoint> = None;
-    let mut records = std::pin::pin!(dns.lookup_svcb(host));
+    let mut records = std::pin::pin!(dns.lookup(host, rtype::HTTPS));
     while let Some(record) = records.next().await {
-        let Ok(record) = record else { continue };
+        // A record of another type cannot arrive from an HTTPS query, but
+        // one method answers every type now, so the filter is written
+        // rather than guaranteed — as a filter, not as a branch nobody
+        // believes in.
+        let Ok(RData::Https(record)) = record.map(|r| r.rdata) else {
+            continue;
+        };
         // AliasMode. See the module doc: priority 0 sorts *below* every
         // ServiceMode record and carries no parameters at all, so a
         // selection that did not skip it would reliably choose the one
@@ -430,7 +436,7 @@ pub enum Discovered<'a> {
     /// nowhere else (this module's doc says why for each); it is held off
     /// entirely while the origin is suppressed by an earlier failed
     /// attempt through its record; and **this transport's own resolver may
-    /// say it cannot ask** (`Resolve::supports_svcb`), which is a fact
+    /// say it cannot ask** (`Resolve::supports`), which is a fact
     /// about the resolver. A caller that wants an answer here must get it
     /// for itself — and a caller whose own resolver *can* ask should,
     /// because the question has not been put; a caller that does not want

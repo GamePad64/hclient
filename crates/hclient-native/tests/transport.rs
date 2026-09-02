@@ -8,7 +8,7 @@
 //! # Why there's no `filter_map` resolution from the task brief here
 //!
 //! The task's draft (`task-13-brief.md`) collected addresses by hand —
-//! `self.dns.lookup_ipv6(&host).filter_map(|r| async { r.ok()... })` —
+//! `self.dns.lookup(&host, rtype::AAAA).filter_map(|r| async { r.ok()... })` —
 //! which discards ANY resolver error (`ErrorKind::Cancelled` included)
 //! and synthesizes a single `ErrorKind::Resolve` if both streams are
 //! empty. In that shape `Cancelled` (an ordinary runtime shutdown) is
@@ -25,7 +25,7 @@
 //! already exercise — and
 //! `resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened`
 //! below checks that this property survives the WHOLE path: from
-//! `Resolve::lookup_ipv4`/`lookup_ipv6`, through `Native::execute`,
+//! `Resolve::lookup`, through `Native::execute`,
 //! through `Client::execute` (which has its own step,
 //! `.map_err(|e| self.transport.to_error(e))`), to the `kind()` the
 //! caller sees.
@@ -34,7 +34,7 @@ mod net_fixtures;
 use hclient::Client;
 use hclient_core::ErrorKind;
 use hclient_core::unversioned::Transport;
-use hclient_dns::{Resolve, ResolvedAddr};
+use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -338,48 +338,38 @@ impl Display for FakeCancelled {
 impl StdError for FakeCancelled {}
 
 impl Resolve for CancelledDns {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
-    }
-
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            futures_util::stream::once(async {
-                Err(hclient_core::Error::new(
-                    ErrorKind::Cancelled,
-                    FakeCancelled,
-                ))
-            })
-        })
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
     }
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
 
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin({
-            futures_util::stream::once(async {
-                Err(hclient_core::Error::new(
-                    ErrorKind::Cancelled,
-                    FakeCancelled,
-                ))
-            })
-        })
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                futures_util::stream::once(async {
+                    Err(hclient_core::Error::new(
+                        ErrorKind::Cancelled,
+                        FakeCancelled,
+                    ))
+                })
+            }),
+            rtype::AAAA => Box::pin({
+                futures_util::stream::once(async {
+                    Err(hclient_core::Error::new(
+                        ErrorKind::Cancelled,
+                        FakeCancelled,
+                    ))
+                })
+            }),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 
@@ -705,39 +695,28 @@ impl hclient_rt::Timer for NeverConnects {
 
 struct OneUnroutableAddr;
 impl Resolve for OneUnroutableAddr {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
-    }
-
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            futures_util::stream::iter([Ok(ResolvedAddr {
-                addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7)),
-                ttl: None,
-            })])
-        })
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
     }
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
 
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::empty())
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                futures_util::stream::iter([Ok(Record::new(RData::from(std::net::IpAddr::V4(
+                    std::net::Ipv4Addr::new(203, 0, 113, 7),
+                ))))])
+            }),
+            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 
@@ -930,41 +909,30 @@ impl hclient_rt::Timer for LoggingNeverConnects {
 /// below has expired, if nothing cut it off first.
 struct FiveUnroutableAddrs;
 impl Resolve for FiveUnroutableAddrs {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
-    }
-
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            futures_util::stream::iter((1..=5u8).map(|n| {
-                Ok(ResolvedAddr {
-                    addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, n)),
-                    ttl: None,
-                })
-            }))
-        })
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
     }
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
 
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::empty())
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                futures_util::stream::iter((1..=5u8).map(|n| {
+                    Ok(Record::new(RData::from(std::net::IpAddr::V4(
+                        std::net::Ipv4Addr::new(203, 0, 113, n),
+                    ))))
+                }))
+            }),
+            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 

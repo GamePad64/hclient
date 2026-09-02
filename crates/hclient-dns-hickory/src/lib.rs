@@ -27,7 +27,7 @@
 //!
 //! # Why the TTL is populated here and not by the system backend
 //!
-//! `ResolvedAddr::ttl` is `Option<Duration>` because `getaddrinfo` does not
+//! `Record::ttl` is `Option<Duration>` because `getaddrinfo` does not
 //! expose one — the system backend returns `None` and is right to. hickory
 //! parses records itself, so the TTL is present, and every address carries
 //! its own rather than the RRset's minimum: a caller doing Happy Eyeballs
@@ -37,24 +37,34 @@
 use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
-use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
+use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hickory_resolver::ConnectionProvider;
 use hickory_resolver::Resolver;
 use hickory_resolver::net::{DnsError, NetError};
 use hickory_resolver::proto::op::ResponseCode;
 use hickory_resolver::proto::rr::rdata::svcb::{SVCB, SvcParamValue};
-use hickory_resolver::proto::rr::{RData, RecordType};
-use std::net::IpAddr;
+use hickory_resolver::proto::rr::{RData as Wire, RecordType};
+
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The two stream shapes this crate hands back, named so the marker sits
+/// The one stream shape this crate hands back, named so the marker sits
 /// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
 /// records about where a bound is written.
-type SendAddrs<'a> =
-    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 type SendRecords<'a> =
-    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+
+/// The seam's type number as hickory's, or `None` for a type this crate
+/// does not ask about — which is what [`Resolve::supports`] answers
+/// `false` for, so the two cannot disagree.
+fn wire_type(rtype: u16) -> Option<RecordType> {
+    match rtype {
+        rtype::A => Some(RecordType::A),
+        rtype::AAAA => Some(RecordType::AAAA),
+        rtype::HTTPS => Some(RecordType::HTTPS),
+        _ => None,
+    }
+}
 
 /// A [`Resolve`] backed by hickory.
 ///
@@ -96,11 +106,18 @@ impl<P: ConnectionProvider> Hickory<P> {
         &self.inner
     }
 
-    fn lookup_ips(
+    /// Every type through one call, because the seam has one method and
+    /// hickory's answer section is read the same way whatever was asked.
+    ///
+    /// A type this crate does not model — a `CNAME`, or anything else the
+    /// answer section legitimately carries — is skipped rather than turned
+    /// into an error, which is the same treatment `_ => None` gave the
+    /// address path before there was one method.
+    fn lookup_records(
         &self,
         name: &str,
         record_type: RecordType,
-    ) -> impl Stream<Item = Result<ResolvedAddr, Error>> + use<P> {
+    ) -> impl Stream<Item = Result<Record, Error>> + use<P> {
         let resolver = Arc::clone(&self.inner);
         let owned = name.to_owned();
         futures_util::stream::once(async move { resolver.lookup(owned, record_type).await })
@@ -110,24 +127,30 @@ impl<P: ConnectionProvider> Hickory<P> {
                         .answers()
                         .iter()
                         .filter_map(|rec| {
-                            let ttl = Duration::from_secs(u64::from(rec.ttl));
-                            let addr: IpAddr = match &rec.data {
-                                RData::A(a) => IpAddr::V4(a.0),
-                                RData::AAAA(a) => IpAddr::V6(a.0),
-                                // A CNAME, or anything else the answer
-                                // section legitimately carries, is not an
-                                // address: skipped rather than turned into
-                                // an error.
+                            // The TTL is the **record's**, not the rdata's
+                            // — hickory keeps it where DNS puts it, and so
+                            // does `Record`.
+                            let ttl = Some(Duration::from_secs(u64::from(rec.ttl)));
+                            let rdata = match &rec.data {
+                                Wire::A(a) => RData::A(a.0),
+                                Wire::AAAA(a) => RData::Aaaa(a.0),
+                                Wire::HTTPS(h) => RData::Https(to_endpoint(&h.0)),
                                 _ => return None,
                             };
-                            Some(Ok(ResolvedAddr {
-                                addr,
-                                ttl: Some(ttl),
-                            }))
+                            Some(Ok(Record::new(rdata).ttl(ttl)))
                         })
                         .collect();
                     futures_util::stream::iter(items)
                 }
+                // An empty result is a real answer — "asked, found none" —
+                // and becomes an empty stream, the same shape as
+                // `Resolve`'s default. `supports` is what keeps the two
+                // distinguishable; that is the whole reason it exists.
+                //
+                // This rests on the `is_empty_answer` arm: hickory reports
+                // NODATA as an error, so without it "this origin publishes
+                // no HTTPS record" goes out as a resolver failure — on
+                // nearly every origin. Do not remove the arm.
                 Err(e) if is_empty_answer(&e) => futures_util::stream::iter(Vec::new()),
                 Err(e) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
             })
@@ -182,14 +205,11 @@ fn is_empty_answer(e: &NetError) -> bool {
 /// `no-default-alpn`, private keys — rather than inventing fields. A
 /// parameter this client cannot act on is not made visible just because it
 /// was on the wire.
-fn to_endpoint(svcb: &SVCB, ttl: Option<Duration>) -> SvcbEndpoint {
+fn to_endpoint(svcb: &SVCB) -> SvcbEndpoint {
     // The trailing dot on the target is included: that is the name as the
     // server sent it, and normalising it here would make the caller's own
     // comparison against a `Uri` host quietly disagree with the wire.
-    // The TTL is the **record's**, not the rdata's — hickory keeps it on
-    // `Record` where DNS puts it, so it has to be passed in rather than
-    // read off the `SVCB` the rest of this function reads.
-    let mut out = SvcbEndpoint::new(svcb.svc_priority, svcb.target_name.to_string()).ttl(ttl);
+    let mut out = SvcbEndpoint::new(svcb.svc_priority, svcb.target_name.to_string());
     for (_, value) in &svcb.svc_params {
         match value {
             SvcParamValue::Alpn(alpn) => {
@@ -208,78 +228,21 @@ fn to_endpoint(svcb: &SVCB, ttl: Option<Duration>) -> SvcbEndpoint {
 }
 
 impl<P: ConnectionProvider> Resolve for Hickory<P> {
-    type Ipv4<'a>
-        = SendAddrs<'a>
-    // send-bound-exception: amendment-C15
-    where
-        Self: 'a;
-
-    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
-        Box::pin(self.lookup_ips(name, RecordType::A))
-    }
-
-    type Ipv6<'a>
-        = SendAddrs<'a>
-    // send-bound-exception: amendment-C15
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
-        Box::pin(self.lookup_ips(name, RecordType::AAAA))
-    }
-
-    /// `true`, unconditionally — and overridden together with
-    /// `lookup_svcb` below, which is the only way `Resolve` permits either.
-    /// Unlike the system backend, there is no target on which this can
-    /// fail to work: hickory parses the record itself rather than asking a
-    /// platform API that may or may not know the type.
-    fn supports_svcb(&self) -> bool {
-        true
-    }
-
-    type Svcb<'a>
+    type Records<'a>
         = SendRecords<'a>
     // send-bound-exception: amendment-C15
     where
         Self: 'a;
 
-    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
-        Box::pin({
-            let resolver = Arc::clone(&self.inner);
-            let owned = name.to_owned();
-            futures_util::stream::once(
-                async move { resolver.lookup(owned, RecordType::HTTPS).await },
-            )
-            .flat_map(|res| match res {
-                // An empty result is a real answer — "asked, found none" —
-                // and becomes an empty stream, the same shape as `Resolve`'s
-                // default. `supports_svcb()` above is what keeps the two
-                // distinguishable; that is the whole reason it exists.
-                //
-                // This rests on the `is_empty_answer` arm below: hickory
-                // reports NODATA as an error, so without that arm "this
-                // origin publishes no HTTPS record" goes out as a resolver
-                // failure — on nearly every origin,
-                // and in the one place `supports_svcb`'s honesty is supposed
-                // to live. Do not remove the arm.
-                Ok(lookup) => {
-                    let items: Vec<_> = lookup
-                        .answers()
-                        .iter()
-                        .filter_map(|rec| match &rec.data {
-                            RData::HTTPS(h) => Some(Ok(to_endpoint(
-                                &h.0,
-                                Some(Duration::from_secs(u64::from(rec.ttl))),
-                            ))),
-                            _ => None,
-                        })
-                        .collect();
-                    futures_util::stream::iter(items)
-                }
-                Err(e) if is_empty_answer(&e) => futures_util::stream::iter(Vec::new()),
-                Err(e) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
-            })
-        })
+    fn supports(&self, rtype: u16) -> bool {
+        wire_type(rtype).is_some()
+    }
+
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let Some(record_type) = wire_type(rtype) else {
+            return Box::pin(futures_util::stream::empty());
+        };
+        Box::pin(self.lookup_records(name, record_type))
     }
 }
 
@@ -332,7 +295,7 @@ mod tests {
     /// The TTL is the record's and these fixtures build rdata, so every
     /// test that is not about the TTL passes `None` through one place.
     fn to_endpoint_no_ttl(svcb: &SVCB) -> SvcbEndpoint {
-        to_endpoint(svcb, None)
+        to_endpoint(svcb)
     }
 
     fn bare() -> SvcbEndpoint {
@@ -396,7 +359,7 @@ mod tests {
         #[case] value: SvcParamValue,
         #[case] expected: SvcbEndpoint,
     ) {
-        assert_eq!(to_endpoint(&one(value), None), expected);
+        assert_eq!(to_endpoint(&one(value)), expected);
     }
 
     /// AliasMode is SvcPriority 0 (RFC 9460 §2.4.2). It has to arrive as 0:
@@ -410,7 +373,7 @@ mod tests {
             Name::from_str("example.net.").unwrap(),
             vec![(SvcParamKey::Port, SvcParamValue::Port(8443))],
         );
-        let e = to_endpoint(&alias, None);
+        let e = to_endpoint(&alias);
         assert_eq!(e.priority, 0, "0 is AliasMode, not a missing priority");
         assert_eq!(e.target, "example.net.");
     }
@@ -422,7 +385,7 @@ mod tests {
     #[test]
     fn a_root_target_survives_as_the_root() {
         assert_eq!(
-            to_endpoint(&SVCB::new(1, Name::root(), Vec::new()), None).target,
+            to_endpoint(&SVCB::new(1, Name::root(), Vec::new())).target,
             "."
         );
     }

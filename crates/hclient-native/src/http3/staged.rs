@@ -230,13 +230,11 @@ where
     // said. A resolver that cannot — `hclient-dns-doh` — leaves this
     // `H3` without a `H3StagedConnect`, which is narrower than the arm
     // being `!Send` for everybody.
-    Self: Sync,                // send-bound-exception: amendment-C15
-    Staged<R, H>: Send,        // send-bound-exception: amendment-C15
-    H: Send + Sync,            // send-bound-exception: amendment-C15
-    R::Instant: Send + Sync,   // send-bound-exception: amendment-C15
-    for<'a> D::Ipv4<'a>: Send, // send-bound-exception: amendment-C15
-    for<'a> D::Ipv6<'a>: Send, // send-bound-exception: amendment-C15
-    for<'a> D::Svcb<'a>: Send, // send-bound-exception: amendment-C15
+    Self: Sync,                   // send-bound-exception: amendment-C15
+    Staged<R, H>: Send,           // send-bound-exception: amendment-C15
+    H: Send + Sync,               // send-bound-exception: amendment-C15
+    R::Instant: Send + Sync,      // send-bound-exception: amendment-C15
+    for<'a> D::Records<'a>: Send, // send-bound-exception: amendment-C15
     H: Hooks + Clone + Unpin,
 {
     type Staged = Staged<R, H>;

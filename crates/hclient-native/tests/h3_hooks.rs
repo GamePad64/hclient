@@ -41,7 +41,7 @@ mod wire;
 
 use hclient_core::unversioned::{Event, Hooks, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody};
-use hclient_dns::{IpLiteralOnly, Resolve, ResolvedAddr};
+use hclient_dns::{IpLiteralOnly, RData, Record, Resolve, rtype};
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
@@ -517,44 +517,28 @@ async fn the_head_reports_the_status_the_server_sent() {
 struct SlowDns(Duration);
 
 impl Resolve for SlowDns {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
+    type Records<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>
     where
         Self: 'a;
 
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
     }
 
-    /// Empty, not slow. `H3::resolve` asks v6 first and takes the first
-    /// answer it gets, so a v6 stream that ends at once is what a v4-only
-    /// host looks like, and the wait below is then the whole of resolution.
-    type Ipv6<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::empty())
-    }
-    type Ipv4<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
-    where
-        Self: 'a;
-
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            let d = self.0;
-            futures_util::stream::once(async move {
-                tokio::time::sleep(d).await;
-                Ok(ResolvedAddr {
-                    addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                    ttl: None,
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                let d = self.0;
+                futures_util::stream::once(async move {
+                    tokio::time::sleep(d).await;
+                    Ok(Record::new(RData::from(IpAddr::V4(Ipv4Addr::LOCALHOST))))
                 })
-            })
-        })
+            }),
+            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 

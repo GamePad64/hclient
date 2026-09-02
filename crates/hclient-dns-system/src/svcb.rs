@@ -41,7 +41,6 @@
 #![forbid(unsafe_code)]
 
 use crate::error::SvcbLookupError;
-use hclient_dns::SvcbEndpoint;
 
 pub(crate) use wire::endpoints_from_records;
 
@@ -66,13 +65,13 @@ pub(crate) const TYPE_HTTPS: u16 = 65;
 /// stream, where it belongs; reporting it here as well would make a name
 /// with no HTTPS record and a name with nothing at all fail the same
 /// lookup twice, and only one of those is this stream's business.
-pub(crate) fn lookup(name: &str) -> Result<Vec<SvcbEndpoint>, SvcbLookupError> {
+pub(crate) fn lookup(name: &str) -> Result<Vec<hclient_dns::Record>, SvcbLookupError> {
     match system_resolver::lookup(name, TYPE_HTTPS) {
         Ok(records) => endpoints_from_records(&records),
         Err(system_resolver::Error::NameDoesNotExist) => Ok(Vec::new()),
         // A build with no backend answers `Unsupported`, and it is an
         // error here rather than an empty answer for the reason
-        // `supports_svcb` exists: the pair has to say *absent capability*
+        // `supports` exists: the pair has to say *absent capability*
         // rather than *asked and found none*, and `Resolve`'s own contract
         // is that a caller reads the first from the capability and never
         // from the stream.
@@ -108,7 +107,7 @@ pub(crate) use hclient_dns::svcb::{RawBinding, RawParam};
 /// touched.
 pub(crate) fn endpoint_from_binding(
     binding: &RawBinding,
-) -> Result<Option<SvcbEndpoint>, SvcbLookupError> {
+) -> Result<Option<hclient_dns::Record>, SvcbLookupError> {
     hclient_dns::svcb::endpoint_from_binding(binding).map_err(|e| match e {
         hclient_dns::svcb::SvcbRecordError::MandatoryKeyAbsent { key } => {
             SvcbLookupError::MandatoryKeyAbsent { key }
@@ -131,7 +130,7 @@ mod wire {
     use domain::dep::octseq::{Octets, parse::Parser};
     use domain::rdata::svcb::Https;
     use domain::rdata::svcb::value::AllValues;
-    use hclient_dns::SvcbEndpoint;
+
     use hclient_dns::svcb::{RawBinding, RawParam};
     use system_resolver::Record;
 
@@ -160,7 +159,7 @@ mod wire {
     /// onto whichever ones survived.
     pub(crate) fn endpoints_from_records(
         records: &[Record],
-    ) -> Result<Vec<SvcbEndpoint>, SvcbLookupError> {
+    ) -> Result<Vec<hclient_dns::Record>, SvcbLookupError> {
         let mut found = Vec::new();
         for record in records.iter().filter(|r| r.rtype == TYPE_HTTPS) {
             if let Some(endpoint) = endpoint_from_binding(&binding_from_rdata(record)?)? {
@@ -344,7 +343,19 @@ mod tests {
         )
     }
 
-    fn endpoints(records: Vec<Record>) -> Result<Vec<SvcbEndpoint>, SvcbLookupError> {
+    /// The HTTPS record a `Record` carries.
+    ///
+    /// The seam hands back a `Record` for every type, so the assertions
+    /// below reach through `rdata` — once, here, rather than at each of
+    /// the thirty sites that read a field.
+    fn https(record: &hclient_dns::Record) -> &hclient_dns::SvcbEndpoint {
+        record
+            .rdata
+            .https()
+            .expect("a type 65 query answers an HTTPS record")
+    }
+
+    fn endpoints(records: Vec<Record>) -> Result<Vec<hclient_dns::Record>, SvcbLookupError> {
         endpoints_from_records(&records)
     }
 
@@ -425,7 +436,8 @@ mod tests {
         );
         let got = endpoints(msg).expect("valid");
         assert_eq!(
-            got[0].target, "owner.example.com",
+            https(&got[0]).target,
+            "owner.example.com",
             "RFC 9460 §2.5 — substituting it here means no consumer has to know the rule"
         );
     }
@@ -435,9 +447,26 @@ mod tests {
         let msg = one_record(0, "alias.example.com", &[]);
         let got = endpoints(msg).expect("valid");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].priority, 0, "priority 0 is what marks AliasMode");
-        assert_eq!(got[0].target, "alias.example.com");
-        assert!(got[0].alpn.is_empty() && got[0].port.is_none());
+        assert_eq!(
+            https(&got[0]).priority,
+            0,
+            "priority 0 is what marks AliasMode"
+        );
+        assert_eq!(https(&got[0]).target, "alias.example.com");
+        assert!(
+            got[0]
+                .rdata
+                .https()
+                .expect("an https answer")
+                .alpn
+                .is_empty()
+                && got[0]
+                    .rdata
+                    .https()
+                    .expect("an https answer")
+                    .port
+                    .is_none()
+        );
     }
 
     /// **The divergence from RFC 9460 that used to be pinned here is
@@ -472,14 +501,24 @@ mod tests {
         );
         let got = endpoints(msg).expect("RFC 9460 §2.4.1: ignore the params, keep the record");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].priority, 0, "priority 0 is what marks AliasMode");
-        assert_eq!(got[0].target, "alias.example.com");
+        assert_eq!(
+            https(&got[0]).priority,
+            0,
+            "priority 0 is what marks AliasMode"
+        );
+        assert_eq!(https(&got[0]).target, "alias.example.com");
         assert!(
-            got[0].alpn.is_empty(),
+            got[0]
+                .rdata
+                .https()
+                .expect("an https answer")
+                .alpn
+                .is_empty(),
             "§2.4.1 makes ignoring an AliasMode record's SvcParams a MUST, and an `h2` here              would be one applied"
         );
         assert_eq!(
-            got[0].port, None,
+            https(&got[0]).port,
+            None,
             "the same MUST, read through the parameter whose effect a caller would notice              first: a port of 443 taken from an alias record redirects the connection"
         );
     }
@@ -519,7 +558,7 @@ mod tests {
             1,
             "RFC 9460 §8 drops the record that requires it, not the RRSet"
         );
-        assert_eq!(got[0].target, "good.example.com");
+        assert_eq!(https(&got[0]).target, "good.example.com");
     }
 
     #[test]
@@ -534,7 +573,7 @@ mod tests {
         );
         let got = endpoints(msg).expect("valid");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].alpn, vec![b"h2".to_vec()]);
+        assert_eq!(https(&got[0]).alpn, vec![b"h2".to_vec()]);
     }
 
     #[test]
@@ -567,8 +606,8 @@ mod tests {
         );
         let got = endpoints(msg).expect("an unknown key is not malformed");
         assert_eq!(got.len(), 1, "the record must survive the unknown key");
-        assert_eq!(got[0].alpn, vec![b"h2".to_vec()]);
-        assert_eq!(got[0].target, "svc.example.com");
+        assert_eq!(https(&got[0]).alpn, vec![b"h2".to_vec()]);
+        assert_eq!(https(&got[0]).target, "svc.example.com");
     }
 
     #[test]
@@ -592,7 +631,7 @@ mod tests {
             1,
             "a mandatory key with no field is still a key this client understands"
         );
-        assert_eq!(got[0].alpn, vec![b"h2".to_vec()]);
+        assert_eq!(https(&got[0]).alpn, vec![b"h2".to_vec()]);
     }
 
     /// The ECHConfigList must come out byte-for-byte as it went in,
@@ -612,7 +651,12 @@ mod tests {
         let msg = one_record(1, "svc.example.com", &[(KEY_ECH, ech.clone())]);
         let got = endpoints(msg).expect("valid");
         assert_eq!(
-            got[0].ech_config_list.as_deref(),
+            got[0]
+                .rdata
+                .https()
+                .expect("an https answer")
+                .ech_config_list
+                .as_deref(),
             Some(ech.as_slice()),
             "an ECHConfigList is opaque here — it feeds rustls, it is not interpreted, and \
              it is not reshaped either"
@@ -623,7 +667,7 @@ mod tests {
     fn a_port_is_carried_through() {
         let msg = one_record(1, "svc.example.com", &[(KEY_PORT, vec![0x01, 0xbb])]);
         let got = endpoints(msg).expect("valid");
-        assert_eq!(got[0].port, Some(443));
+        assert_eq!(https(&got[0]).port, Some(443));
     }
 
     #[test]
@@ -643,7 +687,7 @@ mod tests {
         );
         let got = endpoints(msg).expect("valid");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].target, "svc.example.com");
+        assert_eq!(https(&got[0]).target, "svc.example.com");
     }
 
     #[test]
@@ -678,7 +722,8 @@ mod tests {
             .expect("valid")
             .expect("usable");
         assert_eq!(
-            got.target, "owner.example.com",
+            https(&got).target,
+            "owner.example.com",
             "RFC 9460 §2.5 is applied to a Windows-shaped binding exactly as to a decoded one"
         );
     }
@@ -707,9 +752,9 @@ mod tests {
         ))
         .expect("valid")
         .expect("usable");
-        assert_eq!(got.target, "alias.example.com");
+        assert_eq!(https(&got).target, "alias.example.com");
         assert!(
-            got.alpn.is_empty() && got.port.is_none(),
+            https(&got).alpn.is_empty() && https(&got).port.is_none(),
             "RFC 9460 §2.4.1: recipients MUST ignore SvcParams in AliasMode"
         );
     }
@@ -770,17 +815,24 @@ mod tests {
         ))
         .expect("valid")
         .expect("usable");
-        assert_eq!(got.priority, 2);
-        assert_eq!(got.target, "svc.example.com");
-        assert_eq!(got.alpn, vec![b"h3".to_vec(), b"h2".to_vec()]);
-        assert_eq!(got.port, Some(8443));
-        assert_eq!(got.ipv4hint, vec!["192.0.2.1".parse::<Ipv4Addr>().unwrap()]);
+        assert_eq!(https(&got).priority, 2);
+        assert_eq!(https(&got).target, "svc.example.com");
+        assert_eq!(https(&got).alpn, vec![b"h3".to_vec(), b"h2".to_vec()]);
+        assert_eq!(https(&got).port, Some(8443));
         assert_eq!(
-            got.ipv6hint,
+            https(&got).ipv4hint,
+            vec!["192.0.2.1".parse::<Ipv4Addr>().unwrap()]
+        );
+        assert_eq!(
+            https(&got).ipv6hint,
             vec!["2001:db8::1".parse::<Ipv6Addr>().unwrap()]
         );
         assert_eq!(
-            got.ech_config_list.as_deref(),
+            got.rdata
+                .https()
+                .expect("an https answer")
+                .ech_config_list
+                .as_deref(),
             Some(ech.as_slice()),
             "the ECHConfigList arrives length-prefixed and stays that way — Windows hands it \
              over verbatim, the Unix decoder has the prefix restored, and this is the point \
@@ -823,7 +875,7 @@ mod tests {
         let got = endpoints(msg).expect("valid");
         let mut seen: Vec<(u16, &str)> = got
             .iter()
-            .map(|e| (e.priority, e.target.as_str()))
+            .map(|e| (https(e).priority, https(e).target.as_str()))
             .collect();
         seen.sort_unstable();
         assert_eq!(
@@ -857,7 +909,12 @@ mod tests {
         let msg = one_record(1, "svc.example.com", &[(KEY_ECH, ech.clone())]);
         let got = endpoints(msg).expect("valid");
         assert_eq!(
-            got[0].ech_config_list.as_deref(),
+            got[0]
+                .rdata
+                .https()
+                .expect("an https answer")
+                .ech_config_list
+                .as_deref(),
             Some(ech.as_slice()),
             "rustls reads an ECHConfigList as a TLS vector — a length that is short by a \
              byte, or written little-endian, fails inside rustls and not here"
@@ -888,7 +945,7 @@ mod tests {
             "RFC 9460 §2.4.1: the params are ignored, so nothing here can make it \
                  unusable",
         );
-        assert_eq!(got.target, "alias.example.com");
+        assert_eq!(https(&got).target, "alias.example.com");
     }
 
     #[test]
@@ -974,7 +1031,7 @@ mod tests {
         owner: &str,
         ttl: u32,
         rdata: Vec<u8>,
-    ) -> Result<Vec<SvcbEndpoint>, SvcbLookupError> {
+    ) -> Result<Vec<hclient_dns::Record>, SvcbLookupError> {
         let record = Record::new(
             owner,
             TYPE_HTTPS,
@@ -995,10 +1052,26 @@ mod tests {
             .expect("a real record decodes");
         let endpoint = found.first().expect("one endpoint");
         // A root TargetName means the owner name, RFC 9460 §2.5.
-        assert_eq!(endpoint.target, "cloudflare.com");
-        assert_eq!(endpoint.alpn, vec![b"h3".to_vec(), b"h2".to_vec()]);
-        assert_eq!(endpoint.ipv4hint.len(), 2);
-        assert_eq!(endpoint.ipv6hint.len(), 2);
+        assert_eq!(https(endpoint).target, "cloudflare.com");
+        assert_eq!(https(endpoint).alpn, vec![b"h3".to_vec(), b"h2".to_vec()]);
+        assert_eq!(
+            endpoint
+                .rdata
+                .https()
+                .expect("an https answer")
+                .ipv4hint
+                .len(),
+            2
+        );
+        assert_eq!(
+            endpoint
+                .rdata
+                .https()
+                .expect("an https answer")
+                .ipv6hint
+                .len(),
+            2
+        );
         assert_eq!(endpoint.ttl, Some(Duration::from_secs(300)));
     }
 

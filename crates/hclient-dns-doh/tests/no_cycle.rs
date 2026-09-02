@@ -77,7 +77,7 @@
 //! fn probe(_: Arc<dyn Resolve>) {
 //! error[E0038]: the trait `hclient_dns::Resolve` is not dyn compatible
 //!   --> crates/hclient-dns/src/lib.rs:132:42
-//!   = the trait is not dyn compatible because method `lookup_ipv4`
+//!   = the trait is not dyn compatible because method `lookup`
 //!     references an `impl Trait` type in its return type
 //!
 //! fn probe2(_: Arc<dyn Transport<Body = …, Error = …>>) {}
@@ -101,7 +101,7 @@
 mod support;
 
 use futures_util::StreamExt;
-use hclient_dns::{IpLiteralOnly, Resolve};
+use hclient_dns::{IpLiteralOnly, Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -141,8 +141,13 @@ async fn a_doh_resolver_composes_into_a_transport_and_that_transport_resolves() 
     let resolver: Resolver =
         Doh::pinned(Native::new(Tokio, NoTls, IpLiteralOnly), server.endpoint()).expect("endpoint");
     let addrs: Vec<_> = resolver
-        .lookup_ipv4("example.com")
-        .map(|r| r.expect("an address").addr)
+        .lookup("example.com", rtype::A)
+        .map(|r| {
+            r.expect("an address")
+                .rdata
+                .addr()
+                .expect("an address answer")
+        })
         .collect()
         .await;
     assert_eq!(

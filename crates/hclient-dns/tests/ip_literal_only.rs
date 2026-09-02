@@ -16,12 +16,12 @@
 use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
-use hclient_dns::{IpLiteralOnly, Resolve, ResolvedAddr};
+use hclient_dns::{IpLiteralOnly, Record, Resolve, rtype};
 use rstest::rstest;
 use std::assert_matches;
 use std::net::IpAddr;
 
-type Answer = Result<ResolvedAddr, Error>;
+type Answer = Result<Record, Error>;
 
 fn drain(stream: impl Stream<Item = Answer>) -> Vec<Answer> {
     futures_executor::block_on(stream.collect())
@@ -46,7 +46,7 @@ fn check(got: &[Answer], expect: Expect, input: &str) {
                 panic!("`{input}` must resolve to exactly one address; got {got:?}")
             };
             assert_eq!(
-                a.addr,
+                a.rdata.addr().expect("a literal answers an address"),
                 want.parse::<IpAddr>()
                     .expect("test data is a valid address"),
                 "`{input}` must resolve to itself"
@@ -121,8 +121,12 @@ fn each_family_answers_a_literal_or_refuses_a_name(
     #[case] expect_v6: Expect,
 ) {
     let resolver = IpLiteralOnly;
-    check(&drain(resolver.lookup_ipv4(input)), expect_v4, input);
-    check(&drain(resolver.lookup_ipv6(input)), expect_v6, input);
+    check(&drain(resolver.lookup(input, rtype::A)), expect_v4, input);
+    check(
+        &drain(resolver.lookup(input, rtype::AAAA)),
+        expect_v6,
+        input,
+    );
 }
 
 /// The distinction the whole type rests on, stated once as a rule rather
@@ -135,8 +139,8 @@ fn each_family_answers_a_literal_or_refuses_a_name(
 fn a_name_is_refused_by_both_families_and_never_answered_with_silence(#[case] name: &str) {
     let resolver = IpLiteralOnly;
     for (family, got) in [
-        ("A", drain(resolver.lookup_ipv4(name))),
-        ("AAAA", drain(resolver.lookup_ipv6(name))),
+        ("A", drain(resolver.lookup(name, rtype::A))),
+        ("AAAA", drain(resolver.lookup(name, rtype::AAAA))),
     ] {
         let [Err(e)] = got.as_slice() else {
             panic!(
@@ -158,8 +162,8 @@ fn a_name_is_refused_by_both_families_and_never_answered_with_silence(#[case] na
 #[case("::1")]
 fn a_literal_is_answered_by_one_family_and_the_other_stays_empty(#[case] literal: &str) {
     let resolver = IpLiteralOnly;
-    let v4 = drain(resolver.lookup_ipv4(literal));
-    let v6 = drain(resolver.lookup_ipv6(literal));
+    let v4 = drain(resolver.lookup(literal, rtype::A));
+    let v6 = drain(resolver.lookup(literal, rtype::AAAA));
 
     let answered: Vec<_> = [&v4, &v6].into_iter().filter(|s| !s.is_empty()).collect();
     assert_eq!(
@@ -175,18 +179,19 @@ fn a_literal_is_answered_by_one_family_and_the_other_stays_empty(#[case] literal
 }
 
 /// The doc comment's closing claim, both halves of it. Half alone would be
-/// the failure mode this crate keeps legislating against: `supports_svcb()`
-/// left at `false` while `lookup_svcb` returns something (records nobody
+/// the failure mode this crate keeps legislating against: `supports`
+/// left at `false` while `lookup` returns something (records nobody
 /// looks at), or the capability announced by a resolver that cannot query
 /// DNS at all.
 #[test]
 fn svcb_reads_as_unavailable_because_this_resolver_cannot_query_dns_at_all() {
     assert!(
-        !IpLiteralOnly.supports_svcb(),
+        !IpLiteralOnly.supports(rtype::HTTPS),
         "a resolver that never asks anyone anything must not claim the SVCB capability, \
          or ECH and h3 discovery would read as available and silently find nothing"
     );
-    let got: Vec<_> = futures_executor::block_on(IpLiteralOnly.lookup_svcb("192.0.2.1").collect());
+    let got: Vec<_> =
+        futures_executor::block_on(IpLiteralOnly.lookup("192.0.2.1", rtype::HTTPS).collect());
     assert!(
         got.is_empty(),
         "and it must inherit the empty default rather than inventing records: {got:?}"

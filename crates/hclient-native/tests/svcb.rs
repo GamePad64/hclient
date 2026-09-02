@@ -36,7 +36,7 @@
 use bytes::Bytes;
 use hclient_core::RequestBody;
 use hclient_core::unversioned::Transport;
-use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
+use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_native::{Native, SVCB_FAILURE_TTL};
 use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};
 use hclient_rt_tokio::Tokio;
@@ -209,11 +209,14 @@ impl<'a> Cursor<'a> {
 
 /// A resolver that answers exactly what a test tells it to.
 ///
-/// `supports_svcb` is a field rather than a constant, because one of the
-/// claims below is about the capability itself: a resolver that says it
-/// cannot ask must not be asked, however many records it would have
-/// returned (`Resolve::supports_svcb`'s own doc draws that line, and this
-/// is the consumer side of it).
+/// **The HTTPS answer of `supports` is a field rather than a constant**,
+/// because one of the claims below is about the capability itself: a
+/// resolver that says it cannot ask must not be asked, however many
+/// records it would have returned (`Resolve::supports`'s own doc draws
+/// that line, and this is the consumer side of it). Writing that method
+/// as a constant list of types is what the seam collapse did here by
+/// hand, and `a_resolver_that_says_it_cannot_ask_is_not_asked` is what
+/// caught it — the control test the field exists for.
 #[derive(Clone, Default)]
 struct FakeDns {
     v4: Vec<Ipv4Addr>,
@@ -247,56 +250,49 @@ impl FakeDns {
 }
 
 impl Resolve for FakeDns {
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            futures_util::stream::iter(
-                self.v4
-                    .clone()
-                    .into_iter()
-                    .map(|a| {
-                        Ok(ResolvedAddr {
-                            addr: IpAddr::V4(a),
-                            ttl: None,
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        })
+    /// Addresses always; HTTPS only where the fixture says it can ask —
+    /// `but_cannot_ask` is the control every record-acting test is read
+    /// against, and it works by answering `false` here while still
+    /// holding the records.
+    fn supports(&self, rtype: u16) -> bool {
+        match rtype {
+            rtype::A | rtype::AAAA => true,
+            rtype::HTTPS => self.supports_svcb,
+            _ => false,
+        }
     }
 
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::iter(Vec::new()))
-    }
-
-    fn supports_svcb(&self) -> bool {
-        self.supports_svcb
-    }
-
-    type Svcb<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        Box::pin({
-            futures_util::stream::iter(self.records.clone().into_iter().map(Ok).collect::<Vec<_>>())
-        })
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                futures_util::stream::iter(
+                    self.v4
+                        .clone()
+                        .into_iter()
+                        .map(|a| Ok(Record::new(RData::from(IpAddr::V4(a)))))
+                        .collect::<Vec<_>>(),
+                )
+            }),
+            rtype::AAAA => Box::pin(futures_util::stream::iter(Vec::new())),
+            rtype::HTTPS => Box::pin({
+                futures_util::stream::iter(
+                    self.records
+                        .clone()
+                        .into_iter()
+                        .map(|e| Ok(Record::new(RData::Https(e))))
+                        .collect::<Vec<_>>(),
+                )
+            }),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 
@@ -431,9 +427,9 @@ async fn the_port_from_the_record_is_where_the_connection_goes() {
 /// that reports it cannot answer SVCB, must be left alone.
 ///
 /// Without it, "the port was used" would also pass for a connector that
-/// called `lookup_svcb` unconditionally — which is precisely what
-/// `Resolve::supports_svcb` exists to prevent, since the default
-/// `lookup_svcb` returns an empty stream and cannot be told apart from a
+/// called `lookup` unconditionally — which is precisely what
+/// `Resolve::supports` exists to prevent, since the default
+/// `lookup` returns an empty stream and cannot be told apart from a
 /// resolver that asked and found nothing.
 #[tokio::test]
 async fn a_resolver_that_says_it_cannot_ask_is_not_asked() {

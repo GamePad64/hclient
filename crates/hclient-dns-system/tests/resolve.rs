@@ -1,11 +1,11 @@
 //! `SystemDns` through the door a consumer actually uses — the `Resolve`
-//! trait, its three streams, and `hclient_core::Error`.
+//! trait, its one stream per question, and `hclient_core::Error`.
 //!
 //! **Why any of this is out here rather than in `src`.** The unit tests
 //! inside the crate reach the seams directly: `svcb::endpoints_from_answer`
 //! over records. What they
 //! cannot see is whether those seams are still wired to the trait — a
-//! `lookup_svcb` that classified every failure as an empty stream would
+//! `lookup` that classified every failure as an empty stream would
 //! leave every one of them green. These start from `SystemDns::new` and
 //! assert on what a caller receives.
 //!
@@ -20,7 +20,7 @@
 use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
-use hclient_dns::{Resolve, ResolvedAddr};
+use hclient_dns::{Record, Resolve, rtype};
 use hclient_dns_system::SystemDns;
 use hclient_rt::{Blocking, Cancelled};
 use rstest::rstest;
@@ -49,12 +49,14 @@ where
     futures_executor::block_on(stream.collect())
 }
 
-fn addresses(items: Vec<Result<ResolvedAddr, Error>>) -> Vec<IpAddr> {
+fn addresses(items: Vec<Result<Record, Error>>) -> Vec<IpAddr> {
     items
         .into_iter()
         .map(|item| {
             item.expect("an address literal cannot fail to resolve")
-                .addr
+                .rdata
+                .addr()
+                .expect("an address query answers an address")
         })
         .collect()
 }
@@ -74,8 +76,8 @@ fn an_address_literal_reaches_its_own_family_stream_and_no_other(#[case] literal
     let resolver = SystemDns::new(Inline);
     let expected: IpAddr = literal.parse().expect("the case is a literal");
 
-    let v4 = addresses(drain(resolver.lookup_ipv4(literal)));
-    let v6 = addresses(drain(resolver.lookup_ipv6(literal)));
+    let v4 = addresses(drain(resolver.lookup(literal, rtype::A)));
+    let v6 = addresses(drain(resolver.lookup(literal, rtype::AAAA)));
 
     if expected.is_ipv4() {
         assert_eq!(v4, vec![expected]);
@@ -92,12 +94,12 @@ fn an_address_literal_reaches_its_own_family_stream_and_no_other(#[case] literal
 }
 
 /// `getaddrinfo` returns `sockaddr`s and no TTLs — there is nowhere in its
-/// result for one. `ResolvedAddr::ttl` is therefore `None` from this
+/// result for one. `Record::ttl` is therefore `None` from this
 /// resolver always, and a `Some` here would be an invented number a cache
 /// would then honour.
 #[test]
 fn an_address_from_getaddrinfo_carries_no_ttl_because_there_is_none_to_carry() {
-    let items = drain(SystemDns::new(Inline).lookup_ipv4("127.0.0.1"));
+    let items = drain(SystemDns::new(Inline).lookup("127.0.0.1", rtype::A));
     let addr = items
         .into_iter()
         .next()
@@ -117,7 +119,7 @@ fn an_address_from_getaddrinfo_carries_no_ttl_because_there_is_none_to_carry() {
 /// `ResolveFailed` leaves the message identical and this chain empty.
 #[test]
 fn a_resolve_failure_keeps_the_name_in_its_message_and_the_io_error_in_its_source() {
-    let items = drain(SystemDns::new(Inline).lookup_ipv4("bad\0name"));
+    let items = drain(SystemDns::new(Inline).lookup("bad\0name", rtype::A));
     assert_eq!(
         items.len(),
         1,
@@ -153,25 +155,25 @@ fn a_resolve_failure_keeps_the_name_in_its_message_and_the_io_error_in_its_sourc
     assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput);
 }
 
-/// The pair `Resolve::supports_svcb` exists to keep honest, checked against
+/// The pair `Resolve::supports` exists to keep honest, checked against
 /// behaviour rather than against a second copy of a `#[cfg]`.
 ///
 /// A build with no backend refuses every type before a name is even
 /// looked at, so it CANNOT produce this error; a build with one rejects an
 /// over-long name before it reaches the platform. So a build that
-/// claims `supports_svcb()` and answers this name with silence is a build
+/// claims `supports` and answers this name with silence is a build
 /// whose capability is a lie, and a build that disclaims SVCB and answers
 /// it with an error has a backend it is not admitting to. Each branch
 /// asserts; neither is a `return` dressed up as a pass.
 #[test]
-fn supports_svcb_and_lookup_svcb_agree_about_whether_a_backend_exists() {
+fn supports_and_lookup_agree_about_whether_a_backend_exists() {
     // 256 octets: one past RFC 1035 §2.3.4's limit on the wire form of a
     // name, and short enough that nothing else objects first.
     let too_long = "a".repeat(256);
     let resolver = SystemDns::new(Inline);
-    let items = drain(resolver.lookup_svcb(&too_long));
+    let items = drain(resolver.lookup(&too_long, rtype::HTTPS));
 
-    if resolver.supports_svcb() {
+    if resolver.supports(rtype::HTTPS) {
         assert_eq!(items.len(), 1, "a backend that cannot ask must say so");
         let error = items
             .into_iter()
@@ -200,12 +202,12 @@ fn supports_svcb_and_lookup_svcb_agree_about_whether_a_backend_exists() {
     }
 }
 
-/// The other half of `lookup_svcb`'s contract, at the seam a caller sees:
+/// The other half of `lookup`'s contract, at the seam a caller sees:
 /// the pool going away is neither an empty stream nor a DNS failure.
 ///
 /// `src/lib.rs` asserts this too. It is repeated here because the two
 /// tests can fail for different reasons: that one would still pass if
-/// `lookup_svcb` stopped being reachable through `Resolve` at all, and
+/// `lookup` stopped being reachable through `Resolve` at all, and
 /// this one goes through the trait.
 #[test]
 fn a_cancelled_svcb_lookup_is_reported_as_cancelled_through_the_trait() {
@@ -219,7 +221,7 @@ fn a_cancelled_svcb_lookup_is_reported_as_cancelled_through_the_trait() {
         }
     }
 
-    let items = drain(SystemDns::new(AlwaysCancelled).lookup_svcb("example.com"));
+    let items = drain(SystemDns::new(AlwaysCancelled).lookup("example.com", rtype::HTTPS));
     assert_eq!(items.len(), 1, "the pool going away is not silence");
     let error = items
         .into_iter()

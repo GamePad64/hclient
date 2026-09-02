@@ -16,7 +16,7 @@ mod support;
 
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
-use hclient_dns::{Resolve, ResolvedAddr};
+use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use support::{FLAGS_SERVFAIL, Rr, Server, TYPE_A, message, noerror};
 
-type Item = Result<ResolvedAddr, Error>;
+type Item = Result<Record, Error>;
 
 /// The address the fallback hands back. Distinct from every address any
 /// DoH fixture in this file returns, so which resolver answered is never
@@ -48,7 +48,13 @@ fn dead_endpoint() -> http::Uri {
 fn addrs(items: &[Item]) -> Vec<IpAddr> {
     items
         .iter()
-        .map(|i| i.as_ref().expect("an address, not an error").addr)
+        .map(|i| {
+            i.as_ref()
+                .expect("an address, not an error")
+                .rdata
+                .addr()
+                .expect("an address answer")
+        })
         .collect()
 }
 
@@ -57,7 +63,7 @@ fn addrs(items: &[Item]) -> Vec<IpAddr> {
 #[tokio::test]
 async fn without_a_fallback_an_unreachable_doh_server_is_a_resolution_failure() {
     let doh = Doh::pinned(transport(), dead_endpoint()).expect("endpoint");
-    let items: Vec<Item> = doh.lookup_ipv4("example.com").collect().await;
+    let items: Vec<Item> = doh.lookup("example.com", rtype::A).collect().await;
     assert_eq!(items.len(), 1);
     assert_eq!(
         items[0].as_ref().expect_err("expected an error").kind(),
@@ -72,7 +78,7 @@ async fn with_a_fallback_an_unreachable_doh_server_resolves_through_it() {
     let doh = Doh::pinned(transport(), dead_endpoint())
         .expect("endpoint")
         .with_fallback(Stub::new(FROM_FALLBACK));
-    let items: Vec<Item> = doh.lookup_ipv4("example.com").collect().await;
+    let items: Vec<Item> = doh.lookup("example.com", rtype::A).collect().await;
     assert_eq!(addrs(&items), vec![IpAddr::V4(FROM_FALLBACK)]);
 }
 
@@ -86,7 +92,7 @@ async fn a_servfail_also_reaches_the_fallback() {
     let doh = Doh::pinned(transport(), server.endpoint())
         .expect("endpoint")
         .with_fallback(Stub::new(FROM_FALLBACK));
-    let items: Vec<Item> = doh.lookup_ipv4("example.com").collect().await;
+    let items: Vec<Item> = doh.lookup("example.com", rtype::A).collect().await;
     assert_eq!(addrs(&items), vec![IpAddr::V4(FROM_FALLBACK)]);
 }
 
@@ -110,7 +116,7 @@ async fn a_successful_doh_answer_never_consults_the_fallback() {
         .expect("endpoint")
         .with_fallback(stub);
 
-    let items: Vec<Item> = doh.lookup_ipv4("example.com").collect().await;
+    let items: Vec<Item> = doh.lookup("example.com", rtype::A).collect().await;
 
     assert_eq!(addrs(&items), vec![IpAddr::V4(FROM_DOH)]);
     assert_eq!(
@@ -137,7 +143,7 @@ async fn nxdomain_is_an_answer_and_does_not_reach_the_fallback() {
         .expect("endpoint")
         .with_fallback(stub);
 
-    let items: Vec<Item> = doh.lookup_ipv4("nope.example").collect().await;
+    let items: Vec<Item> = doh.lookup("nope.example", rtype::A).collect().await;
 
     assert!(items.is_empty(), "expected an empty answer, got {items:?}");
     assert_eq!(
@@ -155,7 +161,7 @@ async fn a_fallback_with_nothing_to_say_leaves_the_doh_error_standing() {
     let doh = Doh::pinned(transport(), dead_endpoint())
         .expect("endpoint")
         .with_fallback(Stub::new(FROM_FALLBACK));
-    let items: Vec<Item> = doh.lookup_ipv6("example.com").collect().await;
+    let items: Vec<Item> = doh.lookup("example.com", rtype::AAAA).collect().await;
     assert_eq!(items.len(), 1);
     let e = items[0].as_ref().expect_err("expected the DoH error");
     assert!(
@@ -175,7 +181,7 @@ async fn a_fallback_that_errors_reports_its_own_error() {
         // `IpLiteralOnly` errors for anything that is not a literal, which
         // is exactly a fallback with an opinion of its own.
         .with_fallback(hclient_dns::IpLiteralOnly);
-    let items: Vec<Item> = doh.lookup_ipv4("example.com").collect().await;
+    let items: Vec<Item> = doh.lookup("example.com", rtype::A).collect().await;
     assert_eq!(items.len(), 1);
     let e = items[0].as_ref().expect_err("expected an error");
     assert!(
@@ -188,7 +194,7 @@ async fn a_fallback_that_errors_reports_its_own_error() {
 
 /// A resolver holding one v4 address, which counts how often it was asked.
 ///
-/// v4 only: `lookup_ipv6` returns an empty stream, which is what
+/// v4 only: `lookup` returns an empty stream, which is what
 /// `a_fallback_with_nothing_to_say_leaves_the_doh_error_standing` needs.
 #[derive(Debug, Clone)]
 struct Stub {
@@ -209,38 +215,29 @@ impl Stub {
 }
 
 impl Resolve for Stub {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
-    }
-
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send + 'a>>
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            self.asked.fetch_add(1, Ordering::SeqCst);
-            futures_util::stream::iter(vec![Ok(ResolvedAddr {
-                addr: IpAddr::V4(self.addr),
-                ttl: None,
-            })])
-        })
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
     }
-    type Ipv6<'a>
-        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send + 'a>>
-    where
-        Self: 'a;
 
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin({
-            self.asked.fetch_add(1, Ordering::SeqCst);
-            futures_util::stream::iter(Vec::new())
-        })
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                self.asked.fetch_add(1, Ordering::SeqCst);
+                futures_util::stream::iter(vec![Ok(Record::new(RData::from(IpAddr::V4(
+                    self.addr,
+                ))))])
+            }),
+            rtype::AAAA => Box::pin({
+                self.asked.fetch_add(1, Ordering::SeqCst);
+                futures_util::stream::iter(Vec::new())
+            }),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }

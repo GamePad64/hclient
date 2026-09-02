@@ -14,7 +14,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient_core::unversioned::Transport;
-use hclient_dns::{IpLiteralOnly, Resolve};
+use hclient_dns::{IpLiteralOnly, Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -60,7 +60,7 @@ fn a_doh_with_a_fallback_resolver_is_send_too() {
     let doh = Doh::pinned(transport(), endpoint())
         .expect("an IP-literal endpoint")
         .with_fallback(IpLiteralOnly);
-    assert_send(&doh.lookup_ipv4("example.test"));
-    assert_send(&doh.lookup_ipv6("example.test"));
+    assert_send(&doh.lookup("example.test", rtype::A));
+    assert_send(&doh.lookup("example.test", rtype::AAAA));
     assert_send(&Native::new(Tokio, NoTls, doh).execute(request()));
 }

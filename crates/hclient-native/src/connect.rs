@@ -18,7 +18,7 @@
 //! handle.
 //!
 //! `drive` below is the only place that polls `Scheduler`, and it feeds it
-//! REAL streams: `connect` passes `dns.lookup_ipv6`/`lookup_ipv4` into it
+//! REAL streams: `connect` passes a `dns.lookup` per family into it
 //! one item at a time, and calls `mark_*_done` only once the stream has
 //! actually finished (`None` from `poll_next`), not ahead of time. Since
 //! the HTTPS query became concurrent with them the resolver's stream is
@@ -86,7 +86,7 @@
 //! # RFC 9460 SVCB/HTTPS is wired up here now
 //!
 //! This section read "isn't wired up here either" until v0.3 W2, and it
-//! was honest: `TlsRequest::ech` and `Resolve::lookup_svcb`/
+//! was honest: `TlsRequest::ech` and `Resolve::lookup`/
 //! `SvcbEndpoint` both existed, `connect` consumed neither, and
 //! it passed `ech: None` rather than pretending it had asked. It asks now.
 //! [`crate::discovery`] holds the record-shaped half — which record is
@@ -129,7 +129,7 @@ use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use hclient_core::unversioned::{Hooks, NoHooks};
 use hclient_core::{Error, ErrorKind};
-use hclient_dns::{Resolve, ResolvedAddr};
+use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
 use hclient_rt::{TcpConnect, TcpOpts, Timer};
 use hclient_tls::{TlsConnect, TlsInfo, TlsRequest};
@@ -296,8 +296,8 @@ async fn drive<R, V6, V4, H>(
 ) -> Result<(R::Stream, Option<Box<Attempted>>), Error>
 where
     R: TcpConnect + Timer,
-    V6: Stream<Item = Result<ResolvedAddr, Error>>,
-    V4: Stream<Item = Result<ResolvedAddr, Error>>,
+    V6: Stream<Item = Result<Record, Error>>,
+    V4: Stream<Item = Result<Record, Error>>,
     H: Hooks,
 {
     /// What happened first while we were waiting (`HeAction::Wait`): an
@@ -305,8 +305,8 @@ where
     /// `None`), one of the connection attempts completed, or the wait
     /// timed out.
     enum Event<T, I> {
-        V6(Option<Result<ResolvedAddr, Error>>),
-        V4(Option<Result<ResolvedAddr, Error>>),
+        V6(Option<Result<Record, Error>>),
+        V4(Option<Result<Record, Error>>),
         /// The address and the instant the attempt was launched travel
         /// with the attempt, because `FuturesUnordered` does not say
         /// which of its futures finished. Both are wanted: the address
@@ -394,13 +394,28 @@ where
                 .await;
 
                 match ev {
-                    Event::V6(Some(Ok(addr))) => sched.offer_v6(&[addr.addr]),
+                    // **The family is checked rather than guaranteed.**
+                    // Asking for `AAAA` used to be a different method
+                    // returning a different type; one method answers
+                    // every type, so an `A` record arriving on the v6
+                    // stream is now expressible — and offering it to
+                    // `offer_v6` would put a v4 address in the arm whose
+                    // whole job is to race the two families apart.
+                    Event::V6(Some(Ok(record))) => {
+                        if let Some(addr @ IpAddr::V6(_)) = record.rdata.addr() {
+                            sched.offer_v6(&[addr]);
+                        }
+                    }
                     Event::V6(Some(Err(e))) => v6_err = Some(e),
                     Event::V6(None) => {
                         v6_done = true;
                         sched.mark_v6_done();
                     }
-                    Event::V4(Some(Ok(addr))) => sched.offer_v4(&[addr.addr]),
+                    Event::V4(Some(Ok(record))) => {
+                        if let Some(addr @ IpAddr::V4(_)) = record.rdata.addr() {
+                            sched.offer_v4(&[addr]);
+                        }
+                    }
                     Event::V4(Some(Err(e))) => v4_err = Some(e),
                     Event::V4(None) => {
                         v4_done = true;
@@ -492,12 +507,12 @@ where
     let v6 = futures_util::stream::iter(
         addrs_v6
             .into_iter()
-            .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
+            .map(|addr| Ok(Record::new(RData::from(addr)))),
     );
     let v4 = futures_util::stream::iter(
         addrs_v4
             .into_iter()
-            .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
+            .map(|addr| Ok(Record::new(RData::from(addr)))),
     );
     drive::<_, _, _, NoHooks>(rt, sched, v6, v4, port, opts, None)
         .await
@@ -559,7 +574,7 @@ pub(crate) struct Attempted {
 ///
 /// # Started early, which is what "in parallel" actually means here
 ///
-/// A `Resolve` stream is inert until it is polled — `lookup_ipv4` builds a
+/// A `Resolve` stream is inert until it is polled — `lookup` builds a
 /// query, it does not send one. So running the HTTPS query beside the
 /// address queries is not a matter of constructing all three and awaiting
 /// the first; it is a matter of **polling** the address streams while the
@@ -602,7 +617,7 @@ struct Answers<S> {
     /// no declared auto traits is not neutral — it *removes* them, from
     /// every resolver that had them. Declaring `+ Send` on the `dyn`
     /// instead would have been the other direction: it obliges the seam,
-    /// and `Resolve::lookup_ipv4` returns `impl Stream`, which cannot be
+    /// and `Resolve::lookup` returns `impl Stream`, which cannot be
     /// named and so cannot be bounded — measured, along with what
     /// converting the seam would cost. See `tests/send_future.rs`.
     inner: Pin<Box<S>>,
@@ -611,14 +626,14 @@ struct Answers<S> {
     /// that answered nothing (`ResolveErrors`), and a replay that dropped
     /// the errors would give the second attempt a different diagnosis from
     /// the first.
-    seen: Vec<Result<ResolvedAddr, Error>>,
+    seen: Vec<Result<Record, Error>>,
     /// Set once the stream has returned `None`. Polling past that is a
     /// `Stream` contract violation, and both [`pump`](Self::pump) and
     /// [`Replay`] come back for more by design.
     done: bool,
 }
 
-impl<S: Stream<Item = Result<ResolvedAddr, Error>>> Answers<S> {
+impl<S: Stream<Item = Result<Record, Error>>> Answers<S> {
     fn new(stream: S) -> Self {
         Self {
             inner: Box::pin(stream),
@@ -662,8 +677,8 @@ struct Replay<'r, S> {
     at: usize,
 }
 
-impl<S: Stream<Item = Result<ResolvedAddr, Error>>> Stream for Replay<'_, S> {
-    type Item = Result<ResolvedAddr, Error>;
+impl<S: Stream<Item = Result<Record, Error>>> Stream for Replay<'_, S> {
+    type Item = Result<Record, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let me = self.get_mut();
@@ -711,8 +726,8 @@ async fn alongside_address_lookups<F, S6, S4>(
 ) -> F::Output
 where
     F: Future,
-    S6: Stream<Item = Result<ResolvedAddr, Error>>,
-    S4: Stream<Item = Result<ResolvedAddr, Error>>,
+    S6: Stream<Item = Result<Record, Error>>,
+    S4: Stream<Item = Result<Record, Error>>,
 {
     let mut discovery = std::pin::pin!(discovery);
     poll_fn(move |cx| {
@@ -845,8 +860,8 @@ where
     R::Stream: 'static,
     H: Hooks,
 {
-    let mut v6 = Answers::new(dns.lookup_ipv6(proxy.host()));
-    let mut v4 = Answers::new(dns.lookup_ipv4(proxy.host()));
+    let mut v6 = Answers::new(dns.lookup(proxy.host(), rtype::AAAA));
+    let mut v4 = Answers::new(dns.lookup(proxy.host(), rtype::A));
     let sched = build_scheduler(HeConfig::default())?;
     let (tcp, mut attempted) = drive::<_, _, _, H>(
         rt,
@@ -1058,8 +1073,8 @@ where
     // `attempt` where they used to live — that placement is the whole of
     // the parallelism, and it is also what leaves the retry below with
     // nothing to re-resolve. See `Answers`.
-    let mut v6 = Answers::new(dns.lookup_ipv6(host));
-    let mut v4 = Answers::new(dns.lookup_ipv4(host));
+    let mut v6 = Answers::new(dns.lookup(host, rtype::AAAA));
+    let mut v4 = Answers::new(dns.lookup(host, rtype::A));
 
     let found = match prefetched {
         // Nobody asked, so this connector asks — and the query goes out
@@ -1180,7 +1195,7 @@ where
         return Prefetched::NotConsulted;
     }
     // The capability, asked rather than inferred from an empty stream —
-    // the distinction `Resolve::supports_svcb` exists to carry (a resolver
+    // the distinction `Resolve::supports` exists to carry (a resolver
     // that cannot ask, and one that asked and found nothing, both return
     // an empty stream, and only the first should stop us asking).
     //
@@ -1190,7 +1205,7 @@ where
     // record* — so a caller whose own resolver can ask still asks. This
     // transport's resolver being unable to answer is not a fact about the
     // origin.
-    if !dns.supports_svcb() {
+    if !dns.supports(rtype::HTTPS) {
         return Prefetched::NotConsulted;
     }
     Prefetched::Looked(discovery::lookup(dns, host).await)
@@ -1228,8 +1243,8 @@ async fn first_address_within<R, S6, S4>(
 ) -> Result<(), Error>
 where
     R: Timer,
-    S6: Stream<Item = Result<ResolvedAddr, Error>>,
-    S4: Stream<Item = Result<ResolvedAddr, Error>>,
+    S6: Stream<Item = Result<Record, Error>>,
+    S4: Stream<Item = Result<Record, Error>>,
 {
     // Hints are addresses. `is_inert` has already dropped a record that
     // contributes nothing, so a `Some` here with hints really is somewhere
@@ -1268,7 +1283,7 @@ where
 /// two [`Answers`] that [`connect`] has already asked for, so "the retry
 /// does not resolve a second time" is a property of this signature rather
 /// than a rule someone has to keep in mind. Until the queries were made
-/// concurrent this function called `lookup_ipv6`/`lookup_ipv4` itself,
+/// concurrent this function called the two family lookups itself,
 /// which is exactly why nothing could resolve until the HTTPS query had
 /// finished.
 ///
@@ -1313,8 +1328,8 @@ where
     R: TcpConnect + Timer,
     L: TlsConnect,
     H: Hooks,
-    S6: Stream<Item = Result<ResolvedAddr, Error>>,
-    S4: Stream<Item = Result<ResolvedAddr, Error>>,
+    S6: Stream<Item = Result<Record, Error>>,
+    S4: Stream<Item = Result<Record, Error>>,
 {
     let sched = build_scheduler(HeConfig::default())?;
     // RFC 9460 §7.2: the record's port replaces the scheme's default for
@@ -1325,20 +1340,12 @@ where
     let hint6 = endpoint.map(|e| e.ipv6hint.clone()).unwrap_or_default();
     let hint4 = endpoint.map(|e| e.ipv4hint.clone()).unwrap_or_default();
 
-    let v6_stream = futures_util::stream::iter(hint6.into_iter().map(|a| {
-        Ok(ResolvedAddr {
-            addr: IpAddr::V6(a),
-            ttl: None,
-        })
-    }))
-    .chain(v6.replay());
-    let v4_stream = futures_util::stream::iter(hint4.into_iter().map(|a| {
-        Ok(ResolvedAddr {
-            addr: IpAddr::V4(a),
-            ttl: None,
-        })
-    }))
-    .chain(v4.replay());
+    let v6_stream =
+        futures_util::stream::iter(hint6.into_iter().map(|a| Ok(Record::new(RData::Aaaa(a)))))
+            .chain(v6.replay());
+    let v4_stream =
+        futures_util::stream::iter(hint4.into_iter().map(|a| Ok(Record::new(RData::A(a)))))
+            .chain(v4.replay());
 
     let (tcp, mut attempted) =
         drive::<_, _, _, H>(rt, sched, v6_stream, v4_stream, port, opts, began).await?;
@@ -1794,7 +1801,7 @@ mod tests {
     }
 
     impl futures_util::Stream for AtVirtualTime {
-        type Item = Result<ResolvedAddr, Error>;
+        type Item = Result<Record, Error>;
         fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             let this = self.get_mut();
             if *this.clock.borrow() < this.resolve_at {
@@ -1805,7 +1812,7 @@ mod tests {
             }
             this.yielded = true;
             match this.item {
-                Some(addr) => Poll::Ready(Some(Ok(ResolvedAddr { addr, ttl: None }))),
+                Some(addr) => Poll::Ready(Some(Ok(Record::new(RData::from(addr))))),
                 None => Poll::Ready(None),
             }
         }
@@ -1905,7 +1912,7 @@ mod tests {
     fn a_resolve_error_on_one_family_surfaces_as_resolve_kind_when_nothing_else_is_found() {
         struct ErrOnce(bool);
         impl futures_util::Stream for ErrOnce {
-            type Item = Result<ResolvedAddr, Error>;
+            type Item = Result<Record, Error>;
             fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
                 let this = self.get_mut();
                 if this.0 {
@@ -1969,7 +1976,7 @@ mod tests {
     /// `ErrorKind::Resolve`.
     struct ErrOnceWithKind(bool, ErrorKind);
     impl futures_util::Stream for ErrOnceWithKind {
-        type Item = Result<ResolvedAddr, Error>;
+        type Item = Result<Record, Error>;
         fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             let this = self.get_mut();
             if this.0 {
@@ -2035,10 +2042,7 @@ mod tests {
             &rt,
             sched,
             ErrOnceWithKind(true, ErrorKind::Cancelled),
-            futures_util::stream::iter([Ok(ResolvedAddr {
-                addr: v4(1),
-                ttl: None,
-            })]),
+            futures_util::stream::iter([Ok(Record::new(RData::from(v4(1))))]),
             81,
             &TcpOpts::default(),
             None,
@@ -2074,7 +2078,7 @@ mod tests {
     /// that is exactly the question here.
     struct NamedResolveErr(bool, &'static str);
     impl futures_util::Stream for NamedResolveErr {
-        type Item = Result<ResolvedAddr, Error>;
+        type Item = Result<Record, Error>;
         fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             let this = self.get_mut();
             if this.0 {
@@ -2231,44 +2235,36 @@ mod tests {
         v4: Vec<IpAddr>,
     }
     impl Resolve for StaticResolve {
-        type Svcb<'a>
-            = hclient_dns::NoSvcb
+        type Records<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + 'a>>
         where
             Self: 'a;
 
-        fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-            hclient_dns::NoSvcb::new()
+        fn supports(&self, rtype: u16) -> bool {
+            matches!(rtype, rtype::A | rtype::AAAA)
         }
 
-        type Ipv6<'a>
-            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
-        where
-            Self: 'a;
-
-        fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
-            Box::pin({
-                futures_util::stream::iter(
-                    self.v6
-                        .clone()
-                        .into_iter()
-                        .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
-                )
-            })
-        }
-        type Ipv4<'a>
-            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
-        where
-            Self: 'a;
-
-        fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
-            Box::pin({
-                futures_util::stream::iter(
-                    self.v4
-                        .clone()
-                        .into_iter()
-                        .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
-                )
-            })
+        fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+            let _ = name;
+            match rtype {
+                rtype::A => Box::pin({
+                    futures_util::stream::iter(
+                        self.v4
+                            .clone()
+                            .into_iter()
+                            .map(|addr| Ok(Record::new(RData::from(addr)))),
+                    )
+                }),
+                rtype::AAAA => Box::pin({
+                    futures_util::stream::iter(
+                        self.v6
+                            .clone()
+                            .into_iter()
+                            .map(|addr| Ok(Record::new(RData::from(addr)))),
+                    )
+                }),
+                _ => Box::pin(futures_util::stream::empty()),
+            }
         }
     }
 
@@ -2280,46 +2276,39 @@ mod tests {
     }
 
     impl Resolve for SvcbResolve {
-        type Ipv6<'a>
-            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        type Records<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + 'a>>
         where
             Self: 'a;
 
-        fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
-            Box::pin(futures_util::stream::iter(Vec::new()))
+        fn supports(&self, rtype: u16) -> bool {
+            matches!(rtype, rtype::A | rtype::AAAA | rtype::HTTPS)
         }
-        type Ipv4<'a>
-            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
-        where
-            Self: 'a;
 
-        fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
-            Box::pin({
-                futures_util::stream::iter(
-                    self.v4
-                        .clone()
-                        .into_iter()
-                        .map(|addr| Ok(ResolvedAddr { addr, ttl: None }))
-                        .collect::<Vec<_>>(),
-                )
-            })
-        }
-        fn supports_svcb(&self) -> bool {
-            true
-        }
-        type Svcb<'a>
-            = std::pin::Pin<
-            Box<dyn futures_core::Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> + 'a>,
-        >
-        where
-            Self: 'a;
-
-        fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
-            Box::pin({
-                futures_util::stream::iter(
-                    self.records.clone().into_iter().map(Ok).collect::<Vec<_>>(),
-                )
-            })
+        fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+            let _ = name;
+            match rtype {
+                rtype::A => Box::pin({
+                    futures_util::stream::iter(
+                        self.v4
+                            .clone()
+                            .into_iter()
+                            .map(|addr| Ok(Record::new(RData::from(addr))))
+                            .collect::<Vec<_>>(),
+                    )
+                }),
+                rtype::AAAA => Box::pin(futures_util::stream::iter(Vec::new())),
+                rtype::HTTPS => Box::pin({
+                    futures_util::stream::iter(
+                        self.records
+                            .clone()
+                            .into_iter()
+                            .map(|e| Ok(Record::new(RData::Https(e))))
+                            .collect::<Vec<_>>(),
+                    )
+                }),
+                _ => Box::pin(futures_util::stream::empty()),
+            }
         }
     }
 
@@ -2506,69 +2495,61 @@ mod tests {
     }
 
     impl Resolve for WatchedResolve {
-        type Ipv6<'a>
-            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        type Records<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + 'a>>
         where
             Self: 'a;
 
-        fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
-            Box::pin({
-                self.note("aaaa:call");
-                Staged {
-                    log: Rc::clone(&self.log),
-                    asked: "aaaa:ask",
-                    answered: "aaaa:answer",
-                    items: Vec::<ResolvedAddr>::new().into_iter(),
-                    started: false,
-                }
-            })
+        fn supports(&self, rtype: u16) -> bool {
+            matches!(rtype, rtype::A | rtype::AAAA | rtype::HTTPS)
         }
 
-        type Ipv4<'a>
-            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
-        where
-            Self: 'a;
-
-        fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
-            Box::pin({
-                self.note("a:call");
-                Staged {
-                    log: Rc::clone(&self.log),
-                    asked: "a:ask",
-                    answered: "a:answer",
-                    items: self
-                        .v4
-                        .iter()
-                        .map(|&addr| ResolvedAddr { addr, ttl: None })
-                        .collect::<Vec<_>>()
-                        .into_iter(),
-                    started: false,
-                }
-            })
-        }
-
-        fn supports_svcb(&self) -> bool {
-            true
-        }
-
-        type Svcb<'a>
-            = std::pin::Pin<
-            Box<dyn futures_core::Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> + 'a>,
-        >
-        where
-            Self: 'a;
-
-        fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
-            Box::pin({
-                self.note("https:call");
-                Staged {
-                    log: Rc::clone(&self.log),
-                    asked: "https:ask",
-                    answered: "https:answer",
-                    items: self.records.clone().into_iter(),
-                    started: false,
-                }
-            })
+        fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+            let _ = name;
+            match rtype {
+                rtype::A => Box::pin({
+                    self.note("a:call");
+                    Staged {
+                        log: Rc::clone(&self.log),
+                        asked: "a:ask",
+                        answered: "a:answer",
+                        items: self
+                            .v4
+                            .iter()
+                            .map(|&addr| Record::new(RData::from(addr)))
+                            .collect::<Vec<_>>()
+                            .into_iter(),
+                        started: false,
+                    }
+                }),
+                rtype::AAAA => Box::pin({
+                    self.note("aaaa:call");
+                    Staged {
+                        log: Rc::clone(&self.log),
+                        asked: "aaaa:ask",
+                        answered: "aaaa:answer",
+                        items: Vec::<Record>::new().into_iter(),
+                        started: false,
+                    }
+                }),
+                rtype::HTTPS => Box::pin({
+                    self.note("https:call");
+                    Staged {
+                        log: Rc::clone(&self.log),
+                        asked: "https:ask",
+                        answered: "https:answer",
+                        items: self
+                            .records
+                            .clone()
+                            .into_iter()
+                            .map(|e| Record::new(RData::Https(e)))
+                            .collect::<Vec<_>>()
+                            .into_iter(),
+                        started: false,
+                    }
+                }),
+                _ => Box::pin(futures_util::stream::empty()),
+            }
         }
     }
 
@@ -2760,34 +2741,23 @@ mod tests {
     }
 
     impl Resolve for HangingResolve {
-        type Ipv6<'a>
-            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        type Records<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + 'a>>
         where
             Self: 'a;
 
-        fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
-            Box::pin(self.record("aaaa", futures_util::stream::empty()))
+        fn supports(&self, rtype: u16) -> bool {
+            matches!(rtype, rtype::A | rtype::AAAA | rtype::HTTPS)
         }
-        type Ipv4<'a>
-            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
-        where
-            Self: 'a;
 
-        fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
-            Box::pin(self.record("a", futures_util::stream::empty()))
-        }
-        fn supports_svcb(&self) -> bool {
-            true
-        }
-        type Svcb<'a>
-            = std::pin::Pin<
-            Box<dyn futures_core::Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> + 'a>,
-        >
-        where
-            Self: 'a;
-
-        fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
-            Box::pin(self.record("https", futures_util::stream::pending()))
+        fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+            let _ = name;
+            match rtype {
+                rtype::A => Box::pin(self.record("a", futures_util::stream::empty())),
+                rtype::AAAA => Box::pin(self.record("aaaa", futures_util::stream::empty())),
+                rtype::HTTPS => Box::pin(self.record("https", futures_util::stream::pending())),
+                _ => Box::pin(futures_util::stream::empty()),
+            }
         }
     }
 
@@ -2948,6 +2918,78 @@ mod tests {
             rt.log.borrow().len(),
             2,
             "v6(1) (dead), then a live v4 — v6(2) never started"
+        );
+    }
+
+    /// A resolver that answers the `AAAA` question with an `A` record.
+    ///
+    /// Under the seam this replaced that was not expressible: `lookup_ipv6`
+    /// and `lookup_ipv4` were different methods and the v6 arm could only
+    /// ever be handed what the v6 method returned. One `lookup(name,
+    /// rtype)` makes it expressible, so the connector checks — and this is
+    /// what the check costs if it is removed: the address goes into the v6
+    /// half of the race, which exists precisely to keep the two families
+    /// apart, and it is attempted before anything the v4 half offers.
+    struct CrossedFamilies(IpAddr);
+    impl Resolve for CrossedFamilies {
+        type Records<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn supports(&self, rtype: u16) -> bool {
+            matches!(rtype, rtype::A | rtype::AAAA)
+        }
+
+        fn lookup<'a>(&'a self, _name: &str, rtype: u16) -> Self::Records<'a> {
+            match rtype {
+                // The whole point: a v4 answer to the v6 question.
+                rtype::AAAA => Box::pin(futures_util::stream::once(std::future::ready(Ok(
+                    Record::new(RData::from(self.0)),
+                )))),
+                _ => Box::pin(futures_util::stream::empty()),
+            }
+        }
+    }
+
+    /// The v6 arm takes v6 addresses and nothing else.
+    ///
+    /// Observed on the only thing that sees every attempt — `FakeRt`'s log
+    /// — because a mis-filed address is not a failure, it is a connection
+    /// made through the wrong half of the race. With the family check the
+    /// log is empty and the connect reports no addresses; without it the
+    /// log has one entry and the connect succeeds.
+    #[test]
+    fn an_a_record_answering_the_aaaa_question_is_not_offered_as_v6() {
+        let live = live_listener_addr();
+        let dns = CrossedFamilies(live.ip());
+        let uri: Uri = format!("http://example.invalid:{}/", live.port())
+            .parse()
+            .unwrap();
+        let rt = FakeRt::new([(live.ip(), true)]);
+        let err = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &[],
+            None,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            None,
+            &NegativeCache::default(),
+            Duration::ZERO,
+            Prefetched::NotConsulted,
+            None,
+        ))
+        .expect_err("the only address answered the wrong question");
+        assert_eq!(
+            resolve_errors(&err).to_string(),
+            "resolver returned no addresses for either address family"
+        );
+        assert!(
+            rt.log.borrow().is_empty(),
+            "nothing was attempted: the one address was refused before the race"
         );
     }
 

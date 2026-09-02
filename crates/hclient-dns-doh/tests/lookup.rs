@@ -13,7 +13,7 @@ mod support;
 
 use futures_util::StreamExt;
 use hclient_core::ErrorKind;
-use hclient_dns::{Resolve, ResolvedAddr};
+use hclient_dns::{Record, Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -25,7 +25,7 @@ use support::{
     TYPE_AAAA, message, noerror,
 };
 
-type Item = Result<ResolvedAddr, hclient_core::Error>;
+type Item = Result<Record, hclient_core::Error>;
 
 fn transport() -> Native<Tokio, NoTls, hclient_dns::IpLiteralOnly> {
     Native::new(Tokio, NoTls, hclient_dns::IpLiteralOnly)
@@ -36,17 +36,23 @@ fn doh(server: &Server) -> Doh<Native<Tokio, NoTls, hclient_dns::IpLiteralOnly>>
 }
 
 async fn v4(server: &Server, name: &str) -> Vec<Item> {
-    doh(server).lookup_ipv4(name).collect().await
+    doh(server).lookup(name, rtype::A).collect().await
 }
 
 async fn v6(server: &Server, name: &str) -> Vec<Item> {
-    doh(server).lookup_ipv6(name).collect().await
+    doh(server).lookup(name, rtype::AAAA).collect().await
 }
 
 fn addrs(items: &[Item]) -> Vec<IpAddr> {
     items
         .iter()
-        .map(|i| i.as_ref().expect("an address, not an error").addr)
+        .map(|i| {
+            i.as_ref()
+                .expect("an address, not an error")
+                .rdata
+                .addr()
+                .expect("an address answer")
+        })
         .collect()
 }
 
@@ -92,7 +98,7 @@ async fn an_aaaa_answer_reaches_the_v6_stream() {
     );
 }
 
-/// `ResolvedAddr::ttl` carries the record's own TTL, per record.
+/// `Record::ttl` carries the record's own TTL, per record.
 ///
 /// The two records deliberately carry **different** TTLs: a resolver that
 /// took the RRset minimum, or the first record's value for both, would pass
@@ -341,7 +347,7 @@ async fn a_dead_endpoint_is_a_resolve_error_not_a_connect_one() {
         "http://127.0.0.1:1/dns-query".parse().expect("uri"),
     )
     .expect("endpoint");
-    let items: Vec<Item> = doh.lookup_ipv4("example.com").collect().await;
+    let items: Vec<Item> = doh.lookup("example.com", rtype::A).collect().await;
     let e = one_error(items);
     assert_eq!(e.kind(), &ErrorKind::Resolve);
     assert!(

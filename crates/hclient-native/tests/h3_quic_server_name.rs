@@ -36,7 +36,7 @@ mod server;
 use futures_util::stream;
 use hclient_core::unversioned::Transport;
 use hclient_core::{Error, ErrorKind, RequestBody};
-use hclient_dns::{IpLiteralOnly, Resolve, ResolvedAddr};
+use hclient_dns::{IpLiteralOnly, RData, Record, Resolve, rtype};
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
@@ -54,7 +54,7 @@ use std::net::IpAddr;
 #[derive(Debug, Clone, Copy)]
 struct NoAnswers;
 
-fn refused(name: &str) -> Result<ResolvedAddr, Error> {
+fn refused(name: &str) -> Result<Record, Error> {
     Err(Error::new(
         ErrorKind::Resolve,
         std::io::Error::other(format!("NoAnswers was asked about `{name}`")),
@@ -62,33 +62,22 @@ fn refused(name: &str) -> Result<ResolvedAddr, Error> {
 }
 
 impl Resolve for NoAnswers {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
+    type Records<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>
     where
         Self: 'a;
 
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
     }
 
-    type Ipv4<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
-    where
-        Self: 'a;
-
-    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
-        Box::pin(stream::iter(vec![refused(name)]))
-    }
-
-    type Ipv6<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
-        Box::pin(stream::iter(vec![refused(name)]))
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin(stream::iter(vec![refused(name)])),
+            rtype::AAAA => Box::pin(stream::iter(vec![refused(name)])),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 
@@ -98,12 +87,9 @@ impl Resolve for NoAnswers {
 struct Pointing(IpAddr);
 
 impl Pointing {
-    fn answer(self, this_family: bool) -> Vec<Result<ResolvedAddr, Error>> {
+    fn answer(self, this_family: bool) -> Vec<Result<Record, Error>> {
         if this_family {
-            vec![Ok(ResolvedAddr {
-                addr: self.0,
-                ttl: None,
-            })]
+            vec![Ok(Record::new(RData::from(self.0)))]
         } else {
             vec![]
         }
@@ -111,33 +97,22 @@ impl Pointing {
 }
 
 impl Resolve for Pointing {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
+    type Records<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>
     where
         Self: 'a;
 
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
     }
 
-    type Ipv4<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
-    where
-        Self: 'a;
-
-    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
-        Box::pin(stream::iter(self.answer(self.0.is_ipv4())))
-    }
-
-    type Ipv6<'a>
-        =
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
-        Box::pin(stream::iter(self.answer(self.0.is_ipv6())))
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin(stream::iter(self.answer(self.0.is_ipv4()))),
+            rtype::AAAA => Box::pin(stream::iter(self.answer(self.0.is_ipv6()))),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 

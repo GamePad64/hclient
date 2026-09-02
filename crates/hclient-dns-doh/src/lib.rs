@@ -87,7 +87,7 @@
 //! over, and both halves were measured rather than argued: taking rustc's
 //! own `Box` suggestion produces a type that is no longer a `Resolve`
 //! (`Box<C>` is not a `Transport`), and `dyn Resolve` cannot be written at
-//! all, because `lookup_ipv4` returns an `impl Trait`. **The second is an
+//! all, because `lookup` returns an `impl Trait`. **The second is an
 //! accident**, not a promise anyone has made — `impl Stream` was chosen for
 //! RFC 8305 — so this is the place to look when someone proposes an
 //! object-safe `Resolve` or a blanket `impl Transport for Box<T>`. Neither
@@ -116,14 +116,14 @@
 //!
 //! # What this crate can do that the system resolver often cannot
 //!
-//! `supports_svcb()` is **`true`**, and unlike a platform resolver it is
-//! true on every target: an HTTPS/SVCB query is an ordinary DNS query in an
+//! `supports(rtype::HTTPS)` is **`true`**, and unlike a platform resolver
+//! it is true on every target: an HTTPS/SVCB query is an ordinary DNS query in an
 //! ordinary HTTP body, so nothing about it depends on whether the local
 //! stub resolver forwards type 65. That is the point of the crate — see
 //! §W3, which names Windows 10, wasm, and anything behind a stub resolver
 //! that drops type 65.
 //!
-//! `ResolvedAddr::ttl` is filled from the record's own TTL, per record
+//! `Record::ttl` is filled from the record's own TTL, per record
 //! rather than per RRset, for the same reason `hclient-dns-hickory` gives:
 //! a caller doing its own caching wants the value the server actually sent.
 //!
@@ -170,7 +170,7 @@ use futures_util::StreamExt;
 use futures_util::stream;
 use hclient_core::unversioned::SendTransport;
 use hclient_core::{Error, ErrorKind, RequestBody, Timeouts};
-use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
+use hclient_dns::{RData, Record, Resolve, rtype};
 use http::Uri;
 use http_body_util::BodyExt;
 use std::error::Error as StdError;
@@ -209,7 +209,7 @@ const DEFAULT_TIMEOUTS: Timeouts = Timeouts {
 /// DoH error stands" and "there is no fallback" are the same code path
 /// rather than two.
 ///
-/// `supports_svcb()` stays at the trait's `false` default, which is correct
+/// `supports` answers `false` for every type, which is correct
 /// and load-bearing: an empty stream from this type means "this resolver
 /// cannot", never "asked and found nothing" — the distinction
 /// `hclient_dns`'s module doc draws.
@@ -219,44 +219,33 @@ pub struct NoFallback;
 /// The stream every `Resolve` here hands back, `Send` and short enough to
 /// stay on one line.
 ///
+/// **One alias where there were two.** The seam asks one question and
+/// hands back one kind of `Record`, so the address stream and the SVCB
+/// stream stopped being different types.
+///
 /// **The one-line part is the reason it exists.** `cargo fmt` reflows the
 /// written-out form and carries the `send-bound-exception` marker off the
 /// end with it, so the invariant check reports an unexcused bound and the
 /// two gates cannot pass together — a defect `AGENTS.md` records three
 /// times from the other side. A short alias is the workspace's own
-/// remedy, and the four use sites write `SendAddrStream<'a>`.
-type SendAddrStream<'a> =
-    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
-
-/// The same, for the record stream. Separate rather than generic because
-/// a generic alias over the item type reflows again at the use site.
-type SendSvcbStream<'a> =
-    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
+/// remedy, and every use site writes `SendRecordStream<'a>`.
+type SendRecordStream<'a> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
 
 impl Resolve for NoFallback {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
+    type Records<'a>
+        = SendRecordStream<'a>
     where
         Self: 'a;
 
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
+    /// Nothing, for every type: this is the *absence* of a fallback, and
+    /// saying otherwise would make an empty stream read as "asked, found
+    /// none" for a resolver that never asked.
+    fn supports(&self, _rtype: u16) -> bool {
+        false
     }
 
-    type Ipv4<'a>
-        = SendAddrStream<'a>
-    where
-        Self: 'a;
-
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin(stream::empty())
-    }
-    type Ipv6<'a>
-        = SendAddrStream<'a>
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+    fn lookup<'a>(&'a self, _name: &str, _rtype: u16) -> Self::Records<'a> {
         Box::pin(stream::empty())
     }
 }
@@ -534,7 +523,7 @@ where
     /// `Resolve` is there so that A and AAAA can proceed independently
     /// (RFC 8305), and they do — these are two separate requests — but
     /// *within* one family there is no partial answer to stream.
-    async fn addrs(&self, name: &str, family: Family) -> Vec<Result<ResolvedAddr, Error>> {
+    async fn addrs(&self, name: &str, family: Family) -> Vec<Result<Record, Error>> {
         // An IP literal is not a name and there is nothing to ask about it.
         //
         // **This is not an optimisation; without it a `Doh`-backed client
@@ -555,7 +544,7 @@ where
         if let Some(addr) = ip_literal(name) {
             return match (addr, family) {
                 (IpAddr::V4(_), Family::V4) | (IpAddr::V6(_), Family::V6) => {
-                    vec![Ok(ResolvedAddr { addr, ttl: None })]
+                    vec![Ok(Record::new(RData::from(addr)))]
                 }
                 _ => Vec::new(),
             };
@@ -570,8 +559,9 @@ where
     ///
     /// Takes a [`Family`] rather than a [`Query`], and that is a correction
     /// rather than a tidy-up. With a `Query` there was a third arm, for
-    /// `Https`, that nothing could reach — `lookup_svcb` deliberately does
-    /// not come through here — and a mutation of that arm survived the
+    /// `Https`, that nothing could reach — the HTTPS arm of `lookup`
+    /// deliberately does not come through here — and a mutation of that
+    /// arm survived the
     /// whole suite, because an unreachable arm cannot be killed by any
     /// test. The type now says what both callers already meant, and the
     /// arm is gone rather than covered.
@@ -580,10 +570,10 @@ where
         name: &str,
         family: Family,
         failure: DohError,
-    ) -> Vec<Result<ResolvedAddr, Error>> {
-        let recovered: Vec<Result<ResolvedAddr, Error>> = match family {
-            Family::V4 => self.fallback.lookup_ipv4(name).collect().await,
-            Family::V6 => self.fallback.lookup_ipv6(name).collect().await,
+    ) -> Vec<Result<Record, Error>> {
+        let recovered: Vec<Result<Record, Error>> = match family {
+            Family::V4 => self.fallback.lookup(name, rtype::A).collect().await,
+            Family::V6 => self.fallback.lookup(name, rtype::AAAA).collect().await,
         };
         if recovered.is_empty() {
             vec![Err(failure.into())]
@@ -610,79 +600,67 @@ where
     C::Error: Send + Sync,   // send-bound-exception: amendment-C1
     C::Body: Send,           // send-bound-exception: amendment-C16
     <C::Body as http_body::Body>::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
-    F: Resolve + Sync,         // send-bound-exception: amendment-C16
-    for<'a> F::Ipv4<'a>: Send, // send-bound-exception: amendment-C16
-    for<'a> F::Ipv6<'a>: Send, // send-bound-exception: amendment-C16
+    F: Resolve + Sync,            // send-bound-exception: amendment-C16
+    for<'a> F::Records<'a>: Send, // send-bound-exception: amendment-C16
 {
-    type Ipv4<'a>
-        = SendAddrStream<'a>
+    type Records<'a>
+        = SendRecordStream<'a>
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            let name = name.to_owned();
-            stream::once(async move { self.addrs(&name, Family::V4).await }).flat_map(stream::iter)
-        })
-    }
-
-    type Ipv6<'a>
-        = SendAddrStream<'a>
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
-        Box::pin({
-            let name = name.to_owned();
-            stream::once(async move { self.addrs(&name, Family::V6).await }).flat_map(stream::iter)
-        })
-    }
-
-    /// **`true`, and this is the reason the crate exists.**
+    /// **`true` for all three, and the HTTPS answer is why the crate
+    /// exists.**
     ///
-    /// An HTTPS/SVCB query is an ordinary DNS query carried in an ordinary
-    /// HTTP body, so this answer does not depend on the platform, on the
-    /// local stub resolver forwarding type 65, or on a libc exposing a raw
-    /// query API. `hclient-dns-system` can only say `true` where its
-    /// backend can (`res_query` on Unix, `DnsQuery_UTF8` on Windows), and
-    /// `IpLiteralOnly` and `wasi:http` can never say it at all.
+    /// An HTTPS/SVCB query is an ordinary DNS query carried in an
+    /// ordinary HTTP body, so this does not depend on the platform, on
+    /// the local stub resolver forwarding type 65, or on a libc exposing
+    /// a raw query API. `hclient-dns-system` can only say `true` where
+    /// its backend can, and `IpLiteralOnly` can never say it at all.
     ///
-    /// The pair with [`Self::lookup_svcb`] is the one `hclient_dns`'s
-    /// module doc requires: both overridden together, so an empty stream
-    /// from here means "asked, found none" and nothing else.
-    fn supports_svcb(&self) -> bool {
-        true
+    /// A type this crate does not model gets `false` rather than an
+    /// optimistic `true`: the wire query would succeed and there would be
+    /// no [`RData`] variant to put the answer in, so the honest answer is
+    /// the one that stops a caller asking.
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA | rtype::HTTPS)
     }
 
-    type Svcb<'a>
-        = SendSvcbStream<'a>
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
-        Box::pin({
-            let name = name.to_owned();
-            stream::once(async move {
-                // An IP literal has no owner name to carry an HTTPS record, so
-                // there is nothing to ask — the same rule as `Self::addrs`, and
-                // the same reason. Empty rather than an error, because with
-                // `supports_svcb() == true` an empty stream reads as "asked,
-                // found none", and for a literal there is genuinely none.
-                if ip_literal(&name).is_some() {
-                    return Vec::new();
-                }
-                match self.exchange(&name, Query::Https).await {
-                    Ok(answer) => answer.endpoints.into_iter().map(Ok).collect(),
-                    // Deliberately NOT routed through `recover`: a fallback
-                    // resolver is a `Resolve`, and asking it for SVCB when it
-                    // reports `supports_svcb() == false` would turn its
-                    // honest "I cannot" into our empty "there are none". The
-                    // DoH error stands.
-                    Err(e) => vec![Err(Error::from(e))],
-                }
-            })
-            .flat_map(stream::iter)
-        })
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let name = name.to_owned();
+        match rtype {
+            rtype::A => Box::pin(
+                stream::once(async move { self.addrs(&name, Family::V4).await })
+                    .flat_map(stream::iter),
+            ),
+            rtype::AAAA => Box::pin(
+                stream::once(async move { self.addrs(&name, Family::V6).await })
+                    .flat_map(stream::iter),
+            ),
+            rtype::HTTPS => Box::pin(
+                stream::once(async move {
+                    // An IP literal has no owner name to carry an HTTPS
+                    // record, so there is nothing to ask — the same rule
+                    // as `Self::addrs`, and the same reason. Empty rather
+                    // than an error, because with `supports` answering
+                    // `true` an empty stream reads as "asked, found
+                    // none", and for a literal there is genuinely none.
+                    if ip_literal(&name).is_some() {
+                        return Vec::new();
+                    }
+                    match self.exchange(&name, Query::Https).await {
+                        Ok(answer) => answer.endpoints.into_iter().map(Ok).collect(),
+                        // Deliberately NOT routed through `recover`: a
+                        // fallback resolver is a `Resolve`, and asking it
+                        // for a type it reports it cannot answer would
+                        // turn its honest "I cannot" into our empty
+                        // "there are none". The DoH error stands.
+                        Err(e) => vec![Err(e.into())],
+                    }
+                })
+                .flat_map(stream::iter),
+            ),
+            _ => Box::pin(stream::empty()),
+        }
     }
 }
 

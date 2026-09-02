@@ -1,7 +1,7 @@
 //! The `Resolve` impl itself, driven against a scripted upstream.
 //!
 //! Everything this crate does below `to_endpoint` — which `RecordType` each
-//! lookup asks for, the TTL that reaches `ResolvedAddr`, what happens to an
+//! lookup asks for, the TTL that reaches `Record`, what happens to an
 //! answer record that is not an address, how an upstream failure is
 //! reported — is only observable through a real hickory `Resolver`. Pointing
 //! one at a live server would make these tests depend on outbound DNS, which
@@ -13,7 +13,7 @@
 use futures_util::StreamExt;
 use futures_util::stream;
 use hclient_core::ErrorKind;
-use hclient_dns::{Resolve, ResolvedAddr};
+use hclient_dns::{RData as SeamData, Record as SeamRecord, Resolve, rtype};
 use hclient_dns_hickory::Hickory;
 use hickory_resolver::config::{
     ConnectionConfig, NameServerConfig, ResolveHosts, ResolverConfig, ResolverOpts,
@@ -275,6 +275,14 @@ const V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
 
 // ------------------------------------------------------------------ tests
 
+/// The HTTPS record a `Record` carries, for the assertions below.
+fn https(record: &hclient_dns::Record) -> &hclient_dns::SvcbEndpoint {
+    record
+        .rdata
+        .https()
+        .expect("a type 65 query answers an HTTPS record")
+}
+
 #[tokio::test]
 async fn a_v4_lookup_asks_for_a_and_a_v6_lookup_asks_for_aaaa() {
     let (resolve, asked) = Upstream::default()
@@ -284,7 +292,7 @@ async fn a_v4_lookup_asks_for_a_and_a_v6_lookup_asks_for_aaaa() {
         )
         .wire();
 
-    let _ = resolve.lookup_ipv4(HOST).collect::<Vec<_>>().await;
+    let _ = resolve.lookup(HOST, rtype::A).collect::<Vec<_>>().await;
     assert_eq!(
         asked.record_types(),
         vec![RecordType::A],
@@ -296,7 +304,7 @@ async fn a_v4_lookup_asks_for_a_and_a_v6_lookup_asks_for_aaaa() {
         .answering(RecordType::AAAA, vec![aaaa_record(60, V6)])
         .wire();
 
-    let _ = resolve.lookup_ipv6(HOST).collect::<Vec<_>>().await;
+    let _ = resolve.lookup(HOST, rtype::AAAA).collect::<Vec<_>>().await;
     assert_eq!(asked.record_types(), vec![RecordType::AAAA]);
 }
 
@@ -316,7 +324,7 @@ async fn each_address_carries_the_ttl_of_its_own_record() {
         .wire();
 
     let got: Vec<_> = resolve
-        .lookup_ipv4(HOST)
+        .lookup(HOST, rtype::A)
         .map(|r| r.expect("the scripted answer is a success"))
         .collect()
         .await;
@@ -324,14 +332,10 @@ async fn each_address_carries_the_ttl_of_its_own_record() {
     assert_eq!(
         got,
         vec![
-            ResolvedAddr {
-                addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
-                ttl: Some(Duration::from_secs(900)),
-            },
-            ResolvedAddr {
-                addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
-                ttl: Some(Duration::from_secs(30)),
-            },
+            SeamRecord::new(SeamData::A(Ipv4Addr::new(192, 0, 2, 1)))
+                .ttl(Some(Duration::from_secs(900))),
+            SeamRecord::new(SeamData::A(Ipv4Addr::new(192, 0, 2, 2)))
+                .ttl(Some(Duration::from_secs(30))),
         ],
         "the TTL is the record's own, not the RRset's minimum and not a constant"
     );
@@ -353,21 +357,24 @@ async fn an_answer_record_that_is_not_an_address_is_skipped_not_an_error() {
         )
         .wire();
 
-    let got: Vec<_> = resolve.lookup_ipv4(HOST).collect().await;
+    let got: Vec<_> = resolve.lookup(HOST, rtype::A).collect().await;
     assert_eq!(got.len(), 1, "the CNAME is skipped, the A is kept");
     let addr = got
         .into_iter()
         .next()
         .expect("length was just asserted")
         .expect("a CNAME in the answer section is not a failure");
-    assert_eq!(addr.addr, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)));
+    assert_eq!(
+        addr.rdata.addr().expect("an address answer"),
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7))
+    );
 }
 
 #[tokio::test]
 async fn an_upstream_failure_arrives_as_error_kind_resolve() {
     let (resolve, _) = Upstream::default().failing(RecordType::A).wire();
 
-    let got: Vec<_> = resolve.lookup_ipv4(HOST).collect().await;
+    let got: Vec<_> = resolve.lookup(HOST, rtype::A).collect().await;
     assert_eq!(got.len(), 1, "a failed lookup yields exactly one error");
     let err = got
         .into_iter()
@@ -394,8 +401,8 @@ async fn a_v6_lookup_completes_while_the_v4_lookup_is_still_outstanding() {
         .answering(RecordType::AAAA, vec![aaaa_record(60, V6)])
         .wire();
 
-    let mut v4 = Box::pin(resolve.lookup_ipv4(HOST));
-    let mut v6 = Box::pin(resolve.lookup_ipv6(HOST));
+    let mut v4 = Box::pin(resolve.lookup(HOST, rtype::A));
+    let mut v6 = Box::pin(resolve.lookup(HOST, rtype::AAAA));
 
     // Start the A query and leave it hanging.
     assert_matches!(
@@ -409,7 +416,10 @@ async fn a_v6_lookup_completes_while_the_v4_lookup_is_still_outstanding() {
         .expect("the AAAA lookup must not be gated on the unanswered A lookup")
         .expect("the scripted answer has one AAAA record")
         .expect("the scripted answer is a success");
-    assert_eq!(first_v6.addr, IpAddr::V6(V6));
+    assert_eq!(
+        first_v6.rdata.addr().expect("an address answer"),
+        IpAddr::V6(V6)
+    );
 }
 
 #[tokio::test]
@@ -417,7 +427,7 @@ async fn svcb_support_is_claimed_and_backed_by_a_real_https_query() {
     // `Resolve`'s own doc requires these two to move together: a resolver
     // that answers SVCB must also say so, and one that says so must ask. A
     // test that checked only the boolean would pass for an implementation
-    // that had quietly inherited the default empty-stream `lookup_svcb`.
+    // that had quietly inherited the default empty-stream `lookup`.
     let (resolve, asked) = Upstream::default()
         .answering(
             RecordType::HTTPS,
@@ -435,10 +445,10 @@ async fn svcb_support_is_claimed_and_backed_by_a_real_https_query() {
         )
         .wire();
 
-    assert!(resolve.supports_svcb());
+    assert!(resolve.supports(rtype::HTTPS));
 
     let got: Vec<_> = resolve
-        .lookup_svcb(HOST)
+        .lookup(HOST, rtype::HTTPS)
         .map(|r| r.expect("the scripted answer is a success"))
         .collect()
         .await;
@@ -450,18 +460,18 @@ async fn svcb_support_is_claimed_and_backed_by_a_real_https_query() {
          the former, and asking for the latter finds nothing"
     );
     assert_eq!(got.len(), 1);
-    assert_eq!(got[0].target, "svc.example.net.");
-    assert_eq!(got[0].alpn, vec![b"h3".to_vec()]);
+    assert_eq!(https(&got[0]).target, "svc.example.net.");
+    assert_eq!(https(&got[0]).alpn, vec![b"h3".to_vec()]);
 }
 
 #[tokio::test]
 async fn support_for_svcb_survives_a_lookup_that_finds_nothing() {
-    // `supports_svcb()` answers "can this resolver ask?", never "did the last
+    // `supports` answers "can this resolver ask?", never "did the last
     // answer contain anything?". It is a constant here for exactly that
     // reason, and this pins that a fruitless lookup does not touch it.
     let (resolve, asked) = Upstream::default().wire();
 
-    let _ = resolve.lookup_svcb(HOST).collect::<Vec<_>>().await;
+    let _ = resolve.lookup(HOST, rtype::HTTPS).collect::<Vec<_>>().await;
 
     assert_eq!(
         asked.record_types(),
@@ -469,7 +479,7 @@ async fn support_for_svcb_survives_a_lookup_that_finds_nothing() {
         "the lookup really went to the wire — it did not short-circuit"
     );
     assert!(
-        resolve.supports_svcb(),
+        resolve.supports(rtype::HTTPS),
         "finding no records must not downgrade the claim; that distinction is \
          the whole reason the flag exists"
     );
@@ -492,7 +502,7 @@ async fn support_for_svcb_survives_a_lookup_that_finds_nothing() {
 async fn no_https_record_yields_an_empty_stream_not_an_error() {
     let (resolve, _) = Upstream::default().wire();
 
-    let got: Vec<_> = resolve.lookup_svcb(HOST).collect().await;
+    let got: Vec<_> = resolve.lookup(HOST, rtype::HTTPS).collect().await;
     assert!(
         got.is_empty(),
         "NODATA is 'asked, found none' — an empty stream, not a failure"
@@ -515,12 +525,12 @@ async fn a_family_with_no_records_yields_an_empty_stream_not_an_error() {
         )
         .wire();
 
-    let got: Vec<_> = resolve.lookup_ipv6(HOST).collect().await;
+    let got: Vec<_> = resolve.lookup(HOST, rtype::AAAA).collect().await;
     assert!(
         got.is_empty(),
         "a v4-only host has no AAAA, and that is an answer, not a failure"
     );
-    let v4: Vec<_> = resolve.lookup_ipv4(HOST).collect().await;
+    let v4: Vec<_> = resolve.lookup(HOST, rtype::A).collect().await;
     assert_eq!(
         v4.len(),
         1,
@@ -530,10 +540,12 @@ async fn a_family_with_no_records_yields_an_empty_stream_not_an_error() {
 
 /// Which lookup a case drives.
 ///
-/// The guard is written TWICE — once in `lookup_ips`, once in `lookup_svcb`
-/// — so it can be right in one and wrong in the other. Checking a response
-/// code against only one lookup cannot see that, so the two tests below run
-/// every code past all three entry points.
+/// The guard is written **once** now, in `lookup_records`, where it used
+/// to be written twice — so a response code that is right for one type
+/// and wrong for another is no longer expressible here. The two tests
+/// below still run every code past all three types: what they pin has
+/// moved from *the two copies agree* to *one copy covers every type*, and
+/// a backend that grows a second read path would put the old hazard back.
 #[derive(Debug, Clone, Copy)]
 enum Lookup {
     V4,
@@ -548,29 +560,29 @@ impl Lookup {
         (Self::Svcb, RecordType::HTTPS),
     ];
 
-    /// Drive the lookup and flatten to a shape the three share. The items
-    /// differ in type — `ResolvedAddr` against `SvcbEndpoint` — and nothing
-    /// here cares about their contents, only about how many arrived and
-    /// whether they were errors.
+    /// Drive the lookup and flatten to a shape the three share. Every
+    /// type answers with a `Record` now, and nothing here cares about its
+    /// contents — only about how many arrived and whether they were
+    /// errors.
     async fn run(self, resolve: &Hickory<Canned>) -> Vec<Result<(), hclient_core::Error>> {
         match self {
             Self::V4 => {
                 resolve
-                    .lookup_ipv4(HOST)
+                    .lookup(HOST, rtype::A)
                     .map(|r| r.map(drop))
                     .collect()
                     .await
             }
             Self::V6 => {
                 resolve
-                    .lookup_ipv6(HOST)
+                    .lookup(HOST, rtype::AAAA)
                     .map(|r| r.map(drop))
                     .collect()
                     .await
             }
             Self::Svcb => {
                 resolve
-                    .lookup_svcb(HOST)
+                    .lookup(HOST, rtype::HTTPS)
                     .map(|r| r.map(drop))
                     .collect()
                     .await
@@ -638,8 +650,9 @@ async fn servfail_stays_an_error_because_a_failed_server_is_not_an_empty_name() 
     }
 }
 
-/// The NODATA side, run past all three lookups for the same reason: the
-/// guard that makes it an empty stream is written once per `flat_map`.
+/// The NODATA side, run for all three types — which is now one `flat_map`
+/// rather than two, so the loop is what says the guard covers every type
+/// and not only the one it was written under.
 #[tokio::test]
 async fn nodata_is_an_empty_stream_on_every_lookup() {
     for (lookup, queried) in Lookup::ALL {
@@ -681,19 +694,19 @@ async fn a_non_https_answer_record_does_not_become_an_endpoint() {
         .wire();
 
     let got: Vec<_> = resolve
-        .lookup_svcb(HOST)
+        .lookup(HOST, rtype::HTTPS)
         .map(|r| r.expect("the scripted answer is a success"))
         .collect()
         .await;
     assert_eq!(got.len(), 1, "the TXT record is skipped, the HTTPS is kept");
-    assert_eq!(got[0].priority, 2);
+    assert_eq!(https(&got[0]).priority, 2);
 }
 
 #[tokio::test]
 async fn an_upstream_failure_on_the_https_query_arrives_as_error_kind_resolve() {
     let (resolve, _) = Upstream::default().failing(RecordType::HTTPS).wire();
 
-    let got: Vec<_> = resolve.lookup_svcb(HOST).collect().await;
+    let got: Vec<_> = resolve.lookup(HOST, rtype::HTTPS).collect().await;
     assert_eq!(got.len(), 1, "a failed lookup yields exactly one error");
     let err = got
         .into_iter()
@@ -717,8 +730,8 @@ async fn clones_share_one_resolver_rather_than_multiplying_upstream_traffic() {
         .wire();
     let twin = resolve.clone();
 
-    let first: Vec<_> = resolve.lookup_ipv4(HOST).collect().await;
-    let second: Vec<_> = twin.lookup_ipv4(HOST).collect().await;
+    let first: Vec<_> = resolve.lookup(HOST, rtype::A).collect().await;
+    let second: Vec<_> = twin.lookup(HOST, rtype::A).collect().await;
 
     assert_eq!(first.len(), 1, "the original resolved the name");
     assert_eq!(second.len(), 1, "so did the clone");
@@ -757,8 +770,8 @@ async fn the_resolve_impl_is_generic_over_any_connection_provider() {
     async fn resolves_over_any_provider<P: ConnectionProvider>(h: &Hickory<P>) -> usize {
         // Through the trait, not through `Hickory`'s inherent methods: only a
         // blanket impl satisfies a call made behind this bound.
-        assert!(Resolve::supports_svcb(h));
-        Resolve::lookup_ipv4(h, HOST).count().await
+        assert!(Resolve::supports(h, rtype::HTTPS));
+        Resolve::lookup(h, HOST, rtype::A).count().await
     }
 
     let (resolve, _) = Upstream::default()

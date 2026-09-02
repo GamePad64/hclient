@@ -1691,7 +1691,7 @@ been dishonest for SVCB is the right shape for Alt-Svc.
 **Half of that reason has since been removed, and it was ours.** The
 sentence above read *`SvcbEndpoint` carries no TTL*, which was true of
 the type and never of the wire: every backend's decoder had the record's
-TTL in hand and dropped it. `SvcbEndpoint::ttl` carries it now —
+TTL in hand and dropped it. The TTL is carried now —
 `Option<Duration>`, where `None` is *the resolver did not say* and
 `Some(ZERO)` is RFC 2181 §8's *do not cache this*, which are different
 instructions and must not be one value. So a cache of HTTPS records is
@@ -1844,6 +1844,82 @@ is no type called `Selecting` anywhere in the workspace. Four sentences
 here named one or the other. That is the defect this file records against
 itself in every other section, found by asking a scan which traits exist
 rather than by reading.
+
+### The resolver seam asks one question, and the record type is the parameter
+
+`Resolve` had three associated types, three `lookup_*` methods and a
+`supports_svcb` predicate. It has **one** of each: `type Records<'a>`,
+`fn supports(&self, rtype: u16)` and `fn lookup(&self, name, rtype)`, over
+a `Record { ttl, rdata }` whose `RData` is `A`, `Aaaa` or `Https`.
+
+**What that buys is that the next record type is additive.** TLSA for
+DANE, CAA before issuing, SRV — each is an `RData` variant and changes the
+trait not at all. Under the old shape each was a fourth associated type, a
+fourth method and a fourth capability constant, which every implementor
+outside this workspace would have had to grow to keep compiling. Both new
+types are `#[non_exhaustive]` for the reason this file's own rule gives:
+they are handed *back* and only read, so exhaustiveness is not the
+mechanism.
+
+**`supports` is the same distinction one method further out.**
+`supports_svcb` answered one question about one type; the new one takes
+the number, which is the shape `system_resolver::Support::allows` next
+door already had — `hclient-dns-system`'s answer was literally that
+function with `HTTPS` written in, and the generality was being discarded
+at this seam. The default is still `false` for everything, still the
+understating direction, and still the only thing separating *asked and
+found nothing* from *cannot ask*.
+
+**Two types were deleted because the shape removed their subject.**
+`NoSvcb` existed so a resolver with no SVCB could name something as its
+`Svcb` associated type, and there is no such type any more; `EmptyStream`
+existed for `NoSvcb` alone. That is the `UpgradeSupport` test applied
+again — a name whose whole purpose was a distinction the code no longer
+draws.
+
+**And a TTL that was in two places is now in one.** `SvcbEndpoint::ttl`
+was added a week earlier, correctly, because the wire carried a lifetime
+that nothing carried up; `Record::ttl` now carries it for every type. Two
+copies of one fact is the defect this file records about `Head::version`
+and about `Native::hooks`, so the field is gone and
+`endpoint_from_binding` hands back a `Record` — a TTL belongs to the
+record rather than to what the record says, which is where DNS puts it
+and where hickory keeps it. Nothing can fill one copy and forget the
+other.
+
+**The cost is that a caller writes the match, and it is not only
+cosmetic.** One method cannot say in the type system which variant comes
+back, so `RData::addr()` and `RData::https()` are the accessors and the
+connector's discovery filter is `let Ok(RData::Https(record)) =
+record.map(|r| r.rdata) else`. What the three methods guaranteed by
+construction, three call sites now check: the **family** as well as the
+type, because a resolver answering `A` to an `AAAA` question would
+otherwise put a v4 address into the half of Happy Eyeballs whose whole
+job is to race the families apart. `connect` and `H3::resolve` filter
+rather than trust — and skip rather than panic, since what produced the
+answer is a resolver a caller supplied. It is a real loss, and it is the
+price of the additivity above: the alternative is a method per type,
+which is what this replaced.
+
+`hclient-dns-hickory` is where the collapse pays visibly — two lookups
+that shared a `flat_map` and differed in their `filter_map` became one
+`lookup_records(name, RecordType)`, with `wire_type(rtype)` the single
+place the seam's numbers meet hickory's, so `supports` and `lookup`
+cannot disagree about which types this backend asks about.
+
+**And the mechanical half of the change put the same defect in three
+places, which the suite caught and a reader would not have.** The
+rewrite generated each `supports` as a constant list of the three types,
+which is right for a resolver that answers unconditionally and wrong for
+the three that answered from a field: two test fixtures whose whole job
+is to be the *control* — records held, capability denied — started
+claiming they could ask, and `hclient-dns-system` forwarded
+`system_resolver::support()` verbatim, so a Linux build claimed `CAA`
+while `lookup` had no arm for it. That last one is the capability lying
+in the one method written to stop it, and it is now the rule stated on
+all three backends: **`supports` is true only for a type `lookup` really
+asks about**, with a test that a type this crate has no `RData` variant
+for is refused however capable the platform is.
 
 ### `embedded-nal-async` is the right seam for later and blocked twice now
 
@@ -6020,7 +6096,7 @@ test rather than restating it.
 Re-measured from a scratch crate outside the workspace: `Client` and its
 request future, `Response`, `ClientBody`, `Collected`, `Error`,
 `Native::execute` with and without the h3 arm, `hclient-tower`'s
-`Service::call`, and `Doh`'s `lookup_ipv4`, `lookup_svcb` and the
+`Service::call`, and `Doh`'s `lookup` streams and the
 resolver itself — **all `Send`**. The only remaining row is
 `hclient-fetch` under `+atomics`, which is not a defect but a fact about
 a JS realm.
@@ -6086,7 +6162,7 @@ consumers in this workspace stop compiling, and both are the same shape:
   `R: TcpConnect + Timer + Blocking`. Under RTN, `Client::builder(t)`
   demands `execute(..): Send` of a *type parameter*, so the caller must
   restate the whole chain: `TcpConnect<connect(..): Send>`,
-  `Blocking<run(..): Send>`, `Resolve<lookup_ipv4(..): Send, ..>`. That is
+  `Blocking<run(..): Send>`, `Resolve<lookup(..): Send>`. That is
   **the seven-seam cascade this file already records — moved out of the
   seam and into every generic consumer**, which is the exact tax erasure
   was introduced to remove.
@@ -6302,7 +6378,7 @@ it.
 **This crate's own doc comment had named the box as the single cause for
 two verticals and drawn the opposite conclusion**, because it weighed
 exactly one repair: declaring `+ Send` on the `dyn`. That does oblige the
-seam — `Resolve::lookup_ipv4` returns `impl Stream`, unnameable, so
+seam — `Resolve::lookup` returns `impl Stream`, unnameable, so
 unbounded, still `E0658` on 1.98 — and the argument was right about its
 own question. *Removing* the `dyn` was never asked.
 

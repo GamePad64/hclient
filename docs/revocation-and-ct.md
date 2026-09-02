@@ -342,8 +342,10 @@ follows nothing.
 ### 4.4 The cache lifetime is given, and that is the entire difference
 
 This workspace refuses to invent a lifetime for someone else's answer. It
-has no HTTPS/SVCB cache for exactly that reason — `SvcbEndpoint` carries no
-TTL — and it *does* have an Alt-Svc cache, because RFC 7838's `ma` is the
+has no HTTPS/SVCB cache — though the reason has narrowed since this was
+written: the record's TTL reaches the caller on `Record::ttl` now, so
+what is missing is a key and a bound rather than a lifetime — and it
+*does* have an Alt-Svc cache, because RFC 7838's `ma` is the
 origin's own statement of how long its advertisement is good for.
 
 **A CRL is the Alt-Svc case, not the SVCB case.** RFC 5280 makes

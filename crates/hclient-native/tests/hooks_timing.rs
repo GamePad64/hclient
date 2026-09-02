@@ -36,7 +36,7 @@
 
 use hclient_core::RequestBody;
 use hclient_core::unversioned::{Event, Hooks, Transport};
-use hclient_dns::{Resolve, ResolvedAddr};
+use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
@@ -99,46 +99,30 @@ impl Hooks for FirstConnect {
 struct SlowDns(Duration);
 
 impl Resolve for SlowDns {
-    type Svcb<'a>
-        = hclient_dns::NoSvcb
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
-        hclient_dns::NoSvcb::new()
-    }
-
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            let d = self.0;
-            futures_util::stream::once(async move {
-                tokio::time::sleep(d).await;
-                Ok(ResolvedAddr {
-                    addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                    ttl: None,
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
+    }
+
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                let d = self.0;
+                futures_util::stream::once(async move {
+                    tokio::time::sleep(d).await;
+                    Ok(Record::new(RData::from(IpAddr::V4(Ipv4Addr::LOCALHOST))))
                 })
-            })
-        })
-    }
-    /// Empty, not slow: RFC 8305 races the families, and a v6 answer that
-    /// never comes is what a v4-only host looks like. Making *both* slow
-    /// would leave the scheduler's Resolution Delay in the measurement.
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::empty())
+            }),
+            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 

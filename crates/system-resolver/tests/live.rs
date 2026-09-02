@@ -233,7 +233,7 @@ fn answered() -> bool {
 ///
 /// **Why threads at all, when every call here blocks.** Because a blocking
 /// call is run on a blocking *pool*. `hclient-dns-system` wraps each of
-/// `Resolve`'s three methods in its own `Blocking::run`, and a single
+/// `Resolve::lookup` in its own `Blocking::run`, and a single
 /// request asks for A, AAAA and the HTTPS record at once — so three of
 /// these are in flight on three pool threads before a connection is
 /// opened, and a server handling many requests has many more. Concurrency

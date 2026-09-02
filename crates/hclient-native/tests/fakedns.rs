@@ -9,7 +9,7 @@
 #![cfg(not(target_family = "wasm"))]
 #![allow(dead_code)]
 
-use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
+use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
@@ -22,7 +22,7 @@ pub struct FakeDns {
 struct Inner {
     supports_svcb: bool,
     records: Vec<SvcbEndpoint>,
-    /// Every name `lookup_svcb` was called with, in call order — by this
+    /// Every name `lookup` was called with, in call order — by this
     /// transport and by `hclient-native`'s own connector alike, which is
     /// what makes the duplicate query in `tests/dns_cost.rs` visible.
     svcb_names: Mutex<Vec<String>>,
@@ -60,7 +60,7 @@ impl FakeDns {
     /// A resolver that **cannot** ask, holding records it would have given
     /// if it could.
     ///
-    /// The contradiction is the point: `Resolve::supports_svcb` exists so
+    /// The contradiction is the point: `Resolve::supports` exists so
     /// that "cannot ask" and "asked and found nothing" are distinguishable,
     /// and a transport that inferred the answer from an empty stream would
     /// behave identically for both. Here the stream is not empty, so
@@ -75,7 +75,7 @@ impl FakeDns {
         }
     }
 
-    /// The names `lookup_svcb` was asked for, in order.
+    /// The names `lookup` was asked for, in order.
     pub fn svcb_names(&self) -> Vec<String> {
         self.inner.svcb_names.lock().expect("fake dns log").clone()
     }
@@ -86,66 +86,53 @@ impl FakeDns {
 }
 
 impl Resolve for FakeDns {
-    /// Every name resolves to loopback: the servers are there, and a
-    /// resolver that answered differently per name would be a second thing
-    /// under test.
-    type Ipv4<'a>
+    type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
 
-    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
-        Box::pin({
-            futures_util::stream::iter(vec![Ok(ResolvedAddr {
-                addr: IpAddr::from([127, 0, 0, 1]),
-                ttl: None,
-            })])
-        })
+    /// Addresses always; HTTPS only where the fixture was built to say
+    /// it can ask. `cannot_ask_but_would_have_said` is the arm that needs
+    /// the field: it holds a record and reports that it cannot ask for
+    /// one, which is the state `supports` exists to separate from an
+    /// empty stream — so writing this as a constant list of types makes
+    /// the control test vacuous, which is exactly what happened once.
+    fn supports(&self, rtype: u16) -> bool {
+        match rtype {
+            rtype::A | rtype::AAAA => true,
+            rtype::HTTPS => self.inner.supports_svcb,
+            _ => false,
+        }
     }
 
-    /// Empty, and that is an answer rather than a failure — the servers
-    /// are bound on the v4 loopback, and RFC 8305 has both families
-    /// queried in parallel.
-    type Ipv6<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
-        Box::pin(futures_util::stream::iter(Vec::new()))
-    }
-
-    fn supports_svcb(&self) -> bool {
-        self.inner.supports_svcb
-    }
-
-    type Svcb<'a>
-        = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> + Send + 'a>,
-    >
-    where
-        Self: 'a;
-
-    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
-        Box::pin({
-            self.inner
-                .svcb_names
-                .lock()
-                .expect("fake dns log")
-                .push(name.to_owned());
-            futures_util::stream::iter(
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin({
+                futures_util::stream::iter(vec![Ok(Record::new(RData::from(IpAddr::from([
+                    127, 0, 0, 1,
+                ]))))])
+            }),
+            rtype::AAAA => Box::pin(futures_util::stream::iter(Vec::new())),
+            rtype::HTTPS => Box::pin({
                 self.inner
-                    .records
-                    .clone()
-                    .into_iter()
-                    .map(Ok)
-                    .collect::<Vec<_>>(),
-            )
-        })
+                    .svcb_names
+                    .lock()
+                    .expect("fake dns log")
+                    .push(name.to_owned());
+                futures_util::stream::iter(
+                    self.inner
+                        .records
+                        .clone()
+                        .into_iter()
+                        .map(|e| Ok(Record::new(RData::Https(e))))
+                        .collect::<Vec<_>>(),
+                )
+            }),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 

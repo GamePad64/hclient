@@ -64,7 +64,7 @@
 //! and the symbol is inside `libc.a`; the reasoning for each target is in
 //! that file, beside the `#[cfg_attr]`s that carry it.
 //!
-//! **`supports_svcb()` says what this build can do, and nothing more.**
+//! **`supports` says what this build can do, and nothing more.**
 //! It asks `system_resolver::support()` whether RR type 65 is answerable,
 //! so the capability and the code behind it are one statement rather than
 //! two that could drift. `true` on Linux (glibc or musl), Apple, Android
@@ -72,7 +72,7 @@
 //!
 //! A `true` over a lookup that cannot produce a record would be the exact
 //! defect class — a capability that lies — that the
-//! `Resolve::supports_svcb` doc comment in `hclient-dns` exists to
+//! `Resolve::supports` doc comment in `hclient-dns` exists to
 //! prevent.
 //!
 //! **Windows resolves a symbol at run time again, and it does not change
@@ -83,8 +83,8 @@
 //! HTTPS records rather than about the platform, and it is why the test
 //! guarding this can still compare against a `cfg!`.
 //!
-//! **Both SVCB backends block too**, so `lookup_svcb` goes through the
-//! same `Blocking` capability as `lookup_ipv4`/`lookup_ipv6` and has the
+//! **Both SVCB backends block too**, so `lookup` goes through the
+//! same `Blocking` capability as the address lookups and has the
 //! same three outcomes (see `lookup` below) — with one addition specific
 //! to it: a name with no HTTPS records yields an EMPTY stream, not an
 //! error. That case is the common one, and `res_query` reports it as a
@@ -94,15 +94,15 @@
 //!
 //! **A known limitation — and it's worse than it sounds: TODAY, two
 //! `getaddrinfo` calls for one name, and neither gives an early result.**
-//! `lookup_ipv4` and `lookup_ipv6` don't share one resolution attempt —
-//! each calls `self.lookup` independently, and `std::net::ToSocketAddrs`
+//! the A lookup and the AAAA lookup don't share one resolution attempt
+//! — each calls `self.addresses` independently, and `std::net::ToSocketAddrs`
 //! for a `(host, port)` pair resolves BOTH families at once via a single
 //! system `getaddrinfo`. That means any Happy Eyeballs consumer that
 //! calls both methods for one name (which `Scheduler` is required to do)
 //! actually triggers TWO full dual-family `getaddrinfo` calls — measured
 //! with a counter wrapped around `Blocking::run`: `2` calls for one name
 //! via
-//! `lookup_ipv4` + `lookup_ipv6`. Each call gets both families back and
+//! one `lookup` per family. Each call gets both families back and
 //! throws away half of it with the `is_ipv6() == want_v6` filter — i.e.
 //! the A records from the v6 call and the AAAA records from the v4 call
 //! are both discarded for nothing. Neither of the two calls returns an
@@ -114,7 +114,7 @@
 //! single resolution feeding both streams (or, like curl, two
 //! single-family calls) is v0.2 work, not current behavior; the shape of
 //! the `Resolve` trait already allows for it today (separate
-//! `lookup_ipv4`/`lookup_ipv6`, not one method returning both families at
+//! one `lookup` per family, not one call returning both families at
 //! once), but `SystemDns` doesn't use that possibility yet.
 // **`forbid` again, and the relaxation left with the code that needed
 // it.** This crate carried `deny` under spec amendment C8 because
@@ -134,16 +134,14 @@ use futures_core::Stream;
 /// The two stream shapes this crate hands back, named so the marker sits
 /// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
 /// records about where a bound is written.
-type SendAddrs<'a> =
-    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 type SendRecords<'a> =
-    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 use crate::error::ResolveFailed;
 #[cfg(test)]
 use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
-use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
+use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_rt::{Blocking, Cancelled};
 use std::net::{IpAddr, ToSocketAddrs};
 
@@ -176,7 +174,7 @@ impl<B: Blocking> SystemDns<B> {
     ///   process is shutting down; silently turning it into an empty
     ///   stream would make it indistinguishable from "the resolver asked
     ///   and found nothing" — the same principle that split
-    ///   `supports_svcb()` and the empty `lookup_svcb` in `hclient-dns`,
+    ///   `supports` and the empty `lookup` in `hclient-dns`,
     ///   applied here not to an absent capability but to a failed
     ///   attempt. So `Cancelled` is wrapped in `ErrorKind::Cancelled` (fix
     ///   round 1: it was originally `ErrorKind::Other`, the same class of
@@ -192,11 +190,11 @@ impl<B: Blocking> SystemDns<B> {
     // the line below, and `Resolve`'s associated types are parameterised
     // by `&self`'s lifetime alone. Edition 2024 captures every lifetime in
     // scope unless told otherwise.
-    fn lookup<'a>(
+    fn addresses<'a>(
         &'a self,
         name: &str,
         want_v6: bool,
-    ) -> impl Stream<Item = Result<ResolvedAddr, Error>> + use<'a, B> {
+    ) -> impl Stream<Item = Result<Record, Error>> + use<'a, B> {
         let owned = name.to_owned();
         let fut = self.blocking.run(move || {
             (owned.as_str(), 0u16)
@@ -209,7 +207,7 @@ impl<B: Blocking> SystemDns<B> {
                 addrs
                     .into_iter()
                     .filter(|a| a.is_ipv6() == want_v6)
-                    .map(|addr| Ok(ResolvedAddr { addr, ttl: None }))
+                    .map(|addr| Ok(Record::new(RData::from(addr))))
                     .collect::<Vec<_>>(),
             ),
             Ok(Err(e)) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
@@ -221,64 +219,73 @@ impl<B: Blocking> SystemDns<B> {
 }
 
 impl<B: Blocking> Resolve for SystemDns<B> {
-    type Ipv4<'a>
-        = SendAddrs<'a>
-    // send-bound-exception: amendment-C15
-    where
-        Self: 'a;
-
-    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
-        Box::pin(self.lookup(name, false))
-    }
-    type Ipv6<'a>
-        = SendAddrs<'a>
-    // send-bound-exception: amendment-C15
-    where
-        Self: 'a;
-
-    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
-        Box::pin(self.lookup(name, true))
-    }
-
-    /// Both SVCB methods are overridden together, which is the only way
-    /// `Resolve` permits either to be: the constant below and the query
-    /// inside `lookup_svcb` are the same `#[cfg]`-selected module's two
-    /// items, so a target where the lookup cannot work reports `false`
-    /// here without anyone having to remember to change it.
-    fn supports_svcb(&self) -> bool {
-        system_resolver::support().allows(svcb::TYPE_HTTPS)
-    }
-
-    type Svcb<'a>
+    type Records<'a>
         = SendRecords<'a>
     // send-bound-exception: amendment-C15
     where
         Self: 'a;
 
-    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
-        Box::pin({
-            let owned = name.to_owned();
-            let fut = self.blocking.run(move || svcb::lookup(&owned));
-            futures_util::stream::once(fut).flat_map(move |res| match res {
-                // An empty `Vec` here is a real answer — "asked, found none" —
-                // and becomes an empty stream, exactly like the `Resolve`
-                // default. It is `supports_svcb()` above that keeps the two
-                // distinguishable, which is the whole reason that method
-                // exists.
-                Ok(Ok(endpoints)) => {
-                    futures_util::stream::iter(endpoints.into_iter().map(Ok).collect::<Vec<_>>())
-                }
-                Ok(Err(e)) => {
-                    futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))])
-                }
-                // Same reasoning as `lookup`: the pool going away is not a DNS
-                // failure and not an absence of records.
-                Err(Cancelled) => futures_util::stream::iter(vec![Err(Error::new(
-                    ErrorKind::Cancelled,
-                    Cancelled,
-                ))]),
-            })
-        })
+    /// **`system_resolver`'s answer, asked per type.** This used to be
+    /// `supports_svcb`, and its body was
+    /// `system_resolver::support().allows(TYPE_HTTPS)` — the same
+    /// function with the argument written in. The seam takes a type
+    /// number now, so the question can be asked about any type — and the
+    /// answer is still `false` for every type this crate has no `RData`
+    /// variant for, because `lookup` does not ask for those. The
+    /// generality reaches the seam; it reaches a caller the day a variant
+    /// arrives, which is the day `lookup` gains an arm.
+    ///
+    /// `A` and `AAAA` are answered by `getaddrinfo`, which every target
+    /// has, so they are `true` unconditionally rather than routed through
+    /// the record-level support.
+    fn supports(&self, rtype: u16) -> bool {
+        match rtype {
+            rtype::A | rtype::AAAA => true,
+            rtype::HTTPS => system_resolver::support().allows(rtype),
+            // The platform may well answer other types — `system_resolver`
+            // reports which — but `lookup` below asks for none of them and
+            // there is no `RData` variant to put an answer in. Saying
+            // `true` here would be the capability lying, which is the one
+            // thing it exists not to do.
+            _ => false,
+        }
+    }
+
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        match rtype {
+            rtype::A => Box::pin(self.addresses(name, false)),
+            rtype::AAAA => Box::pin(self.addresses(name, true)),
+            rtype::HTTPS => Box::pin({
+                let owned = name.to_owned();
+                let fut = self.blocking.run(move || svcb::lookup(&owned));
+                futures_util::stream::once(fut).flat_map(move |res| match res {
+                    // An empty `Vec` here is a real answer — "asked, found none" —
+                    // and becomes an empty stream, exactly like the `Resolve`
+                    // default. It is `supports` above that keeps the two
+                    // distinguishable, which is the whole reason that method
+                    // exists.
+                    Ok(Ok(records)) => {
+                        futures_util::stream::iter(records.into_iter().map(Ok).collect::<Vec<_>>())
+                    }
+                    Ok(Err(e)) => {
+                        futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))])
+                    }
+                    // Same reasoning as `lookup`: the pool going away is not a DNS
+                    // failure and not an absence of records.
+                    Err(Cancelled) => futures_util::stream::iter(vec![Err(Error::new(
+                        ErrorKind::Cancelled,
+                        Cancelled,
+                    ))]),
+                })
+            }),
+            // A type the platform may well answer and this crate does not
+            // model: `supports` says `true` for it, and there is no
+            // `RData` variant to put it in. Empty rather than an error,
+            // because the caller asked a question this seam cannot carry
+            // the answer to — which is the cost `RData` states in its own
+            // doc.
+            _ => Box::pin(futures_util::stream::empty()),
+        }
     }
 }
 
@@ -301,17 +308,17 @@ mod tests {
     #[test]
     fn resolves_localhost_into_the_right_family_streams() {
         let r = SystemDns::new(Inline);
-        let v4: Vec<_> = futures_executor::block_on(r.lookup_ipv4("localhost").collect());
+        let v4: Vec<_> = futures_executor::block_on(r.lookup("localhost", rtype::A).collect());
         let v4: Vec<_> = v4.into_iter().filter_map(Result::ok).collect();
         assert!(
-            v4.iter().all(|a| a.addr.is_ipv4()),
+            v4.iter().all(|a| matches!(a.rdata, RData::A(_))),
             "the v4 stream must contain only v4"
         );
 
-        let v6: Vec<_> = futures_executor::block_on(r.lookup_ipv6("localhost").collect());
+        let v6: Vec<_> = futures_executor::block_on(r.lookup("localhost", rtype::AAAA).collect());
         let v6: Vec<_> = v6.into_iter().filter_map(Result::ok).collect();
         assert!(
-            v6.iter().all(|a| a.addr.is_ipv6()),
+            v6.iter().all(|a| matches!(a.rdata, RData::Aaaa(_))),
             "the v6 stream must contain only v6"
         );
 
@@ -333,7 +340,8 @@ mod tests {
     #[test]
     fn unresolvable_name_yields_an_error_not_an_empty_stream() {
         let r = SystemDns::new(Inline);
-        let got: Vec<_> = futures_executor::block_on(r.lookup_ipv4("invalid.invalid.").collect());
+        let got: Vec<_> =
+            futures_executor::block_on(r.lookup("invalid.invalid.", rtype::A).collect());
         assert!(
             got.iter().any(|x| x.is_err()),
             "an empty stream is indistinguishable from \"policy filtered everything out\""
@@ -372,8 +380,8 @@ mod tests {
 
         let count = Arc::new(AtomicUsize::new(0));
         let r = SystemDns::new(Counting(count.clone()));
-        let _v4: Vec<_> = futures_executor::block_on(r.lookup_ipv4("localhost").collect());
-        let _v6: Vec<_> = futures_executor::block_on(r.lookup_ipv6("localhost").collect());
+        let _v4: Vec<_> = futures_executor::block_on(r.lookup("localhost", rtype::A).collect());
+        let _v6: Vec<_> = futures_executor::block_on(r.lookup("localhost", rtype::AAAA).collect());
         assert_eq!(
             count.load(Ordering::SeqCst),
             2,
@@ -406,7 +414,7 @@ mod tests {
     /// type 65 itself a run-time question is the one that would have to
     /// change this — deliberately, not by being weakened until it passes.
     #[test]
-    fn supports_svcb_is_cfg_accurate_rather_than_optimistic() {
+    fn supports_is_cfg_accurate_rather_than_optimistic() {
         let expected = cfg!(any(
             all(
                 target_os = "linux",
@@ -416,13 +424,37 @@ mod tests {
             windows
         ));
         assert_eq!(
-            SystemDns::new(Inline).supports_svcb(),
+            SystemDns::new(Inline).supports(rtype::HTTPS),
             expected,
-            "supports_svcb() must be true exactly where a backend compiles — a `true` over \
-             a lookup that cannot produce a record is the defect class \
-             `Resolve::supports_svcb` exists to prevent, and a `false` where the backend \
-             does exist hides a working capability"
+            "supports(HTTPS) must be true exactly where a backend compiles — a `true` over \
+             a lookup that cannot produce a record is the defect class `Resolve::supports` \
+             exists to prevent, and a `false` where the backend does exist hides a working \
+             capability"
         );
+    }
+
+    /// A type this crate models nothing for is refused, whatever the
+    /// platform can do.
+    ///
+    /// `system_resolver::support()` is broader than this seam: on Linux
+    /// it permits every type the raw query path can carry. Forwarding
+    /// that answer verbatim was the first shape of `supports`, and it is
+    /// a capability that lies — `lookup` has an arm for three types and
+    /// returns an empty stream for the rest, so a caller reading `true`
+    /// for `CAA` would read *asked and found none* out of *never asked*,
+    /// which is the one distinction this method exists to keep.
+    #[test]
+    fn a_type_with_no_rdata_variant_is_refused_however_capable_the_platform_is() {
+        const CAA: u16 = 257;
+        let dns = SystemDns::new(Inline);
+        assert!(
+            !dns.supports(CAA),
+            "no `RData::Caa`, so this resolver cannot answer one"
+        );
+        let got: Vec<_> = futures_executor::block_on(futures_util::StreamExt::collect::<Vec<_>>(
+            dns.lookup("example.com", CAA),
+        ));
+        assert!(got.is_empty(), "and it does not pretend to: {got:?}");
     }
 
     /// The half of the pair the capability check cannot cover: on a build
@@ -433,11 +465,14 @@ mod tests {
     /// over a captured answer, the second is what this asserts.
     #[test]
     fn without_a_backend_the_lookup_is_empty_and_not_an_error() {
-        if SystemDns::new(Inline).supports_svcb() {
+        if SystemDns::new(Inline).supports(rtype::HTTPS) {
             return;
         }
-        let got: Vec<_> =
-            futures_executor::block_on(SystemDns::new(Inline).lookup_svcb("example.com").collect());
+        let got: Vec<_> = futures_executor::block_on(
+            SystemDns::new(Inline)
+                .lookup("example.com", rtype::HTTPS)
+                .collect(),
+        );
         assert!(
             got.is_empty(),
             "an absent capability is an empty stream, never an error: telling a caller its \
@@ -458,7 +493,8 @@ mod tests {
         }
 
         let r = SystemDns::new(AlwaysCancelled);
-        let got: Vec<_> = futures_executor::block_on(r.lookup_svcb("example.com").collect());
+        let got: Vec<_> =
+            futures_executor::block_on(r.lookup("example.com", rtype::HTTPS).collect());
         assert_eq!(got.len(), 1, "the pool going away is not silence");
         let err = got
             .into_iter()
@@ -482,10 +518,11 @@ mod tests {
     fn live_lookup_of_a_name_that_publishes_https_records() {
         let r = SystemDns::new(Inline);
         assert!(
-            r.supports_svcb(),
+            r.supports(rtype::HTTPS),
             "this test is only meaningful on a build that has a backend"
         );
-        let got: Vec<_> = futures_executor::block_on(r.lookup_svcb("cloudflare.com").collect());
+        let got: Vec<_> =
+            futures_executor::block_on(r.lookup("cloudflare.com", rtype::HTTPS).collect());
         let endpoints: Vec<_> = got
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
@@ -496,7 +533,10 @@ mod tests {
              resolver strips RR type 65 rather than that the parser is wrong"
         );
         assert!(
-            endpoints.iter().any(|e| e.alpn.iter().any(|a| a == b"h3")),
+            endpoints.iter().any(|r| match &r.rdata {
+                RData::Https(e) => e.alpn.iter().any(|a| a == b"h3"),
+                _ => false,
+            }),
             "the point of the whole path is h3 discovery without Alt-Svc"
         );
     }
@@ -514,7 +554,7 @@ mod tests {
         }
 
         let r = SystemDns::new(AlwaysCancelled);
-        let got: Vec<_> = futures_executor::block_on(r.lookup_ipv4("example.com").collect());
+        let got: Vec<_> = futures_executor::block_on(r.lookup("example.com", rtype::A).collect());
         assert_eq!(
             got.len(),
             1,

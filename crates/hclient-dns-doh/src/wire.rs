@@ -44,8 +44,7 @@ use dns_message_parser::question::{QClass, QType, Question};
 use dns_message_parser::rr::RR;
 use dns_message_parser::{Dns, Flags, Opcode, RCode};
 use hclient_dns::svcb::{binding_from_decoded, endpoint_from_binding};
-use hclient_dns::{ResolvedAddr, SvcbEndpoint};
-use std::net::IpAddr;
+use hclient_dns::{RData, Record};
 use std::time::Duration;
 
 /// The largest response body this crate will read, in bytes.
@@ -58,7 +57,7 @@ pub const MAX_RESPONSE_BYTES: usize = 65_535;
 /// The three questions this crate knows how to ask.
 ///
 /// A closed enum rather than a `u16` passed around: it is what makes
-/// [`decode_answer`]'s question check total, and it keeps `lookup_ipv4`
+/// [`decode_answer`]'s question check total, and it keeps `lookup`
 /// from being able to ask for `AAAA` by getting an argument wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Query {
@@ -80,7 +79,7 @@ impl Query {
 /// The two questions an *address* lookup can ask.
 ///
 /// A second, narrower enum rather than reusing [`Query`], because the
-/// address path and the SVCB path are genuinely different: `lookup_svcb`
+/// address path and the SVCB path are genuinely different: `lookup`
 /// does not go through `Doh::recover`, so a `recover` taking a `Query` had
 /// an `Https` arm nothing could reach. Mutation testing found it — an
 /// unreachable arm cannot be killed by any test, which is exactly the kind
@@ -105,8 +104,8 @@ impl Family {
 /// other belongs to a question that was not asked.
 #[derive(Debug, Default)]
 pub(crate) struct Answer {
-    pub(crate) addrs: Vec<ResolvedAddr>,
-    pub(crate) endpoints: Vec<SvcbEndpoint>,
+    pub(crate) addrs: Vec<Record>,
+    pub(crate) endpoints: Vec<Record>,
 }
 
 /// One RFC 8484 query, ready to be a request body.
@@ -195,14 +194,13 @@ pub(crate) fn decode_answer(body: Bytes, name: &str, query: Query) -> Result<Ans
         // the addresses are legitimately owned by a different name, and
         // requiring a match would break every aliased host.
         match (query, rr) {
-            (Query::A, RR::A(a)) => answer.addrs.push(ResolvedAddr {
-                addr: IpAddr::V4(a.ipv4_addr),
-                ttl: Some(Duration::from_secs(u64::from(a.ttl))),
-            }),
-            (Query::Aaaa, RR::AAAA(a)) => answer.addrs.push(ResolvedAddr {
-                addr: IpAddr::V6(a.ipv6_addr),
-                ttl: Some(Duration::from_secs(u64::from(a.ttl))),
-            }),
+            (Query::A, RR::A(a)) => answer.addrs.push(
+                Record::new(RData::A(a.ipv4_addr)).ttl(Some(Duration::from_secs(u64::from(a.ttl)))),
+            ),
+            (Query::Aaaa, RR::AAAA(a)) => answer.addrs.push(
+                Record::new(RData::Aaaa(a.ipv6_addr))
+                    .ttl(Some(Duration::from_secs(u64::from(a.ttl)))),
+            ),
             (Query::Https, RR::HTTPS(binding)) => {
                 if let Some(endpoint) = endpoint_from_binding(&binding_from_decoded(binding))
                     .map_err(|e| match e {

@@ -14,7 +14,7 @@
 mod support;
 
 use futures_util::StreamExt;
-use hclient_dns::Resolve;
+use hclient_dns::{Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -50,7 +50,10 @@ async fn an_a_lookup_posts_exactly_the_dns_query_rfc_1035_describes() {
     ));
     let doh = Doh::pinned(transport(), server.endpoint()).expect("a loopback literal endpoint");
 
-    let _ = doh.lookup_ipv4("example.com").collect::<Vec<_>>().await;
+    let _ = doh
+        .lookup("example.com", rtype::A)
+        .collect::<Vec<_>>()
+        .await;
 
     let seen = server.requests();
     assert_eq!(seen.len(), 1, "one lookup is one request");
@@ -68,13 +71,22 @@ async fn the_question_carries_the_type_the_family_asked_for() {
         let doh = Doh::pinned(transport(), server.endpoint()).expect("endpoint");
         match family {
             "v4" => {
-                let _ = doh.lookup_ipv4("example.com").collect::<Vec<_>>().await;
+                let _ = doh
+                    .lookup("example.com", rtype::A)
+                    .collect::<Vec<_>>()
+                    .await;
             }
             "v6" => {
-                let _ = doh.lookup_ipv6("example.com").collect::<Vec<_>>().await;
+                let _ = doh
+                    .lookup("example.com", rtype::AAAA)
+                    .collect::<Vec<_>>()
+                    .await;
             }
             _ => {
-                let _ = doh.lookup_svcb("example.com").collect::<Vec<_>>().await;
+                let _ = doh
+                    .lookup("example.com", rtype::HTTPS)
+                    .collect::<Vec<_>>()
+                    .await;
             }
         }
         let seen = server.requests();
@@ -97,7 +109,10 @@ async fn the_request_is_a_post_to_the_endpoints_own_path_with_both_media_types()
     let server = Server::answering(noerror("example.com", TYPE_A, &[]));
     let doh = Doh::pinned(transport(), server.endpoint()).expect("endpoint");
 
-    let _ = doh.lookup_ipv4("example.com").collect::<Vec<_>>().await;
+    let _ = doh
+        .lookup("example.com", rtype::A)
+        .collect::<Vec<_>>()
+        .await;
 
     let seen = server.requests();
     assert_eq!(seen[0].method, "POST");
@@ -117,8 +132,14 @@ async fn two_identical_lookups_produce_byte_identical_queries() {
     let server = Server::answering(noerror("example.com", TYPE_A, &[]));
     let doh = Doh::pinned(transport(), server.endpoint()).expect("endpoint");
 
-    let _ = doh.lookup_ipv4("example.com").collect::<Vec<_>>().await;
-    let _ = doh.lookup_ipv4("example.com").collect::<Vec<_>>().await;
+    let _ = doh
+        .lookup("example.com", rtype::A)
+        .collect::<Vec<_>>()
+        .await;
+    let _ = doh
+        .lookup("example.com", rtype::A)
+        .collect::<Vec<_>>()
+        .await;
 
     let seen = server.requests();
     assert_eq!(seen.len(), 2);
@@ -138,7 +159,10 @@ async fn the_name_in_the_question_is_the_name_that_was_asked_for() {
     });
     let doh = Doh::pinned(transport(), server.endpoint()).expect("endpoint");
 
-    let _ = doh.lookup_ipv4("other.example").collect::<Vec<_>>().await;
+    let _ = doh
+        .lookup("other.example", rtype::A)
+        .collect::<Vec<_>>()
+        .await;
 
     let seen = server.requests();
     assert_eq!(seen[0].body, expected_query("other.example", TYPE_A));

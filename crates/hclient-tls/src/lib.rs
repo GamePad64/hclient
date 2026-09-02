@@ -174,7 +174,7 @@ pub struct TlsRequest<'a> {
 /// value — a capability that lies about its own state is worse than a
 /// capability that's simply absent (the same principle that split
 /// `RedirectSupport::None`/`Transparent` in `hclient-core` and
-/// `supports_svcb()`/the empty stream in `hclient-dns`).
+/// `supports`/the empty stream in `hclient-dns`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TlsInfo {
@@ -544,7 +544,7 @@ pub trait TlsConnect: TlsIdentity {
     /// that asks instead of assuming cannot end up advertising TLS it will
     /// refuse to perform.
     ///
-    /// The same shape as `hclient_dns::Resolve::supports_svcb`, and for
+    /// The same shape as `hclient_dns::Resolve::supports`, and for
     /// the same reason: a capability has to come from the component that
     /// knows, not from whoever assembles it.
     fn tls_support(&self) -> TlsSupport {
@@ -575,7 +575,7 @@ pub trait TlsConnect: TlsIdentity {
     /// `false` default describes, and it does not override this method.
     ///
     /// The same shape as [`tls_support`](Self::tls_support) and
-    /// `hclient_dns::Resolve::supports_svcb`, for the same reason: a
+    /// `hclient_dns::Resolve::supports`, for the same reason: a
     /// capability has to come from the component that knows, not from
     /// whoever assembles it.
     fn reports_alpn(&self) -> bool {

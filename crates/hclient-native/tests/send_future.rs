@@ -15,7 +15,7 @@
 //! `send-bound-exception` marker and no new dependency**.
 //!
 //! Checked in the failing direction before it was believed: with the `dyn`
-//! back, this file fails with `dyn Stream<Item = Result<ResolvedAddr,
+//! back, this file fails with `dyn Stream<Item = Result<Record,
 //! Error>> cannot be sent between threads safely`, naming `Answers` as the
 //! type that contains it.
 //!

@@ -1,7 +1,7 @@
 //! A resolver that answers some names from a table the caller wrote, and
 //! passes the rest through — `curl --resolve`, as a [`Resolve`].
 
-use crate::{Resolve, ResolvedAddr};
+use crate::{RData, Record, Resolve, rtype};
 use futures_core::Stream;
 use hclient_core::Error;
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ use std::task::{Context, Poll};
 ///
 /// # It overrides a **host**, where curl overrides a host and a port
 ///
-/// [`Resolve`]'s three lookups take a name and no port — a resolver
+/// [`Resolve::lookup`] takes a name and a type and no port — a resolver
 /// answers *what addresses does this name have*, and the port belongs to
 /// the connection rather than to the question. So `--resolve
 /// example.com:443:203.0.113.7` maps onto `Overrides` for the host and
@@ -46,8 +46,8 @@ use std::task::{Context, Poll};
 ///
 /// # What it does not do
 ///
-/// **It does not touch SVCB.** [`supports_svcb`](Resolve::supports_svcb)
-/// and [`lookup_svcb`](Resolve::lookup_svcb) pass straight through, so a
+/// **It does not touch SVCB.** [`supports`](Resolve::supports)
+/// and [`lookup`](Resolve::lookup) pass straight through, so a
 /// discovered HTTPS record still comes from the resolver underneath — and
 /// with it that record's own address hints, which a connector may use in
 /// preference to a lookup. An override is about where a *name* points; a
@@ -94,16 +94,24 @@ impl<D> Overrides<D> {
         self.inner
     }
 
-    fn matching(&self, name: &str, want_v6: bool) -> Option<Vec<ResolvedAddr>> {
+    /// The overriding answers for `name` of type `rtype`, or `None` where
+    /// this table says nothing about the name.
+    ///
+    /// **An override is an address, so only `A` and `AAAA` can be
+    /// overridden** — the same rule the two-method shape stated by having
+    /// no third method to override, said once now that there is one
+    /// method. An HTTPS record carries a port and an ALPN, and minting one
+    /// would put values in the answer that nobody supplied.
+    fn matching(&self, name: &str, rtype: u16) -> Option<Vec<Record>> {
+        if !matches!(rtype, rtype::A | rtype::AAAA) {
+            return None;
+        }
         let addrs = self.table.get(&name.to_ascii_lowercase())?;
         Some(
             addrs
                 .iter()
-                .filter(|a| a.is_ipv6() == want_v6)
-                .map(|a| ResolvedAddr {
-                    addr: *a,
-                    ttl: None,
-                })
+                .filter(|a| a.is_ipv6() == (rtype == rtype::AAAA))
+                .map(|a| Record::new(RData::from(*a)))
                 .collect(),
         )
     }
@@ -117,16 +125,16 @@ impl<D> Overrides<D> {
 #[derive(Debug)]
 pub enum Answer<S> {
     /// The table had this name. Yielded in the order the caller wrote.
-    Overridden(std::vec::IntoIter<ResolvedAddr>),
+    Overridden(std::vec::IntoIter<Record>),
     /// It did not; this is the resolver underneath.
     PassedThrough(S),
 }
 
 impl<S> Stream for Answer<S>
 where
-    S: Stream<Item = Result<ResolvedAddr, Error>> + Unpin,
+    S: Stream<Item = Result<Record, Error>> + Unpin,
 {
-    type Item = Result<ResolvedAddr, Error>;
+    type Item = Result<Record, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // `S: Unpin` is on this impl, so a plain `get_mut` and no
@@ -151,43 +159,24 @@ where
 impl<D> Resolve for Overrides<D>
 where
     D: Resolve,
-    for<'a> D::Ipv4<'a>: Unpin,
-    for<'a> D::Ipv6<'a>: Unpin,
+    for<'a> D::Records<'a>: Unpin,
 {
-    type Ipv4<'a>
-        = Answer<D::Ipv4<'a>>
+    type Records<'a>
+        = Answer<D::Records<'a>>
     where
         Self: 'a;
-    type Ipv6<'a>
-        = Answer<D::Ipv6<'a>>
-    where
-        Self: 'a;
-    type Svcb<'a>
-        = D::Svcb<'a>
-    where
-        Self: 'a;
-
-    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
-        match self.matching(name, false) {
-            Some(v) => Answer::Overridden(v.into_iter()),
-            None => Answer::PassedThrough(self.inner.lookup_ipv4(name)),
-        }
-    }
-
-    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
-        match self.matching(name, true) {
-            Some(v) => Answer::Overridden(v.into_iter()),
-            None => Answer::PassedThrough(self.inner.lookup_ipv6(name)),
-        }
-    }
 
     /// The resolver underneath's, unchanged — see the type's own doc for
-    /// why an override is not allowed to answer this.
-    fn supports_svcb(&self) -> bool {
-        self.inner.supports_svcb()
+    /// why an override is not allowed to answer for a type it cannot
+    /// supply.
+    fn supports(&self, rtype: u16) -> bool {
+        self.inner.supports(rtype)
     }
 
-    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
-        self.inner.lookup_svcb(name)
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        match self.matching(name, rtype) {
+            Some(v) => Answer::Overridden(v.into_iter()),
+            None => Answer::PassedThrough(self.inner.lookup(name, rtype)),
+        }
     }
 }

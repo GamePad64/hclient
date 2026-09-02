@@ -24,7 +24,7 @@
 
 pub use crate::error::SvcbRecordError;
 
-use crate::SvcbEndpoint;
+use crate::{RData, Record, SvcbEndpoint};
 use bytes::Bytes;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
@@ -74,7 +74,7 @@ pub struct RawBinding {
     pub target: String,
     pub params: Vec<RawParam>,
     /// The record's TTL, as the resolver reported it — `None` where it
-    /// reported none. See [`SvcbEndpoint::ttl`], which this becomes.
+    /// reported none. See [`crate::Record::ttl`], which this becomes.
     pub ttl: Option<Duration>,
 }
 
@@ -147,9 +147,13 @@ impl RawParam {
 /// available"). `Err` is reserved for the one client-side check RFC 9460
 /// calls malformed and no decoder makes: a `mandatory` list naming a key
 /// the record does not carry.
-pub fn endpoint_from_binding(
-    binding: &RawBinding,
-) -> Result<Option<SvcbEndpoint>, SvcbRecordError> {
+///
+/// It hands back a [`Record`] rather than a bare [`SvcbEndpoint`] because
+/// the TTL belongs to the record and not to what the record says — so
+/// there is one field carrying it, on the type every backend already has
+/// to build, and no way to fill an endpoint's copy and forget the
+/// record's.
+pub fn endpoint_from_binding(binding: &RawBinding) -> Result<Option<Record>, SvcbRecordError> {
     // RFC 9460 §2.4.1: "In AliasMode, ... recipients MUST ignore any
     // SvcParams that are present", so none of them reach the endpoint.
     if binding.priority == 0 {
@@ -160,18 +164,20 @@ pub fn endpoint_from_binding(
         if binding.target.is_empty() {
             return Ok(None);
         }
-        return Ok(Some(SvcbEndpoint {
-            priority: 0,
-            target: binding.target.clone(),
-            alpn: Vec::new(),
-            port: None,
-            ipv4hint: Vec::new(),
-            ipv6hint: Vec::new(),
-            ech_config_list: None,
-            // An AliasMode record has a TTL like any other, and it is the
-            // one a caller following the alias would have to respect.
-            ttl: binding.ttl,
-        }));
+        return Ok(Some(
+            Record::new(RData::Https(SvcbEndpoint {
+                priority: 0,
+                target: binding.target.clone(),
+                alpn: Vec::new(),
+                port: None,
+                ipv4hint: Vec::new(),
+                ipv6hint: Vec::new(),
+                ech_config_list: None,
+            }))
+            // An AliasMode record has a TTL like any other, and it is the one
+            // a caller following the alias would have to respect.
+            .ttl(binding.ttl),
+        ));
     }
 
     let mut endpoint = SvcbEndpoint {
@@ -190,7 +196,6 @@ pub fn endpoint_from_binding(
         ipv4hint: Vec::new(),
         ipv6hint: Vec::new(),
         ech_config_list: None,
-        ttl: binding.ttl,
     };
 
     let mut mandatory: &[u16] = &[];
@@ -229,7 +234,7 @@ pub fn endpoint_from_binding(
         }
     }
 
-    Ok(Some(endpoint))
+    Ok(Some(Record::new(RData::Https(endpoint)).ttl(binding.ttl)))
 }
 
 /// A `dns-message-parser` record, reduced to the backend-neutral form.

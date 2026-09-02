@@ -241,7 +241,7 @@ async fn a_request_advertised_onto_quic_asks_no_more_than_the_one_before_it() {
 /// The slow tier costs **zero** queries where the resolver cannot do SVCB
 /// — and it is the only tier that can serve such an origin at all.
 ///
-/// The fast tier stops at `Resolve::supports_svcb`, so an origin behind a
+/// The fast tier stops at `Resolve::supports`, so an origin behind a
 /// resolver with no SVCB support could never be chosen onto QUIC before
 /// this tier existed. Now it can be, and the resolver is still not asked
 /// anything.

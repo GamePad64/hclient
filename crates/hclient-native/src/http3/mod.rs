@@ -95,6 +95,7 @@ use hclient_core::{
     CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
     RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, TlsSupport,
 };
+use hclient_dns::rtype;
 use hclient_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use hclient_tls::TlsConfigId;
 use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
@@ -102,7 +103,7 @@ use hooks::{ConnState, Watch, mark, since};
 use std::collections::HashMap;
 use std::fmt;
 use std::future::poll_fn;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
@@ -1037,16 +1038,21 @@ where
         // handshakes' worth of crypto for one request. `hclient-native`'s
         // `happy_eyeballs` is the right tool over TCP and the wrong one
         // here, which is why it is not reused.
-        let mut v6 = Box::pin(self.dns.lookup_ipv6(host));
+        // The family is filtered rather than assumed: one `lookup` answers
+        // every type, so a record of the wrong kind — or of the wrong
+        // family — is expressible where two methods made it impossible. It
+        // is skipped rather than panicked on, because what produced it is
+        // a resolver a caller supplied.
+        let mut v6 = Box::pin(self.dns.lookup(host, rtype::AAAA));
         while let Some(r) = v6.next().await {
-            if let Ok(a) = r {
-                return Ok(SocketAddr::new(a.addr, port));
+            if let Ok(Some(ip @ IpAddr::V6(_))) = r.map(|a| a.rdata.addr()) {
+                return Ok(SocketAddr::new(ip, port));
             }
         }
-        let mut v4 = Box::pin(self.dns.lookup_ipv4(host));
+        let mut v4 = Box::pin(self.dns.lookup(host, rtype::A));
         while let Some(r) = v4.next().await {
-            if let Ok(a) = r {
-                return Ok(SocketAddr::new(a.addr, port));
+            if let Ok(Some(ip @ IpAddr::V4(_))) = r.map(|a| a.rdata.addr()) {
+                return Ok(SocketAddr::new(ip, port));
             }
         }
         Err(Error::new(
@@ -1272,9 +1278,7 @@ where
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
     T: QuicTlsConnect + Sync, // send-bound-exception: amendment-C16
     D: hclient_dns::Resolve + Sync, // send-bound-exception: amendment-C16
-    for<'a> D::Ipv4<'a>: Send, // send-bound-exception: amendment-C16
-    for<'a> D::Ipv6<'a>: Send, // send-bound-exception: amendment-C16
-    for<'a> D::Svcb<'a>: Send, // send-bound-exception: amendment-C16
+    for<'a> D::Records<'a>: Send, // send-bound-exception: amendment-C16
     H: Hooks + Clone + Unpin + Send + Sync, // send-bound-exception: amendment-C16
 {
     fn execute_send(

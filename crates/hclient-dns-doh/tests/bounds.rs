@@ -11,7 +11,7 @@ mod support;
 
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind, Timeouts};
-use hclient_dns::{IpLiteralOnly, Resolve, ResolvedAddr};
+use hclient_dns::{IpLiteralOnly, Record, Resolve, rtype};
 use hclient_dns_doh::{Doh, MAX_RESPONSE_BYTES};
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -20,7 +20,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use support::{Reply, Rr, Server, TYPE_A, noerror};
 
-type Item = Result<ResolvedAddr, Error>;
+type Item = Result<Record, Error>;
 
 const BOUND: Duration = Duration::from_millis(250);
 /// How long a test waits for something that must NOT happen.
@@ -53,10 +53,15 @@ async fn an_ip_literal_is_answered_without_a_query() {
     ));
     let doh = doh(&server);
 
-    let v4: Vec<Item> = doh.lookup_ipv4("192.0.2.1").collect().await;
+    let v4: Vec<Item> = doh.lookup("192.0.2.1", rtype::A).collect().await;
     assert_eq!(
         v4.iter()
-            .map(|i| i.as_ref().expect("an address").addr)
+            .map(|i| i
+                .as_ref()
+                .expect("an address")
+                .rdata
+                .addr()
+                .expect("an address answer"))
             .collect::<Vec<_>>(),
         vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]
     );
@@ -74,10 +79,15 @@ async fn a_bracketed_ipv6_literal_is_answered_without_a_query() {
     let server = Server::answering(noerror("unused", TYPE_A, &[]));
     let doh = doh(&server);
 
-    let v6: Vec<Item> = doh.lookup_ipv6("[2001:db8::1]").collect().await;
+    let v6: Vec<Item> = doh.lookup("[2001:db8::1]", rtype::AAAA).collect().await;
     assert_eq!(
         v6.iter()
-            .map(|i| i.as_ref().expect("an address").addr)
+            .map(|i| i
+                .as_ref()
+                .expect("an address")
+                .rdata
+                .addr()
+                .expect("an address answer"))
             .collect::<Vec<_>>(),
         vec![IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().expect("v6"))]
     );
@@ -92,13 +102,13 @@ async fn a_literal_of_the_wrong_family_is_empty_and_not_an_error() {
     let server = Server::answering(noerror("unused", TYPE_A, &[]));
     let doh = doh(&server);
     assert!(
-        doh.lookup_ipv6("192.0.2.1")
+        doh.lookup("192.0.2.1", rtype::AAAA)
             .collect::<Vec<Item>>()
             .await
             .is_empty()
     );
     assert!(
-        doh.lookup_ipv4("[2001:db8::1]")
+        doh.lookup("[2001:db8::1]", rtype::A)
             .collect::<Vec<Item>>()
             .await
             .is_empty()
@@ -112,8 +122,7 @@ async fn a_literal_of_the_wrong_family_is_empty_and_not_an_error() {
 async fn an_ip_literal_asks_for_no_https_record_either() {
     let server = Server::answering(noerror("unused", support::TYPE_HTTPS, &[]));
     let doh = doh(&server);
-    let found: Vec<Result<hclient_dns::SvcbEndpoint, Error>> =
-        doh.lookup_svcb("192.0.2.1").collect().await;
+    let found: Vec<Result<Record, Error>> = doh.lookup("192.0.2.1", rtype::HTTPS).collect().await;
     assert!(found.is_empty());
     assert!(server.requests().is_empty());
 }
@@ -133,7 +142,9 @@ async fn a_first_byte_bound_ends_a_lookup_a_silent_server_would_not() {
     });
 
     let items = tokio::time::timeout(PATIENCE, async {
-        doh.lookup_ipv4("example.com").collect::<Vec<Item>>().await
+        doh.lookup("example.com", rtype::A)
+            .collect::<Vec<Item>>()
+            .await
     })
     .await
     .expect("the bound under test never fired");
@@ -156,7 +167,9 @@ async fn the_same_silent_server_hangs_with_every_bound_unset() {
     });
 
     let outcome = tokio::time::timeout(PATIENCE, async {
-        doh.lookup_ipv4("example.com").collect::<Vec<Item>>().await
+        doh.lookup("example.com", rtype::A)
+            .collect::<Vec<Item>>()
+            .await
     })
     .await;
     assert!(
@@ -175,7 +188,9 @@ async fn the_default_timeouts_are_not_none() {
     let doh = doh(&server);
 
     let items = tokio::time::timeout(Duration::from_secs(20), async {
-        doh.lookup_ipv4("example.com").collect::<Vec<Item>>().await
+        doh.lookup("example.com", rtype::A)
+            .collect::<Vec<Item>>()
+            .await
     })
     .await
     .expect("a Doh with default timeouts never stopped waiting");
@@ -193,7 +208,7 @@ async fn the_default_timeouts_are_not_none() {
 async fn a_response_larger_than_a_dns_message_can_be_is_refused() {
     let server = Server::spawn(|_| Reply::Dns(vec![0u8; MAX_RESPONSE_BYTES + 1]));
     let doh = doh(&server);
-    let items: Vec<Item> = doh.lookup_ipv4("example.com").collect().await;
+    let items: Vec<Item> = doh.lookup("example.com", rtype::A).collect().await;
     let e = items[0].as_ref().expect_err("expected an error");
     assert!(
         e.to_string()

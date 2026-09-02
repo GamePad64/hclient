@@ -316,7 +316,7 @@ number below is one run of the tree.
 |---|---|
 | `cargo nextest run --workspace --all-features` | **2304 passed, 0 failed**, 12.4 s |
 | `system-resolver`'s four live tests | pass, run in parallel |
-| `hclient-dns-system`'s `live_lookup_of_a_name_that_publishes_https_records` | passes — `lookup_svcb("cloudflare.com")` yields endpoints advertising `h3` |
+| `hclient-dns-system`'s `live_lookup_of_a_name_that_publishes_https_records` | passes — an HTTPS lookup for `cloudflare.com` yields endpoints advertising `h3` |
 
 The last row is the one worth having: it is the whole path, from
 `DNSServiceQueryRecord`'s callback through this crate's `Record` and the

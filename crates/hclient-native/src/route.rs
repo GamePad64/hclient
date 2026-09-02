@@ -37,7 +37,7 @@ use crate::{ALPN_H3, Native, Prefetch as _, Prepared, Protocol, spoken_version};
 use futures_util::StreamExt as _;
 use hclient_core::check_version;
 use hclient_core::{Error, RequestBody, RequireVersion, Timeouts};
-use hclient_dns::Resolve;
+use hclient_dns::{Resolve, rtype};
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
 use std::time::Duration;
@@ -196,8 +196,8 @@ where
     /// does not reach here
     ///
     /// Its `discovery` module refuses to construct the prefixed name
-    /// because *"it would then have to decide what `lookup_ipv4`/
-    /// `lookup_ipv6` are asked for (the prefixed name has no addresses),
+    /// because *"it would then have to decide what `lookup`/
+    /// `lookup` are asked for (the prefixed name has no addresses),
     /// and that is a resolver-facing question the `Resolve` seam does not
     /// answer today"* — and so it applies discovery at the default port
     /// only. This transport reads **one bit** off the record, the presence
@@ -252,7 +252,7 @@ where
     /// An IP literal is skipped because it has no name to look up, and
     /// asking a real resolver for `_443._https.127.0.0.1` is a query with
     /// no answer that every request would pay for. And
-    /// `Resolve::supports_svcb()` is **asked** rather than inferred from an
+    /// `Resolve::`supports`` is **asked** rather than inferred from an
     /// empty stream, which is the distinction that method exists to carry.
     ///
     /// A record that answers — either way — is the end of it. It was
@@ -339,7 +339,7 @@ where
         // for a request that never met this transport — in particular an IP
         // literal keeps paying its record lookup once per *connection*
         // inside the connector, rather than once per request out here.
-        if is_ip_literal(&host) || !self.dns.supports_svcb() {
+        if is_ip_literal(&host) || !self.dns.supports(rtype::HTTPS) {
             return self.by_advertisement(Prepared::new(req), &host, port);
         }
 
@@ -527,9 +527,13 @@ where
     /// would have given without any discovery at all.
     async fn origin_offers_h3(&self, name: &str) -> Option<bool> {
         let mut best: Option<hclient_dns::SvcbEndpoint> = None;
-        let mut records = std::pin::pin!(self.dns.lookup_svcb(name));
+        let mut records = std::pin::pin!(self.dns.lookup(name, rtype::HTTPS));
         while let Some(record) = records.next().await {
-            let Ok(record) = record else { continue };
+            // One method answers every type, so the HTTPS filter is
+            // written rather than guaranteed by which method was called.
+            let Ok(hclient_dns::RData::Https(record)) = record.map(|r| r.rdata) else {
+                continue;
+            };
             if record.priority == 0 {
                 continue;
             }
