@@ -77,12 +77,6 @@ fn info() -> UIDNAInfo {
 #[derive(Debug)]
 pub(crate) struct Icu;
 
-impl Icu {
-    pub(crate) fn name(&self) -> &str {
-        "icuuc.dll (windows-sys, load-time import)"
-    }
-}
-
 /// Always `Some`: if `icuuc.dll` were missing, this process would not
 /// have started (see the module docs). The acceptance probe in `mod.rs`
 /// still runs, and is what decides whether the ICU behind that import is

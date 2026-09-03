@@ -46,6 +46,25 @@
 //! platforms, is pure policy, and would be the first thing to rot if each
 //! backend carried its own copy.
 
+// **Compiled everywhere, read in full by one backend.** This module is
+// ICU's vocabulary — the option bits, the error mask, the acceptance rule
+// — and it is unconditional so that those rules are tested on every host
+// rather than only on a machine that has an ICU. Only the ICU4C backend
+// reads all of it: Android takes `OPTIONS` and nothing else, because
+// ICU4J reports its errors as an `EnumSet` that cannot be masked, and
+// Foundation and the bundled `idna` read none of it. So the dead code is
+// by construction rather than by oversight, and the gate names the one
+// backend that leaves nothing unread — which is what keeps a genuinely
+// unused item here catchable on Windows.
+#![cfg_attr(
+    not(icu_backend),
+    allow(
+        dead_code,
+        reason = "ICU's vocabulary is compiled on every target so its rules are tested there; \
+                  only the ICU4C backend reads all of it"
+    )
+)]
+
 #[path = "windows.rs"]
 #[cfg(icu_backend)]
 mod imp;
