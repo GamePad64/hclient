@@ -255,9 +255,16 @@ const DIVERGENCES: &[(&str, &str)] = &[
 ];
 
 /// The same list with the `idn` feature off, where every U-label becomes a
-/// `UriError::NonAsciiHost` instead. The six extra entries ARE the feature:
-/// they are what a build without the Unicode tables gives up, named one by
-/// one rather than described.
+/// `UriError::NonAsciiHost` instead. The seven extra entries ARE the
+/// feature: they are what a build without the Unicode tables gives up,
+/// named one by one rather than described.
+///
+/// `ä..de` is one of them again. It left the list above when
+/// `hclient-idn` stopped refusing an empty label — with the feature on it
+/// converts what `idna` converts and agrees with the oracle — and it
+/// never left this one, because a build with no IDN at all still answers
+/// `NonAsciiHost` where `url` answers a host. Removing it from both lists
+/// was one edit too many, and only the feature-off build could say so.
 #[cfg(not(feature = "idn"))]
 #[rustfmt::skip]
 const DIVERGENCES: &[(&str, &str)] = &[
@@ -278,6 +285,7 @@ const DIVERGENCES: &[(&str, &str)] = &[
     ("https://example.test/", "https://u:p@münchen.de/x"),
     ("https://example.test/", "//münchen.de/x"),
     ("https://example.test/", "https://xn--zzzz.test/x"),
+    ("https://example.test/", "https://ä..de/x"),
     ("https://example.test/", "https://münchen.de/ä"),
     ("https://example.test/api/", "https://EXAMPLE.test/café"),
 ];
@@ -679,14 +687,16 @@ fn without_the_feature_the_a_label_it_asks_for_resolves_instead() {
             "the A-label this build asks for must itself resolve, unchanged"
         );
     }
-    // **Six, and it was seven.** `ä..de` left this count when it stopped
-    // being a `WithIdn` row — `hclient-idn` refuses an empty label on
-    // every backend now, so its answer is `None` with the feature and
-    // without it, and there is no A-label for a caller to be told to send
-    // instead. The number is a floor against the corpus quietly losing its
+    // **Seven, and it read six for one commit.** `ä..de` was taken out of
+    // this count on the reasoning that `hclient-idn` refuses an empty
+    // label on every backend — which had just stopped being true, since
+    // that refusal was the policy layer being deleted in the same change.
+    // It converts what `idna` converts now, so it is a `WithIdn` row like
+    // the other six and there is an A-label for a caller to be told to
+    // send. The number is a floor against the corpus quietly losing its
     // U-labels, so it moves with a reason rather than being relaxed.
     assert_eq!(
-        checked, 6,
+        checked, 7,
         "the corpus must still carry every U-label shape, or this proves nothing"
     );
 }

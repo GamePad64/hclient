@@ -448,7 +448,31 @@ fn selected() -> Option<&'static platform::Handle> {
 /// [`IdnError::NoImplementation`] if this build has an implementation it
 /// will not trust — see `selected`.
 pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    over(domain, platform::to_ascii)
+    let ascii = over(domain, platform::to_ascii)?;
+    // **The deny list is applied here and in no backend**, because two of
+    // the four take none: `uidna_*` and Foundation convert without one, so
+    // a name `idna` refuses would have been answered on Windows and macOS
+    // and refused on Linux — the same host reachable on two of this
+    // project's platforms and not the third, which is the one thing this
+    // crate exists to prevent. It went missing when the policy layer was
+    // deleted: that layer was URL validation and had to go, and this one
+    // line of it was not — it is part of *being* `idna`, which takes
+    // `AsciiDenyList::URL`.
+    //
+    // **On the converted name, not on the input**, which is the ordering
+    // the fuzzer already established once: `">\u{338}"` composes to `≯`,
+    // so a check before mapping refuses a character UTS 46 removes, where
+    // `idna` answers `xn--hdh`. Punycode copies basic code points
+    // verbatim, so a forbidden byte that survives mapping survives into
+    // the A-label — and one that mapping removed is not in it. An ACE
+    // label the caller supplied is covered by the same line, because
+    // `xn--%-0fa.de` is ASCII and passes through unchanged.
+    if ascii.bytes().any(is_forbidden_domain_byte) {
+        return Err(IdnError::NotAnIdn {
+            domain: domain.to_owned(),
+        });
+    }
+    Ok(ascii)
 }
 
 /// Converts `domain` to its Unicode (U-label) form — UTS 46 ToUnicode.
@@ -695,11 +719,24 @@ mod tests {
     /// So the assertion is the difference rather than the agreement: this
     /// crate is a smaller-binary `idna` and inherits its shape, including
     /// the parts a caller might not expect.
+    ///
+    /// **The reverse half is not asserted on Apple, and that is a
+    /// measured cost rather than an exemption for convenience.**
+    /// Foundation exposes no ToUnicode: the only way in is
+    /// `NSURLComponents`, a URL parser, and a byte a URL cannot contain
+    /// cannot be handed to one — `<` would be consumed as a delimiter and
+    /// the answer would be a different host. So `apple.rs` refuses it
+    /// before the parser sees it, and refusing is the safe direction of a
+    /// choice it does not have. It is the same shape as the divergence
+    /// this crate already records for that backend, and it belongs in the
+    /// differential corpus rather than under a relaxed assertion: the
+    /// forward half, which is the one that decides which host is
+    /// contacted, is checked on every backend alike.
     #[test]
     fn the_deny_list_is_the_ascii_direction_s_alone_as_it_is_in_idna() {
         assert!(domain_to_ascii("a<b.com").is_err());
         assert!(
-            domain_to_unicode("a<b.com").is_ok(),
+            cfg!(apple_backend) || domain_to_unicode("a<b.com").is_ok(),
             "`idna::domain_to_unicode` takes no deny list, so neither does this — a caller who \
              needs one applies it where the host is used, which is what `hclient-proto::uri` does"
         );

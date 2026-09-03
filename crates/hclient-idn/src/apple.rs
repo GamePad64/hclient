@@ -200,5 +200,12 @@ pub(crate) fn to_unicode(_f: &Foundation, domain: &str) -> Option<String> {
     if host.bytes().any(crate::is_forbidden_domain_byte) {
         return None;
     }
-    Some(host)
+    // **The case mapping Foundation does not do.** UTS 46 ToUnicode maps
+    // before it validates, and mapping case-folds ASCII — `idna` answers
+    // `example.com` for `EXAMPLE.COM`. `NSURLComponents::host` is a URL
+    // component getter rather than ToUnicode: it hands back the authority
+    // as written, so the ASCII half arrives un-folded. Restricted to
+    // ASCII on purpose — the non-ASCII half has already been mapped by
+    // Foundation, and Unicode lowercasing is not the same function.
+    Some(host.to_ascii_lowercase())
 }

@@ -47,12 +47,21 @@ pub(crate) fn find() -> Option<Bundled> {
 
 /// The A-label form of `domain`, or `None` if UTS 46 rejects it.
 ///
-/// `AsciiDenyList::URL` rather than `EMPTY`, which is the same list
-/// [`crate::is_forbidden_domain_byte`] states and the same one the other
-/// backends apply by hand — they have to, because neither Foundation nor
-/// ICU takes a deny list.
+/// **`AsciiDenyList::EMPTY`, and the deny list is applied one level up.**
+/// `idna` is the only one of the four backends that takes such a list at
+/// all — neither Foundation nor ICU has one — so applying it here would
+/// leave two backends without it and the third with it, which is how
+/// `a<b.com` came to be refused on Linux and answered on Windows and
+/// macOS. [`crate::domain_to_ascii`] applies
+/// [`crate::is_forbidden_domain_byte`] to the converted name for every
+/// backend alike.
+///
+/// Passing `URL` here as well would be harmless and is deliberately not
+/// done: a second copy of the rule is a second place for it to stop
+/// agreeing, and it would make the shared check unkillable by any test on
+/// the one platform this workspace runs.
 pub(crate) fn to_ascii(_b: &Bundled, domain: &str) -> Option<String> {
-    idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL)
+    idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::EMPTY)
         .ok()
         .map(Cow::into_owned)
 }
