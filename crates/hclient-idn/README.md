@@ -55,8 +55,17 @@ it probably is not.
 | the browser | `new URL()`, whose host parsing the WHATWG standard defines as UTS 46 |
 | Apple, Linux, other ELF unixes, WASI | the `idna` crate |
 
-There is no UTS 46 to reach for on Linux, WASI or Apple, so those take the
+There is no UTS 46 to reach for on Linux or WASI, so those take the
 bundled tables and this crate changes nothing for them.
+
+**WASI is where that costs most**, and not because the tables are bigger:
+a component carries them itself and nothing in the component model shares
+them, so a deployment of ten components pays for ten copies.
+`wasi:http` offers no conversion — its `set-authority` refuses anything
+that is not a syntactically valid, and therefore ASCII, URI authority,
+measured against wasmtime rather than read off the specification. If that
+weight matters more than accepting Unicode host names, the lever is your
+own: turn the `idn` feature off and convert before you build the URL.
 
 Apple and the browser are reached through a URL parser rather than a
 UTS 46 entry point, so each gets the case folding and the ACE check the

@@ -97,12 +97,47 @@ impl wasip3::exports::cli::run::Guest for Guest {
             "hooks-no-head" => hooks_no_head(port).await,
             "hooks-quiet" => hooks_quiet(port).await,
             "hooks-request-id" => hooks_request_id(port).await,
+            "idn-authority" => idn_authority().await,
             other => {
                 eprintln!("unknown mode: {other}");
                 Err(())
             }
         }
     }
+}
+
+/// **Does `wasi:http` take a U-label authority?** The question behind
+/// "could the transport seam carry a `&str` URL and let the host do the
+/// IDN", which would spare a WASI component the Unicode tables — and
+/// there the tables are per component rather than per binary.
+///
+/// `set-authority`'s own contract says *fails if the string given is not
+/// a syntactically valid URI authority*, and RFC 3986's `reg-name` is
+/// ASCII. This asks the host rather than the document. It sends nothing:
+/// what is measured is the setter, so no server and no port are needed.
+async fn idn_authority() -> Result<(), ()> {
+    use wasip3::http::types::{ErrorCode, Fields, Request};
+
+    fn empty() -> Request {
+        let (_, trailers) =
+            wasip3::wit_future::new::<Result<Option<Fields>, ErrorCode>>(|| Ok(None));
+        let (request, transmitted) = Request::new(Fields::new(), None, trailers, None);
+        drop(transmitted);
+        request
+    }
+
+    let request = empty();
+    match request.set_authority(Some("münchen.de")) {
+        Ok(()) => println!("IDN_AUTHORITY_ACCEPTED {:?}", request.get_authority()),
+        Err(()) => println!("IDN_AUTHORITY_REJECTED"),
+    }
+    // The control: the A-label must be accepted, or the probe is
+    // measuring something other than the U-label.
+    match empty().set_authority(Some("xn--mnchen-3ya.de")) {
+        Ok(()) => println!("CONTROL_A_LABEL_ACCEPTED"),
+        Err(()) => println!("CONTROL_A_LABEL_REJECTED"),
+    }
+    Ok(())
 }
 
 /// This guest's original scenario: a real response through

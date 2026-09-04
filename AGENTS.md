@@ -3497,6 +3497,49 @@ but the browser, which is the same shape and could not be given up. **`ä..de` a
 `VerifyDnsLength` stay gone either way** — that was the URL validation,
 and it is not this crate's question.
 
+### `wasi:http` will not take a U-label, so the tables ride in every component
+
+Asked whether the transport seam could carry the URL as a `&str` instead
+of an `http::Uri`, and let each host do the IDN — which on WASI would
+spare a component about 140 KiB, multiplied by however many components a
+deployment ships, because nothing there shares a library.
+
+**It buys WASI nothing, and that is measured rather than argued.**
+`wasi:http`'s `set-authority` takes a string and validates it: *fails if
+the string given is not a syntactically valid URI authority*, and RFC
+3986's `reg-name` is ASCII. Asked of wasmtime 47 through the live guest —
+`set-authority("münchen.de")` is `Err`, `set-authority("xn--mnchen-3ya.de")`
+is `Ok`, the second being the control that says the first measured the
+U-label rather than a broken call. It is
+`a_unicode_authority_is_refused_by_the_host_and_the_a_label_is_not` now,
+because a claim about somebody else's interface is exactly as perishable
+as the check behind it: a `wasi:http` that grows IDN support fails that
+line rather than leaving a stale paragraph.
+
+The one place IDNA appears in WASI at all is `wasi:sockets`'
+`resolve-addresses` — *Unicode domain names are automatically converted
+to ASCII using IDNA encoding* — and it is unreachable three ways:
+`hclient-wasi` does not import sockets (the `wasi:http` world has no such
+import), the function hands back addresses rather than labels, and
+"IDNA encoding" does not say which of 2003, 2008 or UTS 46. That is
+glibc's `AI_IDN` again, one platform over.
+
+**So the seam change would buy the browser 17 KiB and nobody else**,
+because the browser is the only host that both does the conversion and
+will accept a U-label — and it already has a backend at 17.4 KiB. What it
+would cost is `http::Request` itself: `uri` is an `http::Uri`, the type
+sits in the public API of ten crates here, and everything that reads a
+host reads it — cookie domain matching, redirect origins, the cache key,
+the pool key, `Host`, the TLS server name, the HTTPS-record name, and
+`resolve_reference`, which needs a parsed base. Parsing once and carrying
+the parsed form is what the type is for.
+
+So WASI carries the tables, and what that changes is the documentation
+rather than the code: `hclient-wasi`'s own module doc now says the weight
+is per component and names the lever, which is `--no-default-features` on
+`hclient-proto` and a caller that converts once. It is the right trade
+there far more often than anywhere else this workspace builds for.
+
 ### One direction, and the crate stopped answering a question nobody asked
 
 `hclient-idn` had two public functions and has one. `domain_to_unicode`

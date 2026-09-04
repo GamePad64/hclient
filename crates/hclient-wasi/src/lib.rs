@@ -3,6 +3,29 @@
 //! Builds under `wasm32-wasip2`. No `wasip3` type appears in this crate's
 //! public API: `Body::Error` is `hclient_core::Error`, which erases the
 //! source into `Arc<dyn std::error::Error + Send + Sync>`.
+//!
+//! # IDN is the component's own weight, and there is nothing to share it
+//!
+//! **`wasi:http` offers no conversion and the host will not take a
+//! U-label.** `set-authority`'s contract is *fails if the string given is
+//! not a syntactically valid URI authority*, and RFC 3986's `reg-name` is
+//! ASCII — asked of wasmtime rather than read off the document, by
+//! `a_unicode_authority_is_refused_by_the_host_and_the_a_label_is_not`,
+//! with the A-label as its control. The one place IDNA appears in WASI at
+//! all is `wasi:sockets`' `resolve-addresses`, which this crate does not
+//! import and which hands back addresses rather than labels.
+//!
+//! So a component that means to reach `münchen.de` carries UTS 46 itself,
+//! and `hclient-proto`'s `idn` feature — on by default — puts about
+//! 140 KiB of Unicode tables in it. **On WASI that is per component
+//! rather than per binary**, so a deployment of ten components pays it
+//! ten times; nothing in the component model shares it.
+//!
+//! The lever is the feature, and it is the caller's to pull:
+//! `--no-default-features` on `hclient-proto` leaves the component
+//! answering `UriError::NonAsciiHost`, which names the A-label to send
+//! instead, and whoever builds the URL converts once. That is the right
+//! trade far more often here than anywhere else this crate builds for.
 #![forbid(unsafe_code)]
 
 mod body;

@@ -731,6 +731,77 @@ fn run_guest_against_mock_server(
     )
 }
 
+/// Runs the guest with no server at all, for a mode that sends nothing.
+///
+/// `run_guest_against_mock_server` accepts a connection and would hang
+/// waiting for one that is never made. A probe of a setter needs a host
+/// and not a peer.
+fn run_guest_alone(wasmtime: &Path, mode: &str) -> (String, String, std::process::ExitStatus) {
+    let artifact = build_guest();
+    let output = Command::new(wasmtime)
+        .args([
+            "run",
+            "-S",
+            "http",
+            "--",
+            artifact.to_str().expect("utf8 path"),
+            "0",
+            mode,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to spawn wasmtime");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status,
+    )
+}
+
+/// **`wasi:http` does not take a U-label authority**, which is why a WASI
+/// component carries the Unicode tables.
+///
+/// The question this answers is a design one asked twice: could the
+/// transport seam carry the URL as a `&str` and let the host do the IDN,
+/// sparing every component ~140 KiB — and on WASI the tables are per
+/// component rather than per binary, so the prize is multiplied by however
+/// many a deployment ships.
+///
+/// `set-authority`'s own contract says *fails if the string given is not
+/// a syntactically valid URI authority*, and RFC 3986's `reg-name` is
+/// ASCII. This asks the host rather than the document, because a
+/// specification is a claim and a claim is exactly as perishable as the
+/// check behind it: a `wasi:http` that grew IDN support would make this
+/// test fail, which is the notification anyone would want.
+///
+/// The A-label control is what makes the refusal mean the U-label rather
+/// than a broken call.
+#[test]
+fn a_unicode_authority_is_refused_by_the_host_and_the_a_label_is_not() {
+    let Some(wasmtime) =
+        require_wasmtime("a_unicode_authority_is_refused_by_the_host_and_the_a_label_is_not")
+    else {
+        return;
+    };
+
+    let (stdout, stderr, status) = run_guest_alone(&wasmtime, "idn-authority");
+    assert!(
+        status.success(),
+        "the probe sends nothing and must exit cleanly (exit {:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        status.code(),
+    );
+    assert!(
+        stdout.contains("IDN_AUTHORITY_REJECTED"),
+        "wasi:http accepted a U-label authority — if that is real rather than a lenient host, \
+         the tables could come out of a WASI component\n--- stdout ---\n{stdout}"
+    );
+    assert!(
+        stdout.contains("CONTROL_A_LABEL_ACCEPTED"),
+        "the A-label control was refused too, so the probe measured a broken call rather than \
+         the U-label\n--- stdout ---\n{stdout}"
+    );
+}
+
 /// The variable a job that promises to install `wasmtime` sets to
 /// announce that promise. See `require_wasmtime`.
 const REQUIRE_MARKER: &str = "HCLIENT_REQUIRE_WASMTIME";
