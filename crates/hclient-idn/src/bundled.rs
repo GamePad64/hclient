@@ -51,7 +51,8 @@ pub(crate) fn find() -> Option<Bundled> {
 /// `idna` is the only one of the four backends that takes such a list at
 /// all — neither Foundation nor ICU has one — so applying it here would
 /// leave two backends without it and the third with it, which is how
-/// `a<b.com` came to be refused on Linux and answered on Windows. [`crate::domain_to_ascii`] applies
+/// `a<b.com` came to be refused on Linux and answered on Windows and
+/// macOS. [`crate::domain_to_ascii`] applies
 /// [`crate::is_forbidden_domain_byte`] to the converted name for every
 /// backend alike.
 ///

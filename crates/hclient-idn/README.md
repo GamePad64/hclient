@@ -31,9 +31,6 @@ one program converting one name — `opt-level = "z"`, fat LTO,
 | `aarch64-linux-android` | 304.5 KiB | 443.5 KiB | **139.0 KiB — 31%** |
 | `x86_64-linux-android` | 334.9 KiB | 478.3 KiB | **143.3 KiB — 30%** |
 
-Android and Windows are the two targets that save; everywhere else this
-crate is the `idna` crate under another name.
-
 A third of a small native library, per ABI. If you ship to phones, that is
 the reason to use this; if you ship a desktop binary of several megabytes,
 it probably is not.
@@ -43,14 +40,12 @@ it probably is not.
 | target | backend |
 |---|---|
 | Windows | `icuuc.dll`, linked, through `windows-sys` |
+| Apple | Foundation, through `NSURL`/`NSURLComponents`, with the case folding and ACE validation a URL parser does not do |
 | Android | `android.icu.text.IDNA` (ICU4J), over JNI |
-| Apple, Linux, other ELF unixes, wasm | the `idna` crate |
+| Linux, other ELF unixes, wasm | the `idna` crate |
 
 There is no system UTS 46 to reach for on Linux or wasm, so those take the
-bundled tables and this crate changes nothing for them. Apple is in that
-row too: Foundation converts an IDN host only as a side effect of parsing
-a URL, so it does not case-fold ASCII and does not validate an ACE label
-— close enough to look right and not close enough to be it.
+bundled tables and this crate changes nothing for them.
 
 The `idna` feature — off by default — forces the bundled crate on every
 target, for a build that would rather carry the tables than call the
@@ -63,8 +58,8 @@ backend is used only after it converts `straße.de` and `faß.de` the way
 `idna` does, in **both** directions; one that does not is refused and the
 crate returns `IdnError::NoImplementation` rather than a different host.
 A differential corpus compares the platform against `idna` row by row on
-every push, on Windows; the Android backend has been run on a device,
-where thirteen cases agree.
+every push, on Windows and macOS; the Android backend has been run on a
+device, where thirteen cases agree.
 
 ## Licence
 

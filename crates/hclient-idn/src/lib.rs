@@ -23,10 +23,10 @@
 //! crate has — `idna`, off by default, which forces the bundled tables
 //! everywhere.
 //!
-//! Three backends, one shape: Windows' `icuuc.dll`, Android's
-//! `android.icu.text.IDNA` over JNI, and the `idna` crate, which is what
-//! the ELF unixes, wasm and Apple get because there is no UTS 46 to ask
-//! there. `lib.rs` names the selected one `platform` and
+//! Four backends, one shape: Apple's Foundation, Windows' `icuuc.dll`,
+//! Android's `android.icu.text.IDNA` over JNI, and the `idna` crate,
+//! which is what the ELF unixes and wasm get because there is nothing
+//! else there to ask. `lib.rs` names the selected one `platform` and
 //! nothing past that line names an operating system.
 //!
 //! # Why this crate exists, and what it is worth
@@ -128,15 +128,16 @@
 //!
 //! # Which platform answers
 //!
-//! Three backends and one module alias. `lib.rs` selects one with
+//! Four backends and one module alias. `lib.rs` selects one with
 //! `cfg_select!` and names no operating system past that line; each
 //! exports `find`, `to_ascii`, `to_unicode` and a `Handle`.
 //!
 //! | target | backend | `unsafe` |
 //! |---|---|---|
 //! | Windows | `icuuc.dll`, linked through `windows-sys` | amendment C9 |
+//! | Apple | Foundation, `NSURL` and `NSURLComponents` | none |
 //! | Android | `android.icu.text.IDNA` (ICU4J) over JNI | amendment C19 |
-//! | Apple, Linux, other ELF unixes, wasm | the `idna` crate | none |
+//! | Linux, other ELF unixes, wasm | the `idna` crate | none |
 //!
 //! **Windows.** `windows-sys`' `Win32_Globalization` already declares
 //! `uidna_openUTS46`, `uidna_nameToASCII_UTF8`, `uidna_nameToUnicodeUTF8`,
@@ -150,25 +151,18 @@
 //! start. The floor is **Windows 10 1703 / Server 2019**, stated rather
 //! than degraded to.
 //!
-//! **Apple had a backend and does not now, and the measurement is the
-//! reason.** Foundation is reached through `NSURL`, which converts an IDN
-//! host as a side effect of *parsing a URL* — so it is a URL parser and
-//! not a UTS 46 implementation. It does not case-fold ASCII and it does
-//! not validate an ACE label: eight rows of the differential corpus came
-//! back as themselves, `EXAMPLE.COM` and `xn--zzzz.test` among them.
-//! Closing that gap needed a punycode decoder and a conversion sequence
-//! written here, which is this crate reimplementing the thing it exists
-//! to avoid reimplementing. Apple takes `idna` instead, at a measured
-//! cost of 13 crates becoming 50 on `aarch64-apple-darwin` — that is what
-//! the tables weigh, and it buys an answer identical to every other
-//! target's with nothing of ours in between.
-//!
-//! One corroboration from that work is worth keeping: `swift-foundation`'s
-//! `URLParser+ICU.swift` opens its ICU handle with `UIDNA_CHECK_BIDI |
-//! UIDNA_CHECK_CONTEXTJ | UIDNA_NONTRANSITIONAL_TO_UNICODE |
-//! UIDNA_NONTRANSITIONAL_TO_ASCII` — bit for bit the option word below,
-//! arrived at independently, which is the best evidence that constant
-//! will ever get.
+//! **Apple.** `swift-foundation`'s `URLParser+ICU.swift` opens its handle
+//! with `UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ |
+//! UIDNA_NONTRANSITIONAL_TO_UNICODE | UIDNA_NONTRANSITIONAL_TO_ASCII` —
+//! bit for bit the option word below, arrived at independently, which is
+//! the best corroboration that constant will ever get. It needs no
+//! `unsafe` at all: every `objc2-foundation` call is a safe function,
+//! measured by a draft that wrapped them and drew ten `unnecessary unsafe
+//! block` warnings. The catch is that Foundation converts as a side
+//! effect of *parsing a URL*, so it answers only for a host that is not
+//! already ASCII, and the reverse direction is `NSURLComponents::host`
+//! where the forward one is `NSURL::host` — the *encoded* getter being
+//! the ASCII one, which is the opposite of what the names suggest.
 //!
 //! **Android.** ICU4J, the same ICU the Windows backend calls, under the
 //! same option bits and the same error names — but the NDK exposes no C
@@ -266,6 +260,11 @@ use std::borrow::Cow;
 // an arm loses all of it. There is no `_` arm because `build.rs` emits
 // exactly one of these four and a fifth backend must be a compile error
 // here rather than a silent fall-through.
+// Unconditional for the reason `icu` and `android` are: every line of it
+// is integer arithmetic and string splitting, so compiling it everywhere
+// is what puts its tests on a host that can run them. Only `apple` reads
+// it — the two ICU backends validate an ACE label themselves.
+mod ace;
 
 // Unconditional, like `android`: it holds ICU's vocabulary — the option
 // bits, the error mask, the acceptance rule — which both ICU backends
@@ -276,11 +275,15 @@ mod icu;
 // decision — which ICU errors are forgiven — is tested on every host.
 mod android;
 
+#[cfg(apple_backend)]
+mod apple;
+
 #[cfg(idna_backend)]
 mod bundled;
 
 core::cfg_select! {
     idna_backend => { use bundled as platform; }
+    apple_backend => { use apple as platform; }
     icu_backend => { use icu as platform; }
     android_backend => { use android as platform; }
 }
@@ -313,7 +316,7 @@ pub use error::IdnError;
 /// [forbidden domain code point]: https://url.spec.whatwg.org/#forbidden-domain-code-point
 #[must_use]
 #[cfg_attr(
-    not(android_backend),
+    not(any(apple_backend, android_backend)),
     allow(
         dead_code,
         reason = "only the backends that take no deny list of their own apply this — `idna` \
@@ -350,8 +353,8 @@ pub(crate) const fn is_forbidden_domain_byte(b: u8) -> bool {
 ///
 /// Shared by every platform backend rather than duplicated per platform.
 /// The two backends have nothing else in common — one links `icuuc.dll`,
-/// the other makes JNI calls into ICU4J — and this is exactly the kind of
-/// constant that would drift if each kept its own.
+/// the other sends Objective-C messages to Foundation — and this is
+/// exactly the kind of constant that would drift if each kept its own.
 pub(crate) const PROBES: [(&str, &str); 2] = [
     ("straße.de", "xn--strae-oqa.de"),
     ("faß.de", "xn--fa-hia.de"),
@@ -369,7 +372,7 @@ pub(crate) const PROBES: [(&str, &str); 2] = [
 /// `straße.de` right and `faß.de` wrong is not one to trust with the
 /// rest.
 #[cfg_attr(
-    not(any(icu_backend, android_backend)),
+    not(any(icu_backend, apple_backend, android_backend)),
     allow(
         dead_code,
         reason = "only a platform backend has anything to gate, but the POLICY is                   platform-independent and so are its tests — gating it away here would stop                   them running on the one target CI exercises most"
@@ -385,15 +388,14 @@ pub(crate) fn accepts(convert: impl Fn(&str) -> Option<String>) -> bool {
 /// name out.
 ///
 /// **This is what lets a platform getter be used before anyone has run
-/// it.** The Android backend is the case: its ICU4J calls were written
-/// against documentation months before a device ran them, and a build
-/// where a getter is not what the documentation says fails this and
-/// answers `IdnError::NoImplementation` — a refusal rather than a wrong
-/// name. It is also what measured Foundation out of this crate: the pair
-/// passed there and eight corpus rows did not, which is the difference
-/// between *converts the probe* and *implements UTS 46*.
+/// it.** `apple.rs`'s `to_unicode` reads `NSURLComponents::host` on an
+/// argument from Apple's documentation and no machine here can execute
+/// it; a build where that getter is not what the argument says fails this
+/// and answers `IdnError::NoImplementation`, which is a refusal rather
+/// than a wrong name. The forward half has always been gated this way and
+/// for the same reason — see `macos_getter_that_returns_the_a_label`.
 #[cfg_attr(
-    not(any(icu_backend, android_backend)),
+    not(any(icu_backend, apple_backend, android_backend)),
     allow(
         dead_code,
         reason = "only a platform backend has anything to gate, but the POLICY is \
@@ -429,9 +431,8 @@ fn selected() -> Option<&'static platform::Handle> {
                 // unverified platform getter safe.** A backend that converts
                 // out correctly and hands back something else on the way in
                 // is refused here rather than at the call that would have
-                // used its answer — which is the case the Android
-                // backend was written under, since its device run came
-                // months after its code.
+                // used its answer — which is the case `apple.rs`'s
+                // `to_unicode` is written under, since nobody here has a Mac.
                 accepts(|input| platform::to_ascii(h, input))
                     && accepts_back(|input| platform::to_unicode(h, input))
             })
@@ -454,12 +455,12 @@ fn selected() -> Option<&'static platform::Handle> {
 /// will not trust — see `selected`.
 pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     let ascii = over(domain, platform::to_ascii)?;
-    // **The deny list is applied here and in no backend**, because the
-    // platform ones take none: `uidna_*` and ICU4J convert without one, so
-    // a name `idna` refuses would have been answered on Windows and
-    // refused on Linux — the same host reachable on one of this project's
-    // platforms and not another, which is the one thing this crate exists
-    // to prevent. It went missing when the policy layer was
+    // **The deny list is applied here and in no backend**, because two of
+    // the four take none: `uidna_*` and Foundation convert without one, so
+    // a name `idna` refuses would have been answered on Windows and macOS
+    // and refused on Linux — the same host reachable on two of this
+    // project's platforms and not the third, which is the one thing this
+    // crate exists to prevent. It went missing when the policy layer was
     // deleted: that layer was URL validation and had to go, and this one
     // line of it was not — it is part of *being* `idna`, which takes
     // `AsciiDenyList::URL`.
@@ -533,17 +534,17 @@ fn over(domain: &str, direction: Direction) -> Result<Cow<'_, str>, IdnError> {
 ///
 /// **There is no `bundled` here, and there cannot usefully be one.** It
 /// existed until it was checked: `build.rs` sets `idna_backend` only where
-/// the target has no ICU to ask, so on every target where such
+/// the target has neither ICU nor Foundation, so on every target where such
 /// a function would compile it *is* the backend [`domain_to_ascii`] already
 /// calls — a differential probe comparing `idna` with itself. Measured
 /// rather than reasoned: `cargo check -p hclient-idn --all-features`, i.e.
 /// every backend feature requested at once, emits exactly one
-/// `rustc-cfg` per target — `idna_backend` on `x86_64-unknown-linux-gnu`
-/// and on `aarch64-apple-darwin`, `icu_backend` on
-/// `x86_64-pc-windows-msvc`, `android_backend` on
-/// `aarch64-linux-android`, and never two. Making `idna` available beside
-/// a platform backend would buy the comparison back at the price of the
-/// ICU tables on the two platforms this crate exists to keep them off.
+/// `rustc-cfg` per target — `idna_backend` on `x86_64-unknown-linux-gnu`,
+/// `icu_backend` on `x86_64-pc-windows-msvc`, `apple_backend` on
+/// `aarch64-apple-darwin`, `android_backend` on `aarch64-linux-android`,
+/// and never two. Making `idna` available beside a platform backend would
+/// buy the comparison back at the price of the ICU tables on the three
+/// platforms this crate exists to keep them off.
 ///
 /// So the comparison lives where the two implementations are both
 /// reachable: `tests/differential.rs` calls `idna` as a dev-dependency
@@ -724,12 +725,24 @@ mod tests {
     /// So the assertion is the difference rather than the agreement: this
     /// crate is a smaller-binary `idna` and inherits its shape, including
     /// the parts a caller might not expect.
-
+    ///
+    /// **The reverse half is not asserted on Apple, and that is a
+    /// measured cost rather than an exemption for convenience.**
+    /// Foundation exposes no ToUnicode: the only way in is
+    /// `NSURLComponents`, a URL parser, and a byte a URL cannot contain
+    /// cannot be handed to one — `<` would be consumed as a delimiter and
+    /// the answer would be a different host. So `apple.rs` refuses it
+    /// before the parser sees it, and refusing is the safe direction of a
+    /// choice it does not have. It is the same shape as the divergence
+    /// this crate already records for that backend, and it belongs in the
+    /// differential corpus rather than under a relaxed assertion: the
+    /// forward half, which is the one that decides which host is
+    /// contacted, is checked on every backend alike.
     #[test]
     fn the_deny_list_is_the_ascii_direction_s_alone_as_it_is_in_idna() {
         assert!(domain_to_ascii("a<b.com").is_err());
         assert!(
-            domain_to_unicode("a<b.com").is_ok(),
+            cfg!(apple_backend) || domain_to_unicode("a<b.com").is_ok(),
             "`idna::domain_to_unicode` takes no deny list, so neither does this — a caller who \
              needs one applies it where the host is used, which is what `hclient-proto::uri` does"
         );

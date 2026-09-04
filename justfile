@@ -897,13 +897,10 @@ test-no-default:
 # The whole claim of `hclient-idn` is that the platform's ICU answers what
 # the bundled `idna` crate answers. The platform column of
 # `tests/differential.rs` does not compile where there is no platform
-# backend, which is why HCLIENT_IDN_REQUIRE_PLATFORM is set on Windows
-# alone — the one runner in this project that has one. Apple had a backend
-# until the corpus was run against it: `NSURL` is a URL parser, so it does
-# not case-fold ASCII and does not validate an ACE label. The default
-# (`platform`, resolved by target) AND `--all-features`, which is what the
-# workspace suite runs: features have to stay additive, so `idna` on a
-# target that already takes it is a no-op, not an error.
+# backend, which is why HCLIENT_IDN_REQUIRE_PLATFORM is set off Linux only.
+# The default (`platform`, resolved by target) AND `--all-features`, which is
+# what the workspace suite runs: features have to stay additive, so
+# `system-icu` off Windows and `bundled` on it are no-ops, not errors.
 
 # the IDN differential corpus, on both feature settings
 test-idn:
@@ -1748,15 +1745,15 @@ graph-idn-feature:
       -- -p hclient-proto
     # What it COSTS on this runner, and deliberately not target-independent:
     # measured, `--target x86_64-pc-windows-msvc` brings `windows-sys` and no
-    # `idna`; `aarch64-apple-darwin` brings `idna` like Linux does.
+    # `idna`, `aarch64-apple-darwin` brings `objc2-foundation` and no `idna`.
     # This is the line that must MOVE rather than be widened if this ever
     # runs anywhere but Linux.
     ./scripts/tree-guard.sh present '^idna ' \
-      "the default build of hclient-proto on Linux has no idna — hclient-idn takes the bundled tables on every target that is not Windows or Android, so these are the tables the feature is supposed to bring here" \
+      "the default build of hclient-proto on Linux has no idna — hclient-idn takes the bundled tables on every target that is not Windows or Apple, so these are the tables the feature is supposed to bring here" \
       -- -p hclient-proto
     # And that the feature is the ONLY thing bringing it, stated
     # target-independently: the idna|icu_ absence above passes trivially on
-    # Windows and Android, where those never appear.
+    # Windows and Apple, where those never appear.
     ./scripts/tree-guard.sh absent '^hclient-idn ' \
       "--no-default-features still pulls in hclient-idn — the idn feature is the only thing that should" \
       -- -p hclient-proto --no-default-features
@@ -1781,7 +1778,7 @@ graph-idn-backend:
       ./scripts/tree-guard.sh present '^idna ' \
         "hclient-idn on Linux has no idna, so this target has no IDN implementation at all" \
         -- -p hclient-idn
-      ./scripts/tree-guard.sh absent '^(libloading|windows-sys|objc2) ' \
+      ./scripts/tree-guard.sh absent '^(libloading|windows-sys|objc2-foundation) ' \
         "hclient-idn on Linux pulls in a loader or a platform binding — the ELF dlopen backend was removed on purpose, see the crate docs" \
         -- -p hclient-idn --all-features
       # Android is checked from here because no runner in this project is
@@ -1799,27 +1796,29 @@ graph-idn-backend:
       ./scripts/tree-guard.sh present '^idna ' \
         "--features idna does not bring the bundled tables to Android, so the forcing switch does not force" \
         -- -p hclient-idn --target aarch64-linux-android --features idna
-      # **Apple is checked from here for the reason Android is, and what
-      # it asserts is the opposite of what it used to.** Foundation was a
-      # backend until it was measured against the corpus: `NSURL` converts
-      # an IDN host as a side effect of parsing a URL, so it does not
-      # case-fold ASCII and does not validate an ACE label. Apple takes
-      # the bundled tables now, like Linux and wasm, and the pair below is
-      # that decision rather than a description of it — a reappearing
-      # `objc2-foundation` means the backend came back without the corpus
-      # being consulted.
-      ./scripts/tree-guard.sh present '^idna ' \
-        "hclient-idn for Apple has no idna — that target takes the bundled tables, because Foundation is a URL parser rather than a UTS 46 implementation" \
+      # **Apple is checked from here for the reason Android is**, and it
+      # is worth more than the macOS leg's version of the same claim: this
+      # one holds on every push rather than on the runs that reach a Mac.
+      # The backend was deleted once on the argument that a punycode
+      # decoder here reimplements what this crate exists not to
+      # reimplement, and put back when the deletion was measured — 13
+      # crates become 50 on this target, which is the tables arriving.
+      # That number is what these two lines are guarding.
+      ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
+        "the default hclient-idn build for Apple pulls in idna/ICU — Foundation is the backend there, and the tables are what this crate keeps off it" \
         -- -p hclient-idn --target aarch64-apple-darwin
-      ./scripts/tree-guard.sh absent '^objc2' \
-        "hclient-idn for Apple links objc2 — the Foundation backend was removed on purpose, see the crate docs" \
-        -- -p hclient-idn --target aarch64-apple-darwin --all-features
+      ./scripts/tree-guard.sh present '^objc2-foundation ' \
+        "hclient-idn for Apple links no objc2-foundation, so Foundation is unreachable and the backend is not compiled in at all" \
+        -- -p hclient-idn --target aarch64-apple-darwin
+      ./scripts/tree-guard.sh present '^idna ' \
+        "--features idna does not bring the bundled tables to Apple, so the forcing switch does not force" \
+        -- -p hclient-idn --target aarch64-apple-darwin --features idna
     else
       ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
         "the default hclient-idn build on this target pulls in idna/ICU — the whole point of a platform backend is that the OS supplies the tables" \
         -- -p hclient-idn
-      ./scripts/tree-guard.sh present '^windows-sys ' \
-        "hclient-idn on this target links no windows-sys, so no platform backend is compiled in at all" \
+      ./scripts/tree-guard.sh present '^(windows-sys|objc2-foundation) ' \
+        "hclient-idn on this target links neither windows-sys nor objc2-foundation, so no platform backend is compiled in at all" \
         -- -p hclient-idn
       # **The opposite of what this line used to say**, and the change is
       # the feature's meaning rather than a relaxation. `--all-features`

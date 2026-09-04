@@ -1,6 +1,6 @@
 //! Resolves the backend, in one auditable place.
 //!
-//! **One feature and three targets, and the feature wins.** `idna` is the
+//! **One feature and four targets, and the feature wins.** `idna` is the
 //! only switch this crate has: turn it on and every target answers
 //! through the bundled `idna` crate and its Unicode tables. Leave it off —
 //! which is the default — and the answer comes from whatever the platform
@@ -8,23 +8,15 @@
 //!
 //! | target | backend | cfg |
 //! |---|---|---|
+//! | Apple | Foundation, through `NSURL` | `apple_backend` |
 //! | Windows | the system ICU, `icuuc.dll` | `icu_backend` |
 //! | Android | `android.icu.text.IDNA`, over JNI | `android_backend` |
-//! | everything else, Linux and Apple included | the bundled `idna` crate | `idna_backend` |
+//! | everything else, Linux included | the bundled `idna` crate | `idna_backend` |
 //!
 //! Linux takes `idna` with the feature off as well as on, which is why
 //! the feature is a *forcing* switch rather than a selector: there is no
 //! system UTS 46 to reach for on an ELF unix, so the row is the same
 //! either way and the feature buys nothing there.
-//!
-//! **Apple is in that row and used to have one of its own.** Foundation
-//! is reached through `NSURL`, which is a URL parser rather than a UTS 46
-//! implementation: it does not case-fold ASCII and it does not validate
-//! an ACE label, so eight rows of the differential corpus came back as
-//! themselves. Making it conform took a punycode decoder and a sequence
-//! of this crate's own — which is a reimplementation of the thing the
-//! crate exists to avoid reimplementing. The bundled crate is what a
-//! target without a real UTS 46 gets, and that is what Apple is.
 //!
 //! **Exactly one cfg comes out**, which the previous scheme could not
 //! promise — it had three features whose combinations could set two at
@@ -49,12 +41,15 @@
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rustc-check-cfg=cfg(icu_backend)");
+    println!("cargo::rustc-check-cfg=cfg(apple_backend)");
     println!("cargo::rustc-check-cfg=cfg(android_backend)");
     println!("cargo::rustc-check-cfg=cfg(idna_backend)");
 
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
     let forced = std::env::var_os("CARGO_FEATURE_IDNA").is_some();
 
+    let apple = vendor == "apple";
     let windows = os == "windows";
     let android = os == "android";
 
@@ -64,8 +59,10 @@ fn main() {
     // `else` is the ELF unixes and wasm, which have no system UTS 46 to
     // reach for — so it is the same branch the feature forces, reached
     // for a different reason.
-    let cfg = if forced || !(windows || android) {
+    let cfg = if forced || !(apple || windows || android) {
         "idna_backend"
+    } else if apple {
+        "apple_backend"
     } else if windows {
         "icu_backend"
     } else {
