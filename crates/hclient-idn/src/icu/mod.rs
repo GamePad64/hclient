@@ -344,6 +344,16 @@ pub(crate) use imp::{find, to_ascii, to_unicode};
 #[cfg(icu_backend)]
 pub(crate) type Handle = Icu;
 
+/// `uidna_nameToUnicodeUTF8` is ICU4C's own reverse, so this backend
+/// answers both ways.
+///
+/// **A backend that answers `false` is not broken, it is narrower**, and
+/// the one that does is `web`: no JS API anywhere performs ToUnicode. The
+/// constant is read by [`crate::selected`], which then asks the
+/// acceptance probe only the question the backend claims to answer, and
+/// by [`crate::domain_to_unicode`], which refuses rather than guessing.
+pub(crate) const REVERSES: bool = true;
+
 /// The option word, re-exported for the backends so neither reaches past
 /// this module for it.
 #[cfg(icu_backend)]

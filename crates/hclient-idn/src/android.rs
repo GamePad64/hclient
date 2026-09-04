@@ -117,6 +117,21 @@ pub(crate) use imp::{Android, find, to_ascii, to_unicode};
 #[cfg(android_backend)]
 pub(crate) type Handle = Android;
 
+/// `IDNA.nameToUnicode` is ICU4J's own reverse, so this backend answers
+/// both ways.
+///
+/// **A backend that answers `false` is not broken, it is narrower**, and
+/// the one that does is `web`: no JS API anywhere performs ToUnicode. The
+/// constant is read by [`crate::selected`], which then asks the
+/// acceptance probe only the question the backend claims to answer, and
+/// by [`crate::domain_to_unicode`], which refuses rather than guessing.
+///
+/// Gated like `Handle` beside it: this module is unconditional so that
+/// the half holding the decisions is tested on every host, and the items
+/// that only the selected backend reads are the ones that carry the cfg.
+#[cfg(android_backend)]
+pub(crate) const REVERSES: bool = true;
+
 #[cfg(android_backend)]
 mod imp {
     use jni::JavaVM;

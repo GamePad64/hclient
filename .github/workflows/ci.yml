@@ -242,6 +242,15 @@ jobs:
           # broken runner rather than a laptop without a headless browser.
           HCLIENT_REQUIRE_BROWSERS: "1"
         run: just test-browser ${{ matrix.browser }}
+      # The IDN corpus, in the engine that now answers it. `hclient-idn`
+      # has a backend for `wasm32-unknown-unknown` — the browser's own
+      # `new URL()` — and it is checked row by row here rather than by the
+      # acceptance probe alone, which is what Foundation passed while
+      # failing eight of these rows. Both engines, because the claim is
+      # about the WHATWG standard rather than about one implementation.
+      - name: the IDN corpus in this engine
+        shell: bash
+        run: just test-idn-browser ${{ matrix.browser }}
 
   # Every fixture in `crates/hclient-tungstenite/tests/websocket.rs` was
   # written beside the implementation it observes, which is the arrangement

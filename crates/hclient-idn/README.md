@@ -30,6 +30,12 @@ one program converting one name — `opt-level = "z"`, fat LTO,
 |---|---|---|---|
 | `aarch64-linux-android` | 304.5 KiB | 443.5 KiB | **139.0 KiB — 31%** |
 | `x86_64-linux-android` | 334.9 KiB | 478.3 KiB | **143.3 KiB — 30%** |
+| `wasm32-unknown-unknown` | 17.4 KiB | 159.1 KiB | **141.7 KiB — 89%** |
+
+The browser row is the largest share because a wasm module has almost
+nothing else in it, and there the weight is download time. It is measured
+through the whole `wasm-pack` pipeline: the raw `.wasm` carries a section
+of descriptors that `wasm-bindgen` consumes and nothing ships.
 
 Android and Windows are the two targets that save; everywhere else this
 crate is the `idna` crate under another name.
@@ -44,10 +50,16 @@ it probably is not.
 |---|---|
 | Windows | `icuuc.dll`, linked, through `windows-sys` |
 | Android | `android.icu.text.IDNA` (ICU4J), over JNI |
-| Apple, Linux, other ELF unixes, wasm | the `idna` crate |
+| the browser | `new URL()`, whose host parsing the WHATWG standard defines as UTS 46 |
+| Apple, Linux, other ELF unixes, WASI | the `idna` crate |
 
-There is no system UTS 46 to reach for on Linux or wasm, so those take the
-bundled tables and this crate changes nothing for them. Apple is in that
+There is no UTS 46 to reach for on Linux, WASI or Apple, so those take the
+bundled tables and this crate changes nothing for them.
+
+On the browser the reverse direction is not available at all —
+`URL.hostname` always hands back the A-label and no JS API does
+ToUnicode — so `domain_to_unicode` refuses there by name. Turn on `idna`
+if you need it. Apple is in that
 row too: Foundation converts an IDN host only as a side effect of parsing
 a URL, so it does not case-fold ASCII and does not validate an ACE label
 — close enough to look right and not close enough to be it.

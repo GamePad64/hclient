@@ -126,7 +126,7 @@ windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 jni = "0.21"
 ndk-context = "0.1"
 
-# Everywhere else — Linux and the other ELF unixes, wasm, and Apple.
+# Everywhere else — Linux and the other ELF unixes, WASI, and Apple.
 # Unconditional, unlike the optional declaration at the top of this file:
 # these targets have no UTS 46 to reach for, so the bundled crate is the
 # backend with the feature and without it.
@@ -141,7 +141,26 @@ ndk-context = "0.1"
 # `aarch64-apple-darwin` become 50, because the ICU tables arrive with
 # `idna`. What it buys is that macOS answers what every other target
 # answers, with nothing of ours between the caller and the oracle.
-[target.'cfg(not(any(windows, target_os = "android")))'.dependencies]
+# The browser, and only the browser. `URL` is the whole surface: the
+# WHATWG URL Standard *defines* its host parsing as UTS 46 with named
+# parameters, which is the difference between it and Foundation — that one
+# converts as an undocumented side effect of parsing, this one is the
+# standard saying so. Measured on the differential corpus in Firefox: 37
+# of 38 rows answer what `idna` answers, against Foundation's 30 of 38.
+#
+# What it saves is the largest share this crate has anywhere, because in a
+# browser build there is almost nothing else in the module: after the full
+# `wasm-pack` pipeline, **17.4 KiB against 159.1 KiB** — 89%.
+#
+# One direction only, and that is the browser's limit rather than a
+# shortcut: `URL.hostname` always hands back the A-label and there is no
+# ToUnicode in any JS API, so `domain_to_unicode` answers
+# `NoImplementation` here. A build that needs it turns on `idna`, which is
+# what a forcing switch is for.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+web-sys = { version = "0.3", features = ["Url"] }
+
+[target.'cfg(not(any(windows, target_os = "android", all(target_arch = "wasm32", target_os = "unknown"))))'.dependencies]
 idna = { version = "1.1", default-features = false, features = [
     "std",
     "compiled_data",
@@ -149,6 +168,7 @@ idna = { version = "1.1", default-features = false, features = [
 
 [dev-dependencies]
 rstest = { workspace = true }
+
 # **The oracle, and deliberately a dev-dependency** — the same role `url`
 # plays for `hclient-proto`'s `tests/uri_resolution.rs`. The whole claim
 # of this crate is that the platform agrees with `idna`, and that
@@ -161,6 +181,20 @@ idna = { version = "1.1", default-features = false, features = [
     "std",
     "compiled_data",
 ] }
+
+# The browser corpus, `tests/web_corpus.rs` — the check the Apple backend
+# never had: Foundation passed the acceptance probe and failed eight
+# corpus rows, and nothing ran them. A backend reached through a URL
+# parser is held to the whole corpus from the day it lands.
+#
+# **Last in the file on purpose.** A `[target.….dev-dependencies]` table
+# ends `[dev-dependencies]`, so putting this above `idna` moved the oracle
+# into the wasm-only table and took it off Windows and Android — where it
+# is the only way the platform column can be compared at all. Caught by
+# `cargo clippy --target x86_64-pc-windows-msvc`, which is the check that
+# exists because those targets do not build here.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # **One feature, and it is off by default.** `idna` forces the bundled
 # crate and its Unicode tables on every target; without it each platform

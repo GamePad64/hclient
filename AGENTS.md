@@ -3493,6 +3493,60 @@ says rather than something a reader has to work out. **`ä..de` and
 `VerifyDnsLength` stay gone either way** — that was the URL validation,
 and it is not this crate's question.
 
+### The browser is the case Apple was not, and one objection nearly closed it
+
+The same rule, asked of the last candidate: `wasm32-unknown-unknown`.
+`new URL()` converts an IDN host, and it is reached exactly as `NSURL`
+was — build a URL, read the host back. **What separates them is that the
+standard says so**: the WHATWG URL Standard *defines* host parsing as
+UTS 46 with named parameters, where Foundation's conversion is an
+undocumented side effect.
+
+**Measured before anything was written**, on the same 38 rows that caught
+Foundation, in headless Firefox: **37 agree with `idna`**, against
+Foundation's 30. Of the eight rows Foundation answered as itself, the
+browser gets seven right — including all four invalid `xn--` labels and
+both case-folding rows. The one divergence is the empty name, because
+`https:///` is not a URL any engine parses, and it costs **one line**
+against Apple's sixty-five. That ratio is the rule working.
+
+**The saving is the largest this crate has anywhere**, because a wasm
+module has almost nothing else in it: **17.4 KiB against 159.1 KiB**
+through the full `wasm-pack` pipeline, 89%. Measure after
+`wasm-bindgen`: the raw `.wasm` carries a custom section of descriptors
+that the shim generator consumes and nothing ships, and it made the
+browser build look 158 KiB **larger** than the one carrying ICU. That
+number was nearly reported.
+
+**One direction only, and it is declared rather than discovered.**
+`URL.hostname` hands back the A-label whatever went in, and no JS API
+performs ToUnicode. So each backend now states `REVERSES`, the acceptance
+probe asks only the question the backend claims to answer, and
+`domain_to_unicode` refuses by name on that target — a build that needs
+it turns on `idna`. The constant is load-bearing: setting the browser's
+to `true` refuses the backend at the probe and fails 25 of 40 corpus
+rows.
+
+**And the objection that nearly ended it was right about the browser and
+did not reach this code.** *In a browser the client goes through `fetch`,
+and the browser resolves IDN itself, so this buys nothing.* True of
+`fetch`, and the conversion happens one layer earlier: `http::Uri`
+**refuses** a non-ASCII authority — measured,
+`"https://münchen.de/".parse::<http::Uri>()` is `Err(invalid uri
+character)` — and every URL a caller gives goes through
+`hclient_proto::uri::parse` in `Client`'s `effective_uri` before any
+transport exists. `Transport::execute` takes an `http::Request`, so
+`fetch` never sees the U-label. Without the conversion a browser build
+answers `NonAsciiHost` for `client.get("https://münchen.de/")`, which is
+a capability lost rather than a saving — and `config.rs` already recorded
+that, in a comment about the inconsistency this client used to have.
+
+**The check the Apple backend never had is in place from the first
+commit.** `tests/web_corpus.rs` runs the corpus in both engines on every
+push, and the corpus itself moved to `tests/shared/corpus.rs` so the host
+and browser binaries read one copy rather than two agreeing with each
+other.
+
 **The rule the owner set, and it is the one the evidence already
 supported.** This crate is a *micro-optimisation for a platform that
 carries a reliable, conformant converter*. Where the platform is

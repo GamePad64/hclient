@@ -23,10 +23,10 @@
 //! crate has — `idna`, off by default, which forces the bundled tables
 //! everywhere.
 //!
-//! Three backends, one shape: Windows' `icuuc.dll`, Android's
-//! `android.icu.text.IDNA` over JNI, and the `idna` crate, which is what
-//! the ELF unixes, wasm and Apple get because there is no UTS 46 to ask
-//! there. `lib.rs` names the selected one `platform` and
+//! Four backends, one shape: Windows' `icuuc.dll`, Android's
+//! `android.icu.text.IDNA` over JNI, the browser's own `new URL()`, and
+//! the `idna` crate, which is what the ELF unixes, WASI and Apple get
+//! because there is no UTS 46 to ask there. `lib.rs` names the selected one `platform` and
 //! nothing past that line names an operating system.
 //!
 //! # Why this crate exists, and what it is worth
@@ -128,15 +128,16 @@
 //!
 //! # Which platform answers
 //!
-//! Three backends and one module alias. `lib.rs` selects one with
+//! Four backends and one module alias. `lib.rs` selects one with
 //! `cfg_select!` and names no operating system past that line; each
-//! exports `find`, `to_ascii`, `to_unicode` and a `Handle`.
+//! exports `find`, `to_ascii`, `to_unicode`, `REVERSES` and a `Handle`.
 //!
 //! | target | backend | `unsafe` |
 //! |---|---|---|
 //! | Windows | `icuuc.dll`, linked through `windows-sys` | amendment C9 |
 //! | Android | `android.icu.text.IDNA` (ICU4J) over JNI | amendment C19 |
-//! | Apple, Linux, other ELF unixes, wasm | the `idna` crate | none |
+//! | the browser | `new URL()`, through `web-sys` | none |
+//! | Apple, Linux, other ELF unixes, WASI | the `idna` crate | none |
 //!
 //! **Windows.** `windows-sys`' `Win32_Globalization` already declares
 //! `uidna_openUTS46`, `uidna_nameToASCII_UTF8`, `uidna_nameToUnicodeUTF8`,
@@ -169,6 +170,34 @@
 //! UIDNA_NONTRANSITIONAL_TO_ASCII` — bit for bit the option word below,
 //! arrived at independently, which is the best evidence that constant
 //! will ever get.
+//!
+//! **The browser, and it is the case Apple was not.** Both are reached
+//! by building a URL and reading its host back — and that shape is what
+//! removed the Apple backend, because `NSURL` converts as an
+//! undocumented side effect of parsing and got eight corpus rows wrong.
+//! The WHATWG URL Standard instead *defines* host parsing as UTS 46 with
+//! named parameters, and the run agrees with the specification: 37 of the
+//! same 38 rows answer what `idna` answers, measured in Firefox before
+//! the backend was written, and `tests/web_corpus.rs` asks it of both
+//! engines on every push. The one row is the empty name — `https:///` is
+//! not a URL any engine parses — and it costs one line rather than
+//! Apple's sixty-five, which is the difference the rule is about.
+//!
+//! It is also the target where the tables cost most, because a wasm
+//! module has almost nothing else in it: **17.4 KiB against 159.1 KiB**
+//! through the full `wasm-pack` pipeline. Measure after `wasm-bindgen`
+//! and not before — the raw `.wasm` carries a custom section of
+//! descriptors that the shim generator consumes and nothing ships, and it
+//! made the browser build look 158 KiB *larger* than the one with ICU in
+//! it.
+//!
+//! **One direction, and it is declared rather than discovered.**
+//! `URL.hostname` hands back the A-label whatever went in, and no JS API
+//! performs ToUnicode — so `web` sets `REVERSES = false`,
+//! [`domain_to_unicode`] refuses by name on that target, and the
+//! acceptance probe asks only the question the backend claims to answer.
+//! A build that needs the reverse turns on the `idna` feature and gets
+//! the tables, which is what a forcing switch is for.
 //!
 //! **Android.** ICU4J, the same ICU the Windows backend calls, under the
 //! same option bits and the same error names — but the NDK exposes no C
@@ -279,10 +308,18 @@ mod android;
 #[cfg(idna_backend)]
 mod bundled;
 
+// The browser's `new URL()`. Gated, unlike `icu` and `android`, because
+// every line of it is a `web-sys` call: there is no platform-independent
+// half to put on a host that can run it, and the corpus that checks it
+// runs in the browser jobs.
+#[cfg(web_backend)]
+mod web;
+
 core::cfg_select! {
     idna_backend => { use bundled as platform; }
     icu_backend => { use icu as platform; }
     android_backend => { use android as platform; }
+    web_backend => { use web as platform; }
 }
 
 /// This crate's own layer, shared by every backend and reached through
@@ -433,7 +470,18 @@ fn selected() -> Option<&'static platform::Handle> {
                 // backend was written under, since its device run came
                 // months after its code.
                 accepts(|input| platform::to_ascii(h, input))
-                    && accepts_back(|input| platform::to_unicode(h, input))
+                    // **Asked only of a backend that claims a reverse.**
+                    // `platform::REVERSES` is the claim, and a `false`
+                    // there is narrowness rather than breakage: the
+                    // browser has no ToUnicode in any API, so probing it
+                    // would refuse a backend whose forward direction is
+                    // the one that decides which host is contacted.
+                    // `domain_to_unicode` reads the same constant and
+                    // answers `NoImplementation`, so the narrowness
+                    // reaches a caller as a refusal and never as a wrong
+                    // name.
+                    && (!platform::REVERSES
+                        || accepts_back(|input| platform::to_unicode(h, input)))
             })
         })
         .as_ref()
@@ -496,6 +544,17 @@ pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 ///
 /// As [`domain_to_ascii`].
 pub fn domain_to_unicode(domain: &str) -> Result<Cow<'_, str>, IdnError> {
+    // A backend may be forward-only, and one is: `URL.hostname` hands
+    // back the A-label whatever went in, and no JS API performs
+    // ToUnicode. Refusing by name is the honest answer — a punycode
+    // decoder of ours would be the crate reimplementing what it exists
+    // not to reimplement, and a build that needs the reverse turns on the
+    // `idna` feature and gets the tables.
+    if !platform::REVERSES {
+        return Err(IdnError::NoImplementation {
+            domain: domain.to_owned(),
+        });
+    }
     over(domain, platform::to_unicode)
 }
 

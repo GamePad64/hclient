@@ -920,6 +920,31 @@ test-idn:
       fi
     done
 
+# The corpus in a browser — the check the Apple backend never had.
+#
+# `wasm32-unknown-unknown` has a backend of its own now: the browser's
+# `new URL()`, which the WHATWG URL Standard *defines* as UTS 46, unlike
+# Foundation's undocumented conversion. That difference is a claim and
+# this is what tests it, on the same 40 rows that caught Foundation — so
+# the backend is judged row by row from the day it lands rather than by
+# the two-name acceptance probe, which Foundation passed.
+#
+# Fails closed on a run that reported nothing: `wasm-pack` exits zero for
+# a binary with no tests in it, and this file's whole subject is a check
+# that cannot fail.
+test-idn-browser browser="firefox":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd crates/hclient-idn
+    rc=0
+    out="$(wasm-pack test --headless --{{browser}} 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    [ "$rc" -eq 0 ] || exit "$rc"
+    if ! printf '%s\n' "$out" | grep -qE '[0-9]+ passed'; then
+      echo "::error::wasm-pack reported no test result for hclient-idn — the browser run did not happen"
+      exit 1
+    fi
+
 # clippy on hclient-idn's two feature settings
 lint-idn:
     cargo clippy -p hclient-idn --all-targets -- -D warnings
@@ -1822,6 +1847,21 @@ graph-idn-backend:
       ./scripts/tree-guard.sh present '^idna ' \
         "hclient-idn for iOS has no idna — Apple takes the bundled tables, because Foundation is a URL parser rather than a UTS 46 implementation" \
         -- -p hclient-idn --target aarch64-apple-ios
+      # **The browser, where the tables cost the most.** A wasm module has
+      # almost nothing else in it, so the ICU data is most of the
+      # download: measured through the full `wasm-pack` pipeline, 17.4 KiB
+      # against 159.1 KiB. `wasm32-wasip2` is deliberately not here — it
+      # has no URL parser and keeps the tables, which says the
+      # predicate is about the browser rather than about wasm.
+      ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
+        "the default hclient-idn build for the browser pulls in idna/ICU — the URL parser is the backend there, and the tables are most of a wasm module" \
+        -- -p hclient-idn --target wasm32-unknown-unknown
+      ./scripts/tree-guard.sh present '^web-sys ' \
+        "hclient-idn for the browser links no web-sys, so the URL parser is unreachable and the backend is not compiled in at all" \
+        -- -p hclient-idn --target wasm32-unknown-unknown
+      ./scripts/tree-guard.sh present '^idna ' \
+        "hclient-idn for wasip2 has no idna — WASI has no URL to ask, so it keeps the bundled tables" \
+        -- -p hclient-idn --target wasm32-wasip2
     else
       ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
         "the default hclient-idn build on this target pulls in idna/ICU — the whole point of a platform backend is that the OS supplies the tables" \
