@@ -141,33 +141,45 @@ pub(crate) fn find() -> Option<Foundation> {
     Some(Foundation)
 }
 
-/// The A-label form of `domain`, or `None` if Foundation would not parse
-/// it — which, for the reasons in the module docs, is the only failure
-/// signal there is.
+/// The A-label form of `domain`.
+///
+/// **Three steps, and only the middle one is Foundation's.** `NSURL` is a
+/// URL parser rather than a UTS 46 implementation, so it does two things
+/// ICU does and one it does not: it maps and converts a Unicode host, it
+/// does *not* case-fold ASCII, and it does *not* validate an ACE label —
+/// `xn--zzzz.test` comes back unchanged where `idna` refuses it. Measured
+/// on CI, eight rows of the differential corpus, the day the layer that
+/// had been covering for it was deleted.
+///
+/// So the case folding and the ACE check are done here, out of
+/// [`crate::ace`], and the conversion is asked of Foundation. The two
+/// ICU backends need neither — they are UTS 46 implementations and
+/// answer for themselves — which is why this lives in the backend that
+/// falls short rather than in a layer over all of them.
 pub(crate) fn to_ascii(_f: &Foundation, domain: &str) -> Option<String> {
     // Consequence 1: before the parser, never after. A denied byte here
     // is one Foundation would consume as a delimiter, silently changing
-    // which host comes back. `crate::policy` scans too, and gets here
-    // first on every path but the acceptance gate's — which calls this
-    // function directly.
+    // which host comes back. `crate::domain_to_ascii` scans the *answer*
+    // for every backend alike; this scans the input, for this parser.
     if domain.bytes().any(crate::is_forbidden_domain_byte) {
         return None;
     }
-    // Consequence 2: the scheme is ours. The trailing slash makes the
-    // authority unambiguous even for an empty path.
-    let text = NSString::from_str(&format!("https://{domain}/"));
-    let url = NSURL::URLWithString(&text)?;
-    let host = url.host()?;
-    let host = host.to_string();
-    // Foundation is a URL parser, so a host it did not like can come back
-    // as something that is not a host at all. The output must still be
-    // ASCII and must still be free of denied bytes; `to_string` on an
-    // `NSString` is lossless, so anything non-ASCII here means the
-    // conversion did not happen.
-    if !host.is_ascii() || host.bytes().any(crate::is_forbidden_domain_byte) {
-        return None;
-    }
-    Some(host)
+
+    // Everything but the conversion is `crate::ace`'s, and the
+    // conversion is Foundation's. The sequence lives there so that it can
+    // be run on a host with no Foundation — with `idna` as the stand-in —
+    // which is the check that would have caught the eight corpus rows
+    // this repairs.
+    crate::ace::to_ascii_over(
+        |unicode| {
+            // Consequence 2: the scheme is ours. The trailing slash makes
+            // the authority unambiguous even for an empty path.
+            let text = NSString::from_str(&format!("https://{unicode}/"));
+            let url = NSURL::URLWithString(&text)?;
+            Some(url.host()?.to_string())
+        },
+        domain,
+    )
 }
 
 /// The U-label form, through `NSURLComponents::host`.

@@ -3423,6 +3423,71 @@ so the acceptance probe runs in **both** directions and a build where
 that getter is not what Apple documents answers `NoImplementation`
 instead of a plausible wrong name.
 
+### Deleting the policy layer broke two backends, and only CI could see it
+
+The layer went because it answered a question that was not this crate's —
+*may this host be contacted* — and that was right. What went with it was
+not: `AsciiDenyList::URL`, applied by the bundled backend alone, and the
+half of UTS 46 that `NSURL` does not do. Neither is visible from Linux,
+where the backend **is** `idna` and the whole class disappears, so both
+shipped and both were found by the first CI run over seventeen commits.
+
+**The deny list is one line and it is `idna`'s, not a policy.** ICU and
+Foundation take no such list, so `domain_to_ascii("a<b.com")` began
+erroring on Linux and answering on Windows and macOS. It is applied once
+now, in `domain_to_ascii`, **on the converted name** — the ordering the
+fuzzer established, since `">\u{338}"` composes to `≯` and a check before
+mapping refuses a character UTS 46 removes. `bundled` drops to
+`AsciiDenyList::EMPTY` so there is exactly one statement of it: with two,
+removing the shared one left Linux green, and a mutation nothing can kill
+on the only platform this workspace runs is not a check.
+
+**The Apple half was eight rows, and the cause is that `NSURL` is a URL
+parser.** It maps and converts a Unicode host and then stops: it does not
+case-fold ASCII (`EXAMPLE.COM`, `XN--MNCHEN-3YA.DE` came back as written)
+and it does not validate an ACE label (`xn--zzzz.test`, `xn--a.de`,
+`xn--.de`, `xn--a-.de` came back unchanged where `idna` refuses them).
+Two more are the mirror: `""` and `a"b.com` are legal names UTS 46 leaves
+alone and are not URLs a parser will take, so Foundation refused what
+`idna` answers.
+
+**So the sequence came back, and where it lives is the whole of what
+changed.** `hclient-idn::ace` is punycode plus the two ACE rules, and
+`to_ascii_over(convert, domain)` takes the platform's conversion as a
+parameter: fold, decode the ACE labels, skip the parser entirely for an
+all-ASCII name, convert, then check the answer is about the name that was
+given. `apple.rs` is the one caller and passes `NSURL`; the two ICU
+backends call none of it, because they are UTS 46 implementations and
+answer for themselves. That is the same repair the deleted layer made and
+it is **not** the same shape: a layer over every backend, holding rules
+two of them did not need and one URL-validation rule nobody did, against
+a function owned by the backend that falls short.
+
+**The module is unconditional, and that is the point rather than an
+oversight.** Every line is integer arithmetic over `[a-z0-9-]` and string
+splitting, so compiling it on every target puts its tests on a host that
+can run them — `to_ascii_over` with `idna` as the conversion is the Apple
+path minus Apple, and the eight rows are asserted there. Two mutations
+kill it locally: dropping the fold, and dropping the ACE decode. The cost
+is that a genuinely unused item in the module is caught on macOS alone,
+which is `icu/mod.rs`'s trade made a second time and paid knowingly: the
+rows became visible only on a runner nobody here has, and a test that
+runs beats a lint that fires.
+
+**What is deliberately not back**: the empty-label rule and
+`VerifyDnsLength`. `ä..de` converts under `idna` and must convert here —
+that was the URL validation, and it stays gone.
+
+**And the two lints beneath all of it had never run.** `lint-idn` sits
+after `test-idn` in the same recipe, so while the tests failed the lints
+were never reached: `Icu::name` had outlived `Handle::name`, and
+`icu/mod.rs` was dead code on every backend that does not speak ICU4C.
+Both are checkable from here — `cargo clippy -p hclient-idn --target <t>
+--all-targets -- -D warnings` on the three platform triples — and neither
+was checked. A recipe that stops at the first failure hides every later
+one, which is this file's *a check that cannot fail* with the subject
+changed to *a check that does not run*.
+
 ### `hclient-idn` leaves the shared version too, and the gates derive their own lists
 
 It is published like `system-resolver`: its own version, its own

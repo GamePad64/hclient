@@ -260,6 +260,12 @@ use std::borrow::Cow;
 // an arm loses all of it. There is no `_` arm because `build.rs` emits
 // exactly one of these four and a fifth backend must be a compile error
 // here rather than a silent fall-through.
+// Unconditional for the reason `icu` and `android` are: every line of it
+// is integer arithmetic and string splitting, so compiling it everywhere
+// is what puts its tests on a host that can run them. Only `apple` reads
+// it — the two ICU backends validate an ACE label themselves.
+mod ace;
+
 // Unconditional, like `android`: it holds ICU's vocabulary — the option
 // bits, the error mask, the acceptance rule — which both ICU backends
 // share, and only its Windows binding is gated inside.

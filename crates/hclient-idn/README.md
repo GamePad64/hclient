@@ -40,7 +40,7 @@ it probably is not.
 | target | backend |
 |---|---|
 | Windows | `icuuc.dll`, linked, through `windows-sys` |
-| Apple | Foundation, through `NSURL`/`NSURLComponents` |
+| Apple | Foundation, through `NSURL`/`NSURLComponents`, with the case folding and ACE validation a URL parser does not do |
 | Android | `android.icu.text.IDNA` (ICU4J), over JNI |
 | Linux, other ELF unixes, wasm | the `idna` crate |
 
