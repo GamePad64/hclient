@@ -3372,7 +3372,7 @@ Measured, `cargo tree -e normal`, unique crates:
 
 **Four rows fork, and the browser is the one that reads wrong.** 25
 against 50 is the smallest ratio here and the largest saving the crate
-has anywhere — 17.4 KiB against 159.1 KiB — because what a wasm module
+has anywhere — 20.7 KiB against 143.0 KiB — because what a wasm module
 weighs is data rather than dependencies, and a crate count cannot see
 that. Linux is the row where the feature buys nothing, which is the
 table's point and is unchanged.
@@ -3485,7 +3485,7 @@ implementation**, and `NSURL` is a URL parser that happens to call ICU.
 So Apple took the bundled tables for one commit, and `apple.rs`,
 `ace.rs` and `objc2-foundation` went with it — **and came back one
 question later**, when the browser turned out to be the same shape and
-worth 89%. What this paragraph gets right is Foundation; what it gets
+worth 86%. What this paragraph gets right is Foundation; what it gets
 wrong is the conclusion drawn from it, and the section below is that.
 
 **What it costs is measured and it is the crate's own number**: 13 crates
@@ -3526,7 +3526,7 @@ glibc's `AI_IDN` again, one platform over.
 
 **So the seam change would buy the browser 17 KiB and nobody else**,
 because the browser is the only host that both does the conversion and
-will accept a U-label — and it already has a backend at 17.4 KiB. What it
+will accept a U-label — and it already has a backend at 20.7 KiB. What it
 would cost is `http::Request` itself: `uri` is an `http::Uri`, the type
 sits in the public API of ten crates here, and everything that reads a
 host reads it — cookie domain matching, redirect origins, the cache key,
@@ -3572,20 +3572,21 @@ conversion it performed correctly.
 **And Apple is back with it.** The backend was removed on the rule *the
 OS must carry a conformant converter*, which Foundation is not — and the
 rule was right about Foundation and wrong about the conclusion, because
-the same is true of the browser and the browser is worth 89%. What the
+the same is true of the browser and the browser is worth 86%. What the
 two share is that they are reached through a URL parser; what `ace.rs`
 supplies is the case folding and the ACE validation such a parser leaves
-out. The difference is scale, and it is measured: Foundation gets eight
-corpus rows wrong and needs all of that file, the browser gets one wrong
-and needs a single line, because WHATWG defines its host parsing as
-UTS 46 and Apple documents nothing.
+out.
+
+**The difference was said to be scale and there is none**, which is the
+next section's finding and is corrected here rather than left standing:
+the browser needed `ace.rs` in full too, and only Firefox hid it.
 
 So the rule that decides a backend is neither *the OS ships something*
 nor *the OS carries a conformant converter*. It is **the OS carries the
 tables**, and a backend supplies whatever of UTS 46 the platform's entry
-point leaves out — nothing for `icuuc.dll` and ICU4J, sixty-five lines
-for `NSURL`, one for `new URL()`. Five backends, and the ICU tables stay
-off four targets.
+point leaves out — nothing for `icuuc.dll` and ICU4J, and for a URL
+parser the whole ASCII half, whichever parser it is. Five backends, and
+the ICU tables stay off four targets.
 
 ### The browser is the case Apple was not, and one objection nearly closed it
 
@@ -3598,15 +3599,53 @@ undocumented side effect.
 
 **Measured before anything was written**, on the same 38 rows that caught
 Foundation, in headless Firefox: **37 agree with `idna`**, against
-Foundation's 30. Of the eight rows Foundation answered as itself, the
-browser gets seven right — including all four invalid `xn--` labels and
+Foundation's 30. Of the eight rows Foundation answered as itself, that
+engine gets seven right — including all four invalid `xn--` labels and
 both case-folding rows. The one divergence is the empty name, because
-`https:///` is not a URL any engine parses, and it costs **one line**
-against Apple's sixty-five. That ratio is the rule working.
+`https:///` is not a URL any engine parses, and it cost **one line**
+against Apple's sixty-five.
+
+**That ratio was read as the rule working and it was one engine's.**
+`browser (chrome)` is red on the push that landed the backend, and
+Chrome answers **six** of the same rows differently: it does not validate
+an ACE label at all, so `xn--zzzz.test`, `xn--a.de`, `xn--.de` and
+`xn--a-.de` come back unchanged where Firefox refuses them, and it
+percent-encodes `a b.com` and `a\u{a0}b.de` rather than refusing them.
+So the browser backend applies `ace.rs` **in full**, exactly as Apple
+does, and *sixty-five lines against one* was never a fact about a URL
+parser — it was a fact about Firefox.
+
+**What survives is the rule and not the arithmetic**, which is worth
+separating because the arithmetic is what made the case: the OS carries
+the tables and the backend supplies the rest, and *the rest* is the
+engine's business rather than the standard's. The half WHATWG defines is
+the half that needs the tables — mapping, punycode, CheckBidi, ContextJ,
+non-transitional processing — and every engine gets that right. The ASCII
+half is where they differ, and it is free to supply, because
+`ace::to_ascii_over` answers an all-ASCII name without asking the parser
+anything at all.
+
+**The defect is a measurement generalised past its sample**, which is a
+shape this file records from every other direction and not yet this one.
+Nothing was stale and nothing drifted: 37 of 38 was true in Firefox on
+the day, is true now, and was written down as *the browser*. The check
+that caught it existed from the first commit and ran both engines on
+every push — `tests/web_corpus.rs` — so the cost was one red job rather
+than a host reachable in one browser and refused in another. Its
+divergence list is now a **union over engines**, annotated with which
+engine each row belongs to, and no single run can exhaust it; what
+replaces the closed-set assertion is that every divergence a run finds
+must be *repaired*, so the list can record where an engine falls short
+and never where this crate does.
 
 **The saving is the largest this crate has anywhere**, because a wasm
-module has almost nothing else in it: **17.4 KiB against 159.1 KiB**
-through the full `wasm-pack` pipeline, 89%. Measure after
+module has almost nothing else in it: **20.7 KiB against 143.0 KiB**
+through the full `wasm-pack` pipeline, 86%. It read 17.4 against 159.1
+and both numbers moved at once — `ace.rs` is 5.7 KiB of the new figure,
+measured against the same program calling the parser directly at 15.0
+KiB, and the rest is a pipeline nothing pins: `wasm-opt`'s flags, the
+toolchain, `idna`'s own release. **The share is the durable figure**, and
+it moved by three points. Measure after
 `wasm-bindgen`: the raw `.wasm` carries a custom section of descriptors
 that the shim generator consumes and nothing ships, and it made the
 browser build look 158 KiB **larger** than the one carrying ICU. That

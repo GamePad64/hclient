@@ -180,25 +180,28 @@
 //! arrived at independently, which is the best evidence that constant
 //! will ever get.
 //!
-//! **The browser, and it is the case Apple was not.** Both are reached
-//! by building a URL and reading its host back — and that shape is what
-//! removed the Apple backend, because `NSURL` converts as an
-//! undocumented side effect of parsing and got eight corpus rows wrong.
-//! The WHATWG URL Standard instead *defines* host parsing as UTS 46 with
-//! named parameters, and the run agrees with the specification: 37 of the
-//! same 38 rows answer what `idna` answers, measured in Firefox before
-//! the backend was written, and `tests/web_corpus.rs` asks it of both
-//! engines on every push. The one row is the empty name — `https:///` is
-//! not a URL any engine parses — and it costs one line rather than
-//! Apple's sixty-five, which is the difference the rule is about.
+//! **The browser, reached the same way and short in the same place.**
+//! `NSURL` converts as an undocumented side effect of parsing; the WHATWG
+//! URL Standard *defines* host parsing as UTS 46 with named parameters,
+//! so an engine gets the half that needs the tables right on purpose.
+//! What it leaves out is the ASCII half, and **how much of it is the
+//! engine's business rather than the browser's**: measured in headless
+//! Firefox, 37 of 38 corpus rows answer what `idna` answers and the one
+//! that does not is the empty name; measured in Chrome, six diverge,
+//! four because `new URL()` does not validate an ACE label there. So this
+//! backend applies `ace.rs` in full, exactly as `apple.rs` does, and the
+//! sentence that had it costing one line against Apple's sixty-five went
+//! with the number behind it. `tests/web_corpus.rs` asks both engines on
+//! every push, which is what turned a Firefox measurement generalised to
+//! *the browser* into a red job rather than a wrong host.
 //!
 //! It is also the target where the tables cost most, because a wasm
-//! module has almost nothing else in it: **17.4 KiB against 159.1 KiB**
-//! through the full `wasm-pack` pipeline. Measure after `wasm-bindgen`
-//! and not before — the raw `.wasm` carries a custom section of
-//! descriptors that the shim generator consumes and nothing ships, and it
-//! made the browser build look 158 KiB *larger* than the one with ICU in
-//! it.
+//! module has almost nothing else in it: **20.7 KiB against 143.0 KiB**
+//! through the full `wasm-pack` pipeline, a saving of 86%. Measure after
+//! `wasm-bindgen` and not before — the raw `.wasm` carries a custom
+//! section of descriptors that the shim generator consumes and nothing
+//! ships, and it made the browser build look 158 KiB *larger* than the
+//! one with ICU in it.
 //!
 //! **One direction, and it is declared rather than discovered.**
 //! `URL.hostname` hands back the A-label whatever went in, and no JS API
@@ -307,8 +310,9 @@ use std::borrow::Cow;
 // Unconditional for the reason `icu` and `android` are: every line of it
 // is integer arithmetic and string splitting, so compiling it everywhere
 // is what puts its tests on a host that can run them. Two backends read
-// it — `apple` in full, `web` for one line — and both are reached through
-// a URL parser rather than a UTS 46 entry point.
+// it — `apple` and `web`, both in full — and both are reached through a
+// URL parser rather than a UTS 46 entry point, which is the whole of what
+// they have in common and the whole of why this module exists.
 mod ace;
 
 // Unconditional, like `android`: it holds ICU's vocabulary — the option
@@ -323,13 +327,17 @@ mod android;
 #[cfg(idna_backend)]
 mod bundled;
 
-// The browser's `new URL()`. Gated, unlike `icu` and `android`, because
-// every line of it is a `web-sys` call: there is no platform-independent
-// half to put on a host that can run it, and the corpus that checks it
-// runs in the browser jobs.
+// Foundation's `NSURL`. Gated, unlike `icu` and `android`, because every
+// line of it is an `objc2-foundation` call: there is no
+// platform-independent half to put on a host that can run it, and what
+// checks it is the `test (macos-latest)` leg.
 #[cfg(apple_backend)]
 mod apple;
 
+// The browser's `new URL()`, gated for the same reason: every line is a
+// `wasm-bindgen` import, and the corpus that checks it runs in the two
+// `browser` jobs — both of them, because the engines do not agree about
+// how much of UTS 46 a URL parser owes.
 #[cfg(web_backend)]
 mod web;
 
@@ -341,14 +349,17 @@ core::cfg_select! {
     web_backend => { use web as platform; }
 }
 
-/// This crate's own layer, shared by every backend and reached through
-/// all of them — see the module docs for what it takes over and why.
+/// The one error type, in the file this workspace keeps error types in.
 ///
-/// Compiled on every target, including the ones with no platform backend
-/// at all, and reachable there through [`testing::policy_over`]: the
-/// layer is platform-independent, everything in it is decided against
-/// `idna` (a dev-dependency everywhere), and gating it away on Linux
-/// would take its tests and its fuzz target with it — on the one runner
+/// **This comment is the second half of a deletion.** The doc that stood
+/// here described the policy layer — *"reachable through
+/// `testing::policy_over`"* — and that layer was removed a week before,
+/// taking the function it named with it. Nothing broke, because a `///`
+/// on a `mod` declaration is prose and the compiler reads none of it, and
+/// `just docs` saw no unresolved link because the path was in backticks
+/// rather than brackets. It is this file's own recurring finding, wearing
+/// the smallest possible clothes: a claim outlives the thing it describes
+/// unless something fails when it stops being true.
 mod error;
 
 pub use error::IdnError;
@@ -599,11 +610,13 @@ pub mod testing {
     /// The browser engine's own answer, with nothing of this crate's
     /// around it.
     ///
-    /// `tests/web_corpus.rs` makes two claims that differ by one row —
-    /// what the engine answers, and what a caller gets — and the
-    /// difference between them is `web::to_ascii`'s empty-name line. A
-    /// second `URL` binding in the test would have measured a copy of
-    /// the backend rather than the backend.
+    /// `tests/web_corpus.rs` makes two claims — what the engine answers,
+    /// and what a caller gets — and the gap between them is [`super::ace`].
+    /// Measuring it is the point rather than a diagnostic: the gap is one
+    /// row in Firefox and six in Chrome, so a backend written against
+    /// either number alone is wrong in the other engine. A second `URL`
+    /// binding in the test would have measured a copy of the backend
+    /// rather than the backend.
     #[cfg(web_backend)]
     #[must_use]
     pub fn engine(domain: &str) -> Option<String> {

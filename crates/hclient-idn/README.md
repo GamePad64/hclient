@@ -32,7 +32,7 @@ one program converting one name — `opt-level = "z"`, fat LTO,
 |---|---|---|---|
 | `aarch64-linux-android` | 304.5 KiB | 443.5 KiB | **139.0 KiB — 31%** |
 | `x86_64-linux-android` | 334.9 KiB | 478.3 KiB | **143.3 KiB — 30%** |
-| `wasm32-unknown-unknown` | 17.4 KiB | 159.1 KiB | **141.7 KiB — 89%** |
+| `wasm32-unknown-unknown` | 20.7 KiB | 143.0 KiB | **122.3 KiB — 86%** |
 
 The browser row is the largest share because a wasm module has almost
 nothing else in it, and there the weight is download time. It is measured

@@ -1881,8 +1881,8 @@ graph-idn-backend:
         -- -p hclient-idn --target aarch64-apple-ios
       # **The browser, where the tables cost the most.** A wasm module has
       # almost nothing else in it, so the ICU data is most of the
-      # download: measured through the full `wasm-pack` pipeline, 17.4 KiB
-      # against 159.1 KiB. `wasm32-wasip2` is deliberately not here — it
+      # download: measured through the full `wasm-pack` pipeline, 20.7 KiB
+      # against 143.0 KiB. `wasm32-wasip2` is deliberately not here — it
       # has no URL parser and keeps the tables, which says the
       # predicate is about the browser rather than about wasm.
       ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
