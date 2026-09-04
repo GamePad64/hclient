@@ -26,7 +26,7 @@ edition.workspace = true
 # Measured rather than picked: 1.94 rejects `core::cfg_select!` as an
 # unstable library feature and 1.95 accepts it, so that macro is the
 # single binding constraint — every dependency's own floor is below it
-# (`thiserror` 1.31, `windows-sys` 1.71, `objc2-foundation` 1.71, `idna`
+# (`thiserror` 1.31, `windows-sys` 1.71, `jni` 1.73, `idna`
 # 1.57), and edition 2024's 1.85 is lower still. On 1.95.0 the crate
 # builds `--all-targets` and passes its tests.
 #
@@ -65,9 +65,9 @@ thiserror = { workspace = true }
 # reach for on those, and `build.rs` picks `idna_backend` for them either
 # way.
 #
-# The consequence worth knowing: on Apple, Windows and Android the feature
-# is the only thing that pulls the Unicode tables in, and keeping them off
-# those three is what this crate is for.
+# The consequence worth knowing: on Windows and Android the feature is the
+# only thing that pulls the Unicode tables in, and keeping them off those
+# two is what this crate is for.
 #
 # `default-features = false` plus the two features named explicitly is
 # copied from `hclient-proto`'s manifest for the reason it gives there: a
@@ -82,8 +82,8 @@ features = ["std", "compiled_data"]
 # The platform backends are target-scoped and **not optional**, which is
 # what changed when three features became one. There is no longer a switch
 # that could turn one off on the target that needs it: with `idna` on, the
-# backend is `idna` everywhere and these sit unused in a Windows or Apple
-# graph, which costs a manifest line and no code.
+# backend is `idna` everywhere and these sit unused in a Windows or
+# Android graph, which costs a manifest line and no code.
 
 # Windows: `icuuc.dll` is linked, not resolved, because its ICU is built
 # with `U_DISABLE_RENAMING` and the exports are unsuffixed. `windows-sys`
@@ -113,23 +113,6 @@ features = ["std", "compiled_data"]
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 
-# Apple: Foundation, which is part of the OS and linked, so it meets the
-# same "static, OS-versioned ABI" rule Windows does — by a different
-# route, since the entry point is `NSURL` rather than `uidna_*`.
-#
-# **This is the only platform backend that needs no `unsafe` at all**, and
-# therefore no spec amendment: every `objc2-foundation` call in
-# `src/apple.rs` is a safe function, measured by a draft that wrapped them
-# and drew ten `unnecessary unsafe block` warnings. `objc2` encodes
-# message sends, retain/release and nullability in its types, so what is
-# left is ordinary Rust over `Option`.
-[target.'cfg(target_vendor = "apple")'.dependencies]
-objc2-foundation = { version = "0.3", default-features = false, features = [
-    "std",
-    "NSString",
-    "NSURL",
-] }
-
 # Android reaches UTS 46 through the JVM, because that is where Android
 # keeps it: `android.icu.text.IDNA` is ICU4J, shipped with the platform
 # since API 24, and the NDK exposes no C entry point for it. `jni` +
@@ -143,11 +126,22 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 jni = "0.21"
 ndk-context = "0.1"
 
-# Everywhere else — Linux and the other ELF unixes, wasm. Unconditional,
-# unlike the optional declaration at the top of this file: these targets
-# have no system UTS 46, so the bundled crate is the backend with the
-# feature and without it.
-[target.'cfg(not(any(windows, target_vendor = "apple", target_os = "android")))'.dependencies]
+# Everywhere else — Linux and the other ELF unixes, wasm, and Apple.
+# Unconditional, unlike the optional declaration at the top of this file:
+# these targets have no UTS 46 to reach for, so the bundled crate is the
+# backend with the feature and without it.
+#
+# **Apple is in this row and had a backend of its own until it was
+# measured.** Foundation is reached through `NSURL`, a URL parser: it does
+# not case-fold ASCII and it does not validate an ACE label, so eight rows
+# of the differential corpus came back as themselves. Closing that took a
+# punycode decoder and a conversion sequence written here — a
+# reimplementation of the thing this crate exists to avoid
+# reimplementing. What it cost to stop is the honest number: 13 crates on
+# `aarch64-apple-darwin` become 50, because the ICU tables arrive with
+# `idna`. What it buys is that macOS answers what every other target
+# answers, with nothing of ours between the caller and the oracle.
+[target.'cfg(not(any(windows, target_os = "android")))'.dependencies]
 idna = { version = "1.1", default-features = false, features = [
     "std",
     "compiled_data",
