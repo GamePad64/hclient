@@ -881,10 +881,20 @@ rather than a design:
 
   | build of `hclient-proto` | crates | what supplies UTS 46 |
   |---|---|---|
-  | default (`idn`), x86-64 Linux | **41** | `idna` + the ICU data crates |
-  | default (`idn`), `--target x86_64-pc-windows-msvc` | **17** | `icuuc.dll`, through `windows-sys` |
-  | default (`idn`), `--target aarch64-apple-darwin` | **19** | Foundation, through `objc2-foundation` |
-  | `--no-default-features` | **14** | nothing — `NonAsciiHost` |
+  | default (`idn`), x86-64 Linux | **55** | `idna` + the ICU data crates |
+  | default (`idn`), `--target x86_64-pc-windows-msvc` | **20** | `icuuc.dll`, through `windows-sys` |
+  | default (`idn`), `--target aarch64-apple-darwin` | **55** | `idna`, the same as Linux |
+  | `--no-default-features` | **16** | nothing — `NonAsciiHost` |
+
+  **The Apple row moved for a reason of this workspace's own and the rest
+  moved with the graph.** It read **19** and `Foundation, through
+  objc2-foundation` until the differential corpus was run against that
+  backend: `NSURL` converts an IDN host as a side effect of parsing a URL,
+  so it does not case-fold ASCII and does not validate an ACE label, and
+  eight rows came back as themselves. Apple takes the bundled tables now,
+  which is what the row costs. Windows is the only target left where the
+  saving is real, and Android — not in this table, because
+  `hclient-proto` is not built for it here — is the other.
 
   The Linux row was the old **36** plus `hclient-idn` itself and nothing
   else: `thiserror` was already there, and no new Unicode crate arrives.
@@ -3321,20 +3331,25 @@ GitHub-hosted runner of another version on another architecture. What it
 establishes is that the suite completes on a Mac at all, which nothing
 had shown before.
 
-### `hclient-idn` has four backends, two functions and one feature
+### `hclient-idn` had four backends, two functions and one feature
 
 Android joined, `foundation.rs` became `apple.rs`, and the four features
 became one. The shape that came out is worth more than any of the three
-changes.
+changes — and it is three backends now: Apple left, for the reason the
+section below it gives. What is recorded here is what happened and why
+the shape is the shape; the counts and the Apple row are corrected in
+place.
 
 **One feature, `idna`, off by default, and it *forces* rather than
 selects.** With it on, every target answers through the bundled crate and
 its Unicode tables; with it off, each platform answers from what it
-already carries — Foundation on Apple, `icuuc.dll` on Windows,
-`android.icu.text.IDNA` on Android, and the bundled crate on the ELF
-unixes and wasm, because there is nothing else there to ask. Linux takes
-`idna` either way, which is why the switch is a forcing one: on the one
-target where the answer does not change, the feature buys nothing.
+already carries — `icuuc.dll` on Windows, `android.icu.text.IDNA` on
+Android, and the bundled crate on the ELF unixes, wasm and Apple, because
+there is no UTS 46 implementation there to ask. Linux takes `idna` either
+way, which is why the switch is a forcing one: on a target where the
+answer does not change, the feature buys nothing. (Apple was in the first
+list until the corpus was run against Foundation; it is in the second
+now, and the feature buys nothing there either.)
 
 It replaced `platform`/`bundled`/`system-icu`/`foundation`, whose
 combinations could select two backends at once or none — `build.rs`
@@ -3349,10 +3364,15 @@ Measured, `cargo tree -e normal`, unique crates:
 
 | target | without `idna` | with |
 |---|---|---|
-| Linux | 33 | 33 |
-| Windows | **9** | 35 |
-| Apple | **11** | 37 |
-| Android | **21** | 46 |
+| Linux | 46 | 46 |
+| Windows | **11** | 48 |
+| Apple | 46 | 46 |
+| Android | **24** | 59 |
+
+Re-measured after Apple left, and its row is the change: **11 and 37**
+became 46 and 46, which is the ICU tables arriving. The two rows that
+still fork are the two targets that carry a UTS 46 implementation of
+their own.
 
 **Android reaches UTS 46 through the JVM, and the reason it is worth two
 crates is the twenty-five it keeps out.** `android.icu.text.IDNA` is
@@ -3451,32 +3471,33 @@ Two more are the mirror: `""` and `a"b.com` are legal names UTS 46 leaves
 alone and are not URLs a parser will take, so Foundation refused what
 `idna` answers.
 
-**So the sequence came back, and where it lives is the whole of what
-changed.** `hclient-idn::ace` is punycode plus the two ACE rules, and
-`to_ascii_over(convert, domain)` takes the platform's conversion as a
-parameter: fold, decode the ACE labels, skip the parser entirely for an
-all-ASCII name, convert, then check the answer is about the name that was
-given. `apple.rs` is the one caller and passes `NSURL`; the two ICU
-backends call none of it, because they are UTS 46 implementations and
-answer for themselves. That is the same repair the deleted layer made and
-it is **not** the same shape: a layer over every backend, holding rules
-two of them did not need and one URL-validation rule nobody did, against
-a function owned by the backend that falls short.
+**The sequence came back for one commit and then Apple left instead**,
+and the second decision is the one to keep. Closing those eight rows took
+a punycode decoder and a conversion sequence — fold, decode the ACE
+labels, skip the parser for an all-ASCII name, convert, check the answer
+is about the name that was given — which is this crate reimplementing the
+thing it exists to avoid reimplementing. The rule that decides it is
+narrower than *the OS ships something*: it is **the OS carries a UTS 46
+implementation**, and `NSURL` is a URL parser that happens to call ICU.
+So Apple takes the bundled tables, like Linux and wasm, and `apple.rs`,
+`ace.rs` and `objc2-foundation` are gone.
 
-**The module is unconditional, and that is the point rather than an
-oversight.** Every line is integer arithmetic over `[a-z0-9-]` and string
-splitting, so compiling it on every target puts its tests on a host that
-can run them — `to_ascii_over` with `idna` as the conversion is the Apple
-path minus Apple, and the eight rows are asserted there. Two mutations
-kill it locally: dropping the fold, and dropping the ACE decode. The cost
-is that a genuinely unused item in the module is caught on macOS alone,
-which is `icu/mod.rs`'s trade made a second time and paid knowingly: the
-rows became visible only on a runner nobody here has, and a test that
-runs beats a lint that fires.
+**What it costs is measured and it is the crate's own number**: 11 crates
+on `aarch64-apple-darwin` become 46, because the ICU tables arrive with
+`idna`. Android and Windows are where this crate now earns its keep;
+everywhere else it is `idna` under another name, which is what the README
+says rather than something a reader has to work out. **`ä..de` and
+`VerifyDnsLength` stay gone either way** — that was the URL validation,
+and it is not this crate's question.
 
-**What is deliberately not back**: the empty-label rule and
-`VerifyDnsLength`. `ä..de` converts under `idna` and must convert here —
-that was the URL validation, and it stays gone.
+**The check that would have caught it is a graph guard rather than a
+runner.** `graph-idn-backend` now asserts from Linux that Apple pulls
+`idna` and links no `objc2`, next to the identical pair for Android — so
+a Foundation backend cannot come back without the corpus being consulted,
+and neither claim needs a Mac. macOS left the
+`idn-platform-agrees-with-idna` matrix with the backend: it would have
+run the same bundled path as the Linux leg under a job name promising a
+comparison there is nothing left to make.
 
 **And the two lints beneath all of it had never run.** `lint-idn` sits
 after `test-idn` in the same recipe, so while the tests failed the lints
@@ -3576,12 +3597,14 @@ what a small native library actually weighs: 139 KiB against `hc`'s
 shipped per ABI it is the largest single item in it. `aarch64` is the ABI
 almost every real device takes.
 
-On Linux and wasm it changes nothing at all, because there the bundled
-crate *is* the backend.
+On Linux, wasm **and Apple** it changes nothing at all, because there the
+bundled crate *is* the backend. Apple joined that list after Foundation
+was measured against the corpus, which narrows where this crate pays to
+Android and Windows — and Android is where it pays most.
 
-What it costs is now small enough to weigh against that: **726 lines of
-code** across four backends, an acceptance probe and two public
-functions, after the policy layer went. Before it went the crate was
+What it costs is now small enough to weigh against that: **707 lines of
+code** across three backends, an acceptance probe and two public
+functions, after the policy layer went and Apple with it. Before it went the crate was
 2,700 lines and answered a question that was not its own, and the honest
 verdict then would have been different.
 
@@ -3615,15 +3638,19 @@ answer, and what is left is the RFC-versus-WHATWG set and nothing else.
 than for maintenance: on the Linux runner any fuzzer uses, the bundled
 backend *is* `idna`, so a differential target compares `idna` with itself
 and an idempotence target measures `idna`'s. What they were aimed at —
-whether Foundation and ICU answer what `idna` answers — only Windows and
-macOS can be asked, and `tests/differential.rs` asks them on every push.
+whether the platform's ICU answers what `idna` answers — only Windows can
+be asked now, and `tests/differential.rs` asks it on every push.
 
-**What survives is the acceptance probe, and it is the whole contract.**
-A backend is used only after answering the transitional pair the way
-`idna` does, in both directions; one that does not is refused, and the
-crate reports `NoImplementation` rather than a different host. That is
-what makes "same answers, smaller binary" a measurement instead of a
-hope.
+**What survives is the acceptance probe, and it is the whole contract —
+and its limit is now measured too.** A backend is used only after
+answering the transitional pair the way `idna` does, in both directions;
+one that does not is refused, and the crate reports `NoImplementation`
+rather than a different host. Foundation *passed* that probe and failed
+eight rows of the corpus, which is the difference between *converts the
+probe* and *implements UTS 46*: the probe is a floor against a backend
+that is wrong about the thing the crate is for, not a conformance suite.
+The corpus is the conformance suite, and it is why Apple no longer has a
+backend.
 
 One property was lost and is `idna`'s own: the two directions do not
 accept the same names. `domain_to_ascii` takes `AsciiDenyList::URL` and
