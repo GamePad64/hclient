@@ -40,6 +40,37 @@
 //! direction, and it is nobody's now: the crate converts U to A and
 //! stops, because that is the only direction an HTTP client needs.
 
+// **`wasm-bindgen` and not `web-sys`, and the reason is one crate up.**
+// `web-sys` would give this backend `Url` for free and costs
+// `hclient-proto` its sans-io property: `web-sys` pulls `js-sys`, whose
+// optional `futures-core-03-stream` feature is switched on elsewhere in
+// any graph that also has `hclient-fetch`, and Cargo unifies features.
+// `graph-proto-sans-io` caught it — *this crate must stay sans-io on
+// every target, not just the host* — which is the guard doing exactly
+// what it is for.
+//
+// The whole of what is needed is a constructor and a getter, so they are
+// declared here. `wasm-bindgen` alone pulls nothing asynchronous.
+#[wasm_bindgen]
+unsafe extern "C" {
+    // unsafe-code-exception: amendment-C20
+    /// The `URL` global. `catch` because the constructor throws on a
+    /// string it will not parse, which is the refusal this backend reads.
+    #[wasm_bindgen(js_name = URL)]
+    type Url;
+
+    #[wasm_bindgen(constructor, js_class = "URL", catch)]
+    fn new(url: &str) -> Result<Url, JsValue>;
+
+    /// The authority's host, which for an IDN is the A-label — this is
+    /// the conversion, and it is the only thing this file wants.
+    #[wasm_bindgen(method, getter)]
+    fn hostname(this: &Url) -> String;
+}
+
+use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::wasm_bindgen;
+
 /// Nothing to carry: `URL` is a global.
 #[derive(Debug)]
 pub(crate) struct Web;
@@ -64,10 +95,22 @@ pub(crate) fn to_ascii(_w: &Web, domain: &str) -> Option<String> {
     if domain.is_empty() {
         return Some(String::new());
     }
+    engine(domain)
+}
+
+/// The engine's answer alone, with nothing of this crate's around it.
+///
+/// Reached from [`crate::testing`] so that `tests/web_corpus.rs` can say
+/// *what the browser answered* and *what a caller gets* as two different
+/// claims — the corpus diverges from `idna` on one row and the public
+/// entry point on none, and the difference between those two numbers is
+/// the line above. A second binding in the test would have measured a
+/// copy of this rather than this.
+pub(crate) fn engine(domain: &str) -> Option<String> {
     // The scheme is ours and the trailing slash makes the authority
     // unambiguous even for an empty path — the same two consequences the
     // Apple backend was written under, because the shape is the same.
-    let url = web_sys::Url::new(&format!("https://{domain}/")).ok()?;
+    let url = Url::new(&format!("https://{domain}/")).ok()?;
     let host = url.hostname();
     // A host the parser did not like comes back empty rather than as an
     // error on some engines; `domain` is non-empty here, so an empty

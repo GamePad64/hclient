@@ -41,13 +41,11 @@ fn idna_says(domain: &str) -> Option<String> {
 /// is the crate's.
 const DIVERGENCES: &[&str] = &[""];
 
+/// The engine alone, reached through the crate rather than bound again
+/// here: a second binding would compare a copy of the backend with
+/// `idna` and call it a measurement of the browser.
 fn browser_says(domain: &str) -> Option<String> {
-    let url = web_sys::Url::new(&format!("https://{domain}/")).ok()?;
-    let host = url.hostname();
-    if host.is_empty() {
-        return None;
-    }
-    Some(host)
+    hclient_idn::testing::engine(domain)
 }
 
 /// What the engine itself answers, row by row, with the divergences named.

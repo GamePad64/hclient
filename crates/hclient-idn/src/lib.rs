@@ -595,6 +595,20 @@ pub mod testing {
     pub fn platform(domain: &str) -> Option<Result<Cow<'_, str>, IdnError>> {
         has_platform().then(|| super::domain_to_ascii(domain))
     }
+
+    /// The browser engine's own answer, with nothing of this crate's
+    /// around it.
+    ///
+    /// `tests/web_corpus.rs` makes two claims that differ by one row —
+    /// what the engine answers, and what a caller gets — and the
+    /// difference between them is `web::to_ascii`'s empty-name line. A
+    /// second `URL` binding in the test would have measured a copy of
+    /// the backend rather than the backend.
+    #[cfg(web_backend)]
+    #[must_use]
+    pub fn engine(domain: &str) -> Option<String> {
+        super::web::engine(domain)
+    }
 }
 
 #[cfg(test)]

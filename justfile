@@ -1232,6 +1232,19 @@ semver rev="":
     published=""
     pending=""
     vacuum=""
+    stepped=""
+    # Whether two versions share a semver-compatible range, which is what
+    # decides whether a lint can run at all: `^0.1.0` covers 0.1.x and not
+    # 0.2.0, so below 1.0 the *minor* is the major component. Written out
+    # rather than delegated because the whole recipe exists to avoid
+    # trusting a tool to tell it what it is checking.
+    same_compat_range() {
+      a_major="${1%%.*}"; a_rest="${1#*.}"; a_minor="${a_rest%%.*}"
+      b_major="${2%%.*}"; b_rest="${2#*.}"; b_minor="${b_rest%%.*}"
+      [ "$a_major" = "$b_major" ] || return 1
+      [ "$a_major" != "0" ] || [ "$a_minor" = "$b_minor" ] || return 1
+      return 0
+    }
     while read -r manifest; do
       # `name *=` rather than `name =`: two manifests align the value
       # with their neighbours, and a pattern that missed them killed this
@@ -1254,6 +1267,19 @@ semver rev="":
         # stable version is published, because this reads the registry
         # rather than a list.
         vacuum="$vacuum $name($latest)"
+      elif ! same_compat_range "$latest" "$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"; then
+        # **A deliberate major step, where no lint can run either**, and
+        # the same reasoning as the pre-release above rather than a second
+        # exemption: cargo-semver-checks permits breaking across a major
+        # boundary, so it executes none of its lints and the zero-check
+        # guard below would fire on a state that is correct.
+        #
+        # Read off two numbers rather than a list — the registry's and the
+        # manifest's — so it ends by itself on the day the new version is
+        # published and the baseline moves. Dodging the gate this way
+        # costs a major version, which is the loudest thing a release can
+        # do, and the crate is named in the output either way.
+        stepped="$stepped $name($latest->$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1))"
       else
         published="$published $name"
       fi
@@ -1265,6 +1291,9 @@ semver rev="":
     fi
     if [ -n "$vacuum" ]; then
       echo "semver: baseline is a pre-release, where every step is major and no lint runs:$vacuum"
+    fi
+    if [ -n "$stepped" ]; then
+      echo "semver: a deliberate major step, where breaking is permitted and no lint runs:$stepped"
     fi
     if [ -z "$published" ]; then
       echo "::error::no independently-versioned crate has a stable release, so this gate checked nothing — which reads the same as a clean run"
@@ -1859,9 +1888,19 @@ graph-idn-backend:
       ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
         "the default hclient-idn build for the browser pulls in idna/ICU — the URL parser is the backend there, and the tables are most of a wasm module" \
         -- -p hclient-idn --target wasm32-unknown-unknown
-      ./scripts/tree-guard.sh present '^web-sys ' \
-        "hclient-idn for the browser links no web-sys, so the URL parser is unreachable and the backend is not compiled in at all" \
+      ./scripts/tree-guard.sh present '^wasm-bindgen ' \
+        "hclient-idn for the browser links no wasm-bindgen, so the URL parser is unreachable and the backend is not compiled in at all" \
         -- -p hclient-idn --target wasm32-unknown-unknown
+      # **And `web-sys` is refused rather than merely unused.** It has
+      # `Url` ready made and would pull `js-sys`, whose optional
+      # `futures-core-03-stream` feature anything streaming from JS
+      # switches on — which took `hclient-proto`'s sans-io property away
+      # on this target the first time this backend was written.
+      # `graph-proto-sans-io` catches that from the other end; this
+      # catches it here, where the dependency would be added.
+      ./scripts/tree-guard.sh absent '^(web-sys|js-sys) ' \
+        "hclient-idn for the browser pulls web-sys or js-sys — those cost hclient-proto its sans-io property through js-sys' futures feature, and a constructor and a getter are ten lines" \
+        -- -p hclient-idn --target wasm32-unknown-unknown --all-features
       ./scripts/tree-guard.sh present '^idna ' \
         "hclient-idn for wasip2 has no idna — WASI has no URL to ask, so it keeps the bundled tables" \
         -- -p hclient-idn --target wasm32-wasip2
@@ -1869,9 +1908,19 @@ graph-idn-backend:
       ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
         "the default hclient-idn build on this target pulls in idna/ICU — the whole point of a platform backend is that the OS supplies the tables" \
         -- -p hclient-idn
-      ./scripts/tree-guard.sh present '^windows-sys ' \
-        "hclient-idn on this target links no windows-sys, so no platform backend is compiled in at all" \
-        -- -p hclient-idn
+      # **Named per OS rather than as a union**, because a union passes
+      # for a runner that linked the other platform's binding. This branch
+      # runs on whichever non-Linux runner the matrix is on, and each has
+      # exactly one right answer.
+      if [ "{{os()}}" = "macos" ]; then
+        ./scripts/tree-guard.sh present '^objc2-foundation ' \
+          "hclient-idn on macOS links no objc2-foundation, so no platform backend is compiled in at all" \
+          -- -p hclient-idn
+      else
+        ./scripts/tree-guard.sh present '^windows-sys ' \
+          "hclient-idn on this target links no windows-sys, so no platform backend is compiled in at all" \
+          -- -p hclient-idn
+      fi
       # **The opposite of what this line used to say**, and the change is
       # the feature's meaning rather than a relaxation. `--all-features`
       # is `--features idna`, which exists precisely to force the bundled

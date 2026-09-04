@@ -85,7 +85,7 @@ hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0-alpha.2" }
 # no backend at all, which its own `compile_error!` refuses. The switch a
 # consumer actually wants is one level up: `hclient-proto`'s `idn`, which
 # decides whether this crate is in the graph at all.
-hclient-idn   = { path = "crates/hclient-idn",   version = "0.1.0" }
+hclient-idn   = { path = "crates/hclient-idn",   version = "0.2.0" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
 hclient       = { path = "crates/hclient",       version = "0.1.0-alpha.2" }

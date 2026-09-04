@@ -400,6 +400,28 @@ sites that depend on them for exactly that reason. `cargo check --target
 x86_64-pc-windows-msvc --all-targets` is the whole of what this
 workspace can say about it today.
 
+**C20 — a `wasm-bindgen` import declaration**, in
+`hclient-idn/src/web.rs`, and it is the thinnest of these by some way.
+
+Edition 2024 makes every `extern` block `unsafe`, so the attribute is on
+a block that declares two items: `URL`'s constructor and its `hostname`
+getter. Nothing is transcribed and nothing is dereferenced —
+`#[wasm_bindgen]` generates the import shim and the JS glue, the
+constructor is `catch` so a string the engine will not parse arrives as
+`Err` rather than a trap, and `hostname` returns an owned `String`. There
+is no pointer, no lifetime and no layout assumption anywhere in the file.
+
+**Why not `web-sys`, which has `Url` and needs no `unsafe` at all.** It
+pulls `js-sys`, whose optional `futures-core-03-stream` feature is
+switched on by anything in the graph that streams from JS — `wasm-streams`
+through `hclient-fetch` — and Cargo unifies features, so `hclient-proto`
+stopped being sans-io on `wasm32-unknown-unknown` the first time this
+backend was written. `just graph-proto-sans-io` failed on that push,
+which is the guard doing its job. Ten lines of declaration against a
+crate's stated property was not a close trade, and `graph-idn-backend`
+now refuses `web-sys` and `js-sys` by name on that target so the
+temptation is a failure rather than a decision.
+
 ## One that is neither
 
 **C6 — a `#[non_exhaustive]` type can only be checked for completeness

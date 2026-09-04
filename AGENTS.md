@@ -3612,14 +3612,33 @@ that the shim generator consumes and nothing ships, and it made the
 browser build look 158 KiB **larger** than the one carrying ICU. That
 number was nearly reported.
 
+**And the first push of it took `hclient-proto`'s sans-io property away**,
+which is worth more than the backend. `web-sys` has `Url` ready made and
+pulls `js-sys`, whose optional `futures-core-03-stream` feature anything
+streaming from JS switches on — `wasm-streams`, through `hclient-fetch` —
+and Cargo unifies features, so the sans-io leaf grew `futures-util` on
+`wasm32-unknown-unknown` and on no other target. `just
+graph-proto-sans-io` failed on that push: *this crate must stay sans-io
+on every target, not just the host*, which is the guard saying exactly
+what it was written to say.
+
+The repair is ten lines of `#[wasm_bindgen]` declaring `URL`'s
+constructor and its `hostname` getter — amendment C20, and the thinnest
+`unsafe` here, since edition 2024 makes every `extern` block one and
+nothing in this file is dereferenced. It took `web-sys` and `js-sys` out
+of the graph with it: the browser build of `hclient-idn` went from 25
+crates to **17**. `graph-idn-backend` refuses both by name on that target
+now, so reaching for the convenient dependency is a failure rather than a
+decision.
+
 **One direction only, and it is declared rather than discovered.**
 `URL.hostname` hands back the A-label whatever went in, and no JS API
-performs ToUnicode. So each backend now states `REVERSES`, the acceptance
-probe asks only the question the backend claims to answer, and
-`domain_to_unicode` refuses by name on that target — a build that needs
-it turns on `idna`. The constant is load-bearing: setting the browser's
-to `true` refuses the backend at the probe and fails 25 of 40 corpus
-rows.
+performs ToUnicode. That was this backend's one narrowness while the
+crate had a reverse direction — a `REVERSES` constant on every backend, a
+second half of the acceptance probe, a refusal path in the public
+function — and the section below is what became of all of it: there is
+one direction now, so the narrowness has no subject and every backend
+supplies exactly what every other does.
 
 **And the objection that nearly ended it was right about the browser and
 did not reach this code.** *In a browser the client goes through `fetch`,

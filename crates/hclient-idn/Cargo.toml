@@ -13,7 +13,7 @@ name = "hclient-idn"
 # and a use outside HTTP entirely — nothing here depends on `hclient`'s
 # mechanisms, and `cargo tree -i` names `hclient-proto` as its only
 # in-workspace consumer.
-version = "0.1.0"
+version = "0.2.0"
 description = "IDN (UTS 46) domain-to-ASCII and back, through whatever UTS 46 the platform already carries"
 keywords     = ["hclient", "idn", "uts46", "punycode", "idna"]
 categories   = ["internationalization", "encoding"]
@@ -174,8 +174,15 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 # ToUnicode in any JS API, so `domain_to_unicode` answers
 # `NoImplementation` here. A build that needs it turns on `idna`, which is
 # what a forcing switch is for.
+# **`wasm-bindgen` and not `web-sys`**, though `web-sys` has `Url` ready
+# made. It pulls `js-sys`, whose optional `futures-core-03-stream` feature
+# is switched on by anything else in the graph that streams from JS —
+# `wasm-streams`, through `hclient-fetch` — and Cargo unifies features, so
+# `hclient-proto` stopped being sans-io on this target. `just
+# graph-proto-sans-io` failed on the first push, which is the guard
+# working. A constructor and a getter are ten lines in `src/web.rs`.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-web-sys = { version = "0.3", features = ["Url"] }
+wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
 
 [target.'cfg(not(any(windows, target_vendor = "apple", target_os = "android", all(target_arch = "wasm32", target_os = "unknown"))))'.dependencies]
 idna = { version = "1.1", default-features = false, features = [
