@@ -46,8 +46,7 @@
 
 use super::{FIRST_TRY, U_BUFFER_OVERFLOW_ERROR, U_ZERO_ERROR, UIDNA_INFO_SIZE, accept, options};
 use windows_sys::Win32::Globalization::{
-    UErrorCode, UIDNA, UIDNAInfo, uidna_close, uidna_nameToASCII_UTF8, uidna_nameToUnicodeUTF8,
-    uidna_openUTS46,
+    UErrorCode, UIDNA, UIDNAInfo, uidna_close, uidna_nameToASCII_UTF8, uidna_openUTS46,
 };
 
 /// The generated struct, asserted against the size the removed ELF
@@ -182,15 +181,4 @@ fn through(entry: Entry, domain: &str) -> Option<String> {
 /// The A-label form, through `uidna_nameToASCII_UTF8`.
 pub(crate) fn to_ascii(_icu: &Icu, domain: &str) -> Option<String> {
     through(uidna_nameToASCII_UTF8, domain)
-}
-
-/// The U-label form, through `uidna_nameToUnicodeUTF8`.
-///
-/// **The same ICU, the same options and the same error mask**, which is
-/// the whole reason the reverse direction is the platform's here rather
-/// than a punycode decoder of ours: a name ICU will not convert back is
-/// one it did not consider legal going out either, and asking it twice
-/// keeps the two answers on one implementation.
-pub(crate) fn to_unicode(_icu: &Icu, domain: &str) -> Option<String> {
-    through(uidna_nameToUnicodeUTF8, domain)
 }

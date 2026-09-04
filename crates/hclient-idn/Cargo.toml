@@ -141,6 +141,23 @@ ndk-context = "0.1"
 # `aarch64-apple-darwin` become 50, because the ICU tables arrive with
 # `idna`. What it buys is that macOS answers what every other target
 # answers, with nothing of ours between the caller and the oracle.
+# Apple: Foundation, part of the OS and linked, so it meets the same
+# "static, OS-versioned ABI" rule Windows does. It needs no `unsafe` at
+# all — every `objc2-foundation` call is a safe function.
+#
+# **It is a URL parser and not a UTS 46 implementation**, which is the
+# fact `src/ace.rs` exists for: `NSURL` converts an IDN host as a side
+# effect of parsing, so it does not case-fold ASCII and does not validate
+# an ACE label, and eight rows of the differential corpus came back as
+# themselves the day nothing supplied those. The browser is reached the
+# same way and needs one line of the same file; Apple needs all of it.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSString",
+    "NSURL",
+] }
+
 # The browser, and only the browser. `URL` is the whole surface: the
 # WHATWG URL Standard *defines* its host parsing as UTS 46 with named
 # parameters, which is the difference between it and Foundation — that one
@@ -160,7 +177,7 @@ ndk-context = "0.1"
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 web-sys = { version = "0.3", features = ["Url"] }
 
-[target.'cfg(not(any(windows, target_os = "android", all(target_arch = "wasm32", target_os = "unknown"))))'.dependencies]
+[target.'cfg(not(any(windows, target_vendor = "apple", target_os = "android", all(target_arch = "wasm32", target_os = "unknown"))))'.dependencies]
 idna = { version = "1.1", default-features = false, features = [
     "std",
     "compiled_data",

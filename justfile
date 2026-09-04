@@ -1833,19 +1833,22 @@ graph-idn-backend:
       # that decision rather than a description of it — a reappearing
       # `objc2-foundation` means the backend came back without the corpus
       # being consulted.
-      ./scripts/tree-guard.sh present '^idna ' \
-        "hclient-idn for Apple has no idna — that target takes the bundled tables, because Foundation is a URL parser rather than a UTS 46 implementation" \
+      ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
+        "the default hclient-idn build for Apple pulls in idna/ICU — Foundation plus src/ace.rs is the backend there, and the tables are what this crate keeps off it" \
         -- -p hclient-idn --target aarch64-apple-darwin
-      ./scripts/tree-guard.sh absent '^objc2' \
-        "hclient-idn for Apple links objc2 — the Foundation backend was removed on purpose, see the crate docs" \
-        -- -p hclient-idn --target aarch64-apple-darwin --all-features
-      # iOS is the same predicate — `target_vendor = "apple"` — and is
-      # named anyway, because "mac and iOS" was the decision and a
-      # predicate is not a check. It is the target where the tables cost
-      # most, so a Foundation backend coming back for phones only would
-      # be the version of this mistake nobody would look for.
+      ./scripts/tree-guard.sh present '^objc2-foundation ' \
+        "hclient-idn for Apple links no objc2-foundation, so Foundation is unreachable and the backend is not compiled in at all" \
+        -- -p hclient-idn --target aarch64-apple-darwin
       ./scripts/tree-guard.sh present '^idna ' \
-        "hclient-idn for iOS has no idna — Apple takes the bundled tables, because Foundation is a URL parser rather than a UTS 46 implementation" \
+        "--features idna does not bring the bundled tables to Apple, so the forcing switch does not force" \
+        -- -p hclient-idn --target aarch64-apple-darwin --features idna
+      # iOS is the same predicate — `target_vendor = "apple"` — and is
+      # named anyway, because a predicate is not a check. It is the target
+      # where the tables cost most, so an Apple build that quietly stopped
+      # resolving to the backend would be the version of this mistake
+      # nobody would look for.
+      ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
+        "the default hclient-idn build for iOS pulls in idna/ICU — it shares the Apple predicate, and iOS is where a wrongly-resolved target costs most" \
         -- -p hclient-idn --target aarch64-apple-ios
       # **The browser, where the tables cost the most.** A wasm module has
       # almost nothing else in it, so the ICU data is most of the

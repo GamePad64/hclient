@@ -338,13 +338,16 @@ jobs:
   # of the user's machine that nobody chose and nothing reports, and for
   # IDN a Unicode difference is a different host.
   #
-  # **Apple was on that list and was measured off it.** Foundation
-  # converts an IDN host as a side effect of parsing a URL, so it does not
-  # case-fold ASCII and does not validate an ACE label: eight rows of the
-  # corpus came back as themselves. It is a URL parser that happens to
-  # call ICU, not an implementation this crate can stand behind, so Apple
-  # takes the bundled tables like Linux and wasm — which is also what
-  # `--features idna` forces everywhere.
+  # **Two more are reached through a URL parser rather than a UTS 46
+  # entry point**, and they are why `src/ace.rs` exists: Apple's
+  # Foundation and the browser's `new URL()` convert a host as a side
+  # effect of parsing, so neither case-folds ASCII nor validates an ACE
+  # label. The difference between them is scale — Foundation gets eight
+  # corpus rows wrong and needs all of `ace`, the browser gets one wrong
+  # and needs a single line, because the WHATWG standard defines its host
+  # parsing as UTS 46 and Apple documents nothing. The browser's column is
+  # checked by `tests/web_corpus.rs` in the `browser` jobs, on both
+  # engines.
   #
   # **Android is checked from the Linux leg and is never run**, because no
   # runner here is a device: `graph-idn-backend` asserts the tables stay
@@ -355,15 +358,8 @@ jobs:
   #
   # The platform column of `tests/differential.rs` does not compile at all
   # where there is no platform backend, which is why
-  # `HCLIENT_IDN_REQUIRE_PLATFORM` is set on Windows alone: asking for it
-  # anywhere else would demand a test that is not there.
-  #
-  # macOS left this matrix with the backend. It would have run the same
-  # bundled path the Linux leg runs, under a job name promising a
-  # comparison there is nothing left to make; what still covers that
-  # target is `check-targets`, which compiles for it, and
-  # `graph-idn-backend`, which asserts from Linux that Apple takes `idna`
-  # and links no `objc2`.
+  # `HCLIENT_IDN_REQUIRE_PLATFORM` is set off Linux only: asking for it
+  # there would demand a test that is not present.
   #
   # The Linux leg is not decoration. It checks the opposite invariant —
   # that a target with no platform backend really does get the bundled
@@ -375,7 +371,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -391,7 +387,7 @@ jobs:
           # which does not exist there — is not asked for. `env:` cannot be
           # conditional, so the value is, and the test reads presence, not
           # truth.
-          HCLIENT_IDN_REQUIRE_PLATFORM: ${{ runner.os == 'Windows' && '1' || '' }}
+          HCLIENT_IDN_REQUIRE_PLATFORM: ${{ runner.os != 'Linux' && '1' || '' }}
         run: just test-idn
       - name: the Unicode tables come from the platform, or from idna
         shell: bash

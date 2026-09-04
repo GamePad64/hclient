@@ -338,21 +338,11 @@ pub(crate) fn accept(buf: &[u8], written: i32, errors: u32, status: i32) -> Opti
 /// transitional pair correctly, and one gate is what keeps them from
 /// drifting into four.
 #[cfg(icu_backend)]
-pub(crate) use imp::{find, to_ascii, to_unicode};
+pub(crate) use imp::{find, to_ascii};
 
 /// The handle this backend hands back, under the name every backend uses.
 #[cfg(icu_backend)]
 pub(crate) type Handle = Icu;
-
-/// `uidna_nameToUnicodeUTF8` is ICU4C's own reverse, so this backend
-/// answers both ways.
-///
-/// **A backend that answers `false` is not broken, it is narrower**, and
-/// the one that does is `web`: no JS API anywhere performs ToUnicode. The
-/// constant is read by [`crate::selected`], which then asks the
-/// acceptance probe only the question the backend claims to answer, and
-/// by [`crate::domain_to_unicode`], which refuses rather than guessing.
-pub(crate) const REVERSES: bool = true;
 
 /// The option word, re-exported for the backends so neither reaches past
 /// this module for it.

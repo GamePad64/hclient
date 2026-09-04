@@ -1,6 +1,6 @@
 //! Resolves the backend, in one auditable place.
 //!
-//! **One feature and four targets, and the feature wins.** `idna` is the
+//! **One feature and five targets, and the feature wins.** `idna` is the
 //! only switch this crate has: turn it on and every target answers
 //! through the bundled `idna` crate and its Unicode tables. Leave it off —
 //! which is the default — and the answer comes from whatever the platform
@@ -10,6 +10,7 @@
 //! |---|---|---|
 //! | Windows | the system ICU, `icuuc.dll` | `icu_backend` |
 //! | Android | `android.icu.text.IDNA`, over JNI | `android_backend` |
+//! | Apple | Foundation's `NSURL`, plus `ace`'s two rules | `apple_backend` |
 //! | the browser (`wasm32-unknown-unknown`) | `new URL()`, through `web-sys` | `web_backend` |
 //! | everything else, Linux and Apple included | the bundled `idna` crate | `idna_backend` |
 //!
@@ -52,13 +53,16 @@ fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rustc-check-cfg=cfg(icu_backend)");
     println!("cargo::rustc-check-cfg=cfg(android_backend)");
+    println!("cargo::rustc-check-cfg=cfg(apple_backend)");
     println!("cargo::rustc-check-cfg=cfg(web_backend)");
     println!("cargo::rustc-check-cfg=cfg(idna_backend)");
 
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
     let forced = std::env::var_os("CARGO_FEATURE_IDNA").is_some();
 
+    let apple = vendor == "apple";
     let windows = os == "windows";
     let android = os == "android";
     // The browser, and only the browser: `wasm32-wasip2` is `target_os =
@@ -70,11 +74,13 @@ fn main() {
     // Ordered, and the order is the rule: the feature is asked first
     // because it is a promise about *every* target, and the platforms
     // follow in the order their arms appear in `Cargo.toml`. The final
-    // `else` is the ELF unixes, WASI and Apple, which have no UTS 46 to
-    // reach for — so it is the same branch the feature forces, reached
-    // for a different reason.
-    let cfg = if forced || !(windows || android || web) {
+    // `else` is the ELF unixes and WASI, which have no UTS 46 and no URL
+    // parser to reach for — so it is the same branch the feature forces,
+    // reached for a different reason.
+    let cfg = if forced || !(apple || windows || android || web) {
         "idna_backend"
+    } else if apple {
+        "apple_backend"
     } else if windows {
         "icu_backend"
     } else if android {

@@ -32,15 +32,13 @@
 //! ships, and it made the browser build look 158 KiB *larger* than the
 //! one carrying ICU.
 //!
-//! # One direction, and the browser is why
+//! # It supplies one direction, and one direction is all there is
 //!
-//! [`REVERSES`] is `false`. `URL.hostname` hands back the A-label
-//! whatever went in, and no JS API anywhere does ToUnicode — not `Intl`,
-//! not `URL`, not `URLPattern`. So [`crate::domain_to_unicode`] answers
-//! `IdnError::NoImplementation` on this target, which is the honest
-//! refusal rather than a punycode decoder of ours; a build that needs the
-//! reverse turns on the `idna` feature and gets the tables, which is what
-//! a forcing switch is for.
+//! `URL.hostname` hands back the A-label whatever went in, and no JS API
+//! anywhere does ToUnicode — not `Intl`, not `URL`, not `URLPattern`.
+//! That was this backend's one narrowness while the crate had a reverse
+//! direction, and it is nobody's now: the crate converts U to A and
+//! stops, because that is the only direction an HTTP client needs.
 
 /// Nothing to carry: `URL` is a global.
 #[derive(Debug)]
@@ -49,9 +47,6 @@ pub(crate) struct Web;
 /// The name every backend module exports, so that `lib.rs` can select one
 /// with `cfg_select!` and then name no operating system at all.
 pub(crate) type Handle = Web;
-
-/// **Forward only.** See the module docs: the browser has no ToUnicode.
-pub(crate) const REVERSES: bool = false;
 
 /// Always `Some`: `URL` is in every browsing context this target runs in,
 /// windows and workers alike, and a build for it that had no `URL` would
@@ -81,14 +76,4 @@ pub(crate) fn to_ascii(_w: &Web, domain: &str) -> Option<String> {
         return None;
     }
     Some(host)
-}
-
-/// Unreachable: [`REVERSES`] is `false`, so `lib.rs` never calls this.
-///
-/// It exists because every backend module exports the same four items —
-/// the alias in `lib.rs` names one module and nothing past that line
-/// knows which — and a backend that answered here would have to prove it
-/// against the acceptance probe like any other.
-pub(crate) fn to_unicode(_w: &Web, _domain: &str) -> Option<String> {
-    None
 }

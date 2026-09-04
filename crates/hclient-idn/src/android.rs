@@ -110,27 +110,12 @@ pub(crate) fn is_fatal_by_name<'a>(mut errors: impl Iterator<Item = &'a str>) ->
 }
 
 #[cfg(android_backend)]
-pub(crate) use imp::{Android, find, to_ascii, to_unicode};
+pub(crate) use imp::{Android, find, to_ascii};
 
 /// The name every backend module exports, so that `lib.rs` can select one
 /// with `cfg_select!` and then name no platform at all.
 #[cfg(android_backend)]
 pub(crate) type Handle = Android;
-
-/// `IDNA.nameToUnicode` is ICU4J's own reverse, so this backend answers
-/// both ways.
-///
-/// **A backend that answers `false` is not broken, it is narrower**, and
-/// the one that does is `web`: no JS API anywhere performs ToUnicode. The
-/// constant is read by [`crate::selected`], which then asks the
-/// acceptance probe only the question the backend claims to answer, and
-/// by [`crate::domain_to_unicode`], which refuses rather than guessing.
-///
-/// Gated like `Handle` beside it: this module is unconditional so that
-/// the half holding the decisions is tested on every host, and the items
-/// that only the selected backend reads are the ones that carry the cfg.
-#[cfg(android_backend)]
-pub(crate) const REVERSES: bool = true;
 
 #[cfg(android_backend)]
 mod imp {
@@ -163,42 +148,24 @@ mod imp {
     /// The A-label form of `domain`, or `None` if ICU4J refused it for a
     /// reason this crate treats as fatal.
     pub(crate) fn to_ascii(_a: &Android, domain: &str) -> Option<String> {
-        through("nameToASCII", domain, Answer::MustBeAscii)
+        through("nameToASCII", domain)
     }
 
-    /// The U-label form, through `IDNA.nameToUnicode`.
+    /// The conversion, with the method name a parameter.
     ///
-    /// **The same instance, the same options and the same error names**,
-    /// which is why the reverse direction is ICU4J's here rather than a
-    /// punycode decoder of ours: a name ICU will not convert back is one
-    /// it did not consider legal going out either.
-    pub(crate) fn to_unicode(_a: &Android, domain: &str) -> Option<String> {
-        through("nameToUnicode", domain, Answer::MayBeUnicode)
-    }
-
-    /// What the answer is allowed to look like, which is the one thing
-    /// the two directions do **not** share.
+    /// **It took two directions and takes one**, and the parameter that
+    /// went with the second is worth a line: an `Answer` said whether the
+    /// result had to be ASCII, because `nameToUnicode`'s does not. That
+    /// distinction cost the backend its first run — `through` was
+    /// factored out of the ASCII direction and kept its closing check, so
+    /// `nameToUnicode` refused every conversion it performed correctly
+    /// and the backend reported `NoImplementation` on a real device.
+    /// With one direction the check is unconditional and the enum has no
+    /// subject.
     ///
-    /// **This distinction cost the backend its first run.** `through` was
-    /// factored out of the ASCII direction and kept its closing check —
-    /// *the answer must be ASCII* — so `nameToUnicode` refused every
-    /// conversion it performed correctly, the acceptance probe's reverse
-    /// half failed, and the backend reported `NoImplementation` for every
-    /// name on a real device. Every JNI step was right; the check was the
-    /// ASCII direction's alone.
-    #[derive(Clone, Copy)]
-    enum Answer {
-        /// An A-label: ASCII, and free of denied bytes.
-        MustBeAscii,
-        /// A U-label: non-ASCII is the point of it. The deny list still
-        /// applies — a U-label carrying `%` is one punycode smuggled
-        /// through, which is `xn--%-0fa.de`'s case.
-        MayBeUnicode,
-    }
-
-    /// Both directions, which differ by the method name and by what the
-    /// answer may look like: ICU4J gives them one signature.
-    fn through(method: &str, domain: &str, answer: Answer) -> Option<String> {
+    /// `method` stays a parameter rather than being inlined, because it
+    /// is what a second direction would need again and it costs nothing.
+    fn through(method: &str, domain: &str) -> Option<String> {
         // Before the call, never after — the same rule and the same
         // reason as `apple.rs`: a denied byte here is one the platform
         // would consume as a delimiter, silently changing which host
@@ -252,7 +219,7 @@ mod imp {
                 .ok()?;
             let out: String = env.get_string(&JString::from(text)).ok()?.into();
 
-            if matches!(answer, Answer::MustBeAscii) && !out.is_ascii() {
+            if !out.is_ascii() {
                 return None;
             }
             if out.bytes().any(crate::is_forbidden_domain_byte) {

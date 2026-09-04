@@ -110,20 +110,3 @@ fn the_public_entry_point_answers_what_idna_answers_on_every_row() {
         wrong.join("\n")
     );
 }
-
-/// The reverse direction refuses by name rather than guessing.
-///
-/// `URL.hostname` hands back the A-label whatever went in, and no JS API
-/// performs ToUnicode — so this backend claims no reverse and
-/// `domain_to_unicode` says so. A punycode decoder of ours here would be
-/// the crate reimplementing what it exists not to reimplement; a build
-/// that needs the reverse turns on the `idna` feature.
-#[wasm_bindgen_test]
-fn the_reverse_direction_is_refused_by_name() {
-    let err = hclient_idn::domain_to_unicode("xn--mnchen-3ya.de")
-        .expect_err("the browser has no ToUnicode, so this must refuse");
-    assert!(
-        matches!(err, hclient_idn::IdnError::NoImplementation { .. }),
-        "a refusal, not a wrong name: {err:?}"
-    );
-}

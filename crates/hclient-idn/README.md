@@ -15,10 +15,12 @@ hclient-idn = "0.1"
 
 ```rust
 assert_eq!(hclient_idn::domain_to_ascii("münchen.de")?, "xn--mnchen-3ya.de");
-assert_eq!(hclient_idn::domain_to_unicode("xn--mnchen-3ya.de")?, "münchen.de");
 ```
 
-Two functions and an error type. That is the whole surface.
+One function and an error type. That is the whole surface — this crate
+converts U to A and nothing else, because that is the only direction an
+HTTP client needs: `http::Uri` refuses a non-ASCII authority, and nothing
+downstream takes a U-label back.
 
 ## What it saves
 
@@ -56,10 +58,11 @@ it probably is not.
 There is no UTS 46 to reach for on Linux, WASI or Apple, so those take the
 bundled tables and this crate changes nothing for them.
 
-On the browser the reverse direction is not available at all —
-`URL.hostname` always hands back the A-label and no JS API does
-ToUnicode — so `domain_to_unicode` refuses there by name. Turn on `idna`
-if you need it. Apple is in that
+Apple and the browser are reached through a URL parser rather than a
+UTS 46 entry point, so each gets the case folding and the ACE check the
+parser leaves out — all of it for Foundation, one line for the browser,
+because the WHATWG standard defines its host parsing as UTS 46 and Apple
+documents nothing. Apple is in that
 row too: Foundation converts an IDN host only as a side effect of parsing
 a URL, so it does not case-fold ASCII and does not validate an ACE label
 — close enough to look right and not close enough to be it.

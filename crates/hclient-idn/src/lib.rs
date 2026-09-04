@@ -11,14 +11,23 @@
 //! ```
 //! # fn main() -> Result<(), hclient_idn::IdnError> {
 //! assert_eq!(hclient_idn::domain_to_ascii("münchen.de")?, "xn--mnchen-3ya.de");
-//! assert_eq!(hclient_idn::domain_to_unicode("xn--mnchen-3ya.de")?, "münchen.de");
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! **Two functions, and that is the whole surface**:
-//! [`domain_to_ascii`] and [`domain_to_unicode`], plus the [`IdnError`]
-//! their `Result` needs. Which implementation answers is decided by the
+//! **One function, and that is the whole surface**: [`domain_to_ascii`],
+//! plus the [`IdnError`] its `Result` needs.
+//!
+//! **The reverse direction was here and is not**, and the reason is the
+//! rule this crate is built on rather than a gap. Nothing needs it: an
+//! HTTP client converts U to A because `http::Uri` refuses a non-ASCII
+//! authority — measured, `"https://münchen.de/".parse::<http::Uri>()` is
+//! `Err(invalid uri character)` — and never converts back, because
+//! nothing downstream takes a U-label. A direction with no caller is a
+//! surface that has to be right on four backends for nobody, and one of
+//! them could not supply it at all: no JS API performs ToUnicode. So the
+//! crate is one direction, every backend is one function, and the
+//! acceptance probe asks one question. Which implementation answers is decided by the
 //! target and, where the target has a choice, by the one feature this
 //! crate has — `idna`, off by default, which forces the bundled tables
 //! everywhere.
@@ -130,7 +139,7 @@
 //!
 //! Four backends and one module alias. `lib.rs` selects one with
 //! `cfg_select!` and names no operating system past that line; each
-//! exports `find`, `to_ascii`, `to_unicode`, `REVERSES` and a `Handle`.
+//! exports `find`, `to_ascii` and a `Handle`.
 //!
 //! | target | backend | `unsafe` |
 //! |---|---|---|
@@ -193,11 +202,10 @@
 //!
 //! **One direction, and it is declared rather than discovered.**
 //! `URL.hostname` hands back the A-label whatever went in, and no JS API
-//! performs ToUnicode — so `web` sets `REVERSES = false`,
-//! [`domain_to_unicode`] refuses by name on that target, and the
-//! acceptance probe asks only the question the backend claims to answer.
-//! A build that needs the reverse turns on the `idna` feature and gets
-//! the tables, which is what a forcing switch is for.
+//! performs ToUnicode. That was this backend's one narrowness while the
+//! crate had a reverse direction, and the narrowness outlived it: there
+//! is one direction now, so every backend supplies exactly what every
+//! other does.
 //!
 //! **Android.** ICU4J, the same ICU the Windows backend calls, under the
 //! same option bits and the same error names — but the NDK exposes no C
@@ -296,6 +304,13 @@ use std::borrow::Cow;
 // exactly one of these four and a fifth backend must be a compile error
 // here rather than a silent fall-through.
 
+// Unconditional for the reason `icu` and `android` are: every line of it
+// is integer arithmetic and string splitting, so compiling it everywhere
+// is what puts its tests on a host that can run them. Two backends read
+// it — `apple` in full, `web` for one line — and both are reached through
+// a URL parser rather than a UTS 46 entry point.
+mod ace;
+
 // Unconditional, like `android`: it holds ICU's vocabulary — the option
 // bits, the error mask, the acceptance rule — which both ICU backends
 // share, and only its Windows binding is gated inside.
@@ -312,6 +327,9 @@ mod bundled;
 // every line of it is a `web-sys` call: there is no platform-independent
 // half to put on a host that can run it, and the corpus that checks it
 // runs in the browser jobs.
+#[cfg(apple_backend)]
+mod apple;
+
 #[cfg(web_backend)]
 mod web;
 
@@ -319,6 +337,7 @@ core::cfg_select! {
     idna_backend => { use bundled as platform; }
     icu_backend => { use icu as platform; }
     android_backend => { use android as platform; }
+    apple_backend => { use apple as platform; }
     web_backend => { use web as platform; }
 }
 
@@ -418,31 +437,6 @@ pub(crate) fn accepts(convert: impl Fn(&str) -> Option<String>) -> bool {
         .all(|(input, want)| convert(input).as_deref() == Some(*want))
 }
 
-/// The same probe pair read the other way: an A-label in, the Unicode
-/// name out.
-///
-/// **This is what lets a platform getter be used before anyone has run
-/// it.** The Android backend is the case: its ICU4J calls were written
-/// against documentation months before a device ran them, and a build
-/// where a getter is not what the documentation says fails this and
-/// answers `IdnError::NoImplementation` — a refusal rather than a wrong
-/// name. It is also what measured Foundation out of this crate: the pair
-/// passed there and eight corpus rows did not, which is the difference
-/// between *converts the probe* and *implements UTS 46*.
-#[cfg_attr(
-    not(any(icu_backend, android_backend)),
-    allow(
-        dead_code,
-        reason = "only a platform backend has anything to gate, but the POLICY is \
-                  platform-independent and so are its tests"
-    )
-)]
-pub(crate) fn accepts_back(convert: impl Fn(&str) -> Option<String>) -> bool {
-    PROBES
-        .iter()
-        .all(|(want, input)| convert(input).as_deref() == Some(*want))
-}
-
 /// The one gate every backend passes, and the handle it hands back.
 ///
 /// **One `OnceLock` and one probe for all four**, where the ICU module
@@ -470,18 +464,6 @@ fn selected() -> Option<&'static platform::Handle> {
                 // backend was written under, since its device run came
                 // months after its code.
                 accepts(|input| platform::to_ascii(h, input))
-                    // **Asked only of a backend that claims a reverse.**
-                    // `platform::REVERSES` is the claim, and a `false`
-                    // there is narrowness rather than breakage: the
-                    // browser has no ToUnicode in any API, so probing it
-                    // would refuse a backend whose forward direction is
-                    // the one that decides which host is contacted.
-                    // `domain_to_unicode` reads the same constant and
-                    // answers `NoImplementation`, so the narrowness
-                    // reaches a caller as a refusal and never as a wrong
-                    // name.
-                    && (!platform::REVERSES
-                        || accepts_back(|input| platform::to_unicode(h, input)))
             })
         })
         .as_ref()
@@ -528,38 +510,10 @@ pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     Ok(ascii)
 }
 
-/// Converts `domain` to its Unicode (U-label) form — UTS 46 ToUnicode.
-///
-/// `xn--mnchen-3ya.de` comes back as `münchen.de`. A name with no ACE
-/// label comes back lower-cased and otherwise unchanged, which is what
-/// ToUnicode does rather than a shortcut.
-///
-/// **It is the platform's own reverse direction**, not a punycode
-/// decoder of this crate's: `uidna_nameToUnicodeUTF8` on Windows,
-/// `IDNA.nameToUnicode` on Android, `idna::domain_to_unicode` in the
-/// bundled build, `NSURLComponents::host` on Apple. So it answers what
-/// `idna` answers, which is the whole of what this crate promises.
-///
-/// # Errors
-///
-/// As [`domain_to_ascii`].
-pub fn domain_to_unicode(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    // A backend may be forward-only, and one is: `URL.hostname` hands
-    // back the A-label whatever went in, and no JS API performs
-    // ToUnicode. Refusing by name is the honest answer — a punycode
-    // decoder of ours would be the crate reimplementing what it exists
-    // not to reimplement, and a build that needs the reverse turns on the
-    // `idna` feature and gets the tables.
-    if !platform::REVERSES {
-        return Err(IdnError::NoImplementation {
-            domain: domain.to_owned(),
-        });
-    }
-    over(domain, platform::to_unicode)
-}
-
 /// One of the two entry points in [`policy`], as a value the dispatch can
-/// take: [`policy::to_ascii_over`] or `policy::to_unicode_over`.
+/// take. One direction, so one value — kept as a type because the
+/// dispatch is written over it and a second direction would be a second
+/// value rather than a second function.
 ///
 /// A named type because clippy asks for one, and it earns the name — the
 /// pair of directions is the thing being abstracted over, and `PolicyFn`
@@ -570,7 +524,7 @@ type Direction = fn(&platform::Handle, &str) -> Option<String>;
 /// The dispatch both directions share.
 ///
 /// `direction` is the selected backend's own conversion — `to_ascii` or
-/// `to_unicode` — and there is nothing between it and the caller. That is
+/// alone — and there is nothing between it and the caller. That is
 /// the crate's whole contract: **the same answer `idna` gives, from
 /// whatever UTS 46 the platform already carries**, and the acceptance
 /// probe in [`selected`] is what enforces it.
@@ -747,50 +701,18 @@ mod tests {
         ));
     }
 
-    /// **The two directions are one another's inverse on a name that has
-    /// an ACE label**, which is the property `domain_to_unicode` exists
-    /// for and the one a caller will assume.
-    #[test]
-    fn to_unicode_undoes_to_ascii() {
-        assert_eq!(
-            domain_to_unicode("xn--mnchen-3ya.de").unwrap(),
-            "münchen.de"
-        );
-        assert_eq!(domain_to_unicode("münchen.de").unwrap(), "münchen.de");
-        assert_eq!(
-            domain_to_ascii(&domain_to_unicode("xn--strae-oqa.de").unwrap()).unwrap(),
-            "xn--strae-oqa.de"
-        );
-    }
-
-    /// A name with no ACE label comes back lower-cased and otherwise
-    /// untouched — ToUnicode's answer rather than a shortcut, and the
-    /// control that says the decoder is not being reached for every name.
-    #[test]
-    fn an_ascii_name_is_its_own_unicode_form_lower_cased() {
-        assert_eq!(domain_to_unicode("EXAMPLE.COM").unwrap(), "example.com");
-    }
-
-    /// **The two directions do not accept the same names, and that is
-    /// `idna`'s property rather than a defect of this crate's.**
+    /// The deny list is `AsciiDenyList::URL`, applied to the converted
+    /// name for every backend alike.
     ///
-    /// `domain_to_ascii` takes `AsciiDenyList::URL` and refuses
-    /// `a<b.com`; `idna::domain_to_unicode` takes no deny list at all and
-    /// answers it. A test here asserted they agree, and it passed only
-    /// while a layer of this crate's own forced both through one path —
-    /// which is the URL validation that no longer belongs here.
-    ///
-    /// So the assertion is the difference rather than the agreement: this
-    /// crate is a smaller-binary `idna` and inherits its shape, including
-    /// the parts a caller might not expect.
+    /// **It used to be half of a pair.** The other half asserted that
+    /// `domain_to_unicode` accepts `a<b.com`, because `idna`'s reverse
+    /// direction takes no deny list — a difference between the two
+    /// directions that this crate inherited and had to state. There is
+    /// one direction now, so the pair has one member and the difference
+    /// has no subject.
 
     #[test]
     fn the_deny_list_is_the_ascii_direction_s_alone_as_it_is_in_idna() {
         assert!(domain_to_ascii("a<b.com").is_err());
-        assert!(
-            domain_to_unicode("a<b.com").is_ok(),
-            "`idna::domain_to_unicode` takes no deny list, so neither does this — a caller who \
-             needs one applies it where the host is used, which is what `hclient-proto::uri` does"
-        );
     }
 }

@@ -3368,12 +3368,14 @@ Measured, `cargo tree -e normal`, unique crates:
 | Windows | **11** | 48 |
 | Apple | 46 | 46 |
 | Android | **24** | 59 |
+| the browser | **25** | 50 |
 
-Re-measured after Apple left, and its row is the change: **13 and 50**
-became 46 and 46, which is the ICU tables arriving on every Apple build.
-The two rows that still fork are the two targets that carry a UTS 46
-implementation of their own — which is the whole of the rule, read off
-the table.
+**Four rows fork, and the browser is the one that reads wrong.** 25
+against 50 is the smallest ratio here and the largest saving the crate
+has anywhere — 17.4 KiB against 159.1 KiB — because what a wasm module
+weighs is data rather than dependencies, and a crate count cannot see
+that. Linux is the row where the feature buys nothing, which is the
+table's point and is unchanged.
 
 **Android reaches UTS 46 through the JVM, and the reason it is worth two
 crates is the twenty-five it keeps out.** `android.icu.text.IDNA` is
@@ -3480,18 +3482,67 @@ is about the name that was given — which is this crate reimplementing the
 thing it exists to avoid reimplementing. The rule that decides it is
 narrower than *the OS ships something*: it is **the OS carries a UTS 46
 implementation**, and `NSURL` is a URL parser that happens to call ICU.
-So Apple takes the bundled tables, like Linux and wasm, and `apple.rs`,
-`ace.rs` and `objc2-foundation` are gone.
+So Apple took the bundled tables for one commit, and `apple.rs`,
+`ace.rs` and `objc2-foundation` went with it — **and came back one
+question later**, when the browser turned out to be the same shape and
+worth 89%. What this paragraph gets right is Foundation; what it gets
+wrong is the conclusion drawn from it, and the section below is that.
 
 **What it costs is measured and it is the crate's own number**: 13 crates
 on `aarch64-apple-darwin` become 46, because the ICU tables arrive with
-`idna`. That number is what put the backend back once — sixty-five lines
-of arithmetic against thirty-seven crates of tables reads like a bargain
-— and the rule below is why it did not settle it. Android and Windows are where this crate now earns its keep;
-everywhere else it is `idna` under another name, which is what the README
-says rather than something a reader has to work out. **`ä..de` and
+`idna`. That number put the backend back twice — sixty-five lines of
+arithmetic against thirty-seven crates of tables is not a close call —
+and what settled it in the end was neither the number nor the rule above
+but the browser, which is the same shape and could not be given up. **`ä..de` and
 `VerifyDnsLength` stay gone either way** — that was the URL validation,
 and it is not this crate's question.
+
+### One direction, and the crate stopped answering a question nobody asked
+
+`hclient-idn` had two public functions and has one. `domain_to_unicode`
+is gone, every backend is `find` + `to_ascii` + a `Handle`, and the
+acceptance probe asks one question instead of two.
+
+**Nothing needed it, and the reason is structural rather than a survey.**
+An HTTP client converts U to A because `http::Uri` refuses a non-ASCII
+authority — measured, `"https://münchen.de/".parse::<http::Uri>()` is
+`Err(invalid uri character)` — and never converts back, because nothing
+downstream takes a U-label. A grep agrees: the only callers in this
+workspace were the crate's own tests.
+
+**What it cost to keep was four implementations of a direction with no
+caller**, and one target could not supply it at all: no JS API performs
+ToUnicode. That had already grown machinery — a `REVERSES` constant on
+every backend, a second half of the acceptance probe, a refusal path in
+the public function — to describe a narrowness that existed only because
+the surface did. All of it goes with the surface.
+
+**Two smaller things fell out, and both are the same shape.** Windows'
+`uidna_nameToUnicodeUTF8` import and the `accepts_back` probe were dead
+the moment the direction was; and Android's `Answer` enum, which said
+whether a result had to be ASCII, has one reachable variant with one
+direction. That enum is worth its epitaph: it cost the backend its first
+run on a device, because the shared walk was factored out of the ASCII
+direction and kept its closing check, so `nameToUnicode` refused every
+conversion it performed correctly.
+
+**And Apple is back with it.** The backend was removed on the rule *the
+OS must carry a conformant converter*, which Foundation is not — and the
+rule was right about Foundation and wrong about the conclusion, because
+the same is true of the browser and the browser is worth 89%. What the
+two share is that they are reached through a URL parser; what `ace.rs`
+supplies is the case folding and the ACE validation such a parser leaves
+out. The difference is scale, and it is measured: Foundation gets eight
+corpus rows wrong and needs all of that file, the browser gets one wrong
+and needs a single line, because WHATWG defines its host parsing as
+UTS 46 and Apple documents nothing.
+
+So the rule that decides a backend is neither *the OS ships something*
+nor *the OS carries a conformant converter*. It is **the OS carries the
+tables**, and a backend supplies whatever of UTS 46 the platform's entry
+point leaves out — nothing for `icuuc.dll` and ICU4J, sixty-five lines
+for `NSURL`, one for `new URL()`. Five backends, and the ICU tables stay
+off four targets.
 
 ### The browser is the case Apple was not, and one objection nearly closed it
 

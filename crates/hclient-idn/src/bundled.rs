@@ -40,15 +40,6 @@ pub(crate) struct Bundled;
 /// with `cfg_select!` and then name no platform at all.
 pub(crate) type Handle = Bundled;
 
-/// `idna::domain_to_unicode` exists, so this backend answers both ways.
-///
-/// **A backend that answers `false` is not broken, it is narrower**, and
-/// the one that does is `web`: no JS API anywhere performs ToUnicode. The
-/// constant is read by [`crate::selected`], which then asks the
-/// acceptance probe only the question the backend claims to answer, and
-/// by [`crate::domain_to_unicode`], which refuses rather than guessing.
-pub(crate) const REVERSES: bool = true;
-
 /// Always `Some`: the tables are in the binary.
 pub(crate) fn find() -> Option<Bundled> {
     Some(Bundled)
@@ -72,18 +63,4 @@ pub(crate) fn to_ascii(_b: &Bundled, domain: &str) -> Option<String> {
     idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::EMPTY)
         .ok()
         .map(Cow::into_owned)
-}
-
-/// The U-label form, through `idna::domain_to_unicode`.
-///
-/// That function hands back an answer *and* a `Result`, and the answer is
-/// a best effort even when the errors are non-empty — so the errors are
-/// what decides here, not the string. This crate has no bit mask to
-/// forgive them with on this path, unlike the two ICU backends: `idna`
-/// reports an opaque `Errors`, so any error at all is a refusal, which is
-/// the safe direction and the one the round-trip in
-/// `policy::to_unicode_over` would enforce anyway.
-pub(crate) fn to_unicode(_b: &Bundled, domain: &str) -> Option<String> {
-    let (unicode, result) = idna::domain_to_unicode(domain);
-    result.ok().map(|()| unicode)
 }
