@@ -13,7 +13,7 @@ name = "system-resolver"
 #
 # This crate is the one that can afford it: five public names, and a use
 # outside HTTP entirely.
-version = "0.1.0"
+version = "0.2.0"
 description = "Ask the operating system's own DNS resolver for any record type, not just A and AAAA. Linux, macOS, iOS, Android, FreeBSD, Windows."
 keywords     = ["dns", "resolver", "getaddrinfo", "res_query", "svcb"]
 categories   = ["network-programming", "os"]

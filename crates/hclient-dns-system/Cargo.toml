@@ -59,7 +59,7 @@ hclient-rt   = { path = "../hclient-rt",  version = "0.1.0-alpha.2" }
 # on every target and answers `Support::None` where it has no backend,
 # which is what keeps `supports_svcb` a single statement rather than a
 # second copy of a `#[cfg]` list.
-system-resolver = { path = "../system-resolver", version = "0.1.0" }
+system-resolver = { path = "../system-resolver", version = "0.2.0" }
 thiserror      = { workspace = true }
 
 [dev-dependencies]
