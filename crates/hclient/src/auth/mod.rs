@@ -232,7 +232,8 @@ pub trait AuthFlow {
 ///
 /// **Neither trait declares an auto trait**, which is this workspace's
 /// rule for a seam: the demands live where the facade *stores* the value,
-/// in [`BoxedFlow`] and [`SharedAuth`], and are amendment C12's shape —
+/// in [`BoxedFlow`] and in the `Arc` `RequestBuilder::auth` wraps a scheme
+/// into, and are amendment C12's shape —
 /// a bound on a value the caller hands over at an opt-in call.
 ///
 /// The rule was reached the hard way here. A `pub trait AuthFlow: Send`
@@ -262,7 +263,7 @@ impl<T: Auth + ?Sized> Auth for std::sync::Arc<T> {
 pub type BoxedFlow = Box<dyn AuthFlow + Send>; // send-bound-exception: amendment-C12
 
 /// A scheme, as the client stores it — shared by every clone.
-pub type SharedAuth = std::sync::Arc<dyn Auth + Send + Sync>; // send-bound-exception: amendment-C12
+pub(crate) type SharedAuth = std::sync::Arc<dyn Auth + Send + Sync>; // send-bound-exception: amendment-C12
 
 /// RFC 7616 digest, as an [`Auth`].
 ///
