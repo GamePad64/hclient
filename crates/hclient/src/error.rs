@@ -130,6 +130,7 @@ pub(crate) struct BodyVanishedBeforeRetry;
 /// the bound that was actually in force.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the whole operation exceeded its total timeout of {0:?}")]
+#[non_exhaustive]
 pub struct TotalTimeoutElapsed(pub Duration);
 
 /// The body yielded more bytes than the client's limit allowed.
@@ -167,6 +168,7 @@ pub struct LineTooLong {
 /// `Error::source().downcast_ref::<DecodeFailed>()` is the way.
 #[derive(Debug, thiserror::Error)]
 #[error("the response body is not valid `{coding}` data")]
+#[non_exhaustive]
 pub struct DecodeFailed {
     /// The coding that was attempted, as it appeared on the wire.
     pub coding: &'static str,
@@ -213,6 +215,7 @@ pub enum CharsetError {
     "a multipart body sets its own Content-Type, because the header carries the boundary — \
      remove the Content-Type, or build the body with multipart::Form::encode and set both"
 )]
+#[non_exhaustive]
 pub struct ContentTypeIsNotOursToKeep;
 
 /// RFC 7617 §2 makes `:` the separator between a username and a password,
@@ -220,6 +223,7 @@ pub struct ContentTypeIsNotOursToKeep;
 /// anyway would make `("a:b", "")` and `("a", "b")` the same bytes.
 #[derive(Debug, thiserror::Error)]
 #[error("a Basic-auth username may not contain a colon")]
+#[non_exhaustive]
 pub struct ColonInUsername;
 
 /// What can go wrong while turning a [`Form`](crate::multipart::Form) into bytes.
@@ -284,6 +288,7 @@ pub enum MultipartError {
 /// HTTP/1 request trailers one crate over.
 #[derive(Debug, thiserror::Error)]
 #[error("a multipart part's body emitted trailers, which multipart/form-data cannot carry")]
+#[non_exhaustive]
 pub struct TrailersInAPart;
 
 #[derive(Debug, thiserror::Error)]
