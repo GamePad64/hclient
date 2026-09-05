@@ -102,7 +102,8 @@
 //! [`RetryKind::ViaFactory`]: hclient_core::RetryKind::ViaFactory
 //! [`RetryKind::Impossible`]: hclient_core::RetryKind::Impossible
 
-pub use crate::error::{MultipartError, TrailersInAPart};
+pub use crate::error::MultipartError;
+use crate::error::TrailersInAPart;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::{Error, ErrorKind, RequestBody};

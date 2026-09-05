@@ -359,10 +359,16 @@ pub mod proxy {
     /// read them and decide rather than hand them straight over.
     #[cfg(feature = "system-proxy")]
     pub use hclient_native::proxy::system;
+    // **`Handshake`, `Step` and `Approach` are deliberately not here.**
+    // They are the sans-io seam for *writing* a proxy protocol, and one is
+    // written against `hclient-proxy`, which owns the trait — no doctest
+    // here names them and nothing configured through this module does.
+    // What a caller of the facade needs is the values they hand to
+    // `default_transport()?.proxy(..)`, plus the refusals they meet
+    // through `Error::source`.
     pub use hclient_native::proxy::{
-        Approach, ConnectError, Handshake, HttpConnect, NoProxy, Proxy, ProxyRefused, ProxyScheme,
-        Socks4, Socks4HandshakeError, Socks4Refused, Socks5, Socks5HandshakeError, Socks5Refused,
-        Step,
+        ConnectError, HttpConnect, NoProxy, Proxy, ProxyRefused, ProxyScheme, Socks4,
+        Socks4HandshakeError, Socks4Refused, Socks5, Socks5HandshakeError, Socks5Refused,
     };
 }
 
@@ -487,10 +493,18 @@ pub use hclient_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RequireVer
 pub mod retry {
     pub use crate::config::SharedRetryPolicy;
     pub use hclient_proto::backoff::Backoff;
+    // **One verdict vocabulary, not two.** `Verdict`, `Stop` and `Outcome`
+    // belong to `RetryPolicy::decide`, the pure function in
+    // `hclient-proto`; `RetryVerdict` and `ProposedRetry` belong to the
+    // trait this facade's `ClientBuilder::retry` takes. A caller who
+    // *configures* writes `Standard`; one who *implements* writes the
+    // trait. Neither needs the inner three, and two types called a verdict
+    // in one module is the kind of thing a published crate cannot take
+    // back. `retry_after_seconds` goes with them: it is the header parser
+    // the policy uses, not something a caller calls.
     pub use hclient_proto::retry::{
-        Never, Outcome, ProposedRetry, RetryAll, RetryAnd, RetryFromFn, RetryPolicy,
-        RetryPolicyExt, RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard, Stop, Verdict,
-        retry_after_seconds,
+        Never, ProposedRetry, RetryAll, RetryAnd, RetryFromFn, RetryPolicy, RetryPolicyExt,
+        RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard,
     };
 }
 // The observability seam, re-exported for the same reason

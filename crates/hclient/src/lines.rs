@@ -21,8 +21,7 @@ use hclient_core::{Error, ErrorKind};
 use hclient_proto::lines::LineSplitter;
 use http_body::Body as HttpBody;
 
-pub use crate::error::LineTooLong;
-
+use crate::error::LineTooLong;
 use crate::response::Response;
 
 /// The ceiling [`Response::lines`] applies to a single line.
