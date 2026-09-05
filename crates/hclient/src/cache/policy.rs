@@ -254,10 +254,12 @@ impl<S: CacheStore> HttpCache<S> {
     /// across, the entries going wherever `f` puts them.
     ///
     /// `HttpCache` is a policy and `S` is where the bytes live, so the two
-    /// should be separable after construction as well as at it. What asked
-    /// for it is `hclient`, which holds one cache type for every caller and
-    /// so must erase `S` behind a value of its own.
-    pub fn map_store<R>(self, f: impl FnOnce(S) -> R) -> HttpCache<R> {
+    /// are separable after construction as well as at it. `pub(crate)`,
+    /// because the one thing that asks is `ClientBuilder::cache`, which
+    /// holds one cache type for every caller and so must erase `S` behind
+    /// a value of its own. A caller who wants a different store builds one
+    /// with `with_store`.
+    pub(crate) fn map_store<R>(self, f: impl FnOnce(S) -> R) -> HttpCache<R> {
         HttpCache {
             store: f(self.store),
             limits: self.limits,
@@ -276,10 +278,6 @@ impl<S: CacheStore> HttpCache<S> {
 
     pub fn store_ref(&self) -> &S {
         &self.store
-    }
-
-    pub fn store_mut(&mut self) -> &mut S {
-        &mut self.store
     }
 
     /// What to do about a request that is about to be sent.

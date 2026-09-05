@@ -207,7 +207,7 @@ impl<P: PublicSuffixList> CookieJar<P> {
     /// Rebuilding by iteration would not do: `next_seq` is what orders
     /// cookies of equal path length in the `Cookie` header, and a jar
     /// rebuilt from `iter` would restart it.
-    pub fn map_suffixes<Q>(self, f: impl FnOnce(P) -> Q) -> CookieJar<Q> {
+    pub(crate) fn map_suffixes<Q>(self, f: impl FnOnce(P) -> Q) -> CookieJar<Q> {
         CookieJar {
             cookies: self.cookies,
             limits: self.limits,
