@@ -59,13 +59,13 @@ thiserror = { workspace = true }
 # oversight — see the neighbours.
 hclient      = { workspace = true, features = ["json", "gzip", "brotli", "deflate", "zstd", "cookies", "charset", "digest-auth"] }
 hclient-core = { workspace = true }
-hclient-native     = { path = "../hclient-native",     version = "0.1.0-alpha.2" }
-hclient-dns        = { path = "../hclient-dns",        version = "0.1.0-alpha.2" }
-hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.2" }
-hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.2" }
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.2", optional = true, features = ["platform-verifier"] }
-hclient-tls-native-tls = { path = "../hclient-tls-native-tls", version = "0.1.0-alpha.2", optional = true }
-hclient-tungstenite = { path = "../hclient-tungstenite", version = "0.1.0-alpha.2", optional = true }
+hclient-native     = { path = "../hclient-native",     version = "0.1.0-alpha.3" }
+hclient-dns        = { path = "../hclient-dns",        version = "0.1.0-alpha.3" }
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.3" }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.3" }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.3", optional = true, features = ["platform-verifier"] }
+hclient-tls-native-tls = { path = "../hclient-tls-native-tls", version = "0.1.0-alpha.3", optional = true }
+hclient-tungstenite = { path = "../hclient-tungstenite", version = "0.1.0-alpha.3", optional = true }
 
 # The two halves of the WebSocket seam are a `Stream` and a `Sink`, and
 # `--ws` drives both by hand with `std::future::poll_fn` rather than

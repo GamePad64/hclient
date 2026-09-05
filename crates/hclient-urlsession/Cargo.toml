@@ -62,7 +62,7 @@ block2 = "0.6"
 # crate's own sans-io HTTP-proxy half, which this never calls. No `url`
 # and no ICU tables on either side, which is what `just graph-proxy-cost`
 # asserts.
-hclient-proxy = { path = "../hclient-proxy", version = "0.1.0-alpha.2", features = ["system"] }
+hclient-proxy = { path = "../hclient-proxy", version = "0.1.0-alpha.3", features = ["system"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies.objc2-foundation]
 version = "0.3"

@@ -528,10 +528,10 @@ web-time      = "1.1.0"
 thiserror      = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-hclient-native     = { path = "../hclient-native",     version = "0.1.0-alpha.2", optional = true }
-hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.2", optional = true }
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.2", optional = true, features = ["platform-verifier"] }
-hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.2", optional = true }
+hclient-native     = { path = "../hclient-native",     version = "0.1.0-alpha.3", optional = true }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.3", optional = true }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.3", optional = true, features = ["platform-verifier"] }
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.3", optional = true }
 
 # The browser-only extra feature `jitter`'s `getrandom` call needs: on
 # `wasm32-unknown-unknown` `getrandom` has no default backend and must be
@@ -571,7 +571,7 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 # pull in a transport at all, on any target — the same contract the four
 # native entries keep.
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
-hclient-fetch = { path = "../hclient-fetch", version = "0.1.0-alpha.2", optional = true }
+hclient-fetch = { path = "../hclient-fetch", version = "0.1.0-alpha.3", optional = true }
 
 [dev-dependencies]
 static_assertions = { workspace = true }
@@ -608,8 +608,8 @@ url               = "2"
 # outside `-e normal`, so the example's imports do not appear in a
 # consumer's graph — which matters here, since the example's whole point is
 # how small that graph can be.
-hclient-dns        = { path = "../hclient-dns",        version = "0.1.0-alpha.2" }
-hclient-tls        = { path = "../hclient-tls",        version = "0.1.0-alpha.2" }
+hclient-dns        = { path = "../hclient-dns",        version = "0.1.0-alpha.3" }
+hclient-tls        = { path = "../hclient-tls",        version = "0.1.0-alpha.3" }
 
 # `tests/two_runtimes.rs`'s dependencies — an end-to-end run of one generic
 # body on both tokio and smol without a single `#[cfg]` (Task 14).

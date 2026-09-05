@@ -50,8 +50,8 @@ hclient-core = { workspace = true }
 # 9460's client rules over them are behind no feature, because they name
 # no decoder. `hclient-dns-doh` still asks for `codec`; it decodes whole
 # messages, which is what that decoder is for.
-hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.2" }
-hclient-rt   = { path = "../hclient-rt",  version = "0.1.0-alpha.2" }
+hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.3" }
+hclient-rt   = { path = "../hclient-rt",  version = "0.1.0-alpha.3" }
 # Every platform call this crate used to make. It owns `res_query`,
 # `android_res_nquery`, `DnsQueryRaw` and `DnsQuery_UTF8`, and hands back
 # records with their RDATA; what is left here is RFC 9460's client rules

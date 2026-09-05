@@ -19,7 +19,7 @@ futures-core     = "0.3"
 futures-util     = { version = "0.3", default-features = false, features = ["std"] }
 hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
 hclient-core     = { workspace = true }
-hclient-dns      = { path = "../hclient-dns", version = "0.1.0-alpha.2" }
+hclient-dns      = { path = "../hclient-dns", version = "0.1.0-alpha.3" }
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }

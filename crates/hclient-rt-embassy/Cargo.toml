@@ -66,7 +66,7 @@ medium-ieee802154 = ["embassy-net/medium-ieee802154"]
 [dependencies]
 embassy-net  = { version = "0.9", default-features = false, features = ["tcp"] }
 embassy-time = { version = "0.5", default-features = false }
-hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.2" }
+hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.3" }
 # Directly, not through `hclient-rt`: this crate implements
 # `hyper::rt::{Read, Write}` itself, and a re-export would not be nameable
 # in an `impl`.
@@ -137,13 +137,13 @@ log                = { version = "0.4", features = ["std"] }
 smoltcp            = { version = "0.13", default-features = false, features = ["log"] }
 hclient          = { workspace = true }
 hclient-core     = { workspace = true }
-hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.2" }
+hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.3" }
 # The control in `tests/seam.rs`: a transport that *can* promise `Send`,
 # so the negative assertion beside it cannot pass vacuously. Chosen for
 # being tiny — no runtime, no TLS — since this crate is the embedded one.
-hclient-mock     = { path = "../hclient-mock", version = "0.1.0-alpha.2" }
-hclient-dns      = { path = "../hclient-dns", version = "0.1.0-alpha.2" }
-hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.2" }
+hclient-mock     = { path = "../hclient-mock", version = "0.1.0-alpha.3" }
+hclient-dns      = { path = "../hclient-dns", version = "0.1.0-alpha.3" }
+hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.3" }
 # The scenarios collect response bodies themselves, because the embedded
 # path is `Transport` rather than `hclient::Client` — see `tuntap.rs`'s
 # `get`. `hclient::Collected` is not reachable from outside that facade.

@@ -21,7 +21,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-hclient-rt         = { path = "../hclient-rt",   version = "0.1.0-alpha.2" }
+hclient-rt         = { path = "../hclient-rt",   version = "0.1.0-alpha.3" }
 embedded-nal-async = "0.9"
 embedded-io-async  = "0.7"
 hyper              = { version = "1.11", default-features = false }
