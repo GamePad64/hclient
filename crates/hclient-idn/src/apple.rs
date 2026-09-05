@@ -98,8 +98,17 @@
 //!    and it is bounded rather than merely admitted:
 //!    `tests/differential.rs`'s
 //!    `where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_differently`
-//!    asserts, on the runner, that every one of these is a **refusal** —
-//!    a name the caller must spell as an A-label — and never a third host.
+//!    asserts, on the `macos-latest` runner, that every one of these is a
+//!    **refusal** — a name the caller must spell as an A-label — and never
+//!    a third host.
+//!
+//!    **That sentence was false for as long as it had stood.** The test
+//!    was `#[cfg(icu_backend)]`, so it compiled on Windows and nowhere
+//!    else — and Windows is the one platform where none of these eight
+//!    diverges, because ICU masks exactly the six bits they trip. The
+//!    rows were chosen for Apple and asserted where Apple is not. It is
+//!    ungated now, so the runner this paragraph names is a runner that
+//!    runs it.
 //!
 //! 4. **Which getter returns the A-label was settled by a test, and the
 //!    answer is [`NSURL::host`].** `NSURL::host` and

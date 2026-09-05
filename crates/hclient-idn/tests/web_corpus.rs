@@ -157,3 +157,58 @@ fn the_public_entry_point_answers_what_idna_answers_on_every_row() {
         wrong.join("\n")
     );
 }
+
+/// Every input where this crate is **stricter** than `idna` in a browser,
+/// and the only property that makes that acceptable.
+///
+/// **The browser has this and had no check for it.** `web.rs` scans the
+/// input for the WHATWG forbidden-domain set before handing it to
+/// `new URL()`, exactly as `apple.rs` does and for the same reason: a
+/// denied byte is one the parser consumes as a delimiter, so
+/// `ex@ämple.com` comes back as `xn--mple-hva.com` — a different origin
+/// returned as a clean success, which `ace::ascii_labels_survived` cannot
+/// catch because the label that lost the `ex@` is the non-ASCII one it
+/// does not compare.
+///
+/// The cost is that a forbidden byte UTS 46's mapping *removes* is
+/// refused here where `idna` answers: `>` followed by U+0338 composes to
+/// `≯`, so `idna` says `xn--hdh` and this crate says nothing. That is the
+/// safe direction — a name the caller must spell as an A-label — and what
+/// must never happen is the third answer, a host that is neither.
+///
+/// `tests/differential.rs` asserts the same property for Apple, which has
+/// the same scan. It was `#[cfg(icu_backend)]` and so ran only on Windows,
+/// which has no scan at all; the browser half did not exist.
+#[wasm_bindgen_test]
+fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_differently() {
+    const STRICTER: &[(&str, &str)] = &[
+        (
+            ">\u{338}",
+            "a forbidden byte that mapping removes — the input scan cannot see that far",
+        ),
+        (
+            "a\u{ff0f}b.de",
+            "fullwidth solidus, which MAPS to `/` — refused on the answer rather than the input",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (input, why) in STRICTER {
+        let oracle = idna_says(input);
+        let ours = hclient_idn::domain_to_ascii(input)
+            .ok()
+            .map(Cow::into_owned);
+        if ours.is_some() && ours != oracle {
+            wrong.push(format!(
+                "  {input:?} ({why}): `idna` says {oracle:?} and this crate says {ours:?} — a \
+                 THIRD host, not a refusal"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {} inputs came back as a host that is neither `idna`'s answer nor an error:\n{}",
+        wrong.len(),
+        STRICTER.len(),
+        wrong.join("\n")
+    );
+}

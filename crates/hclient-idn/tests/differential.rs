@@ -61,7 +61,6 @@
 // `Cow` import, which left `testing::` unresolved at five sites and `Cow`
 // imported twice. Neither is visible on Linux, where every use of both is
 // inside a function this same `cfg` removes.
-#[cfg(icu_backend)]
 use hclient_idn::testing;
 use rstest::rstest;
 use std::borrow::Cow;
@@ -252,10 +251,23 @@ fn the_platform_backend_passed_its_acceptance_probe() {
 /// to prevent — where a refusal is only a name the caller must spell as an
 /// A-label itself.
 ///
-/// Every row prints what actually happened, so the Windows run
-/// *report* which of the two it was instead of leaving it to be predicted
-/// from Apple's source.
-#[cfg(icu_backend)]
+/// Every row prints what actually happened, so a run *reports* which of
+/// the two it was instead of leaving it to be predicted from a platform's
+/// source.
+///
+/// **It was `#[cfg(icu_backend)]` and compiled on Windows alone**, which
+/// is the one platform where none of these eight diverges: ICU masks
+/// exactly the six error bits they trip, so `ours != oracle` could never
+/// be true and the assertion could not fail. The eight were chosen for
+/// **Apple**, and `apple.rs` cites this test as bounding them *"on the
+/// runner"* — a runner that did not compile it. That is *a check that
+/// cannot fail* with the subject changed to *a check that does not run
+/// where its subject is*, and it is this crate's own recurring defect.
+///
+/// It is ungated now. On Windows it stays what it always was, a control
+/// where every row must come back equal; on Apple it is the assertion the
+/// prose has claimed all along; on Linux the platform *is* `idna`, so it
+/// is equal by construction and costs nothing.
 #[test]
 fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_differently() {
     const STRICTER: &[(&str, &str)] = &[
@@ -272,6 +284,19 @@ fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_diffe
         (
             "a\"ü.de",
             "the A-label keeps the quote, which RFC 3986's reg_name forbids",
+        ),
+        // Not an error bit at all, and the reason it belongs here anyway:
+        // a URL parser is handed the name before UTS 46 maps it, so
+        // `apple.rs` and `web.rs` scan the INPUT for the WHATWG
+        // forbidden-domain set — otherwise `ex@ämple.com` comes back as
+        // `xn--mple-hva.com`, a different origin returned as a clean
+        // success. The cost is this: `>` followed by U+0338 composes to
+        // `≯`, so mapping removes the forbidden byte and `idna` answers
+        // `xn--hdh` where those two refuse. Stricter, in the safe
+        // direction, and asserted rather than merely admitted.
+        (
+            ">\u{338}",
+            "a forbidden byte that UTS 46's mapping removes — the input scan cannot see that far",
         ),
     ];
     if !testing::has_platform() {
