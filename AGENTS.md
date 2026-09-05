@@ -3749,11 +3749,13 @@ family's release. Nothing in it depends on `hclient`'s mechanisms — two
 public functions, an error type, and a use outside HTTP entirely — and
 `cargo tree -i` names `hclient-proto` as its only in-workspace consumer.
 
-**The version goes to `0.1.0` for the reason `system-resolver`'s did.**
-The crate is already on crates.io at `0.1.0-alpha.2`, and inside a
-pre-release `cargo semver-checks` executes none of its lints, because
-every step out of one is a major step. Leaving pre-release is what gives
-the gate a subject; versioning separately is what lets this crate do that
+**The version left pre-release for the reason `system-resolver`'s did**,
+and it has since gone further: `0.1.0` on 2026-09-02 and **`0.2.0` on
+2026-09-05**, the second because dropping `domain_to_unicode` is a
+breaking change and `cargo semver-checks` said so on the first try.
+Inside a pre-release that tool executes none of its lints, because every
+step out of one is a major step. Leaving pre-release is what gives the
+gate a subject; versioning separately is what lets this crate do that
 without promising the same of a family whose seams are still moving.
 
 **Its floor is 1.95.0, measured rather than picked**: 1.94 rejects
@@ -3770,19 +3772,38 @@ its own toolchain, and `just msrv-toolchains` installs the floors it
 finds, so the workflow carries no copy of them either. `just semver`
 finds every crate whose `[package.metadata.release] shared-version` names
 itself, asks crates.io for its newest version, and sorts it into one of
-three: no release at all, a **pre-release baseline** where no lint can
-run and that is not a defect, or a stable baseline where checks are
-required. A third such crate is covered by both the day it writes those
-two lines, and the pre-release exemption ends by itself the day a stable
-version is published — because both read the registry and the manifests
-rather than a list.
+**four**: no release at all, a **pre-release baseline** where no lint can
+run and that is not a defect, a **deliberate major step** — a working
+tree whose version has moved out of the published one's compatible range,
+where breaking is exactly what was intended and no lint runs either — or
+a stable baseline, where checks are required. A third such crate is
+covered by all of them the day it writes those two lines, because they
+read the registry and the manifests rather than a list.
+
+**The fourth bucket is `hclient-idn`'s, and it was needed the day the
+crate broke on purpose.** Removing `domain_to_unicode` from a published
+`0.1.0` is what `cargo semver-checks` is for and it caught it; the answer
+is a major bump rather than a smaller change, and after one the tool
+permits everything and reports nothing. Without a bucket for that, a
+deliberate break and a gate that silently stopped looking are the same
+green run. It was verified in the failing direction at `0.1.1`, where the
+checks come back.
 
 **And the count is now per crate rather than in total**, which is the
 half that would otherwise have gone quietly wrong: 196 checks from one
 crate and zero from another add up to a green run over a crate nothing
-examined. Today it reports `196 checks across 1 crate(s) with a stable
-baseline`, and names `hclient-idn(0.1.0-alpha.2)` as the pre-release
-whose lints could not run.
+examined.
+
+**And the sentence above aged correctly, which is rare enough here to be
+worth the line.** It predicted that the exemption would end by itself the
+day a stable version was published, with no edit to the recipe, because
+the recipe reads the registry. That day came: `hclient-idn` 0.2.0 went up
+on 2026-09-05, and the gate went from `196 checks across 1 crate(s) with
+a stable baseline` to **`392 checks across 2`** — the crate's own 196
+running for the first time, and passing — without a line changing. Every
+other claim in this file that turned out to be perishable was written as
+though it were permanent; this one named the condition that would retire
+it.
 
 Two smaller things the wiring cost, both worth knowing. `[ -n "$x" ] &&
 echo …` exits a recipe under `set -euo pipefail` whenever `$x` is empty,
