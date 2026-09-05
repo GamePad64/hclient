@@ -38,7 +38,7 @@ hclient-core = { workspace = true }
 # `wasi:http` types (`ErrorCode` etc.) instead of raw WIT bindings. We don't
 # disable the default features (`std`, `bitflags`): this crate only ever
 # targets `wasm32-wasip2`, a `no_std` build isn't a scenario here.
-wasip3       = { version = "0.7.0", features = ["http-compat"] }
+wasip3       = { version = "0.8.0", features = ["http-compat"] }
 # Not a new crate in the wasm32-wasip2 graph: both `hclient-core` and
 # `wasip3` (its own `http_compat::Error` is a `thiserror` derive) already
 # pull it in — checked with

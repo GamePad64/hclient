@@ -221,8 +221,20 @@ pub(super) fn platform() -> Raw {
         number(d, key).unwrap_or(0) == 1
     }
 
+    // **`build` became fallible in `system-configuration` 0.8, and that is
+    // a soundness fix rather than a signature change.** 0.6 handed the
+    // result of `SCDynamicStoreCreateWithOptions` to
+    // `wrap_under_create_rule` with no null check, so a store the OS
+    // declined to create was a `SCDynamicStore` that dereferenced null on
+    // first use. It is an `Option` now.
+    //
+    // Both failures take the exit that was already here: the reader has
+    // nothing to report either way, and `platform() -> Raw` carries no
+    // channel to say which. That collapse is the signature's and not a
+    // decision taken here — a reader that could distinguish them would
+    // need `Raw` to grow a variant, and nothing above it could act on one.
     let store = SCDynamicStoreBuilder::new("hclient-proxy").build();
-    let Some(d) = store.get_proxies() else {
+    let Some(d) = store.and_then(|s| s.get_proxies()) else {
         return Raw::default();
     };
 
