@@ -72,7 +72,7 @@ windows-registry = { version = "0.6", optional = true }
 # this target, so an app that reaches the platform trust store has already
 # paid for it.
 [target.'cfg(target_os = "android")'.dependencies]
-jni         = { version = "0.21", optional = true }
+jni         = { version = "0.22", optional = true }
 ndk-context = { version = "0.1", optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]

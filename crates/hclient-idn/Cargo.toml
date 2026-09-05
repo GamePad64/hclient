@@ -123,7 +123,7 @@ windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 # The alternative is the bundled tables, which is the ~1.9 MB of ICU data
 # this crate exists to keep off a mobile target.
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
+jni = "0.22"
 ndk-context = "0.1"
 
 # Everywhere else — Linux and the other ELF unixes, WASI, and Apple.
