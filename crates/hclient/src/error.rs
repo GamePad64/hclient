@@ -239,8 +239,15 @@ pub enum MultipartError {
     /// There is deliberately no fallback — see this module's
     /// documentation on why a fixed boundary is the one value that must
     /// never be emitted.
+    /// The cause is boxed rather than typed, and that is a stability
+    /// decision rather than a style one: it was `getrandom::Error`, so a
+    /// major release of a crate this one uses for sixteen bytes would have
+    /// been a breaking change here, and a caller matching this variant had
+    /// to depend on `getrandom` to name what they caught. The chain is
+    /// unchanged — `source()` still reaches the OS's reason — and so is
+    /// the message.
     #[error("no entropy available for a multipart boundary: {0}")]
-    NoEntropy(#[from] getrandom::Error),
+    NoEntropy(#[source] Box<dyn std::error::Error + Send + Sync>), // send-bound-exception: amendment-C1
 
     /// A caller-supplied boundary that RFC 2046 §5.1.1 does not allow:
     /// empty, longer than 70 characters, ending in a space, or carrying a

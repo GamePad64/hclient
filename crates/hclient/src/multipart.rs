@@ -137,7 +137,7 @@ impl Boundary {
     /// never has to quote one of these.
     pub fn random() -> Result<Self, MultipartError> {
         let mut raw = [0u8; 16];
-        getrandom::fill(&mut raw)?;
+        getrandom::fill(&mut raw).map_err(|e| MultipartError::NoEntropy(Box::new(e)))?;
         Ok(Self(format!("----hclient-{}", const_hex::encode(raw))))
     }
 
