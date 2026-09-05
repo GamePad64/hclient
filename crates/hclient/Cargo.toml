@@ -659,7 +659,7 @@ tokio              = { version = "1", features = ["rt-multi-thread"] }
 # is any use, and an ungated dev-dependency still has to BUILD for a target
 # whose test file is cfg'd out.
 flate2             = { version = "1.1" }
-brotli             = { version = "8.0", default-features = false, features = ["std"] }
+brotli             = { version = "9.0", default-features = false, features = ["std"] }
 # The zstd ENCODER for the same server, and it is an oracle rather than a
 # convenience — the role `multer` plays for `multipart.rs` and `url` for
 # `uri.rs` one crate over. This is `zstd` 0.13, i.e. **libzstd itself**
