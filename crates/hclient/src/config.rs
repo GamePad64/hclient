@@ -212,8 +212,7 @@ pub(crate) fn effective_uri(base: Option<&http::Uri>, url: &str) -> Result<http:
 /// once per hop inside `execute`. A transport is handed the result, never
 /// this function; the one caller outside `src` is this crate's own
 /// `tests/timeouts.rs`.
-#[doc(hidden)]
-pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts {
+pub(crate) fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts {
     match req.get::<Timeouts>() {
         None => *client,
         Some(o) => Timeouts {

@@ -365,7 +365,7 @@ pub fn default_transport() -> DefaultTransport {
     hclient_fetch::Fetch::new()
 }
 
-pub use config::{Config, Timeouts, effective_timeouts};
+pub use config::{Config, Timeouts};
 pub use deadline::NoClock;
 
 // This list must cover not just `Capabilities`/
