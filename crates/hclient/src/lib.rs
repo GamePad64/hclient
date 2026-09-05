@@ -69,7 +69,9 @@
 //! | basic or bearer auth | [`RequestBuilder::basic_auth`], [`RequestBuilder::bearer_auth`] |
 //! | to choose a client certificate per request | [`RequestBuilder::client_identity`] — a label your TLS backend was configured with |
 //! | to put your own value where the transport can read it | [`RequestBuilder::extension`] |
+//! | cookies kept and sent back | [`ClientBuilder::cookie_jar`], behind the `cookies` feature — off by default, because the compiled-in public suffix list is 77 KiB and a browser keeps its own jar anyway |
 //! | to save a cookie jar across a restart | [`cookie::CookieJar::records`] and [`cookie::CookieJar::restore`], behind `cookies` — the format is yours, so no `serde` arrives with it |
+//! | responses cached between requests | [`ClientBuilder::cache`], behind the `cache` feature — RFC 9111, in memory unless you hand it a [`cache::CacheStore`] of your own |
 //! | the `Link:` header a paginated API sends | [`Response::links`] and [`Collected::links`] |
 //! | a body read line by line | [`Response::lines`] — for NDJSON and log tailing |
 //!
