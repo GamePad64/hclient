@@ -42,103 +42,121 @@
 //! value is only acceptable when the degradation has a direction, and a
 //! constant boundary is the single string most likely to appear in
 //! someone's content.
-#![cfg(feature = "test-util")]
+// **The gate is on the items, not on the file.** `#![cfg(..)]` at the
+// top compiles the whole file away when the feature is off — `fn main`
+// with it — and cargo then reports `main` function not found, which is
+// what `just test-no-default` caught. `no_tls_no_resolver.rs` had the
+// shape right already: gate the body and leave a `main` that says what
+// is missing.
+#[cfg(feature = "test-util")]
+mod demo {
 
-use hclient::Client;
-use hclient::mock::MockTransport;
-use hclient::multipart::{Form, Part};
+    use hclient::Client;
+    use hclient::mock::MockTransport;
+    use hclient::multipart::{Form, Part};
 
-fn main() {
-    let transport = MockTransport::new();
-    transport.push_response(
-        http::Response::builder()
-            .status(201)
-            .body("stored")
-            .unwrap(),
-    );
-
-    let client = Client::builder(transport.clone())
-        .base_url("https://example.test".parse().unwrap())
-        .build()
-        .expect("nothing here needs a capability the mock lacks");
-
-    // Stand in for `std::fs::read("report.csv")`. Reading it here rather
-    // than streaming it is the choice that makes the body replayable —
-    // see above.
-    let file: Vec<u8> = b"date,total\n2026-09-05,41\n".to_vec();
-
-    let form = Form::new()
-        // An ordinary field.
-        .part(Part::text("kind", "daily"))
-        // The file. `file_name` is what puts `filename="..."` in the part's
-        // `Content-Disposition`, and it is what makes a server treat this
-        // as an upload rather than a field.
-        //
-        // **Names go out as UTF-8 with three bytes escaped** — LF, CR and
-        // `"` — which is the WHATWG rule all three browser engines moved
-        // to, and every other C0 control is rejected outright. That is a
-        // framing property before an interoperability one: a raw CR LF in
-        // caller data would end the header field and let the rest be read
-        // as further part headers.
-        //
-        // There is no `filename*`: RFC 7578 §4.2 forbids it in as many
-        // words.
-        .part(
-            Part::bytes("file", file)
-                .file_name("report.csv")
-                .mime("text/csv"),
+    pub fn run() {
+        let transport = MockTransport::new();
+        transport.push_response(
+            http::Response::builder()
+                .status(201)
+                .body("stored")
+                .unwrap(),
         );
 
-    let body = futures_executor::block_on(async {
-        client
-            .post("/uploads")
-            .multipart(form)
-            .send()
-            .await?
-            .collect()
-            .await?
-            .text()
-    })
-    .expect("scripted");
+        let client = Client::builder(transport.clone())
+            .base_url("https://example.test".parse().unwrap())
+            .build()
+            .expect("nothing here needs a capability the mock lacks");
 
-    assert_eq!(body, "stored");
+        // Stand in for `std::fs::read("report.csv")`. Reading it here rather
+        // than streaming it is the choice that makes the body replayable —
+        // see above.
+        let file: Vec<u8> = b"date,total\n2026-09-05,41\n".to_vec();
 
-    let sent = transport.requests();
-    let req = &sent[0];
+        let form = Form::new()
+            // An ordinary field.
+            .part(Part::text("kind", "daily"))
+            // The file. `file_name` is what puts `filename="..."` in the part's
+            // `Content-Disposition`, and it is what makes a server treat this
+            // as an upload rather than a field.
+            //
+            // **Names go out as UTF-8 with three bytes escaped** — LF, CR and
+            // `"` — which is the WHATWG rule all three browser engines moved
+            // to, and every other C0 control is rejected outright. That is a
+            // framing property before an interoperability one: a raw CR LF in
+            // caller data would end the header field and let the rest be read
+            // as further part headers.
+            //
+            // There is no `filename*`: RFC 7578 §4.2 forbids it in as many
+            // words.
+            .part(
+                Part::bytes("file", file)
+                    .file_name("report.csv")
+                    .mime("text/csv"),
+            );
 
-    // `multipart` sets the header, and the boundary in it is the one the
-    // body was written with — the two cannot disagree, because the form
-    // draws it once and both read that draw.
-    let ct = req.headers["content-type"].to_str().unwrap();
-    assert!(ct.starts_with("multipart/form-data; boundary="));
+        let body = futures_executor::block_on(async {
+            client
+                .post("/uploads")
+                .multipart(form)
+                .send()
+                .await?
+                .collect()
+                .await?
+                .text()
+        })
+        .expect("scripted");
 
-    // **The replay contract, read off the parts and knowable before the
-    // first byte went out.** Both parts were bytes, so the body can be
-    // sent again — which is what lets a retry policy, or a `425 Too
-    // Early`, send it. Give any part a stream and this becomes
-    // `RetryKind::Impossible`, and no policy overrides that.
-    assert_eq!(req.retry_kind, hclient_core::RetryKind::ViaFactory);
+        assert_eq!(body, "stored");
 
-    // **The length is not visible from here, and the reason is the mock
-    // keeping its own rule.** A form of byte parts has an exact size, and
-    // a real transport turns that into `Content-Length` — but reading it
-    // means running the factory, and this double records only what it can
-    // record *without calling anything*. So `body_size_hint` is `None`:
-    // not "no length", but "not askable without becoming a second
-    // caller". A faithful model of a backend, rather than something that
-    // masks the defect under test.
-    assert_eq!(req.body_size_hint, None);
+        let sent = transport.requests();
+        let req = &sent[0];
 
-    // Rewindable and still not reducible to bytes, which is the design
-    // rather than a gap: a multipart body is written as it goes, so
-    // `snapshot()` has nothing to hand back whole. That is the whole
-    // reason a form is a sequence of parts and not one `Bytes`.
-    assert!(req.body.snapshot().is_none());
+        // `multipart` sets the header, and the boundary in it is the one the
+        // body was written with — the two cannot disagree, because the form
+        // draws it once and both read that draw.
+        let ct = req.headers["content-type"].to_str().unwrap();
+        assert!(ct.starts_with("multipart/form-data; boundary="));
 
-    println!("{ct}");
-    println!("retry_kind: {:?}", req.retry_kind);
-    println!(
-        "body size as the mock may report it: {:?}",
-        req.body_size_hint
-    );
+        // **The replay contract, read off the parts and knowable before the
+        // first byte went out.** Both parts were bytes, so the body can be
+        // sent again — which is what lets a retry policy, or a `425 Too
+        // Early`, send it. Give any part a stream and this becomes
+        // `RetryKind::Impossible`, and no policy overrides that.
+        assert_eq!(req.retry_kind, hclient_core::RetryKind::ViaFactory);
+
+        // **The length is not visible from here, and the reason is the mock
+        // keeping its own rule.** A form of byte parts has an exact size, and
+        // a real transport turns that into `Content-Length` — but reading it
+        // means running the factory, and this double records only what it can
+        // record *without calling anything*. So `body_size_hint` is `None`:
+        // not "no length", but "not askable without becoming a second
+        // caller". A faithful model of a backend, rather than something that
+        // masks the defect under test.
+        assert_eq!(req.body_size_hint, None);
+
+        // Rewindable and still not reducible to bytes, which is the design
+        // rather than a gap: a multipart body is written as it goes, so
+        // `snapshot()` has nothing to hand back whole. That is the whole
+        // reason a form is a sequence of parts and not one `Bytes`.
+        assert!(req.body.snapshot().is_none());
+
+        println!("{ct}");
+        println!("retry_kind: {:?}", req.retry_kind);
+        println!(
+            "body size as the mock may report it: {:?}",
+            req.body_size_hint
+        );
+    }
+}
+
+#[cfg(feature = "test-util")]
+fn main() {
+    demo::run();
+}
+
+#[cfg(not(feature = "test-util"))]
+fn main() {
+    eprintln!("this example needs `--features test-util`");
 }

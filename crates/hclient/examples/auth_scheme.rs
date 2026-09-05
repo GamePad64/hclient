@@ -43,138 +43,156 @@
 //! hop, made before the first send, and it sits *outside* the retry loop:
 //! a retry re-sends the same request, and a flow counting legs must not
 //! count an attempt that failed for the network's reasons.
-#![cfg(feature = "test-util")]
+// **The gate is on the items, not on the file.** `#![cfg(..)]` at the
+// top compiles the whole file away when the feature is off — `fn main`
+// with it — and cargo then reports `main` function not found, which is
+// what `just test-no-default` caught. `no_tls_no_resolver.rs` had the
+// shape right already: gate the body and leave a `main` that says what
+// is missing.
+#[cfg(feature = "test-util")]
+mod demo {
 
-use hclient::Client;
-use hclient::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxedFlow};
-use hclient::mock::MockTransport;
+    use hclient::Client;
+    use hclient::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxedFlow};
+    use hclient::mock::MockTransport;
 
-/// A two-leg scheme: send nothing, read the challenge, answer it.
-///
-/// Deliberately not a real one — the arithmetic of a real scheme is its
-/// own crate's problem, and what this shows is the shape around it.
-#[derive(Debug)]
-struct Token {
-    secret: String,
-}
-
-impl Auth for Token {
-    /// One flow per hop. It carries what `authorize` learned from
-    /// `on_response`, which is the state a shared value could not hold.
-    fn start(&self) -> BoxedFlow {
-        Box::new(TokenFlow {
-            secret: self.secret.clone(),
-            challenge: None,
-        })
-    }
-}
-
-struct TokenFlow {
-    secret: String,
-    /// `None` until the server has challenged. This is the whole reason a
-    /// flow exists per exchange rather than per client.
-    challenge: Option<String>,
-}
-
-impl AuthFlow for TokenFlow {
-    /// Called before **every** attempt, including the first. A scheme that
-    /// can authenticate pre-emptively does it here and never needs a
-    /// second leg; this one has nothing to say until it has been
-    /// challenged.
-    fn authorize(&mut self, req: &AuthRequest<'_>, headers: &mut http::HeaderMap) {
-        let Some(challenge) = &self.challenge else {
-            return;
-        };
-        // A real scheme signs `req.method()` and the request-target here —
-        // which is why `authorize` is handed them, and why the first
-        // design that made a second flow after the response could not
-        // work.
-        let answer = format!("Token {}:{}:{}", challenge, self.secret, req.method());
-        let mut value = http::HeaderValue::from_str(&answer).expect("ASCII");
-        // Keeps the credential out of a `Debug`, which is the only place
-        // it would otherwise show.
-        value.set_sensitive(true);
-        headers.insert(http::header::AUTHORIZATION, value);
+    /// A two-leg scheme: send nothing, read the challenge, answer it.
+    ///
+    /// Deliberately not a real one — the arithmetic of a real scheme is its
+    /// own crate's problem, and what this shows is the shape around it.
+    #[derive(Debug)]
+    struct Token {
+        secret: String,
     }
 
-    /// Only the head is offered, deliberately: a scheme that needed the
-    /// body would make this client buffer every response before deciding.
-    fn on_response(&mut self, status: http::StatusCode, headers: &http::HeaderMap) -> AuthStep {
-        if status != http::StatusCode::UNAUTHORIZED || self.challenge.is_some() {
-            // Either it worked, or it failed with our answer already sent —
-            // and a scheme that kept trying would be an infinite exchange
-            // that only `MAX_LEGS` could stop.
-            return AuthStep::Done;
-        }
-        let Some(nonce) = headers
-            .get(http::header::WWW_AUTHENTICATE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Token nonce="))
-        else {
-            return AuthStep::Done;
-        };
-        self.challenge = Some(nonce.to_owned());
-        // Send it again, and `authorize` above now has something to say.
-        AuthStep::Again
-    }
-}
-
-fn main() {
-    let transport = MockTransport::new();
-    transport.push_response(
-        http::Response::builder()
-            .status(401)
-            .header("www-authenticate", "Token nonce=xyz")
-            .body("")
-            .unwrap(),
-    );
-    transport.push_response(
-        http::Response::builder()
-            .status(200)
-            .body("welcome")
-            .unwrap(),
-    );
-
-    let client = Client::builder(transport.clone())
-        .base_url("https://example.test".parse().unwrap())
-        .build()
-        .expect("nothing here needs a capability the mock lacks");
-
-    let body = futures_executor::block_on(async {
-        client
-            .get("/private")
-            .auth(Token {
-                secret: "s3cret".to_owned(),
+    impl Auth for Token {
+        /// One flow per hop. It carries what `authorize` learned from
+        /// `on_response`, which is the state a shared value could not hold.
+        fn start(&self) -> BoxedFlow {
+            Box::new(TokenFlow {
+                secret: self.secret.clone(),
+                challenge: None,
             })
-            .send()
-            .await?
-            .collect()
-            .await?
-            .text()
-    })
-    .expect("challenge, then answer");
+        }
+    }
 
-    assert_eq!(body, "welcome");
+    struct TokenFlow {
+        secret: String,
+        /// `None` until the server has challenged. This is the whole reason a
+        /// flow exists per exchange rather than per client.
+        challenge: Option<String>,
+    }
 
-    let sent = transport.requests();
-    assert_eq!(
-        sent.len(),
-        2,
-        "one leg for the challenge, one for the answer"
-    );
-    assert!(
-        !sent[0].headers.contains_key("authorization"),
-        "nothing to say before the server has challenged"
-    );
-    assert_eq!(
-        sent[1].headers["authorization"], "Token xyz:s3cret:GET",
-        "the answer carries what the flow learned, and the method it signs"
-    );
+    impl AuthFlow for TokenFlow {
+        /// Called before **every** attempt, including the first. A scheme that
+        /// can authenticate pre-emptively does it here and never needs a
+        /// second leg; this one has nothing to say until it has been
+        /// challenged.
+        fn authorize(&mut self, req: &AuthRequest<'_>, headers: &mut http::HeaderMap) {
+            let Some(challenge) = &self.challenge else {
+                return;
+            };
+            // A real scheme signs `req.method()` and the request-target here —
+            // which is why `authorize` is handed them, and why the first
+            // design that made a second flow after the response could not
+            // work.
+            let answer = format!("Token {}:{}:{}", challenge, self.secret, req.method());
+            let mut value = http::HeaderValue::from_str(&answer).expect("ASCII");
+            // Keeps the credential out of a `Debug`, which is the only place
+            // it would otherwise show.
+            value.set_sensitive(true);
+            headers.insert(http::header::AUTHORIZATION, value);
+        }
 
-    println!("legs: {}", sent.len());
-    println!(
-        "first carried an Authorization: {}",
-        sent[0].headers.contains_key("authorization")
-    );
-    println!("body: {body}");
+        /// Only the head is offered, deliberately: a scheme that needed the
+        /// body would make this client buffer every response before deciding.
+        fn on_response(&mut self, status: http::StatusCode, headers: &http::HeaderMap) -> AuthStep {
+            if status != http::StatusCode::UNAUTHORIZED || self.challenge.is_some() {
+                // Either it worked, or it failed with our answer already sent —
+                // and a scheme that kept trying would be an infinite exchange
+                // that only `MAX_LEGS` could stop.
+                return AuthStep::Done;
+            }
+            let Some(nonce) = headers
+                .get(http::header::WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Token nonce="))
+            else {
+                return AuthStep::Done;
+            };
+            self.challenge = Some(nonce.to_owned());
+            // Send it again, and `authorize` above now has something to say.
+            AuthStep::Again
+        }
+    }
+
+    pub fn run() {
+        let transport = MockTransport::new();
+        transport.push_response(
+            http::Response::builder()
+                .status(401)
+                .header("www-authenticate", "Token nonce=xyz")
+                .body("")
+                .unwrap(),
+        );
+        transport.push_response(
+            http::Response::builder()
+                .status(200)
+                .body("welcome")
+                .unwrap(),
+        );
+
+        let client = Client::builder(transport.clone())
+            .base_url("https://example.test".parse().unwrap())
+            .build()
+            .expect("nothing here needs a capability the mock lacks");
+
+        let body = futures_executor::block_on(async {
+            client
+                .get("/private")
+                .auth(Token {
+                    secret: "s3cret".to_owned(),
+                })
+                .send()
+                .await?
+                .collect()
+                .await?
+                .text()
+        })
+        .expect("challenge, then answer");
+
+        assert_eq!(body, "welcome");
+
+        let sent = transport.requests();
+        assert_eq!(
+            sent.len(),
+            2,
+            "one leg for the challenge, one for the answer"
+        );
+        assert!(
+            !sent[0].headers.contains_key("authorization"),
+            "nothing to say before the server has challenged"
+        );
+        assert_eq!(
+            sent[1].headers["authorization"], "Token xyz:s3cret:GET",
+            "the answer carries what the flow learned, and the method it signs"
+        );
+
+        println!("legs: {}", sent.len());
+        println!(
+            "first carried an Authorization: {}",
+            sent[0].headers.contains_key("authorization")
+        );
+        println!("body: {body}");
+    }
+}
+
+#[cfg(feature = "test-util")]
+fn main() {
+    demo::run();
+}
+
+#[cfg(not(feature = "test-util"))]
+fn main() {
+    eprintln!("this example needs `--features test-util`");
 }

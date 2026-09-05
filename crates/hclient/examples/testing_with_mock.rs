@@ -38,88 +38,106 @@
 //! it cannot honour and `build()` refuses, naming the field. That is the
 //! same gate a real backend gets, so a test cannot be green over a setting
 //! production would reject.
-#![cfg(all(feature = "test-util", feature = "json"))]
+// **The gate is on the items, not on the file.** `#![cfg(..)]` at the
+// top compiles the whole file away when the feature is off — `fn main`
+// with it — and cargo then reports `main` function not found, which is
+// what `just test-no-default` caught. `no_tls_no_resolver.rs` had the
+// shape right already: gate the body and leave a `main` that says what
+// is missing.
+#[cfg(all(feature = "test-util", feature = "json"))]
+mod demo {
 
-use hclient::mock::MockTransport;
-use hclient::{Client, Error};
+    use hclient::mock::MockTransport;
+    use hclient::{Client, Error};
 
-/// The code under test: it knows nothing about mocks, takes a `&Client`,
-/// and is the thing a library actually ships.
-async fn latest_release(client: &Client, repo: &str) -> Result<String, Error> {
-    #[derive(serde::Deserialize)]
-    struct Release {
-        tag_name: String,
+    /// The code under test: it knows nothing about mocks, takes a `&Client`,
+    /// and is the thing a library actually ships.
+    async fn latest_release(client: &Client, repo: &str) -> Result<String, Error> {
+        #[derive(serde::Deserialize)]
+        struct Release {
+            tag_name: String,
+        }
+        let release: Release = client
+            .get(format!("/repos/{repo}/releases/latest"))
+            .header("accept", "application/vnd.example+json")
+            .send()
+            .await?
+            // A `404` becomes an `Err` here rather than a successful parse of
+            // an error document — which is what this call is for.
+            .error_for_status()?
+            .collect()
+            .await?
+            .json()?;
+        Ok(release.tag_name)
     }
-    let release: Release = client
-        .get(format!("/repos/{repo}/releases/latest"))
-        .header("accept", "application/vnd.example+json")
-        .send()
-        .await?
-        // A `404` becomes an `Err` here rather than a successful parse of
-        // an error document — which is what this call is for.
-        .error_for_status()?
-        .collect()
-        .await?
-        .json()?;
-    Ok(release.tag_name)
+
+    pub fn run() {
+        // ── the happy path, through a redirect ────────────────────────────
+        let transport = MockTransport::new();
+        transport.push_response(
+            http::Response::builder()
+                .status(301)
+                .header("location", "/repos/acme/tool/releases/latest?canonical")
+                .body("")
+                .unwrap(),
+        );
+        transport.push_response(
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tag_name":"v2.1.0"}"#)
+                .unwrap(),
+        );
+
+        let client = Client::builder(transport.clone())
+            .base_url("https://api.example.test".parse().unwrap())
+            .build()
+            .expect("nothing configured that this double refuses");
+
+        let tag = futures_executor::block_on(latest_release(&client, "acme/tool"))
+            .expect("two scripted responses");
+        assert_eq!(tag, "v2.1.0");
+
+        // What the code under test actually sent — including the hop it never
+        // knew about, because the client followed it.
+        let sent = transport.requests();
+        assert_eq!(sent.len(), 2, "the redirect was followed by the client");
+        assert_eq!(sent[0].uri.path(), "/repos/acme/tool/releases/latest");
+        assert_eq!(
+            sent[1].headers["accept"], "application/vnd.example+json",
+            "a header set by the caller survives the hop"
+        );
+        println!("tag: {tag}, requests: {}", sent.len());
+
+        // ── the failure path, which is the half usually left untested ─────
+        let transport = MockTransport::new();
+        transport.push_response(
+            http::Response::builder()
+                .status(404)
+                .body(r#"{"message":"Not Found"}"#)
+                .unwrap(),
+        );
+        let client = Client::builder(transport)
+            .base_url("https://api.example.test".parse().unwrap())
+            .build()
+            .unwrap();
+
+        let err = futures_executor::block_on(latest_release(&client, "acme/gone"))
+            .expect_err("a 404 must not parse as a release");
+        // `ErrorKind` is an enum, so this is a match rather than a string
+        // comparison against a message — which is what a `reqwest::Error`
+        // forces, and why three of one consumer's tests had to make real
+        // network requests before they ported.
+        assert_eq!(*err.kind(), hclient::ErrorKind::Status);
+        println!("404 -> {:?}: {err}", err.kind());
+    }
 }
 
+#[cfg(all(feature = "test-util", feature = "json"))]
 fn main() {
-    // ── the happy path, through a redirect ────────────────────────────
-    let transport = MockTransport::new();
-    transport.push_response(
-        http::Response::builder()
-            .status(301)
-            .header("location", "/repos/acme/tool/releases/latest?canonical")
-            .body("")
-            .unwrap(),
-    );
-    transport.push_response(
-        http::Response::builder()
-            .status(200)
-            .body(r#"{"tag_name":"v2.1.0"}"#)
-            .unwrap(),
-    );
+    demo::run();
+}
 
-    let client = Client::builder(transport.clone())
-        .base_url("https://api.example.test".parse().unwrap())
-        .build()
-        .expect("nothing configured that this double refuses");
-
-    let tag = futures_executor::block_on(latest_release(&client, "acme/tool"))
-        .expect("two scripted responses");
-    assert_eq!(tag, "v2.1.0");
-
-    // What the code under test actually sent — including the hop it never
-    // knew about, because the client followed it.
-    let sent = transport.requests();
-    assert_eq!(sent.len(), 2, "the redirect was followed by the client");
-    assert_eq!(sent[0].uri.path(), "/repos/acme/tool/releases/latest");
-    assert_eq!(
-        sent[1].headers["accept"], "application/vnd.example+json",
-        "a header set by the caller survives the hop"
-    );
-    println!("tag: {tag}, requests: {}", sent.len());
-
-    // ── the failure path, which is the half usually left untested ─────
-    let transport = MockTransport::new();
-    transport.push_response(
-        http::Response::builder()
-            .status(404)
-            .body(r#"{"message":"Not Found"}"#)
-            .unwrap(),
-    );
-    let client = Client::builder(transport)
-        .base_url("https://api.example.test".parse().unwrap())
-        .build()
-        .unwrap();
-
-    let err = futures_executor::block_on(latest_release(&client, "acme/gone"))
-        .expect_err("a 404 must not parse as a release");
-    // `ErrorKind` is an enum, so this is a match rather than a string
-    // comparison against a message — which is what a `reqwest::Error`
-    // forces, and why three of one consumer's tests had to make real
-    // network requests before they ported.
-    assert_eq!(*err.kind(), hclient::ErrorKind::Status);
-    println!("404 -> {:?}: {err}", err.kind());
+#[cfg(not(all(feature = "test-util", feature = "json")))]
+fn main() {
+    eprintln!("this example needs `--features test-util,json`");
 }
