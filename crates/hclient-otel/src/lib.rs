@@ -98,7 +98,7 @@ use std::future::Future;
 /// # The front is chosen here, not by a feature
 ///
 /// [`Instrumented::otel`] records an OpenTelemetry span and injects;
-/// [`Instrumented::tracing`] records a `tracing` span and does not.
+/// `Instrumented::tracing` records a `tracing` span and does not.
 /// Enabling both features adds a constructor and changes nothing an
 /// existing call does — which is the point, because Cargo unifies
 /// features across a graph and a feature that decided *what a built

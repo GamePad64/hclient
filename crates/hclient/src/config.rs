@@ -105,14 +105,14 @@ pub struct Config {
     /// see [`crate::NoClock`].
     ///
     /// Set by [`crate::ClientBuilder::total_timeout`] or
-    /// [`crate::Client::total_timeout`]. There is deliberately no
+    /// `Client::total_timeout`. There is deliberately no
     /// per-request override yet — see the v0.2 W4 report.
     pub total: Option<core::time::Duration>,
     /// The caller asked this client to keep a cookie jar of its own.
     ///
     /// A `bool` here and the jar itself in `Client`'s `Inner`, which is
     /// not an arrangement anyone would pick for its looks. `Config` is
-    /// per-handle and `Clone`: [`crate::Client::total_timeout`] hands back
+    /// per-handle and `Clone`: `Client::total_timeout` hands back
     /// a second handle over the same transport by cloning it. A jar in
     /// here would be *copied* by that call, and the two handles would then
     /// disagree about what the server had set — the jar is shared state,
@@ -120,7 +120,7 @@ pub struct Config {
     /// be in `Config` is the one bit `check_supported` reads at
     /// `build()`, and this is that bit.
     ///
-    /// Set only by [`crate::ClientBuilder::cookie_jar`], which exists only
+    /// Set only by `ClientBuilder::cookie_jar`, which exists only
     /// under the `cookies` feature. **The field is not `#[cfg]`-ed with
     /// it**, on purpose: `check_supported` destructures `Config` without a
     /// `..`-remainder precisely so that a new field cannot be forgotten,
@@ -137,7 +137,7 @@ pub struct Config {
     /// *response body* it has handed out, since a recording body holds the
     /// same `Arc` and commits into it when it ends.
     ///
-    /// Set only by [`crate::ClientBuilder::cache`], which exists only
+    /// Set only by `ClientBuilder::cache`, which exists only
     /// under the `cache` feature, and **not `#[cfg]`-ed with it** — the
     /// same argument the field above carries: `check_supported`
     /// destructures `Config` with no `..` remainder precisely so a new

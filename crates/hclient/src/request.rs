@@ -33,7 +33,7 @@ pub struct RequestBuilder<'a> {
     /// multipart one" — so every method that replaces the body clears it.
     multipart: Option<crate::multipart::Boundary>,
     /// The credentials to answer a `401 Digest` with, if the caller gave
-    /// any — see [`Self::digest_auth`].
+    /// any — see `digest_auth`.
     ///
     /// **Not in `extensions`, and that is the decision**: extensions reach
     /// `Transport::execute`, so a password there would be readable by any
@@ -337,7 +337,7 @@ impl<'a> RequestBuilder<'a> {
 
     /// Authenticate this request with a scheme of your own.
     ///
-    /// [`digest_auth`](Self::digest_auth) is this with the one scheme
+    /// `digest_auth` is this with the one scheme
     /// this crate implements. What the seam is *for* is the ones it does
     /// not: NTLM and Negotiate need a platform security provider, and the
     /// crates that have one — `sspi`, `libgssapi`, `cross-krb5` — are at

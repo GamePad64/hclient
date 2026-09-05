@@ -60,18 +60,18 @@
 //! | you want | it is |
 //! |---|---|
 //! | a form body | [`RequestBuilder::form`] — `application/x-www-form-urlencoded`, no feature, sets the header |
-//! | a JSON body, or to read one | [`RequestBuilder::json`] and [`Collected::json`], behind the `json` feature |
+//! | a JSON body, or to read one | [`RequestBuilder`]`::json` and [`Collected`]`::json`, behind the `json` feature |
 //! | query parameters | [`RequestBuilder::query`] — **appends**, so a `?` already in your URL survives |
-//! | to test without a network | [`mock::MockTransport`], behind this crate's `test-util` feature — see below |
+//! | to test without a network | `mock::MockTransport`, behind this crate's `test-util` feature — see below |
 //! | a `4xx`/`5xx` as an `Err` | [`Response::error_for_status`] and [`Collected::error_for_status`] |
 //! | to build a body by hand | [`RequestBody`], re-exported at this crate's root |
-//! | text in a charset that is not UTF-8 | [`Collected::text_with_charset`], behind the `charset` feature |
+//! | text in a charset that is not UTF-8 | [`Collected`]`::text_with_charset`, behind the `charset` feature |
 //! | basic or bearer auth | [`RequestBuilder::basic_auth`], [`RequestBuilder::bearer_auth`] |
 //! | to choose a client certificate per request | [`RequestBuilder::client_identity`] — a label your TLS backend was configured with |
 //! | to put your own value where the transport can read it | [`RequestBuilder::extension`] |
-//! | cookies kept and sent back | [`ClientBuilder::cookie_jar`], behind the `cookies` feature — off by default, because the compiled-in public suffix list is 77 KiB and a browser keeps its own jar anyway |
-//! | to save a cookie jar across a restart | [`cookie::CookieJar::records`] and [`cookie::CookieJar::restore`], behind `cookies` — the format is yours, so no `serde` arrives with it |
-//! | responses cached between requests | [`ClientBuilder::cache`], behind the `cache` feature — RFC 9111, in memory unless you hand it a [`cache::CacheStore`] of your own |
+//! | cookies kept and sent back | [`ClientBuilder`]`::cookie_jar`, behind the `cookies` feature — off by default, because the compiled-in public suffix list is 77 KiB and a browser keeps its own jar anyway |
+//! | to save a cookie jar across a restart | `cookie::CookieJar::records` and `cookie::CookieJar::restore`, behind `cookies` — the format is yours, so no `serde` arrives with it |
+//! | responses cached between requests | [`ClientBuilder`]`::cache`, behind the `cache` feature — RFC 9111, in memory unless you hand it a `cache::CacheStore` of your own |
 //! | the `Link:` header a paginated API sends | [`Response::links`] and [`Collected::links`] |
 //! | a body read line by line | [`Response::lines`] — for NDJSON and log tailing |
 //!
@@ -120,7 +120,7 @@
 //! So: the seams declare none, and auto-traits still decide. The rule for
 //! where a bound is allowed is **an opt-in call that takes a value from
 //! the caller and puts it behind the facade's `Arc`** — and the types that
-//! hold such a value, like [`erased::AnyStore`] or
+//! hold such a value, like `erased::AnyStore` or
 //! [`redirect::SharedRedirectPolicy`]. [`Client::builder`],
 //! [`ClientBuilder::total_timeout`] and [`sse::SseBuilder::with_timer`]
 //! are the shape.
@@ -656,7 +656,7 @@ pub type DefaultClock = hclient_fetch::BrowserClock;
 /// everything the other two do not: without the `default-transport`
 /// feature there is no target-chosen clock to point at, and on
 /// `wasm32-wasip2` there is none *with* it either, because that target has
-/// no [`DefaultTransport`] to take one from. Either way the default clock
+/// no `DefaultTransport` to take one from. Either way the default clock
 /// is the one that measures nothing. See the first branch's doc comment,
 /// and [`NoClock`] for why that is not a silent no-op.
 ///

@@ -3,7 +3,7 @@
 //!
 //! # Why this is not a `CookieStore` trait
 //!
-//! The sibling module's [`CacheStore`](crate::cache::CacheStore) is a
+//! The sibling module's `CacheStore` is a
 //! delegation seam — the policy asks it for the entries under one key and
 //! the caller may back it with anything — and the argument written at the
 //! top of `cache/store.rs` for why that is safe to hand out is exactly the
@@ -132,8 +132,8 @@ use super::suffix::PublicSuffixList;
 ///
 /// # A record and not a `CookieStore` trait
 ///
-/// The sibling [`HttpCache`](crate::cache::HttpCache) delegates to a
-/// [`CacheStore`](crate::cache::CacheStore) and a caller may back that
+/// The sibling `HttpCache` delegates to a
+/// `CacheStore` and a caller may back that
 /// with anything, because RFC 9111 lookup is **by key**: a wrong store
 /// loses entries or keeps too many and cannot answer the wrong request.
 /// RFC 6265bis §5.4 retrieval is a **scan** — every held cookie tested

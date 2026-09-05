@@ -494,7 +494,7 @@ where
 /// protocol over, which is why neither is complete without the other: a
 /// transport that negotiates ALPN speaks whichever the server picked.
 ///
-/// `None` means hyper's default, on [`crate::H2Opts`]' rule and
+/// `None` means hyper's default, on `H2Opts`' rule and
 /// `TcpOpts`': a value set here changes what this client accepts, so a
 /// default of ours would change behaviour for a caller who asked for
 /// nothing.

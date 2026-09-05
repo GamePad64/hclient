@@ -20,7 +20,7 @@
 //!
 //! # What is deliberately not here
 //!
-//! [`crate::cookie`] and [`crate::cache`] keep their own, and the reason
+//! `cookie` and `cache` keep their own, and the reason
 //! is measured rather than aesthetic: both were **crates** until this
 //! year, so by this workspace's own convention each already had an error
 //! module of its own, and the fold that made them modules was argued as
@@ -47,8 +47,8 @@
 //! `lines::LineTooLong` are now a link to the page here, where before
 //! this module carried a link to the page there. The pair flipped, which
 //! is the change stating itself — the definition is here, so the page is
-//! here. Nothing of the sort happens for [`crate::cookie`],
-//! [`crate::cache`] or [`crate::auth`], whose own `error` modules are
+//! here. Nothing of the sort happens for `cookie`,
+//! `cache` or `auth`, whose own `error` modules are
 //! private, so rustdoc inlines each type into the module a caller
 //! names.
 

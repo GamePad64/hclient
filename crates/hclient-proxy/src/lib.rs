@@ -40,7 +40,7 @@
 //! A protocol that has to **wrap** the IO cannot be written against this
 //! seam — TLS to the proxy itself is the real example. That is not a
 //! regression: it was unsupported before this crate existed, and
-//! [`system::ParseError::TlsToProxyUnsupported`] is where the refusal is
+//! `system::ParseError::TlsToProxyUnsupported` is where the refusal is
 //! already written down. Lifting it means a driver that can hand a
 //! handshake an upgraded stream, which is a change to
 //! `hclient-native`'s thirty lines rather than to this seam.

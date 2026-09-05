@@ -38,7 +38,7 @@ use std::task::{Context, Poll};
 /// - [`crate::ClientBuilder::total_timeout`], which takes the clock and
 ///   the bound **in the same call** and returns a builder over that clock.
 ///   It cannot leave `NoClock` in place.
-/// - [`crate::Client::total_timeout`], which takes no clock because the
+/// - `Client::total_timeout`, which takes no clock because the
 ///   client already has one — it exists only for
 ///   [`crate::DefaultClock`], and only under the `default-transport`
 ///   feature, where that alias is a real clock (`Tokio` on native, a

@@ -7,7 +7,7 @@
 //! generic, and until this module existed `hclient` accepted only their
 //! defaulted forms — so a caller who wanted a disk-backed cache, a store
 //! shared between processes, or a jar over
-//! [`NoList`](crate::cookie::NoList) could reach it in `hclient-cache` or
+//! `NoList` could reach it in `hclient-cache` or
 //! `hclient-cookie` and not through the facade. The seam existed one crate
 //! down and was unreachable one crate up.
 //!
@@ -52,8 +52,8 @@
 //!
 //! Both wrappers implement the seam they erase, so a `CookieJar<AnyList>`
 //! and an `HttpCache<AnyStore>` are ordinary jars and caches with their
-//! whole API — which is what lets [`crate::ClientBuilder::cookie_jar`](crate::Client::
-//! cookies) and [`Client::cache`](crate::Client::cache) keep handing back
+//! whole API — which is what lets `ClientBuilder::cookie_jar`(crate::Client::
+//! cookies) and `Client::cache` keep handing back
 //! a guard onto the real thing rather than onto a narrowed trait object.
 
 #[cfg(any(feature = "cookies", feature = "cache"))]

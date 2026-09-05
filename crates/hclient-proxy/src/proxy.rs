@@ -92,7 +92,7 @@ impl<P> Proxy<P> {
     /// policy belongs to whoever builds the transport. **This** list is
     /// not policy — the caller wrote it down.
     ///
-    /// That is still the rule, and [`crate::system`] is not an exception
+    /// That is still the rule, and `system` is not an exception
     /// to it: it reads the environment and the platform's own settings
     /// *because a caller called it*, which is the transport's builder
     /// exercising exactly the policy this paragraph reserves for them.
@@ -165,7 +165,7 @@ impl<P> Proxy<P> {
     /// would have made every other pattern harder to read, for one rule
     /// that is a boolean everywhere it comes from.
     ///
-    /// It is here because [`crate::system`] meets it constantly rather
+    /// It is here because `system` meets it constantly rather
     /// than in a corner: macOS ships with it **on**, so a translation that
     /// could not express it would be wrong on most Macs.
     ///

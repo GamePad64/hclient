@@ -120,7 +120,7 @@ pub use error::{
     ProxyAndUnixSocket, ProxySpokeFirst, ResolveTimedOut, UndeclaredRequestTrailers,
 };
 pub(crate) use error::{ConnectTimedOut, UnknownClientIdentity};
-/// The future [`Native::multiplexed`] spawns — public because that
+/// The future `Native::multiplexed` spawns — public because that
 /// constructor's `Spawn` bound has to name it, and for no other reason.
 #[cfg(feature = "http2")]
 pub use http2::{H2Driver, H2KeepAlive, H2Opts, PingNotAnswered};
@@ -162,7 +162,7 @@ use std::time::Duration;
 /// **A type alias for a reason beyond the lint.** What it says is that the
 /// only thing [`Native`] keeps of `R: Spawn<..>` is a pointer — no bound,
 /// no trait object, nothing that reaches any other signature — which is
-/// the whole mechanism behind [`Native::multiplexed`] and is easy to lose
+/// the whole mechanism behind `Native::multiplexed` and is easy to lose
 /// sight of when the type is spelled out inline.
 #[cfg(feature = "http2")]
 type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H, R>);
@@ -619,7 +619,7 @@ where
     svcb_failures: discovery::NegativeCache,
     /// How to spawn an HTTP/2 connection driver, or `None` for a transport
     /// that has not been asked to share connections — which is every
-    /// transport this crate builds unless [`Native::multiplexed`] was
+    /// transport this crate builds unless `Native::multiplexed` was
     /// called.
     ///
     /// **A function pointer, and that is the whole mechanism.**
@@ -1011,7 +1011,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `Rc` inside a hook makes this transport `!Send` and leaves it
     /// working (P13; `crates/hclient-core/tests/shape.rs`).
     ///
-    /// # It turns [`Native::multiplexed`] back off, and the type is why
+    /// # It turns `Native::multiplexed` back off, and the type is why
     ///
     /// The spawner `multiplexed()` captures is a
     /// `fn(&R, H2Driver<_, H>)` — it **names the hook**, because the
@@ -1065,7 +1065,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// **Including an empty list**, which is why it takes a `Vec` rather
     /// than a first-plus-rest: a machine with no proxy still has to come
-    /// out of [`system_proxies_from`](Self::system_proxies_from) with the
+    /// out of `system_proxies_from` with the
     /// `P` its return type promises, and there is no `Proxy` to pass
     /// through the singular method to get there. An empty list proxies
     /// nothing and claims nothing — `capabilities().proxy` reads the
@@ -1212,7 +1212,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self.system_proxies_from(&crate::proxy::system::SystemProxies::detect())
     }
 
-    /// [`system_proxies_from`](Self::system_proxies_from) for a caller
+    /// `system_proxies_from` for a caller
     /// that **must not fail**, handing back what it could not install.
     ///
     /// `Client::new` is that caller: it reads the machine's settings so
@@ -1320,7 +1320,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// opposite as supported: a hook may hold an `Rc`
     /// (`hclient-core/tests/shape.rs`, P13), which is the whole reason the
     /// seam declares no auto traits. Putting the bound here rather than on
-    /// `H` is [`Native::multiplexed`]'s shape: the field is a `fn`
+    /// `H` is `Native::multiplexed`'s shape: the field is a `fn`
     /// pointer, so **no signature a single-threaded hook meets changes**,
     /// and a runtime that never calls this constructor is untouched. A
     /// hook holding an `Rc` gets `E0277` on the line where it asked.
@@ -1338,7 +1338,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # Ordering
     ///
     /// `.hooks(..)` must come **before** this, for the reason it must come
-    /// before [`Native::multiplexed`]: the pointer's type names `H`. The
+    /// before `Native::multiplexed`: the pointer's type names `H`. The
     /// other order compiles and watches nothing.
     /// Withhold a request body carrying `Expect: 100-continue` until the
     /// server answers `100`, or until `after` has passed.
@@ -1892,7 +1892,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// compiles with the feature on, which is asserted by the workspace
     /// building `--all-features --all-targets`.
     ///
-    /// The shape is [`Native::multiplexed`]'s: a bound that belongs to one
+    /// The shape is `Native::multiplexed`'s: a bound that belongs to one
     /// opt-in lives on the opt-in.
     ///
     /// # It takes an `H3`, it does not build one
@@ -2034,7 +2034,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// which is what a long-poll or an SSE stream between events looks
     /// like from the middle of a network.
     ///
-    /// **Only reached with [`Native::multiplexed`]**, and that is
+    /// **Only reached with `Native::multiplexed`**, and that is
     /// structural: an idle pooled connection has no holder at all, so
     /// there is nothing to write a `PING` or read its answer. Set here
     /// without `multiplexed()`, it is inert.
@@ -2176,12 +2176,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// The head is the one part of a response a client must hold whole
     /// before it can act on any of it, so it is the one part a hostile
     /// server can make expensive without sending a body.
-    /// [`h2_opts`](Self::h2_opts)' `max_header_list_size` is the same
+    /// `h2_opts`' `max_header_list_size` is the same
     /// guard one protocol over, and neither is complete without the other:
     /// a transport that negotiates ALPN speaks whichever the server
     /// picked.
     ///
-    /// **Fallible, unlike [`h2_opts`](Self::h2_opts)**, and the difference
+    /// **Fallible, unlike `h2_opts`**, and the difference
     /// is who would refuse the value. A `SETTINGS` frame is written by
     /// this crate and there is nobody to say no; `max_buf_size` is handed
     /// to hyper, which **panics** below 8192. A caller's number reaching a
@@ -2623,7 +2623,7 @@ where
     ///
     /// **What the second conjunct actually buys is narrower than it
     /// looks**, and a mutation is what said so. It does *not* make
-    /// [`Native::multiplexed`] and [`Native::without_pool`]
+    /// `Native::multiplexed` and [`Native::without_pool`]
     /// order-independent: `share_if_multiplexing` reads the pool's
     /// configuration for the deadline it has to stamp, so a transport with
     /// no pool shares nothing whichever order the two were written in, with

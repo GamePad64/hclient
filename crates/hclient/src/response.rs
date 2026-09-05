@@ -40,7 +40,7 @@ impl<B> Debug for Response<B> {
 ///
 /// A consumer cannot build one of these, which reads as a wall. It points
 /// the other way: script the response on
-/// [`mock::MockTransport`](crate::mock::MockTransport) instead and let a
+/// `mock::MockTransport` instead and let a
 /// real [`Client`](crate::Client) produce it. The test then exercises the
 /// redirect, cookie, decompression and retry code a live request goes
 /// through, where a hand-built `Response` would exercise a path
@@ -429,7 +429,7 @@ impl Collected {
     /// The body as UTF-8 text, or a [`ErrorKind::Decode`] error.
     ///
     /// **This method's meaning does not depend on any feature**, which is
-    /// why the charset-aware path is [`Self::text_with_charset`] beside it
+    /// why the charset-aware path is `text_with_charset` beside it
     /// rather than a smarter version of this one. Cargo unifies features
     /// across a graph, so a library calling `text()` would otherwise get a
     /// different answer depending on what an unrelated crate switched on —

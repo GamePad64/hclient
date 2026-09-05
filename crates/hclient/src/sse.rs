@@ -377,7 +377,7 @@ impl<'a> SseBuilder<'a> {
     /// tokio` or `hclient-rt-smol` already has a `Timer` in scope (`Tokio`/
     /// `Smol` both implement it) for the SAME reason their transport needed
     /// one — nothing new to plumb through. `hclient`'s own `test-util`
-    /// feature carries [`crate::mock::TestTimer`] for exactly this call, so
+    /// feature carries `mock::TestTimer` for exactly this call, so
     /// reconnect stays testable on the bare `futures_executor` this crate's
     /// test suite uses everywhere, without a real runtime and without
     /// sleeping for real — `TestTimer::sleep` records the requested
