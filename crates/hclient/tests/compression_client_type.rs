@@ -53,10 +53,6 @@
 ))]
 
 use hclient::Client;
-use hclient::body::Cached;
-use hclient::body::Deadline;
-use hclient::body::Decompressed;
-use hclient::body::Limited;
 use hclient::mock::{MockTransport, TestTimer};
 use std::time::Duration;
 
@@ -102,34 +98,28 @@ fn the_deadline_sits_inside_the_decoder_not_outside_it() {
 
     let resp = futures_executor::block_on(c.get("https://a/x").send()).expect("responds");
 
-    // The annotation is the assertion, and every layer's position is an
-    // argument made somewhere else: `Limited` outside everything, because
-    // it counts what the caller receives and a decompression bomb is
-    // small on the wire; `Decompressed` inside it; `Deadline` inside
-    // that, because a `total` bound must be polled once per COMPRESSED
-    // frame or well-compressing padding walks around it; `Cached` inside
-    // that again, so a stored response is decoded on the way out by the
-    // same call that decodes a fresh one — above the decoder, an entry
-    // would be stored decoded while still labelled `Content-Encoding`,
-    // and `Vary: Accept-Encoding` would key every variant on a coding the
-    // stored bytes no longer carried. The transport's own body is
-    // innermost — and it is `BoxBody` rather than `MockBody` now, because
-    // an erased `Client` erases the transport's body with the transport:
-    // what this test pins is the ORDER of the four wrappers, which is the
-    // thing that was ever load-bearing.
-    let limited: Limited<Decompressed<Deadline<Cached<hclient::body::BoxBody>>>> =
-        resp.into_parts().1;
-    let body: Decompressed<Deadline<Cached<hclient::body::BoxBody>>> = limited.into_inner();
+    // **The order is no longer assertable from out here, and that is the
+    // change rather than a loss.** This block used to annotate
+    // `Limited<Decompressed<Deadline<Cached<BoxBody>>>>` and peel it with
+    // two `into_inner()` calls; the chain is private now, because spelling
+    // it out made the *composition* a promise and a fifth wrapper a
+    // breaking change. The order is still load-bearing and is still
+    // pinned — by a compile-time assertion in `src/client_body.rs`, where
+    // an invariant this crate keeps for itself belongs.
+    //
+    // What is assertable from a caller's side is what the wrappers are
+    // *for*, and it is better than the shape was: two questions that cost
+    // a peel each now cost one call.
+    let body = resp.into_parts().1;
     assert_eq!(
         body.coding(),
         None,
         "this response carries no `Content-Encoding`, so nothing is being decoded"
     );
-    let deadline: Deadline<Cached<hclient::body::BoxBody>> = body.into_inner();
     assert_eq!(
-        deadline.total_timeout(),
+        body.total_timeout(),
         Some(Duration::from_secs(30)),
-        "the bound must be on the wrapper directly around the transport's body — \
+        "the bound belongs to the wrapper directly around the transport's body — \
          it is the compressed stream that has to be measured"
     );
 }

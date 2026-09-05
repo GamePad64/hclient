@@ -27,8 +27,9 @@ pub type SharedRedirectPolicy = std::sync::Arc<dyn RedirectPolicy + Send + Sync>
 pub struct Config {
     pub timeouts: Timeouts,
     /// A ceiling on the bytes a response body may yield, or `None` for
-    /// none — see [`crate::limit::Limited`], which is where the *which bytes*
-    /// question is answered.
+    /// none. Which bytes it counts is the outermost body wrapper's answer,
+    /// and [`crate::body::ClientBody`] says why it is outermost: what the
+    /// caller receives rather than what crossed the wire.
     ///
     /// `None` by default, and that is the decision rather than an
     /// omission: a default ceiling would fail a caller's legitimate large

@@ -201,7 +201,7 @@ where
 /// ambient exchange behind it is torn down rather than left draining. A
 /// bound that returned an error and left the transfer running would be a
 /// bound on the caller's patience, not on the operation.
-pub struct Deadline<B> {
+pub(crate) struct Deadline<B> {
     /// `None` once the deadline has fired: the body is dropped there, and
     /// dropping it is what stops the exchange.
     inner: Option<B>,

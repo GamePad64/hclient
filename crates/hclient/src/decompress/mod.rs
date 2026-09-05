@@ -15,12 +15,12 @@
 //! # The order of the two wrappers, and why it is this way round
 //!
 //! `Client::execute` hands back
-//! [`Decompressed`]`<`[`Deadline`](crate::body::Deadline)`<T::Body, Tm>>` — the
+//! [`Decompressed`]`<`[`Deadline`](crate::deadline::Deadline)`<T::Body, Tm>>` — the
 //! deadline INSIDE, wrapped directly around the transport's own body, and
 //! the decoder outside it. Reversed, the bound would be walked around by
 //! the very traffic it exists to bound.
 //!
-//! [`Deadline`](crate::body::Deadline) is checked on every poll of itself (it
+//! [`Deadline`](crate::deadline::Deadline) is checked on every poll of itself (it
 //! holds no sleep of its own — see its doc comment for why it cannot).
 //! With the decoder INSIDE the deadline, one `Deadline::poll_frame` can
 //! turn into an unbounded number of polls of the socket: the decoder's
@@ -371,11 +371,11 @@ pub(crate) fn decoder_for(parts: &mut http::response::Parts, allowed: Decoders) 
 /// The response body with its `Content-Encoding` reversed.
 ///
 /// Always in the type, whether or not anything is being decoded — the same
-/// decision [`crate::body::Deadline`] documents, and for the same reason: a type
+/// decision [`Deadline`](crate::deadline::Deadline) documents, and for the same reason: a type
 /// cannot appear and disappear with a runtime value. When there is nothing
 /// to decode the cost is one enum test per frame and every call is
 /// forwarded unchanged.
-pub struct Decompressed<B> {
+pub(crate) struct Decompressed<B> {
     inner: B,
     state: State,
 }
@@ -406,19 +406,11 @@ impl<B> Decompressed<B> {
     }
 
     /// The body underneath. For a response out of [`crate::Client`] that
-    /// is the [`crate::body::Deadline`] wrapper, whose own accessors report on
+    /// is the [`Deadline`](crate::deadline::Deadline) wrapper, whose own accessors report on
     /// the whole-operation bound — which is how a caller reaches
     /// `total_timeout()`/`is_expired()` through this one.
     pub fn get_ref(&self) -> &B {
         &self.inner
-    }
-
-    /// Unwraps to the body underneath, **abandoning any partially decoded
-    /// stream**: whatever the decoder is holding is dropped with it, and
-    /// what is left is the encoded remainder. Fine before reading starts,
-    /// which is what it is for; a way to lose bytes in the middle.
-    pub fn into_inner(self) -> B {
-        self.inner
     }
 
     /// The coding being reversed, as it appeared on the wire — `None` when
@@ -435,7 +427,7 @@ impl<B> Decompressed<B> {
     }
 }
 
-/// Hand-written for the same reason [`crate::body::Deadline`]'s is: the derive
+/// Hand-written for the same reason [`Deadline`](crate::deadline::Deadline)'s is: the derive
 /// would demand `Debug` of things that do not need it, and the decoder's
 /// window is not worth printing.
 impl<B: Debug> Debug for Decompressed<B> {

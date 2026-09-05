@@ -54,11 +54,11 @@ impl<B> Debug for Limited<B> {
 
 /// Stops a response body at a byte ceiling.
 ///
-/// Inert with no limit set, in the shape [`crate::body::Deadline`] already uses:
+/// Inert with no limit set, in the shape [`Deadline`](crate::deadline::Deadline) already uses:
 /// the type is always present, because a type cannot appear and disappear
 /// with a runtime value, and the cost of that is one `Option` test per
 /// frame.
-pub struct Limited<B> {
+pub(crate) struct Limited<B> {
     /// `None` once the limit has fired, which drops the inner body — and
     /// dropping it is what stops the exchange, exactly as `Deadline`'s
     /// expiry does. A limit that reported an error and left the transfer
@@ -69,16 +69,11 @@ pub struct Limited<B> {
 }
 
 impl<B> Limited<B> {
-    /// The body underneath, for the type-shape test that pins this
-    /// wrapper's position — see `tests/compression_client_type.rs`, where
-    /// each layer's place is an argument rather than an arrangement.
-    ///
-    /// Panics if the limit has already fired, which is unreachable from a
-    /// caller: the error that fires it is terminal, so a body that
-    /// yielded one is not one anybody unwraps.
-    pub fn into_inner(self) -> B {
-        self.inner
-            .expect("the limit had already fired, so there is no body left")
+    /// The body underneath, or `None` once the limit has fired and dropped
+    /// it — which is terminal, so a caller that meets `None` has already
+    /// been handed the error.
+    pub(crate) fn get_ref(&self) -> Option<&B> {
+        self.inner.as_ref()
     }
 
     pub(crate) fn new(inner: B, limit: Option<u64>) -> Self {

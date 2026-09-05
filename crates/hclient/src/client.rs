@@ -816,10 +816,10 @@ impl Client {
         Ok((
             http::Response::from_parts(
                 parts,
-                crate::limit::Limited::new(
+                crate::body::ClientBody::new(crate::limit::Limited::new(
                     Decompressed::new(body, decoder),
                     self.config().response_limit,
-                ),
+                )),
             ),
             final_uri,
         ))

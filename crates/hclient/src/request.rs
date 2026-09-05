@@ -7,7 +7,7 @@ use hclient_core::{Error, ErrorKind, RequestBody};
 use hclient_proto::redirect::RedirectPolicy;
 
 /// `Tm` is the CLIENT's clock, carried along so that `send`'s response
-/// body can hold the operation's deadline (see [`crate::body::Deadline`]). It has the
+/// body can hold the operation's deadline. It has the
 /// same default as `Client`'s own parameter, so `RequestBuilder<'_, T>`
 /// keeps naming what it always named.
 #[derive(Debug)]
@@ -556,7 +556,7 @@ impl<'a> RequestBuilder<'a> {
 
     /// Sends the request.
     ///
-    /// The body comes back wrapped in [`crate::body::Deadline`], which carries the
+    /// The body comes back as [`crate::body::ClientBody`], which carries the
     /// client's whole-operation bound past the response head — inert, and
     /// costing one `Option` test per frame, for a client that never set
     /// one.

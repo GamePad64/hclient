@@ -657,12 +657,13 @@ fn a_client_with_no_total_is_not_bounded_by_the_wrapper_being_present() {
             .expect("responds");
         // Two `into_inner()`s: the byte limit added outside everything,
         // then the decompression wrapper v0.2 W5 added outside this one.
-        // What is underneath is the `Deadline` this file is about. The
-        // order is pinned by `tests/compression_client_type.rs`, not
-        // assumed here.
-        let deadline_body = resp.into_parts().1.into_inner().into_inner();
-        let total = deadline_body.total_timeout();
-        (deadline_body, total)
+        // The `Deadline` this file is about is inside `ClientBody`, which
+        // forwards its two answers rather than being peeled — the chain
+        // went private when the alias became a newtype, and the order is
+        // pinned by a compile-time assertion in `src/client_body.rs`.
+        let client_body = resp.into_parts().1;
+        let total = client_body.total_timeout();
+        (client_body, total)
     });
     assert_eq!(
         total, None,

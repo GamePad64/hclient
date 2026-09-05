@@ -154,6 +154,7 @@ pub mod auth;
 pub mod cache;
 mod cached;
 mod client;
+mod client_body;
 mod config;
 #[cfg(feature = "cookies")]
 pub mod cookie;
@@ -236,70 +237,10 @@ pub mod hooks {
 /// [`body::ClientBody`] is an alias over all four, and an alias cannot
 /// name a private type.
 pub mod body {
-    pub use crate::cached::Cached;
-    pub use crate::deadline::Deadline;
-    pub use crate::decompress::Decompressed;
-    pub use crate::limit::Limited;
+    pub use hclient_core::unversioned::erased::BoxBody;
     pub use hclient_core::{RetryKind, RewindFactory};
 
-    /// The response body a [`crate::Client`] hands back: the transport's own body,
-    /// with this client's three wrappers around it **in the order the client
-    /// applies them**.
-    ///
-    /// The order is not a formatting choice. [`Cached`] is innermost, because
-    /// it is the one wrapper that can *replace* the transport's body — a cache
-    /// hit had no exchange and so has no `B` at all — and because what it
-    /// records must be what the wire carried. [`Deadline`] goes around that,
-    /// so it is polled once for every frame that arrives off the wire;
-    /// [`Decompressed`] goes outside both, because reversing a content coding
-    /// can consume many compressed frames before it produces a single byte for
-    /// the caller. Written the other way round, one poll of the decoder could
-    /// pull an unbounded amount of traffic without the clock ever being
-    /// consulted — a slow server sending well-compressing padding would be
-    /// bounded by nothing. See `Client::execute`, the `decompress` module's
-    /// doc comment, and `cached`'s.
-    ///
-    /// The cache being **below** the decompressor is the load-bearing half of
-    /// that order: a stored response is decoded on the way out by the same
-    /// call that decodes a fresh one, and a `Vary: Accept-Encoding` entry is
-    /// keyed on the coding actually asked for.
-    ///
-    /// All three wrappers are always present, whether or not any is doing
-    /// anything: a type cannot appear and disappear with a runtime value. An
-    /// unbounded, undecoded, uncached response pays two `Option` tests and one
-    /// enum test per frame for that — and without the `cache` feature
-    /// [`Cached`] is a newtype over `Option<B>` whose other two fields do not
-    /// exist, so the third wrapper costs nothing a build did not ask for.
-    /// The transport's body is erased into
-    /// [`hclient_core::unversioned::erased::BoxBody`] at the seam, so this
-    /// alias names no type parameters at all — which is what lets
-    /// [`crate::Response`] and [`crate::Client`] name none either.
-    ///
-    /// **It is `Send`, and this fence is the control for the test that
-    /// says so.** `tests/shape.rs` asserts the positive with a live
-    /// `T: Send` bound, which a weakened helper would satisfy vacuously —
-    /// and a `compile_fail` in a `tests/` file is dead text, because
-    /// rustdoc reads library targets only. So the negative lives here,
-    /// where `just test-doc` compiles it and requires it to fail:
-    ///
-    /// ```compile_fail
-    /// fn assert_send<T: Send>() {}
-    /// assert_send::<std::rc::Rc<()>>();
-    /// ```
-    ///
-    /// and the positive beside it, so a reader can see the pair differs by
-    /// one type:
-    ///
-    /// ```
-    /// fn assert_send<T: Send>() {}
-    /// assert_send::<hclient::body::ClientBody>();
-    /// ```
-    pub type ClientBody = Limited<Decompressed<Deadline<Cached<BoxBody>>>>;
-
-    /// The transport's own body, erased — the innermost layer of
-    /// [`ClientBody`], re-exported so a caller naming the chain does not
-    /// have to reach into `hclient-core` for one type.
-    pub use hclient_core::unversioned::erased::BoxBody;
+    pub use crate::client_body::ClientBody;
 }
 
 /// RFC 8288 `Link:` — the paginated-API header, parsed.

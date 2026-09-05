@@ -78,7 +78,7 @@ impl<B> Debug for Cached<B> {
 /// The third wrapper of [`crate::body::ClientBody`] — see this module's doc
 /// comment for why it is always present and what it costs when nothing is
 /// cached.
-pub struct Cached<B> {
+pub(crate) struct Cached<B> {
     /// The transport's body. `None` for a cache hit, which had no
     /// exchange to have one.
     inner: Option<B>,
