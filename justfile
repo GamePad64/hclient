@@ -250,6 +250,49 @@ test-doh-live:
 # ── the other two targets ───────────────────────────────────────────────
 
 # the wasi example, built as a component
+# Every example in `hclient` that can run without a socket, RUN rather
+# than built — because a build is green for an example that asserts
+# nothing, which is the defect `portable-example-three-targets` already
+# guards against from the other side by pinning its claims in a test.
+#
+# Each example asserts its own claims and panics on failure, so a non-zero
+# exit is the signal. What this recipe adds is that **no example can be
+# forgotten**: it derives the file list from the directory and refuses one
+# that is in neither table, so adding an example without deciding whether
+# it runs is an error rather than a silence.
+examples:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    declare -A RUN=(
+      [configured]=test-util,cookies,cache
+      [custom_cache_store]=test-util,cache
+      [auth_scheme]=test-util
+      [streaming]=test-util
+      [file_upload]=test-util
+      [testing_with_mock]=test-util,json
+    )
+    # Built and not run: these two need a network or a target this runner
+    # is not. `portable` is built for three targets by
+    # `build-three-targets`, and its behaviour is pinned by
+    # `tests/portable_example.rs`.
+    BUILD_ONLY="portable no_tls_no_resolver"
+    ran=0
+    for name in "${!RUN[@]}"; do
+      echo "==> run $name (--features ${RUN[$name]})"
+      cargo run -q -p hclient --example "$name" --features "${RUN[$name]}"
+      ran=$((ran + 1))
+    done
+    [ "$ran" -gt 0 ] || { echo "::error::no example ran — the loop found nothing, which reads the same as a clean run"; exit 1; }
+    missing=""
+    for f in crates/hclient/examples/*.rs; do
+      name="$(basename "$f" .rs)"
+      [ -n "${RUN[$name]+x}" ] && continue
+      case " $BUILD_ONLY " in *" $name "*) continue ;; esac
+      missing="$missing $name"
+    done
+    [ -z "$missing" ] || { echo "::error::example(s) in neither table:$missing — add it to RUN with its features, or to BUILD_ONLY with the reason it cannot run"; exit 1; }
+    echo "examples: $ran run, $(echo $BUILD_ONLY | wc -w) built elsewhere"
+
 build-wasi-example:
     cargo build -p hclient-wasi --example fetch --target wasm32-wasip2
 

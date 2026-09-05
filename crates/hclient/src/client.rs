@@ -16,7 +16,12 @@ use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 use hclient_proto::retry::{Outcome, RetryPolicy, RetryVerdict, retry_after_seconds};
 use std::fmt::Debug;
 use std::sync::Arc;
-#[cfg(any(feature = "cookies", feature = "cache"))]
+// `cookies` alone: the jar is the only thing here behind a `Mutex`. It
+// read `any(cookies, cache)` until an example built the second without
+// the first — a leftover from when `Client` held `Arc<Mutex<HttpCache>>`,
+// which went when the store became async. Neither `--all-features` nor
+// `cargo hack --each-feature` builds that pair.
+#[cfg(feature = "cookies")]
 use std::sync::Mutex;
 // The wall clock this client reads for the jar and the cache.
 //

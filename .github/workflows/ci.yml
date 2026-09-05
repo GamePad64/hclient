@@ -396,6 +396,21 @@ jobs:
         shell: bash
         run: just lint-idn
 
+  # The examples that need no socket are RUN here, not built. A build is
+  # green for an example that asserts nothing, which is the same defect
+  # `test-doc` was found to have; each of these asserts its own claims and
+  # the recipe refuses an example that is in neither of its tables.
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          bins: just
+      - shell: bash
+        run: just examples
+
   portable-example-three-targets:
     runs-on: ubuntu-latest
     steps:
