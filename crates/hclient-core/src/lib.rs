@@ -29,6 +29,7 @@
 //! this list says what kind they are.
 #![forbid(unsafe_code)]
 
+pub mod auth;
 mod body;
 mod caps;
 mod error;
