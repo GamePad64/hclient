@@ -31,6 +31,17 @@ This crate sends nothing. No socket, no cache, no retries, no config
 parsing. Whatever your machine already does still happens, because the
 machine is what answers.
 
+**On macOS the trap is one API call away, and it was measured rather than
+feared.** `resolver(5)` describes macOS as running several DNS clients
+with a "Super" meta-client routing between them by best domain match, and
+libc's own `res_query` is documented against the *primary* client alone —
+so it misses the per-domain files in `/etc/resolver/` and a VPN's
+split-DNS zone. Asked for a `.local` name on a Mac, which every machine
+has through mDNS: `res_query` fails with rcode 3 from a nameserver that
+has never heard of `.local`, and `DNSServiceQueryRecord` answers. An
+ordinary unicast name is the control and both answer it. This crate calls
+the second.
+
 ## Platforms
 
 | target | API used |
@@ -55,8 +66,14 @@ answers before you spend a query, and `lookup` returns
 - Windows 10 parses 43 record types into structs before the crate can see
   them. 26 are converted back to RDATA; 16 are refused by name.
 - Apple reports "no such name" and "no such record" with one code, so
-  `NXDOMAIN` cannot be told apart from an empty answer.
-- There is no message header, so no `AD` bit and no `TC`. You get records.
+  `Error::NameDoesNotExist` is unreachable there: a name that does not
+  exist and a name with no record of that type are the same answer.
+- **Two platforms hand back records rather than a message, and lose the
+  header with it.** Apple and Windows 10 answer one record's RDATA at a
+  time, so there is no `TC` and no rcode. Linux, FreeBSD, Android and
+  Windows 11 hand over the whole message, which this crate walks, so both
+  reach you — as `Error::Truncated` and `Error::ResponseCode`.
+- No platform exposes the `AD` bit.
 - It blocks. Call it from a blocking thread pool.
 - FreeBSD is compiled and type-checked on every push, but has never been
   run on FreeBSD.
