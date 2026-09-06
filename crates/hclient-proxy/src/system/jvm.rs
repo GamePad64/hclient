@@ -31,8 +31,9 @@
 //! alternative would be an error on every non-Android-app use of a
 //! library that is also linked into tests and command-line tools.
 
-use jni::JavaVM;
+use jni::errors::Error;
 use jni::objects::{JObject, JString, JValue};
+use jni::{Env, JavaVM, jni_sig, jni_str};
 
 /// One JVM system property, or `None` for anything that went wrong.
 ///
@@ -52,26 +53,59 @@ pub(super) fn system_property(name: &str) -> Option<String> {
     }
     // SAFETY: the pointer is the one the application registered with
     // `ndk_context`, which is the `JavaVM` the Android runtime created
-    // for this process. Null-checked above rather than trusted.
-    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.ok()?; // unsafe-code-exception: amendment-C19
-    let mut env = vm.attach_current_thread().ok()?;
+    // for this process.
+    //
+    // **The null check above is load-bearing rather than polite, and it
+    // became so in jni 0.22.** `from_raw` used to answer a `Result` and
+    // now answers `Self` over an internal `assert!(!ptr.is_null())` — so
+    // what was a `None` on a bad pointer is a panic, and this check is
+    // what keeps it unreachable.
+    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }; // unsafe-code-exception: amendment-C19
 
-    let key: JString<'_> = env.new_string(name).ok()?;
+    // `attach_current_thread` takes a callback in 0.22 where it handed
+    // back a guard, and the callback must answer a `Result` — so the
+    // `Option`-per-step style below becomes `ok_or(Error::NullPtr(..))`
+    // at the boundary and nowhere else. The outer `.ok()` puts it back
+    // to the `None` this module's doc argues for: every failure here is
+    // *nothing was read*, and a caller whose whole answer is a string
+    // has no use for four error paths.
+    vm.attach_current_thread(|env| read_property(env, name))
+        .ok()
+}
+
+/// The four JNI calls, with the env the attach handed over.
+///
+/// Split out because 0.22's callback owns the `Env` for its own scope:
+/// inlining this into the closure above would work and would put the
+/// module's one interesting sequence inside a lambda, where the next
+/// reader has to find it.
+fn read_property(env: &mut Env<'_>, name: &str) -> Result<String, Error> {
+    let key: JString<'_> = env.new_string(name)?;
+    // **`jni_str!` rather than a plain literal, and it is 0.22's doing.**
+    // A class or method name crosses this boundary as MUTF-8, and 0.21
+    // converted a `&str` at every call; 0.22 asks for the encoded form
+    // in the type, and the macro does it in a `const` — so the same
+    // literal costs an allocation there and nothing here.
     let value = env
         .call_static_method(
-            "java/lang/System",
-            "getProperty",
-            "(Ljava/lang/String;)Ljava/lang/String;",
+            const { jni_str!("java/lang/System") },
+            const { jni_str!("getProperty") },
+            const { jni_sig!("(Ljava/lang/String;)Ljava/lang/String;") },
             &[JValue::Object(&JObject::from(key))],
-        )
-        .ok()?
-        .l()
-        .ok()?;
+        )?
+        .l()?;
     if value.is_null() {
         // The property is not set, which is the ordinary answer on a
-        // device with no proxy.
-        return None;
+        // device with no proxy. An error rather than an `Ok(None)`
+        // because the caller collapses both onto `None` anyway, and one
+        // shape through the callback is fewer than two.
+        return Err(Error::NullPtr("System.getProperty returned null"));
     }
-    let s: JString<'_> = value.into();
-    env.get_string(&s).ok().map(Into::into)
+    // **A checked cast where 0.21 took a bare `.into()`**, and the check
+    // is the upgrade rather than ceremony: `cast_local` asks the runtime
+    // whether the object really is a `java.lang.String` and answers
+    // `Error::WrongObjectType` where it is not, in place of a conversion
+    // that could not fail and could be wrong.
+    let s: JString<'_> = env.cast_local::<JString<'_>>(value)?;
+    s.try_to_string(env)
 }

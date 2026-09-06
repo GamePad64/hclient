@@ -6649,6 +6649,93 @@ wire-format parser in one test binary, one of them handing types to a stack
 built against the other. A duplicate is cheap for a crate whose types never
 cross a seam and wrong for one whose whole job is the types.
 
+### `jni` 0.22 is a redesign wearing a minor version, and the run on the device is what settled it
+
+Dependabot's bump from 0.21.1 to 0.22.4 failed `cross-target-check`, and
+the gap is why: 0.21.1 is from **March 2023** and 0.22 landed **February
+2026**, with 0.22.0 and 0.22.1 both yanked. Two crates here call into the
+JVM — `hclient-idn`'s `android.rs` for `android.icu.text.IDNA` and
+`hclient-proxy`'s `jvm.rs` for the system proxy properties — and five
+separate API changes reached them.
+
+**`JNIEnv` split into `Env` and `EnvUnowned`, and the alias points at the
+FFI-safe half.** `jni::JNIEnv` is now deprecated and resolves to
+`EnvUnowned`, which carries none of the calling API — so every
+`find_class`, `call_method` and `new_string` in this workspace stopped
+resolving with *no method named … for `&mut EnvUnowned`*. Upstream says
+in the diagnostic that this is deliberate: *"there will be clear compiler
+errors if trying to access the real `Env` API through the `EnvUnowned`
+type."* The repair is `Env` at both `with_env` helpers.
+
+**`attach_current_thread` takes a callback where it handed back a
+guard**, and the callback must answer a `Result`. That is the change with
+consequences past its call site: both helpers here were written in the
+`Option`-per-step style, so an error type had to arrive.
+
+**`JavaVM::from_raw` stopped being fallible** — it answers `Self` over an
+internal `assert!(!ptr.is_null())`. Both call sites already null-checked
+the pointer from `ndk_context` with a comment reading *"null-checked
+above rather than trusted"*, so nothing changed behaviourally; what
+changed is that the check went from **polite to load-bearing**, since the
+failure it prevents is now a panic rather than a `None`. Said at both
+sites.
+
+**Class, method and signature names want their encoded types.** A `&str`
+no longer coerces: `jni_str!` and `jni_sig!` encode MUTF-8 in a `const`,
+so a literal costs nothing at run time where 0.21 converted on every
+call. The one name that cannot use the macro is `through`'s `method`
+parameter, which is chosen at run time — `JNIString::from` is the
+run-time half, and it is the single allocation this path gained.
+
+**And `JObject → JString` stopped being a `From`.** `env.cast_local` is
+the replacement and it is a **checked** cast: it asks the runtime whether
+the object really is a `java.lang.String` and answers
+`Error::WrongObjectType` otherwise, in place of a conversion that could
+not fail and could be wrong.
+
+**The error type is this workspace's own, and refusing to reuse
+`jni::errors::Error` is the one judgement here.** 0.22 wants
+`Result<T, E>` from the callback, and the obvious `E` is theirs — which
+would have filed *"the answer was not ASCII"*, *"the answer carried a
+forbidden byte"* and *"ICU4J reported a fatal error"* under
+`Error::NullPtr` for a null pointer that never existed. `Stop::{Jni,
+Refused}` keeps the two apart. Nothing reads the distinction — `with_env`
+collapses both onto `None`, which is this backend's contract — so the
+compiler called both payloads dead, and the honest answer was a `Display`
+that prints the JVM's own message or this crate's reason rather than an
+`#[allow(dead_code)]` over data nobody can see.
+
+**`--all-features` is the wrong invocation for this crate, which nearly
+cost the whole check.** `hclient-idn`'s Android backend compiles only
+with the `idna` feature **off** — the feature forces the bundled tables
+on every target — so `cargo check -p hclient-idn --target
+aarch64-linux-android --all-features` is green over a backend it never
+built. The justfile already runs the pair, both ways round, for exactly
+this reason; reading it before trusting a green check is what caught it.
+
+**And then it was run on a device, because this crate's own history says
+a compiling Android arm is not a working one.** The last time this
+backend changed it type-checked, passed `cross-target-check`, and
+**refused every name** on the emulator — one line of ours, kept from the
+wrong direction. So: emulator, API 36, no APK, a `cdylib` whose
+`JNI_OnLoad` registers the VM with `ndk_context` and one `app_process`
+invocation, against the corpus `.notes/android-idn-live.md` recorded from
+that run. **Twelve of twelve agree**, including the four ICU4J error
+names the backend forgives (`EMPTY_LABEL`, `TRAILING_HYPHEN`,
+`HYPHEN_3_4`), the one it does not (`PUNYCODE`), and the deny list.
+
+The probe was then checked in the failing direction, which is what makes
+the twelve mean anything: forcing the closing `is_ascii` check to reject
+takes the run from **12/12 to 2/12** and reproduces the exact failure
+mode the previous migration shipped. A live run that cannot fail is worth
+no more than a type-check.
+
+One thing the run costs and does not buy: it is **not** a CI job, for the
+reason `.notes/android-idn-live.md` already gives — an emulator boot
+needs minutes and KVM. What is checkable from here is unchanged:
+`check-targets` compiles the backend in both feature settings and
+`graph-idn-backend` asserts the tables stay off Android.
+
 ### One crate was named after a family the dependency rule forbids
 
 Asked before publishing whether any crate is redundant or misnamed, both

@@ -119,14 +119,66 @@ pub(crate) type Handle = Android;
 
 #[cfg(android_backend)]
 mod imp {
-    use jni::JavaVM;
+    use jni::errors::Error;
     use jni::objects::{JObject, JString, JValue};
+    use jni::{Env, JavaVM, jni_sig, jni_str};
 
     /// Nothing to carry: the class is part of the platform and the JVM
     /// handle comes from `ndk_context` at each call. The type exists so
     /// the backend has the same shape as the other two.
     #[derive(Debug)]
     pub(crate) struct Android;
+
+    /// Why a conversion stopped — a JNI failure, or this crate refusing
+    /// the answer.
+    ///
+    /// **It exists because jni 0.22 asks the callback for a `Result` and
+    /// the honest `E` is not [`jni::errors::Error`].** That type is the
+    /// JVM's vocabulary: `WrongObjectType`, `ClassNotFound`,
+    /// `CaughtJavaException`. Three of the stops on this path are *ours*
+    /// — the answer was not ASCII, it carried a byte
+    /// [`crate::is_forbidden_domain_byte`] refuses, ICU4J reported an
+    /// error name this crate treats as fatal — and pushing those through
+    /// `Error::NullPtr` would file a decision of ours under a null
+    /// pointer that never existed.
+    ///
+    /// Nothing reads the distinction today: [`with_env`] collapses both
+    /// arms onto `None`, which is this backend's contract and the reason
+    /// its doc gives. What the type buys is that the collapse happens in
+    /// **one** place, visibly, rather than by every call site borrowing
+    /// a JNI variant to mean something else.
+    #[derive(Debug)]
+    enum Stop {
+        /// The JVM refused, or the call could not be made.
+        Jni(Error),
+        /// This crate refused the answer.
+        Refused(&'static str),
+    }
+
+    impl From<Error> for Stop {
+        fn from(e: Error) -> Self {
+            Self::Jni(e)
+        }
+    }
+
+    /// **The one reader, and it exists so that the payloads are not dead
+    /// weight.** Without it both fields are `dead_code` — a `Debug`
+    /// derive does not count as a use — and the honest choices then are
+    /// to carry the data with an `#[allow]` over it or to drop it and
+    /// keep a unit enum that says less than its name promises.
+    ///
+    /// This is what a `#[allow(dead_code)]` would have papered over, and
+    /// it is two lines: the failure prints as itself, so anyone reaching
+    /// for a `dbg!` or a log line on a device gets the JVM's own message
+    /// or this crate's reason rather than a discriminant.
+    impl std::fmt::Display for Stop {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Jni(e) => write!(f, "{e}"),
+                Self::Refused(why) => f.write_str(why),
+            }
+        }
+    }
 
     /// `Some` where a JVM is registered and `android.icu.text.IDNA`
     /// resolves.
@@ -139,10 +191,9 @@ mod imp {
     /// with no `icuuc.dll` — see [`crate::backend`].
     pub(crate) fn find() -> Option<Android> {
         with_env(|env| {
-            env.find_class("android/icu/text/IDNA")
-                .map(|_| Android)
-                .ok()
-        })?
+            env.find_class(const { jni_str!("android/icu/text/IDNA") })?;
+            Ok(Android)
+        })
     }
 
     /// The A-label form of `domain`, or `None` if ICU4J refused it for a
@@ -177,93 +228,129 @@ mod imp {
             // `IDNA.getUTS46Instance(int)` takes the same option bits
             // ICU4C does, which is why `crate::icu::OPTIONS` is passed
             // straight through rather than translated.
-            let options = i32::try_from(crate::icu::OPTIONS).ok()?;
+            let options = i32::try_from(crate::icu::OPTIONS)
+                .map_err(|_| Stop::Refused("OPTIONS does not fit an i32"))?;
             let idna = env
                 .call_static_method(
-                    "android/icu/text/IDNA",
-                    "getUTS46Instance",
-                    "(I)Landroid/icu/text/IDNA;",
+                    const { jni_str!("android/icu/text/IDNA") },
+                    const { jni_str!("getUTS46Instance") },
+                    const { jni_sig!("(I)Landroid/icu/text/IDNA;") },
                     &[JValue::Int(options)],
-                )
-                .ok()?
-                .l()
-                .ok()?;
+                )?
+                .l()?;
 
-            let src: JString<'_> = env.new_string(domain).ok()?;
-            let dest = env.new_object("java/lang/StringBuilder", "()V", &[]).ok()?;
-            let info = env
-                .new_object("android/icu/text/IDNA$Info", "()V", &[])
-                .ok()?;
+            let src: JString<'_> = env.new_string(domain)?;
+            let dest = env.new_object(
+                const { jni_str!("java/lang/StringBuilder") },
+                const { jni_sig!("()V") },
+                &[],
+            )?;
+            let info = env.new_object(
+                const { jni_str!("android/icu/text/IDNA$Info") },
+                const { jni_sig!("()V") },
+                &[],
+            )?;
 
+            // **The method name is a runtime parameter and every other
+            // name here is a literal**, which is what keeps `jni_str!`
+            // from covering it: the macro encodes at compile time, and
+            // `method` is `through`'s argument. `JNIString::from` is the
+            // run-time half of the same conversion, and it is the one
+            // allocation 0.22 asks for on this path.
             env.call_method(
                 &idna,
-                method,
-                "(Ljava/lang/CharSequence;Ljava/lang/StringBuilder;Landroid/icu/text/IDNA$Info;)\
-                 Ljava/lang/StringBuilder;",
+                jni::strings::JNIString::from(method),
+                const {
+                    jni_sig!(
+                        "(Ljava/lang/CharSequence;Ljava/lang/StringBuilder;\
+                         Landroid/icu/text/IDNA$Info;)Ljava/lang/StringBuilder;"
+                    )
+                },
                 &[
                     JValue::Object(&JObject::from(src)),
                     JValue::Object(&dest),
                     JValue::Object(&info),
                 ],
-            )
-            .ok()?;
+            )?;
 
             if errors_are_fatal(env, &info)? {
-                return None;
+                return Err(Stop::Refused(
+                    "IDNA reported an error this crate treats as fatal",
+                ));
             }
 
             let text = env
-                .call_method(&dest, "toString", "()Ljava/lang/String;", &[])
-                .ok()?
-                .l()
-                .ok()?;
-            let out: String = env.get_string(&JString::from(text)).ok()?.into();
+                .call_method(
+                    &dest,
+                    const { jni_str!("toString") },
+                    const { jni_sig!("()Ljava/lang/String;") },
+                    &[],
+                )?
+                .l()?;
+            let text: JString<'_> = env.cast_local::<JString<'_>>(text)?;
+            let out: String = text.try_to_string(env)?;
 
             if !out.is_ascii() {
-                return None;
+                return Err(Stop::Refused("the answer was not ASCII"));
             }
             if out.bytes().any(crate::is_forbidden_domain_byte) {
-                return None;
+                return Err(Stop::Refused("the answer carried a forbidden byte"));
             }
-            Some(out)
-        })?
+            Ok(out)
+        })
     }
 
     /// Walks `IDNA.Info.getErrors()` and asks [`super::is_fatal_by_name`].
     ///
     /// `None` for a JNI failure, which the caller turns into a refusal —
     /// an error set this crate could not read is not one it may forgive.
-    fn errors_are_fatal(env: &mut jni::JNIEnv<'_>, info: &JObject<'_>) -> Option<bool> {
+    fn errors_are_fatal(env: &mut Env<'_>, info: &JObject<'_>) -> Result<bool, Error> {
         let set = env
-            .call_method(info, "getErrors", "()Ljava/util/Set;", &[])
-            .ok()?
-            .l()
-            .ok()?;
+            .call_method(
+                info,
+                const { jni_str!("getErrors") },
+                const { jni_sig!("()Ljava/util/Set;") },
+                &[],
+            )?
+            .l()?;
         let iter = env
-            .call_method(&set, "iterator", "()Ljava/util/Iterator;", &[])
-            .ok()?
-            .l()
-            .ok()?;
+            .call_method(
+                &set,
+                const { jni_str!("iterator") },
+                const { jni_sig!("()Ljava/util/Iterator;") },
+                &[],
+            )?
+            .l()?;
         let mut names = Vec::new();
         while env
-            .call_method(&iter, "hasNext", "()Z", &[])
-            .ok()?
-            .z()
-            .ok()?
+            .call_method(
+                &iter,
+                const { jni_str!("hasNext") },
+                const { jni_sig!("()Z") },
+                &[],
+            )?
+            .z()?
         {
             let item = env
-                .call_method(&iter, "next", "()Ljava/lang/Object;", &[])
-                .ok()?
-                .l()
-                .ok()?;
+                .call_method(
+                    &iter,
+                    const { jni_str!("next") },
+                    const { jni_sig!("()Ljava/lang/Object;") },
+                    &[],
+                )?
+                .l()?;
             let name = env
-                .call_method(&item, "name", "()Ljava/lang/String;", &[])
-                .ok()?
-                .l()
-                .ok()?;
-            names.push(String::from(env.get_string(&JString::from(name)).ok()?));
+                .call_method(
+                    &item,
+                    const { jni_str!("name") },
+                    const { jni_sig!("()Ljava/lang/String;") },
+                    &[],
+                )?
+                .l()?;
+            let name: JString<'_> = env.cast_local::<JString<'_>>(name)?;
+            names.push(name.try_to_string(env)?);
         }
-        Some(super::is_fatal_by_name(names.iter().map(String::as_str)))
+        Ok(super::is_fatal_by_name(names.iter().map(String::as_str)))
     }
 
     /// Attaches to the process's JVM and runs `f` with an env.
@@ -277,18 +364,33 @@ mod imp {
         unsafe_code, // unsafe-code-exception: amendment-C19
         reason = "JavaVM::from_raw over the pointer the application registered with ndk_context"
     )]
-    fn with_env<T>(f: impl FnOnce(&mut jni::JNIEnv<'_>) -> T) -> Option<T> {
+    fn with_env<T>(f: impl FnOnce(&mut Env<'_>) -> Result<T, Stop>) -> Option<T> {
         let ctx = ndk_context::android_context();
         if ctx.vm().is_null() {
             return None;
         }
         // SAFETY: the pointer is the one the application registered with
         // `ndk_context`, which is the `JavaVM` the Android runtime
-        // created for this process. Null-checked above rather than
-        // trusted.
-        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.ok()?; // unsafe-code-exception: amendment-C19
-        let mut env = vm.attach_current_thread().ok()?;
-        Some(f(&mut env))
+        // created for this process.
+        //
+        // **The null check above is load-bearing rather than polite, and
+        // it became so in jni 0.22.** `from_raw` used to answer a
+        // `Result` and now answers `Self` over an internal
+        // `assert!(!ptr.is_null())` — so what was a `None` on a bad
+        // pointer is a panic, and this check is what keeps it
+        // unreachable.
+        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }; // unsafe-code-exception: amendment-C19
+
+        // **The callback shape is 0.22's, and it is why every body below
+        // answers `Result` where it used to answer `Option`.**
+        // `attach_current_thread` handed back a guard and now takes a
+        // closure returning `Result<T, E>` — which is a real improvement
+        // rather than churn: the attachment's scope is the callback, so
+        // there is no guard whose lifetime a caller could get wrong. The
+        // `.ok()` here is what puts the two back together, and the
+        // collapse of every failure onto `None` is unchanged and is this
+        // function's own doc.
+        vm.attach_current_thread(f).ok()
     }
 }
 
