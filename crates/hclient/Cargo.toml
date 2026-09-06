@@ -394,7 +394,7 @@ flate2        = { version = "1.1", optional = true }
 # is chosen above, and its `into_inner` is what turns a truncated stream
 # into an error rather than a short read. Licence `BSD-3-Clause OR MIT`, its
 # two `alloc-*-stdlib` dependencies `BSD-3-Clause` — again already allowed.
-brotli-decompressor = { version = "5.0", optional = true }
+brotli-decompressor = { version = "6.0", optional = true }
 # The `zstd` feature. `ruzstd`, not `zstd`: the latter is libzstd through
 # `zstd-sys`, which is C with a build script — the same objection the
 # `flate2` line above records against `zlib`/`zlib-ng`, and it bites
@@ -674,7 +674,7 @@ tokio              = { version = "1", features = ["rt-multi-thread"] }
 # is any use, and an ungated dev-dependency still has to BUILD for a target
 # whose test file is cfg'd out.
 flate2             = { version = "1.1" }
-brotli             = { version = "8.0", default-features = false, features = ["std"] }
+brotli             = { version = "9.0", default-features = false, features = ["std"] }
 # The zstd ENCODER for the same server, and it is an oracle rather than a
 # convenience — the role `multer` plays for `multipart.rs` and `url` for
 # `uri.rs` one crate over. This is `zstd` 0.13, i.e. **libzstd itself**

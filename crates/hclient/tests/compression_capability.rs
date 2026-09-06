@@ -52,6 +52,32 @@ use std::error::Error as StdError;
 /// An independent implementation on the producing side is the point. A
 /// blob made by `flate2` and read back by `flate2` would still pass if
 /// both agreed on something that is not gzip; this one cannot.
+/// A real brotli stream, produced by **libbrotli** through Python's
+/// `brotli` binding — not by the `brotli` crate this file's neighbours
+/// encode with:
+///
+/// ```text
+/// python3 -c "import brotli; print(', '.join(f'0x{b:02x}' for b in \
+///   brotli.compress(b'hello, brotli - the plaintext this test asserts on\n', quality=9)))"
+/// ```
+///
+/// The independent producer is the point, exactly as it is for
+/// [`GZIP_BLOB`] below: a blob made by the Rust `brotli` crate and read
+/// back by `brotli-decompressor` — which share an author and a
+/// repository — would still pass if the two agreed on something that is
+/// not brotli. This one cannot.
+#[cfg(feature = "brotli")]
+const BROTLI_BLOB: &[u8] = &[
+    0x1b, 0x32, 0x00, 0x00, 0x04, 0xca, 0x6d, 0xdd, 0x92, 0x9e, 0xae, 0x35, 0x28, 0x2c, 0x0c, 0xc4,
+    0xc1, 0xfe, 0x82, 0x3d, 0x48, 0x28, 0x12, 0x01, 0xa5, 0x9f, 0xce, 0x5b, 0xd1, 0xf4, 0x9c, 0x3a,
+    0x5d, 0xdc, 0xd4, 0x9a, 0x5e, 0x44, 0xa0, 0xc4, 0x87, 0x92, 0x16, 0x61, 0xb4, 0xed, 0x68, 0xac,
+    0x7a, 0x03,
+];
+
+/// What [`BROTLI_BLOB`] decodes to.
+#[cfg(feature = "brotli")]
+const BROTLI_PLAIN: &str = "hello, brotli - the plaintext this test asserts on\n";
+
 const GZIP_BLOB: &[u8] = &[
     0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0xd7,
     0x51, 0x48, 0xaf, 0xca, 0x2c, 0x50, 0x78, 0xd4, 0x30, 0x45, 0xa1, 0x24, 0x23, 0x55, 0xa1, 0x20,
@@ -335,6 +361,77 @@ fn a_truncated_stream_is_an_error_not_a_shorter_document() {
 
     let err = get(&c).expect_err("a cut-off body must not read as a complete, shorter one");
     assert_eq!(*err.kind(), ErrorKind::Decode);
+}
+
+/// The same claim for **brotli**, and it had no test until a version bump
+/// went looking.
+///
+/// `a_truncated_stream_is_an_error_not_a_shorter_document` above reads as
+/// though it covered every coding — its name says *a truncated stream* —
+/// and it sends gzip. Deflate and zstd have their own in
+/// `compression_deflate_zstd.rs`. Brotli had none, so the check that
+/// `decoder.rs` calls out by name — `into_inner`'s `Err` is *"the input
+/// ended before the brotli stream did"*, and it is why
+/// `brotli-decompressor` was chosen over a pull-shaped decoder — was
+/// asserted nowhere.
+///
+/// **Found by mutation rather than by reading**: replacing that `Err` arm
+/// with `Ok` left the whole compression suite green. The bump from
+/// `brotli-decompressor` 5 to 6 is what prompted the check; the gap was
+/// older than the bump and is not its doing.
+///
+/// The mock is the instrument, as it is for gzip above, and the reason is
+/// the one `tests/compression.rs` records: under a `Content-Length` the
+/// **transport** reports a short body first, so the decoder's
+/// end-of-stream check is never reached and a test written against a
+/// socket server would pass over a decoder that had no check at all.
+#[cfg(feature = "brotli")]
+#[test]
+fn a_truncated_brotli_stream_is_an_error_not_a_shorter_document() {
+    let c =
+        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
+            .build()
+            .expect("supported");
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "br")
+                // The last four bytes carry the end-of-stream marker.
+                .body(vec![Bytes::from_static(
+                    BROTLI_BLOB.split_at(BROTLI_BLOB.len() - 4).0,
+                )])
+                .unwrap(),
+        );
+
+    let err = get(&c).expect_err("a cut-off brotli body must not read as a complete, shorter one");
+    assert_eq!(*err.kind(), ErrorKind::Decode);
+}
+
+/// The control, and without it the test above passes for a client that
+/// refuses **every** brotli body.
+///
+/// It also earns the fixture: the blob is libbrotli's, so a client that
+/// decodes it has agreed with an implementation that shares no code with
+/// the one doing the decoding.
+#[cfg(feature = "brotli")]
+#[test]
+fn a_whole_brotli_stream_decodes() {
+    let c =
+        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
+            .build()
+            .expect("supported");
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "br")
+                .body(vec![Bytes::from_static(BROTLI_BLOB)])
+                .unwrap(),
+        );
+
+    let got = get(&c).expect("a whole brotli body decodes");
+    assert_eq!(got.text().expect("utf-8"), BROTLI_PLAIN);
 }
 
 /// A body error that arrives while a coding is being reversed keeps the
