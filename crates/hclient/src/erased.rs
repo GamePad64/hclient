@@ -66,7 +66,7 @@
 //! cookies) and `Client::cache` keep handing back
 //! a guard onto the real thing rather than onto a narrowed trait object.
 
-#[cfg(any(feature = "cookies", feature = "cache"))]
+#[cfg(any(feature = "cookies", feature = "cache", feature = "hsts"))]
 use std::fmt::Debug;
 
 /// A [`PublicSuffixList`](crate::cookie::PublicSuffixList) of any type.
@@ -402,5 +402,98 @@ impl crate::cookie::CookieStore for AnyCookieStore {
     }
     fn clear(&self) -> Self::Done<'_> {
         self.0.clear_boxed()
+    }
+}
+
+/// The object-safe half of [`HstsStore`](crate::hsts::HstsStore).
+///
+/// [`BoxedCookieStore`]'s twin, for the same reason and with the same
+/// split: the seam names its futures as associated types, which is what
+/// lets a single-threaded store answer for itself and is exactly what
+/// makes it not `dyn`-compatible. The blanket impl means **a store author
+/// writes nothing**, and the boxing happens where the type is still
+/// concrete, so `Send` is inferred rather than proved.
+#[cfg(feature = "hsts")]
+trait BoxedHstsStore {
+    fn get_boxed<'a>(
+        &'a self,
+        domains: &'a [String],
+    ) -> futures_core::future::BoxFuture<'a, Vec<(String, crate::hsts::Entry)>>;
+    fn put_boxed<'a>(
+        &'a self,
+        domain: &'a str,
+        entry: crate::hsts::Entry,
+    ) -> futures_core::future::BoxFuture<'a, ()>;
+    fn remove_boxed<'a>(&'a self, domain: &'a str) -> futures_core::future::BoxFuture<'a, ()>;
+}
+
+#[cfg(feature = "hsts")]
+impl<S> BoxedHstsStore for S
+where
+    S: crate::hsts::HstsStore,
+    for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
+    for<'a> S::Done<'a>: Send, // send-bound-exception: amendment-C12
+{
+    fn get_boxed<'a>(
+        &'a self,
+        domains: &'a [String],
+    ) -> futures_core::future::BoxFuture<'a, Vec<(String, crate::hsts::Entry)>> {
+        Box::pin(self.get(domains))
+    }
+    fn put_boxed<'a>(
+        &'a self,
+        domain: &'a str,
+        entry: crate::hsts::Entry,
+    ) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.put(domain, entry))
+    }
+    fn remove_boxed<'a>(&'a self, domain: &'a str) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.remove(domain))
+    }
+}
+
+/// An [`HstsStore`](crate::hsts::HstsStore) of any type.
+///
+/// [`AnyCookieStore`]'s counterpart, built by
+/// [`ClientBuilder::hsts`](crate::ClientBuilder::hsts) from whatever store
+/// the caller's [`Hsts`](crate::hsts::Hsts) was over — so an
+/// `Hsts<AnyHstsStore>` is the ordinary rules with its one seam erased.
+#[cfg(feature = "hsts")]
+pub struct AnyHstsStore(
+    Box<dyn BoxedHstsStore + Send + Sync>, // send-bound-exception: amendment-C12
+);
+
+#[cfg(feature = "hsts")]
+impl AnyHstsStore {
+    pub fn new<S>(store: S) -> Self
+    where
+        S: crate::hsts::HstsStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,                          // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send,                         // send-bound-exception: amendment-C12
+    {
+        Self(Box::new(store))
+    }
+}
+
+#[cfg(feature = "hsts")]
+impl Debug for AnyHstsStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnyHstsStore").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "hsts")]
+impl crate::hsts::HstsStore for AnyHstsStore {
+    type Get<'a> = futures_core::future::BoxFuture<'a, Vec<(String, crate::hsts::Entry)>>;
+    type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
+
+    fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
+        self.0.get_boxed(domains)
+    }
+    fn put<'a>(&'a self, domain: &'a str, entry: crate::hsts::Entry) -> Self::Done<'a> {
+        self.0.put_boxed(domain, entry)
+    }
+    fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a> {
+        self.0.remove_boxed(domain)
     }
 }

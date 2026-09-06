@@ -327,6 +327,21 @@ public-suffix = []
 #
 # CI's `test` job runs `--all-features`, so this path stays under test.
 cache = ["dep:jiff", "dep:winnow"]
+# RFC 6797 Strict Transport Security: remember which hosts asserted a
+# policy, and upgrade `http://` to `https://` before the request is made.
+#
+# Off by default, like the jar and the cache beside it, and for a reason
+# neither of them has: this one changes **where the request goes**. A
+# caller who did not ask for it should not find a request they wrote as
+# `http://` leaving as `https://` because a header on some earlier
+# response said so — that is a good default for a browser, whose user
+# agreed to be a browser, and a surprising one for a library. Switching
+# it on is one line and the module doc says what it costs.
+#
+# No `jiff`: unlike the other two this parses no dates. §6.1.1's `max-age`
+# is `delta-seconds`, a count, and the only calendar arithmetic is one
+# `SystemTime::checked_add`.
+hsts = ["dep:winnow"]
 
 [dependencies]
 bytes         = { workspace = true }

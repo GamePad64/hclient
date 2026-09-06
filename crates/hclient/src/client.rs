@@ -54,6 +54,16 @@ pub struct ClientBuilder {
     /// two halves live apart.
     #[cfg(feature = "cookies")]
     jar: Option<crate::cookie::CookieJar<crate::erased::AnyList, crate::erased::AnyCookieStore>>,
+    /// The HSTS policy set, on its way to `Inner`.
+    ///
+    /// **No `Config` bit beside it, unlike the jar and the cache**, and
+    /// the absence is the decision rather than an omission: those two
+    /// carry one because `build()` has to refuse them against a transport
+    /// that keeps its own, and there is no such refusal here. See
+    /// `crate::hsts`'s module doc for why a capability would be a gate
+    /// with nothing to gate.
+    #[cfg(feature = "hsts")]
+    hsts: Option<crate::hsts::Hsts<crate::erased::AnyHstsStore>>,
     /// The cache itself, on its way to `Inner`, already behind the `Arc`
     /// it will share with every clone of the client **and with every
     /// recording response body** — see `cached::Cache`. `Config` carries
@@ -81,6 +91,8 @@ impl ClientBuilder {
             config: Config::default(),
             #[cfg(feature = "cookies")]
             jar: None,
+            #[cfg(feature = "hsts")]
+            hsts: None,
             #[cfg(feature = "cache")]
             cache: None,
         }
@@ -332,6 +344,57 @@ impl ClientBuilder {
         self
     }
 
+    /// Honour RFC 6797 Strict Transport Security: remember which hosts
+    /// asserted a policy, and send `https://` where the caller wrote
+    /// `http://`.
+    ///
+    /// `.hsts(Hsts::new())` is the "just turn it on" form. The argument
+    /// is there for the reason [`cache`](Self::cache)'s is: the store is
+    /// worth configuring — a policy set that outlives the process, or one
+    /// seeded from a preload list, is an
+    /// [`HstsStore`](crate::hsts::HstsStore) — and a `bool` could express
+    /// neither.
+    ///
+    /// **This changes where requests go, which is why it is off by
+    /// default.** A caller who did not ask for it should not find a
+    /// request they wrote as `http://` leaving as `https://` because a
+    /// header on some earlier response said so. That is the right default
+    /// for a browser, whose user agreed to be a browser, and the wrong
+    /// one for a library — so it is one line to switch on and the module
+    /// documentation says what it costs.
+    ///
+    /// **There is no capability refusal here**, unlike
+    /// [`cookie_jar`](Self::cookie_jar) and [`cache`](Self::cache) beside
+    /// it. A browser applies HSTS inside `fetch()` too, and unlike a
+    /// second jar or a second cache, a second *upgrade* is not harmful:
+    /// both answers are `https://`. `crate::hsts`'s module doc has the
+    /// argument, including what would have to be true for a capability to
+    /// earn its place.
+    ///
+    /// The `now` is [`web_time::SystemTime::now()`] and not the client's
+    /// [`Timer`], for the reason the jar's is: §6.1.1's
+    /// `max-age` becomes a calendar instant the moment it is stored, and
+    /// `Timer::Instant` is a stopwatch with no epoch. Under
+    /// [`NoClock`](crate::NoClock) a stopwatch-derived expiry would never
+    /// advance, so every policy would last for ever — which for this
+    /// module is the *safe* direction and still not one to arrive at by
+    /// accident.
+    ///
+    /// **The store is the caller's and is erased on the way in** — see
+    /// [`AnyHstsStore`](crate::erased::AnyHstsStore), and
+    /// [`CookieStore`](crate::cookie::CookieStore)'s documentation for
+    /// the five-way measurement that chose the seam's shape.
+    #[cfg(feature = "hsts")]
+    pub fn hsts<S>(mut self, hsts: crate::hsts::Hsts<S>) -> Self
+    where
+        S: crate::hsts::HstsStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,                          // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send,                         // send-bound-exception: amendment-C12
+    {
+        self.hsts = Some(hsts.map_store(crate::erased::AnyHstsStore::new));
+        self
+    }
+
     /// Keep an RFC 9111 response cache: serve a fresh stored response
     /// without sending anything, revalidate a stale one conditionally, and
     /// store what comes back.
@@ -431,6 +494,8 @@ impl ClientBuilder {
                 timer: self.timer,
                 #[cfg(feature = "cookies")]
                 cookies: self.jar,
+                #[cfg(feature = "hsts")]
+                hsts: self.hsts,
                 #[cfg(feature = "cache")]
                 cache: self.cache,
             }),
@@ -494,6 +559,13 @@ struct Inner {
     #[cfg(feature = "cookies")]
     cookies:
         Option<crate::cookie::CookieJar<crate::erased::AnyList, crate::erased::AnyCookieStore>>,
+    /// The RFC 6797 policy set, if one was asked for.
+    ///
+    /// No lock, for the jar's reason one field up: the store is where
+    /// synchronisation lives, and a store that awaits cannot be held
+    /// behind a `&mut` across the await.
+    #[cfg(feature = "hsts")]
+    hsts: Option<crate::hsts::Hsts<crate::erased::AnyHstsStore>>,
     /// The response cache, if one was asked for.
     ///
     /// Already an `Arc<Mutex<..>>` rather than a `Mutex` like the jar
@@ -1021,6 +1093,24 @@ impl Client {
             hclient_core::unversioned::Attempt::new(hclient_core::unversioned::RequestId::next());
 
         loop {
+            // **§8.3, and it is the first thing in the loop.** Before the
+            // jar, because a `Secure` cookie's eligibility is decided by
+            // the scheme this hop actually uses; before the cache,
+            // because the URI is part of its key; and before the
+            // request is built, because §8.3's whole subject is what the
+            // UA does *"whenever [it] prepares to 'load' … any 'http'
+            // URI"*.
+            //
+            // Covering the redirect hops falls out of it being in the
+            // loop rather than above it: `next_hop` has already put
+            // `Location`'s resolved target in `hp.uri` by the time the
+            // next iteration starts.
+            //
+            // **Boxed, for the reason the two cookie hooks below it
+            // are**: an `async fn` awaited inline has its whole state
+            // machine inlined into `run`'s, and this future is a store
+            // lookup on a path that is about to open a socket.
+            Box::pin(self.upgrade_scheme(&mut hp.uri)).await;
             // Cookies are attached PER HOP, not once for the operation,
             // and re-derived rather than carried: `next_hop` clones the
             // previous hop's headers, and a 302 within one origin is
@@ -1530,8 +1620,62 @@ impl Client {
         // are relative to the request that got the response, not to
         // wherever the chain ends up.
         Box::pin(self.store_cookies(&hp.uri, resp.headers())).await;
+        // §8.1, beside the jar's own learning and for the same reason:
+        // this is the hop that sent the request, so it is the hop whose
+        // authority the policy is about — not wherever the chain ends up.
+        Box::pin(self.note_hsts(&hp.uri, resp.headers())).await;
         Ok(resp)
     }
+
+    /// §8.3's upgrade, applied to the URI a hop is about to be sent to.
+    ///
+    /// **Called in two places and re-derived at each, rather than once
+    /// for the operation** — the jar's rule and for a sharper reason: a
+    /// `Location: http://…` is a *new* `http` URI, and §8.3 names that
+    /// case in as many words (*"including when following HTTP
+    /// redirects"*). A client that upgraded only the caller's own URL
+    /// would send the first request over TLS and the second in clear
+    /// text, which is the shape of the attack HSTS exists against.
+    #[cfg(feature = "hsts")]
+    async fn upgrade_scheme(&self, uri: &mut http::Uri) {
+        let Some(hsts) = self.inner.hsts.as_ref() else {
+            return;
+        };
+        if let Some(upgraded) = hsts.upgrade(uri, SystemTime::now()).await {
+            *uri = upgraded;
+        }
+    }
+
+    /// Written out rather than `#[cfg]`-ed at the call site, for the
+    /// reason `attach_cookies` gives: the two call sites carry the
+    /// reasoning about *when* the upgrade happens, and burying that in a
+    /// conditional would put it behind a feature flag too.
+    #[cfg(not(feature = "hsts"))]
+    async fn upgrade_scheme(&self, _: &mut http::Uri) {}
+
+    /// §8.1: let the policy set learn from this hop's response.
+    ///
+    /// `secure` is read off the URI the request was **sent to** rather
+    /// than from anything the transport reports, and that is the honest
+    /// reading available here: §8.1 conditions noting on the response
+    /// having arrived *"over secure transport"* with *"no underlying
+    /// secure transport errors or warnings"*, and the second half is
+    /// `TlsConnect`'s knowledge, one layer below `Transport`. What this
+    /// client can say is that it asked for `https`, and a transport that
+    /// answered a request it could not secure has already failed it —
+    /// see `crate::hsts`'s module doc, which names §8.4 as the half this
+    /// crate does not enforce.
+    #[cfg(feature = "hsts")]
+    async fn note_hsts(&self, uri: &http::Uri, headers: &http::HeaderMap) {
+        let Some(hsts) = self.inner.hsts.as_ref() else {
+            return;
+        };
+        let secure = uri.scheme_str() == Some("https");
+        hsts.note(uri, headers, secure, SystemTime::now()).await;
+    }
+
+    #[cfg(not(feature = "hsts"))]
+    async fn note_hsts(&self, _: &http::Uri, _: &http::HeaderMap) {}
 
     /// Puts this hop's cookies on the request, if this client keeps a jar.
     ///

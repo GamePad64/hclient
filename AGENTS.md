@@ -4560,6 +4560,108 @@ of them caused rather than found: inserting `alt_svc_store` above
 and `--no-default-features` stopped compiling. `just test-no-default`
 caught it, which is twice in two days for the recipe this file records as
 having once printed `error:` and exited zero.
+### HSTS, the one memory that changes where a request goes
+
+`hclient::hsts` — RFC 6797, behind an `hsts` feature, off by default.
+[`Hsts`] over an [`HstsStore`] is the same seam shape as the jar and the
+cache, and `ClientBuilder::hsts` installs it erased. It was the last row
+of the browser-state inventory and the one flagged there as *the single
+line where absence changes not the speed but **where the request goes***.
+
+**It is in `Client` rather than in a transport, which is the opposite
+answer from `Alt-Svc` one crate over, and the RFC draws the line
+itself.** §8.3 governs what a UA does *"whenever [it] prepares to 'load'
+… any 'http' URI (including when following HTTP redirects)"* — the
+scheme is settled before any transport is asked, it decides which port
+and which handshake happen at all, and a `Location: http://…` is
+`Client`'s to resolve. It is equally not in `hclient-proto`, where the
+redirect *mechanism* lives: this needs a calendar clock and a store, and
+that crate is the sans-io leaf whose dependency count is guarded.
+
+**There is no capability, and that is the decision rather than an
+omission.** `owns_cookie_jar` and `owns_cache` exist because a browser
+does both internally and doing them *twice* is harmful — two `Cookie`
+headers, two stored copies. A browser applies HSTS too, and a second
+upgrade is not harmful, because both answers are the same answer:
+`https://`. So a capability here would be a gate with nothing to refuse,
+which is the *distinction with one reachable side* this workspace deletes
+rather than adds. The condition for one arriving is written where the
+next reader will look: a transport that an upgrade above it would make
+**wrong**, at which point the capability, the check and the refusal come
+together — `owns_cookie_jar`'s own rule for its third state.
+
+**§8.3's port rule is the one implementations get wrong, and it is
+counter-intuitive on purpose.** No explicit port stays portless; an
+explicit `:80` becomes `:443`; **any other explicit port is preserved**,
+so `http://a.test:8080/` upgrades to `https://a.test:8080/` and not to
+`:443`. The RFC's own NOTE says why — *"these steps ensure that the HSTS
+Policy applies to HTTP over any TCP port of an HSTS Host"* — and its next
+NOTE warns that such a request is *"reasonably likely"* to fail because a
+plain HTTP server is listening there. Failing to reach it is the intended
+outcome; reaching it in clear text is not.
+
+**The matching rule is the opposite of the jar's, and a reader carrying
+the cookie intuition will get it backwards.** §8.3 step 5: *"if … any
+superdomain match with an asserted includeSubDomains directive is found,
+or, if no superdomain matches … are found and a congruent match is
+found"*. So **any** covering entry upgrades and a more specific entry
+cannot veto a less specific one — where RFC 6265 gives the more specific
+`Domain` the say. `example.com` with `includeSubDomains` covers
+`a.b.example.com` even beside a `b.example.com` entry without the flag.
+That was verified against the text rather than taken from a summary, and
+then against the errata, because a research pass had twice flagged it as
+the most counter-intuitive rule in the document: five errata reported for
+RFC 6797, **all rejected**, none touching §8.2 or §8.3.
+
+The enumeration that makes it a store's exact lookup is the jar's
+`candidate_domains` move a second time, and for the identical reason:
+§8.2 defines matching as a *relation*, so a store asked *what covers this
+host* would have to implement §8.2 — which is the thing the seam exists
+to keep above it.
+
+**What it is narrower than the RFC in, said where a reader meets it:**
+§8.4's *"MUST terminate the connection if there are any errors … with the
+underlying secure transport"* is not enforced, because that is a rule
+about a handshake and this crate conducts none — `TlsConnect` is the seam
+that could. Upgrading the scheme and then accepting a bad certificate
+honours half of HSTS, and the half honoured is the half that moves the
+bytes onto TLS at all. There is also no preload list: that is a *policy*
+— who is on it, how it is updated — and `HstsStore` is exactly where one
+would go, needing nothing here to change.
+
+**Seventeen mutations, fifteen killed on the first pass, and the two
+survivors were both my tests being true for the wrong reason.** Neither
+was a control.
+
+`max-age=0` took **three** attempts to pin, and each wrong version is a
+different way to be accidentally green. §6.1.1 makes it a deletion; with
+the branch disabled it instead *stores* an entry expiring at `now + 0`.
+Asserting *the next request is not upgraded* passes, because expiry
+declines it too. Asserting *the store is empty afterwards* also passes,
+because `upgrade`'s own §8.1.1 eviction sweeps the entry on the way. Only
+reading the store **before** `upgrade` separates deletion from
+already-expired — and in memory the two look alike, where in a store that
+outlives the process one is a row that never expires out.
+
+The IP-literal test was the same shape one rule over: §8.1.1 forbids
+*noting* a literal, and I asserted it through `upgrade`, which refuses
+literals on its own account under §8.3 step 3. Green for a client that
+noted every literal it ever met. It reads the store now.
+
+**And one guard here could not have seen its own subject.**
+`graph-no-cookie-jar` proves a default build carries no jar and no cache
+by looking for `public-suffix` and `jiff`. `hsts` costs **no crate at
+all** — `winnow` is already in a default build through `hclient-proto`'s
+response-head parser, `web-time` through the client's clock — so the two
+dependency graphs are byte-identical and no `cargo tree` pattern can
+discriminate them. That is a good property of the feature and a blind
+spot in the guard. `graph-default-has-no-hsts` asserts the resolved
+**feature set** instead, which `-f "{p} {f}"` puts on the package's own
+line, and it carries a `present` half so that renaming the feature fails
+the check rather than silently emptying it. Both halves were checked in
+the failing direction: putting `hsts` in `default` fires the first,
+staling the pattern fires the second.
+
 ### The jar and the cache became modules, and one feature shape is what made it free
 
 `hclient-cookie` and `hclient-cache` are `hclient::cookie` and

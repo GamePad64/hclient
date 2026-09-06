@@ -1717,6 +1717,37 @@ graph-no-cookie-jar:
         "hclient's default build pulled in the cookie jar or the response cache — both features are off by default precisely so this does not happen" \
         -- -p hclient
 
+# the default hclient build does not upgrade anybody's scheme
+#
+# **A feature guard rather than a graph guard, and the difference is the
+# finding.** Every other check in this section names a crate, because a
+# feature that costs a dependency shows up in `cargo tree` — that is how
+# `graph-no-cookie-jar` above sees the jar (`public-suffix`) and the cache
+# (`jiff`). `hsts` costs **nothing**: `winnow` is already in a default
+# build through `hclient-proto`'s response-head parser, and `web-time`
+# through the client's clock, so the two graphs are byte-identical and no
+# `cargo tree` pattern can ever discriminate them.
+#
+# That is a good property of the feature and a blind spot in the guard, so
+# what is asserted here is the resolved **feature set** rather than the
+# crate list — `-f "{p} {f}"` puts it on the package's own line. Without
+# this, `hsts` joining `default` would be invisible to every check in this
+# file, and it is the one feature where that matters: it changes where a
+# request goes, so a build that acquired it by accident would send
+# somewhere the caller did not write.
+#
+# Checked in both directions: with `hsts` in `default` this fails, and the
+# `present` half fails if the feature is renamed out from under it.
+graph-default-has-no-hsts:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/tree-guard.sh absent '^hclient v.*[ ,]hsts[,$]' \
+        "hclient's default build switched on the HSTS policy set — it is off by default because it changes which scheme a request goes out on, which is not a thing to acquire by accident" \
+        -- -p hclient -f '{p} {f}' --depth 0
+    ./scripts/tree-guard.sh present '^hclient v.*[ ,]hsts[,$]' \
+        "the hsts feature did not appear in a build that asked for it — this guard's pattern has gone stale, so its absent half above is checking nothing" \
+        -- -p hclient --features hsts -f '{p} {f}' --depth 0
+
 # `url` is gone from the graph either way: hclient-proto writes out RFC 3986
 # §5.2 in src/uri.rs precisely so that it does not depend on `url`, which
 # belongs in [dev-dependencies] where it is the oracle for
@@ -2063,7 +2094,7 @@ features:
         --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-default-has-no-hsts graph-proto-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
 
 # ── the whole pipeline ──────────────────────────────────────────────────
 

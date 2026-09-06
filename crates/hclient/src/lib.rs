@@ -165,6 +165,8 @@ mod deadline;
 mod decompress;
 pub mod erased;
 pub mod error;
+#[cfg(feature = "hsts")]
+pub mod hsts;
 mod limit;
 pub mod lines;
 /// Mock transport and controllable timer, re-exported from `hclient-mock`.
