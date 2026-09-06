@@ -67,18 +67,25 @@ release_always = true
 # saying the same thing until one of them drifts. The git *tag* is still
 # written — that is what `just release-pending` reads.
 #
-# **It does not remove the forge token requirement, measured.** With this
-# set, `release-plz release` still exits `git release not configured. Did
-# you specify git-token and forge?`. The key is parsed and validated — a
-# non-boolean here is rejected at this line — so the setting is read and
-# the demand survives it. Supplying a dummy token gets further and then
-# calls `api.github.com/…/commits/<sha>/pulls`, so what the token is
-# really for is reading the pull requests a changelog entry links to,
-# rather than only for creating a release.
+# **It does not remove the forge token requirement, and the reason is
+# structural rather than a setting being ignored.** Read in
+# `release_plz_core` 0.37.2, `src/command/release.rs`: `release()` calls
+# `get_git_client(input)?` on its **third line**, before it looks at any
+# per-package configuration and before it decides whether to release
+# anything at all. That function is a plain `.context(..)?` on an
+# `Option`, so a missing token is the error above and there is no branch
+# around it.
 #
-# So a release needs `GIT_TOKEN` in the environment (or `--git-token`)
-# whatever this says. That is worth knowing before a release rather than
-# during one, and it is upstream's shape rather than a mistake here.
+# What the client is for is `should_release`, which asks the forge for the
+# pull requests associated with the current commit in order to detect a
+# merged release PR. `release_always = true` is consulted **after** that
+# call, in the `None` arm — so setting it does not skip the lookup either.
+#
+# So `release-plz release` needs `GIT_TOKEN` in the environment (or
+# `--git-token`) whatever this file says, on a repository with no PR flow
+# and with git releases disabled. That is upstream's shape rather than a
+# mistake here, and it is written down because two settings look as though
+# they should avoid it and neither does.
 git_release_enable = false
 
 # **The tag has to name the crate now, and that is the shared version
