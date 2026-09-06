@@ -1127,20 +1127,22 @@ packaging:
 # that compiles a crate the way a reader would receive it rather than the
 # way this workspace sits on disk.
 #
-# `release-pending` is last and is **diagnostics**: the policy publishes
-# every crate (`docs/publishing.md` §5), so nothing here has to answer
-# which changed. It is printed so whoever is releasing can see what has
-# accumulated before choosing a level.
+# **`release-pending` was the third recipe here and is gone.** It answered
+# *which crates have changed since they last published*, anchored on a git
+# tag — a question `cargo-release` could not answer for itself, because it
+# has no change detection and someone had to select with `-p` by hand.
+#
+# `release-plz` computes that set, so the recipe became a second opinion
+# about which crates to publish. Keeping it also meant keeping its anchor:
+# one git tag per crate per release, planted only so a diagnostic could
+# read them back. The tool needs no tags to decide, so the tags were
+# upkeep for the recipe rather than the other way round.
 #
 # Not in `ci`: `package-build` is minutes of work for a question only a
-# release asks, and `release-pending` reaches the network.
+# release asks.
 
-# everything a release needs, plus what has accumulated since the last one
-release-check: ci packaging package-build release-pending
-
-# crates with unreleased changes (network; run before releasing)
-release-pending:
-    ./scripts/release-pending.sh
+# everything a release needs
+release-check: ci packaging package-build
 
 # install a toolchain for every floor a crate declares, for `msrv`
 #

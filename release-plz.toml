@@ -65,7 +65,8 @@ release_always = true
 # what this repository publishes is crates, and a GitHub release would be
 # a second changelog beside `CHANGELOG.md`, kept by a different mechanism,
 # saying the same thing until one of them drifts. The git *tag* is still
-# written — that is what `just release-pending` reads.
+# written, because a tag is how anyone — a person, a bisect, a future
+# tool — finds the commit a version went out from.
 #
 # **It does not remove the forge token requirement, and the reason is
 # structural rather than a setting being ignored.** Read in
@@ -94,11 +95,8 @@ git_release_enable = false
 # sparse per crate, `v0.1.0-alpha.4` would be ambiguous the first time two
 # crates sit at different numbers.
 #
-# `just release-pending` reads these tags to decide what changed since a
-# crate last published, and its own header says a crate whose published
-# version has no tag "cannot be compared against anything". So the
-# existing `v0.1.0-alpha.3` tags stay meaningful for the crates released
-# under them, and everything after this is named.
+# The existing `v0.1.0-alpha.3` tags stay meaningful for the crates
+# released under them; everything after this is named per crate.
 git_tag_name = "{{ package }}-v{{ version }}"
 
 # The three crates that are `publish = false` in their own manifests:

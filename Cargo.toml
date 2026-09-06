@@ -129,10 +129,6 @@ unexpected_cfgs   = { level = "warn", check-cfg = [] }
 # `-p` flag selects, which is knowing-which-crates-changed by hand — the
 # step the old policy existed to remove.
 #
-# `just release-pending` still answers *which crates have changed since
-# they last published*, anchored on a git tag rather than on commit
-# messages, and is still worth running before a release.
-#
 # What this workspace had to change to make per-crate releases possible is
 # recorded at `[workspace.package]` above: the shared `version` is gone
 # and every crate carries its own.

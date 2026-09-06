@@ -1,9 +1,8 @@
 # Releasing the crates
 
 ```
-just release-pending      # what has changed since each crate last published
 release-plz update        # edit versions and changelogs locally, publish nothing
-release-plz release       # publish
+cargo publish --workspace # publish
 ```
 
 **The tool is `release-plz`, and it was `cargo-release` until
@@ -26,11 +25,6 @@ a dependent must bump so its requirement can name a version that exists.
 So the saving arrives for a change confined to a leaf (`hclient-cli`,
 `hclient-winhttp`) and not for one that touches the core. That is a fact
 about this dependency graph rather than about release-plz.
-
-**`just release-pending` is still the thing to run first.** It answers
-which crates have changed since they last published, anchored on a git
-tag rather than on commit messages, and it reaches the network — which is
-why it is diagnostics rather than a CI gate.
 
 **Bump levels now come from conventional commits.** This repository did
 not write them: nought of the twenty-five subjects before the migration
@@ -143,9 +137,22 @@ but that gate checks the copies agree.
 
 `release-plz update` does the bump: it downloads each published crate,
 compares, decides a level from the commits since, writes the new version
-and rewrites every requirement that names it. `release-plz release` then
-publishes. Both are safe to run and inspect — `update` edits the working
-tree and uploads nothing.
+and rewrites every requirement that names it. It is safe to run and
+inspect: it edits the working tree and uploads nothing.
+
+**Publishing is `cargo publish --workspace`, not `release-plz release`**,
+and that is a choice with a reason. `release-plz release` calls
+`get_git_client(input)?` on the third line of `release()` — read in
+`release_plz_core` 0.37.2 — before any per-package config and before
+deciding whether to release at all, because it asks the forge which pull
+requests are associated with the current commit. So it needs a forge
+token on a repository that has no PR flow and creates no GitHub releases,
+and neither `git_release_enable = false` nor `release_always = true`
+avoids that: the second is read in the `None` arm *after* the call.
+
+`cargo publish --workspace` needs no forge at all, computes the upload
+order itself, and verifies each crate out of its own tarball on the way.
+So the split is: release-plz decides the versions, cargo does the upload.
 
 
 ## 2. The first release will be refused, and that is correct
@@ -279,9 +286,7 @@ while len(done) < len(pub):
   preference. cargo-release wrote `v{{version}}` and one tag covered every
   crate because one version did; with versions sparse per crate that is
   ambiguous the first time two sit at different numbers. `just
-  release-pending` reads these tags, and its own header says a crate whose
-  published version has no tag cannot be compared against anything — so the
-  existing `v0.1.0-alpha.3` tags stay meaningful for what was released
+  the existing `v0.1.0-alpha.3` tags stay meaningful for what was released
   under them.
 - three `[[package]] release = false` entries — `hclient-rt-pair-check`,
   `hclient-rt-nal` and `hclient-rt-embassy`. They are `publish = false` in
@@ -299,9 +304,8 @@ that can be forgotten, and publishing everything cannot forget. What ended
 it is a tool that *computes* the set rather than asking a human for it.
 
 ```
-just release-pending      # diagnostics: what has changed, and since when
 release-plz update        # the plan, written into the tree; uploads nothing
-release-plz release       # the upload
+cargo publish --workspace # the upload
 ```
 
 **In practice this publishes everything anyway, today, and that is
@@ -327,63 +331,23 @@ second is now the intended shape rather than a symptom.
 
 ## 5a. Knowing which crates have unreleased changes
 
-Under §5's policy nothing has to answer this — publishing everything
-cannot leave a crate behind. It is kept for the two cases that remain:
-seeing what has accumulated before deciding a version level, and the day
-the policy changes back to selecting with `-p`. `just release-pending`
-is that:
+**`just release-pending` answered this and has been removed.** It compared
+each crate's directory against the git tag of its last published version
+and printed *changed* or *unchanged* — a question `cargo-release` could
+not answer for itself, since it has no change detection and someone had to
+select with `-p` by hand.
 
-```
-just release-pending
-```
+`release-plz` computes that set as part of deciding what to publish, so
+the recipe became a second opinion about which crates go out, and the one
+that would rot. It also carried an obligation: one git tag per crate per
+release, planted so a diagnostic could read them back. release-plz needs
+no tags to decide, so those tags were upkeep for the recipe rather than
+for the release.
 
-For each publishable crate it reads the last version in the crates.io
-sparse index, finds the git tag naming that version, and diffs the
-crate's directory between that tag and `HEAD`. Three answers, and the
-third is the one worth having:
+To see what has changed since a crate last published, run `release-plz
+update` and read the plan — it edits the working tree and uploads nothing,
+so it is safe to run and `git checkout -- .` afterwards.
 
-- **unchanged** — nothing in the directory moved since it was published,
-  so release-plz will answer `already up to date` for it.
-- **CHANGED (n files)** — it has unreleased content. The recipe suggests
-  `release-plz update` and nothing more specific: release-plz computes the
-  set itself, and a crate list printed here would be a second opinion
-  about which crates to publish — the one that rots.
-- **NO TAG — cannot compare** — the anchor is missing, and the recipe
-  refuses to guess a commit rather than answering wrongly.
-
-**The anchor is a git tag and it is not optional.**
-`release-plz.toml` sets `git_tag_name = "{{ package }}-v{{ version }}"`, so
-every release leaves one per crate — it was `v{{version}}` under
-cargo-release, where one tag covered every crate because one version did;
-that single
-tag covers whichever crates went out under it, which is enough, because
-the index says *which version* each crate is at and the tag says *which
-commit* that version was.
-
-**As of this writing there is no such tag.** All 23 crates are published
-at `0.1.0-alpha.1` and `git tag` is empty, so the recipe answers
-"cannot compare" for every one of them — the first release was made
-without cargo-release, or with its tagging off. Plant it once on the
-commit that was published:
-
-```
-git tag -a v0.1.0-alpha.1 <commit> -m "hclient 0.1.0-alpha.1"
-git push origin v0.1.0-alpha.1
-```
-
-From then on the tags maintain themselves.
-
-**It is not in `just ci`, deliberately.** It asks crates.io over the
-network — the kind of flakiness a gate must not have — and the answer is
-only wanted before a release. It was checked in the discriminating
-direction rather than trusted: with a tag planted six commits back it
-reported 20 changed and 3 unchanged, not one blanket answer.
-
-**What it does not catch**, said here because the boundary is real: a
-change *outside* a crate's directory that still alters what it publishes
-— the workspace `Cargo.toml`'s lints or a `[workspace.dependencies]`
-version bump. Those move every crate at once, and the honest handling is
-to treat a workspace-manifest change as touching everything.
 
 ## 6. Keywords and categories: how twenty-nine crates stay one family
 
@@ -429,8 +393,7 @@ one the dependency rule forbids. That is the same defect that renamed
 
 One command, `just release-check`, which is `ci` plus the three below in
 the order a failure is cheapest to find. Not part of `ci` itself:
-`package-build` is minutes of work for a question only a release asks,
-and `release-pending` reaches the network.
+`package-build` is minutes of work for a question only a release asks.
 
 - `just package-build` — `cargo package --workspace`, which builds each
   `.crate` from the files that would ship and then **verifies** it by
@@ -444,9 +407,6 @@ and `release-pending` reaches the network.
   for a run that did less than it should. It was a literal until the jar
   and the cache became modules — 25 to 23 — which is the edit the
   derivation removes.
-- `just release-pending` — §5a, and **diagnostics rather than a gate**:
-  under §5's policy nothing has to answer which crates changed.
-
 Neither can catch a wrong publish *order*, because `cargo package
 --workspace` makes every member available to every other through a local
 overlay. That used to matter; it no longer does, because the order is the

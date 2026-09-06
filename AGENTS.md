@@ -475,8 +475,7 @@ crate — and **publishing everything removes both**, which is the second
 argument for the policy. cargo-release does **not** work out which
 crates changed — measured, with a tag one commit back: a plain `cargo
 release patch` still planned all 23 uploads, which under this policy is
-the wanted behaviour. `just release-pending` answers it for the day the
-policy changes back. `docs/publishing.md` has the table, the script that derives it,
+the wanted behaviour. `docs/publishing.md` has the table, the script that derives it,
 and the reason the waves are **not** collapsed back to five — a version-carrying
 dev-dependency is what lets a downloaded `.crate` run its own tests, which
 distribution packagers do.
