@@ -671,3 +671,35 @@ fn from_unix(seconds: i64) -> SystemTime {
         UNIX_EPOCH - Duration::from_secs(seconds.unsigned_abs())
     }
 }
+
+/// The one thing about [`MAX_EXPIRY`] that three modules assert and
+/// nothing checked.
+#[cfg(all(test, feature = "hsts"))]
+mod agreement {
+    /// `hsts::MAX_AGE_CAP`'s public doc says it carries "the same figure"
+    /// as this constant, and `hclient-native`'s `altsvc::MAX_LEASE` says
+    /// it takes "`MAX_EXPIRY` and its argument verbatim".
+    ///
+    /// **A claim about a value is exactly as perishable as the check
+    /// behind it**, and there was none: the three spell
+    /// `400 * 24 * 60 * 60` independently, so changing one leaves a
+    /// public doc comment asserting an agreement that has ended. This
+    /// pins the pair reachable from one crate.
+    ///
+    /// It lives here rather than beside `MAX_AGE_CAP` because this
+    /// constant is `pub(super)` — deliberately, its own doc argues the
+    /// narrowness — so `hsts` cannot see it and widening the visibility
+    /// to be checked would undo the thing being checked.
+    ///
+    /// `altsvc::MAX_LEASE` is another crate's private constant and stays
+    /// prose. Said rather than left to be found, because a check covering
+    /// two of three reads as covering all three.
+    #[test]
+    fn the_hsts_cap_still_carries_this_figure() {
+        assert_eq!(
+            crate::hsts::MAX_AGE_CAP,
+            super::MAX_EXPIRY,
+            "`hsts::MAX_AGE_CAP`'s doc claims this crate's cookie figure"
+        );
+    }
+}
