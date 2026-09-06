@@ -363,3 +363,38 @@ fn crlf_terminator_split_mid_event_across_frame_boundary_joins_the_data_lines() 
         }]
     );
 }
+
+/// The response head is reachable from the stream that owns it.
+///
+/// `SseStream` holds one `Response` for its whole life and exposed nothing
+/// off it, which is this workspace's recurring shape — *the limitation
+/// belongs to the wrapper, and the layer beneath has the thing* — met with
+/// the wrapper being ours. `hc --sse --headers` refuses with a message
+/// that named this absence as its cause.
+///
+/// Asserted on a header a server sets rather than one this client causes,
+/// so it cannot pass by reading something of our own; and on a value
+/// distinct from the `content-type` the constructor already validates, so
+/// it is not the check one line over reported twice.
+#[test]
+fn the_response_head_is_readable_through_the_stream() {
+    let m = MockTransport::new();
+    m.push_response(
+        http::Response::builder()
+            .status(200)
+            .header("content-type", "text/event-stream")
+            .header("x-request-id", "abc123")
+            .body("data: hi\n\n")
+            .unwrap(),
+    );
+
+    let c = Client::builder(m).build().unwrap();
+    let resp = futures_executor::block_on(c.get("https://a/s").send()).unwrap();
+    let s = SseStream::new(resp, DEFAULT_MAX_EVENT_SIZE).unwrap();
+
+    assert_eq!(
+        s.headers().get("x-request-id").unwrap(),
+        "abc123",
+        "the head the stream was opened with"
+    );
+}

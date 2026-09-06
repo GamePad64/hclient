@@ -158,6 +158,29 @@ where
         self.decoder.last_event_id()
     }
 
+    /// The headers of the response this stream was opened with.
+    ///
+    /// **There is no `status()` beside it, and the asymmetry is the
+    /// point**: [`SseStream::new`] has already refused anything but a
+    /// `200`, so a status accessor here would be a constant wearing the
+    /// clothes of an observation. The headers are not — a server sets
+    /// `Cache-Control`, its own correlation id, a rate-limit budget — and
+    /// they were sitting in the `Response` this type owns, reachable by
+    /// nothing.
+    ///
+    /// # Not on [`ReconnectingSseStream`], and that is not an oversight
+    ///
+    /// That type reopens a *fresh* response on every reconnect and spends
+    /// two of its three states holding none at all, so "the headers" is
+    /// not one value there. [`ReconnectingSseStream::last_event_id`] can
+    /// answer while disconnected because WHATWG makes the last event ID a
+    /// property of the `EventSource` as a whole; a header is a property of
+    /// one connection, so there is nothing to fall back to and a cached
+    /// copy would describe a connection that has already ended.
+    pub fn headers(&self) -> &http::HeaderMap {
+        self.resp.headers()
+    }
+
     /// The next decoded event. Reads exactly as many chunks from the body
     /// as the decoder needs to assemble at least one ready event —
     /// transport chunk boundaries aren't required to line up with SSE

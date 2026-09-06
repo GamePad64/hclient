@@ -163,12 +163,16 @@ pub fn refuse_unusable(mode: Mode, cli: &Cli, items: &[Item]) -> Result<(), Stri
         return Err(format!(
             "`--headers` prints one response head, and `{flag}` has none to print: {}",
             match mode {
-                // Not merely "there are several": `SseStream` owns the
-                // `Response` it was built from and exposes neither
-                // `status()` nor `headers()`, so this is unreachable
-                // rather than unimplemented.
+                // **Unimplemented rather than unreachable**, and the
+                // comment here said the opposite until `SseStream` grew a
+                // `headers()`. What blocks it now is `--sse-reconnect`:
+                // that stream reopens a fresh response on every reconnect
+                // and spends two of its three states holding none, so
+                // there is no one head for this flag to name — and one
+                // flag meaning different things in the two modes is worse
+                // than a refusal. Lifting it is a per-branch answer.
                 Mode::Sse { .. } =>
-                    "the stream owns the response it was opened with and hands back only events.",
+                    "the stream reconnects, so there is no single response head to print.",
                 _ => "after the `101` the connection carries frames, not responses.",
             }
         ));

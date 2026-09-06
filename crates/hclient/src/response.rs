@@ -126,6 +126,25 @@ impl<B> Response<B> {
     pub fn headers(&self) -> &http::HeaderMap {
         &self.parts.headers
     }
+    /// The protocol this response was actually spoken over.
+    ///
+    /// **This is the honest route to knowing which protocol was used**,
+    /// and the reason it is a method rather than a capability is that
+    /// [`Capabilities`] report the *floor* — the value that holds on the
+    /// worst protocol a transport might negotiate. With HTTP/2 compiled
+    /// in, `full_duplex` and `response_trailers` still read as HTTP/1.1's
+    /// answers, because a library cannot know what another crate in the
+    /// graph switched on. So a caller who needs to know asks
+    /// [`RequireVersion`] before the head, or this after it.
+    ///
+    /// Nine tests across `hclient-native` assert this value against what
+    /// an `h2` or `quinn` server decoded, which is what makes it a fact
+    /// about the connection rather than an echo of a request.
+    ///
+    /// It is on [`Collected`] too, for [`Self::links`]'s reason.
+    ///
+    /// [`Capabilities`]: hclient_core::Capabilities
+    /// [`RequireVersion`]: hclient_core::RequireVersion
     pub fn version(&self) -> http::Version {
         self.parts.version
     }
@@ -382,6 +401,20 @@ impl Collected {
     }
     pub fn url(&self) -> &http::Uri {
         &self.url
+    }
+    /// The protocol this response was actually spoken over.
+    ///
+    /// [`Response::version`] has what the value is for and why nothing in
+    /// [`Capabilities`](hclient_core::Capabilities) can answer the same
+    /// question. Why it is here as well is [`Self::links`]'s reason,
+    /// with more force than either of the other two: `.collect().await?`
+    /// appears in every example this crate leads with, so `Collected` is
+    /// the type a caller most often ends up holding — and the value was
+    /// sitting in the `Parts` this type already keeps, reachable by no
+    /// accessor. A fact this workspace calls the honest route to knowing
+    /// which protocol spoke should not be lost by reading the body.
+    pub fn version(&self) -> http::Version {
+        self.parts.version
     }
     /// Every [`Link:`](hclient_proto::link) header, in the order the server
     /// wrote them, with **each target resolved against [`Self::url`]**.

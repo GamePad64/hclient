@@ -598,3 +598,37 @@ fn chunk_survives_a_non_body_error_kind_instead_of_relabeling_it_body() {
     );
     assert!(src.downcast_ref::<std::io::Error>().is_some(), "{src}");
 }
+
+/// The protocol survives `collect()`, which is the half `Response::version`
+/// alone cannot promise.
+///
+/// This workspace calls `Response::version()` the honest route to knowing
+/// which protocol spoke, because `Capabilities` report the floor — so a
+/// caller who writes the shape every example on the front page leads with,
+/// `.collect().await?`, must not lose the answer. The assertion is
+/// therefore that the two agree, rather than that `Collected` reports
+/// some version: reading `HTTP_11` off a `Collected` would pass for an
+/// accessor hard-coded to the default.
+#[test]
+fn the_protocol_survives_collecting_the_body() {
+    let m = MockTransport::new();
+    m.push_response(
+        http::Response::builder()
+            .status(200)
+            .version(http::Version::HTTP_2)
+            .body("body")
+            .unwrap(),
+    );
+
+    let c = Client::builder(m).build().unwrap();
+    let resp = futures_executor::block_on(c.get("https://a/x").send()).unwrap();
+    let streaming = resp.version();
+    assert_eq!(streaming, http::Version::HTTP_2, "the premise");
+
+    let collected = futures_executor::block_on(resp.collect()).unwrap();
+    assert_eq!(
+        collected.version(),
+        streaming,
+        "the body was read, not the head"
+    );
+}
