@@ -347,6 +347,34 @@ impl<'a> RequestBuilder<'a> {
     /// See [`crate::auth`] for the three rules a flow cannot override:
     /// a body that cannot be replayed ends it, credentials do not cross
     /// an origin, and the legs are bounded.
+    ///
+    /// # Four setters, two mechanisms, and what happens if you use both
+    ///
+    /// This and [`digest_auth`](Self::digest_auth) install a **scheme**,
+    /// which answers a challenge when one arrives.
+    /// [`basic_auth`](Self::basic_auth) and
+    /// [`bearer_auth`](Self::bearer_auth) write an `Authorization`
+    /// **header** immediately and involve no scheme at all. The names do
+    /// not say which is which, so the behaviour is stated rather than
+    /// left to be discovered:
+    ///
+    /// **A scheme wins wherever it writes at all.** It is handed the same
+    /// header map the setter already wrote into, so its value replaces
+    /// what is there; where a scheme writes nothing — digest's first
+    /// request, which cannot answer a nonce it has not seen — the header
+    /// stands and goes out as written.
+    ///
+    /// That is the only precedence that works: an answer that could not
+    /// override a pre-set header would make
+    /// `basic_auth(..).digest_auth(..)` send `Basic` for ever against a
+    /// server asking for digest. The order the two setters are called in
+    /// does not matter.
+    ///
+    /// Measured rather than reasoned about, and pinned by
+    /// `a_scheme_replaces_a_preset_header_rather_than_deferring_to_it`
+    /// — which needs a **pre-emptive** scheme to mean anything, since one
+    /// that stays quiet on the first request leaves the header standing
+    /// under either rule.
     #[must_use]
     pub fn auth<A>(mut self, scheme: A) -> Self
     where

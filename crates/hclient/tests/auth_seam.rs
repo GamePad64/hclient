@@ -422,3 +422,87 @@ fn each_leg_is_shown_the_body_that_leg_will_send() {
         vec!["opaque".to_owned(), "bytes:hello".to_owned()],
     );
 }
+
+/// A scheme that authorises **pre-emptively**, which is the only shape
+/// that can collide with a header setter on the first request.
+///
+/// `ThreeLeg` above returns early on leg 0 — the NTLM shape — so it
+/// cannot reach the collision at all: a test written on it passes whether
+/// or not the client guards the header, which is how the first version of
+/// the test below scored a survived mutation.
+#[derive(Debug, Clone, Default)]
+struct Preemptive;
+
+impl Auth for Preemptive {
+    fn start(&self) -> BoxedFlow {
+        Box::new(PreemptiveFlow)
+    }
+}
+
+struct PreemptiveFlow;
+
+impl AuthFlow for PreemptiveFlow {
+    fn authorize(&mut self, _req: &AuthRequest<'_>, headers: &mut http::HeaderMap) {
+        headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Fake preemptive"),
+        );
+    }
+
+    fn on_response(&mut self, _status: http::StatusCode, _headers: &http::HeaderMap) -> AuthStep {
+        AuthStep::Done
+    }
+}
+
+/// A header setter and a scheme are two mechanisms, and both can be set.
+///
+/// `RequestBuilder` has four auth setters whose names do not say that two
+/// of them (`basic_auth`, `bearer_auth`) write an `Authorization` header
+/// immediately while two (`auth`, `digest_auth`) install a scheme that
+/// answers a challenge later. So a caller can set both, and nothing said
+/// what happens — `auth`'s doc carries the table now, and this is what
+/// keeps it true.
+///
+/// The precedence is the only one that works: a scheme **replaces** the
+/// header, because an answer that could not override a pre-set header
+/// would leave `basic_auth(..).auth(..)` sending `Basic` for ever at a
+/// server asking for something else.
+///
+/// **It must be a pre-emptive scheme**, and that is what the first
+/// version of this test got wrong: written on `ThreeLeg`, whose leg 0
+/// sends nothing, it passed with the precedence mutated either way —
+/// the `Basic` on leg 0 was the flow declining to write rather than the
+/// client preferring the header. A test that cannot fail is the thing
+/// this workspace is about, and the way to find one is still to break
+/// its subject on purpose.
+#[test]
+fn a_scheme_replaces_a_preset_header_rather_than_deferring_to_it() {
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+
+    let c = hclient::Client::builder(m.clone()).build().unwrap();
+    let got = futures_executor::block_on(
+        c.get("https://a.test/x")
+            .basic_auth("u", "p")
+            .auth(Preemptive)
+            .send(),
+    )
+    .expect("the exchange completes");
+    assert_eq!(got.status(), 200);
+
+    let sent: Vec<Option<String>> = m
+        .requests()
+        .iter()
+        .map(|r| {
+            r.headers
+                .get("authorization")
+                .map(|v| v.to_str().unwrap().to_owned())
+        })
+        .collect();
+
+    assert_eq!(
+        sent,
+        vec![Some("Fake preemptive".to_owned())],
+        "the scheme's value, not the `Basic` the header setter wrote"
+    );
+}
