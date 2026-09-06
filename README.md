@@ -30,9 +30,10 @@ can be multiplexed on request; request and response bodies stream, with
 real full duplex on h3. WebSocket and WebTransport are their own crates,
 behind their own seams, because a transport that cannot do them should be
 a compile error rather than a runtime refusal. Cookies, an RFC 9111 cache,
-redirects, decompression, proxies (HTTP `CONNECT` and SOCKS5) and
-`multipart/form-data` are each one implementation shared by every backend,
-which is what makes "the same answers everywhere" more than a slogan.
+RFC 6797 HSTS, redirects, decompression, proxies (HTTP `CONNECT` and
+SOCKS5) and `multipart/form-data` are each one implementation shared by
+every backend, which is what makes "the same answers everywhere" more than
+a slogan.
 
 **`hclient::Client` names no type parameters**, so a library that takes a
 client writes `fn f(c: &Client)` and nothing else — no transport, no clock,
@@ -76,9 +77,10 @@ associated type or two, chosen at compile time.
 ```mermaid
 flowchart TB
     you["your code"] --> C
-    C["<b>hclient::Client</b><br/>redirects · cookies · cache · decompression · SSE<br/><i>names no type parameters</i>"]
+    C["<b>hclient::Client</b><br/>redirects · cookies · cache · HSTS · decompression · SSE<br/><i>names no type parameters</i>"]
     POL["<b>RedirectPolicy</b> · <b>RetryPolicy</b> — hclient-proto<br/><b>Auth</b> / <b>AuthFlow</b> — hclient<br/><b>Hooks</b> — hclient-core"] -. "values, not type parameters" .-> C
     C == "SendTransport" ==> TR{{"<b>Transport</b> — hclient-core"}}
+    C -. "installed, like the policies above" .-> MEM
 
     TR --> AMB["hclient-fetch · hclient-wasi<br/>hclient-urlsession · hclient-winhttp<br/><i>ambient: they own no connection,<br/>so they ask for none of the seams below</i>"]
     TR --> OTH["hclient-tower<br/>hclient-mock"]
@@ -93,10 +95,19 @@ flowchart TB
         NAT --> TLS{{"<b>TlsConnect · TlsIdentity</b><br/>hclient-tls<br/><b>QuicTlsConnect</b>, feature <i>quic</i>"}}
         NAT --> DNS{{"<b>Resolve</b><br/>hclient-dns"}}
         NAT --> PXY{{"<b>Handshake</b><br/>hclient-proxy"}}
+        NAT --> ALT{{"<b>AltSvcStore</b><br/>hclient-native"}}
+        ALT --> ALI["MemoryStore<br/><i>or yours</i>"]
         RT --> RTI["hclient-rt-tokio<br/>hclient-rt-smol<br/>hclient-rt-embassy"]
         TLS --> TLI["hclient-tls-rustls<br/>hclient-tls-native-tls<br/>NoTls"]
         DNS --> DNI["hclient-dns-system<br/>hclient-dns-hickory<br/>hclient-dns-doh<br/>IpLiteralOnly"]
         PXY --> PXI["HTTP CONNECT<br/>SOCKS5 · SOCKS4a<br/>NoProxy"]
+    end
+
+    subgraph MEM["what the client remembers between requests — one seam each"]
+        direction TB
+        CS{{"<b>CookieStore</b><br/>hclient::cookie"}} --> CSI["MemoryStore<br/><i>or yours: a file, a database,<br/>the browser's own storage</i>"]
+        HC{{"<b>CacheStore</b><br/>hclient::cache"}} --> HCI["MemoryStore<br/><i>or yours</i>"]
+        HS{{"<b>HstsStore</b><br/>hclient::hsts"}} --> HSI["MemoryStore<br/><i>or yours: a preload list</i>"]
     end
 
     subgraph SOCK["a seam of its own, so a backend that cannot is a compile error"]
@@ -107,15 +118,17 @@ flowchart TB
 
     classDef cluster fill:#fafafa,stroke:#cfd8dc,color:#455a64;
     class OWN,SOCK cluster;
+    class MEM cluster;
     classDef seam fill:#0d47a1,stroke:#0d47a1,color:#fff;
     classDef box fill:#eceff1,stroke:#90a4ae,color:#111;
-    class TR,RT,TLS,DNS,PXY,WS seam;
-    class NAT,AMB,OTH,RTI,TLI,DNI,PXI,TUN,FE2,POL box;
+    class TR,RT,TLS,DNS,PXY,WS,CS,HC,HS,ALT seam;
+    class NAT,AMB,OTH,RTI,TLI,DNI,PXI,TUN,FE2,POL,CSI,HCI,HSI,ALI box;
 ```
 
-**Three things the picture is claiming.** The bottom four seams are asked
-for by `hclient-native` and by nothing else — an ambient backend has no
-socket, no clock and no resolver of its own, which is why swapping in
+**Four things the picture is claiming.** The seams inside *what a
+transport that owns its connections asks for* are asked for by
+`hclient-native` and by nothing else — an ambient backend has no socket,
+no clock and no resolver of its own, which is why swapping in
 `hclient-fetch` costs one line and no `where` clause. `WebSocketConnect`
 is deliberately *not* a method on `Transport`: a backend that cannot do it
 is then a compile error rather than a runtime refusal, and the browser —
@@ -126,12 +139,31 @@ things you hand over, so two clients differing only in their redirect
 rule are the same type — which is what lets a library write
 `fn f(c: &Client)` and nothing else.
 
-## The twenty-five published crates, as six families
+The fourth is the row of stores, and **which side of `Client` a memory
+sits on is a claim rather than a layout choice**. Cookies, the response
+cache and HSTS are the client's, because all three are decided before a
+transport is asked and mean the same thing whichever backend answers;
+`AltSvcStore` is `hclient-native`'s, because what it remembers is *which
+protocol this origin offered*, which is that transport's business and no
+other backend has an opinion about. Each is one trait with a `MemoryStore`
+behind it and room for yours — a file, a database, the browser's own
+storage, or for HSTS a preload list. They are futures rather than plain
+calls precisely so that the interesting stores, which are none of them in
+memory, are writable at all.
+
+## The published crates, as six families
+
+**The count is deliberately not in this heading.** It read *twenty-five*
+while there were twenty-seven, which is the count-in-prose defect this
+project records against itself elsewhere: nothing forces a number in a
+sentence to move, so it goes stale silently and is believed anyway.
+`cargo metadata` answers it, `just packaging` derives it on every push,
+and a family list is what a reader actually wants.
 
 You name **one**: `hclient`. Most of the rest reach your lockfile
 transitively, and about a dozen are ever chosen deliberately — the
 remainder is plumbing. What follows is
-so the list reads as families rather than as thirty rows. On crates.io the
+so the list reads as families rather than as one long table. On crates.io the
 same grouping is the keyword `hclient`, plus `transport`, `runtime`, `tls`
 or `dns` on the family members.
 
