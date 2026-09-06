@@ -65,9 +65,16 @@
 //!   `Content-Encoding` off a response and gets a different answer per
 //!   target for the same server; nothing in this workspace does yet.
 
+// One module per coding, plus the seam they all implement. The gate is on
+// the `mod` declaration rather than on every item inside it, which is what
+// keeps a coding's file free of `#[cfg]` entirely.
+#[cfg(feature = "brotli")]
+mod brotli;
 mod decoder;
 #[cfg(feature = "deflate")]
 mod deflate;
+#[cfg(feature = "gzip")]
+mod gzip;
 #[cfg(feature = "zstd")]
 mod zstd;
 
@@ -184,7 +191,7 @@ const REGISTRATIONS: &[Registration] = &[
         token: "br",
         aliases: &[],
         preference: 1,
-        new: || Box::new(decoder::Brotli::new()),
+        new: || Box::new(brotli::Brotli::new()),
     },
     #[cfg(feature = "gzip")]
     Registration {
@@ -192,7 +199,7 @@ const REGISTRATIONS: &[Registration] = &[
         // RFC 9110 §8.4.1.3's deprecated alias.
         aliases: &["x-gzip"],
         preference: 2,
-        new: || Box::new(decoder::Gzip::new()),
+        new: || Box::new(gzip::Gzip::new()),
     },
     #[cfg(feature = "deflate")]
     Registration {

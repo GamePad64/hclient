@@ -1,4 +1,11 @@
-//! The dispatch: one trait, one implementor per coding.
+//! The seam every coding implements — and nothing else.
+//!
+//! One file per coding sits beside this one: [`gzip`](super::gzip),
+//! [`brotli`](super::brotli), [`deflate`](super::deflate) and
+//! [`zstd`](super::zstd). Which of them exist is the `mod` declarations in
+//! `mod.rs`, and which are reachable is the registry there; **none of
+//! those four files contains a `#[cfg]` at all**, which is what putting
+//! the gate on the declaration buys.
 //!
 //! # Why a trait where this was an enum, and what the measurement said
 //!
@@ -27,18 +34,18 @@
 //! `match *self {}`: three copies of a four-feature condition existing
 //! only to tell the compiler that an empty enum cannot be matched. A
 //! trait object has no empty case — such a build has no implementors, and
-//! [`Coding::decoder`] answers `None` as it always did. **The three
-//! `match *self {}` arms are gone and 25 `#[cfg]`s became 12** — the
-//! remainder is one per item per coding, which is the honest floor for
-//! four optional codings in one file and was 25 only because each method
-//! carried a four-feature condition of its own.
+//! the registry simply has no entry. **The three `match *self {}` arms
+//! are gone, and this file went from 25 `#[cfg]`s to one**, which is the
+//! `dead_code` allowance on [`take`] and is explained there.
 //!
-//! **And a coding's rules now sit with the coding.** `deflate` and `zstd`
-//! already had files of their own; gzip and brotli had their bodies
-//! spread across three `match` arms here, so brotli's
-//! `Option`-to-allow-`into_inner` dance sat forty lines from the buffer
-//! constant it uses and three lines from an error it shares with nothing.
-//! Each is a type with one `impl` now.
+//! **And a coding's rules sit with the coding.** `deflate` and `zstd`
+//! already had files, because each needed a hand-written stream; gzip and
+//! brotli had their bodies spread across three `match` arms here, so
+//! brotli's `Option`-to-allow-`into_inner` dance sat forty lines from the
+//! buffer constant it uses and three from an error it shares with
+//! nothing. All four are files now, which also means a reader asking what
+//! this client does about a coding has one place to look rather than two
+//! and no rule for which.
 //!
 //! What it does **not** buy, and here the old sentence was right: nothing
 //! a caller can see, and no coding becomes possible that was not possible
@@ -135,116 +142,18 @@ pub(crate) type Decoder = Box<dyn Decode + Send>; // send-bound-exception: amend
 
 /// Takes the accumulated plaintext out of a decoder's output buffer,
 /// leaving it empty for the next frame.
-#[cfg(any(feature = "gzip", feature = "brotli", feature = "deflate"))]
+/// **No `#[cfg]`, although three of the four codings use it.** The gate
+/// it used to carry named those three, which is the shape that goes stale
+/// the moment a fourth wants it — `zstd` does not only because its own
+/// buffering hands back a `Bytes` directly, which is a fact about that
+/// implementation rather than a rule. An unused private function in a
+/// build with no codings is one `dead_code` warning away from being
+/// noticed, and `just features` compiles all sixteen sets; a condition
+/// listing coding names is a second statement of the registry.
+#[allow(
+    dead_code,
+    reason = "a build with no coding features has no caller; checked by removing it and watching `--no-default-features` warn"
+)]
 pub(super) fn take(out: &mut Vec<u8>) -> Bytes {
     Bytes::from(std::mem::take(out))
-}
-
-/// The `gzip` coding — RFC 1952, through `flate2`.
-///
-/// A type of its own where it used to be three `match` arms, and it is
-/// three lines: `flate2`'s decoder is already push-shaped, so there is
-/// nothing here but the name.
-#[cfg(feature = "gzip")]
-pub(super) struct Gzip(flate2::write::GzDecoder<Vec<u8>>);
-
-#[cfg(feature = "gzip")]
-impl Gzip {
-    pub(super) fn new() -> Self {
-        Self(flate2::write::GzDecoder::new(Vec::new()))
-    }
-}
-
-/// Hand-written for the reason every decoder here has one: an internal
-/// window is not something to print.
-#[cfg(feature = "gzip")]
-impl Debug for Gzip {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Gzip")
-    }
-}
-
-#[cfg(feature = "gzip")]
-impl Decode for Gzip {
-    fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error> {
-        use std::io::Write as _;
-        self.0.write_all(input)?;
-        Ok(take(self.0.get_mut()))
-    }
-    fn finish(&mut self) -> Result<Bytes, std::io::Error> {
-        self.0.try_finish()?;
-        Ok(take(self.0.get_mut()))
-    }
-    fn token(&self) -> &'static str {
-        "gzip"
-    }
-}
-
-/// The size of the brotli decoder's internal output buffer, in bytes.
-///
-/// Not a limit on anything a caller can see — the writer loops over it
-/// until the input is consumed — only how often it hands decoded bytes to
-/// the `Vec` behind it.
-#[cfg(feature = "brotli")]
-const BROTLI_BUFFER: usize = 8 * 1024;
-
-/// The `br` coding — RFC 7932, through `brotli-decompressor`.
-///
-/// **The `Option` is this coding's own problem and now lives with it**,
-/// which is one of the two things splitting the enum bought.
-/// `DecompressorWriter::into_inner` is what checks the stream was not
-/// truncated, and it consumes the writer — so [`Decode::finish`], which
-/// takes `&mut self` for the other three codings' sake, needs somewhere
-/// to leave a hole. A second `finish` cannot happen (`Decompressed` moves
-/// to `Ended` first), and if it ever did it would be an error rather than
-/// a silent second end.
-#[cfg(feature = "brotli")]
-pub(super) struct Brotli(Option<brotli_decompressor::writer::DecompressorWriter<Vec<u8>>>);
-
-#[cfg(feature = "brotli")]
-impl Brotli {
-    pub(super) fn new() -> Self {
-        Self(Some(brotli_decompressor::writer::DecompressorWriter::new(
-            Vec::new(),
-            BROTLI_BUFFER,
-        )))
-    }
-}
-
-/// Hand-written because `brotli_decompressor`'s writer has no `Debug`.
-#[cfg(feature = "brotli")]
-impl Debug for Brotli {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Brotli")
-    }
-}
-
-#[cfg(feature = "brotli")]
-fn brotli_after_end() -> std::io::Error {
-    std::io::Error::other("the brotli decoder was used after its stream ended")
-}
-
-#[cfg(feature = "brotli")]
-impl Decode for Brotli {
-    fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error> {
-        use std::io::Write as _;
-        let w = self.0.as_mut().ok_or_else(brotli_after_end)?;
-        w.write_all(input)?;
-        Ok(take(w.get_mut()))
-    }
-    fn finish(&mut self) -> Result<Bytes, std::io::Error> {
-        // `into_inner` closes the stream, and its `Err` is exactly "the
-        // input ended before the brotli stream did".
-        let w = self.0.take().ok_or_else(brotli_after_end)?;
-        match w.into_inner() {
-            Ok(mut out) => Ok(take(&mut out)),
-            Err(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "the brotli stream ended before its end-of-stream marker",
-            )),
-        }
-    }
-    fn token(&self) -> &'static str {
-        "br"
-    }
 }
