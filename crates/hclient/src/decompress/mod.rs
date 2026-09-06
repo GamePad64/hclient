@@ -73,11 +73,13 @@ mod zstd;
 
 use crate::error::DecodeFailed;
 use decoder::Decoder;
-// The same `#[cfg]` its definition carries: `just features` builds each
-// coding alone, and an unconditional import of a `brotli`-gated constant
-// is unresolved in fifteen of the sixteen sets.
-#[cfg(feature = "brotli")]
-use decoder::BROTLI_BUFFER;
+// Each import carries its own coding's `#[cfg]` and nothing else: `just
+// features` builds each coding alone, so an import gated on a
+// *neighbouring* feature is unresolved in the sets that have this one and
+// not that. That is not hypothetical — deleting the `BROTLI_BUFFER`
+// import from this block left its `#[cfg(feature = "brotli")]` behind,
+// where it stacked onto the line below and made `DeflateStream` need both
+// features. The powerset in `just features` is what says so.
 #[cfg(feature = "deflate")]
 use deflate::DeflateStream;
 #[cfg(feature = "zstd")]
@@ -127,17 +129,13 @@ impl Coding {
     fn decoder(self) -> Option<Decoder> {
         match self {
             #[cfg(feature = "gzip")]
-            Coding::Gzip => Some(Decoder::Gzip(Box::new(flate2::write::GzDecoder::new(
-                Vec::new(),
-            )))),
+            Coding::Gzip => Some(Box::new(decoder::Gzip::new())),
             #[cfg(feature = "brotli")]
-            Coding::Brotli => Some(Decoder::Brotli(Some(Box::new(
-                brotli_decompressor::writer::DecompressorWriter::new(Vec::new(), BROTLI_BUFFER),
-            )))),
+            Coding::Brotli => Some(Box::new(decoder::Brotli::new())),
             #[cfg(feature = "deflate")]
-            Coding::Deflate => Some(Decoder::Deflate(Box::new(DeflateStream::new()))),
+            Coding::Deflate => Some(Box::new(DeflateStream::new())),
             #[cfg(feature = "zstd")]
-            Coding::Zstd => Some(Decoder::Zstd(Box::new(ZstdStream::new()))),
+            Coding::Zstd => Some(Box::new(ZstdStream::new())),
             // Whichever codings this build has no decoder for. Written as
             // a wildcard rather than named arms because which names are
             // left depends on the feature set, and `#[cfg]`-ing the arm

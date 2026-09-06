@@ -114,29 +114,6 @@ impl ZstdStream {
         }
     }
 
-    pub(super) fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error> {
-        self.pending.extend_from_slice(input);
-        self.drive(false)
-    }
-
-    pub(super) fn finish(&mut self) -> Result<Bytes, std::io::Error> {
-        let out = self.drive(true)?;
-        // `drive` stops when it needs input it does not have. At the end
-        // of the body there is none coming, so anything left over — a
-        // half-written block, a frame whose last block never arrived, a
-        // missing four-byte checksum — is a truncation rather than a
-        // pause. Without this the bytes that DID arrive would decode
-        // perfectly well and reach the caller as a shorter document,
-        // which is the same defect gzip's trailer check exists against.
-        if !self.dec.is_finished() || !self.pending.is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "the zstd body ended in the middle of a frame",
-            ));
-        }
-        Ok(out)
-    }
-
     /// Decodes everything the bytes in hand allow.
     ///
     /// `eof` says whether more compressed bytes may still arrive, and it
@@ -262,3 +239,44 @@ impl ZstdStream {
 /// descriptor 1, window descriptor 1, dictionary id 4, frame content size
 /// 8 (RFC 8878 §3.1.1.1).
 const ZSTD_MAX_FRAME_HEADER: usize = 18;
+
+/// The seam this coding is reached through — `decoder`'s module doc has
+/// why it is a trait rather than an enum arm, and what measuring the
+/// objection to that found.
+/// Hand-written rather than derived: [`Decode`](super::decoder::Decode)
+/// requires it so a decoder can be named in a `Debug`, and a decoder's
+/// internal window is not something to print.
+impl std::fmt::Debug for ZstdStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ZstdStream")
+    }
+}
+
+impl super::decoder::Decode for ZstdStream {
+    fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error> {
+        self.pending.extend_from_slice(input);
+        self.drive(false)
+    }
+
+    fn finish(&mut self) -> Result<Bytes, std::io::Error> {
+        let out = self.drive(true)?;
+        // `drive` stops when it needs input it does not have. At the end
+        // of the body there is none coming, so anything left over — a
+        // half-written block, a frame whose last block never arrived, a
+        // missing four-byte checksum — is a truncation rather than a
+        // pause. Without this the bytes that DID arrive would decode
+        // perfectly well and reach the caller as a shorter document,
+        // which is the same defect gzip's trailer check exists against.
+        if !self.dec.is_finished() || !self.pending.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the zstd body ended in the middle of a frame",
+            ));
+        }
+        Ok(out)
+    }
+
+    fn token(&self) -> &'static str {
+        super::Coding::Zstd.token()
+    }
+}

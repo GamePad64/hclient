@@ -121,42 +121,6 @@ impl DeflateStream {
         method && window && check
     }
 
-    pub(super) fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error> {
-        // The bytes to feed: normally just `input`, but on the frame that
-        // completes the two-byte header it is that header plus whatever
-        // came with it, because nothing buffered has been fed yet.
-        let mut carried = None;
-        if let DeflateStream::Sniffing(buf) = self {
-            buf.extend_from_slice(input);
-            if buf.len() < 2 {
-                return Ok(Bytes::new());
-            }
-            let all = std::mem::take(buf);
-            *self = DeflateStream::Running {
-                dec: flate2::Decompress::new(Self::looks_like_zlib([all[0], all[1]])),
-                done: false,
-            };
-            carried = Some(all);
-        }
-        let bytes: &[u8] = carried.as_deref().unwrap_or(input);
-        let DeflateStream::Running { dec, done } = self else {
-            // Unreachable: the block above leaves `Sniffing` only by
-            // returning. An empty answer rather than a panic, for the
-            // reason `Coding::decoder`'s `Option` is an `Option`.
-            return Ok(Bytes::new());
-        };
-        if *done && !bytes.is_empty() {
-            // Mirrors brotli's arm one type over. Discarding them would be
-            // this crate deciding that bytes a server sent are not part of
-            // the document.
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "bytes arrived after the end of the `deflate` stream",
-            ));
-        }
-        Self::drive(dec, done, bytes, flate2::FlushDecompress::None)
-    }
-
     /// Runs the decoder until it stops making progress, or until the
     /// stream ends.
     ///
@@ -202,8 +166,58 @@ impl DeflateStream {
         }
         Ok(Bytes::from(out))
     }
+}
 
-    pub(super) fn finish(&mut self) -> Result<Bytes, std::io::Error> {
+/// The seam this coding is reached through — `decoder`'s module doc has
+/// why it is a trait rather than an enum arm, and what measuring the
+/// objection to that found.
+/// Hand-written rather than derived: [`Decode`](super::decoder::Decode)
+/// requires it so a decoder can be named in a `Debug`, and a decoder's
+/// internal window is not something to print.
+impl std::fmt::Debug for DeflateStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeflateStream")
+    }
+}
+
+impl super::decoder::Decode for DeflateStream {
+    fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error> {
+        // The bytes to feed: normally just `input`, but on the frame that
+        // completes the two-byte header it is that header plus whatever
+        // came with it, because nothing buffered has been fed yet.
+        let mut carried = None;
+        if let DeflateStream::Sniffing(buf) = self {
+            buf.extend_from_slice(input);
+            if buf.len() < 2 {
+                return Ok(Bytes::new());
+            }
+            let all = std::mem::take(buf);
+            *self = DeflateStream::Running {
+                dec: flate2::Decompress::new(Self::looks_like_zlib([all[0], all[1]])),
+                done: false,
+            };
+            carried = Some(all);
+        }
+        let bytes: &[u8] = carried.as_deref().unwrap_or(input);
+        let DeflateStream::Running { dec, done } = self else {
+            // Unreachable: the block above leaves `Sniffing` only by
+            // returning. An empty answer rather than a panic, for the
+            // reason `Coding::decoder`'s `Option` is an `Option`.
+            return Ok(Bytes::new());
+        };
+        if *done && !bytes.is_empty() {
+            // Mirrors brotli's arm one type over. Discarding them would be
+            // this crate deciding that bytes a server sent are not part of
+            // the document.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bytes arrived after the end of the `deflate` stream",
+            ));
+        }
+        Self::drive(dec, done, bytes, flate2::FlushDecompress::None)
+    }
+
+    fn finish(&mut self) -> Result<Bytes, std::io::Error> {
         match self {
             // The whole body was one byte or none. The shortest possible
             // raw stream is two bytes and the shortest zlib one is eight,
@@ -227,5 +241,9 @@ impl DeflateStream {
                 Ok(last)
             }
         }
+    }
+
+    fn token(&self) -> &'static str {
+        super::Coding::Deflate.token()
     }
 }
