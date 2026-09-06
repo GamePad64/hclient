@@ -760,4 +760,65 @@ mod replayability {
              the caller made about `a` was handed to `b`"
         );
     }
+
+    /// And `AllowEarlyData` is the **only** thing that hop strips.
+    ///
+    /// The test above says the mark does not cross an origin; this says
+    /// nothing else is treated that way, which is the half a caller
+    /// actually acts on. `RequestBuilder::extension` puts an arbitrary
+    /// value in the same bag, and after reading that `Authorization` is
+    /// dropped when the origin changes, the natural assumption is that a
+    /// value of one's own is protected too. It is not: `next_hop` clones
+    /// the bag and removes exactly one type.
+    ///
+    /// That default is right for what the setter is for — a trace context
+    /// should span a chain rather than stop at the first hop — and it is
+    /// the reason a credential travels as an argument instead. Pinned
+    /// here so that widening the strip list, which would look like
+    /// tightening a boundary, has to be a decision rather than an edit.
+    #[test]
+    fn a_callers_own_extension_is_not_stripped_with_the_mark() {
+        #[derive(Clone, Debug, PartialEq)]
+        struct Mine(&'static str);
+
+        let m = MockTransport::new();
+        m.push_response(
+            http::Response::builder()
+                .status(302)
+                .header("location", "https://b/second")
+                .body("")
+                .unwrap(),
+        );
+        m.push_response(http::Response::builder().status(200).body("").unwrap());
+
+        let c = hclient::Client::builder(m.clone()).build().unwrap();
+        let resp = futures_executor::block_on(
+            c.get("https://a/first")
+                .extension(Mine("carried"))
+                .allow_early_data()
+                .send(),
+        )
+        .expect("send");
+        assert_eq!(resp.status(), 200);
+
+        let reqs = m.requests();
+        assert_eq!(reqs.len(), 2, "the redirect was followed");
+        assert_eq!(
+            reqs[1].uri.host(),
+            Some("b"),
+            "the second hop is the other origin"
+        );
+        assert_eq!(
+            reqs[1].extensions.get::<Mine>(),
+            Some(&Mine("carried")),
+            "a caller's own extension crossed the origin"
+        );
+        assert!(
+            reqs[1]
+                .extensions
+                .get::<hclient_core::AllowEarlyData>()
+                .is_none(),
+            "the control: the one type that IS stripped, on the same hop"
+        );
+    }
 }

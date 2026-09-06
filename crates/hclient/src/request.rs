@@ -573,6 +573,27 @@ impl<'a> RequestBuilder<'a> {
     /// `allow_early_data` each carry the argument for their own value, and
     /// a reader who meets `.extension(RequireVersion(HTTP_2))` learns
     /// nothing about the capability gate behind it.
+    ///
+    /// # It follows every redirect, including one to another origin
+    ///
+    /// The client strips exactly one type on a cross-origin hop —
+    /// [`AllowEarlyData`](hclient_core::AllowEarlyData), because *"this is
+    /// safe to replay"* is a judgement about one server. Everything else
+    /// in the bag is cloned onto each hop unchanged, a caller's own types
+    /// included.
+    ///
+    /// That is the right default for what this setter is *for* — a trace
+    /// context should span a redirect chain rather than stop at the first
+    /// hop — and it is stated because the opposite reading is the natural
+    /// one after the paragraph above: `Authorization` is dropped when the
+    /// origin changes, and an extension is not.
+    ///
+    /// **So a value that only one origin may see does not belong here.**
+    /// A credential travels as an argument rather than an extension for a
+    /// second reason too, given in [`crate::auth`]: extensions reach
+    /// [`Transport::execute`](hclient_core::unversioned::Transport), so
+    /// any transport in the graph can read one — including a transport
+    /// this workspace did not write.
     #[must_use]
     pub fn extension<T>(mut self, value: T) -> Self
     where
