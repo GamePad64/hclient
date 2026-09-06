@@ -73,17 +73,8 @@ mod zstd;
 
 use crate::error::DecodeFailed;
 use decoder::Decoder;
-// Each import carries its own coding's `#[cfg]` and nothing else: `just
-// features` builds each coding alone, so an import gated on a
-// *neighbouring* feature is unresolved in the sets that have this one and
-// not that. That is not hypothetical — deleting the `BROTLI_BUFFER`
-// import from this block left its `#[cfg(feature = "brotli")]` behind,
-// where it stacked onto the line below and made `DeflateStream` need both
-// features. The powerset in `just features` is what says so.
-#[cfg(feature = "deflate")]
-use deflate::DeflateStream;
-#[cfg(feature = "zstd")]
-use zstd::ZstdStream;
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use crate::response::classify_body_error;
 use bytes::Bytes;
@@ -93,201 +84,221 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// A content coding this client can reverse.
+/// One entry in the [registry](registry): a coding's identity and how to
+/// start decoding it.
 ///
-/// Deliberately not `pub`: it names what the build can do, and the answer
-/// belongs to [`Decoders`], which is the only thing allowed to produce one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Coding {
-    Gzip,
-    Brotli,
-    Deflate,
-    Zstd,
+/// **The factory, not a decoder.** A `Decode` is stateful — `push` and
+/// `finish` carry one stream's window and its integrity check — so a
+/// single instance cannot serve two response bodies, and a registry of
+/// decoders would hand the same window to both. What is registered once
+/// is the *constructor*; each body calls it and owns what comes back.
+/// That is also why the map's value is a `fn()` rather than a `dyn
+/// Decode`: a `dyn` is unsized and could not sit in a map by value
+/// anyway.
+pub(crate) struct Registration {
+    /// The token as it appears in `Content-Encoding` and
+    /// `Accept-Encoding` — and the key this is registered under.
+    pub(crate) token: &'static str,
+    /// Aliases this token is also known by, matched
+    /// ASCII-case-insensitively like the token itself.
+    ///
+    /// **Two exist in RFC 9110 and one is reachable here**: §8.4.1.3's
+    /// `x-gzip`. §8.4.1.1's `x-compress` names a coding this client does
+    /// not reverse. Inventing a third — an `x-deflate`, say — would be
+    /// this client deciding what a token nobody specified means, on the
+    /// one coding whose wire format it already has to guess at.
+    pub(crate) aliases: &'static [&'static str],
+    /// Where this coding sits in `Accept-Encoding`, lowest first.
+    ///
+    /// **Explicit, because the map cannot carry it.** A `BTreeMap` orders
+    /// by key, so walking it would ask for `br, deflate, gzip, zstd` —
+    /// alphabetical, which puts `deflate` above `gzip` and states a
+    /// preference nobody chose. The wire order is a decision (the
+    /// densest coding first, and the one whose wire format has to be
+    /// guessed at last), so it is a field rather than an accident of
+    /// spelling.
+    pub(crate) preference: u8,
+    /// A fresh decoder for one response body.
+    pub(crate) new: fn() -> Decoder,
 }
 
-impl Coding {
-    /// The token as it appears in `Content-Encoding` / `Accept-Encoding`.
-    fn token(self) -> &'static str {
-        match self {
-            Coding::Gzip => "gzip",
-            Coding::Brotli => "br",
-            Coding::Deflate => "deflate",
-            Coding::Zstd => "zstd",
+/// Every coding this build can reverse, keyed by its token.
+///
+/// # Why a registry, and what it replaced
+///
+/// This was an `enum Coding` with four variants and four `match`es over
+/// it — `token`, `decoder`, `coding` and `has` — plus a `Decoders` struct
+/// of four `bool`s and a `PREFERENCE` array. Adding a fifth coding meant
+/// touching all six, and the compiler could only catch the `match`es: a
+/// coding missing from `PREFERENCE` compiled and silently never appeared
+/// in `Accept-Encoding`.
+///
+/// Here a coding is **one [`Registration`]**, declared beside its
+/// decoder, and the map is what everything else reads. What the compiler
+/// no longer checks — that the list is complete — is checked by
+/// `every_registration_is_reachable` instead, which is the trade: a test
+/// where there were exhaustive matches.
+///
+/// # `OnceLock` rather than a `const` table
+///
+/// The map is built once, on the first response that has a
+/// `Content-Encoding` or the first request that sets `Accept-Encoding`,
+/// and never again. A `const` table would need `phf` or a sorted-slice
+/// binary search written by hand; four entries do not earn either, and
+/// `BTreeMap` is what makes the lookup a lookup rather than a chain of
+/// `eq_ignore_ascii_case`.
+fn registry() -> &'static BTreeMap<&'static str, &'static Registration> {
+    static REGISTRY: OnceLock<BTreeMap<&'static str, &'static Registration>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut m = BTreeMap::new();
+        for r in REGISTRATIONS {
+            // A duplicate token would mean two codings answering to one
+            // name, and the second silently winning. `insert` returning
+            // `Some` is that, and there is no configuration in which it
+            // is not a bug in this file.
+            assert!(
+                m.insert(r.token, r).is_none(),
+                "two decoders registered the same token"
+            );
         }
-    }
+        m
+    })
+}
 
-    /// A fresh decoder for this coding, or `None` if this build did not
-    /// compile one in.
-    ///
-    /// An `Option` rather than an `unreachable!()` guarded by "the caller
-    /// checked": this and [`Decoders::has`] are two readings of the same
-    /// cargo features, and `every_advertised_coding_has_a_decoder_in_this_
-    /// build` below pins that they agree — in every feature combination,
-    /// since that test compiles into all four. If they ever stop agreeing,
-    /// the failure here is "the body is handed over untouched, headers and
-    /// all", which is a correct response, rather than a panic.
-    fn decoder(self) -> Option<Decoder> {
-        match self {
-            #[cfg(feature = "gzip")]
-            Coding::Gzip => Some(Box::new(decoder::Gzip::new())),
-            #[cfg(feature = "brotli")]
-            Coding::Brotli => Some(Box::new(decoder::Brotli::new())),
-            #[cfg(feature = "deflate")]
-            Coding::Deflate => Some(Box::new(DeflateStream::new())),
-            #[cfg(feature = "zstd")]
-            Coding::Zstd => Some(Box::new(ZstdStream::new())),
-            // Whichever codings this build has no decoder for. Written as
-            // a wildcard rather than named arms because which names are
-            // left depends on the feature set, and `#[cfg]`-ing the arm
-            // list four times over would say the same thing less clearly.
-            #[cfg(not(all(
-                feature = "gzip",
-                feature = "brotli",
-                feature = "deflate",
-                feature = "zstd"
-            )))]
-            _ => None,
-        }
+/// The codings compiled into this build, in the order they are declared.
+///
+/// **One `#[cfg]` per coding and no `not(any(..))` anywhere**: a build
+/// with no coding features has an empty array, which is an ordinary
+/// value, where the enum this replaced had no variants and needed three
+/// `match *self {}` arms to say so.
+const REGISTRATIONS: &[Registration] = &[
+    #[cfg(feature = "zstd")]
+    Registration {
+        token: "zstd",
+        aliases: &[],
+        preference: 0,
+        new: || Box::new(zstd::ZstdStream::new()),
+    },
+    #[cfg(feature = "brotli")]
+    Registration {
+        token: "br",
+        aliases: &[],
+        preference: 1,
+        new: || Box::new(decoder::Brotli::new()),
+    },
+    #[cfg(feature = "gzip")]
+    Registration {
+        token: "gzip",
+        // RFC 9110 §8.4.1.3's deprecated alias.
+        aliases: &["x-gzip"],
+        preference: 2,
+        new: || Box::new(decoder::Gzip::new()),
+    },
+    #[cfg(feature = "deflate")]
+    Registration {
+        token: "deflate",
+        aliases: &[],
+        // Last, and that is a decision rather than an ordering accident:
+        // it is the one coding whose wire format RFC 9110 §8.4.1.2 leaves
+        // ambiguous, so this client would rather be offered any other.
+        preference: 3,
+        new: || Box::new(deflate::DeflateStream::new()),
+    },
+];
+
+/// The registration a `Content-Encoding` names, if this build has one.
+///
+/// Matching is ASCII-case-insensitive, as RFC 9110 §8.4.1 requires, and
+/// the map's own key is the fast path — an alias costs a walk, which four
+/// entries make free and which is the only place a token that is not a
+/// token gets looked at twice.
+fn lookup(token: &str) -> Option<&'static Registration> {
+    let reg = registry();
+    if let Some(r) = reg.get(token) {
+        return Some(r);
     }
+    reg.values().copied().find(|r| {
+        r.token.eq_ignore_ascii_case(token)
+            || r.aliases.iter().any(|a| a.eq_ignore_ascii_case(token))
+    })
 }
 
 /// The content codings this build can actually reverse.
 ///
-/// **One value, three readers** — what goes into `Accept-Encoding`, what a
-/// `Content-Encoding` is matched against, and which decoder is
-/// constructed all come from here. That is the point, and it is
-/// `hclient-native`'s `reuse_of` recipe applied to a different capability:
-/// a client that advertised `br` in a build without the `brotli` feature
-/// would be asking for bytes it cannot read, which is the same defect as a
-/// capability that lies, entered from the request side.
+/// **One value, three readers** — what goes into `Accept-Encoding`, what
+/// a `Content-Encoding` is matched against, and which decoder is
+/// constructed all come from here, so a client cannot advertise a coding
+/// it will not reverse or reverse one it did not ask for.
 ///
-/// [`Self::compiled_in`] reads the cargo features with `cfg!` — an
-/// expression, so there is no `#[cfg]` branch switching behaviour here,
-/// only two booleans whose value differs per build.
+/// It is a `bool` beside the [registry](registry) rather than a set of
+/// its own: which codings *exist* is the registry's answer and is fixed
+/// at compile time, and the only thing that varies per request is whether
+/// this client may decode **at all** — which
+/// [`Capabilities::response_decompression`] decides. Carrying a subset
+/// would be a second statement of what the registry already says, and the
+/// enum-plus-four-`bool`s this replaced was exactly that: `Decoders`
+/// re-derived from cargo features what `Coding::decoder` re-derived
+/// again, and a test existed to pin that the two agreed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Decoders {
-    gzip: bool,
-    brotli: bool,
-    deflate: bool,
-    zstd: bool,
-}
+pub(crate) struct Decoders(bool);
 
 impl Decoders {
-    /// Every coding this crate knows how to name, **in the order they go
-    /// into `Accept-Encoding`**, which is a decision rather than the order
-    /// they were written in.
-    ///
-    /// Best first, and `deflate` deliberately LAST. RFC 9110 §12.5.3 puts
-    /// no meaning on the order of an unweighted list, so nothing here is
-    /// entitled to a particular answer — but a server that walks the list
-    /// and takes the first token it supports is the common
-    /// implementation, and the one coding whose wire format this client
-    /// has to GUESS at (see `deflate`'s module doc) is the one to be offered
-    /// least often. Browsers send `gzip, deflate, br, zstd`, which is
-    /// chronological rather than preferential; correctness here does not
-    /// depend on either order, only exposure does.
-    ///
-    /// One array, three readers: [`Self::accept_encoding`] walks it,
-    /// [`Self::has`] and [`Coding::token`] are what it walks with, and
-    /// the tests iterate it so that adding a fifth coding without
-    /// teaching `coding()` to match it fails a line.
-    pub(crate) const PREFERENCE: [Coding; 4] =
-        [Coding::Zstd, Coding::Brotli, Coding::Gzip, Coding::Deflate];
-
-    /// What this build can reverse, from the features that pulled the
-    /// decoders in.
+    /// What this build can reverse — everything registered, which is what
+    /// the coding features decided when they included their
+    /// [`Registration`].
     pub(crate) const fn compiled_in() -> Self {
-        Self {
-            gzip: cfg!(feature = "gzip"),
-            brotli: cfg!(feature = "brotli"),
-            deflate: cfg!(feature = "deflate"),
-            zstd: cfg!(feature = "zstd"),
-        }
+        Self(true)
     }
 
     /// Nothing may be reversed — what the capability gate returns for a
-    /// transport that decodes for us, and what a build with none of the
-    /// features has anyway.
+    /// transport that decodes for us.
     pub(crate) const fn none() -> Self {
-        Self {
-            gzip: false,
-            brotli: false,
-            deflate: false,
-            zstd: false,
-        }
+        Self(false)
     }
 
-    pub(crate) const fn is_empty(self) -> bool {
-        !self.gzip && !self.brotli && !self.deflate && !self.zstd
+    pub(crate) fn is_empty(self) -> bool {
+        !self.0 || REGISTRATIONS.is_empty()
     }
 
     /// The `Accept-Encoding` value to send, or `None` when there is
     /// nothing to ask for.
     ///
-    /// Assembled from [`Self::has`] and [`Coding::token`] — the same two
-    /// functions [`Self::coding`] matches an incoming `Content-Encoding`
-    /// with — rather than from a table of literal strings, so the set
-    /// asked for and the set understood cannot drift, and neither can
-    /// their spelling.
+    /// Assembled from the registry rather than from a table of literals,
+    /// so the set asked for and the set understood cannot drift, and
+    /// neither can their spelling. The order is
+    /// [`Registration::preference`] — see there for why it is a field and
+    /// not the map's own.
     pub(crate) fn accept_encoding(self) -> Option<http::HeaderValue> {
-        let mut value = String::new();
-        for coding in Self::PREFERENCE {
-            if self.has(coding) {
-                if !value.is_empty() {
-                    value.push_str(", ");
-                }
-                value.push_str(coding.token());
-            }
+        if !self.0 {
+            return None;
         }
+        let mut regs: Vec<&'static Registration> = registry().values().copied().collect();
+        regs.sort_by_key(|r| r.preference);
+        let value = regs.iter().map(|r| r.token).collect::<Vec<_>>().join(", ");
         if value.is_empty() {
             return None;
         }
-        // Infallible: every token is a compile-time ASCII constant from
-        // `Coding::token`, and the separator is `", "`. Nothing here comes
+        // Infallible: every token is a compile-time ASCII constant from a
+        // `Registration`, and the separator is `", "`. Nothing here comes
         // from the network or the caller.
         Some(http::HeaderValue::from_str(&value).expect("content coding tokens are ASCII"))
     }
 
-    /// The coding named by a response's `Content-Encoding`, if it is one
-    /// this build can reverse.
+    /// The decoder for what a `Content-Encoding` names, if this build has
+    /// one and this client may decode.
     ///
-    /// `None` for anything else, and "anything else" deliberately includes
-    /// a LIST (`gzip, br` — two codings applied in order): reversing one
-    /// layer of two and then declaring the body decoded would corrupt it,
-    /// and no server sends a list to a client that asked for a single
-    /// coding. `identity` and an empty value are the ordinary "not
-    /// encoded" answers. Matching is ASCII-case-insensitive, as RFC 9110
-    /// §8.4.1 requires; `x-gzip` is accepted as the deprecated alias for
-    /// `gzip` that RFC 9110 §8.4.1.3 still names.
-    ///
-    /// There is deliberately **no `x-deflate`**: RFC 9110 names exactly
-    /// two `x-` aliases, §8.4.1.1's `x-compress` and §8.4.1.3's `x-gzip`,
-    /// and inventing a third would be this client deciding what a token
-    /// nobody specified means — on the one coding whose wire format it is
-    /// already having to guess at.
-    pub(crate) fn coding(self, value: &http::HeaderValue) -> Option<Coding> {
-        let token = value.to_str().ok()?.trim();
-        let coding = if token.eq_ignore_ascii_case("gzip") || token.eq_ignore_ascii_case("x-gzip") {
-            Coding::Gzip
-        } else if token.eq_ignore_ascii_case("br") {
-            Coding::Brotli
-        } else if token.eq_ignore_ascii_case("deflate") {
-            Coding::Deflate
-        } else if token.eq_ignore_ascii_case("zstd") {
-            Coding::Zstd
-        } else {
+    /// A single token only, never a LIST (`gzip, br` — two codings
+    /// applied in order): reversing one layer of two and then declaring
+    /// the body decoded would corrupt it, and no server sends a list to a
+    /// client that asked for a single coding. `identity` and an empty
+    /// value are the ordinary "not encoded" answers, and neither is
+    /// registered.
+    pub(crate) fn decoder(self, value: &http::HeaderValue) -> Option<Decoder> {
+        if !self.0 {
             return None;
-        };
-        self.has(coding).then_some(coding)
-    }
-
-    pub(crate) const fn has(self, coding: Coding) -> bool {
-        match coding {
-            Coding::Gzip => self.gzip,
-            Coding::Brotli => self.brotli,
-            Coding::Deflate => self.deflate,
-            Coding::Zstd => self.zstd,
         }
+        let token = value.to_str().ok()?.trim();
+        Some((lookup(token)?.new)())
     }
 }
 
@@ -355,12 +366,11 @@ pub(crate) fn negotiate(
 /// `size_hint` trap `hclient-fetch`'s `body.rs` documents at length,
 /// reproduced one layer up.
 pub(crate) fn decoder_for(parts: &mut http::response::Parts, allowed: Decoders) -> Option<Decoder> {
-    let coding = allowed.coding(parts.headers.get(http::header::CONTENT_ENCODING)?)?;
     // The decoder is built BEFORE the headers are touched, so that the
     // only way to lose those two headers is to have something that will
     // actually reverse the coding. Failing the other way round would leave
     // a compressed body labelled as plaintext.
-    let decoder = coding.decoder()?;
+    let decoder = allowed.decoder(parts.headers.get(http::header::CONTENT_ENCODING)?)?;
     parts.headers.remove(http::header::CONTENT_ENCODING);
     parts.headers.remove(http::header::CONTENT_LENGTH);
     Some(decoder)
@@ -584,134 +594,108 @@ mod tests {
         c
     }
 
-    /// Every coding this crate knows, on. Named `ALL` rather than `BOTH`
-    /// since W5's two became four.
-    const ALL: Decoders = Decoders {
-        gzip: true,
-        brotli: true,
-        deflate: true,
-        zstd: true,
-    };
+    /// Everything this build registered.
+    const ALL: Decoders = Decoders::compiled_in();
 
-    /// One member of `Decoders` per bit of `mask`, in
-    /// [`Decoders::PREFERENCE`] order — so `subsets()` below enumerates
-    /// all sixteen without naming any of them, which is the point: a
-    /// fifth coding makes these tests cover thirty-two by arithmetic
-    /// rather than by somebody remembering to add eight literals.
-    fn from_mask(mask: u32) -> Decoders {
-        let mut d = Decoders::none();
-        for (i, coding) in Decoders::PREFERENCE.into_iter().enumerate() {
-            if mask & (1 << i) == 0 {
-                continue;
-            }
-            match coding {
-                Coding::Gzip => d.gzip = true,
-                Coding::Brotli => d.brotli = true,
-                Coding::Deflate => d.deflate = true,
-                Coding::Zstd => d.zstd = true,
-            }
-        }
-        d
-    }
-
-    fn subsets() -> impl Iterator<Item = Decoders> {
-        (0..(1u32 << Decoders::PREFERENCE.len())).map(from_mask)
-    }
-
-    /// The one-fact property, checked in whichever build is running — and
-    /// this test compiles into all sixteen feature combinations, so
-    /// between CI's `--all-features` run and `idn-feature-is-real`'s
-    /// `--no-default-features` one it is checked in more than the maximal
-    /// build.
+    /// **The property the registry makes structural, pinned anyway.**
     ///
-    /// What it stops: `Decoders::compiled_in` reads the cargo features to
-    /// decide what to ADVERTISE, and `Coding::decoder` reads them again to
-    /// decide what can be BUILT. A client that asked for `br` in a build
-    /// without the brotli decoder would receive bytes nothing here can
-    /// read — the request-side form of a capability that lies.
+    /// This was `every_advertised_coding_has_a_decoder_in_this_build`, and
+    /// it existed because `Decoders::compiled_in` read the cargo features
+    /// to decide what to ADVERTISE while `Coding::decoder` read them again
+    /// to decide what could be BUILT — two readings that could disagree,
+    /// and a client advertising `br` in a build with no brotli decoder
+    /// receives bytes nothing can read.
+    ///
+    /// One [`Registration`] carries both now, so they cannot disagree: the
+    /// token that goes into `Accept-Encoding` and the `new` that builds
+    /// the decoder are fields of one value, behind one `#[cfg]`. What is
+    /// left to check is that the registry is *reachable* — that every
+    /// registration can be looked up by the token it registered under,
+    /// which is what would break if two codings ever registered one name
+    /// or if `lookup` stopped matching the map's own key.
     #[test]
-    fn every_advertised_coding_has_a_decoder_in_this_build() {
-        for coding in Decoders::PREFERENCE {
-            assert_eq!(
-                Decoders::compiled_in().has(coding),
-                coding.decoder().is_some(),
-                "`{}` is advertised by one reading of the features and not the other",
-                coding.token()
-            );
-        }
-    }
-
-    /// `PREFERENCE` is the only list of codings in this module, and
-    /// everything else reads it. A coding left out of it would be
-    /// unreachable from `accept_encoding` while still matching in
-    /// `coding()` — a client that decodes something it never asked for,
-    /// which is the shape the caller-set-header rule exists against.
-    #[test]
-    fn the_preference_list_names_every_coding_exactly_once() {
-        let mut tokens: Vec<&str> = Decoders::PREFERENCE.iter().map(|c| c.token()).collect();
-        tokens.sort_unstable();
-        tokens.dedup();
-        assert_eq!(
-            tokens.len(),
-            Decoders::PREFERENCE.len(),
-            "a duplicate would be advertised twice in one header"
-        );
-        for coding in Decoders::PREFERENCE {
-            let v = http::HeaderValue::from_static(match coding {
-                Coding::Gzip => "gzip",
-                Coding::Brotli => "br",
-                Coding::Deflate => "deflate",
-                Coding::Zstd => "zstd",
-            });
-            assert_eq!(
-                ALL.coding(&v),
-                Some(coding),
-                "`{}` is in the preference list and is not matched back",
-                coding.token()
-            );
-        }
-    }
-
-    #[test]
-    fn accept_encoding_names_exactly_what_can_be_decoded() {
-        // The property, not the string: every token advertised must be one
-        // `coding` recognises, for each of the sixteen possible builds. A
-        // literal `assert_eq!(.., "zstd, br, gzip, deflate")` would pass
-        // just as happily for a build with three of the decoders switched
-        // off.
-        let mut seen = 0;
-        for d in subsets() {
-            seen += 1;
-            let Some(v) = d.accept_encoding() else {
-                assert!(d.is_empty(), "only an empty set may advertise nothing");
-                continue;
-            };
-            let mut count = 0;
-            for token in v.to_str().unwrap().split(',') {
-                count += 1;
-                let one = http::HeaderValue::from_str(token.trim()).unwrap();
-                assert!(
-                    d.coding(&one).is_some(),
-                    "advertised `{token}` that {d:?} cannot decode"
+    fn every_registration_is_reachable_by_its_own_token() {
+        for r in REGISTRATIONS {
+            let found = lookup(r.token)
+                .unwrap_or_else(|| panic!("`{}` is registered and cannot be looked up", r.token));
+            assert_eq!(found.token, r.token);
+            for alias in r.aliases {
+                let found =
+                    lookup(alias).unwrap_or_else(|| panic!("alias `{alias}` does not resolve"));
+                assert_eq!(
+                    found.token, r.token,
+                    "`{alias}` resolves to the wrong coding"
                 );
             }
-            // And the other direction, which the loop above cannot see: a
-            // set of three that advertised two would satisfy every
-            // assertion so far.
-            let want = Decoders::PREFERENCE.iter().filter(|c| d.has(**c)).count();
-            assert_eq!(
-                count, want,
-                "{d:?} advertised {count} of its {want} codings"
-            );
         }
-        assert_eq!(seen, 16, "the point of this test is that it is exhaustive");
+        assert_eq!(
+            registry().len(),
+            REGISTRATIONS.len(),
+            "two codings registered the same token, and one silently won"
+        );
     }
 
-    /// `deflate` is offered last, and that is a decision (see
-    /// `Decoders::PREFERENCE`) rather than the order the fields happen to
-    /// be declared in: it is the one coding whose wire format this client
-    /// has to guess at, so a server picking the first token it knows
-    /// should reach for it only when it has nothing else.
+    /// A token is matched ASCII-case-insensitively — RFC 9110 §8.4.1 —
+    /// and the map's own key is only the fast path.
+    #[test]
+    fn a_registered_token_is_matched_whatever_its_case() {
+        for r in REGISTRATIONS {
+            let shouted = r.token.to_ascii_uppercase();
+            let found = lookup(&shouted)
+                .unwrap_or_else(|| panic!("`{shouted}` did not match `{}`", r.token));
+            assert_eq!(found.token, r.token);
+        }
+    }
+
+    /// `accept_encoding` names exactly what is registered, and nothing
+    /// else — the property, not the string. A literal
+    /// `assert_eq!(.., "zstd, br, gzip, deflate")` would pass just as
+    /// happily for a build with three decoders switched off, which is why
+    /// that assertion lives in the one test below that is about the
+    /// *order*.
+    #[test]
+    fn accept_encoding_names_exactly_what_can_be_decoded() {
+        let Some(v) = ALL.accept_encoding() else {
+            assert!(
+                ALL.is_empty(),
+                "only an empty registry may advertise nothing"
+            );
+            return;
+        };
+        let mut count = 0;
+        for token in v.to_str().unwrap().split(',') {
+            count += 1;
+            let one = http::HeaderValue::from_str(token.trim()).unwrap();
+            assert!(
+                ALL.decoder(&one).is_some(),
+                "advertised `{token}`, which this build cannot decode"
+            );
+        }
+        assert_eq!(
+            count,
+            REGISTRATIONS.len(),
+            "advertised {count} of {} registered codings",
+            REGISTRATIONS.len()
+        );
+    }
+
+    /// `deflate` is offered last, and that is a decision rather than the
+    /// order anything happens to be declared in: it is the one coding
+    /// whose wire format this client has to guess at, so a server picking
+    /// the first token it knows should reach for it only when it has
+    /// nothing else.
+    ///
+    /// **This is also what says the registry did not reorder them.** A
+    /// `BTreeMap` orders by key, so a walk of it advertises `br, deflate,
+    /// gzip, zstd` — alphabetical, `deflate` second — which is why
+    /// [`Registration::preference`] is a field. Written as a literal
+    /// deliberately, and only here.
+    #[cfg(all(
+        feature = "gzip",
+        feature = "brotli",
+        feature = "deflate",
+        feature = "zstd"
+    ))]
     #[test]
     fn the_ambiguous_coding_is_offered_last() {
         let v = ALL.accept_encoding().expect("something is compiled in");
@@ -722,44 +706,57 @@ mod tests {
         );
     }
 
+    /// A coding this build did not register is not matched — which is
+    /// what stops a client from handing a caller a body nothing here can
+    /// read.
+    ///
+    /// **It is checked against the registry rather than against a
+    /// hand-built subset**, because there is no subset to build any more:
+    /// `Decoders` was four `bool`s that a test could set independently of
+    /// the cargo features, and it is one bit now. So the case this test
+    /// wants — a token that is *not* registered — is written as a token
+    /// no build ever registers, and the feature-specific half is covered
+    /// by `just features`, which compiles this file in all sixteen
+    /// combinations and runs the two tests above in each.
     #[test]
-    fn a_coding_that_is_not_compiled_in_is_not_matched() {
-        let gzip_only = Decoders {
-            gzip: true,
-            brotli: false,
-            deflate: false,
-            zstd: false,
-        };
-        assert_eq!(
-            gzip_only.coding(&http::HeaderValue::from_static("br")),
-            None,
-            "matching `br` in a build without the decoder would hand a caller \
-             a body nothing can read"
-        );
-        assert_eq!(
-            gzip_only.coding(&http::HeaderValue::from_static("gzip")),
-            Some(Coding::Gzip)
-        );
+    fn an_unregistered_coding_is_not_matched() {
+        for token in ["compress", "x-compress", "identity", "", "lz4"] {
+            assert_eq!(
+                lookup(token).map(|r| r.token),
+                None,
+                "`{token}` is not a coding this crate registers"
+            );
+        }
+        // The control: without it this passes for a registry that matches
+        // nothing at all.
+        for r in REGISTRATIONS {
+            assert!(lookup(r.token).is_some());
+        }
     }
 
     #[test]
     fn content_encoding_matching_is_case_insensitive_and_rejects_lists() {
-        assert_eq!(
-            ALL.coding(&http::HeaderValue::from_static("GZIP")),
-            Some(Coding::Gzip)
+        #[cfg(feature = "gzip")]
+        {
+            assert!(
+                ALL.decoder(&http::HeaderValue::from_static("GZIP"))
+                    .is_some()
+            );
+            assert!(
+                ALL.decoder(&http::HeaderValue::from_static(" x-gzip "))
+                    .is_some(),
+                "RFC 9110 §8.4.1.3's deprecated alias, and the surrounding \
+                 whitespace a header may carry"
+            );
+        }
+        assert!(
+            ALL.decoder(&http::HeaderValue::from_static("identity"))
+                .is_none()
         );
-        assert_eq!(
-            ALL.coding(&http::HeaderValue::from_static(" x-gzip ")),
-            Some(Coding::Gzip)
-        );
-        assert_eq!(
-            ALL.coding(&http::HeaderValue::from_static("identity")),
-            None
-        );
-        assert_eq!(ALL.coding(&http::HeaderValue::from_static("")), None);
-        assert_eq!(
-            ALL.coding(&http::HeaderValue::from_static("gzip, br")),
-            None,
+        assert!(ALL.decoder(&http::HeaderValue::from_static("")).is_none());
+        assert!(
+            ALL.decoder(&http::HeaderValue::from_static("gzip, br"))
+                .is_none(),
             "two codings applied in order: reversing one and calling the body \
              decoded would corrupt it"
         );
@@ -785,8 +782,18 @@ mod tests {
             !h.contains_key(http::header::ACCEPT_ENCODING),
             "the transport forbids this header; we must not add it"
         );
+        // **The property, not the value.** In a build with no coding
+        // features `ALL` is "this client may decode" while the registry
+        // is empty, so `negotiate` answers `none()` and the two are
+        // unequal — which is correct and which an `assert_eq!(d, ALL)`
+        // reads as a failure. That equality held only because the old
+        // `Decoders` was four `bool`s, so "may decode" and "has a
+        // decoder" were one value; splitting them is what let the
+        // registry be the single list of codings. `just test-no-default`
+        // is what caught it.
         assert_eq!(
-            d, ALL,
+            d.is_empty(),
+            ALL.is_empty(),
             "a `Content-Encoding` the server applied unbidden is still ours to reverse"
         );
     }

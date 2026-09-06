@@ -244,6 +244,6 @@ impl super::decoder::Decode for DeflateStream {
     }
 
     fn token(&self) -> &'static str {
-        super::Coding::Deflate.token()
+        "deflate"
     }
 }

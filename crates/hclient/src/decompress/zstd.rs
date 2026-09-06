@@ -277,6 +277,6 @@ impl super::decoder::Decode for ZstdStream {
     }
 
     fn token(&self) -> &'static str {
-        super::Coding::Zstd.token()
+        "zstd"
     }
 }

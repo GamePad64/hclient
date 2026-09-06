@@ -176,7 +176,7 @@ impl Decode for Gzip {
         Ok(take(self.0.get_mut()))
     }
     fn token(&self) -> &'static str {
-        super::Coding::Gzip.token()
+        "gzip"
     }
 }
 
@@ -245,6 +245,6 @@ impl Decode for Brotli {
         }
     }
     fn token(&self) -> &'static str {
-        super::Coding::Brotli.token()
+        "br"
     }
 }
