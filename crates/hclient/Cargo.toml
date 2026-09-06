@@ -1,6 +1,6 @@
 [package]
 name = "hclient"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "Cross-platform async HTTP client: one codebase for native, browser, and WASI"
 keywords     = ["hclient", "http", "http-client", "async", "wasm"]
 categories   = ["web-programming::http-client", "asynchronous", "wasm"]

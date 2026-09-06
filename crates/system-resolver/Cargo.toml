@@ -65,14 +65,6 @@ readme = "README.md"
 [package.metadata.docs.rs]
 all-features = true
 
-# The other half of the literal version above: `cargo-release` groups
-# crates by this name, so this one bumps and publishes on its own cadence
-# while everything named `hclient` moves together. Both lines are needed —
-# a literal version with no group would still be dragged to the family's
-# number on the next `cargo release`.
-[package.metadata.release]
-shared-version = "system-resolver"
-
 [dependencies]
 thiserror = { workspace = true }
 

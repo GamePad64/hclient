@@ -1,6 +1,6 @@
 [package]
 name = "hclient-rt-smol"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "hclient runtime capabilities implemented on top of smol"
 keywords     = ["hclient", "runtime", "smol", "async"]
 categories   = ["asynchronous"]

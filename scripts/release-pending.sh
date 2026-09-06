@@ -85,21 +85,17 @@ published and this answers properly from then on:
 EOF
 fi
 
-total=$((changed + clean + unpublished))
-if [ ${#pending[@]} -eq 0 ]; then
-  :
-elif [ ${#pending[@]} -eq "$total" ] && [ "$total" -gt 0 ]; then
-  # Everything changed, which is what the policy publishes anyway.
+# **This prints no command to run, and that changed with the tool.** Under
+# cargo-release it ended with a ready `cargo release -p … <level>` line,
+# because that tool cannot work out the set itself and someone had to
+# paste it. `release-plz` computes the set — so a command here would be a
+# second opinion about which crates to publish, and the one that rots.
+#
+# What this answers is the question release-plz does not: *how long has
+# each crate been sitting unreleased*, anchored on a git tag. That is
+# worth knowing before a release and is nobody else's job.
+if [ ${#pending[@]} -gt 0 ]; then
   echo
-  echo "cargo release <level>"
-else
-  # The selecting form, for the policy `docs/publishing.md` §5 keeps
-  # rather than the one it uses. Built with a loop: `${a[*]// / -p }`
-  # looks like it works and does not — it leaves the `-p` off every
-  # entry but the first, and a half-right command someone pastes is
-  # worse than none.
-  line="cargo release"
-  for c in "${pending[@]}"; do line="$line -p $c"; done
-  echo
-  echo "$line <level>"
+  echo "release-plz update      # the plan, written into the tree"
+  echo "release-plz release     # the upload"
 fi

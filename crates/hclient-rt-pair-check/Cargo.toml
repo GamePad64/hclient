@@ -1,6 +1,6 @@
 [package]
 name = "hclient-rt-pair-check"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "Proof: the same client code runs the runtime capabilities on both tokio and smol without a single #[cfg]"
 edition.workspace = true
 rust-version.workspace = true

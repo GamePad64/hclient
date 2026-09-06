@@ -1,6 +1,6 @@
 [package]
 name = "hclient-rt-embassy"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "hclient runtime capabilities implemented on top of embassy — embassy-time for the clock, embassy-net (smoltcp) for the sockets"
 keywords     = ["hclient", "runtime", "embassy", "embedded"]
 categories   = ["asynchronous", "embedded"]

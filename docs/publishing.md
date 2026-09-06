@@ -1,23 +1,49 @@
-# Releasing the 26 crates
+# Releasing the crates
 
 ```
-cargo release <patch|minor|major|VERSION>            # shows the plan, changes nothing
-cargo release <patch|minor|major|VERSION> --execute  # does it
+just release-pending      # what has changed since each crate last published
+release-plz update        # edit versions and changelogs locally, publish nothing
+release-plz release       # publish
 ```
 
-That is the whole procedure. This document exists for the things it does
-not tell you: what the tool is doing on your behalf, the one thing that
-will stop the **first** release, how to release one crate rather than
-thirty afterwards, and why the order below is written down when nothing
-has to follow it by hand any more.
+**The tool is `release-plz`, and it was `cargo-release` until
+2026-09-07.** What changed with it is the policy: cargo-release published
+every crate on every release, because one `[workspace.package].version`
+served all of them and one number cannot advance for some. Every crate
+now carries its own literal version, and release-plz publishes the crates
+that changed.
 
-**The first release is `0.1.0-alpha.1`, and the version is already set in
-the tree**, so the first release is a publish and not a bump:
+**What that does not buy is worth reading before the first release under
+it**, because the obvious expectation is wrong and was measured rather
+than assumed. A run today still bumps all 27 crates — and that is the
+tool being right. Asked crate by crate on a pristine tree it answers
+`hclient-otel: already up to date`, and the same for `hclient-tower` and
+`hclient-webtransport`; its detection is exact. What produces the sweep is
+**dependency propagation**: `hclient-core` changed, every crate here
+depends on it transitively — 8 changed, **30 affected, 0 untouched** — and
+a dependent must bump so its requirement can name a version that exists.
 
-```
-cargo release publish             # the plan; uploads nothing
-cargo release publish --execute   # the release
-```
+So the saving arrives for a change confined to a leaf (`hclient-cli`,
+`hclient-winhttp`) and not for one that touches the core. That is a fact
+about this dependency graph rather than about release-plz.
+
+**`just release-pending` is still the thing to run first.** It answers
+which crates have changed since they last published, anchored on a git
+tag rather than on commit messages, and it reaches the network — which is
+why it is diagnostics rather than a CI gate.
+
+**Bump levels now come from conventional commits.** This repository did
+not write them: nought of the twenty-five subjects before the migration
+parsed as one, because a commit message here is the record of *why*. The
+prefix goes in front of that sentence rather than replacing it.
+
+**Semver is release-plz's now.** `just semver` has come out of CI, because
+that recipe *fails* on a breaking change where release-plz *bumps the
+major* — both would mean a breaking change fails CI and is released
+anyway. The recipe still exists for running by hand. What it also did and
+release-plz does not is fail closed on a run that executed zero lints,
+which is the state inside a pre-release; that blind spot is live while
+this family is on `-alpha`.
 
 **A stale `rmeta` will fail a release, and it fails it as a missing
 API.** On 2026-08-28 `cargo release publish` and `just package-build` both
@@ -84,9 +110,10 @@ The requirements had to move with it and not merely alongside: `^0.1.0`
 does **not** accept `0.1.0-alpha.1`, because a caret requirement excludes
 pre-releases unless it names one itself.
 
-Every release after this is the tool's again — `cargo release alpha` from
-`0.1.0-alpha.1` gives `0.1.0-alpha.2`, measured, and it is a bump so the
-downgrade guard never applies.
+Every release after this is the tool's again. That read
+`cargo release alpha` until 2026-09-07 and is `release-plz` now, which
+derives the level from the commits rather than taking it as an argument;
+either way it is a bump, so the downgrade guard never applies.
 
 The reason for a pre-release is not doubt about the code — 19 CI jobs on
 three platforms are green — it is that the week before it moved six public
@@ -94,42 +121,32 @@ surfaces, and `0.1.0` would freeze twenty-nine of them at the moment they
 were last seen moving. A pre-release claims the names and promises nothing:
 `cargo add hclient` will not select it unless asked, so another week of
 changes costs `-alpha.2` rather than a major version across the family.
-Subsequent pre-releases are `cargo release alpha`, which increments the
-`.1`.
 
-`0.1.0` follows when the seams stop moving on their own, and it is an
-ordinary `cargo release 0.1.0` when it does — an upgrade from any
-`-alpha.N`, so the tool handles that one.
+`0.1.0` follows when the seams stop moving on their own. Under release-plz
+that is `release-plz update --version 0.1.0` for the crates concerned
+rather than a level word — an upgrade from any `-alpha.N` either way.
 
 ## 1. What each half does, measured on this workspace
 
 **`cargo publish --workspace` is native since cargo 1.90 and works here.**
 Dry-run on this tree: 29 packaged, 29 **verified**, exit 0, and the upload
 order computed by cargo itself. So publishing is not the part that needed a
-tool.
+tool, and that was true under cargo-release and is true under release-plz.
 
-**The bump is.** `[workspace.package].version` is one number, and beside it
-are dozens of literal version requirements, counted by
-`just versions-agree` rather than written down — 8 in the root
-`[workspace.dependencies]` and 61 in crate manifests — which must move with
-it. (The header says 70: that is these 69 plus the workspace version
-itself. Both counts were measured; an earlier "68 / 7" here was a narrower
-grep than the one that set the version, and a document contradicting itself
-two sections apart is the count-in-prose defect this project keeps
-finding.) Cargo offers no way to write `version.workspace = true` inside a
-dependency requirement, so the repetition is forced and nothing checked
-that the copies agreed. `cargo release version minor` does it:
+**The bump is**, and what it involves changed with the migration. Every
+crate now carries its own literal version — there is no
+`[workspace.package].version` to move — and beside those are dozens of
+literal version requirements, counted by `just versions-agree` rather than
+written down here. Cargo offers no way to write `version.workspace = true`
+inside a dependency requirement, so the repetition is forced and nothing
+but that gate checks the copies agree.
 
-```
-Upgrading workspace to version 0.2.0
-Upgrading hclient-dns from 0.1.0 to 0.2.0 (inherited from workspace)
- Updating hclient's dependency from 0.1.0 to 0.2.0
- Updating hclient-dns-doh's dependency from 0.1.0 to 0.2.0
- …
-```
+`release-plz update` does the bump: it downloads each published crate,
+compares, decides a level from the commits since, writes the new version
+and rewrites every requirement that names it. `release-plz release` then
+publishes. Both are safe to run and inspect — `update` edits the working
+tree and uploads nothing.
 
-`cargo release <level> --execute` then runs bump → commit → publish in
-dependency order → tag → push, so the two halves are one command.
 
 ## 2. The first release will be refused, and that is correct
 
@@ -242,159 +259,71 @@ while len(done) < len(pub):
 
 ## 4. The configuration, and why each line is not a default
 
-`[workspace.metadata.release]` in the root `Cargo.toml`. **An unknown key
-there is a hard parse error, not a silent no-op** — checked on purpose
-before writing it, because a release configuration that ignores a typo is
-the shape this project refuses everywhere else.
+`release-plz.toml` at the repository root, which replaced
+`[workspace.metadata.release]` in `Cargo.toml`.
 
-- `shared-version = "hclient"` — a named group rather than `true`. Every
-  crate carrying `version.workspace = true` names this group and moves
-  together, exactly as `true` used to say; what the name buys is that
-  `system-resolver` can name a *different* one. It leaves by writing two
-  deliberate lines — its own literal version and its own group — rather
-  than by a missing one, so nothing drops out of the family by accident.
-  §5.1 is why one crate does that.
-- `consolidate-commits = true` — one commit for the bump, not thirty.
-- `allow-branch = ["main"]` — the default is every branch except `HEAD`,
-  which would let a release happen from a feature branch.
-- `pre-release-commit-message` and `tag-message` — the defaults are
-  `chore: Release …`, and this repository does not write conventional
-  commits: **nought of the last twenty-five subjects** are in that form,
-  because its commit messages are the record of *why*. A release commit has
-  no argument to make, so it says what it did and stops.
+- `semver_check = true` — release-plz runs cargo-semver-checks and turns a
+  breaking change into a **major bump**. `just semver` used to run the same
+  tool as a CI **gate** that failed instead; the two cannot both hold, so
+  the CI step is gone. The recipe remains for running by hand, and the note
+  where the step was records what that costs: it failed closed on a run
+  that executed zero lints, which is exactly the pre-release state this
+  family is in.
+- `changelog_update = true` — new. cargo-release wrote no changelog,
+  because prose subjects give a generator nothing to parse. Conventional
+  commits do.
+- `release_always = true` — releases happen when the command is run, rather
+  than on merging a release PR. This repository has no PR flow.
+- `git_tag_name = "{{ package }}-v{{ version }}"` — **the tag has to name
+  the crate now**, and that is the shared version ending rather than a
+  preference. cargo-release wrote `v{{version}}` and one tag covered every
+  crate because one version did; with versions sparse per crate that is
+  ambiguous the first time two sit at different numbers. `just
+  release-pending` reads these tags, and its own header says a crate whose
+  published version has no tag cannot be compared against anything — so the
+  existing `v0.1.0-alpha.3` tags stay meaningful for what was released
+  under them.
+- three `[[package]] release = false` entries — `hclient-rt-pair-check`,
+  `hclient-rt-nal` and `hclient-rt-embassy`. They are `publish = false` in
+  their own manifests already; naming them here stops release-plz
+  version-bumping and changelogging crates that never go out.
 
-## 5. Releases after the first: one version, everything published
 
-**The policy is to publish all 23 crates on every release**, off the one
-shared version:
+## 5. Releases after the first: what changed, and only that
 
-```
-cargo release patch
-```
-
-The argument for it is that it removes a question rather than answering
-one. Selecting crates means knowing which changed, and *knowing* means a
-step that can be skipped, got wrong, or forgotten — the failure this
-document spent §5a building a tool against. Publishing everything cannot
-forget anything. The cost is 24 uploads for a one-line fix and a version
-history with no gaps in it, which for crates this size is cosmetic.
-
-**It is also not what guarantees compatibility — and the version of that
-sentence which stood here was wrong in a way worth keeping.** It read:
-what guarantees it is the *requirement*, the published `hclient` asks
-`^0.1.0-alpha.1` of each neighbour, and semver makes the set resolve.
-Semver is indeed the mechanism, and under `fix` the mechanism was
-promising something nobody had. Measured on the published crates:
-`hclient = "=0.1.0-alpha.2"` beside `hclient-core = "=0.1.0-alpha.1"`
-resolves, and then fails to compile — *cannot find `Reduced` in
-`hclient_core`*, a type that arrived in alpha.2. A pre-release promises
-nothing between alphas; a requirement spanning two of them says otherwise.
-
-`dependent-version = "upgrade"` is what closes it: `^0.1.0-alpha.2`
-excludes alpha.1 outright, so no `=` pin is needed, and matching numbers
-stop being a coincidence the requirements are indifferent to.
-
-**Selecting by name still works and the configuration still supports it**,
-because the policy may change:
+**The policy is that a release publishes the crates that changed.** It was
+the opposite until 2026-09-07 — every crate on every release, one shared
+version — and the argument for that is worth keeping because it was a good
+one: selecting means knowing which crates changed, knowing means a step
+that can be forgotten, and publishing everything cannot forget. What ended
+it is a tool that *computes* the set rather than asking a human for it.
 
 ```
-cargo release -p hclient-native patch
+just release-pending      # diagnostics: what has changed, and since when
+release-plz update        # the plan, written into the tree; uploads nothing
+release-plz release       # the upload
 ```
 
-Measured on this tree with a tag planted one commit back: the workspace
-version moves to `0.1.1` in every manifest, `hclient-native` is
-published, and every other crate is skipped — *"disabled by user, skipping
-hclient-core, despite being unpublished"*.
+**In practice this publishes everything anyway, today, and that is
+correct.** `hclient-core` sits under every other crate, so any change to
+it propagates: measured, 8 crates changed and **30 affected, 0 untouched**.
+release-plz is not failing to skip — asked crate by crate it answers
+`already up to date` for the ones that are. The saving is real for a
+change confined to a leaf and absent for one that touches the core.
 
-**What used to make that legal is `dependent-version = "fix"`, and it is
-no longer set.** `fix` rewrites a requirement only when the new version
-stops satisfying it, so requirements stay at `^0.1.0` and an
-already-published 0.1.0 keeps satisfying them — which is what lets a
-neighbour be skipped. That is a real property and it was paid for by the
-lie above, so `upgrade` is set instead: every dependent's requirement
-moves to the new number, and a `-p` release then obliges publishing the
-neighbours it names. Under §5's policy — everything, every time — that
-obligation costs nothing, because everything is being published anyway.
+**What the old policy removed and this one brings back is drift.** With
+one version, requirements could not disagree with the crates they named.
+With versions sparse per crate, they can — so `just versions-agree` stops
+being a convenience and becomes the thing that catches it. It resolves
+every in-workspace requirement to the crate it names and compares against
+**that** crate's version, which it has done since `system-resolver` left
+the shared version, so it needed no change for this migration.
 
-Selecting with `-p` therefore now means bumping the neighbours too, or
-setting `fix` back for that release and accepting what it means: a
-requirement that spans two versions this project does not claim are
-compatible. `just versions-agree` is the check either way, and it reads
-the manifests rather than the setting.
+**Two things that used to read as mistakes and no longer are.** An
+unpublished crate's version running ahead of the index, and published
+versions going sparse per crate: the first is still ordinary, and the
+second is now the intended shape rather than a symptom.
 
-**cargo-release does not work out which crates changed** — it was measured
-and it does not: with a tag one commit back and one crate touched, a plain
-`cargo release patch` still planned all 24 uploads. Under §5's policy that
-is the wanted behaviour rather than a shortcoming; under the `-p` form,
-selecting is yours, and §5a is what tells you what to select.
-`cargo-smart-release` is the tool that does compute the set, and it is not
-used here for reasons in §8.
-
-**Two consequences the `-p` form has and this policy does not**, recorded
-because they are the argument for publishing everything and because they
-read as mistakes if met without warning:
-
-- **An unpublished crate's version runs ahead of the index.**
-  `hclient-core` could be 0.1.5 in this tree and 0.1.0 on crates.io,
-  because nothing in it changed. Correct, and not a drift to "fix".
-- **Published versions go sparse per crate.** A crate released at 0.1.1
-  and again at 0.1.4 would have no 0.1.2 or 0.1.3, because those releases
-  were other crates'. Cargo does not care; a reader might.
-
-Publishing everything removes both: every crate is at every version, and
-the tree and the index agree. That is the second argument for the policy,
-after the one §5 gives — the first removes a step that can be forgotten,
-this one removes two explanations a reader would otherwise need.
-
-Both artefacts fall out of one shared version number, which is the trade
-`[workspace.package].version` was chosen for: 23 hand-maintained numbers
-could drift, and one cannot.
-
-### 5.1 The one crate outside the group, and what buys the exception
-
-`system-resolver` versions on its own — `0.1.0` where the family is at
-`0.1.0-alpha.2`, its own `shared-version` group, its own publish.
-
-**The reason is not that it changes at a different rate.** It is that a
-shared version cannot leave pre-release while any member of the family
-still needs to, and *inside a pre-release `cargo semver-checks` checks
-nothing at all.* Measured on this crate against 0.50.0:
-
-| baseline -> current | how the tool classifies it | lints executed |
-|---|---|---|
-| not published | — | **error**: no baseline in the registry |
-| `0.1.0-alpha.2` -> `0.1.0-alpha.2` | `no change; assume major` | **0** of 254 |
-| `0.1.0-alpha.2` -> `0.1.0` | `major change` | **0** of 254 |
-| `0.1.0` -> `0.1.1` | `minor change` | **196**, and one caught a breaking change |
-
-A major step permits breaking, so there is nothing to check — and every
-step inside `0.1.0-alpha.N` is a major step. So a compatibility gate over
-the family would be green for a tree in which every promise had been
-broken, which is this project's *check that cannot fail* with the subject
-changed. The exception is what gives one crate a baseline worth checking
-against; `just semver` is the gate, and it fails closed on a run that
-executed nothing as well as on a run that failed.
-
-**Why this crate and not another.** Its surface is five names —
-`Record`, `Support`, `Error`, `lookup`, `support` — none of which took a
-change in the week that moved six of the family's, and its use is outside
-HTTP entirely. The rest of the family is where the churn is, and the
-`0.1.0-alpha` series exists precisely to hold it.
-
-**What the exception costs**, said plainly because §5's whole argument is
-that selecting crates is a question one can forget to answer: for this one
-crate the question comes back. It is not published by `cargo release
-<level>` with the others; it is bumped and published deliberately, and
-nothing in this repository will notice if that is skipped. That is the
-trade for a crate that can make a promise while its neighbours cannot.
-
-`just versions-agree` is what keeps the split honest. It used to compare
-every requirement against `[workspace.package].version`, which was one
-statement only while every crate shared it; it resolves each requirement
-to the crate it names and compares against **that** crate's version now.
-The old rule is what the new one implies for every member of the group,
-and the exception needs no entry in a list — a list of exceptions being a
-second place to remember, and the one that rots.
 
 ## 5a. Knowing which crates have unreleased changes
 
@@ -413,18 +342,20 @@ sparse index, finds the git tag naming that version, and diffs the
 crate's directory between that tag and `HEAD`. Three answers, and the
 third is the one worth having:
 
-- **unchanged** — nothing in the directory moved since it was published.
-  Under a `-p` release that is a crate to skip — see §5 for what
-  `dependent-version = "upgrade"` now costs that form.
-- **CHANGED (n files)** — it has unreleased content. The recipe prints a
-  ready `cargo release -p … -p … <level>` line at the end, which is the
-  selecting form §5 keeps rather than the policy it uses.
+- **unchanged** — nothing in the directory moved since it was published,
+  so release-plz will answer `already up to date` for it.
+- **CHANGED (n files)** — it has unreleased content. The recipe suggests
+  `release-plz update` and nothing more specific: release-plz computes the
+  set itself, and a crate list printed here would be a second opinion
+  about which crates to publish — the one that rots.
 - **NO TAG — cannot compare** — the anchor is missing, and the recipe
   refuses to guess a commit rather than answering wrongly.
 
 **The anchor is a git tag and it is not optional.**
-`[workspace.metadata.release]` sets `tag-name = "v{{version}}"`, so every
-release cargo-release makes leaves one; with `shared-version` that single
+`release-plz.toml` sets `git_tag_name = "{{ package }}-v{{ version }}"`, so
+every release leaves one per crate — it was `v{{version}}` under
+cargo-release, where one tag covered every crate because one version did;
+that single
 tag covers whichever crates went out under it, which is enough, because
 the index says *which version* each crate is at and the tag says *which
 commit* that version was.
@@ -521,29 +452,34 @@ Neither can catch a wrong publish *order*, because `cargo package
 overlay. That used to matter; it no longer does, because the order is the
 tool's to compute rather than a human's to remember.
 
-## 8. Why `cargo-release` and not the other two
+## 8. Why `release-plz`, and what this section said before
 
-Both alternatives **infer** — what to release and how far to bump — from
-git history, and this repository's history is the wrong shape for it.
-`release-plz`'s own description says "conventional commits", and **nought
-of the last twenty-five subjects here** are in that form: the commit
-messages are the record of *why*, and feeding them to a `feat:`/`fix:`
-parser would mean flattening them.
+**This section argued for `cargo-release` and against `release-plz`, and
+the objection it raised was correct at the time.** It read: both
+alternatives *infer* what to release and how far to bump from git history,
+and this repository's history is the wrong shape — release-plz wants
+conventional commits, and nought of the last twenty-five subjects were in
+that form, because the commit messages are the record of *why*.
 
-`cargo-smart-release` aims precisely at §5's problem — it uses git tags to
-know whether a crate changed at all and skips the ones that did not — and
-is the tool to revisit if selecting by hand becomes tiresome. Three things
-kept it out for now, all from its own README: it derives the version from
-conventional commits too; detecting whether a change is breaking is an
-open item, so "downstream breakage impossible" rests on the commit being
-labelled correctly; and pre-release versions like `1.0.0-beta.1` are
-listed as not handled, which rules it out for a cautious first release.
-Its author recommends `cargo-release` in the same file.
+That is still an accurate description of the trade. What changed is the
+answer to it: the repository writes conventional-commit prefixes now, in
+front of the sentence rather than instead of it, which is a cost paid
+deliberately in exchange for computed release sets and changelogs.
 
-Its other half is separable and worth remembering: `cargo changelog`
-writes changelogs non-destructively "leaving the release workflow to
-cargo-release", so changelogs can be adopted later without moving the
-release path.
+**What cargo-release could not do is the reason.** It has no change
+detection at all — measured, with a tag one commit back, a plain
+`cargo release patch` still planned all 23 uploads. Its `-p` flag selects,
+which is knowing-which-crates-changed by hand, the step §5's old policy
+existed to remove. So the choice was between publishing everything for
+ever and moving to a tool that computes the set.
+
+**`cargo-smart-release` was the other candidate and is still not it**, for
+the reasons this section already recorded from its own README: it derives
+versions from conventional commits too, detecting whether a change is
+breaking is an open item there, and pre-release versions like
+`1.0.0-beta.1` are listed as not handled — which rules it out while this
+family is on `-alpha`.
+
 
 ## 9. Irreversible
 

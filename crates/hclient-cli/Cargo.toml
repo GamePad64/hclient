@@ -1,6 +1,6 @@
 [package]
 name = "hclient-cli"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "hc: an HTTP command-line client that lets you choose the backend at runtime, and refuses one it does not have"
 keywords     = ["hclient", "http", "cli", "curl", "httpie"]
 categories   = ["command-line-utilities", "web-programming::http-client"]

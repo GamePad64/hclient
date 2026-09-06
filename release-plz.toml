@@ -1,0 +1,93 @@
+# How this workspace releases.
+#
+# **cargo-release published every crate on every release; release-plz
+# publishes the crates that changed.** That is a policy change rather than
+# a change of vendor, and it cost a structural one to make possible: the
+# shared `[workspace.package].version` is gone and every crate carries its
+# own literal version. `Cargo.toml` records why at the place it was
+# removed from.
+#
+# **What this does NOT buy, measured before believing it, because the
+# obvious expectation is wrong.** Switching tools to publish only what
+# changed does not reduce what this workspace publishes: a run bumps all
+# 27 crates, and that is release-plz being right rather than failing.
+#
+# Asked about one crate at a time on a pristine tree, it answers
+# `hclient-otel: already up to date`, and the same for `hclient-tower` and
+# `hclient-webtransport`. Its detection is exact. What produces the full
+# sweep is **dependency propagation**: `hclient-core` genuinely changed,
+# every crate here depends on it transitively — computed, 8 changed and
+# **30 affected, 0 untouched** — and a dependent must bump so that its
+# requirement can name a version that exists.
+#
+# So sparse versions pay off for a change confined to a leaf, and not for
+# one that touches the core. That is a fact about this dependency graph,
+# not about the tool, and it is written here because two wrong causes were
+# proposed first — `version.workspace = true`, and `.cargo_vcs_info.json`
+# differing in every packaged crate. Both were real differences and
+# neither was the reason; a pristine clone with one variable changed is
+# what settled it.
+#
+# **`version_group` is NOT what holds a family at one version**, which is
+# worth writing down because the name suggests otherwise. release-plz's
+# own documentation says *"the version group is considered only when
+# packages contain changes"*, and its example leaves `bbb` at `0.2.0`
+# while `aaa` moves. A group aligns crates that were already bumping; it
+# does not pull unchanged ones along. So there is no group here — it would
+# be a no-op that reads as a guarantee.
+
+[workspace]
+# **release-plz owns the semver decision now**, and `just semver` has come
+# out of CI with it. The two cannot both hold: that recipe is a gate that
+# FAILS on a breaking change, where this bumps the major and reports. Both
+# would mean a breaking change fails CI and is then released anyway.
+#
+# What is given up is named rather than glossed. `just semver` also failed
+# closed on a run that executed **zero** lints — the state inside a
+# pre-release, where every step is a major step and cargo-semver-checks
+# skips all 254 of them. release-plz has no equivalent: a package it
+# cannot check is one it does not bump for. That blind spot is the cost of
+# this choice and it is live while the family is on `-alpha`.
+semver_check = true
+
+# Bump levels come from conventional commits, which this repository now
+# writes. It did not: nought of the twenty-five subjects before this
+# change parsed as one, because a commit message here is the record of
+# *why* and reads as a sentence. The prefix goes in front of that sentence
+# rather than replacing it.
+changelog_update = true
+
+# Releases happen when run, rather than on merging a release PR — this
+# repository has no PR flow and releases come off `main` by hand.
+release_always = true
+
+# **The tag has to name the crate now, and that is the shared version
+# ending rather than a preference.** `cargo-release` wrote `v{{version}}`,
+# and one tag covered every crate because one version did. With versions
+# sparse per crate, `v0.1.0-alpha.4` would be ambiguous the first time two
+# crates sit at different numbers.
+#
+# `just release-pending` reads these tags to decide what changed since a
+# crate last published, and its own header says a crate whose published
+# version has no tag "cannot be compared against anything". So the
+# existing `v0.1.0-alpha.3` tags stay meaningful for the crates released
+# under them, and everything after this is named.
+git_tag_name = "{{ package }}-v{{ version }}"
+
+# The three crates that are `publish = false` in their own manifests. They
+# are named here too because release-plz would otherwise version-bump and
+# changelog them: `hclient-rt-pair-check` is a test harness, `hclient-rt-nal`
+# a measurement, and `hclient-rt-embassy` a `!Send` counterexample whose
+# own doc says publishing would promise a deployment configuration that
+# does not exist.
+[[package]]
+name = "hclient-rt-pair-check"
+release = false
+
+[[package]]
+name = "hclient-rt-nal"
+release = false
+
+[[package]]
+name = "hclient-rt-embassy"
+release = false

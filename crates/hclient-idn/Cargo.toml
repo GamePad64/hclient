@@ -49,12 +49,6 @@ build = "build.rs"
 [package.metadata.docs.rs]
 all-features = true
 
-# The other half of leaving the shared version: `shared-version` takes a
-# string, so a named group is a *subset* that versions together. This
-# crate is a group of one.
-[package.metadata.release]
-shared-version = "hclient-idn"
-
 [dependencies]
 thiserror = { workspace = true }
 

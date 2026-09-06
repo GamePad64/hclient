@@ -1,6 +1,6 @@
 [package]
 name = "hclient-tls-rustls"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "hclient's rustls TLS backend, the adapter written against hyper::rt"
 keywords     = ["hclient", "tls", "rustls"]
 categories   = ["cryptography"]

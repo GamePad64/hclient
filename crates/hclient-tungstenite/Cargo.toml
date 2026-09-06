@@ -1,6 +1,6 @@
 [package]
 name = "hclient-tungstenite"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "WebSocket framing for hclient: RFC 6455 over an upgraded byte stream, on tungstenite"
 keywords     = ["hclient", "websocket", "tungstenite", "rfc6455"]
 categories   = ["web-programming::websocket"]

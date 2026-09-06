@@ -1,6 +1,6 @@
 [package]
 name = "hclient-native"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "Native transport for hclient: TCP + TLS + HTTP/1.1 on hyper"
 keywords     = ["hclient", "transport", "http", "tls", "hyper"]
 categories   = ["web-programming::http-client", "network-programming"]

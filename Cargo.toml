@@ -13,7 +13,26 @@ members = ["crates/*"]
 # the target docs.rs uses, and `just docs` keeps it that way on every push.
 
 [workspace.package]
-version      = "0.1.0-alpha.3"
+# **There is no shared `version` here any more, and its absence is the
+# release policy.** It read `version = "0.1.0-alpha.3"` and every crate
+# inherited it with `version.workspace = true`, which is what made
+# "publish every crate on every release" the only expressible policy: one
+# number for 28 crates cannot advance for some of them.
+#
+# That was a good mechanism for the policy it served — thirty copies were
+# thirty chances to drift, and one statement removed the drift. What ended
+# it is a decision to publish only what changed, which needs the opposite:
+# a crate's version has to be its own before it can move on its own.
+# `hclient-idn` and `system-resolver` had already left for their own
+# reasons and are the shape the rest now follow.
+#
+# What replaces the guarantee is not a second copy of it.
+# `just versions-agree` resolves every in-workspace requirement to the
+# crate it names and compares against **that** crate's version — which it
+# has done since `system-resolver` left, so it needed no change here. The
+# drift a shared version made impossible is now a thing a gate catches
+# rather than a thing the layout forbids, and that is the honest cost of
+# the trade.
 edition      = "2024"
 rust-version = "1.98"
 license      = "MIT OR Apache-2.0"
@@ -95,72 +114,25 @@ unsafe_code       = "forbid"
 missing_debug_implementations = "warn"
 unexpected_cfgs   = { level = "warn", check-cfg = [] }
 
-# ── Releasing: `cargo release <level>` ──────────────────────────────────
+# ── Releasing: `release-plz` ────────────────────────────────────────────
 #
-# What this tool is here for is the **bump**, and only that. Publishing is
-# `cargo publish --workspace`, which cargo 1.98 does natively — measured on
-# this workspace, which it packages, verifies and orders itself, arriving at
-# the same order `docs/publishing.md` derives independently.
+# **cargo-release configuration used to live here and is gone**; the tool
+# is `release-plz` now and its configuration is `release-plz.toml` at the
+# repository root. What changed is the policy rather than the vendor:
+# cargo-release published every crate on every release, and this publishes
+# the crates that changed.
 #
-# What has no other owner is the version: `[workspace.package].version` is
-# one number, and beside it are dozens of literal `version = "..."`
-# requirements that must move with it. Cargo offers no way to write
-# `version.workspace = true` inside a dependency requirement, so the
-# repetition is forced, and nothing checked that the copies agreed — so
-# they did not. After the alpha.2 release every one of them still read
-# `alpha.1`. `just versions-agree` derives the count from the manifests
-# and compares each requirement against the workspace version, so the
-# figure is not written here: a number in prose is the drift this file
-# already removed once for the version itself.
+# The reason cargo-release could not do the new thing is worth keeping,
+# because it is a fact about this workspace and not about that tool:
+# **it has no change detection at all**. Measured, with a tag one commit
+# back, a plain `cargo release patch` still planned all 23 uploads. Its
+# `-p` flag selects, which is knowing-which-crates-changed by hand — the
+# step the old policy existed to remove.
 #
-# An unknown key here is a hard parse error rather than a silent no-op —
-# checked on purpose before writing this block, because a release
-# configuration that quietly ignores a typo is the shape this project
-# refuses everywhere else.
-[workspace.metadata.release]
-# **A named group rather than `true`, and the name is what allows an
-# exception without inventing a mechanism for one.** `shared-version`
-# takes a bool or a string, and a string makes a *subset* that versions
-# together — so this is still "one version for the whole family", said in
-# a way that lets `system-resolver` say a different one. Everything
-# inheriting `version.workspace = true` is in this group by naming it;
-# nothing opts out by accident, because a crate leaves only by writing
-# its own literal version and its own group, which is two deliberate
-# lines rather than a missing one.
-shared-version = "hclient"
-# **`upgrade`, and `fix` was here for a policy this workspace does not
-# have.** `fix` touches a dependent's requirement only when the new
-# version stops satisfying it, which keeps `hclient` asking for
-# `^0.1.0-alpha.1` for ever, so an already-published neighbour keeps
-# satisfying it and only the crates that changed need publishing. Every
-# word of that is true and its subject is `cargo release -p <crate>` —
-# which the policy three lines up forbids: **every crate is published on
-# every release**, so there is no neighbour to spare a publish.
+# `just release-pending` still answers *which crates have changed since
+# they last published*, anchored on a git tag rather than on commit
+# messages, and is still worth running before a release.
 #
-# What it cost is a requirement that lies, and it was measured on the
-# published crates rather than reasoned about. `hclient` 0.1.0-alpha.2
-# asks `^0.1.0-alpha.1` of `hclient-core`, and a caller who pins
-# `hclient-core = "=0.1.0-alpha.1"` gets a resolution cargo accepts and
-# rustc refuses: `cannot find Reduced in hclient_core`, because
-# `Reduced` arrived in alpha.2. A pre-release promises nothing between
-# alphas — that is what this file says a pre-release is *for* — so a
-# requirement spanning two of them claims a compatibility that was never
-# offered.
-#
-# `^0.1.0-alpha.2` excludes alpha.1 outright, so `upgrade` closes it with
-# no need for `=` pins. The 61 literal requirements move with the version
-# now, and `just versions-agree` is what says they did — because they had
-# already drifted once, silently, which is how this was found.
-dependent-version = "upgrade"
-# One commit for the bump, not thirty.
-consolidate-commits = true
-# Releases come off `main` and nowhere else. The default is every branch
-# except `HEAD`, which would let a release happen from a feature branch.
-allow-branch = ["main"]
-# The default messages are `chore: Release …`, and this repository does not
-# write conventional commits — nought of the last twenty-five subjects are
-# in that form, and its commit messages are the record of *why*. A release
-# commit has no argument to make, so it says what it did and stops.
-pre-release-commit-message = "Release {{version}}"
-tag-name = "v{{version}}"
-tag-message = "hclient {{version}}"
+# What this workspace had to change to make per-crate releases possible is
+# recorded at `[workspace.package]` above: the shared `version` is gone
+# and every crate carries its own.

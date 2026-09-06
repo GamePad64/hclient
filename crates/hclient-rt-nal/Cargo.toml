@@ -1,6 +1,6 @@
 [package]
 name = "hclient-rt-nal"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "hclient-rt's TcpConnect over embedded-nal-async, with Send inferred rather than proven"
 keywords     = ["hclient", "embedded", "no-std", "embedded-nal", "transport"]
 categories   = ["embedded", "network-programming", "asynchronous"]

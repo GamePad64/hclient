@@ -1,6 +1,6 @@
 [package]
 name = "hclient-fetch"
-version.workspace = true
+version = "0.1.0-alpha.3"
 description = "hclient transport over the browser fetch API"
 keywords     = ["hclient", "transport", "fetch", "wasm", "browser"]
 categories   = ["web-programming::http-client", "wasm"]
