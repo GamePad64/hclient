@@ -44,13 +44,11 @@ fn a_known_host_is_requested_over_https_although_the_caller_wrote_http() {
     let m = MockTransport::new();
     m.push_response(ok());
     let store = MemoryStore::new();
-    rtx.block_on(store.put(
+    rtx.block_on(store.put(Entry::new(
         "a.test",
-        Entry::new(
-            std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
-            false,
-        ),
-    ));
+        std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+        false,
+    )));
     let c = Client::builder(m.clone())
         .hsts(Hsts::with_store(store))
         .build()
@@ -209,7 +207,7 @@ fn a_redirect_to_a_second_known_host_is_upgraded_on_that_hosts_own_policy() {
     m.push_response(ok());
     let store = MemoryStore::new();
     let far = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
-    rtx.block_on(store.put("b.test", Entry::new(far, false)));
+    rtx.block_on(store.put(Entry::new("b.test", far, false)));
     let c = Client::builder(m.clone())
         .hsts(Hsts::with_store(store))
         .build()
@@ -244,7 +242,7 @@ struct OnDiskish {
 }
 
 impl HstsStore for OnDiskish {
-    type Get<'a> = std::future::Ready<Vec<(String, Entry)>>;
+    type Get<'a> = std::future::Ready<Vec<Entry>>;
     type Done<'a> = std::future::Ready<()>;
 
     fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
@@ -255,28 +253,25 @@ impl HstsStore for OnDiskish {
             rows.iter()
                 .filter(|(d, _, _)| domains.iter().any(|q| q == d))
                 .map(|(d, secs, sub)| {
-                    (
-                        d.clone(),
-                        Entry::new(
-                            std::time::SystemTime::UNIX_EPOCH
-                                + std::time::Duration::from_secs(*secs),
-                            *sub,
-                        ),
+                    Entry::new(
+                        d,
+                        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(*secs),
+                        *sub,
                     )
                 })
                 .collect(),
         )
     }
 
-    fn put<'a>(&'a self, domain: &'a str, entry: Entry) -> Self::Done<'a> {
+    fn put(&self, entry: Entry) -> Self::Done<'_> {
         let secs = entry
             .expires_at()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let mut rows = self.rows.lock().unwrap();
-        rows.retain(|(d, _, _)| d != domain);
-        rows.push((domain.to_owned(), secs, entry.include_subdomains()));
+        rows.retain(|(d, _, _)| d != entry.domain());
+        rows.push((entry.domain().to_owned(), secs, entry.include_subdomains()));
         std::future::ready(())
     }
 
@@ -354,7 +349,7 @@ struct Counting {
 }
 
 impl HstsStore for Counting {
-    type Get<'a> = std::future::Ready<Vec<(String, Entry)>>;
+    type Get<'a> = std::future::Ready<Vec<Entry>>;
     type Done<'a> = std::future::Ready<()>;
 
     fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
@@ -362,8 +357,8 @@ impl HstsStore for Counting {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner.get(domains)
     }
-    fn put<'a>(&'a self, domain: &'a str, entry: Entry) -> Self::Done<'a> {
-        self.inner.put(domain, entry)
+    fn put(&self, entry: Entry) -> Self::Done<'_> {
+        self.inner.put(entry)
     }
     fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a> {
         self.inner.remove(domain)
@@ -396,7 +391,7 @@ fn the_policy_set_is_readable_through_the_client() {
     let held = rtx.block_on(hsts.store().get(&["example.test".to_owned()]));
     assert_eq!(held.len(), 1, "the visit is readable back out");
     assert!(
-        held[0].1.include_subdomains(),
+        held[0].include_subdomains(),
         "and so is what the host actually asserted"
     );
 }

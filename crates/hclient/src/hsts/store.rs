@@ -19,19 +19,43 @@ use web_time::SystemTime;
 /// reading the code.
 ///
 /// [`StoredResponse::new`]: crate::cache::StoredResponse::new
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
+    domain: String,
     expires_at: SystemTime,
     include_subdomains: bool,
 }
 
 impl Entry {
-    /// A policy that stops applying at `expires_at`.
-    pub fn new(expires_at: SystemTime, include_subdomains: bool) -> Self {
+    /// A policy `domain` asserted, which stops applying at `expires_at`.
+    ///
+    /// **The domain is a field rather than the other half of a
+    /// `(String, Entry)` pair**, which is what [`get`](HstsStore::get)
+    /// used to answer. Both neighbouring seams hand back a `Vec` of one
+    /// type — [`CookieStore::get`](crate::cookie::CookieStore) a
+    /// `Vec<Cookie>`, [`CacheStore::get`](crate::cache::CacheStore) a
+    /// `Vec<StoredResponse>`(crate::cache::StoredResponse) — and this was
+    /// the only one asking a caller to remember which half was which.
+    ///
+    /// It is also not redundant with the key it is stored under: §8.3's
+    /// precedence turns on *which* candidate matched, so the reader has
+    /// to know the name whatever shape it arrives in. A field says it
+    /// once; a tuple said it in a position.
+    pub fn new(
+        domain: impl Into<String>,
+        expires_at: SystemTime,
+        include_subdomains: bool,
+    ) -> Self {
         Self {
+            domain: domain.into(),
             expires_at,
             include_subdomains,
         }
+    }
+
+    /// The domain this policy was asserted for, lowercased.
+    pub fn domain(&self) -> &str {
+        &self.domain
     }
 
     /// When this policy stops applying — RFC 6797 §6.1.1's `max-age`
@@ -126,7 +150,7 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
 /// Naming is not requiring — amendment C15.
 pub trait HstsStore {
     /// The answer to [`get`](Self::get).
-    type Get<'a>: Future<Output = Vec<(String, Entry)>> + 'a
+    type Get<'a>: Future<Output = Vec<Entry>> + 'a
     where
         Self: 'a;
     /// The answer to [`put`](Self::put) and [`remove`](Self::remove).
@@ -134,17 +158,24 @@ pub trait HstsStore {
     where
         Self: 'a;
 
-    /// Every entry whose domain is **exactly** one of `domains`, paired
-    /// with the domain it was stored under.
+    /// Every entry whose domain is **exactly** one of `domains`.
     ///
-    /// The name comes back because §8.3's precedence turns on *which*
-    /// candidate matched — a congruent match applies whatever it says,
-    /// where a superdomain match applies only with `includeSubDomains` —
-    /// and a bare list of entries could not tell the two apart.
+    /// Each carries [`Entry::domain`], and it is load-bearing rather than
+    /// an echo of the key: §8.3's precedence turns on *which* candidate
+    /// matched — a congruent match applies whatever it says, where a
+    /// superdomain match applies only with `includeSubDomains`.
     fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a>;
 
-    /// Remember `entry` for `domain`, replacing whatever was there.
-    fn put<'a>(&'a self, domain: &'a str, entry: Entry) -> Self::Done<'a>;
+    /// Remember `entry`, replacing whatever was stored under its domain.
+    ///
+    /// **No separate key parameter**, and the split from
+    /// [`CacheStore::put`](crate::cache::CacheStore) is worth reading:
+    /// that one takes a `Key` because a `StoredResponse` genuinely does
+    /// not carry one. An [`Entry`] does — [`Entry::domain`] — so a second
+    /// parameter would be one fact stated twice, which is one fact that
+    /// can disagree with itself. [`CookieStore::put`](crate::cookie::CookieStore)
+    /// takes only the cookie for the same reason.
+    fn put(&self, entry: Entry) -> Self::Done<'_>;
 
     /// Forget `domain` — §6.1.1's `max-age=0`.
     fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a>;
@@ -180,24 +211,19 @@ impl MemoryStore {
 }
 
 impl HstsStore for MemoryStore {
-    type Get<'a> = Ready<Vec<(String, Entry)>>;
+    type Get<'a> = Ready<Vec<Entry>>;
     type Done<'a> = Ready<()>;
 
     fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
         let map = self.entries.lock().expect("hsts store poisoned");
-        ready(
-            domains
-                .iter()
-                .filter_map(|d| map.get(d).map(|e| (d.clone(), *e)))
-                .collect(),
-        )
+        ready(domains.iter().filter_map(|d| map.get(d).cloned()).collect())
     }
 
-    fn put<'a>(&'a self, domain: &'a str, entry: Entry) -> Self::Done<'a> {
+    fn put(&self, entry: Entry) -> Self::Done<'_> {
         self.entries
             .lock()
             .expect("hsts store poisoned")
-            .insert(domain.to_owned(), entry);
+            .insert(entry.domain().to_owned(), entry);
         ready(())
     }
 

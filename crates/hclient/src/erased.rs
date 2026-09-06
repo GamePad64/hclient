@@ -424,12 +424,8 @@ trait BoxedHstsStore {
     fn get_boxed<'a>(
         &'a self,
         domains: &'a [String],
-    ) -> futures_core::future::BoxFuture<'a, Vec<(String, crate::hsts::Entry)>>;
-    fn put_boxed<'a>(
-        &'a self,
-        domain: &'a str,
-        entry: crate::hsts::Entry,
-    ) -> futures_core::future::BoxFuture<'a, ()>;
+    ) -> futures_core::future::BoxFuture<'a, Vec<crate::hsts::Entry>>;
+    fn put_boxed(&self, entry: crate::hsts::Entry) -> futures_core::future::BoxFuture<'_, ()>;
     fn remove_boxed<'a>(&'a self, domain: &'a str) -> futures_core::future::BoxFuture<'a, ()>;
     fn clear_boxed(&self) -> futures_core::future::BoxFuture<'_, ()>;
 }
@@ -444,15 +440,11 @@ where
     fn get_boxed<'a>(
         &'a self,
         domains: &'a [String],
-    ) -> futures_core::future::BoxFuture<'a, Vec<(String, crate::hsts::Entry)>> {
+    ) -> futures_core::future::BoxFuture<'a, Vec<crate::hsts::Entry>> {
         Box::pin(self.get(domains))
     }
-    fn put_boxed<'a>(
-        &'a self,
-        domain: &'a str,
-        entry: crate::hsts::Entry,
-    ) -> futures_core::future::BoxFuture<'a, ()> {
-        Box::pin(self.put(domain, entry))
+    fn put_boxed(&self, entry: crate::hsts::Entry) -> futures_core::future::BoxFuture<'_, ()> {
+        Box::pin(self.put(entry))
     }
     fn remove_boxed<'a>(&'a self, domain: &'a str) -> futures_core::future::BoxFuture<'a, ()> {
         Box::pin(self.remove(domain))
@@ -494,14 +486,14 @@ impl Debug for AnyHstsStore {
 
 #[cfg(feature = "hsts")]
 impl crate::hsts::HstsStore for AnyHstsStore {
-    type Get<'a> = futures_core::future::BoxFuture<'a, Vec<(String, crate::hsts::Entry)>>;
+    type Get<'a> = futures_core::future::BoxFuture<'a, Vec<crate::hsts::Entry>>;
     type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
 
     fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
         self.0.get_boxed(domains)
     }
-    fn put<'a>(&'a self, domain: &'a str, entry: crate::hsts::Entry) -> Self::Done<'a> {
-        self.0.put_boxed(domain, entry)
+    fn put(&self, entry: crate::hsts::Entry) -> Self::Done<'_> {
+        self.0.put_boxed(entry)
     }
     fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a> {
         self.0.remove_boxed(domain)

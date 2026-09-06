@@ -283,16 +283,16 @@ impl<S: HstsStore> Hsts<S> {
 
         let mut expired: Vec<String> = Vec::new();
         let mut covered = false;
-        for (domain, entry) in found {
+        for entry in found {
             if entry.expires_at() <= now {
-                expired.push(domain);
+                expired.push(entry.domain().to_owned());
                 continue;
             }
             // The congruent match is `candidates[0]` — the host itself —
             // and applies whatever it says; every other candidate is a
             // superdomain match and applies only with
             // `includeSubDomains`.
-            let congruent = domain == candidates[0];
+            let congruent = entry.domain() == candidates[0];
             if congruent || entry.include_subdomains() {
                 covered = true;
             }
@@ -388,10 +388,11 @@ impl<S: HstsStore> Hsts<S> {
             // chose.
             .unwrap_or(now);
         self.store
-            .put(
-                &domain,
-                Entry::new(expires_at, directives.include_subdomains),
-            )
+            .put(Entry::new(
+                domain,
+                expires_at,
+                directives.include_subdomains,
+            ))
             .await;
     }
 }
@@ -756,7 +757,7 @@ mod tests {
         let h = known("a.test", "max-age=99999999999999999999");
         let held = block_on(h.store().get(&["a.test".to_owned()]));
         assert_eq!(held.len(), 1);
-        assert_eq!(held[0].1.expires_at(), at(0) + MAX_AGE_CAP);
+        assert_eq!(held[0].expires_at(), at(0) + MAX_AGE_CAP);
         // And it is still a policy, rather than one that expired the
         // instant it arrived — which is the direction that silently
         // loses it.
@@ -853,7 +854,7 @@ mod tests {
         // §8.3 step 3, checked at the reading end too: a store handed to
         // us may hold an entry §8.1.1 would never have written.
         let store = MemoryStore::new();
-        block_on(store.put("127.0.0.1", Entry::new(at(100), false)));
+        block_on(store.put(Entry::new("127.0.0.1", at(100), false)));
         let h = Hsts::with_store(store);
         assert_eq!(block_on(h.upgrade(&uri("http://127.0.0.1/"), at(1))), None);
     }
