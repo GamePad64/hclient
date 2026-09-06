@@ -80,7 +80,26 @@ pub type BoxSleep = Pin<Box<dyn Future<Output = ()> + Send>>; // send-bound-exce
 /// Written here rather than taken from `http-body-util`: `hclient-core`
 /// depends on `http-body` and not on the util crate, and this is a dozen
 /// lines against a dependency every backend would then carry.
-pub fn box_body<B>(body: B) -> BoxBody
+///
+/// **`pub(crate)`, and it was `pub` until it was asked who calls it.** Its
+/// doc named a reader outside this workspace — an author writing a
+/// backend — and that reader does not exist, because the only call is
+/// [`BoxedTransport`]'s blanket impl below, which erases a backend's body
+/// *for* it. A backend declares `type Body` and hands back its own; it
+/// never boxes one itself.
+///
+/// Checked rather than reasoned about, and the check had to be a consumer
+/// rather than a grep: a whole backend written outside this workspace —
+/// its own `Transport`, `SendTransport` and body type, reaching
+/// `hclient::Client` — compiles without naming this function, and goes on
+/// compiling with it private. The two neighbours that look identical to a
+/// grep, [`BoxedTimer`] and [`ErasedInstant`], are the counterexample that
+/// makes the method worth stating: both have **zero** mentions outside
+/// this crate too, and both are load-bearing `pub` — making either private
+/// is `E0624` at a call in `hclient`, because their blanket impls are how
+/// a caller's own `Timer` reaches the erasure. Absence from a grep is not
+/// absence of a caller.
+pub(crate) fn box_body<B>(body: B) -> BoxBody
 where
     B: http_body::Body<Data = Bytes> + Send + 'static, // send-bound-exception: amendment-C14
     B::Error: Into<Error>,
