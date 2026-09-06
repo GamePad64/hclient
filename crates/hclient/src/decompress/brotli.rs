@@ -5,7 +5,7 @@
 //! type, and keeping that here rather than in the seam is what splitting
 //! the old enum bought.
 
-use super::decoder::{Decode, take};
+use super::decoder::{Decode, Out, out, take};
 use bytes::Bytes;
 
 /// The size of the brotli decoder's internal output buffer, in bytes.
@@ -23,12 +23,12 @@ const BUFFER: usize = 8 * 1024;
 /// to leave a hole. A second `finish` cannot happen (`Decompressed` moves
 /// to `Ended` first), and if it ever did it would be an error rather than
 /// a silent second end.
-pub(super) struct Brotli(Option<brotli_decompressor::writer::DecompressorWriter<Vec<u8>>>);
+pub(super) struct Brotli(Option<brotli_decompressor::writer::DecompressorWriter<Out>>);
 
 impl Brotli {
     pub(super) fn new() -> Self {
         Self(Some(brotli_decompressor::writer::DecompressorWriter::new(
-            Vec::new(),
+            out(),
             BUFFER,
         )))
     }

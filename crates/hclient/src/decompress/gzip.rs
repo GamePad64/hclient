@@ -13,14 +13,14 @@
 //! sniffing two wire formats apart, the difference in size is the
 //! difference in how much of a coding this crate has to own.
 
-use super::decoder::{Decode, take};
+use super::decoder::{Decode, Out, out, take};
 use bytes::Bytes;
 
-pub(super) struct Gzip(flate2::write::GzDecoder<Vec<u8>>);
+pub(super) struct Gzip(flate2::write::GzDecoder<Out>);
 
 impl Gzip {
     pub(super) fn new() -> Self {
-        Self(flate2::write::GzDecoder::new(Vec::new()))
+        Self(flate2::write::GzDecoder::new(out()))
     }
 }
 

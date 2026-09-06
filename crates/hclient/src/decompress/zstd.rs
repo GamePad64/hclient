@@ -96,8 +96,18 @@ pub(crate) struct ZstdStream {
     dec: ruzstd::decoding::FrameDecoder,
     /// Compressed bytes that have arrived and are not yet consumed.
     pending: Vec<u8>,
-    /// The decoded-byte scratch `decode_from_to` writes into.
+    /// The decoded-byte scratch `decode_from_to` writes into. Reused
+    /// across calls and never handed out, so it is a plain `Vec`.
     out: Vec<u8>,
+    /// Where decoded bytes accumulate before they are handed over.
+    ///
+    /// **A [`BytesMut`] held here rather than a `Vec` allocated per
+    /// call**, and the difference is the arena: `split` hands the caller
+    /// the filled prefix and leaves this owning the rest of the same
+    /// allocation, so the next frame writes into capacity that already
+    /// exists. `decoder`'s [`take`](super::decoder::take) has the
+    /// measurement.
+    decoded: bytes::BytesMut,
 }
 
 impl ZstdStream {
@@ -111,6 +121,7 @@ impl ZstdStream {
             dec,
             pending: Vec::new(),
             out: vec![0; ZSTD_CHUNK],
+            decoded: bytes::BytesMut::new(),
         }
     }
 
@@ -120,7 +131,6 @@ impl ZstdStream {
     /// is read in exactly one place: deciding whether too few bytes for a
     /// frame header mean *wait* or *this frame is truncated*.
     fn drive(&mut self, eof: bool) -> Result<Bytes, std::io::Error> {
-        let mut decoded = Vec::new();
         loop {
             // `is_finished()` is true both before the first frame and
             // after each completed one, which is the same question here:
@@ -133,7 +143,7 @@ impl ZstdStream {
                     if n == 0 {
                         break;
                     }
-                    decoded.extend_from_slice(&self.out[..n]);
+                    bytes::BufMut::put_slice(&mut self.decoded, &self.out[..n]);
                 }
                 self.verify_checksum()?;
                 if !self.start_frame(eof)? {
@@ -145,7 +155,7 @@ impl ZstdStream {
                 .dec
                 .decode_from_to(&self.pending, &mut self.out)
                 .map_err(std::io::Error::other)?;
-            decoded.extend_from_slice(&self.out[..written]);
+            bytes::BufMut::put_slice(&mut self.decoded, &self.out[..written]);
             self.pending.drain(..read);
             if read == 0 && written == 0 {
                 // Neither consumed nor produced: the rest of a block has
@@ -153,7 +163,7 @@ impl ZstdStream {
                 break;
             }
         }
-        Ok(Bytes::from(decoded))
+        Ok(self.decoded.split().freeze())
     }
 
     /// Starts the next frame, answering whether there was one to start.

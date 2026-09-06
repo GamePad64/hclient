@@ -78,6 +78,15 @@ pub(crate) enum DeflateStream {
     Sniffing(Vec<u8>),
     Running {
         dec: flate2::Decompress,
+        /// Where decoded bytes accumulate before they are handed over.
+        ///
+        /// **Held here rather than allocated per call**, which is what
+        /// makes it an arena: `split` hands the caller the filled prefix
+        /// and leaves this owning the rest of the same allocation, so the
+        /// next frame writes into capacity that already exists.
+        /// `decoder`'s [`take`](super::decoder::take) has the
+        /// measurement.
+        out: bytes::BytesMut,
         /// `StreamEnd` has been seen — RFC 1951 §3.2.3's `BFINAL` block
         /// for the raw form, and that plus RFC 1950's Adler-32 for the
         /// wrapped one. What [`Self::finish`] asks about.
@@ -136,17 +145,28 @@ impl DeflateStream {
     fn drive(
         dec: &mut flate2::Decompress,
         done: &mut bool,
+        out: &mut bytes::BytesMut,
         bytes: &[u8],
         flush: flate2::FlushDecompress,
     ) -> Result<Bytes, std::io::Error> {
-        let mut out = Vec::new();
         let mut consumed = 0usize;
         while !*done {
-            out.reserve(DEFLATE_CHUNK);
+            // **`resize` rather than `reserve`, and the zero-fill is what
+            // it costs to stay safe.** `decompress` writes into an
+            // initialised `&mut [u8]`; the arena's spare capacity is
+            // `MaybeUninit`, and reading that needs `unsafe`, which this
+            // crate forbids. So the window is zeroed first and the
+            // decoder's own `total_out` says how much of it is real —
+            // which is the same figure `decompress_vec` used to set the
+            // length from.
+            let filled = out.len();
+            out.resize(filled + DEFLATE_CHUNK, 0);
             let (before_in, before_out) = (dec.total_in(), dec.total_out());
             let status = dec
-                .decompress_vec(&bytes[consumed..], &mut out, flush)
+                .decompress(&bytes[consumed..], &mut out[filled..], flush)
                 .map_err(std::io::Error::other)?;
+            let written = (dec.total_out() - before_out) as usize;
+            out.truncate(filled + written);
             consumed += (dec.total_in() - before_in) as usize;
             if status == flate2::Status::StreamEnd {
                 *done = true;
@@ -164,7 +184,7 @@ impl DeflateStream {
                 "bytes arrived after the end of the `deflate` stream",
             ));
         }
-        Ok(Bytes::from(out))
+        Ok(out.split().freeze())
     }
 }
 
@@ -193,13 +213,14 @@ impl super::decoder::Decode for DeflateStream {
             }
             let all = std::mem::take(buf);
             *self = DeflateStream::Running {
+                out: bytes::BytesMut::new(),
                 dec: flate2::Decompress::new(Self::looks_like_zlib([all[0], all[1]])),
                 done: false,
             };
             carried = Some(all);
         }
         let bytes: &[u8] = carried.as_deref().unwrap_or(input);
-        let DeflateStream::Running { dec, done } = self else {
+        let DeflateStream::Running { dec, done, out } = self else {
             // Unreachable: the block above leaves `Sniffing` only by
             // returning. An empty answer rather than a panic, for the
             // reason `Coding::decoder`'s `Option` is an `Option`.
@@ -214,7 +235,7 @@ impl super::decoder::Decode for DeflateStream {
                 "bytes arrived after the end of the `deflate` stream",
             ));
         }
-        Self::drive(dec, done, bytes, flate2::FlushDecompress::None)
+        Self::drive(dec, done, out, bytes, flate2::FlushDecompress::None)
     }
 
     fn finish(&mut self) -> Result<Bytes, std::io::Error> {
@@ -227,11 +248,11 @@ impl super::decoder::Decode for DeflateStream {
                 std::io::ErrorKind::UnexpectedEof,
                 "the `deflate` body ended before even a two-byte header arrived",
             )),
-            DeflateStream::Running { dec, done } => {
+            DeflateStream::Running { dec, done, out } => {
                 // One last call, with nothing left to give it: the
                 // decoder may still be holding output, and `StreamEnd`
                 // may still be one call away — see `drive`.
-                let last = Self::drive(dec, done, &[], flate2::FlushDecompress::Finish)?;
+                let last = Self::drive(dec, done, out, &[], flate2::FlushDecompress::Finish)?;
                 if !*done {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
