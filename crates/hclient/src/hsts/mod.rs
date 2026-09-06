@@ -93,7 +93,7 @@ mod store;
 use std::time::Duration;
 use web_time::SystemTime;
 
-pub use parse::{Directives, parse};
+pub use parse::Directives;
 pub use store::{Entry, HstsStore, MemoryStore};
 
 use store::candidate_domains;
@@ -107,6 +107,13 @@ use store::candidate_domains;
 /// second silently drops a policy whose whole job is not to be dropped.
 /// 400 days is RFC 6265bis's number rather than one invented here, and
 /// the sum is never computed, so the hazard has no end to be at.
+///
+/// **It is `pub` where `cookie::MAX_EXPIRY` is `pub(super)`**, and the
+/// difference is a reader rather than a preference: that constant is
+/// named by nothing a caller can see, where this one is what
+/// [`Directives::max_age`]'s documentation points at to explain why an
+/// absurd value cannot overflow. A number a public doc comment reasons
+/// about should be a number a reader can look up.
 ///
 /// The direction is safe: a host asserting a century gets 400 days and
 /// re-asserts it on the next visit, which §11.2 assumes happens
@@ -140,8 +147,31 @@ impl<S: HstsStore> Hsts<S> {
     }
 
     /// The store this was built over.
+    ///
+    /// **`store` where [`HttpCache`](crate::cache::HttpCache) calls the
+    /// same thing `store_ref`**, and the difference is a name collision
+    /// rather than a disagreement: that type has a `store(..)` *verb* —
+    /// it puts a response away — so its accessor had to be called
+    /// something else. Nothing here is called `store` but the noun, so
+    /// this reads as [`CookieJar`](crate::cookie::CookieJar)'s does.
     pub fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Forget every policy this set holds.
+    ///
+    /// For a caller changing whose requests these are — a profile switch,
+    /// a logout, a test between cases. It is **not** RFC 6797's
+    /// `max-age=0`, which is one host withdrawing its own assertion and
+    /// is [`note`](Self::note)'s business; this is the user agent's own
+    /// decision about a set it owns.
+    ///
+    /// The bluntness is the point, and it is worth knowing which way it
+    /// cuts: every host that has to be visited again over `https://`
+    /// before it is protected again, so clearing is the *unsafe*
+    /// direction and a caller should mean it.
+    pub async fn clear(&self) {
+        self.store.clear().await;
     }
 
     /// The same rules over a different store — `CookieJar::map_store`'s
@@ -292,7 +322,7 @@ impl<S: HstsStore> Hsts<S> {
     /// - **An IP literal** — §8.1.1's *"MUST NOT note this host as a
     ///   Known HSTS Host"*.
     /// - **A malformed field value** — §6.1 requirement 4, applied by
-    ///   [`parse`].
+    ///   [`Directives::parse`].
     ///
     /// # Only the first header field
     ///
@@ -328,7 +358,7 @@ impl<S: HstsStore> Hsts<S> {
         let Ok(value) = value.to_str() else {
             return;
         };
-        let Some(directives) = parse(value) else {
+        let Some(directives) = Directives::parse(value) else {
             return;
         };
 
@@ -444,7 +474,7 @@ mod tests {
     #[test]
     fn a_plain_max_age_is_the_common_deployment() {
         assert_eq!(
-            parse("max-age=31536000"),
+            Directives::parse("max-age=31536000"),
             Some(Directives {
                 max_age: 31_536_000,
                 include_subdomains: false
@@ -456,7 +486,7 @@ mod tests {
     fn directive_names_are_case_insensitive() {
         // §6.1 requirement 3.
         assert_eq!(
-            parse("MAX-AGE=1; INCLUDESUBDOMAINS"),
+            Directives::parse("MAX-AGE=1; INCLUDESUBDOMAINS"),
             Some(Directives {
                 max_age: 1,
                 include_subdomains: true
@@ -468,15 +498,15 @@ mod tests {
     fn order_is_not_significant() {
         // §6.1 requirement 1.
         assert_eq!(
-            parse("includeSubDomains; max-age=1"),
-            parse("max-age=1; includeSubDomains")
+            Directives::parse("includeSubDomains; max-age=1"),
+            Directives::parse("max-age=1; includeSubDomains")
         );
     }
 
     #[test]
     fn a_quoted_max_age_is_unescaped_first() {
         // §6.1.1: "after quoted-string unescaping, if necessary".
-        assert_eq!(parse(r#"max-age="600""#).unwrap().max_age, 600);
+        assert_eq!(Directives::parse(r#"max-age="600""#).unwrap().max_age, 600);
     }
 
     #[test]
@@ -484,7 +514,7 @@ mod tests {
         // §6.1 requirement 5 — and `preload` is the one that matters,
         // because it is not in RFC 6797 and is on most real deployments.
         assert_eq!(
-            parse("max-age=1; includeSubDomains; preload"),
+            Directives::parse("max-age=1; includeSubDomains; preload"),
             Some(Directives {
                 max_age: 1,
                 include_subdomains: true
@@ -511,7 +541,7 @@ mod tests {
     #[case("max-age=1 rubbish")]
     #[case(r#"max-age="600"#)]
     fn a_malformed_value_is_ignored_whole(#[case] value: &str) {
-        assert_eq!(parse(value), None, "{value:?} should not parse");
+        assert_eq!(Directives::parse(value), None, "{value:?} should not parse");
     }
 
     #[test]
@@ -521,7 +551,9 @@ mod tests {
         // is what lets `MAX_AGE_CAP` be the only place a bound is
         // applied.
         assert_eq!(
-            parse("max-age=99999999999999999999").unwrap().max_age,
+            Directives::parse("max-age=99999999999999999999")
+                .unwrap()
+                .max_age,
             u64::MAX
         );
     }
@@ -529,10 +561,10 @@ mod tests {
     #[test]
     fn an_empty_directive_conforms_because_the_grammar_brackets_it() {
         // §6.1: `[ directive ] *( ";" [ directive ] )`.
-        assert_eq!(parse("max-age=1;").unwrap().max_age, 1);
-        assert_eq!(parse(";max-age=1").unwrap().max_age, 1);
+        assert_eq!(Directives::parse("max-age=1;").unwrap().max_age, 1);
+        assert_eq!(Directives::parse(";max-age=1").unwrap().max_age, 1);
         assert!(
-            parse("max-age=1;;includeSubDomains")
+            Directives::parse("max-age=1;;includeSubDomains")
                 .unwrap()
                 .include_subdomains
         );
@@ -757,6 +789,31 @@ mod tests {
         block_on(h.note(&uri("https://a.test/"), &hm, true, at(0)));
         // The second field would have deleted it; only the first counts.
         assert!(block_on(h.upgrade(&uri("http://a.test/"), at(1))).is_some());
+    }
+
+    #[test]
+    fn clear_forgets_every_policy() {
+        let h = known("a.test", "max-age=100");
+        block_on(h.note(
+            &uri("https://b.test/"),
+            &headers("max-age=100"),
+            true,
+            at(0),
+        ));
+        // The control comes first: without it this passes for a `note`
+        // that never stored anything.
+        assert!(block_on(h.upgrade(&uri("http://a.test/"), at(1))).is_some());
+        assert!(block_on(h.upgrade(&uri("http://b.test/"), at(1))).is_some());
+
+        block_on(h.clear());
+
+        assert_eq!(block_on(h.upgrade(&uri("http://a.test/"), at(1))), None);
+        assert_eq!(block_on(h.upgrade(&uri("http://b.test/"), at(1))), None);
+        // The rows are gone rather than merely unmatched — the
+        // distinction `max_age_zero_removes_the_policy` took three
+        // attempts to pin, applied here for free because there is no
+        // expiry sweep in the way.
+        assert!(block_on(h.store().get(&["a.test".to_owned(), "b.test".to_owned()])).is_empty());
     }
 
     // ---- §8.1.1 and §8.3 step 3, IP literals -------------------------

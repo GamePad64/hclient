@@ -73,6 +73,8 @@
 //! | to save a cookie jar across a restart | `cookie::CookieJar::records` and `cookie::CookieJar::restore`, behind `cookies` — the format is yours, so no `serde` arrives with it |
 //! | cookies kept somewhere other than memory | `cookie::CookieStore`, behind `cookies` — a jar on disk, in a database or in the browser's own storage; the storage is yours and RFC 6265 stays ours |
 //! | responses cached between requests | [`ClientBuilder`]`::cache`, behind the `cache` feature — RFC 9111, in memory unless you hand it a `cache::CacheStore` of your own |
+//! | `http://` upgraded to `https://` where a host asked for it | [`ClientBuilder`]`::hsts`, behind the `hsts` feature — RFC 6797, off by default because it changes which scheme a request goes out on |
+//! | that policy set kept somewhere other than memory | `hsts::HstsStore`, behind `hsts` — a set on disk, or one seeded from a preload list |
 //! | the `Link:` header a paginated API sends | [`Response::links`] and [`Collected::links`] |
 //! | a body read line by line | [`Response::lines`] — for NDJSON and log tailing |
 //!

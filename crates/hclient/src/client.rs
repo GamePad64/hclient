@@ -24,7 +24,8 @@ use std::sync::Arc;
 // caught by `hclient-wasi`'s live suite rather than by
 // `--all-features`, which cannot reach the configuration.
 //
-// The wall clock this client reads for the jar and the cache.
+// The wall clock this client reads for every memory it keeps — the
+// jar, the cache and the HSTS policy set.
 //
 // `web_time`, not `std::time`, and the difference is one target: off
 // `wasm32-unknown-unknown` this IS `std::time::SystemTime` — the crate's
@@ -736,6 +737,24 @@ impl Client {
     #[cfg(feature = "cache")]
     pub fn cache(&self) -> Option<&crate::cache::HttpCache<crate::erased::AnyStore>> {
         Some(self.inner.cache.as_ref()?)
+    }
+
+    /// The RFC 6797 policy set this client keeps, if one was configured.
+    ///
+    /// [`Client::cookies`] and [`Client::cache`]'s shape, and it was
+    /// missing for a while — which is the asymmetry worth naming, because
+    /// nothing failed without it. A caller who installs an
+    /// [`Hsts`](crate::hsts::Hsts) could reach it on the way in and never
+    /// again: what a host asserted, when it expires, and every entry a
+    /// persisting store would want to write down were all one-way.
+    ///
+    /// A borrow rather than a guard, for the reason both neighbours give:
+    /// [`HstsStore`](crate::hsts::HstsStore)'s methods take `&self`, so
+    /// there is no lock here to hold across an `.await` — the
+    /// synchronisation, where a store needs any, is the store's.
+    #[cfg(feature = "hsts")]
+    pub fn hsts(&self) -> Option<&crate::hsts::Hsts<crate::erased::AnyHstsStore>> {
+        self.inner.hsts.as_ref()
     }
 
     /// The verb methods below, and this one, take `impl AsRef<str>` rather

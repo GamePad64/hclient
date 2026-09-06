@@ -284,6 +284,11 @@ impl HstsStore for OnDiskish {
         self.rows.lock().unwrap().retain(|(d, _, _)| d != domain);
         std::future::ready(())
     }
+
+    fn clear(&self) -> Self::Done<'_> {
+        self.rows.lock().unwrap().clear();
+        std::future::ready(())
+    }
 }
 
 #[test]
@@ -363,4 +368,45 @@ impl HstsStore for Counting {
     fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a> {
         self.inner.remove(domain)
     }
+    fn clear(&self) -> Self::Done<'_> {
+        self.inner.clear()
+    }
+}
+
+// ---- the policy set is readable back out ---------------------------
+
+#[test]
+fn the_policy_set_is_readable_through_the_client() {
+    // **`Client::cookies` and `Client::cache`'s counterpart, and it was
+    // missing until the public surface was reviewed against them.**
+    // Nothing failed without it — which is why it needed looking for
+    // rather than waiting for: a caller could install an `Hsts` and
+    // never read it again, so what a host asserted, and every entry a
+    // persisting store would write down, were one-way.
+    let rtx = rt();
+    let m = MockTransport::new();
+    m.push_response(ok_with_sts("max-age=3600; includeSubDomains"));
+    let c = Client::builder(m).hsts(Hsts::new()).build().expect("build");
+
+    rtx.block_on(async {
+        let _ = c.get("https://example.test/one").send().await;
+    });
+
+    let hsts = c.hsts().expect("the client keeps one");
+    let held = rtx.block_on(hsts.store().get(&["example.test".to_owned()]));
+    assert_eq!(held.len(), 1, "the visit is readable back out");
+    assert!(
+        held[0].1.include_subdomains(),
+        "and so is what the host actually asserted"
+    );
+}
+
+#[test]
+fn a_client_with_no_hsts_reads_none() {
+    // The control: without it the test above passes for a `hsts()` that
+    // hands back a set nobody installed.
+    let c = Client::builder(MockTransport::new())
+        .build()
+        .expect("build");
+    assert!(c.hsts().is_none());
 }

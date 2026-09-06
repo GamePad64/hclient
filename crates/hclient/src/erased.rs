@@ -1,15 +1,21 @@
-//! The cookie jar's public suffix list and the cache's store, erased so
-//! that neither becomes a type parameter on [`Client`](crate::Client).
+//! Every seam a caller hands to [`Client`](crate::Client) by value,
+//! erased so that none of them becomes a type parameter on it.
+//!
+//! Four today — the cookie jar's public suffix list and its store, the
+//! cache's store, and the HSTS policy set's — and **the sentence here
+//! used to name two**, which is the count-in-prose defect this workspace
+//! records against itself elsewhere: nothing forces a list in a doc
+//! comment to grow when the module does. The types below are the list
+//! that cannot go stale.
 //!
 //! # Why erased at all, when the seams are already generic
 //!
-//! `crate::cookie::CookieJar<P>` and `crate::cache::HttpCache<S>` are
-//! generic, and until this module existed `hclient` accepted only their
-//! defaulted forms — so a caller who wanted a disk-backed cache, a store
-//! shared between processes, or a jar over
-//! `NoList` could reach it in `hclient-cache` or
-//! `hclient-cookie` and not through the facade. The seam existed one crate
-//! down and was unreachable one crate up.
+//! `crate::cookie::CookieJar<P, S>`, `crate::cache::HttpCache<S>` and
+//! `crate::hsts::Hsts<S>` are generic, and until this module existed
+//! `hclient` accepted only their defaulted forms — so a caller who wanted
+//! a disk-backed cache, a store shared between processes, or a jar over
+//! `NoList` could reach it in the module and not through the facade. The
+//! seam existed a layer down and was unreachable a layer up.
 //!
 //! # Why not a type parameter on `Client`
 //!
@@ -425,6 +431,7 @@ trait BoxedHstsStore {
         entry: crate::hsts::Entry,
     ) -> futures_core::future::BoxFuture<'a, ()>;
     fn remove_boxed<'a>(&'a self, domain: &'a str) -> futures_core::future::BoxFuture<'a, ()>;
+    fn clear_boxed(&self) -> futures_core::future::BoxFuture<'_, ()>;
 }
 
 #[cfg(feature = "hsts")]
@@ -449,6 +456,9 @@ where
     }
     fn remove_boxed<'a>(&'a self, domain: &'a str) -> futures_core::future::BoxFuture<'a, ()> {
         Box::pin(self.remove(domain))
+    }
+    fn clear_boxed(&self) -> futures_core::future::BoxFuture<'_, ()> {
+        Box::pin(self.clear())
     }
 }
 
@@ -495,5 +505,8 @@ impl crate::hsts::HstsStore for AnyHstsStore {
     }
     fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a> {
         self.0.remove_boxed(domain)
+    }
+    fn clear(&self) -> Self::Done<'_> {
+        self.0.clear_boxed()
     }
 }

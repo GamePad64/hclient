@@ -148,6 +148,22 @@ pub trait HstsStore {
 
     /// Forget `domain` — §6.1.1's `max-age=0`.
     fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a>;
+
+    /// Forget every policy.
+    ///
+    /// **On the seam rather than built over the others, because it
+    /// cannot be**: [`get`](Self::get) answers an exact set of names, so
+    /// there is no way to enumerate what is held and remove it one by
+    /// one. A store knows its own contents, and this is the only method
+    /// that asks it to say so.
+    ///
+    /// What it is for is a caller changing whose requests these are — a
+    /// profile switch, a logout, a test between cases. RFC 6797 has no
+    /// opinion on that: §8.1's rules are about what a *host* may ask a UA
+    /// to forget, and this is the UA's own decision about a set it owns.
+    /// That is why it is here rather than part of
+    /// [`note`](super::Hsts::note)'s reading of a header.
+    fn clear(&self) -> Self::Done<'_>;
 }
 
 /// The store this crate ships: a `HashMap` in memory.
@@ -190,6 +206,11 @@ impl HstsStore for MemoryStore {
             .lock()
             .expect("hsts store poisoned")
             .remove(domain);
+        ready(())
+    }
+
+    fn clear(&self) -> Self::Done<'_> {
+        self.entries.lock().expect("hsts store poisoned").clear();
         ready(())
     }
 }

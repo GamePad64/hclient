@@ -52,90 +52,92 @@ pub struct Directives {
     pub include_subdomains: bool,
 }
 
-/// Parse one field value — `None` where §6.1 requirement 4 says to ignore
-/// it.
-///
-/// # What makes a value malformed, and why each is refused
-///
-/// §6.1 requirement 4 is *"UAs MUST ignore any STS header field
-/// containing directives, or other header field value data, that does
-/// not conform to the syntax defined in this specification"* — one
-/// refusal for the whole value rather than a best-effort salvage, which
-/// is why every branch here answers `None` rather than a partial answer.
-///
-/// - **No `max-age`.** §6.1.1 makes it REQUIRED, and a value carrying
-///   only `includeSubDomains` states a scope for a lifetime nobody gave.
-/// - **A repeated directive.** §6.1 requirement 2: *"All directives MUST
-///   appear only once in an STS header field."* Both copies are refused
-///   rather than one being preferred, because the RFC gives no rule for
-///   choosing and a client taking the first would disagree with one
-///   taking the last.
-/// - **A `max-age` that is not `1*DIGIT`.** §6.1.1's `delta-seconds`.
-///   `max-age=abc`, `max-age=` and a bare `max-age` are all this.
-/// - **A value on `includeSubDomains`.** §6.1.2 calls it *"a valueless
-///   directive"*, so `includeSubDomains=1` does not conform.
-/// - **Trailing rubbish** — the *"or other header field value data"*
-///   half of requirement 4.
-///
-/// An **unrecognised** directive is none of those: §6.1 requirement 5
-/// says to ignore it and process the rest, so `max-age=1; preload` is a
-/// well-formed value here and `preload` is dropped. That is the one place
-/// this parser is deliberately permissive, and it is the RFC's own
-/// instruction rather than leniency — `preload` is not in RFC 6797 at
-/// all, and a client refusing it would refuse most of the real
-/// deployment of HSTS on the web.
-pub fn parse(value: &str) -> Option<Directives> {
-    let mut input = value;
-    let list: Vec<Raw<'_>> = separated(0.., raw_directive, (ows, ';', ows))
-        .parse_next(&mut input)
-        .ok()?;
-    let _ = ows(&mut input);
-    // Requirement 4's "or other header field value data": anything left
-    // over means the value did not conform, whatever the prefix looked
-    // like.
-    if !input.is_empty() {
-        return None;
-    }
-
-    let mut max_age: Option<u64> = None;
-    let mut include_subdomains: Option<bool> = None;
-    for Raw { name, value } in list {
-        // §6.1 requirement 3: "Directive names are case-insensitive."
-        if name.eq_ignore_ascii_case("max-age") {
-            // §6.1.1's `delta-seconds`, read "after quoted-string
-            // unescaping, if necessary" — which is why the value arrives
-            // through the unescaping `quoted_string` rather than the
-            // borrowing one: `max-age="31536000"` is a form §6.1's
-            // grammar permits.
-            let v = value?;
-            if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            // Saturating rather than refusing — see `Directives::max_age`.
-            if max_age
-                .replace(v.parse::<u64>().unwrap_or(u64::MAX))
-                .is_some()
-            {
-                return None; // requirement 2
-            }
-        } else if name.eq_ignore_ascii_case("includesubdomains") {
-            // §6.1.2: "a valueless directive".
-            if value.is_some() {
-                return None;
-            }
-            if include_subdomains.replace(true).is_some() {
-                return None; // requirement 2
-            }
+impl Directives {
+    /// Parse one field value — `None` where §6.1 requirement 4 says to ignore
+    /// it.
+    ///
+    /// # What makes a value malformed, and why each is refused
+    ///
+    /// §6.1 requirement 4 is *"UAs MUST ignore any STS header field
+    /// containing directives, or other header field value data, that does
+    /// not conform to the syntax defined in this specification"* — one
+    /// refusal for the whole value rather than a best-effort salvage, which
+    /// is why every branch here answers `None` rather than a partial answer.
+    ///
+    /// - **No `max-age`.** §6.1.1 makes it REQUIRED, and a value carrying
+    ///   only `includeSubDomains` states a scope for a lifetime nobody gave.
+    /// - **A repeated directive.** §6.1 requirement 2: *"All directives MUST
+    ///   appear only once in an STS header field."* Both copies are refused
+    ///   rather than one being preferred, because the RFC gives no rule for
+    ///   choosing and a client taking the first would disagree with one
+    ///   taking the last.
+    /// - **A `max-age` that is not `1*DIGIT`.** §6.1.1's `delta-seconds`.
+    ///   `max-age=abc`, `max-age=` and a bare `max-age` are all this.
+    /// - **A value on `includeSubDomains`.** §6.1.2 calls it *"a valueless
+    ///   directive"*, so `includeSubDomains=1` does not conform.
+    /// - **Trailing rubbish** — the *"or other header field value data"*
+    ///   half of requirement 4.
+    ///
+    /// An **unrecognised** directive is none of those: §6.1 requirement 5
+    /// says to ignore it and process the rest, so `max-age=1; preload` is a
+    /// well-formed value here and `preload` is dropped. That is the one place
+    /// this parser is deliberately permissive, and it is the RFC's own
+    /// instruction rather than leniency — `preload` is not in RFC 6797 at
+    /// all, and a client refusing it would refuse most of the real
+    /// deployment of HSTS on the web.
+    pub fn parse(value: &str) -> Option<Self> {
+        let mut input = value;
+        let list: Vec<Raw<'_>> = separated(0.., raw_directive, (ows, ';', ows))
+            .parse_next(&mut input)
+            .ok()?;
+        let _ = ows(&mut input);
+        // Requirement 4's "or other header field value data": anything left
+        // over means the value did not conform, whatever the prefix looked
+        // like.
+        if !input.is_empty() {
+            return None;
         }
-        // else: requirement 5 — ignore what we do not recognise, and go
-        // on to process the rest.
-    }
 
-    Some(Directives {
-        // §6.1.1: REQUIRED.
-        max_age: max_age?,
-        include_subdomains: include_subdomains.unwrap_or(false),
-    })
+        let mut max_age: Option<u64> = None;
+        let mut include_subdomains: Option<bool> = None;
+        for Raw { name, value } in list {
+            // §6.1 requirement 3: "Directive names are case-insensitive."
+            if name.eq_ignore_ascii_case("max-age") {
+                // §6.1.1's `delta-seconds`, read "after quoted-string
+                // unescaping, if necessary" — which is why the value arrives
+                // through the unescaping `quoted_string` rather than the
+                // borrowing one: `max-age="31536000"` is a form §6.1's
+                // grammar permits.
+                let v = value?;
+                if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                // Saturating rather than refusing — see `Directives::max_age`.
+                if max_age
+                    .replace(v.parse::<u64>().unwrap_or(u64::MAX))
+                    .is_some()
+                {
+                    return None; // requirement 2
+                }
+            } else if name.eq_ignore_ascii_case("includesubdomains") {
+                // §6.1.2: "a valueless directive".
+                if value.is_some() {
+                    return None;
+                }
+                if include_subdomains.replace(true).is_some() {
+                    return None; // requirement 2
+                }
+            }
+            // else: requirement 5 — ignore what we do not recognise, and go
+            // on to process the rest.
+        }
+
+        Some(Directives {
+            // §6.1.1: REQUIRED.
+            max_age: max_age?,
+            include_subdomains: include_subdomains.unwrap_or(false),
+        })
+    }
 }
 
 /// One `directive` as written: a name, and the value it carried if any.
