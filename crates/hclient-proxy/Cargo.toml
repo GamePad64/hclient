@@ -1,6 +1,6 @@
 [package]
 name = "hclient-proxy"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 description = "Proxy protocols for hclient — HTTP CONNECT, SOCKS5 and SOCKS4a as sans-io handshakes, and the operating system's own proxy settings"
 keywords     = ["hclient", "proxy", "socks5", "connect", "sans-io"]
 categories   = ["network-programming"]

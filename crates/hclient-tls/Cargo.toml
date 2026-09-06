@@ -1,6 +1,6 @@
 [package]
 name = "hclient-tls"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 description = "Pluggable TLS trait for hclient"
 keywords     = ["hclient", "tls", "seam"]
 categories   = ["cryptography", "network-programming"]

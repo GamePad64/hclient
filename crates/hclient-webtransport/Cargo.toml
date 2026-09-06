@@ -1,6 +1,6 @@
 [package]
 name = "hclient-webtransport"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 description = "WebTransport sessions over an HTTP/3 QUIC connection, for hclient"
 keywords     = ["hclient", "webtransport", "http3", "quic"]
 categories   = ["web-programming", "network-programming"]

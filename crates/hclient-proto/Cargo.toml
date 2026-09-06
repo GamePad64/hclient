@@ -1,6 +1,6 @@
 [package]
 name = "hclient-proto"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 description = "Pure state machines for hclient's protocol layers: no I/O, no async, no runtime"
 keywords     = ["hclient", "http", "sans-io", "uri", "sse"]
 categories   = ["web-programming::http-client", "parser-implementations"]
