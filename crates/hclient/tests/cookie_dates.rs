@@ -252,31 +252,35 @@ fn the_parsed_date_actually_reaches_the_jar() {
     use hclient::cookie::CookieJar;
     use http::{HeaderValue, Uri};
 
-    let uri: Uri = "https://example.com/".parse().expect("uri");
-    let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    let mut jar = CookieJar::new();
+    futures_executor::block_on(async {
+        let uri: Uri = "https://example.com/".parse().expect("uri");
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let jar = CookieJar::new();
 
-    jar.store(
-        &uri,
-        &HeaderValue::from_static("a=1; Expires=Mon, 15 Nov 2094 12:45:26 GMT"),
-        now,
-    )
-    .expect("stored");
-    assert_eq!(
-        jar.iter().next().expect("one").expires(),
-        // Capped at 400 days by §5.5, which is a separate rule from the
-        // parse and is asserted here so that "the date parsed" and "the
-        // date survived the cap" cannot be confused for one another.
-        Some(now + Duration::from_secs(400 * 24 * 60 * 60))
-    );
+        jar.store(
+            &uri,
+            &HeaderValue::from_static("a=1; Expires=Mon, 15 Nov 2094 12:45:26 GMT"),
+            now,
+        )
+        .await
+        .expect("stored");
+        assert_eq!(
+            jar.cookies().await.first().expect("one").expires(),
+            // Capped at 400 days by §5.5, which is a separate rule from the
+            // parse and is asserted here so that "the date parsed" and "the
+            // date survived the cap" cannot be confused for one another.
+            Some(now + Duration::from_secs(400 * 24 * 60 * 60))
+        );
 
-    jar.store(
-        &uri,
-        &HeaderValue::from_static("a=1; Expires=Thu, 01-Jan-1970 00:00:01 GMT"),
-        now,
-    )
-    .expect("accepted");
-    assert!(jar.is_empty(), "a past Expires deletes");
+        jar.store(
+            &uri,
+            &HeaderValue::from_static("a=1; Expires=Thu, 01-Jan-1970 00:00:01 GMT"),
+            now,
+        )
+        .await
+        .expect("accepted");
+        assert!(jar.is_empty().await, "a past Expires deletes");
+    });
 }
 
 /// A guard on the corpus itself: `SystemTime` on this platform must be able

@@ -18,14 +18,29 @@
 //! read off the wire, and a cache without one would be the dishonest
 //! shape. Alt-Svc is *more* cacheable than the fast tier, not less.
 //!
-//! The clock is the transport's `R: Timer`, never `std::time::Instant::
-//! now()`, for the reason `hclient-native`'s negative cache gives for its
-//! own: `Timer` is the one seam through which time reaches a transport
-//! here, and a wall-clock read would disagree with a caller testing under
-//! `tokio::time::pause()`. This module never reads a clock at all — `now`
-//! arrives as a parameter, exactly as it does on
+//! # The clock is a calendar now, and the argument it replaced is worth
+//! reading before changing it back
+//!
+//! This module never reads a clock at all — `now` arrives as a parameter,
+//! exactly as it does on
 //! `hclient_native::discovery::NegativeCache::suppressed` — so the cache
-//! is sans-io and clockless and can be tested by handing it times.
+//! is clockless and can be tested by handing it times. What changed with
+//! [`AltSvcStore`] is the *type* of that parameter.
+//!
+//! It was elapsed time on the transport's own `R: Timer`, defended here
+//! on the grounds that `Timer` is the one seam through which time reaches
+//! a transport and that a wall-clock read would disagree with a caller
+//! testing under `tokio::time::pause()`. **Measured before that was
+//! overturned: `tokio::time::pause()` appears in five doc comments in
+//! this workspace and in zero tests**, and `hclient-native`'s own
+//! `tests/svcb.rs` records having rejected it for something else. So the
+//! sentence protecting the type had no check behind it.
+//!
+//! What the change costs is real and is not that sentence: this crate
+//! reads a wall clock now, where `Timer` was its only clock. What it buys
+//! is an entry that means something to a store outside this process — an
+//! offset from one transport's epoch means nothing to a file — without
+//! which the seam would name a use it could not serve.
 //!
 //! # What the cache stores is narrower than what the parser returns, and
 //! that is deliberate
@@ -51,8 +66,15 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::future::{Future, Ready, ready};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+// `web_time`, not `std::time`, for the same reason the jar and the cache
+// read it: an entry's lifetime has to mean something outside the process
+// that stored it, and off `wasm32-unknown-unknown` this IS
+// `std::time::SystemTime`. `no-std-wall-clock-in-the-client` keeps the
+// plain import from coming back.
+use web_time::SystemTime;
 use winnow::ascii::{digit1, hex_uint, space0};
 use winnow::combinator::{alt, delimited, preceded, repeat, terminated};
 use winnow::token::{any, none_of, one_of, take_while};
@@ -194,25 +216,128 @@ impl Origin {
 ///
 /// `persist` is not a field carried and never read: it is exactly what
 /// [`AltSvcCache::network_changed`] keeps.
-#[derive(Clone, Default)]
-pub struct AltSvcCache {
-    entries: Arc<Mutex<HashMap<Origin, Entry>>>,
+#[derive(Clone, Debug)]
+pub struct AltSvcCache<S = MemoryStore> {
+    store: S,
 }
 
-/// One remembered advertisement.
-#[derive(Debug, Clone, Copy)]
-struct Entry {
-    /// Elapsed time, on the owning transport's `Timer` and from that
-    /// transport's epoch, past which this advertisement is stale.
-    expires_at: Duration,
-    /// RFC 7838 §3.1 `persist=1` — read by
-    /// [`AltSvcCache::network_changed`] and by nothing else.
+/// **Defaulted for the in-memory store alone**, not derived over `S`:
+/// `AltSvcCache::default()` has to name one type, and a derive would make
+/// every `let c = AltSvcCache::default()` ambiguous. `HttpCache` and
+/// `CookieJar` are defaulted the same way and for the same reason.
+impl Default for AltSvcCache<MemoryStore> {
+    fn default() -> Self {
+        Self::with_store(MemoryStore::default())
+    }
+}
+
+/// The longest lease this cache will grant, whatever `ma` asks for.
+///
+/// **New with the store, and the reason is arithmetic rather than
+/// policy.** The expiry was elapsed time and `saturating_add` answered
+/// an absurd `ma` with `Duration::MAX`; it is a calendar instant now, and
+/// `SystemTime` has no `MAX` to saturate towards — so an unbounded `ma`
+/// would have to become either a panic or an *immediate* expiry, and the
+/// second is the direction that silently loses the advertisement.
+///
+/// 400 days is `hclient::cookie`'s `MAX_EXPIRY` and its argument
+/// verbatim: it is RFC 6265bis's figure rather than one invented here,
+/// and it removes the hazard from the other end, because the sum is never
+/// computed. RFC 7838 sets no ceiling of its own — its `ma` is a
+/// freshness lifetime with a 24-hour default — and nothing in it obliges
+/// a client to honour a lease longer than it intends to live.
+const MAX_LEASE: Duration = Duration::from_secs(400 * 24 * 60 * 60);
+
+/// One remembered advertisement — the whole of what an
+/// [`AltSvcStore`] holds.
+///
+/// Public because a store outside this crate has to be able to hold one
+/// and hand it back, which is `hclient::cache::StoredResponse`'s argument
+/// one crate over and was found there the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entry {
+    expires_at: SystemTime,
     persist: bool,
 }
 
-impl Debug for AltSvcCache {
+impl Entry {
+    /// An advertisement that stops being fresh at `expires_at`.
+    pub fn new(expires_at: SystemTime, persist: bool) -> Self {
+        Self {
+            expires_at,
+            persist,
+        }
+    }
+
+    /// When this advertisement stops being fresh — RFC 7838 §3.1's `ma`,
+    /// resolved against the `now` that stored it.
+    ///
+    /// **A calendar time, where this was elapsed time on the transport's
+    /// own `Timer` until the seam arrived.** The module doc has the
+    /// argument and what overturning it cost.
+    pub fn expires_at(&self) -> SystemTime {
+        self.expires_at
+    }
+
+    /// RFC 7838 §3.1 `persist=1` — read by
+    /// [`AltSvcCache::network_changed`] and by nothing else.
+    pub fn persist(&self) -> bool {
+        self.persist
+    }
+}
+
+/// Where the advertisements live.
+///
+/// The third seam of this shape in the family, after
+/// `hclient::cache::CacheStore` and `hclient::cookie::CookieStore`, and
+/// written to their pattern deliberately: associated future types so each
+/// implementor answers for its own auto traits, `&self` so a store that
+/// waits is not held behind a `&mut` across the await, and one backend
+/// able to serve all three — which is measured rather than hoped for,
+/// because the destination is one file holding the lot.
+///
+/// # What is not in here
+///
+/// Every RFC 7838 rule. §3's *a present field replaces everything*, the
+/// `ma` comparison, §2.2's `persist`, and the narrowing to *h3 at this
+/// origin's own authority* are all [`AltSvcCache`]'s, applied to whatever
+/// a store answers. So a wrong store forgets an advertisement or keeps a
+/// stale one — and a stale one costs at most a QUIC attempt that falls
+/// back, which is the direction this module already fails in.
+#[allow(clippy::len_without_is_empty)]
+pub trait AltSvcStore {
+    /// The answer to [`get`](Self::get).
+    type Get<'a>: Future<Output = Option<Entry>> + 'a
+    where
+        Self: 'a;
+    /// The answer to [`put`](Self::put), [`remove`](Self::remove) and
+    /// [`retain_persistent`](Self::retain_persistent).
+    type Done<'a>: Future<Output = ()> + 'a
+    where
+        Self: 'a;
+
+    /// What is remembered about `origin`, if anything.
+    fn get<'a>(&'a self, origin: &'a Origin) -> Self::Get<'a>;
+    /// Remember `entry` for `origin`, replacing whatever was there.
+    fn put<'a>(&'a self, origin: &'a Origin, entry: Entry) -> Self::Done<'a>;
+    /// Forget `origin`.
+    fn remove<'a>(&'a self, origin: &'a Origin) -> Self::Done<'a>;
+    /// Forget every entry whose `persist` is false — RFC 7838 §2.2.
+    fn retain_persistent(&self) -> Self::Done<'_>;
+}
+
+/// The store this crate ships: a `HashMap` in memory.
+///
+/// `Clone` shares it, because a `Native` is cloned into its own routing
+/// half and both must see one memory.
+#[derive(Clone, Default)]
+pub struct MemoryStore {
+    entries: Arc<Mutex<HashMap<Origin, Entry>>>,
+}
+
+impl Debug for MemoryStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AltSvcCache")
+        f.debug_struct("MemoryStore")
             .field(
                 "advertised",
                 &self.entries.lock().map(|m| m.len()).unwrap_or(0),
@@ -221,7 +346,47 @@ impl Debug for AltSvcCache {
     }
 }
 
-impl AltSvcCache {
+impl AltSvcStore for MemoryStore {
+    type Get<'a> = Ready<Option<Entry>>;
+    type Done<'a> = Ready<()>;
+
+    fn get<'a>(&'a self, origin: &'a Origin) -> Self::Get<'a> {
+        ready(
+            self.entries
+                .lock()
+                .expect("alt-svc store poisoned")
+                .get(origin)
+                .copied(),
+        )
+    }
+    fn put<'a>(&'a self, origin: &'a Origin, entry: Entry) -> Self::Done<'a> {
+        self.entries
+            .lock()
+            .expect("alt-svc store poisoned")
+            .insert(origin.clone(), entry);
+        ready(())
+    }
+    fn remove<'a>(&'a self, origin: &'a Origin) -> Self::Done<'a> {
+        self.entries
+            .lock()
+            .expect("alt-svc store poisoned")
+            .remove(origin);
+        ready(())
+    }
+    fn retain_persistent(&self) -> Self::Done<'_> {
+        self.entries
+            .lock()
+            .expect("alt-svc store poisoned")
+            .retain(|_, e| e.persist);
+        ready(())
+    }
+}
+
+impl<S: AltSvcStore> AltSvcCache<S> {
+    /// The rules over a store of the caller's own.
+    pub fn with_store(store: S) -> Self {
+        Self { store }
+    }
     /// Whether `origin` currently advertises `h3` at its own authority —
     /// and, in the same pass, forgetting the entry when its `ma` has run
     /// out.
@@ -235,12 +400,11 @@ impl AltSvcCache {
     /// The comparison is strict, so an entry whose window has exactly
     /// closed is stale. That is what makes `ma=0` a removal rather than a
     /// zero-length lease nobody can distinguish from one.
-    pub fn advertises_h3(&self, origin: &Origin, now: Duration) -> bool {
-        let mut entries = self.entries.lock().expect("alt-svc cache poisoned");
-        match entries.get(origin) {
+    pub async fn advertises_h3(&self, origin: &Origin, now: SystemTime) -> bool {
+        match self.store.get(origin).await {
             Some(e) if now < e.expires_at => true,
             Some(_) => {
-                entries.remove(origin);
+                self.store.remove(origin).await;
                 false
             }
             None => false,
@@ -280,8 +444,7 @@ impl AltSvcCache {
     /// no meaning beyond being the order the origin wrote them in, and
     /// choosing among duplicates by `ma` would be this crate preferring
     /// the entry that keeps itself alive longest.
-    pub fn note(&self, origin: &Origin, value: &FieldValue, now: Duration) {
-        let mut entries = self.entries.lock().expect("alt-svc cache poisoned");
+    pub async fn note(&self, origin: &Origin, value: &FieldValue, now: SystemTime) {
         let found = match value {
             FieldValue::Clear => None,
             FieldValue::Alternatives(list) => list
@@ -290,19 +453,19 @@ impl AltSvcCache {
         };
         match found {
             Some(a) => {
-                entries.insert(
-                    origin.clone(),
-                    Entry {
-                        // Saturating for `hclient-native`'s reason: an
-                        // elapsed time near `Duration::MAX` is not a case
-                        // to panic on, and `ma` is a number a peer chose.
-                        expires_at: now.saturating_add(Duration::from_secs(a.max_age)),
-                        persist: a.persist,
-                    },
-                );
+                let entry = Entry {
+                    expires_at: now
+                        .checked_add(MAX_LEASE.min(Duration::from_secs(a.max_age)))
+                        // Unreachable with the cap above, and checked
+                        // rather than trusted: the alternative is a
+                        // `panic!` on a number a peer chose.
+                        .unwrap_or(now),
+                    persist: a.persist,
+                };
+                self.store.put(origin, entry).await;
             }
             None => {
-                entries.remove(origin);
+                self.store.remove(origin).await;
             }
         }
     }
@@ -312,11 +475,8 @@ impl AltSvcCache {
     ///
     /// RFC 7838 §2.2, and the `persist` parameter's only reader. See this
     /// type's doc for why the event arrives from outside.
-    pub fn network_changed(&self) {
-        self.entries
-            .lock()
-            .expect("alt-svc cache poisoned")
-            .retain(|_, e| e.persist);
+    pub async fn network_changed(&self) {
+        self.store.retain_persistent().await;
     }
 }
 
@@ -590,4 +750,100 @@ fn trim_ows(mut s: &[u8]) -> &[u8] {
         s = rest;
     }
     s
+}
+
+/// An [`AltSvcStore`] of any type.
+///
+/// `hclient::erased::AnyStore`'s counterpart, built by
+/// [`Native::alt_svc_store`](crate::Native::alt_svc_store) from whatever
+/// the caller supplied. The split is the same one that crate uses and for
+/// the same reason: the seam names its futures as associated types, which
+/// is what lets a single-threaded store answer for itself and is exactly
+/// what makes it not `dyn`-compatible. **A store author writes nothing** —
+/// the blanket impl below boxes where the type is still concrete, so
+/// `Send` is inferred rather than proved.
+///
+/// It exists because `Native` already carries five type parameters and a
+/// sixth for storage would reach every signature in this crate to serve
+/// one opt-in call. That is the argument `hclient::Client` made when it
+/// gave up its own parameters, applied one crate down and only to this
+/// field.
+#[derive(Clone)]
+pub struct AnyAltSvcStore(Arc<dyn BoxedAltSvcStore + Send + Sync>); // send-bound-exception: amendment-C12
+
+impl AnyAltSvcStore {
+    pub fn new<S>(store: S) -> Self
+    where
+        S: AltSvcStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,               // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send,              // send-bound-exception: amendment-C12
+    {
+        Self(Arc::new(store))
+    }
+}
+
+impl Debug for AnyAltSvcStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnyAltSvcStore").finish_non_exhaustive()
+    }
+}
+
+/// The object-safe half of [`AltSvcStore`].
+trait BoxedAltSvcStore {
+    fn get_boxed<'a>(
+        &'a self,
+        origin: &'a Origin,
+    ) -> futures_core::future::BoxFuture<'a, Option<Entry>>;
+    fn put_boxed<'a>(
+        &'a self,
+        origin: &'a Origin,
+        entry: Entry,
+    ) -> futures_core::future::BoxFuture<'a, ()>;
+    fn remove_boxed<'a>(&'a self, origin: &'a Origin) -> futures_core::future::BoxFuture<'a, ()>;
+    fn retain_persistent_boxed(&self) -> futures_core::future::BoxFuture<'_, ()>;
+}
+
+impl<S> BoxedAltSvcStore for S
+where
+    S: AltSvcStore,
+    for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
+    for<'a> S::Done<'a>: Send, // send-bound-exception: amendment-C12
+{
+    fn get_boxed<'a>(
+        &'a self,
+        origin: &'a Origin,
+    ) -> futures_core::future::BoxFuture<'a, Option<Entry>> {
+        Box::pin(self.get(origin))
+    }
+    fn put_boxed<'a>(
+        &'a self,
+        origin: &'a Origin,
+        entry: Entry,
+    ) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.put(origin, entry))
+    }
+    fn remove_boxed<'a>(&'a self, origin: &'a Origin) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.remove(origin))
+    }
+    fn retain_persistent_boxed(&self) -> futures_core::future::BoxFuture<'_, ()> {
+        Box::pin(self.retain_persistent())
+    }
+}
+
+impl AltSvcStore for AnyAltSvcStore {
+    type Get<'a> = futures_core::future::BoxFuture<'a, Option<Entry>>;
+    type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
+
+    fn get<'a>(&'a self, origin: &'a Origin) -> Self::Get<'a> {
+        self.0.get_boxed(origin)
+    }
+    fn put<'a>(&'a self, origin: &'a Origin, entry: Entry) -> Self::Done<'a> {
+        self.0.put_boxed(origin, entry)
+    }
+    fn remove<'a>(&'a self, origin: &'a Origin) -> Self::Done<'a> {
+        self.0.remove_boxed(origin)
+    }
+    fn retain_persistent(&self) -> Self::Done<'_> {
+        self.0.retain_persistent_boxed()
+    }
 }

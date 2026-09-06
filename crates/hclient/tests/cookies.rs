@@ -158,28 +158,30 @@ async fn get(c: &Client, addr: std::net::SocketAddr, path: &str) {
 /// two mutations that break them are both listed in the commit.
 #[test]
 fn a_cookie_the_server_set_comes_back_on_the_next_request() {
-    let (addr, seen) = recording_server(|path| match path {
-        "/set" => ok_with(Some("sid=abc; Path=/")),
-        _ => ok_with(None),
-    });
-    let c = jarred();
+    futures_executor::block_on(async {
+        let (addr, seen) = recording_server(|path| match path {
+            "/set" => ok_with(Some("sid=abc; Path=/")),
+            _ => ok_with(None),
+        });
+        let c = jarred();
 
-    rt().block_on(async {
-        get(&c, addr, "/set").await;
-        get(&c, addr, "/again").await;
-    });
+        rt().block_on(async {
+            get(&c, addr, "/set").await;
+            get(&c, addr, "/again").await;
+        });
 
-    let seen = seen.lock().expect("log").clone();
-    assert_eq!(seen.len(), 2, "{seen:?}");
-    assert_eq!(
-        seen[0].cookie, None,
-        "the first request cannot carry a cookie nobody had set yet"
-    );
-    assert_eq!(
-        seen[1].cookie.as_deref(),
-        Some("sid=abc"),
-        "the jar neither stored the Set-Cookie nor attached it: {seen:?}"
-    );
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(
+            seen[0].cookie, None,
+            "the first request cannot carry a cookie nobody had set yet"
+        );
+        assert_eq!(
+            seen[1].cookie.as_deref(),
+            Some("sid=abc"),
+            "the jar neither stored the Set-Cookie nor attached it: {seen:?}"
+        );
+    })
 }
 
 /// The control, and the reason the test above is about wiring rather than
@@ -190,23 +192,25 @@ fn a_cookie_the_server_set_comes_back_on_the_next_request() {
 /// or a server that echoed it — would pass the headline test.
 #[test]
 fn without_a_jar_nothing_comes_back() {
-    let (addr, seen) = recording_server(|path| match path {
-        "/set" => ok_with(Some("sid=abc; Path=/")),
-        _ => ok_with(None),
-    });
-    let c = Client::builder(transport()).build().expect("supported");
+    futures_executor::block_on(async {
+        let (addr, seen) = recording_server(|path| match path {
+            "/set" => ok_with(Some("sid=abc; Path=/")),
+            _ => ok_with(None),
+        });
+        let c = Client::builder(transport()).build().expect("supported");
 
-    rt().block_on(async {
-        get(&c, addr, "/set").await;
-        get(&c, addr, "/again").await;
-    });
+        rt().block_on(async {
+            get(&c, addr, "/set").await;
+            get(&c, addr, "/again").await;
+        });
 
-    let seen = seen.lock().expect("log").clone();
-    assert_eq!(seen.len(), 2, "{seen:?}");
-    assert_eq!(
-        seen[1].cookie, None,
-        "a client with no jar must send no Cookie header at all: {seen:?}"
-    );
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(
+            seen[1].cookie, None,
+            "a client with no jar must send no Cookie header at all: {seen:?}"
+        );
+    })
 }
 
 /// A cookie set on a **redirect response** reaches the very next hop.
@@ -218,24 +222,26 @@ fn without_a_jar_nothing_comes_back() {
 /// pass.
 #[test]
 fn a_cookie_set_on_a_redirect_reaches_the_next_hop() {
-    let (addr, seen) = recording_server(|path| match path {
-        "/login" => redirect_to("/home", Some("sid=abc; Path=/")),
-        _ => ok_with(None),
-    });
-    let c = jarred();
+    futures_executor::block_on(async {
+        let (addr, seen) = recording_server(|path| match path {
+            "/login" => redirect_to("/home", Some("sid=abc; Path=/")),
+            _ => ok_with(None),
+        });
+        let c = jarred();
 
-    rt().block_on(async { get(&c, addr, "/login").await });
+        rt().block_on(async { get(&c, addr, "/login").await });
 
-    let seen = seen.lock().expect("log").clone();
-    assert_eq!(seen.len(), 2, "the redirect was not followed: {seen:?}");
-    assert_eq!(seen[1].path, "/home");
-    assert_eq!(
-        seen[1].cookie.as_deref(),
-        Some("sid=abc"),
-        "the Set-Cookie on the 302 never reached the jar, or the jar was \
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(seen.len(), 2, "the redirect was not followed: {seen:?}");
+        assert_eq!(seen[1].path, "/home");
+        assert_eq!(
+            seen[1].cookie.as_deref(),
+            Some("sid=abc"),
+            "the Set-Cookie on the 302 never reached the jar, or the jar was \
          consulted once for the whole operation instead of once per hop: \
          {seen:?}"
-    );
+        );
+    })
 }
 
 /// The other half of "once per hop": a `Cookie` header that was right for
@@ -249,31 +255,33 @@ fn a_cookie_set_on_a_redirect_reaches_the_next_hop() {
 /// `/two/y`: a cookie delivered outside the path the server scoped it to.
 #[test]
 fn a_cookie_scoped_to_one_path_does_not_ride_a_redirect_to_another() {
-    let (addr, seen) = recording_server(|path| match path {
-        "/set" => ok_with(Some("scoped=1; Path=/one")),
-        "/one/x" => redirect_to("/two/y", None),
-        _ => ok_with(None),
-    });
-    let c = jarred();
+    futures_executor::block_on(async {
+        let (addr, seen) = recording_server(|path| match path {
+            "/set" => ok_with(Some("scoped=1; Path=/one")),
+            "/one/x" => redirect_to("/two/y", None),
+            _ => ok_with(None),
+        });
+        let c = jarred();
 
-    rt().block_on(async {
-        get(&c, addr, "/set").await;
-        get(&c, addr, "/one/x").await;
-    });
+        rt().block_on(async {
+            get(&c, addr, "/set").await;
+            get(&c, addr, "/one/x").await;
+        });
 
-    let seen = seen.lock().expect("log").clone();
-    assert_eq!(seen.len(), 3, "{seen:?}");
-    assert_eq!(
-        seen[1].cookie.as_deref(),
-        Some("scoped=1"),
-        "the cookie should be attached inside its own path: {seen:?}"
-    );
-    assert_eq!(seen[2].path, "/two/y");
-    assert_eq!(
-        seen[2].cookie, None,
-        "a Cookie header attached for /one/x was carried into /two/y, which \
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert_eq!(
+            seen[1].cookie.as_deref(),
+            Some("scoped=1"),
+            "the cookie should be attached inside its own path: {seen:?}"
+        );
+        assert_eq!(seen[2].path, "/two/y");
+        assert_eq!(
+            seen[2].cookie, None,
+            "a Cookie header attached for /one/x was carried into /two/y, which \
          is outside the path the server scoped it to: {seen:?}"
-    );
+        );
+    })
 }
 
 /// A caller who sets `Cookie` themselves keeps it, and keeps it whole.
@@ -285,38 +293,40 @@ fn a_cookie_scoped_to_one_path_does_not_ride_a_redirect_to_another() {
 /// separate decisions.
 #[test]
 fn a_caller_set_cookie_header_is_left_alone_and_the_jar_still_learns() {
-    let (addr, seen) = recording_server(|path| match path {
-        "/set" => ok_with(Some("sid=abc; Path=/")),
-        "/manual" => ok_with(Some("second=2; Path=/")),
-        _ => ok_with(None),
-    });
-    let c = jarred();
+    futures_executor::block_on(async {
+        let (addr, seen) = recording_server(|path| match path {
+            "/set" => ok_with(Some("sid=abc; Path=/")),
+            "/manual" => ok_with(Some("second=2; Path=/")),
+            _ => ok_with(None),
+        });
+        let c = jarred();
 
-    rt().block_on(async {
-        get(&c, addr, "/set").await;
-        c.get(format!("http://{addr}/manual"))
-            .header("Cookie", "manual=1")
-            .send()
-            .await
-            .expect("answers")
-            .collect()
-            .await
-            .expect("empty body");
-        get(&c, addr, "/after").await;
-    });
+        rt().block_on(async {
+            get(&c, addr, "/set").await;
+            c.get(format!("http://{addr}/manual"))
+                .header("Cookie", "manual=1")
+                .send()
+                .await
+                .expect("answers")
+                .collect()
+                .await
+                .expect("empty body");
+            get(&c, addr, "/after").await;
+        });
 
-    let seen = seen.lock().expect("log").clone();
-    assert_eq!(
-        seen[1].cookie.as_deref(),
-        Some("manual=1"),
-        "the caller's own Cookie header was replaced or added to: {seen:?}"
-    );
-    let after = seen[2].cookie.clone().unwrap_or_default();
-    assert!(
-        after.contains("sid=abc") && after.contains("second=2"),
-        "the jar must go on storing while a caller drives the header by \
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(
+            seen[1].cookie.as_deref(),
+            Some("manual=1"),
+            "the caller's own Cookie header was replaced or added to: {seen:?}"
+        );
+        let after = seen[2].cookie.clone().unwrap_or_default();
+        assert!(
+            after.contains("sid=abc") && after.contains("second=2"),
+            "the jar must go on storing while a caller drives the header by \
          hand — got {after:?}"
-    );
+        );
+    })
 }
 
 /// The jar is shared by every clone of the client, and readable from
@@ -328,33 +338,39 @@ fn a_caller_set_cookie_header_is_left_alone_and_the_jar_still_learns() {
 /// and the two handles would quietly disagree about the session.
 #[test]
 fn the_jar_is_shared_by_clones_and_readable() {
-    let (addr, _) = recording_server(|path| match path {
-        "/set" => ok_with(Some("sid=abc; Path=/")),
-        _ => ok_with(None),
-    });
-    let c = jarred();
-    let clone = c.clone();
+    futures_executor::block_on(async {
+        let (addr, _) = recording_server(|path| match path {
+            "/set" => ok_with(Some("sid=abc; Path=/")),
+            _ => ok_with(None),
+        });
+        let c = jarred();
+        let clone = c.clone();
 
-    rt().block_on(async { get(&clone, addr, "/set").await });
+        rt().block_on(async { get(&clone, addr, "/set").await });
 
-    let names: Vec<String> = c
-        .cookies()
-        .expect("this client was given a jar")
-        .iter()
-        .map(|k| format!("{}={}", k.name(), k.value()))
-        .collect();
-    assert_eq!(
-        names,
-        vec!["sid=abc".to_owned()],
-        "a request made through a clone did not reach the original's jar"
-    );
+        let names: Vec<String> = c
+            .cookies()
+            .expect("this client was given a jar")
+            .cookies()
+            .await
+            .into_iter()
+            .map(|k| format!("{}={}", k.name(), k.value()))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["sid=abc".to_owned()],
+            "a request made through a clone did not reach the original's jar"
+        );
+    })
 }
 
 /// A client with no jar reports none, rather than an empty one.
 #[test]
 fn a_client_without_a_jar_reports_none() {
-    let c = Client::builder(transport()).build().expect("supported");
-    assert!(c.cookies().is_none());
+    futures_executor::block_on(async {
+        let c = Client::builder(transport()).build().expect("supported");
+        assert!(c.cookies().is_none());
+    })
 }
 
 /// The gate: a jar of our own against a backend that keeps its own is a
@@ -368,20 +384,22 @@ fn a_client_without_a_jar_reports_none() {
 /// where the `bool` came from is not something it can tell.
 #[test]
 fn a_jar_against_a_transport_that_keeps_its_own_is_refused_at_build() {
-    use hclient::mock::MockTransport;
+    futures_executor::block_on(async {
+        use hclient::mock::MockTransport;
 
-    let mut caps = hclient::caps::Capabilities::default();
-    caps.owns_cookie_jar = true;
-    let m = MockTransport::new().with_capabilities(caps);
+        let mut caps = hclient::caps::Capabilities::default();
+        caps.owns_cookie_jar = true;
+        let m = MockTransport::new().with_capabilities(caps);
 
-    let err = Client::builder(m)
-        .cookie_jar(CookieJar::new())
-        .build()
-        .expect_err("a client-side jar cannot be honoured here");
-    assert_eq!(
-        err.what, "cookie_jar",
-        "the refusal must name the setting: {err}"
-    );
+        let err = Client::builder(m)
+            .cookie_jar(CookieJar::new())
+            .build()
+            .expect_err("a client-side jar cannot be honoured here");
+        assert_eq!(
+            err.what, "cookie_jar",
+            "the refusal must name the setting: {err}"
+        );
+    })
 }
 
 /// The control for the gate, and it is not ceremony: a check written as
@@ -391,17 +409,19 @@ fn a_jar_against_a_transport_that_keeps_its_own_is_refused_at_build() {
 /// tells those two apart from the correct one.
 #[test]
 fn the_same_jar_against_a_transport_that_keeps_none_builds() {
-    use hclient::mock::MockTransport;
+    futures_executor::block_on(async {
+        use hclient::mock::MockTransport;
 
-    let c = Client::builder(MockTransport::new())
-        .cookie_jar(CookieJar::new())
-        .build()
-        .expect("a transport that keeps no jar is exactly where ours belongs");
-    assert!(
-        !c.capabilities().owns_cookie_jar,
-        "the mock is the 'keeps no jar' side of this pair"
-    );
-    assert!(c.cookies().is_some());
+        let c = Client::builder(MockTransport::new())
+            .cookie_jar(CookieJar::new())
+            .build()
+            .expect("a transport that keeps no jar is exactly where ours belongs");
+        assert!(
+            !c.capabilities().owns_cookie_jar,
+            "the mock is the 'keeps no jar' side of this pair"
+        );
+        assert!(c.cookies().is_some());
+    })
 }
 
 /// And a client that never asked for a jar builds against a jar-owning
@@ -413,16 +433,18 @@ fn the_same_jar_against_a_transport_that_keeps_none_builds() {
 /// `UnsupportedCapability` for a setting it never made.
 #[test]
 fn no_jar_against_a_jar_owning_transport_is_fine() {
-    use hclient::mock::MockTransport;
+    futures_executor::block_on(async {
+        use hclient::mock::MockTransport;
 
-    let mut caps = hclient::caps::Capabilities::default();
-    caps.owns_cookie_jar = true;
-    let m = MockTransport::new().with_capabilities(caps);
+        let mut caps = hclient::caps::Capabilities::default();
+        caps.owns_cookie_jar = true;
+        let m = MockTransport::new().with_capabilities(caps);
 
-    let built: Result<_, UnsupportedCapability> = Client::builder(m).build();
-    assert!(
-        built.is_ok(),
-        "a client that never mentioned cookies must not be refused by a \
+        let built: Result<_, UnsupportedCapability> = Client::builder(m).build();
+        assert!(
+            built.is_ok(),
+            "a client that never mentioned cookies must not be refused by a \
          backend that keeps its own jar"
-    );
+        );
+    })
 }

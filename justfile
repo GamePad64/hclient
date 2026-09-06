@@ -1697,17 +1697,24 @@ graph-proto-sans-io:
 # suffix list is +77 KiB — a claim nothing checked until here. Exact
 # analogue of the idna/ICU guard below.
 #
-# `public-suffix` alone now, where this named `hclient-cookie` too: the jar
-# is a module of `hclient` rather than a crate, so there is no crate name
-# left to look for and the dependency is the whole of what the feature
-# costs. That is a weaker check than it was and the weakening is real —
-# a jar compiled into a default build would no longer show up here, only
-# its list would.
+# This named `hclient-cookie` and `public-suffix` while the jar was a crate.
+# The jar is a module of `hclient` now, so there is no crate name left to
+# look for, and the check was recorded as genuinely weakened: `public-suffix`
+# catches the cookie half and only where the list is on, so a jar compiled
+# into a default build showed up here only through its list, and a *cache*
+# compiled in showed up not at all.
+#
+# `jiff` is what repairs that, and it is measured rather than guessed: it is
+# absent from a default build and present with `cookies` OR with `cache`,
+# because both date parsers delegate the calendar to it. So one pattern now
+# covers both modules, and it covers the jar itself rather than its list.
+# Checked in the failing direction by running this same command with each
+# feature and watching it fire.
 
-# the default hclient build carries no public suffix list
+# the default hclient build carries neither the jar nor the cache
 graph-no-cookie-jar:
-    ./scripts/tree-guard.sh absent '^public-suffix ' \
-        "hclient's default build pulled in the public suffix list — the cookies feature is off by default precisely so this does not happen" \
+    ./scripts/tree-guard.sh absent '^(public-suffix|jiff) ' \
+        "hclient's default build pulled in the cookie jar or the response cache — both features are off by default precisely so this does not happen" \
         -- -p hclient
 
 # `url` is gone from the graph either way: hclient-proto writes out RFC 3986

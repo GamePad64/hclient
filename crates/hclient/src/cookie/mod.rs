@@ -54,6 +54,11 @@
 //!   last-access times intact; the *format* — and the file, the database
 //!   row, the `localStorage` key — is the caller's, and `persist.rs`
 //!   carries the measurement behind that.
+//! - **It does not choose where the cookies live either.** That is
+//!   [`CookieStore`], and `store.rs` carries the argument for where the
+//!   line between it and the rules is drawn — including why the key is a
+//!   domain rather than a request, which is the one place this seam could
+//!   not simply copy the cache's.
 //! - **It has no background sweep.** Expired cookies are filtered on
 //!   retrieval and dropped on the next [`store`](CookieJar::store); a jar
 //!   nobody touches keeps its expired entries until it is touched. Same
@@ -66,10 +71,12 @@ mod jar;
 mod matching;
 mod parse;
 mod persist;
+mod store;
 mod suffix;
 
 pub use error::{ParseError, Rejected};
 pub use jar::{Cookie, CookieJar, Limits};
 pub use parse::{SameSite, SetCookie};
 pub use persist::CookieRecord;
+pub use store::{Capacity, CookieKey, CookieStore, MemoryStore};
 pub use suffix::{BuiltinList, NoList, PublicSuffixList};

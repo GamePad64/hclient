@@ -130,6 +130,50 @@ impl Selector {
     pub fn names(&self) -> impl Iterator<Item = &HeaderName> {
         self.0.iter().map(|(n, _)| n)
     }
+
+    /// Every `(name, value)` this selector holds — the whole of it, where
+    /// [`names`](Self::names) is half.
+    ///
+    /// `None` is §4.1's *absent*, which matches only an absent field and
+    /// is not the same as an empty value. A store writing an entry down
+    /// has to keep that distinction or the reloaded selector matches the
+    /// wrong requests.
+    pub fn fields(&self) -> impl Iterator<Item = (&HeaderName, Option<&HeaderValue>)> {
+        self.0.iter().map(|(n, v)| (n, v.as_ref()))
+    }
+
+    /// A selector rebuilt from what [`fields`](Self::fields) wrote down.
+    ///
+    /// # It exists for [`CacheStore`] and for nothing else
+    ///
+    /// A store that outlives the process — on disk, in a database — has
+    /// to hand back [`StoredResponse`]s on [`get`](CacheStore::get), and
+    /// every one carries a selector. Without this the seam named a use it
+    /// could not serve, which is `cookie::Cookie::from_record`'s sentence
+    /// one module over and the same defect.
+    ///
+    /// **The sort and the dedup are re-applied rather than trusted**, and
+    /// that is the whole of what this adds over the tuple it takes:
+    /// equality here is the `Vec`'s, so a selector rebuilt in the order a
+    /// file happened to list it would compare unequal to every selector
+    /// this crate builds from a request, and the entry would never be
+    /// found again. A store cannot get that wrong because it cannot
+    /// express it.
+    ///
+    /// **What is not re-applied is the `Authorization` rule**, and the
+    /// direction is why: a selector built from a request carries the
+    /// credential unconditionally (see this type's own documentation), so
+    /// a fabricated selector *without* it is unequal to every selector a
+    /// request produces and can only ever miss. A wrong store loses
+    /// entries; it cannot serve one principal's response to another.
+    pub fn from_fields(
+        fields: impl IntoIterator<Item = (HeaderName, Option<HeaderValue>)>,
+    ) -> Self {
+        let mut fields: Vec<(HeaderName, Option<HeaderValue>)> = fields.into_iter().collect();
+        fields.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        fields.dedup_by(|a, b| a.0 == b.0);
+        Self(fields)
+    }
 }
 
 /// Every value of `name`, joined with `", "` — §4.1's *"combining multiple
@@ -182,7 +226,34 @@ pub struct StoredResponse {
 }
 
 impl StoredResponse {
-    pub(crate) fn new(
+    /// A stored response built from its parts.
+    ///
+    /// # Public for [`CacheStore`], and the argument is the seam's own
+    ///
+    /// Every field here is already readable through the accessors below,
+    /// so a store could always write an entry **down**; until this it
+    /// could not build one **back**, and a seam advertising stores "on
+    /// disk, in a database, in `moka::future`" could serve none of them.
+    /// That is the hole `cookie::Cookie::from_record` closed one module
+    /// over on the same day this one was found, and it is closed here the
+    /// same way.
+    ///
+    /// **It checks nothing, and it does not need to**, which is the part
+    /// worth reading before relying on it. RFC 9111 is applied *above*
+    /// this seam on whatever a store answers:
+    /// [`HttpCache::lookup`](super::HttpCache::lookup) filters by
+    /// [`Selector`] and recomputes age and freshness against the
+    /// request's own directives every time. So a store that hands back a
+    /// wrong entry loses a hit or keeps rubbish — it cannot make a stale
+    /// response answer a request that forbade one, which is this module's
+    /// safety claim and the reason the seam is safe to hand to a caller.
+    ///
+    /// `requested_at` and `received_at` are §4.2.3's `request_time` and
+    /// `response_time`; handing them back reversed is not rejected,
+    /// because every arithmetic that reads them is
+    /// `duration_since(..).unwrap_or(ZERO)` and the `Date` header still
+    /// bounds the answer.
+    pub fn new(
         status: StatusCode,
         version: Version,
         headers: HeaderMap,
@@ -270,6 +341,19 @@ impl StoredResponse {
 /// or be unimplementable. The one this crate ships is in memory and
 /// answers immediately — [`std::future::Ready`], no allocation — so the
 /// shape costs it nothing.
+///
+/// **And for a while this paragraph named three stores the seam could not
+/// serve.** Waiting was never the only thing an out-of-process store
+/// needs: it also has to build a [`StoredResponse`] back out of whatever
+/// it wrote down, and both that constructor and [`Selector`]'s were
+/// `pub(crate)` — so the two halves of the round trip were public and the
+/// return journey was not. Found by writing the store from a scratch
+/// crate outside this workspace rather than by reading, which is this
+/// project's own rule about consumers being a different instrument from
+/// tests. Both are public now, and
+/// `tests/pluggable_stores.rs`'s `ReloadingStore` holds no
+/// `StoredResponse` at all between `put` and `get` — so a hit served out
+/// of it is evidence that the journey is exact.
 ///
 /// `&self` rather than `&mut self` follows from the first: a store that
 /// awaits cannot be held across that await behind a `&mut`, and a store
@@ -662,5 +746,65 @@ mod tests {
         assert_eq!(block_on(s.len()), 2);
         block_on(s.invalidate(&k));
         assert_eq!(block_on(s.len()), 0);
+    }
+    /// **The property [`Selector::from_fields`] exists for**, asserted
+    /// rather than described: a selector that has left the process and
+    /// come back is the one that left, whatever order the rows arrived
+    /// in. Equality here is the `Vec`'s, so without the re-sort a store
+    /// whose file, row order or `HashMap` iteration differed would build
+    /// a selector that matches nothing and the entry would be
+    /// unreachable — a cache that silently stops hitting.
+    #[test]
+    fn a_selector_survives_being_written_down_in_any_order() {
+        let mut req = HeaderMap::new();
+        req.insert(
+            http::header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip"),
+        );
+        req.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer t"),
+        );
+        let original = Selector::of(
+            &req,
+            &[http::header::ACCEPT_ENCODING, http::header::ACCEPT_LANGUAGE],
+        );
+
+        let rows: Vec<(HeaderName, Option<HeaderValue>)> = original
+            .fields()
+            .map(|(n, v)| (n.clone(), v.cloned()))
+            .collect();
+        assert_eq!(Selector::from_fields(rows.clone()), original);
+        assert_eq!(
+            Selector::from_fields(rows.into_iter().rev()),
+            original,
+            "the order a store happened to write is not part of the value"
+        );
+    }
+
+    /// The other half of that doc comment, and it is the half that says
+    /// the seam is safe: a selector fabricated **without** the credential
+    /// is unequal to every selector a request produces, so a wrong store
+    /// loses a hit and cannot serve one principal's response to another.
+    #[test]
+    fn a_selector_missing_the_credential_can_only_miss() {
+        let mut req = HeaderMap::new();
+        req.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer t"),
+        );
+        let from_request = Selector::of(&req, &[]);
+
+        let fabricated = Selector::from_fields([(
+            http::header::ACCEPT_ENCODING,
+            Some(HeaderValue::from_static("gzip")),
+        )]);
+        assert_ne!(fabricated, from_request);
+
+        // and the control: the same rule leaves an honest one matching.
+        assert_eq!(
+            Selector::from_fields(from_request.fields().map(|(n, v)| (n.clone(), v.cloned())),),
+            from_request
+        );
     }
 }

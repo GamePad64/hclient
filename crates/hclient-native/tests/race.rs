@@ -581,7 +581,7 @@ async fn a_quic_arm_that_lost_the_race_teaches_the_memory() {
          head start is paid once and not once per request"
     );
 
-    t.network_changed();
+    t.network_changed().await;
 
     let three = hop(&t, &pair, request(&pair, None)).await;
     assert_eq!(three.body(), "h1");

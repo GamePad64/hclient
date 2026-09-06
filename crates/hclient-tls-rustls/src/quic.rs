@@ -61,6 +61,16 @@ pub(crate) struct QuicState {
 }
 
 impl QuicState {
+    /// A state whose ticket store is the caller's rather than this
+    /// module's default — [`Rustls::with_quic_session_store`].
+    pub(crate) fn with_store(store: Arc<dyn rustls::client::ClientSessionStore>) -> Self {
+        let state = Self::default();
+        // Cannot fail: nothing has asked for the store yet, because this
+        // value does not exist until here.
+        let _ = state.store.set(store);
+        state
+    }
+
     fn store(&self) -> Arc<dyn rustls::client::ClientSessionStore> {
         self.store
             .get_or_init(|| Arc::new(rustls::client::ClientSessionMemoryCache::new(256)))
@@ -163,5 +173,71 @@ impl Rustls {
                 Arc::new(cfg)
             })
             .clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The setter reaches the field `quic_config_for` reads.**
+    ///
+    /// The half of `Rustls::with_quic_session_store` that can be asserted
+    /// without a QUIC handshake, and the half that could silently be
+    /// wrong: whether rustls then consults what it was given is rustls'
+    /// own contract, exercised by the TCP test one file over. Before this
+    /// setter existed the store was a `OnceLock` filled on first use and
+    /// unreachable from outside the crate at all.
+    #[test]
+    fn the_installed_quic_store_is_the_one_handed_out() {
+        #[derive(Debug)]
+        struct Nothing;
+        impl rustls::client::ClientSessionStore for Nothing {
+            fn set_kx_hint(
+                &self,
+                _: rustls::pki_types::ServerName<'static>,
+                _: rustls::NamedGroup,
+            ) {
+            }
+            fn kx_hint(&self, _: &rustls::pki_types::ServerName<'_>) -> Option<rustls::NamedGroup> {
+                None
+            }
+            fn set_tls12_session(
+                &self,
+                _: rustls::pki_types::ServerName<'static>,
+                _: rustls::client::Tls12ClientSessionValue,
+            ) {
+            }
+            fn tls12_session(
+                &self,
+                _: &rustls::pki_types::ServerName<'_>,
+            ) -> Option<rustls::client::Tls12ClientSessionValue> {
+                None
+            }
+            fn remove_tls12_session(&self, _: &rustls::pki_types::ServerName<'_>) {}
+            fn insert_tls13_ticket(
+                &self,
+                _: rustls::pki_types::ServerName<'static>,
+                _: rustls::client::Tls13ClientSessionValue,
+            ) {
+            }
+            fn take_tls13_ticket(
+                &self,
+                _: &rustls::pki_types::ServerName<'_>,
+            ) -> Option<rustls::client::Tls13ClientSessionValue> {
+                None
+            }
+        }
+
+        let mine: Arc<dyn rustls::client::ClientSessionStore> = Arc::new(Nothing);
+        let state = QuicState::with_store(Arc::clone(&mine));
+        assert!(
+            Arc::ptr_eq(&state.store(), &mine),
+            "the QUIC path fetched the store the caller installed"
+        );
+
+        // The control: without the setter it makes one of its own, which
+        // is what the seam exists to be able to replace.
+        assert!(!Arc::ptr_eq(&QuicState::default().store(), &mine));
     }
 }

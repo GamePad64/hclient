@@ -242,7 +242,7 @@ async fn a_reported_network_change_lets_a_failed_origin_be_tried_again() {
     let three = hop(&t, &pair, request(&pair, None)).await;
     assert_eq!(three.quic_tried, 0, "suppressed");
 
-    t.network_changed();
+    t.network_changed().await;
 
     let four = hop(&t, &pair, request(&pair, None)).await;
     assert!(

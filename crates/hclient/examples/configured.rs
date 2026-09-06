@@ -125,8 +125,11 @@ mod demo {
         // request above — a cookie is sent on the request *after* the one that
         // set it.
         let jar = client.cookies().expect("a jar was configured");
-        assert_eq!(jar.len(), 1, "one cookie, from the 200");
-        drop(jar);
+        assert_eq!(
+            futures_executor::block_on(jar.len()),
+            1,
+            "one cookie, from the 200"
+        );
 
         // **A setting the transport cannot honour is an error, not a silence.**
         // Per-phase bounds are the example: `Timeouts::connect` is a promise

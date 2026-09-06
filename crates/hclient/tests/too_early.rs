@@ -339,10 +339,12 @@ fn a_425_teaches_the_jar_without_rewriting_the_replay() {
         seen[1]
     );
     assert_eq!(
-        c.cookies()
-            .expect("this client has a jar")
-            .cookie_header(&url.parse().expect("uri"), std::time::SystemTime::now())
-            .map(|v| v.to_str().expect("ascii").to_owned()),
+        futures_executor::block_on(
+            c.cookies()
+                .expect("this client has a jar")
+                .cookie_header(&url.parse().expect("uri"), std::time::SystemTime::now()),
+        )
+        .map(|v| v.to_str().expect("ascii").to_owned()),
         Some("k=v".to_owned()),
         "the jar learned from the 425 all the same"
     );

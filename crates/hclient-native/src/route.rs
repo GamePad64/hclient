@@ -181,7 +181,7 @@ where
             Route::Quic { req, fallback } => self.serve_quic(req, fallback, origin.as_ref()).await,
         };
         if let (Ok(r), Some(origin)) = (&resp, &origin) {
-            self.note_alt_svc(origin, r.headers());
+            self.note_alt_svc(origin, r.headers()).await;
         }
         resp
     }
@@ -340,7 +340,7 @@ where
         // literal keeps paying its record lookup once per *connection*
         // inside the connector, rather than once per request out here.
         if is_ip_literal(&host) || !self.dns.supports(rtype::HTTPS) {
-            return self.by_advertisement(Prepared::new(req), &host, port);
+            return self.by_advertisement(Prepared::new(req), &host, port).await;
         }
 
         let prepared = self.prepare(req).await;
@@ -361,7 +361,7 @@ where
         match offers_h3 {
             Some(true) => self.quic_unless_it_failed(prepared, &host, port),
             Some(false) => Route::Tcp(prepared),
-            None => self.by_advertisement(prepared, &host, port),
+            None => self.by_advertisement(prepared, &host, port).await,
         }
     }
 
@@ -414,10 +414,16 @@ where
     /// record for — and one of them is the IP literal, which is served by
     /// this tier and not by the fast one (`altsvc`'s doc says why that is
     /// not an exception).
-    fn by_advertisement(&self, prepared: Prepared, host: &str, port: u16) -> Route {
+    async fn by_advertisement(&self, prepared: Prepared, host: &str, port: u16) -> Route {
         if self
             .alt_svc
-            .advertises_h3(&Origin::new(host, port), self.now())
+            // `web_time::SystemTime::now()` and not `self.now()`: the
+            // advertisement's lifetime has to mean something to a store
+            // that outlives this transport, and `Timer` is a stopwatch
+            // with no epoch. `altsvc`'s module doc has the argument and
+            // what overturning the old one cost.
+            .advertises_h3(&Origin::new(host, port), web_time::SystemTime::now())
+            .await
         {
             self.quic_unless_it_failed(prepared, host, port)
         } else {
@@ -469,7 +475,7 @@ where
     /// so they are parsed one at a time and their alternatives run
     /// together — with a `clear` in any of them winning outright, which is
     /// §3's own rule for a reply carrying both.
-    fn note_alt_svc(&self, origin: &Origin, headers: &http::HeaderMap) {
+    async fn note_alt_svc(&self, origin: &Origin, headers: &http::HeaderMap) {
         let mut values = headers.get_all(ALT_SVC).into_iter().peekable();
         if values.peek().is_none() {
             return;
@@ -479,17 +485,24 @@ where
             match altsvc::parse(value.as_bytes()) {
                 altsvc::FieldValue::Clear => {
                     self.alt_svc
-                        .note(origin, &altsvc::FieldValue::Clear, self.now());
+                        .note(
+                            origin,
+                            &altsvc::FieldValue::Clear,
+                            web_time::SystemTime::now(),
+                        )
+                        .await;
                     return;
                 }
                 altsvc::FieldValue::Alternatives(a) => alternatives.extend(a),
             }
         }
-        self.alt_svc.note(
-            origin,
-            &altsvc::FieldValue::Alternatives(alternatives),
-            self.now(),
-        );
+        self.alt_svc
+            .note(
+                origin,
+                &altsvc::FieldValue::Alternatives(alternatives),
+                web_time::SystemTime::now(),
+            )
+            .await;
     }
 
     /// Whether the highest-preference ServiceMode record under `name` lists

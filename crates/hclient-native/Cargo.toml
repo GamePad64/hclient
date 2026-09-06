@@ -82,6 +82,10 @@ system-proxy = ["proxy", "hclient-proxy/system"]
 
 [dependencies]
 bytes          = { workspace = true }
+# The alt-svc store keeps a calendar expiry rather than an offset on this
+# transport's own `Timer`, so that an entry means something to a store
+# that outlives the process — see `altsvc`'s module doc.
+web-time      = "1.1.0"
 hclient-proxy  = { path = "../hclient-proxy", version = "0.1.0-alpha.3" }
 futures-util   = { version = "0.3", default-features = false, features = ["std"] }
 h2             = { version = "0.4", optional = true }

@@ -466,7 +466,7 @@ async fn a_reported_network_change_sends_the_origin_back_to_tcp() {
     pair.set_alt_svc(None);
     hop(&t, &pair, &uri(&pair), "h3").await;
 
-    t.network_changed();
+    t.network_changed().await;
     hop(&t, &pair, &uri(&pair), "h1").await;
 }
 
@@ -484,7 +484,7 @@ async fn a_persistent_advertisement_survives_a_reported_network_change() {
     pair.set_alt_svc(None);
     hop(&t, &pair, &uri(&pair), "h3").await;
 
-    t.network_changed();
+    t.network_changed().await;
     hop(&t, &pair, &uri(&pair), "h3").await;
 }
 

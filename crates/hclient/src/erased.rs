@@ -37,18 +37,28 @@
 //!
 //! # What it costs, said plainly
 //!
-//! One `Send` bound, on each of the two opt-in setters and nowhere else —
-//! spec amendment C12. That is `Native::multiplexed()`'s shape exactly: no
-//! signature anyone else meets acquires a bound, and a caller who hands in
-//! a `!Send` list gets `E0277` on the line where they asked.
+//! `Send` bounds on the opt-in setters and nowhere else — spec amendment
+//! C12. That is `Native::multiplexed()`'s shape exactly: no signature
+//! anyone else meets acquires a bound, and a caller who hands in a
+//! `!Send` list or store gets `E0277` on the line where they asked.
 //!
-//! The bound is not new in substance. `Inner`'s own doc has said since the
-//! jar landed that the `Mutex` is there because *"a `Client` is meant to
-//! cross a `tokio::spawn`"*, and `BuiltinList` and `MemoryStore` are both
-//! `Send` — so what this states is the property the concrete types already
-//! had. Erasing without it would make every `Client` in a build with the
-//! feature compiled in `!Send`, configured cache or not, which is the
-//! feature-unification hazard the paragraph above is about.
+//! The bounds are not new in substance. `Inner`'s own doc has said since
+//! the jar landed that a `Client` is meant to cross a `tokio::spawn`, and
+//! `BuiltinList` and both `MemoryStore`s are `Send` — so what this states
+//! is the property the concrete types already had. Erasing without it
+//! would make every `Client` in a build with the feature compiled in
+//! `!Send`, configured jar or not, which is the feature-unification
+//! hazard the paragraph above is about.
+//!
+//! **[`AnyList`] asks for `Sync` as well now, and a lock is what used to
+//! supply it.** The jar sat in a `Mutex` in `Inner`, and `Mutex<T>` is
+//! `Sync` whenever `T` is `Send` — so the list's `Sync` was being
+//! manufactured by a lock rather than held by the list. Taking the lock
+//! away when the jar took a store (`cookie::CookieStore`) took that with
+//! it, and the bound moved to where the property actually has to hold. A
+//! list that is genuinely `!Sync` was never usable from two threads; what
+//! changed is that it now says so at the setter instead of working until
+//! someone shared the client.
 //!
 //! Both wrappers implement the seam they erase, so a `CookieJar<AnyList>`
 //! and an `HttpCache<AnyStore>` are ordinary jars and caches with their
@@ -68,14 +78,14 @@ use std::fmt::Debug;
 /// when reading it back.
 #[cfg(feature = "cookies")]
 pub struct AnyList(
-    Box<dyn crate::cookie::PublicSuffixList + Send>, // send-bound-exception: amendment-C12
+    Box<dyn crate::cookie::PublicSuffixList + Send + Sync>, // send-bound-exception: amendment-C12
 );
 
 #[cfg(feature = "cookies")]
 impl AnyList {
     pub fn new<P>(list: P) -> Self
     where
-        P: crate::cookie::PublicSuffixList + Send + 'static, // send-bound-exception: amendment-C12
+        P: crate::cookie::PublicSuffixList + Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
         Self(Box::new(list))
     }
@@ -241,6 +251,151 @@ impl crate::cache::CacheStore for AnyStore {
     }
     fn invalidate<'a>(&'a self, key: &'a crate::cache::Key) -> Self::Done<'a> {
         self.0.invalidate_boxed(key)
+    }
+    fn len(&self) -> Self::Len<'_> {
+        self.0.len_boxed()
+    }
+    fn clear(&self) -> Self::Done<'_> {
+        self.0.clear_boxed()
+    }
+}
+
+/// The object-safe half of [`CookieStore`](crate::cookie::CookieStore).
+///
+/// [`BoxedCacheStore`]'s twin, for the same reason and with the same
+/// split: the seam names its futures as associated types, which is what
+/// lets a single-threaded store answer for itself and is exactly what
+/// makes it not `dyn`-compatible. The blanket impl means **a store author
+/// writes nothing**, and the boxing happens where the type is still
+/// concrete, so `Send` is inferred rather than proved.
+#[cfg(feature = "cookies")]
+trait BoxedCookieStore {
+    fn get_boxed<'a>(
+        &'a self,
+        domains: &'a [String],
+    ) -> futures_core::future::BoxFuture<'a, Vec<crate::cookie::Cookie>>;
+    fn all_boxed(&self) -> futures_core::future::BoxFuture<'_, Vec<crate::cookie::Cookie>>;
+    fn put_boxed(
+        &self,
+        cookie: crate::cookie::Cookie,
+        now: web_time::SystemTime,
+    ) -> futures_core::future::BoxFuture<'_, ()>;
+    fn remove_boxed<'a>(
+        &'a self,
+        key: &'a crate::cookie::CookieKey,
+    ) -> futures_core::future::BoxFuture<'a, ()>;
+    fn touch_boxed<'a>(
+        &'a self,
+        keys: &'a [crate::cookie::CookieKey],
+        now: web_time::SystemTime,
+    ) -> futures_core::future::BoxFuture<'a, ()>;
+    fn len_boxed(&self) -> futures_core::future::BoxFuture<'_, usize>;
+    fn clear_boxed(&self) -> futures_core::future::BoxFuture<'_, ()>;
+}
+
+#[cfg(feature = "cookies")]
+impl<S> BoxedCookieStore for S
+where
+    S: crate::cookie::CookieStore,
+    for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
+    for<'a> S::Done<'a>: Send, // send-bound-exception: amendment-C12
+    for<'a> S::Len<'a>: Send,  // send-bound-exception: amendment-C12
+{
+    fn get_boxed<'a>(
+        &'a self,
+        domains: &'a [String],
+    ) -> futures_core::future::BoxFuture<'a, Vec<crate::cookie::Cookie>> {
+        Box::pin(self.get(domains))
+    }
+    fn all_boxed(&self) -> futures_core::future::BoxFuture<'_, Vec<crate::cookie::Cookie>> {
+        Box::pin(self.all())
+    }
+    fn put_boxed(
+        &self,
+        cookie: crate::cookie::Cookie,
+        now: web_time::SystemTime,
+    ) -> futures_core::future::BoxFuture<'_, ()> {
+        Box::pin(self.put(cookie, now))
+    }
+    fn remove_boxed<'a>(
+        &'a self,
+        key: &'a crate::cookie::CookieKey,
+    ) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.remove(key))
+    }
+    fn touch_boxed<'a>(
+        &'a self,
+        keys: &'a [crate::cookie::CookieKey],
+        now: web_time::SystemTime,
+    ) -> futures_core::future::BoxFuture<'a, ()> {
+        Box::pin(self.touch(keys, now))
+    }
+    fn len_boxed(&self) -> futures_core::future::BoxFuture<'_, usize> {
+        Box::pin(self.len())
+    }
+    fn clear_boxed(&self) -> futures_core::future::BoxFuture<'_, ()> {
+        Box::pin(self.clear())
+    }
+}
+
+/// A [`CookieStore`](crate::cookie::CookieStore) of any type.
+///
+/// [`AnyStore`]'s counterpart, built by
+/// [`ClientBuilder::cookie_jar`](crate::ClientBuilder::cookie_jar) from
+/// whatever store the caller's jar was over — so a `CookieJar<AnyList,
+/// AnyCookieStore>` is an ordinary jar with both of its seams erased.
+#[cfg(feature = "cookies")]
+pub struct AnyCookieStore(
+    Box<dyn BoxedCookieStore + Send + Sync>, // send-bound-exception: amendment-C12
+);
+
+#[cfg(feature = "cookies")]
+impl AnyCookieStore {
+    pub fn new<S>(store: S) -> Self
+    where
+        S: crate::cookie::CookieStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send, // send-bound-exception: amendment-C12
+        for<'a> S::Len<'a>: Send,  // send-bound-exception: amendment-C12
+    {
+        Self(Box::new(store))
+    }
+}
+
+#[cfg(feature = "cookies")]
+/// **The count is gone from the `Debug`, and it is the seam's doing** —
+/// `AnyStore`'s sentence verbatim, for the same reason: `len` is a future
+/// now, and a `Debug` cannot await one.
+impl Debug for AnyCookieStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnyCookieStore").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "cookies")]
+impl crate::cookie::CookieStore for AnyCookieStore {
+    type Get<'a> = futures_core::future::BoxFuture<'a, Vec<crate::cookie::Cookie>>;
+    type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
+    type Len<'a> = futures_core::future::BoxFuture<'a, usize>;
+
+    fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
+        self.0.get_boxed(domains)
+    }
+    fn all(&self) -> Self::Get<'_> {
+        self.0.all_boxed()
+    }
+    fn put(&self, cookie: crate::cookie::Cookie, now: web_time::SystemTime) -> Self::Done<'_> {
+        self.0.put_boxed(cookie, now)
+    }
+    fn remove<'a>(&'a self, key: &'a crate::cookie::CookieKey) -> Self::Done<'a> {
+        self.0.remove_boxed(key)
+    }
+    fn touch<'a>(
+        &'a self,
+        keys: &'a [crate::cookie::CookieKey],
+        now: web_time::SystemTime,
+    ) -> Self::Done<'a> {
+        self.0.touch_boxed(keys, now)
     }
     fn len(&self) -> Self::Len<'_> {
         self.0.len_boxed()

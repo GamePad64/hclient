@@ -112,9 +112,10 @@
 use web_time::SystemTime;
 
 use super::error::{ParseError, Rejected};
-use super::jar::{Cookie, CookieJar, MAX_EXPIRY};
+use super::jar::{Arrival, Cookie, CookieJar, MAX_EXPIRY};
 use super::matching::is_ip_literal;
 use super::parse::{SameSite, is_ctl};
+use super::store::CookieStore;
 use super::suffix::PublicSuffixList;
 
 /// One persistent cookie, as plain data: every fact [`CookieJar::restore`]
@@ -239,9 +240,67 @@ impl Cookie {
             same_site: self.same_site,
         })
     }
+
+    /// A cookie rebuilt from a saved record.
+    ///
+    /// # It exists for [`CookieStore`](super::CookieStore) and for
+    /// nothing else
+    ///
+    /// A store that outlives the process — on disk, in a database — has
+    /// to hand back [`Cookie`] values on
+    /// [`get`](super::CookieStore::get), and [`Cookie`]'s fields are
+    /// private, so without this the seam would name a use it could not
+    /// serve. Everything a store needs is here and nothing more: the
+    /// serialisable form is [`CookieRecord`], because that is the type
+    /// this module already argues is the one to write down.
+    ///
+    /// **Seeding a jar is still [`CookieJar::restore`]**, and the
+    /// difference is the whole reason both exist. `restore` re-checks
+    /// what a record *claims* — the public suffix list, the name
+    /// prefixes, the IP-literal rule, §5.5's cap — because a record on
+    /// disk is a claim a caller is making about scope. This does not: a
+    /// store is handing back a cookie the jar gave it, so re-deciding
+    /// scope here would be a second, quieter copy of §5.7. What keeps a
+    /// wrong store harmless is not this function but
+    /// [`CookieJar::matching`](super::CookieJar::matching), which
+    /// re-applies domain-match, path-match, `Secure` and expiry to
+    /// whatever a store answers.
+    ///
+    /// **`seq` is not carried and cannot be**, because it is the jar's
+    /// insertion counter rather than the cookie's — [`CookieRecord`] has
+    /// no field for it and adding one would put a jar's private state in
+    /// a file. So cookies rebuilt this way share a `seq`, and §5.4's
+    /// *second* tiebreak degenerates among them; the first, `creation`,
+    /// is carried, so the order only becomes arbitrary between cookies
+    /// stored in the same instant.
+    pub fn from_record(record: &CookieRecord) -> Self {
+        Self {
+            name: record.name.clone(),
+            value: record.value.clone(),
+            // §5.2.3's normalisation, applied for the same reason
+            // `restore` applies it: a leading dot and a capital letter are
+            // how the attribute is *written*, not a different scope.
+            domain: record
+                .domain
+                .strip_prefix('.')
+                .unwrap_or(&record.domain)
+                .to_ascii_lowercase(),
+            path: record.path.clone(),
+            expires: Some(record.expires),
+            creation: record.creation,
+            last_access: record.last_access,
+            seq: 0,
+            host_only: record.host_only,
+            // A record is a persistent cookie by construction.
+            persistent: true,
+            secure: record.secure,
+            http_only: record.http_only,
+            same_site: record.same_site,
+        }
+    }
 }
 
-impl<P: PublicSuffixList> CookieJar<P> {
+impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
     /// Everything worth saving, in the order [`restore`](Self::restore)
     /// wants it back.
     ///
@@ -254,8 +313,12 @@ impl<P: PublicSuffixList> CookieJar<P> {
     /// clock this type does not have; [`restore`](Self::restore) drops
     /// them on the way back in, which is the arrival this rule has to
     /// hold at anyway.
-    pub fn records(&self) -> impl Iterator<Item = CookieRecord> + '_ {
-        self.cookies.iter().filter_map(Cookie::to_record)
+    pub async fn records(&self) -> Vec<CookieRecord> {
+        self.cookies()
+            .await
+            .iter()
+            .filter_map(Cookie::to_record)
+            .collect()
     }
 
     /// Put one saved cookie back, with its creation and last-access times
@@ -306,28 +369,30 @@ impl<P: PublicSuffixList> CookieJar<P> {
     /// use http::{HeaderValue, Uri};
     /// use hclient::cookie::{CookieJar, CookieRecord};
     ///
+    /// # futures_executor::block_on(async {
     /// let uri: Uri = "https://www.example.com/app".parse().unwrap();
     /// let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     ///
-    /// let mut jar = CookieJar::new();
-    /// jar.store(&uri, &HeaderValue::from_static("sid=abc; Max-Age=86400"), now)?;
-    /// jar.store(&uri, &HeaderValue::from_static("tmp=xyz"), now)?;
+    /// let jar = CookieJar::new();
+    /// jar.store(&uri, &HeaderValue::from_static("sid=abc; Max-Age=86400"), now).await?;
+    /// jar.store(&uri, &HeaderValue::from_static("tmp=xyz"), now).await?;
     ///
     /// // Save. The session cookie has no record, so it cannot be written
     /// // down even by a caller who forgot that it should not be.
-    /// let saved: Vec<CookieRecord> = jar.records().collect();
+    /// let saved: Vec<CookieRecord> = jar.records().await;
     /// assert_eq!(saved.len(), 1);
     ///
     /// // Load, into a jar that has never seen the server.
     /// let restart = now + Duration::from_secs(600);
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     /// for record in saved {
-    ///     jar.restore(record, restart)?;
+    ///     jar.restore(record, restart).await?;
     /// }
-    /// assert_eq!(jar.cookie_header(&uri, restart).unwrap(), "sid=abc");
+    /// assert_eq!(jar.cookie_header(&uri, restart).await.unwrap(), "sid=abc");
     /// # Ok::<(), hclient::cookie::Rejected>(())
+    /// # }).unwrap();
     /// ```
-    pub fn restore(&mut self, record: CookieRecord, now: SystemTime) -> Result<(), Rejected> {
+    pub async fn restore(&self, record: CookieRecord, now: SystemTime) -> Result<(), Rejected> {
         let CookieRecord {
             name,
             value,
@@ -408,7 +473,7 @@ impl<P: PublicSuffixList> CookieJar<P> {
             return Ok(());
         }
 
-        let mut cookie = Cookie {
+        let cookie = Cookie {
             name,
             value,
             domain,
@@ -416,7 +481,9 @@ impl<P: PublicSuffixList> CookieJar<P> {
             expires: Some(expires),
             creation,
             last_access,
-            seq: self.next_seq,
+            // Filled in by `insert`, which is the only thing that knows
+            // whether this cookie is new to the jar.
+            seq: 0,
             host_only,
             // A record is a persistent cookie by construction.
             persistent: true,
@@ -425,23 +492,14 @@ impl<P: PublicSuffixList> CookieJar<P> {
             same_site,
         };
 
-        match self.position_of(&cookie) {
-            Some(i) => {
-                // Unlike `store`, the record's own `creation` stands: a
-                // `Set-Cookie` is a fresh statement about a cookie the jar
-                // already has, where a record *is* that cookie, times and
-                // all. What is kept is `seq`, which is the jar's insertion
-                // identity rather than the cookie's — a restored cookie
-                // must not jump the queue against one already held.
-                cookie.seq = self.cookies[i].seq;
-                self.cookies[i] = cookie;
-            }
-            None => {
-                self.next_seq += 1;
-                self.make_room_for(&cookie, now);
-                self.cookies.push(cookie);
-            }
-        }
+        // `Arrival::Record` and not `SetCookie`: unlike `store`, the
+        // record's own `creation` stands — a `Set-Cookie` is a fresh
+        // statement about a cookie the jar already has, where a record
+        // *is* that cookie, times and all. What `insert` keeps either way
+        // is `seq`, the jar's insertion identity rather than the
+        // cookie's, so a restored cookie cannot jump the queue against
+        // one already held.
+        self.insert(cookie, now, Arrival::Record).await;
         Ok(())
     }
 }

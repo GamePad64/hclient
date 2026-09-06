@@ -15,6 +15,8 @@ use std::time::Duration;
 // `scripts/ast-grep/rules/no-std-wall-clock-in-the-client.yml` keeps it so.
 use web_time::{SystemTime, UNIX_EPOCH};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use http::{HeaderMap, HeaderValue, Uri};
 
 use super::matching::{
@@ -22,6 +24,7 @@ use super::matching::{
     request_path,
 };
 use super::parse::{SameSite, SetCookie};
+use super::store::{CookieKey, CookieStore, MemoryStore, candidate_domains};
 use super::suffix::{BuiltinList, PublicSuffixList};
 
 /// RFC 6265bis §5.5: an expiry further out than this is capped to it.
@@ -31,30 +34,29 @@ use super::suffix::{BuiltinList, PublicSuffixList};
 /// `Max-Age=9223372036854775807` cannot overflow anything, because the sum
 /// is never computed.
 pub(super) const MAX_EXPIRY: Duration = Duration::from_secs(400 * 24 * 60 * 60);
-
-/// How large the jar is allowed to get.
+/// How large one cookie is allowed to be.
 ///
-/// A jar with no bound is a memory-exhaustion bug with a server on the
-/// other end of it, so the bound is part of the type rather than a later
-/// hardening. The defaults are RFC 6265 §6.1's minimums, which is the
-/// smallest set of numbers that cannot be called arbitrary.
+/// **A refusal, and that is why it is here and not in the store.** The
+/// bound on a cookie's `name` + `value` is decided before a [`Cookie`]
+/// exists at all — a larger one never reaches storage — where the bound
+/// on *how many* cookies are kept is what a store can hold, and lives
+/// with the store as [`Capacity`](super::Capacity). The line is
+/// [`crate::cache`]'s: a wrong `Capacity` loses cookies, where a wrong
+/// refusal would store a cookie the jar was told not to.
+///
+/// The default is RFC 6265 §6.1's minimum, which is the smallest number
+/// here that cannot be called arbitrary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Total cookies across all domains. RFC 6265 §6.1: at least 3000.
-    pub max_cookies: usize,
-    /// Cookies for any one domain. RFC 6265 §6.1: at least 50.
-    pub max_per_domain: usize,
     /// `name.len() + value.len()`. RFC 6265 §6.1: at least 4096 bytes.
-    /// A larger cookie is refused outright rather than truncated, because a
-    /// truncated cookie is a wrong cookie.
+    /// A larger cookie is refused outright rather than truncated, because
+    /// a truncated cookie is a wrong cookie.
     pub max_name_value_bytes: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_cookies: 3000,
-            max_per_domain: 50,
             max_name_value_bytes: 4096,
         }
     }
@@ -130,93 +132,156 @@ impl Cookie {
         self.creation
     }
 
-    pub(super) fn is_expired(&self, now: SystemTime) -> bool {
+    /// Whether this cookie's expiry is at or before `now`.
+    ///
+    /// Public because a [`CookieStore`](super::CookieStore) is told a
+    /// `now` on [`put`](super::CookieStore::put) precisely so that it can
+    /// drop what has expired, and it has no other way to ask.
+    pub fn is_expired(&self, now: SystemTime) -> bool {
         self.expires.is_some_and(|e| e <= now)
     }
+}
+/// Which side supplies a cookie's creation time when it replaces one the
+/// jar already holds.
+///
+/// §5.7 says a `Set-Cookie` keeps the **old** cookie's creation time:
+/// without that, refreshing a session cookie would move it to the back of
+/// §5.4's ordering and change which of two equally specific cookies a
+/// server sees first. A [`CookieRecord`](super::CookieRecord) is the
+/// other way round — a record *is* the cookie, times and all — so the
+/// record's own creation time stands.
+///
+/// A two-variant enum rather than a `bool` because the two call sites
+/// differ in exactly this and the names are what say so at them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Arrival {
+    /// A fresh statement about a cookie the jar may already have.
+    SetCookie,
+    /// A cookie coming back from storage, carrying its own times.
+    Record,
 }
 
 /// A cookie jar: parse, store, expire and hand back.
 ///
-/// Sans-io and clockless — every method that needs the time takes it as a
-/// `now` parameter, the same rule `hclient-proto` runs under. Nothing here
-/// reads a clock, opens a socket or spawns anything, which is what makes
-/// "the same cookie behaviour on every backend" a structural fact rather
-/// than a consequence of everyone happening to call the same client.
+/// Clockless — every method that needs the time takes it as a `now`
+/// parameter, the same rule `hclient-proto` runs under. Nothing here
+/// reads a clock or spawns anything, which is what makes "the same cookie
+/// behaviour on every backend" a structural fact rather than a
+/// consequence of everyone happening to call the same client.
+///
+/// **It is no longer sans-io, and the seam is why.** Where the cookies
+/// live is [`CookieStore`]'s: a jar over a store on disk awaits a disk, a
+/// jar over the default [`MemoryStore`] awaits [`std::future::Ready`] and
+/// suspends never. The *rules* do no I/O either way — every refusal below
+/// is decided before the store is asked.
 ///
 /// ```
 /// use std::time::SystemTime;
 /// use http::{HeaderValue, Uri};
 /// use hclient::cookie::CookieJar;
 ///
-/// let mut jar = CookieJar::new();
+/// # futures_executor::block_on(async {
+/// let jar = CookieJar::new();
 /// let uri: Uri = "https://www.example.com/app".parse().unwrap();
 /// let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
 ///
-/// jar.store(&uri, &HeaderValue::from_static("sid=abc; Domain=example.com"), now).unwrap();
+/// jar.store(&uri, &HeaderValue::from_static("sid=abc; Domain=example.com"), now)
+///     .await
+///     .unwrap();
 ///
 /// let other: Uri = "https://api.example.com/v1".parse().unwrap();
-/// assert_eq!(jar.cookie_header(&other, now).unwrap(), "sid=abc");
+/// assert_eq!(jar.cookie_header(&other, now).await.unwrap(), "sid=abc");
+/// # });
 /// ```
 ///
-/// The type parameter is the public suffix list; see
-/// [`PublicSuffixList`] for why it is a seam and not a fixed table.
-#[derive(Debug, Clone)]
-pub struct CookieJar<P = BuiltinList> {
-    pub(super) cookies: Vec<Cookie>,
+/// The first type parameter is the public suffix list; see
+/// [`PublicSuffixList`] for why it is a seam and not a fixed table. The
+/// second is where the cookies are kept; see [`CookieStore`].
+#[derive(Debug)]
+pub struct CookieJar<P = BuiltinList, S = MemoryStore> {
+    store: S,
     pub(super) limits: Limits,
     pub(super) suffixes: P,
-    pub(super) next_seq: u64,
+    /// §5.4's second tiebreak, drawn once for a cookie that is new to the
+    /// jar and kept by every replacement of it.
+    ///
+    /// An `AtomicU64` because every method here takes `&self` now — which
+    /// is what the store's own `&self` buys, and what removed the `Mutex`
+    /// from [`Client`](crate::Client). `Relaxed` is enough: nothing
+    /// orders anything else by this, and two cookies drawing different
+    /// values is the whole requirement.
+    next_seq: AtomicU64,
 }
 
-impl Default for CookieJar<BuiltinList> {
+impl Default for CookieJar<BuiltinList, MemoryStore> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CookieJar<BuiltinList> {
-    /// A jar with default [`Limits`] and the compiled-in public suffix
-    /// list.
+impl CookieJar<BuiltinList, MemoryStore> {
+    /// A jar with default [`Limits`], the compiled-in public suffix list
+    /// and the in-memory store.
     pub fn new() -> Self {
         Self::with_public_suffix_list(BuiltinList)
     }
 }
 
-impl<P: PublicSuffixList> CookieJar<P> {
+impl<P: PublicSuffixList> CookieJar<P, MemoryStore> {
     /// A jar over a caller-supplied list — a fresher snapshot than the one
     /// this crate was built with, or [`NoList`](super::NoList).
     pub fn with_public_suffix_list(suffixes: P) -> Self {
+        Self::with_store(suffixes, MemoryStore::new())
+    }
+}
+
+impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
+    /// A jar over a store of the caller's own — on disk, in a database,
+    /// in the browser's own storage.
+    pub fn with_store(suffixes: P, store: S) -> Self {
         Self {
-            cookies: Vec::new(),
+            store,
             limits: Limits::default(),
             suffixes,
-            next_seq: 0,
+            next_seq: AtomicU64::new(0),
         }
     }
 
-    /// The same jar over a different public suffix list — every cookie,
-    /// both bounds and the sequence counter carried across.
+    /// The same jar over a different public suffix list — the store, the
+    /// bound and the sequence counter carried across.
     ///
-    /// The list is a seam and the jar is storage, so the two should be
+    /// The list is a seam and the jar is rules, so the two should be
     /// separable after construction as well as at it. What actually asked
     /// for this is `hclient`, which holds one jar type for every caller
     /// and so must erase `P`; the operation is not specific to that —
     /// swapping a stale compiled-in snapshot for a freshly fetched list
     /// without losing the cookies is the same call.
-    ///
-    /// Rebuilding by iteration would not do: `next_seq` is what orders
-    /// cookies of equal path length in the `Cookie` header, and a jar
-    /// rebuilt from `iter` would restart it.
-    pub(crate) fn map_suffixes<Q>(self, f: impl FnOnce(P) -> Q) -> CookieJar<Q> {
+    pub(crate) fn map_suffixes<Q>(self, f: impl FnOnce(P) -> Q) -> CookieJar<Q, S> {
         CookieJar {
-            cookies: self.cookies,
+            store: self.store,
             limits: self.limits,
             suffixes: f(self.suffixes),
             next_seq: self.next_seq,
         }
     }
 
-    /// Replace the bounds. Applied on the next [`store`](Self::store); it
+    /// The same jar over a different store, everything else carried
+    /// across — [`map_suffixes`](Self::map_suffixes)' counterpart and
+    /// `HttpCache::map_store`'s twin one module over, `pub(crate)` for
+    /// the same reason: the one thing that asks is
+    /// [`ClientBuilder::cookie_jar`](crate::ClientBuilder::cookie_jar),
+    /// which holds one jar type for every caller. A caller who wants a
+    /// different store builds one with [`with_store`](Self::with_store).
+    pub(crate) fn map_store<R>(self, f: impl FnOnce(S) -> R) -> CookieJar<P, R> {
+        CookieJar {
+            store: f(self.store),
+            limits: self.limits,
+            suffixes: self.suffixes,
+            next_seq: self.next_seq,
+        }
+    }
+
+    /// Replace the bound. Applied on the next [`store`](Self::store); it
     /// does not evict what is already held.
     #[must_use]
     pub fn with_limits(mut self, limits: Limits) -> Self {
@@ -228,36 +293,66 @@ impl<P: PublicSuffixList> CookieJar<P> {
         self.limits
     }
 
-    /// How many cookies are held, expired ones included — they are removed
-    /// on the next [`store`](Self::store) that names a `now` past them, not
-    /// by a background sweep this crate has no way to run.
-    pub fn len(&self) -> usize {
-        self.cookies.len()
+    /// How many cookies are held, expired ones included — they are
+    /// removed on the next [`store`](Self::store) that names a `now` past
+    /// them, not by a background sweep this crate has no way to run.
+    pub async fn len(&self) -> usize {
+        self.store.len().await
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.cookies.is_empty()
+    pub async fn is_empty(&self) -> bool {
+        self.len().await == 0
     }
 
-    pub fn clear(&mut self) {
-        self.cookies.clear();
+    pub async fn clear(&self) {
+        self.store.clear().await;
     }
 
     /// Every cookie held, in insertion order. For inspection; retrieval
     /// for a request is [`matching`](Self::matching), and saving a jar is
-    /// [`records`](Self::records) — which filters the session cookies this
-    /// does not.
-    pub fn iter(&self) -> impl Iterator<Item = &Cookie> {
-        self.cookies.iter()
+    /// [`records`](Self::records) — which filters the session cookies
+    /// this does not.
+    ///
+    /// **Owned rather than an iterator of borrows**, which is what the
+    /// seam costs: a store on the far side of a socket has nothing to
+    /// lend. It is bounded by [`Capacity`](super::Capacity), so the copy
+    /// is bounded with it.
+    pub async fn cookies(&self) -> Vec<Cookie> {
+        self.store.all().await
     }
 
     /// Store one `Set-Cookie`, per RFC 6265bis §5.7.
-    pub fn store(
-        &mut self,
+    pub async fn store(
+        &self,
         uri: &Uri,
         set_cookie: &HeaderValue,
         now: SystemTime,
     ) -> Result<(), Rejected> {
+        let cookie = self.prepare(uri, set_cookie, now)?;
+        // A `Max-Age=0` or a past `Expires` is a deletion: the steps above
+        // build it as an already-expired cookie and the store's own expiry
+        // purge drops it, so deletion is the same code path as expiry
+        // rather than a second one that could disagree with it.
+        self.insert(cookie, now, Arrival::SetCookie).await;
+        Ok(())
+    }
+
+    /// Everything §5.7 decides about one `Set-Cookie`, with the store
+    /// untouched.
+    ///
+    /// **Split out because every rule here is a pure function of the
+    /// header, the URI and a `now`** — the jar's sans-io half — and only
+    /// the insertion needs to ask where the cookies live.
+    /// [`store_response`](Self::store_response) is what wanted the line
+    /// drawn: it can settle every refusal before it touches the store at
+    /// all, and then read once for the whole response instead of once per
+    /// header.
+    fn prepare(
+        &self,
+        uri: &Uri,
+        set_cookie: &HeaderValue,
+        now: SystemTime,
+    ) -> Result<Cookie, Rejected> {
         let host = canonical_host(uri).ok_or(Rejected::NoHost)?;
         let parsed = SetCookie::parse(set_cookie.as_bytes())?;
 
@@ -298,7 +393,7 @@ impl<P: PublicSuffixList> CookieJar<P> {
 
         let (expires, persistent) = expiry(&parsed, now);
 
-        let mut cookie = Cookie {
+        let cookie = Cookie {
             name: parsed.name,
             value: parsed.value,
             domain,
@@ -306,7 +401,9 @@ impl<P: PublicSuffixList> CookieJar<P> {
             expires,
             creation: now,
             last_access: now,
-            seq: self.next_seq,
+            // Filled in by `insert`, which is the only thing that knows
+            // whether this cookie is new to the jar.
+            seq: 0,
             host_only,
             persistent,
             secure: parsed.secure,
@@ -314,29 +411,7 @@ impl<P: PublicSuffixList> CookieJar<P> {
             same_site: parsed.same_site,
         };
 
-        match self.position_of(&cookie) {
-            Some(i) => {
-                // §5.7: a replacement keeps the *old* cookie's creation
-                // time. Without it, refreshing a session cookie would move
-                // it to the back of §5.4's ordering and change which of two
-                // equally specific cookies a server sees first.
-                cookie.creation = self.cookies[i].creation;
-                cookie.seq = self.cookies[i].seq;
-                self.cookies[i] = cookie;
-            }
-            None => {
-                self.next_seq += 1;
-                self.make_room_for(&cookie, now);
-                self.cookies.push(cookie);
-            }
-        }
-
-        // A `Max-Age=0` or a past `Expires` is a deletion: it is stored as
-        // an already-expired cookie by the steps above and removed here, so
-        // deletion is the same code path as expiry rather than a second
-        // one that could disagree with it.
-        self.cookies.retain(|c| !c.is_expired(now));
-        Ok(())
+        Ok(cookie)
     }
 
     /// Store every `Set-Cookie` in a response's headers, returning how many
@@ -346,12 +421,60 @@ impl<P: PublicSuffixList> CookieJar<P> {
     /// `Set-Cookie` must not stop the others from being stored — that is
     /// what a browser does and what a server assumes. Use
     /// [`store`](Self::store) per header when the reasons matter.
-    pub fn store_response(&mut self, uri: &Uri, headers: &HeaderMap, now: SystemTime) -> usize {
-        headers
+    /// **One read for the whole response, not one per header**, and the
+    /// difference is a fact about the store rather than about the rules.
+    /// Each header used to go through [`store`](Self::store), and each of
+    /// those asked the store what it already held so that §5.7's
+    /// replacement could keep the old cookie's `seq` and `creation`.
+    /// Measured from outside the workspace against a store that logs its
+    /// statements: a response carrying five `Set-Cookie` headers cost
+    /// **six reads and five writes**, where one read serves them all.
+    /// `MemoryStore` answers [`std::future::Ready`] so it never showed;
+    /// a store on the far side of a file or a socket pays every one.
+    ///
+    /// The batch still sees itself, which is the part that had to be
+    /// built rather than saved: two `Set-Cookie` headers naming one
+    /// cookie mean the second replaces the first, so a cookie already
+    /// placed by *this* response is looked up in the batch before the
+    /// snapshot — otherwise the second would draw a fresh `seq` and jump
+    /// §5.4's queue against the first.
+    pub async fn store_response(&self, uri: &Uri, headers: &HeaderMap, now: SystemTime) -> usize {
+        let arriving: Vec<Cookie> = headers
             .get_all(http::header::SET_COOKIE)
             .iter()
-            .filter(|value| self.store(uri, value, now).is_ok())
-            .count()
+            .filter_map(|v| self.prepare(uri, v, now).ok())
+            .collect();
+        if arriving.is_empty() {
+            return 0;
+        }
+
+        // One question, covering every domain this response scopes a
+        // cookie to. `get` takes a slice precisely so that it can be
+        // asked once.
+        let mut domains: Vec<String> = arriving.iter().map(|c| c.domain.clone()).collect();
+        domains.sort();
+        domains.dedup();
+        let held = self.store.get(&domains).await;
+
+        let stored = arriving.len();
+        let mut placed: Vec<Cookie> = Vec::new();
+        for mut cookie in arriving {
+            let key = CookieKey::of(&cookie);
+            let previous = placed
+                .iter()
+                .find(|c| CookieKey::of(c) == key)
+                .or_else(|| held.iter().find(|c| CookieKey::of(c) == key));
+            match previous {
+                Some(old) => {
+                    cookie.creation = old.creation;
+                    cookie.seq = old.seq;
+                }
+                None => cookie.seq = self.next_seq.fetch_add(1, Ordering::Relaxed),
+            }
+            placed.push(cookie.clone());
+            self.store.put(cookie, now).await;
+        }
+        stored
     }
 
     /// The cookies that apply to `uri`, in the order RFC 6265bis §5.4
@@ -360,12 +483,30 @@ impl<P: PublicSuffixList> CookieJar<P> {
     /// Read-only — it does not update last-access times, so it cannot
     /// change which cookie the bound would evict next.
     /// [`cookie_header`](Self::cookie_header) is the one that does.
-    pub fn matching(&self, uri: &Uri, now: SystemTime) -> Vec<&Cookie> {
-        let mut out: Vec<&Cookie> = self
-            .indices_matching(uri, now)
-            .into_iter()
-            .map(|i| &self.cookies[i])
-            .collect();
+    pub async fn matching(&self, uri: &Uri, now: SystemTime) -> Vec<Cookie> {
+        let Some(host) = canonical_host(uri) else {
+            return Vec::new();
+        };
+        let path = request_path(uri);
+        let secure = is_secure_request(uri);
+
+        // The store answers exact domains, and this is the list of them:
+        // §5.1.3's suffix rule enumerated rather than tested, so that
+        // nothing on the far side of the seam has to know it. The filter
+        // below still asks `domain_matches`, because a host-only cookie
+        // is a different question and because an exact answer to the
+        // wrong question is still wrong.
+        let mut out = self.store.get(&candidate_domains(&host)).await;
+        out.retain(|c| {
+            !c.is_expired(now)
+                && if c.host_only {
+                    host == c.domain
+                } else {
+                    domain_matches(&host, &c.domain)
+                }
+                && path_matches(path, &c.path)
+                && (!c.secure || secure)
+        });
         out.sort_by(|a, b| {
             b.path
                 .len()
@@ -379,25 +520,20 @@ impl<P: PublicSuffixList> CookieJar<P> {
     /// The `Cookie` request header for `uri`, or `None` when nothing
     /// matches.
     ///
-    /// Takes `&mut self` because §5.4 updates each returned cookie's
-    /// last-access time, which is what [`Limits`] evicts on.
-    pub fn cookie_header(&mut self, uri: &Uri, now: SystemTime) -> Option<HeaderValue> {
-        let mut indices = self.indices_matching(uri, now);
-        if indices.is_empty() {
+    /// Takes `&self` where it used to take `&mut self`, and still updates
+    /// each returned cookie's last-access time — §5.4 requires it and
+    /// [`Capacity`](super::Capacity) evicts on it. What changed is who
+    /// holds the mutation: the store does, behind its own
+    /// synchronisation, which is what let [`Client`](crate::Client) stop
+    /// serialising every request behind one lock.
+    pub async fn cookie_header(&self, uri: &Uri, now: SystemTime) -> Option<HeaderValue> {
+        let matched = self.matching(uri, now).await;
+        if matched.is_empty() {
             return None;
         }
-        indices.sort_by(|a, b| {
-            let (a, b) = (&self.cookies[*a], &self.cookies[*b]);
-            b.path
-                .len()
-                .cmp(&a.path.len())
-                .then(a.creation.cmp(&b.creation))
-                .then(a.seq.cmp(&b.seq))
-        });
 
         let mut out = Vec::new();
-        for i in &indices {
-            let cookie = &self.cookies[*i];
+        for cookie in &matched {
             if !out.is_empty() {
                 out.extend_from_slice(b"; ");
             }
@@ -405,9 +541,9 @@ impl<P: PublicSuffixList> CookieJar<P> {
             out.push(b'=');
             out.extend_from_slice(cookie.value.as_bytes());
         }
-        for i in indices {
-            self.cookies[i].last_access = now;
-        }
+
+        let keys: Vec<CookieKey> = matched.iter().map(CookieKey::of).collect();
+        self.store.touch(&keys, now).await;
 
         // Every byte here already survived `parse.rs`'s CTL check, so the
         // only way this fails is a bug in that check — which is exactly
@@ -415,27 +551,27 @@ impl<P: PublicSuffixList> CookieJar<P> {
         HeaderValue::from_bytes(&out).ok()
     }
 
-    fn indices_matching(&self, uri: &Uri, now: SystemTime) -> Vec<usize> {
-        let Some(host) = canonical_host(uri) else {
-            return Vec::new();
-        };
-        let path = request_path(uri);
-        let secure = is_secure_request(uri);
-        self.cookies
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                !c.is_expired(now)
-                    && if c.host_only {
-                        host == c.domain
-                    } else {
-                        domain_matches(&host, &c.domain)
-                    }
-                    && path_matches(path, &c.path)
-                    && (!c.secure || secure)
-            })
-            .map(|(i, _)| i)
-            .collect()
+    /// Put a cookie into the store, resolving the two fields that belong
+    /// to the **jar** rather than to the cookie.
+    ///
+    /// `seq` is the jar's insertion identity: a cookie already held keeps
+    /// the one it has, so a refresh cannot jump §5.4's queue and a
+    /// restored cookie cannot jump ahead of one already there. `creation`
+    /// is §5.7's, and which side supplies it is what [`Arrival`] names.
+    pub(super) async fn insert(&self, mut cookie: Cookie, now: SystemTime, arrival: Arrival) {
+        let key = CookieKey::of(&cookie);
+        let domains = [cookie.domain.clone()];
+        let held = self.store.get(&domains).await;
+        match held.iter().find(|c| CookieKey::of(c) == key) {
+            Some(old) => {
+                if arrival == Arrival::SetCookie {
+                    cookie.creation = old.creation;
+                }
+                cookie.seq = old.seq;
+            }
+            None => cookie.seq = self.next_seq.fetch_add(1, Ordering::Relaxed),
+        }
+        self.store.put(cookie, now).await;
     }
 
     /// RFC 6265bis §5.7's domain steps, in the order the RFC puts them —
@@ -494,58 +630,6 @@ impl<P: PublicSuffixList> CookieJar<P> {
             });
         }
         Ok((domain.to_owned(), false))
-    }
-
-    /// §5.7's replacement key: name, domain, **host-only flag** and path.
-    ///
-    /// The host-only flag is in the key and easy to leave out — RFC 6265
-    /// itself did, and 6265bis added it. Without it, `a=1` set by
-    /// `example.com` and `a=2; Domain=example.com` set by the same host
-    /// collapse into one cookie, and the survivor is whichever arrived
-    /// last: a host-only cookie silently acquires a subdomain scope it was
-    /// never given, or loses the one it had.
-    pub(super) fn position_of(&self, cookie: &Cookie) -> Option<usize> {
-        self.cookies.iter().position(|c| {
-            c.name == cookie.name
-                && c.domain == cookie.domain
-                && c.host_only == cookie.host_only
-                && c.path == cookie.path
-        })
-    }
-
-    /// RFC 6265 §5.3's eviction: expired cookies first, then the least
-    /// recently used, per domain and then overall.
-    pub(super) fn make_room_for(&mut self, incoming: &Cookie, now: SystemTime) {
-        self.cookies.retain(|c| !c.is_expired(now));
-
-        while self
-            .cookies
-            .iter()
-            .filter(|c| c.domain == incoming.domain)
-            .count()
-            >= self.limits.max_per_domain
-        {
-            let Some(victim) = self.least_recently_used(Some(&incoming.domain)) else {
-                break;
-            };
-            self.cookies.remove(victim);
-        }
-
-        while self.cookies.len() >= self.limits.max_cookies {
-            let Some(victim) = self.least_recently_used(None) else {
-                break;
-            };
-            self.cookies.remove(victim);
-        }
-    }
-
-    fn least_recently_used(&self, domain: Option<&str>) -> Option<usize> {
-        self.cookies
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| domain.is_none_or(|d| c.domain == d))
-            .min_by(|(_, a), (_, b)| a.last_access.cmp(&b.last_access).then(a.seq.cmp(&b.seq)))
-            .map(|(i, _)| i)
     }
 }
 

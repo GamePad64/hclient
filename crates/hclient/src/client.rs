@@ -16,13 +16,14 @@ use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 use hclient_proto::retry::{Outcome, RetryPolicy, RetryVerdict, retry_after_seconds};
 use std::fmt::Debug;
 use std::sync::Arc;
-// `cookies` alone: the jar is the only thing here behind a `Mutex`. It
-// read `any(cookies, cache)` until an example built the second without
-// the first — a leftover from when `Client` held `Arc<Mutex<HttpCache>>`,
-// which went when the store became async. Neither `--all-features` nor
-// `cargo hack --each-feature` builds that pair.
-#[cfg(feature = "cookies")]
-use std::sync::Mutex;
+// **There is no `Mutex` here any more**, and the `#[cfg(feature =
+// "cookies")]` that gated its import is gone with it rather than left
+// behind — which it briefly was, where it attached itself to the import
+// below and made a build without `cookies` fail to find `SystemTime`.
+// That is `lib.rs`'s orphaned-attribute defect a second time, and it was
+// caught by `hclient-wasi`'s live suite rather than by
+// `--all-features`, which cannot reach the configuration.
+//
 // The wall clock this client reads for the jar and the cache.
 //
 // `web_time`, not `std::time`, and the difference is one target: off
@@ -52,7 +53,7 @@ pub struct ClientBuilder {
     /// bit that says one was asked for — see `Config::cookies` for why the
     /// two halves live apart.
     #[cfg(feature = "cookies")]
-    jar: Option<crate::cookie::CookieJar<crate::erased::AnyList>>,
+    jar: Option<crate::cookie::CookieJar<crate::erased::AnyList, crate::erased::AnyCookieStore>>,
     /// The cache itself, on its way to `Inner`, already behind the `Arc`
     /// it will share with every clone of the client **and with every
     /// recording response body** — see `cached::Cache`. `Config` carries
@@ -315,12 +316,19 @@ impl ClientBuilder {
     /// with_public_suffix_list(NoList)` is what drops the compiled-in
     /// list's 77 KiB at run time.
     #[cfg(feature = "cookies")]
-    pub fn cookie_jar<P>(mut self, jar: crate::cookie::CookieJar<P>) -> Self
+    pub fn cookie_jar<P, S>(mut self, jar: crate::cookie::CookieJar<P, S>) -> Self
     where
-        P: crate::cookie::PublicSuffixList + Send + 'static, // send-bound-exception: amendment-C12
+        P: crate::cookie::PublicSuffixList + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        S: crate::cookie::CookieStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send, // send-bound-exception: amendment-C12
+        for<'a> S::Len<'a>: Send,  // send-bound-exception: amendment-C12
     {
         self.config.cookies = true;
-        self.jar = Some(jar.map_suffixes(crate::erased::AnyList::new));
+        self.jar = Some(
+            jar.map_suffixes(crate::erased::AnyList::new)
+                .map_store(crate::erased::AnyCookieStore::new),
+        );
         self
     }
 
@@ -422,7 +430,7 @@ impl ClientBuilder {
                 transport: self.transport,
                 timer: self.timer,
                 #[cfg(feature = "cookies")]
-                cookies: self.jar.map(Mutex::new),
+                cookies: self.jar,
                 #[cfg(feature = "cache")]
                 cache: self.cache,
             }),
@@ -473,14 +481,19 @@ struct Inner {
     /// for the reason the `Config::cookies` bit records: a jar is shared
     /// state, and `Config` is cloned per handle.
     ///
-    /// `Mutex` rather than `RefCell` because a `Client` is meant to cross
-    /// a `tokio::spawn`, and `!Sync` here would take that away from every
-    /// client whether or not it keeps cookies. The lock is held across no
-    /// `.await` at all — `cookie_header` and `store_response` are pure
-    /// functions of the jar, the URI and a `now`, which is what the
-    /// sans-io shape of `hclient-cookie` buys here.
+    /// **No lock**, where there was a `Mutex` until the jar took a store.
+    /// The argument for the lock was that `cookie_header` and
+    /// `store_response` were pure functions of the jar, the URI and a
+    /// `now`, so it was never held across an `.await` — true, and it
+    /// stopped being true the moment a store could wait. Rather than an
+    /// async mutex there is now no lock at this level at all, so two
+    /// requests no longer queue behind each other to read a header; the
+    /// synchronisation, where a store needs any, is the store's own.
+    /// `crate::cached::Cache`'s doc makes the same argument one module
+    /// over and made it first.
     #[cfg(feature = "cookies")]
-    cookies: Option<Mutex<crate::cookie::CookieJar<crate::erased::AnyList>>>,
+    cookies:
+        Option<crate::cookie::CookieJar<crate::erased::AnyList, crate::erased::AnyCookieStore>>,
     /// The response cache, if one was asked for.
     ///
     /// Already an `Arc<Mutex<..>>` rather than a `Mutex` like the jar
@@ -603,32 +616,34 @@ impl Client {
         self.inner.transport.capabilities()
     }
 
-    /// This client's cookie jar, if it was given one — locked for as long
-    /// as the guard is held.
+    /// This client's cookie jar, if it was given one.
     ///
     /// `None` when no jar was configured. That is the same answer for
     /// "cookies were never switched on" and for "the transport keeps its
     /// own", because the second case never gets past
     /// [`ClientBuilder::build`] and so cannot reach this method at all.
     ///
-    /// The guard is the API rather than a snapshot: persisting a jar
-    /// ([`CookieJar::iter`](crate::cookie::CookieJar::iter)) and seeding
-    /// one from disk are both wanted, and a `Vec<Cookie>` copy would
-    /// answer only the first. Every clone of this client shares the jar
-    /// behind it, so a guard held across an `.await` blocks that client's
-    /// other requests — hold it to read, not to work.
+    /// **A borrow rather than a guard, and there is nothing to block.**
+    /// This returned a `MutexGuard` for as long as the jar was behind
+    /// one, with a paragraph warning that holding it across an `.await`
+    /// blocked every other request of every clone of this client — and a
+    /// paragraph about recovering a poisoned lock. The jar's own methods
+    /// take `&self` now, because
+    /// [`CookieStore`](crate::cookie::CookieStore)'s do, so there is no
+    /// lock here to hold, to poison, or to warn about. It is
+    /// [`Client::cache`]'s shape, arrived at by the same route one module
+    /// over.
     ///
-    /// A poisoned lock is recovered rather than propagated
-    /// (`PoisonError::into_inner`): the jar is a `Vec` of parsed cookies,
-    /// a panic while holding it cannot leave it half-written in any sense
-    /// this type can observe, and a client that stopped sending cookies
-    /// because an unrelated task panicked would be a worse answer than a
-    /// slightly stale jar.
+    /// Reading a jar out — [`records`](crate::cookie::CookieJar::records)
+    /// — and seeding one back in
+    /// ([`restore`](crate::cookie::CookieJar::restore)) are both `&self`
+    /// too, so both work through this borrow.
     #[cfg(feature = "cookies")]
     pub fn cookies(
         &self,
-    ) -> Option<std::sync::MutexGuard<'_, crate::cookie::CookieJar<crate::erased::AnyList>>> {
-        Some(lock(self.inner.cookies.as_ref()?))
+    ) -> Option<&crate::cookie::CookieJar<crate::erased::AnyList, crate::erased::AnyCookieStore>>
+    {
+        self.inner.cookies.as_ref()
     }
 
     /// This client's response cache, if it was given one.
@@ -1015,7 +1030,16 @@ impl Client {
             // is a different question (credentials leaving the origin)
             // from this one (a header that stopped being right for the
             // path).
-            self.attach_cookies(&mut hp, caller_owns_the_cookie_header);
+            // **Boxed, and for the reason the cache hooks two blocks
+            // down already record**: both cookie hooks became `async fn`
+            // when the jar took a store, and an `async fn` awaited inline
+            // has its whole state machine inlined into this one. Measured
+            // at 4,784 bytes with the cache's two boxed and the jar still
+            // synchronous, **6,896** with these two inlined — over
+            // `tests/future_size.rs`'s 6 KiB ceiling — and **5,024** with
+            // them boxed. Two allocations per hop, on a path that is
+            // about to touch a store.
+            Box::pin(self.attach_cookies(&mut hp, caller_owns_the_cookie_header)).await;
             // **Per hop, and the caller's own header wins.** Per hop
             // because a redirect leads to a request this client is making
             // too, and a `User-Agent` that vanished after the first hop
@@ -1505,7 +1529,7 @@ impl Client {
         // Scoped to the hop that sent the header, because `Domain`/`Path`
         // are relative to the request that got the response, not to
         // wherever the chain ends up.
-        self.store_cookies(&hp.uri, resp.headers());
+        Box::pin(self.store_cookies(&hp.uri, resp.headers())).await;
         Ok(resp)
     }
 
@@ -1535,7 +1559,7 @@ impl Client {
     /// the short forms are that `Timer` is a stopwatch and `Expires` is a
     /// date, and that `std`'s wall clock panics in a browser.
     #[cfg(feature = "cookies")]
-    fn attach_cookies(&self, hp: &mut HopParts, caller_owns_the_header: bool) {
+    async fn attach_cookies(&self, hp: &mut HopParts, caller_owns_the_header: bool) {
         let Some(jar) = self.inner.cookies.as_ref() else {
             return;
         };
@@ -1543,7 +1567,7 @@ impl Client {
             return;
         }
         hp.headers.remove(http::header::COOKIE);
-        if let Some(v) = lock(jar).cookie_header(&hp.uri, SystemTime::now()) {
+        if let Some(v) = jar.cookie_header(&hp.uri, SystemTime::now()).await {
             hp.headers.insert(http::header::COOKIE, v);
         }
     }
@@ -1553,7 +1577,7 @@ impl Client {
     /// happens and when, and burying it in a conditional would put the
     /// per-hop reasoning above behind a feature flag too.
     #[cfg(not(feature = "cookies"))]
-    fn attach_cookies(&self, _: &mut HopParts, _: bool) {}
+    async fn attach_cookies(&self, _: &mut HopParts, _: bool) {}
 
     /// Stores this hop's `Set-Cookie` headers, if this client keeps a jar.
     ///
@@ -1569,16 +1593,16 @@ impl Client {
     /// its cookies arrive. A caller who needs the reasons calls
     /// `CookieJar::store` per header, through [`Client::cookies`].
     #[cfg(feature = "cookies")]
-    fn store_cookies(&self, uri: &http::Uri, headers: &http::HeaderMap) {
+    async fn store_cookies(&self, uri: &http::Uri, headers: &http::HeaderMap) {
         let Some(jar) = self.inner.cookies.as_ref() else {
             return;
         };
-        lock(jar).store_response(uri, headers, SystemTime::now());
+        jar.store_response(uri, headers, SystemTime::now()).await;
     }
 
     /// The twin without the feature — see `attach_cookies`'.
     #[cfg(not(feature = "cookies"))]
-    fn store_cookies(&self, _: &http::Uri, _: &http::HeaderMap) {}
+    async fn store_cookies(&self, _: &http::Uri, _: &http::HeaderMap) {}
 
     /// `web_time::SystemTime::now()`, but only where something will read
     /// it.
@@ -1846,14 +1870,6 @@ fn replay_for_too_early(snapshot: Option<&RequestBody>) -> Option<RequestBody> {
         // `Impossible`, or nothing was replayable to begin with.
         _ => None,
     }
-}
-
-/// Locks the jar, recovering from poisoning rather than propagating it.
-///
-/// See [`Client::cookies`] for why a poisoned jar is still a usable one.
-#[cfg(feature = "cookies")]
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 // `not(target_family = "wasm")`, not just `feature = "default-transport"`

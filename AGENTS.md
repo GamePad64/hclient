@@ -2099,6 +2099,34 @@ And nothing is lost by waiting: if RTN stabilises the question becomes a
 stable one again, and by then `http`'s `no_std` status may have moved too.
 What needed capturing was the measurement, not the crate.
 
+**"If RTN stabilises" had no date behind it and now has one, pointing the
+other way.** Measured on 2026-09-06: the stabilisation PR
+(rust-lang/rust#138424, opened 2025-03-12) was **closed unmerged on
+2025-12-27**, its author saying they are no longer working on Rust and
+that they look forward to someone landing it in some capacity; the
+tracking issue (#109417) is still `S-tracking-impl-incomplete`, and
+nightly **1.100.0 (0ed41eb41, 2026-09-04)** still answers `E0658 — return
+type notation is experimental` for `S<get(..): Send>`. That last is the
+check rather than a reading, and it is the one to re-run — written out
+here rather than made a recipe, because it needs nightly and this
+workspace refuses a nightly pin, which is `.notes/android-idn-live.md`'s
+shape for the emulator run:
+
+```
+printf 'pub trait S { async fn get(&self) -> u8; }\n\
+pub fn f<T: S<get(..): Send>>(_: &T) {}\n' > /tmp/rtn.rs
+rustc +nightly --edition 2024 --crate-type lib /tmp/rtn.rs -o /dev/null
+```
+
+`E0658` means nothing has moved. Anything else means these sections are
+stale and the erasure question is open again.
+
+So the sentence above is not wrong and its tense was: waiting costs
+nothing *and* is not waiting for something in motion. Every decision in
+this file that turns on RTN — the NAL adapter's third blocker, the
+generic consumer's bill in the erasure section — should be read as
+permanent until somebody re-runs that one-line probe, not as deferred.
+
 It also means blocker three does not lift with blocker one. A half-close
 is a method upstream could add; this needs either return type notation to
 stabilise and stop ICEing, or NAL to move to associated future types,
@@ -4170,6 +4198,368 @@ seam that had never stopped being synchronous. `SuspendingStore` in
 test asserts a second request is served from it *and* that it suspended.
 Removing the body's wait for the write fails four tests across two files.
 
+### The jar took a store too, and the key could not be the cache's
+
+`hclient::cookie::CookieStore` — `get`, `all`, `put`, `remove`, `touch`,
+`len`, `clear`, every one a future and every one taking `&self`, which is
+`CacheStore`'s shape verbatim and for its reasons: a store that awaits
+cannot be held behind a `&mut` across the await, and a store that is
+remote is shared already. `CookieJar<P = BuiltinList, S = MemoryStore>`
+is the rules over it, and `MemoryStore` answers `Ready`, so the shape
+costs a plain `CookieJar::new()` no allocation and no suspension.
+
+**The key is a domain, and that is the one place this seam could not copy
+the cache's.** A cache has an exact key — the method and the target URI —
+so `CacheStore::get` is a lookup and every rule is applied to what comes
+back. Cookie retrieval has no such key: §5.1.3's domain-match is a suffix
+relation and §5.1.4's path-match a prefix one, so a store asked *what
+applies to `https://a.b.example.com/x`* would have to implement RFC 6265,
+which is the thing the seam exists to keep on this side of it. What **is**
+exact is the domain a cookie was stored under, and the set of domains that
+can match a host is bounded and computable from the host alone. So the
+rule enumerates the candidates and the store answers an exact lookup for
+each — `candidate_domains` is `domain_matches` turned inside out, and the
+two are asserted against **each other** rather than against a second list,
+so a change to the rule that the enumeration did not follow fails a test.
+Checked in the failing direction: dropping the IP-literal arm fails both
+of its tests.
+
+**A wrong store cannot put a cookie on the wire**, and that is a property
+of the code rather than a hope: `matching` re-applies domain-match,
+path-match, `Secure` and expiry to whatever `get` answers, so a store that
+returned the wrong rows loses them at the filter. That is the half of
+`CacheStore`'s safety argument that had to be *built* here rather than
+inherited.
+
+**What it bought is the lock.** `Client` held `Option<Mutex<CookieJar>>`,
+and `Client::cookies()` handed back a `MutexGuard` — with a paragraph
+warning that holding it across an `.await` blocked every other request of
+every clone, and a second paragraph about recovering a poisoned lock. Both
+are gone rather than reworded, exactly as the cache's were: the accessor
+is a borrow, two requests no longer queue behind each other to read a
+header, and the synchronisation is the store's own where a store needs
+any.
+
+**And the lock was manufacturing a property, which nobody had noticed.**
+`Mutex<T>` is `Sync` whenever `T` is `Send`, so `AnyList`'s `Sync` was the
+lock's rather than the list's. Removing the lock moved the bound to where
+it actually has to hold: `ClientBuilder::cookie_jar` now asks `P: Send +
+Sync`. A list that is genuinely `!Sync` was never usable from two threads;
+what changed is that it says so at the setter instead of working until
+someone shared the client.
+
+**`Limits` split, on the line `crate::cache` already draws.**
+`max_name_value_bytes` is a **refusal** — decided before a `Cookie` exists
+and never reaching storage — so it stays on the jar. `max_cookies` and
+`max_per_domain` are what a store can **hold**, so they are
+`cookie::Capacity` on `MemoryStore`, beside `HttpCache`'s `Limits { max_body_bytes }`
+and `cache::MemoryStore::with_capacity`. A wrong `Capacity` loses cookies;
+a wrong refusal would store one the jar was told not to.
+
+**One thing the seam owed and the cache's still does not pay.**
+`CookieStore` traffics in `Cookie`, whose fields are private, so a store
+that outlives the process could not have handed one back — a seam naming a
+use it could not serve. `Cookie::from_record` closes it: the serialisable
+form is `CookieRecord`, which this module already argues is the thing to
+write down, and session cookies having no record is not a gap but the
+meaning of the word. It deliberately does **not** re-run
+`CookieJar::restore`'s checks — the public suffix list, the name prefixes,
+the IP-literal rule — because a record on disk is a *claim about scope*
+where a store is handing back a cookie the jar gave it, and a second
+quieter copy of §5.7 is how the two would drift.
+The same hole was open one module over and is closed now too — see the
+section below, which is what asking *what else* found.
+
+**`async fn` in traits was tried first, and the three outcomes are the
+argument.** It is stable and it is the obvious way to write this, so it
+was written on a scratch crate rather than dismissed. `Client` boxes its
+jar `Send + Sync`, so something must prove the store's futures `Send`:
+with `async fn` on the trait the erasure is `E0277`, because a generic
+impl cannot prove a property of a future it cannot name; return type
+notation names it and is `E0658` on stable, which this workspace has
+already measured the full cost of and declined; and rustc's own
+suggestion — `+ Send` on the seam — compiles and **excludes every
+single-threaded store**, refusing an implementor that holds an `Rc`
+across an await while accepting the same one holding an `Arc`. That is
+`Resolve → BoxStream`'s finding with the subject changed: a fixed `Send`
+in a seam excludes whoever cannot satisfy it, where an associated type
+lets each implementor answer for itself. Naming is not requiring —
+amendment C15, arrived at from a fourth direction.
+
+**`#[async_trait]` is the same wall with a macro in front of it and an
+allocation behind it**, which is worth writing down because it is the
+shape everyone reaches for first and it predates the language feature.
+Both halves were built rather than reasoned about: the plain form writes
+`Pin<Box<dyn Future + Send>>` into the trait, so the `Rc`-holding store
+fails at its own `impl` with the identical diagnostic, and
+`#[async_trait(?Send)]` writes a plain box, so the erasure `Client` needs
+stops compiling instead — `E0308`, the two box types. The choice is fixed
+at the trait rather than per implementor, which is the objection; the
+allocation is the surcharge, measured with a counting allocator over
+1,000 calls to a store that answers immediately: **1,000 allocations
+against 0**, because `MemoryStore` answers `Ready` and the macro boxes
+unconditionally.
+
+**`trait_variant` is the one alternative that carries this exact shape,
+and finding that out took building the shape rather than the trait.**
+rust-lang's own crate for the question writes a *second* trait whose
+futures are `Send`, with a blanket impl making every `SendStore` a
+`Store`. Against the three-sided constraint this workspace actually has —
+a single-threaded store in a bare jar, a threaded store erased through
+`ClientBuilder::cookie_jar`, and `CookieJar<AnyList, AnyCookieStore>`
+still `Send + Sync` — **all three compile**, and it allocates nothing: 0
+per 1,000 calls, level with the shipped shape and unlike `#[async_trait]`.
+An earlier reading of it as a non-starter was wrong and was corrected by
+the probe.
+
+**What it costs is that the author's choice between the two names is
+one-way**, and that is the discriminator rather than any of the
+arithmetic. A store whose futures are genuinely `Send`, written against
+the trait the seam is *named* after — the obvious choice — works in a
+bare jar and is refused at the erasure with `E0277`; and its author
+cannot add the second impl beside the first, because the macro's own
+blanket impl conflicts, `E0119`. The repair is to delete the impl and
+rewrite it against the other name. With associated futures there is one
+trait, one impl, and the property is read off the concrete type: the same
+`MemoryStore` source is a jar's store and a `Client`'s, and its author
+wrote nothing about `Send` at all.
+
+**Two measured costs.** `Client::execute`'s future went from 4,784 bytes
+to **6,896** when the two cookie hooks became `async fn` — over
+`tests/future_size.rs`'s 6 KiB ceiling, which is the guard doing exactly
+what the cache's own boxing measurement predicted it would — and back to
+**5,024** with `attach_cookies` and `store_cookies` boxed. Two more
+allocations per hop, on a path already about to touch a store. And
+`matching` hands back owned `Cookie`s where it lent them, `iter` is
+`cookies()`, because a store on the far side of a socket has nothing to
+lend.
+
+**The suite needed a store that actually waits**, for the reason the cache
+work already recorded: `MemoryStore` answers `Ready`, so a suite built on
+it alone would pass for a seam that had never stopped being synchronous.
+`SuspendingCookieStore` in `tests/pluggable_stores.rs` suspends once per
+operation and counts it, and the test asserts both that the second request
+carried the cookie and that the store suspended.
+
+**And a `#[cfg]` was orphaned by the deletion, which is `lib.rs`'s defect
+a second time.** Removing `use std::sync::Mutex;` left its
+`#[cfg(feature = "cookies")]` behind, where it attached to the import on
+the next line and made a build *without* `cookies` fail to find
+`SystemTime`. `--all-features` cannot reach that configuration and did not
+see it; `hclient-wasi`'s live suite builds `hclient` with its own feature
+set and failed seven tests at once.
+
+### The cache seam advertised three stores it could not serve, and a consumer is what found it
+
+Asked what else was worth doing to the jar and the cache, and the answer
+was not a feature. `CacheStore`'s own documentation opens *"because the
+interesting stores are not in memory — a cache on disk, in Redis, or in
+`moka::future`"*, and **not one of them could be written from outside this
+crate.** Every field of a `StoredResponse` is readable through an
+accessor, so a store could always write an entry *down*; `StoredResponse::
+new` was `pub(crate)`, so it could never build one *back*. `Selector` was
+worse and in two ways: its constructor was `pub(crate)` too, and the only
+public reader was `names()` — the field names without their values, which
+is half of a thing whose whole content is `(name, value)` pairs.
+
+**It was found by writing the store, not by reading the code**, from a
+scratch crate outside the workspace with a path dependency. That is this
+file's own rule about consumers being a different instrument from tests,
+and the instrument had already been aimed once: the identical hole in the
+cookie seam was found the same day and closed with `Cookie::from_record`.
+The cache's was recorded then as *"a real gap, the cache's, recorded here
+rather than fixed as a side effect"* — which was the right call at that
+moment and is what asking the question again cashed in.
+
+**Both are public now, and the argument for opening them is the seam's
+own safety claim rather than convenience.** RFC 9111 is applied *above*
+the seam on whatever a store answers — `HttpCache::lookup` filters by
+`Selector` and recomputes age and freshness against the request's
+directives every time — so a store handing back a wrong entry loses a hit
+or keeps rubbish, and cannot make a stale response answer a request that
+forbade one. Checked rather than asserted: the filter and the
+recomputation are both in `lookup`, read before the visibility changed.
+The trust model does not move either, because a store already received
+and returned `StoredResponse` values and could always have handed back
+the wrong one.
+
+**`Selector::from_fields` re-applies the sort and the dedup rather than
+trusting them**, and that is the whole of what it adds over the tuples it
+takes: equality is the `Vec`'s, so a selector rebuilt in whatever order a
+file or a database row happened to list it would compare unequal to every
+selector a request produces, and the entry would be unreachable — a cache
+that silently stops hitting. A store cannot get that wrong because it
+cannot express it. What is deliberately **not** re-applied is the
+`Authorization` rule, and the direction is why: a selector fabricated
+without the credential is unequal to every selector a request builds, so
+it can only ever miss.
+
+**The evidence is a store that holds nothing of this crate's.**
+`ReloadingStore` in `tests/pluggable_stores.rs` writes every entry down to
+plain data — a `u16`, strings, byte vectors — and rebuilds one on every
+read, so a hit served out of it says the status, the version, the headers,
+the body, both §4.2.3 timestamps *and* the selector all survived the
+journey. It is `SuspendingCookieStore`'s counterpart and asks a different
+question: that one whether the seam really waits, this one whether an
+entry can leave the process and come back at all.
+
+**Checked in the failing direction, and the pair is what makes the sort a
+claim.** With the disk rows handed back **reversed** the test passes,
+because `from_fields` sorts; with the rows reversed *and* the sort removed
+it fails. So neither half is decoration. Two unit tests carry the same two
+properties at the type — a round trip in any order, and a credential-less
+selector that can only miss — because a property named at the type is
+found by a reader where one buried in an integration test is not.
+### One backend, both seams — measured before anybody writes the sqlite one
+
+The plan is a single sqlite file holding the cache and the jar together,
+and no persisting implementation in this workspace. So what was worth
+checking now is not *can we persist* but **do the two seams admit one
+backend at all** — a question that is free to answer today and expensive
+to answer after somebody has written the store.
+
+**They do, and it needed no wrapper.** One type implementing both
+`CacheStore` and `CookieStore`, `Clone` over an `Arc` of shared state,
+installed into one `Client` through `ClientBuilder::cookie_jar` **and**
+`ClientBuilder::cache` — compiles and runs, with both halves reaching the
+same handle. The associated types collide in name and not in fact, so
+`AnyStore` and `AnyCookieStore` each pick the right ones with no
+qualification at the call site. Nothing about the two seams had to change
+to allow it, which is the answer the question was asked for.
+
+**Two things did have to change, and neither was visible from inside.**
+
+**A record is not a representation, and the first store outside the
+workspace fell into it in five minutes.** `Cookie::to_record` answers
+`None` for a session cookie — right for a file, wrong for a store, because
+a `CookieStore` is not a mirror of the jar, it *is* where the jar keeps
+its cookies for as long as the process runs. A store whose only
+representation is `CookieRecord` drops every session cookie and reports
+success: a plain `sid=abc` never reached the second request, and the seam
+had done exactly what it was asked. Nothing in the signatures says the
+round trip is lossy — `put` takes a `Cookie` — so it is said on the trait:
+a persisting store holds what it *has* as `Cookie` and writes down the
+strict subset that has a record.
+
+**And a response asked the store once per `Set-Cookie` header.** Each
+header went through `CookieJar::store`, and each of those read what the
+jar already held so §5.7's replacement could keep the old cookie's `seq`
+and `creation`. Measured against a store that logs its own statements:
+five headers, **six reads and five writes**. `MemoryStore` answers
+`Ready`, so through it the difference between one read and six does not
+exist; a store on the far side of a file or a socket pays every one.
+
+`store_response` splits `store` into `prepare` — every §5.7 rule, pure,
+no store touched — and the insertion, so every refusal is settled before
+the store is asked anything, and then one `get` covers every domain the
+whole response scopes a cookie to. **Six reads to two**, writes unchanged
+at five, because a write per cookie is what storing five cookies is.
+
+The batch still sees itself, which is the half that had to be built rather
+than saved: two `Set-Cookie` headers naming one cookie mean the second
+replaces the first, so a cookie already placed by *this* response is
+looked up in the batch before the snapshot — otherwise the second draws a
+fresh `seq` and jumps §5.4's queue against the first.
+
+**Kept by `a_response_full_of_set_cookie_headers_asks_the_store_once`**,
+whose bound is *at most two reads* rather than today's number: what must
+not come back is growth with the header count, and a test pinned to a
+figure gets relaxed rather than read. Checked in the failing direction by
+restoring the per-header loop and watching it fire.
+
+**The instrument is the one this file already records.** None of the three
+findings is reachable from a test written beside the code: the seams'
+compatibility needs two traits on one type, the record's lossiness needs a
+store that is not a decorator, and the read count needs a store that is
+not `Ready`. All three came from a scratch crate outside the workspace,
+and all three are kept by tests inside it — which is the division that
+worked for the cache seam one section up and is now three for three.
+### Two more seams, and the one that took a recorded argument down with it
+
+`hclient::cache` and `hclient::cookie` had stores; the inventory said the
+other two memories worth one did not. Both have one now, and the cost of
+each is what the inventory predicted plus one thing it did not.
+
+**`hclient_native::altsvc::AltSvcStore`** — `get`, `put`, `remove`,
+`retain_persistent`, associated future types, `&self`. `AltSvcCache<S>`
+is the RFC 7838 rules over it — §3's *a present field replaces
+everything*, the `ma` comparison, §2.2's `persist`, the narrowing to *h3
+at this origin's own authority* — applied to whatever a store answers, so
+a wrong store forgets an advertisement or keeps a stale one, and a stale
+one costs at most a QUIC attempt that falls back. `Native::alt_svc_store`
+installs one, **erased** rather than a sixth type parameter, which is
+`hclient::Client`'s argument one crate up.
+
+**The expiry had to become a calendar time, and that overturned an
+argument this file records.** `Entry::expires_at` was elapsed time on the
+transport's own `Timer`, defended in the module doc on the grounds that
+*a wall-clock read would disagree with a caller testing under
+`tokio::time::pause()`*. Measured before overturning: **`tokio::time::
+pause()` appears in five doc comments in this workspace and in zero
+tests**, and `tests/svcb.rs` records having *rejected* it. So the
+sentence protecting the type was a claim with no check behind it — this
+file's own recurring defect, met from the direction where the claim was
+guarding a design rather than describing one. What the change costs is
+real and is not that sentence: `hclient-native` reads a wall clock now,
+where `Timer` was its only clock. What it buys is an entry that means
+something to a store outside the process, without which the seam names a
+use it cannot serve.
+
+**One behaviour changed with the type, and a test caught it.**
+`saturating_add` answered an absurd `ma` with `Duration::MAX`;
+`SystemTime` has no `MAX` to saturate towards, so the first version
+answered with *now* — an immediate expiry, which silently loses the
+advertisement. `MAX_LEASE` is the repair, 400 days, which is
+`hclient::cookie::MAX_EXPIRY`'s figure and its argument verbatim: the sum
+is never computed, so the hazard has no end to be at.
+
+**`hclient_tls_rustls::Rustls::with_session_store` and
+`with_quic_session_store`** — rustls owns this seam, `ClientSessionStore`
+is its trait, and what was missing was a way to reach it without building
+a whole `ClientConfig`, which every convenience constructor spares you.
+**They are two setters and not one**, because `quic.rs` already argued
+the stores must be separate: `ClientSessionStore` keys by `ServerName`
+alone while a ticket issued over QUIC also carries `quic_params`, so one
+store serving both paths would hold two kinds of ticket in one slot.
+Handing the same store to both setters puts that back, which is a
+caller's decision rather than one made for them. Installing either
+redraws `TlsConfigId`, because it must: that id is a component of the
+pool key and says *which client may resume whose sessions*, which is
+exactly what changed.
+
+**Nothing here persists anything, and that is the shape rather than a
+gap.** Neither Chromium nor Firefox persists TLS tickets — Chromium's
+`SSLClientSessionCache` is in memory and flushed on memory pressure,
+read from its own header — and this crate's default is the same. A
+resumption ticket is a credential and 0-RTT data is replayable, so the
+seam exists to let a caller make that decision, not to make it for them.
+
+**Every seam is asserted where it is reachable, and finding out where
+that was cost the sharpest defect of the day.** The alt-svc store is
+asserted twice — the rules running over a substituted store, and
+`Native::alt_svc_store` reaching the field `network_changed` reads, which
+fires when the installer is made a no-op. The TLS halves are split: the
+TCP store is consulted by `rustls::ClientConnection` through a private
+`config_for`, so that assertion is a unit test in `lib.rs`; the QUIC
+store is fetched by `quic_config_for`, so `quic.rs` pins that the setter
+reaches the field it reads. Both fire when their setter is made a no-op.
+
+**The defect is that the TCP test did not exist for twenty minutes while
+appearing to.** Appended by a script that inserted before the file's last
+`}`, it landed inside a `#[cfg(not(feature = "webpki-roots"))] impl` — a
+`#[test] fn` in an `impl` is an associated function, never collected, and
+under `--all-features` not even compiled. It compiled, it looked right,
+and `cargo nextest` ran 38 tests where it should have run 39. What caught
+it was checking the failing direction and reading **zero** where a
+failure was due. A test that cannot fail is the thing this file is about,
+and the way to find one is still to break its subject on purpose.
+
+**And an orphaned `#[cfg]` for the third time in one week**, the second
+of them caused rather than found: inserting `alt_svc_store` above
+`network_changed` took that method's `#[cfg(feature = "http3")]` with it,
+and `--no-default-features` stopped compiling. `just test-no-default`
+caught it, which is twice in two days for the recipe this file records as
+having once printed `error:` and exited zero.
 ### The jar and the cache became modules, and one feature shape is what made it free
 
 `hclient-cookie` and `hclient-cache` are `hclient::cookie` and
@@ -4218,10 +4608,21 @@ still links `public-suffix` as dead code; the test asserts behaviour, not
 graph size, and `graph-no-cookie-jar` still pins the crate out of a
 default build.
 
-That guard is **weaker than it was** and the weakening is worth naming:
+That guard was **weaker than it was** and the weakening was worth naming:
 it looked for `hclient-cookie` and `public-suffix`, and there is no crate
-name left to look for, so a jar compiled into a default build would no
-longer show up there — only its list would.
+name left to look for, so a jar compiled into a default build would show
+up there only through its list — and a *cache* compiled in would not show
+up at all, which the paragraph did not notice.
+
+**`jiff` is what repaired it**, found by asking the graph rather than by
+reading: it is absent from a default build and present with `cookies` or
+with `cache`, because both date parsers delegate the calendar to it. So
+one pattern covers both modules and covers the jar itself rather than its
+list. Checked in all three directions — silent on the default build, and
+firing on each feature alone. It also cost the same defect this file
+records twice: the backticks in the new message were eaten by the shell
+inside the recipe (`sh: 1: cache: Permission denied`), which is a thing to
+remember before putting one in a `just` string.
 
 **Two smaller things the move surfaced, both caught by `just docs`
 rather than by the compiler.** Doc links in the moved files pointed at

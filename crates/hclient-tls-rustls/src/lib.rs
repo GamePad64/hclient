@@ -175,6 +175,77 @@ impl Rustls {
         self
     }
 
+    /// Keep TLS 1.3 resumption tickets somewhere of your own — the
+    /// **TCP** path's store.
+    ///
+    /// rustls owns this seam: `ClientSessionStore` is its trait and
+    /// `ClientSessionMemoryCache` its default. What was missing here was
+    /// a way to reach it without building a whole `rustls::ClientConfig`,
+    /// which [`from_config`](Self::from_config) demands and every
+    /// convenience constructor spares you.
+    ///
+    /// # It is the TCP half, and the split is deliberate
+    ///
+    /// [`with_quic_session_store`](Self::with_quic_session_store) is the
+    /// other, and `crate::quic`'s module doc has the reason they are two:
+    /// `ClientSessionStore` is keyed by `ServerName` **alone**, while a
+    /// TLS 1.3 ticket issued over QUIC also carries `quic_params`, so one
+    /// store serving both paths would have one slot per host for two
+    /// kinds of ticket. What happens when a TCP-issued ticket is offered
+    /// to a QUIC handshake is unverified, and this crate removes the
+    /// question rather than answering it. Handing the same store to both
+    /// setters puts it back, which is a caller's decision to make and not
+    /// one made for them.
+    ///
+    /// # What it costs, and what browsers do
+    ///
+    /// A resumption ticket is a credential and 0-RTT data is replayable,
+    /// so a store that outlives the process is a security decision rather
+    /// than an optimisation. Neither Chromium nor Firefox persists these:
+    /// Chromium's `SSLClientSessionCache` is in memory, flushed on memory
+    /// pressure, and this crate's default is the same. Nothing here
+    /// persists them either — the seam exists so that the decision can be
+    /// a caller's.
+    ///
+    /// The identity is redrawn, because it must be: [`TlsConfigId`] is a
+    /// component of `hclient-native`'s pool key and says *which client
+    /// may resume whose sessions*, which is exactly what changed.
+    #[must_use]
+    pub fn with_session_store(
+        mut self,
+        store: Arc<dyn rustls::client::ClientSessionStore>,
+    ) -> Self {
+        let mut cfg = (*self.base).clone();
+        cfg.resumption = rustls::client::Resumption::store(store);
+        self.base = Arc::new(cfg);
+        // The per-ALPN clones were derived from the old `base`.
+        self.by_alpn = Arc::new(Mutex::new(HashMap::new()));
+        self.config_id = TlsConfigId::new_unique();
+        self
+    }
+
+    /// The same, for the **QUIC** path — see
+    /// [`with_session_store`](Self::with_session_store) for why there are
+    /// two.
+    ///
+    /// Setting it after a QUIC connection has been made is a no-op rather
+    /// than a swap: the store is fetched once, on the first handshake,
+    /// and a value that changed under a live connection would be two
+    /// caches wearing one name. Every constructor here hands back a fresh
+    /// value, so the ordinary chain cannot meet that.
+    #[cfg(feature = "quic")]
+    #[must_use]
+    pub fn with_quic_session_store(
+        mut self,
+        store: Arc<dyn rustls::client::ClientSessionStore>,
+    ) -> Self {
+        let cell = OnceLock::new();
+        let _ = cell.set(quic::QuicState::with_store(store));
+        self.quic = Arc::new(cell);
+        self.config_id = TlsConfigId::new_unique();
+        self
+    }
+
     pub fn from_config(cfg: Arc<rustls::ClientConfig>) -> Self {
         Self {
             identities: Arc::new(HashMap::new()),
@@ -619,6 +690,77 @@ mod tests {
         assert_eq!(
             normalize_cipher_suite(rustls::CipherSuite::Unknown(0x9999)),
             None
+        );
+    }
+
+    /// **The TCP half of the session-resumption seam reaches the config
+    /// this connector hands out.**
+    ///
+    /// In here rather than in `tests/session_store.rs` because
+    /// `config_for` is private: what the seam promises is that the store
+    /// a caller installed is the one rustls consults, and the only public
+    /// route to that is a real handshake. The QUIC half's assertion *is*
+    /// an integration test, because `quic_client_config` is on the public
+    /// trait — so between them both halves are asserted from wherever
+    /// they are reachable.
+    #[test]
+    fn the_tcp_path_uses_the_store_the_caller_installed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Default)]
+        struct Counting(Arc<AtomicUsize>);
+        impl rustls::client::ClientSessionStore for Counting {
+            fn set_kx_hint(
+                &self,
+                _: rustls::pki_types::ServerName<'static>,
+                _: rustls::NamedGroup,
+            ) {
+            }
+            fn kx_hint(&self, _: &rustls::pki_types::ServerName<'_>) -> Option<rustls::NamedGroup> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+            fn set_tls12_session(
+                &self,
+                _: rustls::pki_types::ServerName<'static>,
+                _: rustls::client::Tls12ClientSessionValue,
+            ) {
+            }
+            fn tls12_session(
+                &self,
+                _: &rustls::pki_types::ServerName<'_>,
+            ) -> Option<rustls::client::Tls12ClientSessionValue> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+            fn remove_tls12_session(&self, _: &rustls::pki_types::ServerName<'_>) {}
+            fn insert_tls13_ticket(
+                &self,
+                _: rustls::pki_types::ServerName<'static>,
+                _: rustls::client::Tls13ClientSessionValue,
+            ) {
+            }
+            fn take_tls13_ticket(
+                &self,
+                _: &rustls::pki_types::ServerName<'_>,
+            ) -> Option<rustls::client::Tls13ClientSessionValue> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+
+        let asked = Arc::new(AtomicUsize::new(0));
+        let c = Rustls::with_platform_verifier()
+            .expect("a platform verifier")
+            .with_session_store(Arc::new(Counting(Arc::clone(&asked))));
+
+        let cfg = c.config_for(&[], None).expect("a config for no ALPN");
+        let name = rustls::pki_types::ServerName::try_from("example.com").expect("a name");
+        let _ = rustls::ClientConnection::new(cfg, name).expect("a client connection");
+
+        assert!(
+            asked.load(Ordering::Relaxed) >= 1,
+            "the handshake consulted the caller's store rather than a default"
         );
     }
 }

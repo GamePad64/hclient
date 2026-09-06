@@ -543,7 +543,7 @@ where
     /// has no answer, so an origin that publishes an HTTPS record never
     /// touches it and the fast path takes no lock.
     #[cfg(feature = "http3")]
-    alt_svc: altsvc::AltSvcCache,
+    alt_svc: altsvc::AltSvcCache<altsvc::AnyAltSvcStore>,
     /// Origins whose HTTP/3 connect has already failed, and when.
     ///
     /// The negative half, and a different fact from
@@ -904,7 +904,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             #[cfg(feature = "http3")]
             h3: None,
             #[cfg(feature = "http3")]
-            alt_svc: altsvc::AltSvcCache::default(),
+            alt_svc: altsvc::AltSvcCache::with_store(altsvc::AnyAltSvcStore::new(
+                altsvc::MemoryStore::default(),
+            )),
             #[cfg(feature = "http3")]
             h3_failures: failures::H3Failures::default(),
             #[cfg(feature = "http3")]
@@ -1826,8 +1828,50 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// about the network alone, no peer ever asked us to carry it, and it
     /// is exactly the entry a network change makes certainly wrong.
     #[cfg(feature = "http3")]
-    pub fn network_changed(&self) {
-        self.alt_svc.network_changed();
+    /// Keep the `Alt-Svc` advertisements somewhere of your own.
+    ///
+    /// The slow discovery tier's storage, and only its storage: every RFC
+    /// 7838 rule — §3's *a present field replaces everything*, the `ma`
+    /// comparison, §2.2's `persist`, the narrowing to *h3 at this
+    /// origin's own authority* — stays on this side of the seam and is
+    /// applied to whatever a store answers. See
+    /// [`AltSvcStore`](altsvc::AltSvcStore).
+    ///
+    /// **The store is erased here rather than becoming a sixth type
+    /// parameter**, which is `hclient::Client`'s argument one crate up:
+    /// a parameter would reach every signature in this crate to serve one
+    /// opt-in call. The `Send + Sync` that costs is on this method and
+    /// nowhere else — amendment C12's shape.
+    ///
+    /// Nothing in this workspace persists these; what the seam is for is
+    /// a store that does, and `altsvc`'s module doc says what an entry
+    /// has to carry for that to be possible at all.
+    #[cfg(feature = "http3")]
+    #[must_use]
+    pub fn alt_svc_store<S>(mut self, store: S) -> Self
+    where
+        S: altsvc::AltSvcStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,                       // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send,                      // send-bound-exception: amendment-C12
+    {
+        self.alt_svc = altsvc::AltSvcCache::with_store(altsvc::AnyAltSvcStore::new(store));
+        self
+    }
+
+    /// **`async` since the alt-svc memory took a store**, which is the
+    /// one thing about this method a caller has to change: the store may
+    /// be on the far side of a file or a socket, and forgetting an
+    /// advertisement there is not a lock and a `retain`. The half that
+    /// clears failed QUIC connects is still ours and still immediate.
+    ///
+    // The gate is repeated rather than inherited: inserting
+    // `alt_svc_store` above took the `#[cfg]` that used to sit here with
+    // it, and a `--no-default-features` build stopped compiling. That is
+    // `hclient::lib.rs`'s orphaned-attribute defect for the third time in
+    // one week, and the second time it was caused rather than found.
+    #[cfg(feature = "http3")]
+    pub async fn network_changed(&self) {
+        self.alt_svc.network_changed().await;
         self.h3_failures.network_changed();
     }
 
