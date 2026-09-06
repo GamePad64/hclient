@@ -38,6 +38,20 @@ use hclient_proto::field::{ows, quoted_string, token};
 /// `Directives` with `max_age: 0` is what this type hands back, and
 /// [`Hsts::note`](super::Hsts::note) is where the deletion happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// **`#[non_exhaustive]`, which is answer 3 of the three this workspace
+// records**: this is handed *back* and only read, so exhaustiveness is
+// not the mechanism anywhere — nothing branches on the set of fields, and
+// a caller builds one with `Directives::parse` rather than a literal.
+//
+// It is also the arm that will actually be used. §6.1 defines two
+// directives and says in as many words that more may be registered
+// ("Additional directives extending the semantic functionality of the STS
+// header field can be defined in other specifications"), and `preload` is
+// already deployed on most of the web without being one of them. A
+// directive arriving here is an added field, and that must not be a major
+// version. `SetCookie` one module over carries the attribute for the same
+// reason and reads the same way.
+#[non_exhaustive]
 pub struct Directives {
     /// §6.1.1's REQUIRED `max-age`, in seconds.
     ///

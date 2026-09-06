@@ -26,6 +26,55 @@ fn public_api_types_are_reachable_from_the_facade() {
         hclient::caps::check_supported(&cfg, &caps, "probe");
 }
 
+/// The doors that are **only** re-exports, and which nothing else names.
+///
+/// `hclient::link`, `hclient::proxy` and `hclient::erased` exist so that a
+/// caller reaches `hclient-proto`'s, `hclient-native`'s and this crate's
+/// erased types without naming those crates — and a door made of nothing
+/// but `pub use` is the one that breaks silently. The crate underneath
+/// renames a type, the re-export follows it in-tree, `--workspace` stays
+/// green, and the path a reader was given from the documentation is gone.
+///
+/// `tests/links.rs` is the illustration rather than the counterexample:
+/// it exercises `Link` thoroughly and does it through `Client`, so it
+/// never names `hclient::link::Link` and would not have noticed.
+///
+/// Never called; compiling is the assertion, which is
+/// `response_collected_and_request_builder_are_reachable_from_the_facade`'s
+/// shape below and for its reason — these types have no constructor a
+/// test can reach without a transport or a network.
+#[allow(dead_code)]
+fn the_re_export_only_doors_are_reachable(
+    _link: &hclient::link::Link,
+    _links: &hclient::link::Links,
+) {
+    // `erased`: what `ClientBuilder`'s seam setters turn a caller's value
+    // into, and what `Client::cookies`/`cache`/`hsts` hand back — so a
+    // caller who names the return type of any of those names one of
+    // these.
+    //
+    // **Each behind its own feature**, which `just test-no-default`
+    // insisted on: the types are gated exactly as the modules they serve
+    // are, so naming them unconditionally fails the build this recipe
+    // covers and `--all-features` cannot see.
+    #[cfg(feature = "cookies")]
+    fn cookie_seam_types_are_nameable(
+        _l: &hclient::erased::AnyList,
+        _c: &hclient::erased::AnyCookieStore,
+    ) {
+    }
+    #[cfg(feature = "cache")]
+    fn cache_seam_type_is_nameable(_s: &hclient::erased::AnyStore) {}
+    #[cfg(feature = "hsts")]
+    fn hsts_seam_type_is_nameable(_h: &hclient::erased::AnyHstsStore) {}
+}
+
+/// `hclient::proxy`, which is the same shape one crate over and is split
+/// out because it needs the `proxy` feature that the door above does not.
+#[cfg(feature = "proxy")]
+#[allow(dead_code)]
+fn the_proxy_door_is_reachable(_p: &hclient::proxy::Proxy<hclient::proxy::Socks5>) {}
+
 /// `Response`, `Collected` and `RequestBuilder`, which
 /// unlike the types above have no public constructor without a
 /// transport — there's nothing here to construct a value with, so
