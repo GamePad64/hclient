@@ -61,6 +61,26 @@ changelog_update = true
 # repository has no PR flow and releases come off `main` by hand.
 release_always = true
 
+# **No GitHub release**, which is a decision rather than a missing token:
+# what this repository publishes is crates, and a GitHub release would be
+# a second changelog beside `CHANGELOG.md`, kept by a different mechanism,
+# saying the same thing until one of them drifts. The git *tag* is still
+# written — that is what `just release-pending` reads.
+#
+# **It does not remove the forge token requirement, measured.** With this
+# set, `release-plz release` still exits `git release not configured. Did
+# you specify git-token and forge?`. The key is parsed and validated — a
+# non-boolean here is rejected at this line — so the setting is read and
+# the demand survives it. Supplying a dummy token gets further and then
+# calls `api.github.com/…/commits/<sha>/pulls`, so what the token is
+# really for is reading the pull requests a changelog entry links to,
+# rather than only for creating a release.
+#
+# So a release needs `GIT_TOKEN` in the environment (or `--git-token`)
+# whatever this says. That is worth knowing before a release rather than
+# during one, and it is upstream's shape rather than a mistake here.
+git_release_enable = false
+
 # **The tag has to name the crate now, and that is the shared version
 # ending rather than a preference.** `cargo-release` wrote `v{{version}}`,
 # and one tag covered every crate because one version did. With versions
@@ -74,20 +94,40 @@ release_always = true
 # under them, and everything after this is named.
 git_tag_name = "{{ package }}-v{{ version }}"
 
-# The three crates that are `publish = false` in their own manifests. They
-# are named here too because release-plz would otherwise version-bump and
-# changelog them: `hclient-rt-pair-check` is a test harness, `hclient-rt-nal`
-# a measurement, and `hclient-rt-embassy` a `!Send` counterexample whose
-# own doc says publishing would promise a deployment configuration that
-# does not exist.
+# The three crates that are `publish = false` in their own manifests:
+# `hclient-rt-pair-check` is a test harness, `hclient-rt-nal` a
+# measurement, and `hclient-rt-embassy` a `!Send` counterexample whose own
+# doc says publishing would promise a deployment configuration that does
+# not exist.
+#
+# **Both keys are needed, and `release = false` alone is an error.** They
+# are separate switches: `release` decides whether release-plz processes
+# the package at all, and `publish` decides whether `cargo publish` runs.
+# `publish` defaults to `true` and is validated against the manifest on
+# its own — so a config saying only `release = false` still claims
+# `publish = true` for a crate whose manifest says otherwise, and
+# `release-plz release` refuses by name before doing anything:
+#
+#     ERROR Package `hclient-rt-embassy` has `publish = false` … in the
+#     Cargo.toml, but it has `publish = true` in the release-plz
+#     configuration.
+#
+# That refusal is the right behaviour and it is worth the four extra
+# lines: the alternative is a tool quietly disagreeing with a manifest
+# about whether a crate may be uploaded. The documentation says
+# `release = false` alone does not error, which was measured here and is
+# not what happens.
 [[package]]
 name = "hclient-rt-pair-check"
 release = false
+publish = false
 
 [[package]]
 name = "hclient-rt-nal"
 release = false
+publish = false
 
 [[package]]
 name = "hclient-rt-embassy"
 release = false
+publish = false
