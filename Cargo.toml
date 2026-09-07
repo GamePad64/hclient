@@ -39,6 +39,29 @@ license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/GamePad64/hclient"
 
 [workspace.dependencies]
+# **One declaration, because two crates ask for the same thing for the
+# same reason.** `hclient-winhttp` binds WinHTTP's `LPCWSTR` parameters
+# and `system-resolver` the wide name `DnsQueryRaw` takes; both want
+# `HSTRING`, whose allocation **reserves the terminating null**, so
+# `as_ptr()` is an `LPCWSTR` by construction rather than by a crate
+# remembering to chain a zero — which is the two-line helper this
+# replaced, and the kind of thing nothing catches losing.
+#
+# `default-features = false` on both, and it stays here: the default
+# pulls `std`, and these are FFI string types either way.
+#
+# It costs one crate: `windows-strings` depends on `windows-link` alone,
+# already present under `windows-sys`.
+windows-strings = { version = "0.100", default-features = false }
+# **The version here and the features at each call site**, which is the
+# shape a `workspace.dependencies` entry has to take when consumers want
+# different parts of one crate. Three crates ask for `windows-sys` and no
+# two want the same features — `Win32_Networking_WinHttp` for the
+# transport, `Win32_NetworkManagement_Dns` for the resolver,
+# `Win32_Globalization` for the IDN backend — and features are additive,
+# so naming them here would hand every consumer the union of all three.
+# What was being repeated is the *number*, which is what this removes.
+windows-sys = { version = "0.61" }
 http           = "1.5"
 http-body      = "1.1"
 http-body-util = "0.1"

@@ -57,11 +57,9 @@ bitflags        = { workspace = true }
 # chain a zero — which is what it did, in a two-line helper that nothing
 # would have caught losing.
 #
-# One crate: `windows-strings` depends on `windows-link` alone, which is
-# already here under `windows-sys`.
-windows-strings = { version = "0.5", default-features = false }
+windows-strings = { workspace = true }
 
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_Networking_WinHttp",
 ] }

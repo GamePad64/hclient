@@ -105,7 +105,7 @@ features = ["std", "compiled_data"]
 # a size saving, on the one platform where the version is not ours to
 # know. Linux takes the bundled tables instead.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
+windows-sys = { workspace = true, features = ["Win32_Globalization"] }
 
 # Android reaches UTS 46 through the JVM, because that is where Android
 # keeps it: `android.icu.text.IDNA` is ICU4J, shipped with the platform
