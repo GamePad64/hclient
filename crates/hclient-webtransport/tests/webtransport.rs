@@ -11,7 +11,7 @@
 mod server;
 
 use bytes::Bytes;
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_webtransport::{
     AlreadyClosed, BadCloseCapsule, DatagramTooLarge, DatagramsUnavailable, NotHttps,
     NotSupportedByPeer, Session, SessionClose, SessionRefused,
@@ -30,7 +30,7 @@ use std::time::Duration;
 const ACTED: Duration = Duration::from_secs(10);
 
 /// Await `f`, and fail rather than hang if the session's end never comes.
-async fn ended(session: &Session) -> Result<SessionClose, hclient_core::Error> {
+async fn ended(session: &Session) -> Result<SessionClose, hclient_core::error::Error> {
     tokio::time::timeout(ACTED, session.closed())
         .await
         .expect("the session ends, one way or the other")
@@ -62,7 +62,7 @@ async fn take_stream_zero(conn: &quinn::Connection) {
         .expect("a freshly opened stream can be reset");
 }
 
-fn source_of<T: StdError + 'static>(e: &hclient_core::Error) -> &T {
+fn source_of<T: StdError + 'static>(e: &hclient_core::error::Error) -> &T {
     StdError::source(e)
         .and_then(|s| s.downcast_ref::<T>())
         .expect("the reason is typed, not a string")

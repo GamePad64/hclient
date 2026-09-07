@@ -6,7 +6,7 @@
 //! only a `USERID` a proxy may check against an identd.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 
 use crate::error::{Socks5HandshakeError, Socks5Refused};
 use crate::{Approach, Handshake, Step, take};

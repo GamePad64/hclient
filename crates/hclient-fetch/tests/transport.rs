@@ -18,7 +18,7 @@ use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 use hclient::Client;
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_fetch::Fetch;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -147,16 +147,16 @@ impl Display for DummySource {
 impl StdError for DummySource {}
 
 /// `to_error` must be the identity: `Fetch::Error` is already
-/// `hclient_core::Error`, so wrapping it again (the default's fallback for
+/// `hclient_core::error::Error`, so wrapping it again (the default's fallback for
 /// a foreign error type) would double the category
 /// (`Other: Unsupported: ...`) and break every `is_*` predicate. This is
 /// the direct, structural half of the guarantee; the two tests above are
 /// the behavioral half, exercised through a real `Client`.
 #[wasm_bindgen_test]
 fn to_error_is_the_identity_so_the_classification_survives_unwrapped() {
-    use hclient_core::Transport;
+    use hclient_core::transport::Transport;
     let t = Fetch::new();
-    let original = hclient_core::Error::new(ErrorKind::Tls, DummySource);
+    let original = hclient_core::error::Error::new(ErrorKind::Tls, DummySource);
     let out = t.to_error(original.clone());
     assert_eq!(out.kind(), original.kind());
     assert_eq!(out.to_string(), original.to_string());
@@ -182,7 +182,7 @@ fn to_error_is_the_identity_so_the_classification_survives_unwrapped() {
 struct NeverPolled;
 impl http_body::Body for NeverPolled {
     type Data = bytes::Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
     fn poll_frame(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
@@ -229,7 +229,7 @@ async fn a_streaming_request_body_through_the_real_client_fails_for_the_measured
     let c = Client::builder(f).build().unwrap();
     let err = c
         .post(&url)
-        .body(hclient_core::RequestBody::Streaming(Box::new(NeverPolled)))
+        .body(hclient_core::body::RequestBody::Streaming(Box::new(NeverPolled)))
         .send()
         .await
         .unwrap_err();
@@ -262,7 +262,7 @@ async fn a_streaming_request_body_through_the_real_client_fails_for_the_measured
 
 #[wasm_bindgen_test]
 fn capabilities_forwards_the_same_probe_execute_itself_consults() {
-    use hclient_core::Transport;
+    use hclient_core::transport::Transport;
     let f = Fetch::new();
     let probed = f.capabilities_for_test();
     let via_trait = Transport::capabilities(&f);
@@ -296,8 +296,8 @@ fn assert_send<T: Send>(_: T) {}
 
 #[wasm_bindgen_test]
 fn execute_future_is_send_for_an_empty_request_body() {
-    use hclient_core::RequestBody;
-    use hclient_core::Transport;
+    use hclient_core::body::RequestBody;
+    use hclient_core::transport::Transport;
     let t = Fetch::new();
     let req = http::Request::builder()
         .uri("https://example.com/")
@@ -309,8 +309,8 @@ fn execute_future_is_send_for_an_empty_request_body() {
 
 #[wasm_bindgen_test]
 fn execute_future_is_send_even_for_a_streaming_request_body() {
-    use hclient_core::RequestBody;
-    use hclient_core::Transport;
+    use hclient_core::body::RequestBody;
+    use hclient_core::transport::Transport;
     let t = Fetch::new();
     let req = http::Request::builder()
         .uri("https://example.com/")
@@ -489,11 +489,11 @@ fn page_url() -> String {
         .expect("the currently loaded page always has an href")
 }
 
-fn get(url: &str) -> http::Request<hclient_core::RequestBody> {
+fn get(url: &str) -> http::Request<hclient_core::body::RequestBody> {
     http::Request::builder()
         .method(http::Method::GET)
         .uri(url)
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .expect("request")
 }
 
@@ -510,13 +510,13 @@ fn issue_and_poll_once(
     Box<
         dyn std::future::Future<
                 Output = Result<
-                    http::Response<<Fetch as hclient_core::Transport>::Body>,
-                    hclient_core::Error,
+                    http::Response<<Fetch as hclient_core::transport::Transport>::Body>,
+                    hclient_core::error::Error,
                 >,
             > + '_,
     >,
 > {
-    use hclient_core::Transport;
+    use hclient_core::transport::Transport;
     use std::task::{Context, Poll, Waker};
 
     install_fetch_observer();
@@ -604,7 +604,7 @@ async fn an_execute_future_that_is_kept_completes_the_very_same_fetch() {
 fn fetch_declares_the_cancellation_it_performs() {
     assert_eq!(
         Fetch::new().capabilities_for_test().cancel_on_drop,
-        hclient_core::CancelSupport::Supported,
+        hclient_core::caps::CancelSupport::Supported,
         "the tests in this file measure a cancellation that `Fetch` must also declare — a \
          backend is free to declare `None`, but not to declare `None` while behaving \
          otherwise, nor to quietly stop being covered by the measurement"

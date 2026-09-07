@@ -29,8 +29,9 @@
 
 use bytes::Bytes;
 use hclient::Client;
-use hclient_core::{CloseReason, Event, Hooks};
-use hclient_core::{RequestBody, Timeouts};
+use hclient_core::hooks::{CloseReason, Event, Hooks};
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Timeouts;
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, PoolConfig};
 use hclient_rt::{Spawn, TcpConnect, TcpOpts, TcpOptsSupport};
@@ -285,7 +286,7 @@ impl TlsConnect for FakeTls {
     }
 
     type Handshake<'a, S>
-        = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
+        = std::future::Ready<Result<(S, TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -404,14 +405,14 @@ type HeldTasks = Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()> + Send>>>>>;
 #[derive(Clone, Default)]
 struct HoldsTasks(HeldTasks);
 
-impl hclient_core::Timer for HoldsTasks {
-    type Instant = <Tokio as hclient_core::Timer>::Instant;
-    type Sleep = <Tokio as hclient_core::Timer>::Sleep;
+impl hclient_core::timer::Timer for HoldsTasks {
+    type Instant = <Tokio as hclient_core::timer::Timer>::Instant;
+    type Sleep = <Tokio as hclient_core::timer::Timer>::Sleep;
     fn sleep(&self, d: Duration) -> Self::Sleep {
         Tokio.sleep(d)
     }
     fn now(&self) -> Self::Instant {
-        hclient_core::Timer::now(&Tokio)
+        hclient_core::timer::Timer::now(&Tokio)
     }
     fn elapsed_since(&self, earlier: Self::Instant) -> Duration {
         Tokio.elapsed_since(earlier)
@@ -505,7 +506,7 @@ async fn a_spawner_that_never_runs_hangs_the_request_and_first_byte_is_what_cuts
     assert!(
         matches!(
             err.kind(),
-            hclient_core::ErrorKind::Timeout(hclient_core::Phase::FirstByte)
+            hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::FirstByte)
         ),
         "the one bound that reaches this failure must be the one that \
          reports it: {err:?}"
@@ -1076,8 +1077,8 @@ async fn waiting_for_a_shared_connect_spends_the_callers_connect_bound() {
             assert!(
                 matches!(
                     e.kind(),
-                    hclient_core::ErrorKind::Connect
-                        | hclient_core::ErrorKind::Timeout(hclient_core::Phase::Connect)
+                    hclient_core::error::ErrorKind::Connect
+                        | hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::Connect)
                 ),
                 "the failure is the connect's, not something further on: {e:?}"
             );
@@ -1136,7 +1137,7 @@ struct Feed {
 
 impl http_body::Body for Feed {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -1252,7 +1253,7 @@ async fn a_demand_for_http2_is_served_by_the_shared_connection() {
         .body(RequestBody::Empty)
         .unwrap();
     req.extensions_mut()
-        .insert(hclient_core::RequireVersion(http::Version::HTTP_2));
+        .insert(hclient_core::caps::RequireVersion(http::Version::HTTP_2));
     let resp = tokio::time::timeout(BOUND, client.execute(req))
         .await
         .expect("must not hang")
@@ -1287,9 +1288,9 @@ async fn a_1xx_on_a_shared_connection_reaches_the_hook() {
     #[derive(Debug, Clone, Default)]
     struct Hints(Arc<Mutex<Vec<(u16, u64)>>>);
 
-    impl hclient_core::Hooks for Hints {
-        fn on(&self, event: &hclient_core::Event<'_>) {
-            if let hclient_core::Event::Informational(e) = event {
+    impl hclient_core::hooks::Hooks for Hints {
+        fn on(&self, event: &hclient_core::hooks::Event<'_>) {
+            if let hclient_core::hooks::Event::Informational(e) = event {
                 self.0
                     .lock()
                     .unwrap()
@@ -1729,7 +1730,7 @@ struct SlowHandshake<S> {
 }
 
 impl<S: Unpin> std::future::Future for SlowHandshake<S> {
-    type Output = Result<(S, TlsInfo), hclient_core::Error>;
+    type Output = Result<(S, TlsInfo), hclient_core::error::Error>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -1737,8 +1738,8 @@ impl<S: Unpin> std::future::Future for SlowHandshake<S> {
     ) -> std::task::Poll<Self::Output> {
         std::task::ready!(self.sleep.as_mut().poll(cx));
         if self.fail {
-            return std::task::Poll::Ready(Err(hclient_core::Error::new(
-                hclient_core::ErrorKind::Connect,
+            return std::task::Poll::Ready(Err(hclient_core::error::Error::new(
+                hclient_core::error::ErrorKind::Connect,
                 std::io::Error::other("the first handshake fails, slowly"),
             )));
         }

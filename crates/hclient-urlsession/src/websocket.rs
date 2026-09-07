@@ -44,8 +44,8 @@ use std::task::{Context, Poll, ready};
 
 use block2::RcBlock;
 use futures_channel::oneshot;
-use hclient_core::{CloseFrame, Message, WebSocket, WebSocketConnect};
-use hclient_core::{Error, ErrorKind};
+use hclient_core::websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
+use hclient_core::error::{Error, ErrorKind};
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2_foundation::{

@@ -59,7 +59,7 @@ use std::time::Duration;
 /// vocabulary every backend reports into, defined in `hclient-core`
 /// because a transport must be able to raise one without depending on
 /// this crate.
-pub use hclient_core::{Phase, UnsupportedCapability, VersionNotAvailable};
+pub use hclient_core::error::{Phase, UnsupportedCapability, VersionNotAvailable};
 /// A string that could not be made into a URI, from the sans-io leaf that
 /// does the parsing.
 pub use hclient_proto::uri::UriError;
@@ -274,7 +274,7 @@ pub enum MultipartError {
     #[error("a part's Content-Type is not a valid header value: {0}")]
     InvalidContentType(#[from] http::header::InvalidHeaderValue),
 
-    /// A part's body was a [`RequestBody::Rewindable`](hclient_core::RequestBody::Rewindable) whose factory kept
+    /// A part's body was a [`RequestBody::Rewindable`](hclient_core::body::RequestBody::Rewindable) whose factory kept
     /// returning another one.
     ///
     /// The same bound, for the same reason, as `hclient-fetch`'s and

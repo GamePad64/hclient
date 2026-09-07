@@ -40,7 +40,7 @@ use std::task::Poll;
 pub use crate::error::{ProxyAndUnixSocket, ProxySpokeFirst};
 use bytes::{Bytes, BytesMut};
 
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hyper::rt::{Read, Write};
 use std::future::poll_fn;
 

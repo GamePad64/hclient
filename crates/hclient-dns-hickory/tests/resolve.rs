@@ -12,7 +12,7 @@
 
 use futures_util::StreamExt;
 use futures_util::stream;
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_dns::{RData as SeamData, Record as SeamRecord, Resolve, rtype};
 use hclient_dns_hickory::Hickory;
 use hickory_resolver::config::{
@@ -564,7 +564,7 @@ impl Lookup {
     /// type answers with a `Record` now, and nothing here cares about its
     /// contents — only about how many arrived and whether they were
     /// errors.
-    async fn run(self, resolve: &Hickory<Canned>) -> Vec<Result<(), hclient_core::Error>> {
+    async fn run(self, resolve: &Hickory<Canned>) -> Vec<Result<(), hclient_core::error::Error>> {
         match self {
             Self::V4 => {
                 resolve
@@ -591,7 +591,7 @@ impl Lookup {
     }
 
     /// The single error this lookup must have produced.
-    fn sole_error(got: Vec<Result<(), hclient_core::Error>>, what: Self) -> hclient_core::Error {
+    fn sole_error(got: Vec<Result<(), hclient_core::error::Error>>, what: Self) -> hclient_core::error::Error {
         assert_eq!(
             got.len(),
             1,

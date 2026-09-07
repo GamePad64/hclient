@@ -15,7 +15,7 @@
 
 use futures_core::Stream;
 use futures_util::StreamExt;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_dns::{IpLiteralOnly, Record, Resolve, rtype};
 use rstest::rstest;
 use std::assert_matches;

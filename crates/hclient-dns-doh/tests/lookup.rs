@@ -12,7 +12,7 @@
 mod support;
 
 use futures_util::StreamExt;
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_dns::{Record, Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;
@@ -25,7 +25,7 @@ use support::{
     TYPE_AAAA, message, noerror,
 };
 
-type Item = Result<Record, hclient_core::Error>;
+type Item = Result<Record, hclient_core::error::Error>;
 
 fn transport() -> Native<Tokio, NoTls, hclient_dns::IpLiteralOnly> {
     Native::new(Tokio, NoTls, hclient_dns::IpLiteralOnly)
@@ -56,7 +56,7 @@ fn addrs(items: &[Item]) -> Vec<IpAddr> {
         .collect()
 }
 
-fn one_error(items: Vec<Item>) -> hclient_core::Error {
+fn one_error(items: Vec<Item>) -> hclient_core::error::Error {
     let mut items = items;
     assert_eq!(items.len(), 1, "expected exactly one item, got {items:?}");
     items

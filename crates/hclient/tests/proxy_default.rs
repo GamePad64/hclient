@@ -7,7 +7,7 @@
 
 #![cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 
-use hclient_core::Transport;
+use hclient_core::transport::Transport;
 
 /// `default_transport()` reads nothing, and a client built over it
 /// therefore proxies nothing — whatever the machine says.

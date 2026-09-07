@@ -31,7 +31,7 @@
 /// the reason.
 ///
 /// The name is in the message AND the `io::Error` is a `#[source]`, which
-/// is not redundant: `hclient_core::Error` chains `source()`, so a caller
+/// is not redundant: `hclient_core::error::Error` chains `source()`, so a caller
 /// that wants the errno downcasts to `std::io::Error` through this without
 /// parsing text, while a caller that only logs still sees which name
 /// failed. Dropping `#[source]` would leave the second reader with the
@@ -59,7 +59,7 @@ pub(crate) struct ResolveFailed(pub(crate) String, #[source] pub(crate) std::io:
 /// is `Resolver`. Flattening a source into a `String` to recover the two
 /// derives was rejected then and is rejected now: it would break the
 /// `source()` chain that lets a caller reach the real cause without
-/// parsing a message, which is what `hclient_core::Error` is built
+/// parsing a message, which is what `hclient_core::error::Error` is built
 /// around.
 ///
 /// `Malformed` and `Resolver` carry `#[source]` explicitly and not
@@ -163,7 +163,7 @@ mod tests {
     /// else's error type instead of flattening it into a `String` (see the
     /// type doc). Exactly the two variants that wrap another crate's
     /// failure must expose it, pointing at **that crate's** type, and no
-    /// other variant may invent one: `hclient_core::Error` chains
+    /// other variant may invent one: `hclient_core::error::Error` chains
     /// `source()`, so a caller reaches the real cause by downcast rather
     /// than by reading a message.
     #[test]

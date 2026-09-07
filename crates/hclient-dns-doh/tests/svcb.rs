@@ -35,7 +35,7 @@ const KEY_IPV6HINT: u16 = 6;
 /// RFC 9461's `dohpath`: real, registered, and acted on by nothing here.
 const KEY_DOHPATH: u16 = 7;
 
-type Item = Result<hclient_dns::Record, hclient_core::Error>;
+type Item = Result<hclient_dns::Record, hclient_core::error::Error>;
 
 fn doh(server: &Server) -> Doh<Native<Tokio, NoTls, hclient_dns::IpLiteralOnly>> {
     Doh::pinned(

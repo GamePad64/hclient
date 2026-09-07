@@ -52,7 +52,7 @@
 //! satisfy it.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::Transport;
+use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -65,7 +65,7 @@ fn the_exchange_future_crosses_a_thread_on_the_default_stack() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let req = http::Request::builder()
         .uri("http://192.0.2.1/")
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .unwrap();
     // Never polled: the property under test is the future's type, not what
     // it does, and 192.0.2.1 (RFC 5737 TEST-NET-1) is unroutable anyway.
@@ -100,7 +100,7 @@ async fn a_spawned_exchange_answers() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let req = http::Request::builder()
         .uri(format!("http://{addr}/"))
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .unwrap();
 
     // The transport is moved into the task, so the future is `'static` as

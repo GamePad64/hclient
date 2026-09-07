@@ -16,7 +16,7 @@
 
 use futures_core::Stream;
 use futures_util::StreamExt;
-use hclient_core::Error;
+use hclient_core::error::Error;
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use std::assert_matches;
 use std::pin::pin;

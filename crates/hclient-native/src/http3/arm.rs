@@ -36,8 +36,8 @@
 
 use crate::http3::{H3StagedConnect, Refused};
 use bytes::Bytes;
-use hclient_core::Error as CoreError;
-use hclient_core::RequestBody;
+use hclient_core::error::Error as CoreError;
+use hclient_core::body::RequestBody;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;

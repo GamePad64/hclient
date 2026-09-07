@@ -10,8 +10,8 @@
 
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
@@ -146,7 +146,7 @@ fn get(
         .expect("a well-formed request");
     if let Some(name) = identity {
         req.extensions_mut()
-            .insert(hclient_core::ClientIdentity::new(name));
+            .insert(hclient_core::identity::ClientIdentity::new(name));
     }
     let _ = t;
     req

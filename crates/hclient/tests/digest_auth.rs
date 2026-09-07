@@ -258,7 +258,7 @@ fn a_body_that_cannot_be_replayed_leaves_the_challenge_unanswered() {
     let c = Client::builder(challenge_then(ok()))
         .build()
         .expect("build");
-    let body = hclient_core::RequestBody::Streaming(Box::new(
+    let body = hclient_core::body::RequestBody::Streaming(Box::new(
         http_body_util::Full::new(bytes::Bytes::from_static(b"once")).map_err(|e| match e {}),
     ));
     let got = futures_executor::block_on(async {

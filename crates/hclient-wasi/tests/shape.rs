@@ -32,17 +32,17 @@ fn assert_send<T: Send>(_: T) {}
 /// `execute` produces on a real streaming body.
 #[test]
 fn execute_future_is_send_even_for_a_streaming_request_body() {
-    use hclient_core::RequestBody;
-    use hclient_core::Transport;
+    use hclient_core::body::RequestBody;
+    use hclient_core::transport::Transport;
 
     struct OneShot(Option<bytes::Bytes>);
     impl http_body::Body for OneShot {
         type Data = bytes::Bytes;
-        type Error = hclient_core::Error;
+        type Error = hclient_core::error::Error;
         fn poll_frame(
             mut self: Pin<&mut Self>,
             _: &mut Context<'_>,
-        ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
+        ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::error::Error>>> {
             Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
         }
     }
@@ -63,8 +63,8 @@ fn execute_future_is_send_even_for_a_streaming_request_body() {
 /// so it has its own path to a `Send` future.
 #[test]
 fn execute_future_is_send_for_an_empty_request_body() {
-    use hclient_core::RequestBody;
-    use hclient_core::Transport;
+    use hclient_core::body::RequestBody;
+    use hclient_core::transport::Transport;
 
     let transport = hclient_wasi::WasiHttp::new();
     let req = http::Request::builder()
@@ -85,8 +85,9 @@ fn execute_future_is_send_for_an_empty_request_body() {
 /// through in both directions or they are not auto traits.
 #[test]
 fn a_send_hook_leaves_the_execute_future_send() {
-    use hclient_core::RequestBody;
-    use hclient_core::{Event, Hooks, Transport};
+    use hclient_core::body::RequestBody;
+    use hclient_core::hooks::{Event, Hooks};
+    use hclient_core::transport::Transport;
 
     struct Atomic(std::sync::atomic::AtomicUsize);
     impl Hooks for Atomic {
@@ -121,8 +122,9 @@ fn a_send_hook_leaves_the_execute_future_send() {
 /// under a real host.
 #[test]
 fn a_non_send_hook_still_gives_a_working_transport() {
-    use hclient_core::RequestBody;
-    use hclient_core::{Event, Hooks, Transport};
+    use hclient_core::body::RequestBody;
+    use hclient_core::hooks::{Event, Hooks};
+    use hclient_core::transport::Transport;
 
     #[derive(Clone, Default)]
     struct Local(std::rc::Rc<std::cell::Cell<usize>>);
@@ -150,7 +152,7 @@ fn a_non_send_hook_still_gives_a_working_transport() {
 /// and the default parameter names the same type rather than a second one.
 #[test]
 fn the_no_op_hook_takes_up_no_room_in_the_transport() {
-    use hclient_core::NoHooks;
+    use hclient_core::hooks::NoHooks;
     assert_eq!(std::mem::size_of::<NoHooks>(), 0);
     assert_eq!(
         std::mem::size_of::<hclient_wasi::WasiHttp<NoHooks>>(),

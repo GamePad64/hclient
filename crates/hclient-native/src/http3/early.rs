@@ -68,7 +68,9 @@
 //! strip belongs at the `425` branch rather than here: this module cannot
 //! see that a response was a `425`.
 
-use hclient_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RetryKind};
+use hclient_core::body::{RequestBody, RetryKind};
+use hclient_core::caps::AllowEarlyData;
+use hclient_core::error::{Error, ErrorKind};
 
 /// Whether this request may go into early data, and why not when it may
 /// not.

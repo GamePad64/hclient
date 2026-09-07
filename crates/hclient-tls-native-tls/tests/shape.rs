@@ -2,7 +2,7 @@
 //! the one refusal this backend makes happens before it touches the
 //! transport.
 
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_native_tls::NativeTls;
 use std::pin::Pin;

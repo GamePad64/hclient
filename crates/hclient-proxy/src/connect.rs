@@ -15,7 +15,7 @@
 //! authority-form (§3.2.3) is three fields.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_proto::head;
 
 use crate::error::{ConnectError, ProxyRefused};

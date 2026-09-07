@@ -49,7 +49,7 @@
 
 use bytes::Bytes;
 use hclient::Client;
-use hclient_core::RequestBody;
+use hclient_core::body::RequestBody;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -329,7 +329,7 @@ struct Feed {
 
 impl http_body::Body for Feed {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -371,7 +371,7 @@ struct Repeat {
 
 impl http_body::Body for Repeat {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -410,15 +410,15 @@ impl StdError for TheCallersOwnBodyError {}
 
 impl http_body::Body for FailsAfterOneChunk {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
         if self.sent {
-            return Poll::Ready(Some(Err(hclient_core::Error::new(
-                hclient_core::ErrorKind::Body,
+            return Poll::Ready(Some(Err(hclient_core::error::Error::new(
+                hclient_core::error::ErrorKind::Body,
                 TheCallersOwnBodyError,
             ))));
         }
@@ -474,7 +474,7 @@ impl TlsConnect for FakeTls {
     }
 
     type Handshake<'a, S>
-        = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
+        = std::future::Ready<Result<(S, TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -834,7 +834,7 @@ async fn a_request_body_that_fails_fails_the_request_with_the_callers_own_error(
 
     assert_eq!(
         *err.kind(),
-        hclient_core::ErrorKind::Body,
+        hclient_core::error::ErrorKind::Body,
         "the caller's own kind, not the `Connect` a reset would produce: {err}"
     );
     assert!(

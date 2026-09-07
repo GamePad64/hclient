@@ -50,8 +50,8 @@
 //! to an empty, harmless native `cdylib` there instead.
 #![cfg(target_arch = "wasm32")]
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use http_body::{Body as HttpBody, Frame};
 use std::future::poll_fn;
 use std::pin::Pin;
@@ -318,11 +318,11 @@ impl DataThenTrailers {
 }
 impl HttpBody for DataThenTrailers {
     type Data = bytes::Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
     fn poll_frame(
         mut self: Pin<&mut Self>,
         _: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<bytes::Bytes>, hclient_core::Error>>> {
+    ) -> Poll<Option<Result<Frame<bytes::Bytes>, hclient_core::error::Error>>> {
         if let Some(d) = self.data.take() {
             return Poll::Ready(Some(Ok(Frame::data(d))));
         }
@@ -362,7 +362,7 @@ async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
         .parse()
         .expect("uri");
     let mut builder = http::Request::builder().method(http::Method::POST).uri(uri);
-    let body: Box<dyn HttpBody<Data = bytes::Bytes, Error = hclient_core::Error> + Unpin + Send> =
+    let body: Box<dyn HttpBody<Data = bytes::Bytes, Error = hclient_core::error::Error> + Unpin + Send> =
         match case {
             TrailerCase::Undeclared => Box::new(DataThenTrailers::with_checksum_trailer()),
             TrailerCase::Declared => {
@@ -390,7 +390,7 @@ async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
             eprintln!("expected success, got error: {e}");
             Err(())
         }
-        (false, Err(e)) if e.kind() == &hclient_core::ErrorKind::Body => {
+        (false, Err(e)) if e.kind() == &hclient_core::error::ErrorKind::Body => {
             let msg = e.to_string();
             // The message must name the specific field, not just
             // "rejected".
@@ -531,9 +531,9 @@ async fn cancel_on_drop(port: u16, case: CancelCase) -> Result<(), ()> {
 #[derive(Clone, Default)]
 struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
 
-impl hclient_core::Hooks for Recorder {
-    fn on(&self, event: &hclient_core::Event<'_>) {
-        use hclient_core::Event;
+impl hclient_core::hooks::Hooks for Recorder {
+    fn on(&self, event: &hclient_core::hooks::Event<'_>) {
+        use hclient_core::hooks::Event;
         let line = match event {
             // Named individually rather than through a catch-all, so that
             // a backend that started emitting one of them shows up in the
@@ -737,7 +737,7 @@ async fn hooks_no_head(port: u16) -> Result<(), ()> {
 /// its own process: a number hard-coded on the host side would be
 /// asserting on the order the tests happen to run in.
 async fn hooks_request_id(port: u16) -> Result<(), ()> {
-    use hclient_core::{Attempt, RequestId};
+    use hclient_core::hooks::{Attempt, RequestId};
 
     let get = |rec: &Recorder, attempt: Option<Attempt>| {
         let transport = hclient_wasi::WasiHttp::new().hooks(rec.clone());

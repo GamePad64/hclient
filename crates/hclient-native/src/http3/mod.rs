@@ -88,11 +88,11 @@ pub use error::{ConnectTimedOut, RequestTrailersNotSent, UnknownRequestBodyFrame
 pub use staged::{H3StagedConnect, Refused, Staged};
 
 use bytes::Bytes;
-use hclient_core::{
-    CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
-    RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, TlsSupport,
-};
-use hclient_core::{CloseReason, ConnectionId, Event, Head, Hooks, NoHooks, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport};
+use hclient_core::error::{Error, ErrorKind, Phase};
+use hclient_core::hooks::{CloseReason, ConnectionId, Event, Head, Hooks, NoHooks};
+use hclient_core::transport::Transport;
 use hclient_dns::rtype;
 use hclient_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use hclient_tls::TlsConfigId;
@@ -132,7 +132,7 @@ struct PoolKey {
     /// not what keeps two tenants apart. It is here because `dial` needs
     /// the *name* to hand to `QuicTlsRequest`, and the key is what `dial`
     /// is given.
-    identity: Option<hclient_core::ClientIdentity>,
+    identity: Option<hclient_core::identity::ClientIdentity>,
 }
 
 type SendRequest = h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>;
@@ -327,9 +327,9 @@ where
     /// - `version_reported: true`, and `version_select: true` — which is
     ///   not a claim to choose anything. This transport speaks exactly one
     ///   version and *honours* a per-request
-    ///   [`RequireVersion`](hclient_core::RequireVersion): `HTTP_3`
+    ///   [`RequireVersion`](hclient_core::caps::RequireVersion): `HTTP_3`
     ///   proceeds, anything else is
-    ///   [`VersionNotAvailable`](hclient_core::VersionNotAvailable) before
+    ///   [`VersionNotAvailable`](hclient_core::error::VersionNotAvailable) before
     ///   a packet goes out. `false` would make `Client` refuse the one
     ///   demand this transport meets by construction.
     /// - `timeouts`: `connect` is `true` and enforced in `execute` — it
@@ -370,7 +370,7 @@ where
     T: QuicTlsConnect,
 {
     /// Send this transport's events to `hooks` — see
-    /// [`hclient_core::Hooks`] for what it hears and what it
+    /// [`hclient_core::hooks::Hooks`] for what it hears and what it
     /// costs, [`Event`] for the vocabulary, and `crate::http3::hooks` for the
     /// two things QUIC cannot say in it.
     ///
@@ -692,7 +692,7 @@ where
     /// there is no request stream for it to replay.
     ///
     /// So the rejection reached the caller as an `ErrorKind::Connect`, on a
-    /// request whose only sin was carrying [`hclient_core::AllowEarlyData`].
+    /// request whose only sin was carrying [`hclient_core::caps::AllowEarlyData`].
     /// It was found as a flake — 2 failures in 277 concurrent runs of this
     /// crate's suite, 0 in 846 after.
     ///
@@ -771,7 +771,7 @@ where
             identity: key
                 .identity
                 .as_ref()
-                .map(hclient_core::ClientIdentity::name),
+                .map(hclient_core::identity::ClientIdentity::name),
         })?;
         let endpoint = self.endpoint(addr)?;
         let mut cfg = quinn::ClientConfig::new(crypto);
@@ -795,7 +795,7 @@ where
         // for the key and once here, would be the two-places-drifting
         // problem `bare_host`'s doc is about.
         let connecting = endpoint
-            .connect_with(cfg, addr, hclient_core::bare_host(&key.host))
+            .connect_with(cfg, addr, hclient_core::host::bare_host(&key.host))
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
 
         // The round trip 0-RTT exists to skip, actually skipped.
@@ -898,7 +898,7 @@ where
         head: http::Request<()>,
         body: RequestBody,
         watch: Option<Box<Watch<H>>>,
-        sent: Option<std::sync::Arc<hclient_core::Meter>>,
+        sent: Option<std::sync::Arc<hclient_core::hooks::Meter>>,
     ) -> Result<http::Response<H3Body<H>>, Error> {
         let stream = send.send_request(head).await.map_err(body::stream_error)?;
         // From here on the head is on the wire, and a write-side failure
@@ -946,13 +946,13 @@ where
     fn counted(
         &self,
         resp: http::Response<H3Body<H>>,
-        id: hclient_core::ConnectionId,
-        request: hclient_core::RequestId,
+        id: hclient_core::hooks::ConnectionId,
+        request: hclient_core::hooks::RequestId,
         uri: &http::Uri,
-        sent: Option<std::sync::Arc<hclient_core::Meter>>,
-    ) -> http::Response<hclient_core::Counting<H3Body<H>, H>> {
+        sent: Option<std::sync::Arc<hclient_core::hooks::Meter>>,
+    ) -> http::Response<hclient_core::hooks::Counting<H3Body<H>, H>> {
         resp.map(|b| {
-            hclient_core::Counting::new(b, self.hooks.clone(), id, request, Some(uri), sent)
+            hclient_core::hooks::Counting::new(b, self.hooks.clone(), id, request, Some(uri), sent)
         })
     }
 
@@ -996,7 +996,7 @@ where
         &self,
         resp: &http::Response<H3Body<H>>,
         id: ConnectionId,
-        request: hclient_core::RequestId,
+        request: hclient_core::hooks::RequestId,
         uri: &http::Uri,
         began: Option<R::Instant>,
     ) {
@@ -1021,7 +1021,7 @@ where
         // this half of the defect only because `IpLiteralOnly::literal`
         // strips on the way in; a shortcut in front of the resolver has to
         // strip for itself.
-        if let Ok(ip) = hclient_core::bare_host(host).parse::<std::net::IpAddr>() {
+        if let Ok(ip) = hclient_core::host::bare_host(host).parse::<std::net::IpAddr>() {
             return Ok(SocketAddr::new(ip, port));
         }
         // v6 first, then v4. Not happy eyeballs: QUIC's connect is not a
@@ -1169,7 +1169,7 @@ where
     /// one place that covers both. `Native` passes `Counted::already` for
     /// a body that came up that way, or every octet would be counted
     /// twice.
-    type Body = hclient_core::Counting<H3Body<H>, H>;
+    type Body = hclient_core::hooks::Counting<H3Body<H>, H>;
     type Error = Error;
 
     /// `H3::stage` then `H3::finish` — the same two halves
@@ -1261,7 +1261,7 @@ where
 /// `H3StagedConnect for H3` already carries, for the same reason and named
 /// the same way: this backend's exchange crosses a thread exactly when
 /// its runtime's and its resolver's answers do.
-impl<R, T, D, H> hclient_core::SendTransport for H3<R, T, D, H>
+impl<R, T, D, H> hclient_core::transport::SendTransport for H3<R, T, D, H>
 where
     R: H3Runtime + Sync,      // send-bound-exception: amendment-C16
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10

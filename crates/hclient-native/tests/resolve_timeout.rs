@@ -7,8 +7,10 @@
 //! is worth a different retry.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::Transport;
-use hclient_core::{ErrorKind, Phase, RequestBody, Timeouts};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Timeouts;
+use hclient_core::error::{ErrorKind, Phase};
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_native::{Native, ResolveTimedOut};
 use hclient_rt_tokio::Tokio;
@@ -33,7 +35,7 @@ struct Answering(Option<Duration>);
 impl Resolve for Answering {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
@@ -69,7 +71,7 @@ struct Failing;
 impl Resolve for Failing {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
@@ -83,7 +85,7 @@ impl Resolve for Failing {
         match rtype {
             rtype::A => Box::pin({
                 futures_util::stream::once(async {
-                    Err(hclient_core::Error::new(
+                    Err(hclient_core::error::Error::new(
                         ErrorKind::Resolve,
                         std::io::Error::other("no such host"),
                     ))
@@ -129,7 +131,7 @@ fn server() -> u16 {
     port
 }
 
-fn go<D: Resolve + Clone>(dns: D, port: u16, t: Timeouts) -> Result<u16, hclient_core::Error> {
+fn go<D: Resolve + Clone>(dns: D, port: u16, t: Timeouts) -> Result<u16, hclient_core::error::Error> {
     let transport = Native::new(Tokio, Rustls::with_webpki_roots(), dns);
     rt().block_on(async { transport.execute(request(port, t)).await })
         .map(|r| r.status().as_u16())
@@ -239,7 +241,7 @@ struct Hinting(u16);
 impl Resolve for Hinting {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
     >
     where
         Self: 'a;

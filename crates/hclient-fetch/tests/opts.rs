@@ -14,7 +14,7 @@
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
-use hclient_core::RequestBody;
+use hclient_core::body::RequestBody;
 use hclient_fetch::opts::FetchOpts;
 use web_sys::{ReferrerPolicy, RequestCache, RequestCredentials, RequestMode};
 
@@ -101,7 +101,7 @@ fn all_four_survive_being_set_at_once() {
 /// settings.
 #[wasm_bindgen_test]
 fn configuring_the_options_changes_no_capability() {
-    use hclient_core::Transport;
+    use hclient_core::transport::Transport;
     let plain = hclient_fetch::Fetch::new();
     let configured = hclient_fetch::Fetch::new().opts(FetchOpts {
         mode: Some(RequestMode::NoCors),
@@ -113,7 +113,7 @@ fn configuring_the_options_changes_no_capability() {
     assert_eq!(a.redirects, b.redirects);
     assert_eq!(
         b.redirects,
-        hclient_core::RedirectSupport::Internal,
+        hclient_core::caps::RedirectSupport::Internal,
         "and it is still `Internal`, which is why `redirect` is not one of \
          the members offered — see `opts`'s module doc"
     );

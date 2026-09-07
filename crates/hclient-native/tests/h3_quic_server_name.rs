@@ -8,7 +8,7 @@
 //! becomes `rustls_pki_types::ServerName`, rejecting `[::1]` as neither a
 //! name nor an address) and `resolve`'s literal shortcut (`str::parse::
 //! <IpAddr>`, which a bracketed literal fails). See
-//! `hclient_core::bare_host`.
+//! `hclient_core::host::bare_host`.
 //!
 //! **The two are separated by which resolver is in play**, which is the
 //! whole reason this file has three tests rather than one:
@@ -34,8 +34,9 @@
 mod server;
 
 use futures_util::stream;
-use hclient_core::Transport;
-use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::error::{Error, ErrorKind};
 use hclient_dns::{IpLiteralOnly, RData, Record, Resolve, rtype};
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;

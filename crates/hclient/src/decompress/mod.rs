@@ -85,7 +85,8 @@ use std::sync::OnceLock;
 
 use crate::response::classify_body_error;
 use bytes::Bytes;
-use hclient_core::{Capabilities, DecompressionSupport, Error, ErrorKind};
+use hclient_core::caps::{Capabilities, DecompressionSupport};
+use hclient_core::error::{Error, ErrorKind};
 use std::error::Error as StdError;
 use std::fmt::Debug;
 use std::pin::Pin;
@@ -466,7 +467,7 @@ where
     B: http_body::Body<Data = Bytes> + Unpin,
     // Same `send-bound-exception: amendment-C1` point `Deadline` and
     // `Response::chunk` already stand on: the error is re-classified into
-    // `hclient_core::Error`, whose source is an `Arc<dyn Error + Send +
+    // `hclient_core::error::Error`, whose source is an `Arc<dyn Error + Send +
     // Sync>`.
     B::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
@@ -593,7 +594,7 @@ fn decode_error(coding: &'static str, source: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::{Capabilities, DecompressionSupport};
+    use hclient_core::caps::{Capabilities, DecompressionSupport};
 
     fn caps(d: DecompressionSupport) -> Capabilities {
         let mut c = Capabilities::default();

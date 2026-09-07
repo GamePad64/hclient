@@ -34,7 +34,7 @@ fn hop_to(next: &'static str) -> MockTransport {
     t
 }
 
-fn go(c: &Client) -> Result<hclient::Collected, hclient_core::Error> {
+fn go(c: &Client) -> Result<hclient::Collected, hclient_core::error::Error> {
     futures_executor::block_on(async { c.get("https://a.test/one").send().await?.collect().await })
 }
 
@@ -98,7 +98,7 @@ fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
         .build()
         .expect("build");
     let err = go(&c).expect_err("a refusal is a failure to reach an answer");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Redirect, "{err:?}");
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Redirect, "{err:?}");
     let refused = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<RedirectRefused>())
         .unwrap_or_else(|| panic!("the typed refusal: {err:?}"));
@@ -239,7 +239,7 @@ fn every_hop_is_asked_and_the_answers_are_independent() {
         .build()
         .expect("build");
     let err = go(&c).expect_err("the second hop is refused");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Redirect, "{err:?}");
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Redirect, "{err:?}");
     assert_eq!(*asked.lock().unwrap(), vec!["/two", "/three"]);
     assert_eq!(
         c.transport_as::<MockTransport>()
@@ -363,7 +363,7 @@ fn a_refuse_short_circuits_and_the_rest_of_the_chain_is_not_asked() {
 #[test]
 fn a_policy_against_an_internally_redirecting_backend_is_refused() {
     let mut caps = hclient::caps::Capabilities::default();
-    caps.redirects = hclient_core::RedirectSupport::Internal;
+    caps.redirects = hclient_core::caps::RedirectSupport::Internal;
     let err = Client::builder(MockTransport::new().with_capabilities(caps))
         .redirect(
             Limit::new(10).and(FromFn(|_: &hclient::redirect::ProposedRedirect<'_>| {
@@ -450,7 +450,7 @@ fn a_ring_between_two_allowed_hosts_is_visible_in_the_chain() {
         .build()
         .unwrap();
     let err = go(&counting).expect_err("the policy's hop limit ends it");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Redirect);
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Redirect);
 
     // The chain: refused the moment the target has been seen before.
     let seen = Arc::new(Mutex::new(Vec::new()));

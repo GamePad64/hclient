@@ -115,12 +115,12 @@ impl DataThenTrailers {
 
 impl http_body::Body for DataThenTrailers {
     type Data = bytes::Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::error::Error>>> {
         if self.pend && self.polled == 1 {
             self.pend = false;
             cx.waker().wake_by_ref();
@@ -197,11 +197,11 @@ fn spawn_capturing_h1_server() -> (std::net::SocketAddr, std::sync::mpsc::Receiv
 async fn exchange(
     declare: Option<&str>,
     frames: DataThenTrailers,
-) -> (Result<u16, hclient_core::Error>, String) {
+) -> (Result<u16, hclient_core::error::Error>, String) {
     let (addr, rx) = spawn_capturing_h1_server();
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
-    let body = hclient_core::RequestBody::Streaming(Box::new(frames));
+    let body = hclient_core::body::RequestBody::Streaming(Box::new(frames));
     let mut req = c.post(format!("http://{addr}/"));
     if let Some(d) = declare {
         req = req.header("trailer", d);
@@ -217,11 +217,11 @@ async fn exchange(
 }
 
 /// Pulls the transport's own error type out from under
-/// `hclient_core::Error`, the way a caller would.
-fn undeclared(e: &hclient_core::Error) -> &UndeclaredRequestTrailers {
+/// `hclient_core::error::Error`, the way a caller would.
+fn undeclared(e: &hclient_core::error::Error) -> &UndeclaredRequestTrailers {
     assert_eq!(
         e.kind(),
-        &hclient_core::ErrorKind::Body,
+        &hclient_core::error::ErrorKind::Body,
         "the request body is what failed, and `Unsupported` is \
          `hclient-h3`'s answer for a transport that cannot send trailers \
          at all — this one can. Got: {e}"
@@ -437,7 +437,7 @@ mod over_http2 {
         }
 
         type Handshake<'a, S>
-            = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
+            = std::future::Ready<Result<(S, TlsInfo), hclient_core::error::Error>>
         where
             Self: 'a,
             S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -520,7 +520,7 @@ mod over_http2 {
             SystemDns::new(Tokio),
         );
         let c = Client::builder(t).build().unwrap();
-        let body = hclient_core::RequestBody::Streaming(Box::new(DataThenTrailers::new(Some(
+        let body = hclient_core::body::RequestBody::Streaming(Box::new(DataThenTrailers::new(Some(
             "grpc-status",
         ))));
         let resp =

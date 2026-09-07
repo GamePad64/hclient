@@ -19,7 +19,7 @@
 //! observer can see it is what makes its silence in the first test worth
 //! something.
 
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_rt::TcpConnect;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
@@ -71,7 +71,7 @@ fn recording_peer() -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
     (addr, rx)
 }
 
-async fn connect_with(ech: Option<&[u8]>, addr: SocketAddr) -> Result<(), hclient_core::Error> {
+async fn connect_with(ech: Option<&[u8]>, addr: SocketAddr) -> Result<(), hclient_core::error::Error> {
     let tls = Rustls::with_webpki_roots();
     let tcp = Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())

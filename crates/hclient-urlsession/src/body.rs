@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body, Frame};
 
 use crate::delegate::{Chunk, Shared};

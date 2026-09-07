@@ -7,8 +7,8 @@
 //! shape.
 #![cfg(unix)]
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -124,7 +124,7 @@ fn a_proxy_and_a_socket_cannot_both_be_configured() {
         .unix_socket(&path)
         .map(|_| ())
         .expect_err("both decide where the connection goes");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Unsupported, "{err:?}");
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Unsupported, "{err:?}");
     assert!(
         StdError::source(&err)
             .and_then(|s| s.downcast_ref::<hclient_native::ProxyAndUnixSocket>())
@@ -200,7 +200,7 @@ fn each_socket_sees_its_own_requests() {
 /// connection whose beginning was never announced.
 #[test]
 fn the_connected_event_carries_no_address_and_is_still_emitted() {
-    use hclient_core::{Event, Hooks};
+    use hclient_core::hooks::{Event, Hooks};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]

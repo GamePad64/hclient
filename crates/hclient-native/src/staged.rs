@@ -100,8 +100,11 @@ use crate::{
     Native, NativeIo, Prepared, body, connect, connection_id, discovery, handshake_for, mark,
     negotiated_protocol, protocol_admissible, since, spoken_version, with_connect_timeout,
 };
-use hclient_core::{ConnectTiming, Connected, ConnectionId, Event, Hooks, Reused, Transport};
-use hclient_core::{Error, RequestBody, Timeouts, check_version};
+use hclient_core::hooks::{ConnectTiming, Connected, ConnectionId, Event, Hooks, Reused};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{Timeouts, check_version};
+use hclient_core::error::Error;
 use hclient_dns::Resolve;
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
@@ -367,9 +370,9 @@ where
             .take()
             .expect("a Staged is emptied only by this method, which consumes it");
         let (parts, body) = req.into_parts();
-        let request = hclient_core::identify::<H>(&parts.extensions);
+        let request = hclient_core::hooks::identify::<H>(&parts.extensions);
         let outgoing = body::OutgoingBody::from_request_body(body)?;
-        let sent = hclient_core::meter::<H>(outgoing.expected())
+        let sent = hclient_core::hooks::meter::<H>(outgoing.expected())
             .map(std::sync::Arc::new)
             .inspect(|_| ());
         let outgoing = outgoing.counting(sent.clone());
@@ -390,7 +393,7 @@ where
         );
         let attempt = std::pin::pin!(self.within_first_byte_gated(first_byte, gate, attempt));
         let resp =
-            hclient_core::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
+            hclient_core::hooks::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
                 .await
                 .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, request, &uri, began);
@@ -443,25 +446,25 @@ where
         // Read and resolved here for the reason `Native::run` does the
         // same one file over: a name this backend has not got is a
         // refusal, never a connection with the default identity.
-        let named = req.extensions().get::<hclient_core::ClientIdentity>();
+        let named = req.extensions().get::<hclient_core::identity::ClientIdentity>();
         let identity_id = match named {
             None => None,
             Some(id) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, id.name()) {
                 Some(cfg) => Some(cfg),
                 None => {
                     let e = Error::new(
-                        hclient_core::ErrorKind::Tls,
+                        hclient_core::error::ErrorKind::Tls,
                         crate::UnknownClientIdentity(id.name().to_owned()),
                     );
                     return Err((e, req));
                 }
             },
         };
-        let identity = named.map(hclient_core::ClientIdentity::name);
+        let identity = named.map(hclient_core::identity::ClientIdentity::name);
         // Which request this connect is being paid for, read once from the
         // request still in hand — `Staged` keeps it, so `exchange` reads it
         // back off the same request rather than looking again.
-        let request = hclient_core::identify::<H>(req.extensions());
+        let request = hclient_core::hooks::identify::<H>(req.extensions());
 
         let parts_of_key = match self.key_parts(req.uri(), identity_id) {
             Ok(p) => p,

@@ -25,4 +25,4 @@ pub use udp::{Datagrams, EcnCodepoint, RecvMeta, UdpAdoptStd, UdpBind, UdpCaps, 
 /// `async_io::Timer` does — needs the adapter to satisfy it. Re-exported
 /// here so a runtime crate does not have to depend on `hclient-core`
 /// directly just to name one wrapper.
-pub use hclient_core::{Discard, Timer};
+pub use hclient_core::timer::{Discard, Timer};

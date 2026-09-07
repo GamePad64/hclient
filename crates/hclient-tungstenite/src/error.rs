@@ -36,7 +36,7 @@ pub(crate) struct BadUpgradeHeader(pub(crate) &'static str);
 #[error("the server's Sec-WebSocket-Accept does not match the Sec-WebSocket-Key this client sent")]
 pub(crate) struct AcceptKeyMismatch;
 
-/// The source of the [`hclient_core::ErrorKind::Body`] error a missed pong produces.
+/// The source of the [`hclient_core::error::ErrorKind::Body`] error a missed pong produces.
 ///
 /// A named public type rather than a message, for the reason
 /// [`hclient_native::BetweenBytesElapsed`] is one: a caller must be able to tell
@@ -57,7 +57,7 @@ pub(crate) struct AcceptKeyMismatch;
 /// inventing a second vocabulary.
 ///
 /// It is deliberately **not** an `ErrorKind::Timeout`: no field of
-/// [`hclient_core::Timeouts`] is in force here, and `Phase::BetweenBytes`
+/// [`hclient_core::caps::Timeouts`] is in force here, and `Phase::BetweenBytes`
 /// in particular would name a bound this seam deliberately does not have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the peer did not answer a keep-alive ping within {0:?}")]

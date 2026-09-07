@@ -1,4 +1,4 @@
-//! Apple's `URLSession` behind [`Transport`](hclient_core::Transport).
+//! Apple's `URLSession` behind [`Transport`](hclient_core::transport::Transport).
 //!
 //! The fourth ambient backend — after `hclient-wasi` and `hclient-fetch`,
 //! it owns no connection of its own — and the reason it exists is the list
@@ -34,7 +34,7 @@
 //!   one line.
 //! - Redirects are the sharpest of the three, because `URLSession` lets a
 //!   delegate refuse them and the browser does not. So this backend
-//!   reports [`RedirectSupport::Transparent`](hclient_core::RedirectSupport::Transparent) where `hclient-fetch`
+//!   reports [`RedirectSupport::Transparent`](hclient_core::caps::RedirectSupport::Transparent) where `hclient-fetch`
 //!   reports `Internal`, and `Client`'s redirect policy — its hop limit,
 //!   its `Authorization` stripping across origins — works here and cannot
 //!   there.
@@ -46,7 +46,7 @@
 //! # What it does take, and says so
 //!
 //! The proxy configuration, which is one of the three reasons above — and
-//! [`Capabilities::proxy`](hclient_core::Capabilities::proxy) reports it,
+//! [`Capabilities::proxy`](hclient_core::caps::Capabilities::proxy) reports it,
 //! read from the machine at construction rather than left at `false`.
 //! Left at `false` it was a **capability that lies**: a caller asking
 //! *will my requests go through a proxy* got `no` from a transport that
@@ -71,7 +71,7 @@
 //! # WebSocket
 //!
 //! [`UrlSessionWebSocket`] implements
-//! [`WebSocketConnect`](hclient_core::WebSocketConnect) over
+//! [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect) over
 //! `NSURLSessionWebSocketTask`, **in this crate** rather than one of its
 //! own: the rule that puts framing in a separate crate is about a
 //! dependency to keep out of other graphs, and this costs zero crates —
@@ -90,7 +90,7 @@
 //! through the first send or receive rather than from `websocket()`; and
 //! the peer's close arrives as a **failed receive** with the code on the
 //! task, which is read back and reported as
-//! [`Message::Close`](hclient_core::Message::Close).
+//! [`Message::Close`](hclient_core::websocket::Message::Close).
 
 mod body;
 mod delegate;

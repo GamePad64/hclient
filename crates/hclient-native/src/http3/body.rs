@@ -2,8 +2,8 @@
 //! still being written on the other half of it.
 
 use bytes::{Buf, Bytes};
-use hclient_core::Hooks;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::hooks::Hooks;
+use hclient_core::error::{Error, ErrorKind};
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -68,7 +68,7 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
 /// and so that this type is `Unpin` for every `H` — `hclient-select`
 /// requires that of `<H3<..> as Transport>::Body`, and a `Box` is `Unpin`
 /// whatever it holds.
-pub struct H3Body<H = hclient_core::NoHooks> {
+pub struct H3Body<H = hclient_core::hooks::NoHooks> {
     stream: RecvHalf,
     /// `None` once the request body has been written in full — which for
     /// an empty body is before this type exists, and for a large one may

@@ -11,8 +11,8 @@ use crate::error::TotalTimeoutElapsed;
 use crate::response::classify_body_error;
 use bytes::Bytes;
 use core::time::Duration;
-use hclient_core::Timer;
-use hclient_core::{Error, ErrorKind, Phase};
+use hclient_core::timer::Timer;
+use hclient_core::error::{Error, ErrorKind, Phase};
 use std::error::Error as StdError;
 use std::fmt::Debug;
 use std::future::Future;
@@ -343,7 +343,7 @@ where
     B: http_body::Body<Data = Bytes> + Unpin,
     // The same `send-bound-exception: amendment-C1` point `Response::chunk`
     // already stands on: the error is re-classified into
-    // `hclient_core::Error`, whose source is an `Arc<dyn Error + Send +
+    // `hclient_core::error::Error`, whose source is an `Arc<dyn Error + Send +
     // Sync>`.
     B::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {

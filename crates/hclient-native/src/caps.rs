@@ -49,7 +49,7 @@
 
 pub use crate::error::Disagreement;
 
-use hclient_core::Capabilities;
+use hclient_core::caps::Capabilities;
 use std::fmt::Debug;
 
 /// The value both members can be held to, or the first field on which
@@ -113,7 +113,7 @@ pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, 
     // `between_bytes` and `hclient-h3` does not, while `connect` is
     // enforced by both. Declaring a bound that one stack silently ignores
     // is the exact no-op v0.2 W4 made this field exist to prevent.
-    c.timeouts = hclient_core::TimeoutSupport {
+    c.timeouts = hclient_core::caps::TimeoutSupport {
         resolve: tcp.timeouts.connect && quic.timeouts.connect,
         connect: tcp.timeouts.connect && quic.timeouts.connect,
         first_byte: tcp.timeouts.first_byte && quic.timeouts.first_byte,
@@ -198,10 +198,10 @@ pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, 
 /// at all: early data is entered only for a request the **caller** marked,
 /// per request, and this transport does not mark anything on their behalf.
 ///
-/// [`EarlyDataSupport::Supported`]: hclient_core::EarlyDataSupport::Supported
-/// [`EarlyDataSupport::None`]: hclient_core::EarlyDataSupport::None
-fn early_data(tcp: &Capabilities, quic: &Capabilities) -> hclient_core::EarlyDataSupport {
-    use hclient_core::EarlyDataSupport::{None, Supported};
+/// [`EarlyDataSupport::Supported`]: hclient_core::caps::EarlyDataSupport::Supported
+/// [`EarlyDataSupport::None`]: hclient_core::caps::EarlyDataSupport::None
+fn early_data(tcp: &Capabilities, quic: &Capabilities) -> hclient_core::caps::EarlyDataSupport {
+    use hclient_core::caps::EarlyDataSupport::{None, Supported};
     match (tcp.early_data, quic.early_data) {
         (None, None) => None,
         _ => Supported,

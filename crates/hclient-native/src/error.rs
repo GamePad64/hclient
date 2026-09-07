@@ -47,7 +47,7 @@
 //! [`UndeclaredRequestTrailers::fields`] is still how a caller reads it.
 
 use crate::http1::MINIMUM_MAX_BUF_SIZE;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use http::HeaderName;
 use std::fmt::Debug;
 use std::time::Duration;
@@ -159,7 +159,7 @@ pub(crate) struct UnsupportedScheme(pub(crate) String);
 /// `http://` carries no ALPN, so HTTP/2 there needs prior knowledge (RFC
 /// 9113 §3.4) and this transport does not do it. Serving the request over
 /// HTTP/1.1 anyway would ignore the setting; serving it at all would make
-/// [`Capabilities::full_duplex`](hclient_core::Capabilities::full_duplex) wrong,
+/// [`Capabilities::full_duplex`](hclient_core::caps::Capabilities::full_duplex) wrong,
 /// since [`crate::Native::http1`] raises
 /// that floor on the guarantee that no connection here speaks HTTP/1.1.
 #[derive(Debug, thiserror::Error)]
@@ -337,7 +337,7 @@ pub(crate) struct ConnectTimedOut(pub(crate) Duration);
 #[error("no response head within the first_byte timeout of {0:?}")]
 pub struct FirstByteTimedOut(pub Duration);
 
-/// The source of an [`ErrorKind::Timeout`]`(`[`Phase::BetweenBytes`](hclient_core::Phase::BetweenBytes)`)`.
+/// The source of an [`ErrorKind::Timeout`]`(`[`Phase::BetweenBytes`](hclient_core::error::Phase::BetweenBytes)`)`.
 ///
 /// A named type rather than a string, for the same reason
 /// `hclient::error::TotalTimeoutElapsed` is one: a caller must be able to tell
@@ -402,7 +402,7 @@ pub struct EndedBeforeTheResponse;
 /// the body will emit (RFC 9110 §6.6.2, and hyper's
 /// `proto/h1/encode.rs` enforces it). The same request over HTTP/2 needs
 /// no such header and is unaffected — which is why
-/// [`Capabilities::request_trailers`](hclient_core::Capabilities::request_trailers)
+/// [`Capabilities::request_trailers`](hclient_core::caps::Capabilities::request_trailers)
 /// is `true` for this transport: it sends them on both protocols it
 /// speaks, and a request that omits the declaration HTTP/1.1 requires is
 /// malformed rather than unsupported.

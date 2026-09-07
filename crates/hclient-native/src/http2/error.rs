@@ -7,9 +7,9 @@
 //! hardest to recover once lost — RFC 9113 §8.1's two halves — so they
 //! are where a reader looking for it will be.
 
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 
-/// The one conversion point from [`h2::Error`] to [`hclient_core::Error`]
+/// The one conversion point from [`h2::Error`] to [`hclient_core::error::Error`]
 /// in this module, so a category is chosen once per site rather than
 /// scattered.
 pub(super) fn from_h2_error(e: h2::Error, fallback: ErrorKind) -> Error {

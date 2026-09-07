@@ -72,8 +72,10 @@ mod error;
 pub use error::QueueEmpty;
 
 use bytes::Bytes;
-use hclient_core::Transport;
-use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind};
+use hclient_core::transport::Transport;
+use hclient_core::body::{RequestBody, RetryKind};
+use hclient_core::caps::Capabilities;
+use hclient_core::error::{Error, ErrorKind};
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -153,7 +155,7 @@ pub enum RecordedBody {
     /// the defect under test*.
     ///
     /// [`RecordedBody::snapshot`] is the opt-in.
-    Rewindable(hclient_core::RewindFactory),
+    Rewindable(hclient_core::body::RewindFactory),
     /// A [`RequestBody::Streaming`], which the mock **deliberately does
     /// not drain**.
     ///
@@ -237,9 +239,9 @@ impl RecordedBody {
             // test would have sent, including through a nested factory
             // chain, and a variant added later needs nothing here.
             Self::Rewindable(f) => match f().reduce() {
-                Ok(hclient_core::Reduced::Bytes(b)) => Some(b),
-                Ok(hclient_core::Reduced::Empty) => Some(Bytes::new()),
-                Ok(hclient_core::Reduced::Streaming(_)) | Err(_) => None,
+                Ok(hclient_core::body::Reduced::Bytes(b)) => Some(b),
+                Ok(hclient_core::body::Reduced::Empty) => Some(Bytes::new()),
+                Ok(hclient_core::body::Reduced::Streaming(_)) | Err(_) => None,
             },
             Self::NotRecorded => None,
         }
@@ -507,7 +509,7 @@ impl MockTransport {
     /// structurally similar to the tested decoder-limit-exceeded path but
     /// unverified in its own right).
     /// `err` reaches `Response::chunk()` unchanged: `chunk()` passes `err`
-    /// through unmodified when it's already an `hclient_core::Error`
+    /// through unmodified when it's already an `hclient_core::error::Error`
     /// (`MockBody::Error` — exactly that), instead of relabeling its
     /// category as `Body` — the same trick `Transport::to_error`'s default
     /// uses. It only wraps in `ErrorKind::Body` a foreign error type,
@@ -602,7 +604,7 @@ impl Transport for MockTransport {
     }
 
     /// Identity, not wrapping — `Self::Error` is already
-    /// `hclient_core::Error`.
+    /// `hclient_core::error::Error`.
     ///
     /// The same reason `hclient-wasi` overrides it: without the override,
     /// `Client::execute` would wrap an already-classified error in another
@@ -655,7 +657,7 @@ impl http_body::Body for MockBody {
     }
 }
 
-/// A controllable [`hclient_core::Timer`] for tests: `sleep`
+/// A controllable [`hclient_core::timer::Timer`] for tests: `sleep`
 /// never actually waits — it records the requested `Duration` and resolves
 /// immediately — so a reconnect test (`ReconnectingSseStream`, `sse.rs`)
 /// stays on the bare `futures_executor` executor this crate's test suite
@@ -682,7 +684,7 @@ impl TestTimer {
     }
 }
 
-impl hclient_core::Timer for TestTimer {
+impl hclient_core::timer::Timer for TestTimer {
     /// The sum of every recorded sleep so far — a simple virtual clock,
     /// sufficient for the one thing `Timer::Instant` needs to support
     /// (`Copy + PartialOrd`), without claiming any relationship to real
@@ -711,7 +713,7 @@ impl hclient_core::Timer for TestTimer {
 /// bound of its own: the mock's whole state is behind a `std::sync::Mutex`
 /// (see the module doc), so `execute`'s future is `Send` by ordinary
 /// inference and the impl is one line of forwarding.
-impl hclient_core::SendTransport for MockTransport {
+impl hclient_core::transport::SendTransport for MockTransport {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
@@ -725,7 +727,7 @@ impl hclient_core::SendTransport for MockTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::Transport;
+    use hclient_core::transport::Transport;
     use std::error::Error as StdError;
 
     #[test]
@@ -849,7 +851,7 @@ mod tests {
     /// transport.
     #[test]
     fn extensions_round_trip_through_the_recording_so_timeouts_survive() {
-        use hclient_core::Timeouts;
+        use hclient_core::caps::Timeouts;
         use std::time::Duration;
 
         let m = MockTransport::new();
@@ -945,7 +947,7 @@ mod tests {
 
     #[test]
     fn test_timer_sleep_resolves_immediately_without_real_waiting() {
-        use hclient_core::Timer;
+        use hclient_core::timer::Timer;
         use std::time::{Duration, Instant};
 
         let t = TestTimer::new();
@@ -961,7 +963,7 @@ mod tests {
 
     #[test]
     fn test_timer_records_every_sleep_call_in_order() {
-        use hclient_core::Timer;
+        use hclient_core::timer::Timer;
         use std::time::Duration;
 
         let t = TestTimer::new();
@@ -984,7 +986,7 @@ mod tests {
     /// see the SAME sleeps, not an independent, empty log.
     #[test]
     fn test_timer_clones_share_the_same_recording() {
-        use hclient_core::Timer;
+        use hclient_core::timer::Timer;
         use std::time::Duration;
 
         let original = TestTimer::new();
@@ -999,7 +1001,7 @@ mod tests {
 
     #[test]
     fn test_timer_now_and_elapsed_since_track_the_virtual_clock() {
-        use hclient_core::Timer;
+        use hclient_core::timer::Timer;
         use std::time::Duration;
 
         let t = TestTimer::new();

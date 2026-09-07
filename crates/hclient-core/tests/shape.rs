@@ -5,8 +5,11 @@
 //! list keeps its meaning of "a justified exception in production code."
 
 use bytes::Bytes;
-use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, Timeouts, UnsupportedCapability};
-use hclient_core::{Timer, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{Capabilities, Timeouts};
+use hclient_core::error::{Error, ErrorKind, UnsupportedCapability};
+use hclient_core::timer::Timer;
+use hclient_core::transport::Transport;
 use static_assertions::assert_impl_all;
 use std::error::Error as StdError;
 use std::fmt::Display;
@@ -178,7 +181,7 @@ fn to_error_defaults_to_other_and_keeps_the_source_intact() {
 /// And a backend whose error is already `Error` overrides the hook with an
 /// identity — otherwise its category is lost and `Display` prints the
 /// source twice. `Echo` here stands in for `hclient-wasi`, whose
-/// `type Error = hclient_core::Error` and which does exactly this.
+/// `type Error = hclient_core::error::Error` and which does exactly this.
 #[test]
 fn a_backend_whose_error_is_already_ours_can_pass_it_through_unchanged() {
     let t = Echo {
@@ -353,7 +356,7 @@ fn captured_instants_are_orderable_without_a_third_now_call() {
 fn a_non_send_backend_still_satisfies_the_websocket_seam() {
     use futures_core::Stream;
     use futures_sink::Sink;
-    use hclient_core::{Message, WebSocket, WebSocketConnect};
+    use hclient_core::websocket::{Message, WebSocket, WebSocketConnect};
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
@@ -417,7 +420,7 @@ fn a_non_send_backend_still_satisfies_the_websocket_seam() {
 /// pass while proving nothing about the site the question is about.
 #[test]
 fn a_non_send_hook_reaches_a_bodys_poll_frame_and_the_transport_still_implements_transport() {
-    use hclient_core::{CloseReason, Closed, ConnectionId, Event, Hooks};
+    use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
     use http_body::{Body as HttpBody, Frame};
     use std::pin::Pin;
     use std::task::{Context, Poll, Waker};
@@ -519,7 +522,7 @@ fn a_non_send_hook_reaches_a_bodys_poll_frame_and_the_transport_still_implements
 /// transport.
 #[test]
 fn a_send_hook_leaves_the_transport_and_its_body_send() {
-    use hclient_core::{Event, Hooks, NoHooks};
+    use hclient_core::hooks::{Event, Hooks, NoHooks};
 
     struct Counting(std::sync::atomic::AtomicUsize);
     impl Hooks for Counting {
@@ -568,7 +571,7 @@ fn a_send_hook_leaves_the_transport_and_its_body_send() {
 /// unnecessary: no real connection can wear this one.
 #[test]
 fn the_id_that_names_no_connection_is_one_the_counter_never_hands_out() {
-    use hclient_core::ConnectionId;
+    use hclient_core::hooks::ConnectionId;
 
     let mut seen = std::collections::HashSet::new();
     for _ in 0..64 {

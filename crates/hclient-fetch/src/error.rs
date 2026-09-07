@@ -36,7 +36,7 @@
 //! site that raises it: the same cause is a `Decode` in one place and a
 //! `Body` in another, and that choice belongs to the code making it.
 
-use hclient_core::Error;
+use hclient_core::error::Error;
 
 // ---------------------------------------------------------------------
 // Building a request the browser will accept — `convert.rs`.

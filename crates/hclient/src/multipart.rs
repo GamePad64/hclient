@@ -98,15 +98,16 @@
 //! against.
 //!
 //! [whatwg/html#7575]: https://github.com/whatwg/html/issues/7575
-//! [`RetryKind`]: hclient_core::RetryKind
-//! [`RetryKind::ViaFactory`]: hclient_core::RetryKind::ViaFactory
-//! [`RetryKind::Impossible`]: hclient_core::RetryKind::Impossible
+//! [`RetryKind`]: hclient_core::body::RetryKind
+//! [`RetryKind::ViaFactory`]: hclient_core::body::RetryKind::ViaFactory
+//! [`RetryKind::Impossible`]: hclient_core::body::RetryKind::Impossible
 
 pub use crate::error::MultipartError;
 use crate::error::TrailersInAPart;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::body::RequestBody;
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body, Frame, SizeHint};
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -337,7 +338,7 @@ impl Form {
     ///
     /// The variant handed back is decided by the parts and not by an
     /// argument — see this module's table. Public because a caller
-    /// driving a [`Transport`](hclient_core::Transport)
+    /// driving a [`Transport`](hclient_core::transport::Transport)
     /// directly has no [`crate::RequestBuilder`] to do it for them; they
     /// must then also set the `Content-Type` themselves, from
     /// [`Boundary::content_type`].
@@ -417,7 +418,7 @@ type StreamingPart = Box<dyn Body<Data = Bytes, Error = Error> + Unpin + Send>; 
 /// states it — every call produces an equivalent body — rather than a
 /// second interpretation of it invented by this module.
 fn resolve(body: RequestBody) -> Result<Resolved, MultipartError> {
-    // `hclient_core::RequestBody::reduce`, which is the same unwrapping
+    // `hclient_core::body::RequestBody::reduce`, which is the same unwrapping
     // this function used to write — the sixth copy of it in the
     // workspace, and the bound it applies is now one number rather than
     // three answers.
@@ -426,9 +427,9 @@ fn resolve(body: RequestBody) -> Result<Resolved, MultipartError> {
     // empty **bytes** rather than to nothing, because a multipart part
     // with no content still gets a header block and a boundary.
     match body.reduce().map_err(|_| MultipartError::RewindTooDeep)? {
-        hclient_core::Reduced::Empty => Ok(Resolved::Bytes(Bytes::new())),
-        hclient_core::Reduced::Bytes(bytes) => Ok(Resolved::Bytes(bytes)),
-        hclient_core::Reduced::Streaming(s) => Ok(Resolved::Stream(s)),
+        hclient_core::body::Reduced::Empty => Ok(Resolved::Bytes(Bytes::new())),
+        hclient_core::body::Reduced::Bytes(bytes) => Ok(Resolved::Bytes(bytes)),
+        hclient_core::body::Reduced::Streaming(s) => Ok(Resolved::Stream(s)),
     }
 }
 
@@ -545,7 +546,7 @@ impl Body for MultipartBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::RetryKind;
+    use hclient_core::body::RetryKind;
     use http_body_util::BodyExt;
     use std::error::Error as StdError;
     use std::future::poll_fn;
@@ -558,14 +559,14 @@ mod tests {
 
     /// Drains a `RequestBody` to bytes, resolving `Rewindable` the way a
     /// transport does — which is now one function rather than a phrase:
-    /// `hclient_core::RequestBody::reduce`.
+    /// `hclient_core::body::RequestBody::reduce`.
     fn drain(body: RequestBody) -> Bytes {
         match body.reduce().expect("these fixtures nest no rewind chain") {
-            hclient_core::Reduced::Streaming(s) => futures_executor::block_on(s.collect())
+            hclient_core::body::Reduced::Streaming(s) => futures_executor::block_on(s.collect())
                 .expect("collect")
                 .to_bytes(),
-            hclient_core::Reduced::Bytes(b) => b,
-            hclient_core::Reduced::Empty => Bytes::new(),
+            hclient_core::body::Reduced::Bytes(b) => b,
+            hclient_core::body::Reduced::Empty => Bytes::new(),
         }
     }
 

@@ -3,7 +3,7 @@
 
 use crate::{RData, Record, Resolve, rtype};
 use futures_core::Stream;
-use hclient_core::Error;
+use hclient_core::error::Error;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::pin::Pin;

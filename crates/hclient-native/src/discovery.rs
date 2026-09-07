@@ -496,7 +496,7 @@ pub enum Discovered<'a> {
 /// build a request move the connection to another port and another
 /// address. Nothing in this workspace can do that today except DNS.
 pub struct Prepared {
-    pub(crate) req: http::Request<hclient_core::RequestBody>,
+    pub(crate) req: http::Request<hclient_core::body::RequestBody>,
     pub(crate) found: Prefetched,
 }
 
@@ -508,7 +508,7 @@ impl Prepared {
     /// it did not ask about still go through
     /// [`crate::Prefetch::execute_prepared`], and this is how they get
     /// there, with the connector's own discovery untouched.
-    pub fn new(req: http::Request<hclient_core::RequestBody>) -> Self {
+    pub fn new(req: http::Request<hclient_core::body::RequestBody>) -> Self {
         Self {
             req,
             found: Prefetched::NotConsulted,
@@ -519,7 +519,7 @@ impl Prepared {
     /// record inside was fetched for this URI's authority, and a URI that
     /// could be edited afterwards would be the wrong-origin question
     /// arriving through the back door.
-    pub fn request(&self) -> &http::Request<hclient_core::RequestBody> {
+    pub fn request(&self) -> &http::Request<hclient_core::body::RequestBody> {
         &self.req
     }
 
@@ -533,7 +533,7 @@ impl Prepared {
     /// For the caller that asked, read the answer, and decided to send
     /// this request somewhere else entirely — which is what
     /// `hclient-select` does with a record offering `h3`.
-    pub fn into_request(self) -> http::Request<hclient_core::RequestBody> {
+    pub fn into_request(self) -> http::Request<hclient_core::body::RequestBody> {
         self.req
     }
 }

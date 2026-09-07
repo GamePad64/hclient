@@ -52,7 +52,7 @@ fn what_a_request_produces_is_send() {
 
     // The request future. This is the one `AGENTS.md` records as lost to
     // erasure and regained by C16, so it is the one worth naming.
-    assert_send(c.execute(http::Request::new(hclient_core::RequestBody::Empty)));
+    assert_send(c.execute(http::Request::new(hclient_core::body::RequestBody::Empty)));
 
     // The response body, through the alias a caller actually meets.
     assert_impl_all!(hclient::body::ClientBody: Send);
@@ -118,17 +118,17 @@ fn cloning_shares_one_transport_rather_than_copying_it() {
 fn clone_does_not_require_the_transport_to_be_clone() {
     #[derive(Debug)]
     struct NotClone(hclient::mock::MockTransport);
-    impl hclient_core::Transport for NotClone {
-        type Body = <hclient::mock::MockTransport as hclient_core::Transport>::Body;
-        type Error = <hclient::mock::MockTransport as hclient_core::Transport>::Error;
+    impl hclient_core::transport::Transport for NotClone {
+        type Body = <hclient::mock::MockTransport as hclient_core::transport::Transport>::Body;
+        type Error = <hclient::mock::MockTransport as hclient_core::transport::Transport>::Error;
         fn execute(
             &self,
-            req: http::Request<hclient_core::RequestBody>,
+            req: http::Request<hclient_core::body::RequestBody>,
         ) -> impl std::future::Future<Output = Result<http::Response<Self::Body>, Self::Error>>
         {
             self.0.execute(req)
         }
-        fn capabilities(&self) -> &hclient_core::Capabilities {
+        fn capabilities(&self) -> &hclient_core::caps::Capabilities {
             self.0.capabilities()
         }
     }
@@ -136,12 +136,12 @@ fn clone_does_not_require_the_transport_to_be_clone() {
     // `Client`: hand the same exchange over in a form whose `Send` has a
     // name. At a concrete type — which is what a backend always is — that
     // is inference, not proof.
-    impl hclient_core::SendTransport for NotClone {
+    impl hclient_core::transport::SendTransport for NotClone {
         fn execute_send(
             &self,
-            req: http::Request<hclient_core::RequestBody>,
-        ) -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error> {
-            Box::pin(<Self as hclient_core::Transport>::execute(self, req))
+            req: http::Request<hclient_core::body::RequestBody>,
+        ) -> hclient_core::transport::BoxSendExchange<'_, Self::Body, Self::Error> {
+            Box::pin(<Self as hclient_core::transport::Transport>::execute(self, req))
         }
     }
 

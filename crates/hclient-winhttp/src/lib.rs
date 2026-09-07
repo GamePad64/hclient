@@ -1,4 +1,4 @@
-//! Windows' WinHTTP behind [`Transport`](hclient_core::Transport).
+//! Windows' WinHTTP behind [`Transport`](hclient_core::transport::Transport).
 //!
 //! The fifth ambient backend — after `hclient-wasi`, `hclient-fetch` and
 //! `hclient-urlsession`, it owns no connection of its own — and it exists
@@ -44,14 +44,14 @@
 //!   `Client`'s policy decides — its hop limit, its `Authorization`
 //!   stripping across origins, its per-hop predicate. This backend
 //!   therefore reports
-//!   [`RedirectSupport::Transparent`](hclient_core::RedirectSupport::Transparent),
+//!   [`RedirectSupport::Transparent`](hclient_core::caps::RedirectSupport::Transparent),
 //!   as `hclient-urlsession` does and `hclient-fetch` cannot.
 //! - `WINHTTP_DISABLE_COOKIES`, so `Client`'s jar is the only one.
 //!
 //! **Decompression is the one where this backend is better placed than
 //! either of its ambient siblings**, and it takes a decision to keep it
 //! that way. `hclient-fetch` and `hclient-urlsession` both report
-//! [`DecompressionSupport::Internal`](hclient_core::DecompressionSupport::Internal):
+//! [`DecompressionSupport::Internal`](hclient_core::caps::DecompressionSupport::Internal):
 //! the platform decodes the body and there is no way to ask it not to.
 //! WinHTTP decodes only when asked — `WINHTTP_OPTION_DECOMPRESSION`,
 //! opt-in since Windows 8.1 — so **not asking** leaves `Content-Encoding`
@@ -60,7 +60,7 @@
 //! it is a choice rather than a limitation.
 //!
 //! There is no cache decision to make: WinHTTP has no response cache at
-//! all, unlike WinINET, so [`Capabilities::owns_cache`](hclient_core::Capabilities::owns_cache)
+//! all, unlike WinINET, so [`Capabilities::owns_cache`](hclient_core::caps::Capabilities::owns_cache)
 //! is `false` by construction rather than by a call.
 //!
 //! # HTTP/2 and HTTP/3, and the read-back that the obvious call gets wrong
@@ -76,7 +76,7 @@
 //! **This section replaces one that said the feature was one call away
 //! and named the wrong second call.** It read that enabling HTTP/2 would
 //! oblige reading `WINHTTP_QUERY_VERSION` back on every response to keep
-//! [`Capabilities::version_reported`](hclient_core::Capabilities::version_reported)
+//! [`Capabilities::version_reported`](hclient_core::caps::Capabilities::version_reported)
 //! honest. It would not: `WINHTTP_QUERY_VERSION` reads the **status
 //! line**, an HTTP/2 or HTTP/3 response has none, and WinHTTP synthesises
 //! `HTTP/1.1` into the raw header block this crate already parses. A
@@ -93,10 +93,10 @@
 //!
 //! **A demand is now honoured rather than refused**, which is the other
 //! half. `WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED` prevents a fallback off
-//! the mask, so a [`RequireVersion`](hclient_core::RequireVersion) demand
+//! the mask, so a [`RequireVersion`](hclient_core::caps::RequireVersion) demand
 //! narrows the mask for that one request and WinHTTP refuses the
 //! connection rather than quietly answering over HTTP/1.1 —
-//! [`Capabilities::version_select`](hclient_core::Capabilities::version_select)
+//! [`Capabilities::version_select`](hclient_core::caps::Capabilities::version_select)
 //! is `true`. Without that option a demand could only be *noticed* after
 //! the head, which is `check_version`'s own definition of a check placed
 //! too late.
@@ -116,7 +116,7 @@
 //!
 //! - **Streaming request bodies.** `WinHttpWriteData` is the piece, plus a
 //!   `WRITE_COMPLETE` arm in the callback. Until then a
-//!   [`RequestBody::Streaming`](hclient_core::RequestBody::Streaming) is a
+//!   [`RequestBody::Streaming`](hclient_core::body::RequestBody::Streaming) is a
 //!   typed `Unsupported` error rather than a silent empty body, which is
 //!   the same refusal `hclient-urlsession` makes and for the same reason.
 //! - **The rest of the HTTP/2 and HTTP/3 knobs.** WinHTTP documents
@@ -140,7 +140,7 @@
 //! # WebSocket, and the rule this crate cited at itself
 //!
 //! [`WinHttpWebSocket`] implements
-//! [`WebSocketConnect`](hclient_core::WebSocketConnect), and
+//! [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect), and
 //! it is **in this crate** rather than one of its own. The list above used
 //! to say the opposite, citing the rule that put the framing in
 //! `hclient-tungstenite` — and that rule is about a *dependency*: a

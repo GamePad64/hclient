@@ -259,7 +259,7 @@ fn response_headers_do_not_leak_into_the_next_hop() {
 /// `extensions` surviving to every hop, not just the first one.
 #[test]
 fn per_request_extensions_survive_a_hop_unchanged() {
-    use hclient_core::Timeouts;
+    use hclient_core::caps::Timeouts;
     use std::time::Duration;
 
     // Capabilities aren't decorative anymore now that `Client::execute`
@@ -325,7 +325,7 @@ fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_reques
     struct OneShot(Option<bytes::Bytes>);
     impl http_body::Body for OneShot {
         type Data = bytes::Bytes;
-        type Error = hclient_core::Error;
+        type Error = hclient_core::error::Error;
         fn poll_frame(
             mut self: Pin<&mut Self>,
             _: &mut Context<'_>,

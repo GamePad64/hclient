@@ -37,7 +37,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Buf;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body, Frame};
 
 // Hand-written, so that it carries **no `B: Debug` bound**. `#[derive]`

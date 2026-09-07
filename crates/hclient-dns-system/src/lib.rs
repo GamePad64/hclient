@@ -140,7 +140,7 @@ use crate::error::ResolveFailed;
 #[cfg(test)]
 use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_rt::{Blocking, Cancelled};
 use std::net::{IpAddr, ToSocketAddrs};

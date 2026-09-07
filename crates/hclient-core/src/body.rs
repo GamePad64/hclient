@@ -21,7 +21,7 @@ pub enum RetryKind {
 
 /// `Send + Sync` bounds — a documented exception to the crate invariant
 /// "declare `Send`/`Sync` nowhere" (spec amendment-C2, sibling of C1 on
-/// [`crate::Error`]). Without them `RequestBody` would be `!Send`, so
+/// [`crate::error::Error`]). Without them `RequestBody` would be `!Send`, so
 /// `http::Request<RequestBody>` would be `!Send`, so the future
 /// `Transport::execute` returns would be `!Send` for every backend —
 /// `tokio::spawn(client.get(u).send())` would never build. `Sync` is only
@@ -59,7 +59,7 @@ pub enum RequestBody {
     ///
     /// `+ Send` — the same C2 exception as [`RewindFactory`]: `Box<T>: Send`
     /// requires only `T: Send`, `Sync` isn't needed here.
-    Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
+    Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::error::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 
 impl Debug for RequestBody {
@@ -170,7 +170,7 @@ pub enum Reduced {
     /// A body already in memory.
     Bytes(Bytes),
     /// A body that has to be pumped, and can be sent once.
-    Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
+    Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::error::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 
 /// What can be seen of a [`RequestBody`] **without consuming it and
@@ -418,7 +418,7 @@ mod tests {
     struct EmptyStream;
     impl http_body::Body for EmptyStream {
         type Data = Bytes;
-        type Error = crate::Error;
+        type Error = crate::error::Error;
         fn poll_frame(
             self: Pin<&mut Self>,
             _: &mut Context<'_>,

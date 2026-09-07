@@ -13,7 +13,7 @@
 
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::Transport;
+use hclient_core::transport::Transport;
 use hclient_dns::{IpLiteralOnly, Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;
@@ -33,10 +33,10 @@ fn endpoint() -> http::Uri {
     "https://1.1.1.1/dns-query".parse().unwrap()
 }
 
-fn request() -> http::Request<hclient_core::RequestBody> {
+fn request() -> http::Request<hclient_core::body::RequestBody> {
     http::Request::builder()
         .uri("https://example.test/x")
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .unwrap()
 }
 

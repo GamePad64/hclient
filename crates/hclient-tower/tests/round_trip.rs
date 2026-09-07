@@ -7,7 +7,9 @@
 //! adapter had to exist.
 
 use hclient::Client;
-use hclient_core::{Capabilities, RedirectSupport, RequestBody, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{Capabilities, RedirectSupport};
+use hclient_core::transport::Transport;
 use hclient_mock::MockTransport;
 use hclient_tower::{ServiceTransport, TransportService};
 use std::pin::Pin;
@@ -27,9 +29,9 @@ type Seen = Arc<Mutex<Vec<http::Uri>>>;
 fn stack(
     m: MockTransport,
     seen: Seen,
-) -> impl hclient_core::SendTransport<
-    Error = hclient_core::Error,
-    Body: http_body::Body<Error: Into<hclient_core::Error>> + Send + 'static,
+) -> impl hclient_core::transport::SendTransport<
+    Error = hclient_core::error::Error,
+    Body: http_body::Body<Error: Into<hclient_core::error::Error>> + Send + 'static,
 > + Clone {
     let caps = m.capabilities().clone();
     let svc = TransportService::new(m);
@@ -165,7 +167,7 @@ struct DemandsReadiness {
 
 impl tower_service::Service<http::Request<RequestBody>> for DemandsReadiness {
     type Response = http::Response<http_body_util::Full<bytes::Bytes>>;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
     type Future = Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>>>>;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

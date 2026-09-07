@@ -3,7 +3,7 @@ use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 use bytes::Bytes;
-use hclient_core::RequestBody;
+use hclient_core::body::RequestBody;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,7 +23,7 @@ fn rejects_a_forbidden_header_instead_of_dropping_it() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
     assert!(err.to_string().contains("host"), "{err}");
@@ -69,7 +69,7 @@ fn conversion_of_a_streaming_body_follows_this_browsers_real_capability() {
     );
     if let Err(e) = outcome {
         assert!(
-            matches!(e.kind(), hclient_core::ErrorKind::Unsupported),
+            matches!(e.kind(), hclient_core::error::ErrorKind::Unsupported),
             "{e}"
         );
     }
@@ -86,7 +86,7 @@ fn conversion_of_a_streaming_body_follows_this_browsers_real_capability() {
 struct NeverPolled;
 impl http_body::Body for NeverPolled {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
     fn poll_frame(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
@@ -113,7 +113,7 @@ struct Counted {
 }
 impl http_body::Body for Counted {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
     fn poll_frame(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
@@ -145,7 +145,7 @@ fn counted_body(chunks: Vec<&'static [u8]>) -> (RequestBody, Arc<AtomicUsize>) {
 struct WithTrailers(bool);
 impl http_body::Body for WithTrailers {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
     fn poll_frame(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
@@ -164,8 +164,8 @@ impl http_body::Body for WithTrailers {
 /// `Capabilities` shaped like a browser that streams, for the arm the local
 /// browser may not be. Mirrors what `caps::probe()` sets, minus the fields
 /// no conversion here reads.
-fn caps_that_stream() -> hclient_core::Capabilities {
-    let mut caps = hclient_core::Capabilities::default();
+fn caps_that_stream() -> hclient_core::caps::Capabilities {
+    let mut caps = hclient_core::caps::Capabilities::default();
     caps.streaming_request_body = true;
     caps.forbidden_request_headers = &hclient_fetch::FORBIDDEN_HEADERS;
     caps
@@ -312,7 +312,7 @@ async fn drain(request: &web_sys::Request) -> Vec<Vec<u8>> {
 
 #[wasm_bindgen_test]
 fn streaming_body_is_rejected_when_the_browser_would_corrupt_it() {
-    let mut caps = hclient_core::Capabilities::default();
+    let mut caps = hclient_core::caps::Capabilities::default();
     caps.streaming_request_body = false;
     caps.forbidden_request_headers = &hclient_fetch::FORBIDDEN_HEADERS;
     let req = http::Request::builder()
@@ -322,7 +322,7 @@ fn streaming_body_is_rejected_when_the_browser_would_corrupt_it() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request_with_caps(req, &caps).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
     // Names the capability, so a caller reading the message learns which
@@ -458,15 +458,15 @@ async fn a_body_that_fails_mid_stream_errors_the_stream_instead_of_ending_it() {
     struct FailsAfterOne(bool);
     impl http_body::Body for FailsAfterOne {
         type Data = Bytes;
-        type Error = hclient_core::Error;
+        type Error = hclient_core::error::Error;
         fn poll_frame(
             self: Pin<&mut Self>,
             _: &mut Context<'_>,
         ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
             let me = self.get_mut();
             if me.0 {
-                return Poll::Ready(Some(Err(hclient_core::Error::new(
-                    hclient_core::ErrorKind::Other,
+                return Poll::Ready(Some(Err(hclient_core::error::Error::new(
+                    hclient_core::error::ErrorKind::Other,
                     std::io::Error::other("the-producer-gave-up"),
                 ))));
             }
@@ -583,7 +583,7 @@ fn rewindable_wrapping_full_is_bufferable() {
 /// below, the same mutation caught from the other side.
 #[wasm_bindgen_test]
 fn rewindable_wrapping_streaming_is_rejected_not_silently_emptied() {
-    let mut caps = hclient_core::Capabilities::default();
+    let mut caps = hclient_core::caps::Capabilities::default();
     caps.streaming_request_body = false;
     caps.forbidden_request_headers = &hclient_fetch::FORBIDDEN_HEADERS;
     let req = http::Request::builder()
@@ -593,7 +593,7 @@ fn rewindable_wrapping_streaming_is_rejected_not_silently_emptied() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request_with_caps(req, &caps).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
 }
@@ -671,7 +671,7 @@ fn a_factory_that_never_bottoms_out_is_a_bounded_error_not_a_hang() {
     // conversion refusing to keep unwrapping — the same category `hclient-
     // wasi`'s analogous `RewindTooDeep` uses.
     assert!(
-        !matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        !matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
 }
@@ -723,7 +723,7 @@ fn rewindable_nested_one_past_the_ceiling_is_a_typed_error() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
     assert!(
-        !matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        !matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
 }
@@ -754,7 +754,7 @@ fn nonempty_body_on_get_is_rejected_not_silently_sent() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
     assert!(err.to_string().contains("GET"), "{err}");
@@ -784,7 +784,7 @@ fn a_streaming_body_on_get_is_rejected_just_as_a_buffered_one_is() {
     let err =
         hclient_fetch::testing::to_web_request_with_caps(req, &caps_that_stream()).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
     assert!(err.to_string().contains("GET"), "{err}");
@@ -804,7 +804,7 @@ fn nonempty_body_on_head_is_rejected_not_silently_sent() {
     // pass with our own ahead-of-time check removed — it just wouldn't be
     // `Unsupported` anymore, only the opaque `Other` `js_err` produces.
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
     assert!(err.to_string().contains("HEAD"), "{err}");
@@ -823,7 +823,7 @@ fn non_http_scheme_is_a_typed_unsupported_error_not_opaque() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
     assert!(err.to_string().contains("ftp"), "{err}");
@@ -845,7 +845,7 @@ fn a_relative_uri_is_a_typed_unsupported_error_not_opaque() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
 }
@@ -866,7 +866,7 @@ fn non_ascii_header_value_is_a_typed_unsupported_error_not_opaque() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
     assert!(err.to_string().contains("x-binary"), "{err}");
@@ -941,7 +941,7 @@ fn a_header_outside_the_fixed_list_is_still_caught_not_silently_dropped() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
     assert!(err.to_string().contains("sec-test-header"), "{err}");
@@ -1036,7 +1036,7 @@ fn abort_controller_signal_is_actually_the_requests_signal() {
 #[wasm_bindgen_test]
 fn check_headers_rejects_exactly_what_capabilities_declares_forbidden() {
     static FORBIDDEN: [http::HeaderName; 1] = [http::header::AUTHORIZATION];
-    let mut caps = hclient_core::Capabilities::default();
+    let mut caps = hclient_core::caps::Capabilities::default();
     caps.forbidden_request_headers = &FORBIDDEN;
 
     let mut h = http::HeaderMap::new();

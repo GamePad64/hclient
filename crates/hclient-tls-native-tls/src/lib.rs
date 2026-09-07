@@ -49,7 +49,7 @@
 mod hyper_io;
 mod stream;
 
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_rt::FuturesIo;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use hyper_io::HyperIo;

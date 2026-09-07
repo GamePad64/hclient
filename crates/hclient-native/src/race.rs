@@ -175,7 +175,9 @@ use crate::route::spend_connect_budget;
 use crate::{Prepared, StagedConnect as TcpConnectStaged};
 use bytes::Bytes;
 use futures_util::future::{Either, select};
-use hclient_core::{Error, RequestBody, RetryKind, Timeouts};
+use hclient_core::body::{RequestBody, RetryKind};
+use hclient_core::caps::Timeouts;
+use hclient_core::error::Error;
 use hclient_dns::Resolve;
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
@@ -359,7 +361,7 @@ where
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
-    H: hclient_core::Hooks + Clone + Unpin,
+    H: hclient_core::hooks::Hooks + Clone + Unpin,
     P: crate::proxy::Handshake + Clone,
 {
     /// Everything the QUIC arm of `Transport::execute` does, hedged or not.
@@ -551,7 +553,7 @@ mod tests {
             .body(RequestBody::Full(Bytes::from_static(b"hello")))
             .expect("a well-formed request");
         req.extensions_mut()
-            .insert(hclient_core::RequireVersion(http::Version::HTTP_3));
+            .insert(hclient_core::caps::RequireVersion(http::Version::HTTP_3));
         req.extensions_mut().insert(Timeouts {
             resolve: None,
             connect: Some(Duration::from_millis(300)),
@@ -566,7 +568,7 @@ mod tests {
         assert_eq!(
             probe
                 .extensions()
-                .get::<hclient_core::RequireVersion>()
+                .get::<hclient_core::caps::RequireVersion>()
                 .map(|v| v.0),
             Some(http::Version::HTTP_3),
             "the version demand decides whether a connect is attempted at all"

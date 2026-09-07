@@ -15,7 +15,8 @@ use crate::error::{
     BadScheme, BodyWriteFailed, FieldsError, Rejected, TimeoutRejected, UndeclaredTrailers,
 };
 use bytes::Bytes;
-use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::body::RequestBody;
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body as HttpBody, Frame};
 use std::fmt::Debug;
 use std::future::Future;
@@ -114,7 +115,7 @@ pub(crate) fn fields_error(e: HeaderError) -> Error {
 /// substring-matching down the `source()` chain. Variant names checked
 /// against `wasip3-0.7.0+wasi-0.3.0/src/service.rs:161-206`.
 pub(crate) fn wasi_err(e: ErrorCode) -> Error {
-    use hclient_core::Phase;
+    use hclient_core::error::Phase;
     use wasip3::http::types::ErrorCode as EC;
     let kind = match &e {
         EC::DnsTimeout | EC::DnsError(_) => ErrorKind::Resolve,
@@ -420,7 +421,7 @@ impl Debug for Payload {
 /// the declared capability), and `Rewindable` after the factory unwraps
 /// it.
 ///
-/// Iterative, not recursive, and bounded by `hclient_core::MAX_REWIND_DEPTH` — a
+/// Iterative, not recursive, and bounded by `hclient_core::body::MAX_REWIND_DEPTH` — a
 /// factory that itself returns `Rewindable` would unwrap forever (or
 /// until the stack overflowed) without it.
 pub(crate) fn resolve_payload(body: RequestBody) -> Result<Option<Payload>, Error> {
@@ -429,9 +430,9 @@ pub(crate) fn resolve_payload(body: RequestBody) -> Result<Option<Payload>, Erro
     // `hclient-native` and its HTTP/3 pump recursed without a bound. One
     // question, four backends, three answers — settled in one place.
     match body.reduce().map_err(|e| Error::new(ErrorKind::Other, e))? {
-        hclient_core::Reduced::Empty => Ok(None),
-        hclient_core::Reduced::Bytes(b) => Ok(Some(Payload::Bytes(b))),
-        hclient_core::Reduced::Streaming(s) => Ok(Some(Payload::Streaming(s))),
+        hclient_core::body::Reduced::Empty => Ok(None),
+        hclient_core::body::Reduced::Bytes(b) => Ok(Some(Payload::Bytes(b))),
+        hclient_core::body::Reduced::Streaming(s) => Ok(Some(Payload::Streaming(s))),
     }
 }
 
@@ -487,7 +488,7 @@ mod tests {
     #[test]
     fn capabilities_declare_what_wasi_http_actually_does() {
         let c = super::super::WasiHttp::new();
-        let caps = hclient_core::Transport::capabilities(&c);
+        let caps = hclient_core::transport::Transport::capabilities(&c);
         // wasi:http 0.3 is richer than native for request body streaming…
         assert!(caps.streaming_request_body);
         assert!(caps.request_trailers && caps.response_trailers);
@@ -507,13 +508,13 @@ mod tests {
         // `Client`'s redirect stage handles it in full. `None` is what
         // `Capabilities::default()` returns, and would mean "there are no
         // redirects here".
-        assert_eq!(caps.redirects, hclient_core::RedirectSupport::Transparent);
+        assert_eq!(caps.redirects, hclient_core::caps::RedirectSupport::Transparent);
         assert_ne!(
             caps.redirects,
-            hclient_core::Capabilities::default().redirects,
+            hclient_core::caps::Capabilities::default().redirects,
             "a declared capability must differ from \"the field was never filled in\""
         );
-        assert_eq!(caps.tls_config, hclient_core::TlsSupport::None);
+        assert_eq!(caps.tls_config, hclient_core::caps::TlsSupport::None);
         assert!(!caps.proxy);
         // five headers the host actually
         // refuses to accept from the guest.
@@ -543,7 +544,7 @@ mod tests {
     /// `Display` (which, if wrapped, would print `Other: Tls: …`).
     #[test]
     fn to_error_is_the_identity_so_the_classification_survives_the_client() {
-        use hclient_core::Transport as _;
+        use hclient_core::transport::Transport as _;
 
         let t = super::super::WasiHttp::new();
         let classified = wasi_err(ErrorCode::TlsProtocolError);
@@ -880,7 +881,7 @@ mod tests {
     /// `wasi_err`'s own doc comment cites.
     #[test]
     fn wasi_err_gives_every_error_code_variant_the_category_it_is_documented_to_have() {
-        use hclient_core::Phase;
+        use hclient_core::error::Phase;
         use wasip3::http::types::{DnsErrorPayload, FieldSizePayload, TlsAlertReceivedPayload};
 
         fn field_size() -> FieldSizePayload {
@@ -1079,11 +1080,11 @@ mod tests {
         let err = resolve_payload(RequestBody::rewindable(infinite)).unwrap_err();
         let too_deep = StdError::source(&err)
             .expect("Error::new always has a source")
-            .downcast_ref::<hclient_core::RewindTooDeep>()
+            .downcast_ref::<hclient_core::error::RewindTooDeep>()
             .expect("the source of a nesting-bound failure is RewindTooDeep");
         let msg = too_deep.to_string();
         assert!(
-            msg.contains(&hclient_core::MAX_REWIND_DEPTH.to_string()),
+            msg.contains(&hclient_core::body::MAX_REWIND_DEPTH.to_string()),
             "the bound that was hit must appear in the message: {msg}"
         );
         assert!(msg.contains("Rewindable"), "{msg}");

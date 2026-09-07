@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use hclient::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxedFlow};
-use hclient_core::RequestBody;
+use hclient_core::body::RequestBody;
 use hclient_mock::MockTransport;
 
 fn challenge(token: &str) -> http::Response<&'static str> {
@@ -231,13 +231,13 @@ struct Watching {
 
 /// `BodyView` is `Copy` and borrows, so what a test can keep is a
 /// description rather than the value.
-fn describe(v: hclient_core::BodyView<'_>) -> String {
+fn describe(v: hclient_core::body::BodyView<'_>) -> String {
     match v {
-        hclient_core::BodyView::Empty => "empty".to_owned(),
-        hclient_core::BodyView::Bytes(b) => {
+        hclient_core::body::BodyView::Empty => "empty".to_owned(),
+        hclient_core::body::BodyView::Bytes(b) => {
             format!("bytes:{}", String::from_utf8_lossy(b))
         }
-        hclient_core::BodyView::Opaque => "opaque".to_owned(),
+        hclient_core::body::BodyView::Opaque => "opaque".to_owned(),
     }
 }
 

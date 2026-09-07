@@ -10,7 +10,7 @@
 #![cfg(feature = "system-proxy")]
 
 use hclient::Client;
-use hclient_core::Transport;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::proxy::system::testing::system_proxies;
 use hclient_native::testing::chosen_proxy;
@@ -22,7 +22,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-type Installed = Native<Tokio, NoTls, IpLiteralOnly, hclient_core::NoHooks, HttpConnect>;
+type Installed = Native<Tokio, NoTls, IpLiteralOnly, hclient_core::hooks::NoHooks, HttpConnect>;
 
 /// Where a request would go, asked through the chooser a request uses
 /// rather than by reading fields back.
@@ -103,7 +103,7 @@ fn a_configuration_this_transport_cannot_hold_is_an_unsupported_error() {
         .system_proxies_from(&sys)
         .expect_err("a SOCKS proxy is not installable here");
 
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Unsupported);
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Unsupported);
     assert!(err.to_string().contains("socks.corp"), "{err}");
 }
 

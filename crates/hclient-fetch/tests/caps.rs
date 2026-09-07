@@ -13,7 +13,7 @@ fn declares_what_fetch_genuinely_cannot_do() {
     assert!(!c.version_select);
     assert!(!c.version_reported);
     // No TLS, no client certificates, no proxy.
-    assert_eq!(c.tls_config, hclient_core::TlsSupport::None);
+    assert_eq!(c.tls_config, hclient_core::caps::TlsSupport::None);
     assert!(!c.client_certs);
     assert!(!c.proxy);
     // Cookies and cache are ambient, owned by the browser.
@@ -43,7 +43,7 @@ fn declares_what_fetch_genuinely_cannot_do() {
 #[wasm_bindgen_test]
 fn the_browser_follows_redirects_itself_so_a_client_policy_cannot_apply() {
     let c = hclient_fetch::Fetch::new().capabilities_for_test();
-    assert_eq!(c.redirects, hclient_core::RedirectSupport::Internal);
+    assert_eq!(c.redirects, hclient_core::caps::RedirectSupport::Internal);
 }
 
 #[wasm_bindgen_test]
@@ -249,7 +249,7 @@ fn the_cheap_presence_check_and_the_deciding_probe_still_agree() {
 /// `undeclared_capability_fields_match_their_conservative_defaults_today`.
 #[wasm_bindgen_test]
 fn undeclared_capability_fields_match_their_conservative_defaults_today() {
-    let hclient_core::Capabilities {
+    let hclient_core::caps::Capabilities {
         request_trailers,
         response_trailers,
         client_certs,

@@ -952,7 +952,7 @@ impl Request {
     /// versions other than those enabled by
     /// **WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL** from being used for the
     /// request"* — and it is what makes
-    /// [`Capabilities::version_select`](hclient_core::Capabilities::version_select)
+    /// [`Capabilities::version_select`](hclient_core::caps::Capabilities::version_select)
     /// honest here. Without it a demand could only be *checked* after the
     /// head came back, which is `check_version`'s own definition of a
     /// check placed too late: the request would already be at the server.

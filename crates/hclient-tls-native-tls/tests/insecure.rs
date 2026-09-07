@@ -74,7 +74,7 @@ async fn bounded<F: std::future::Future>(fut: F) -> F::Output {
         .unwrap_or_else(|_| panic!("did not resolve within {OP_TIMEOUT:?}"))
 }
 
-async fn handshake(tls: &NativeTls, addr: SocketAddr) -> Result<(), hclient_core::Error> {
+async fn handshake(tls: &NativeTls, addr: SocketAddr) -> Result<(), hclient_core::error::Error> {
     let tcp = Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await

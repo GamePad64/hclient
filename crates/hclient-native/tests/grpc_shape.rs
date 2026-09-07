@@ -65,7 +65,8 @@
 
 use bytes::Bytes;
 use hclient::Client;
-use hclient_core::{RequestBody, Timeouts};
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Timeouts;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -599,7 +600,7 @@ struct Feed {
 
 impl http_body::Body for Feed {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -636,7 +637,7 @@ struct Repeat {
 
 impl http_body::Body for Repeat {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -738,7 +739,7 @@ impl TlsConnect for FakeTls {
     }
 
     type Handshake<'a, S>
-        = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
+        = std::future::Ready<Result<(S, TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -1609,7 +1610,7 @@ async fn an_idle_stream_survives_by_default_and_is_cut_only_when_asked() {
     .expect("the bounded arm must fail rather than deliver");
     assert_eq!(
         err.kind(),
-        &hclient_core::ErrorKind::Timeout(hclient_core::Phase::BetweenBytes),
+        &hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::BetweenBytes),
         "the same gap the unbounded arm rode out, cut by the knob the \
          caller reached for: {err}"
     );

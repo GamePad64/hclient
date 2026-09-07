@@ -6,7 +6,7 @@
 //! head, looks at its socket, and only then decides what to send.
 
 use hclient::Client;
-use hclient_core::RequestBody;
+use hclient_core::body::RequestBody;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -93,7 +93,7 @@ fn server(interim: Option<&'static [u8]>) -> (SocketAddr, mpsc::Receiver<Seen>) 
 fn post(
     addr: SocketAddr,
     waiting: bool,
-) -> impl std::future::Future<Output = Result<u16, hclient_core::Error>> {
+) -> impl std::future::Future<Output = Result<u16, hclient_core::error::Error>> {
     let base = Native::new(Tokio, NoTls, IpLiteralOnly);
     let transport = if waiting {
         // **Far longer than this test's own guard**, deliberately: with a

@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use hclient_core::RequestBody;
+use hclient_core::body::RequestBody;
 use hclient_tower::app::{AppTransport, OutgoingBody};
 use http_body_util::BodyExt as _;
 

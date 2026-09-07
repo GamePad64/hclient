@@ -20,8 +20,9 @@
 //! not.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::Transport;
-use hclient_core::{ErrorKind, RequestBody};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::error::ErrorKind;
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, Prepared, StagedConnect};
 use hclient_rt_tokio::Tokio;
@@ -124,7 +125,7 @@ fn get(addr: SocketAddr) -> Prepared {
 
 async fn body_of<B>(resp: http::Response<B>) -> String
 where
-    B: http_body::Body<Data = bytes::Bytes, Error = hclient_core::Error>,
+    B: http_body::Body<Data = bytes::Bytes, Error = hclient_core::error::Error>,
 {
     assert_eq!(resp.status(), 200);
     let bytes = resp

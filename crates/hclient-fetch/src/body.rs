@@ -117,7 +117,8 @@ use futures_channel::{mpsc, oneshot};
 use futures_core::Stream;
 use futures_util::StreamExt;
 use futures_util::future::{Either, select};
-use hclient_core::{DecompressionSupport, Error, ErrorKind};
+use hclient_core::caps::DecompressionSupport;
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::fmt::Debug;
 use std::future::poll_fn;
@@ -176,13 +177,13 @@ impl Debug for Body {
 ///   `Content-Length` would be exactly right and distrusting it would be
 ///   the lie.
 /// - `caps::probe` reports it as
-///   [`Capabilities::response_decompression`](hclient_core::Capabilities::response_decompression),
+///   [`Capabilities::response_decompression`](hclient_core::caps::Capabilities::response_decompression),
 ///   which is what stops `hclient`'s `Client` decoding a second time and
 ///   corrupting every compressed response.
 ///
 /// Hence a constant read by both rather than a literal at each site — the
 /// same recipe `hclient-native`'s `reuse_of` uses for
-/// [`ReuseSupport`](hclient_core::ReuseSupport), so that "what this
+/// [`ReuseSupport`](hclient_core::caps::ReuseSupport), so that "what this
 /// transport does" and "what it declares" are one fact read twice. Flipping
 /// this to `None` makes `tests/body.rs`'s
 /// `size_hint_does_not_trust_content_length_under_content_encoding` fail,

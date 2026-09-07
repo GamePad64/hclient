@@ -6,11 +6,11 @@
 //! handshake to lose. [`Error`] and [`ErrorKind`] are the shape a backend
 //! reports such a failure in, and the rest are the refusals made above
 //! every backend, where the fact being refused is portable: a
-//! [`Capabilities`](crate::Capabilities) field a transport does not have
+//! [`Capabilities`](crate::caps::Capabilities) field a transport does not have
 //! ([`UnsupportedCapability`]), a
-//! [`RequireVersion`](crate::RequireVersion) demand a connection cannot
+//! [`RequireVersion`](crate::caps::RequireVersion) demand a connection cannot
 //! meet ([`VersionNotAvailable`]), and a
-//! [`RequestBody`](crate::RequestBody) whose factory contract was broken
+//! [`RequestBody`](crate::body::RequestBody) whose factory contract was broken
 //! ([`RewindTooDeep`]).
 //!
 //! **That is why they are here and not one per backend**, which the two
@@ -33,7 +33,7 @@ use std::sync::Arc;
 pub enum Phase {
     /// Name resolution alone, which is a phase a caller can distinguish
     /// and a connector mostly cannot — see
-    /// [`Timeouts::resolve`](crate::Timeouts::resolve) for what it bounds
+    /// [`Timeouts::resolve`](crate::caps::Timeouts::resolve) for what it bounds
     /// and why it is not
     /// [`Connect`](Self::Connect) minus the rest.
     Resolve,
@@ -184,8 +184,8 @@ impl StdError for Error {
     }
 }
 
-/// A [`RequestBody::Rewindable`](crate::RequestBody::Rewindable) whose factory kept handing back another
-/// `Rewindable`, past [`MAX_REWIND_DEPTH`](crate::MAX_REWIND_DEPTH).
+/// A [`RequestBody::Rewindable`](crate::body::RequestBody::Rewindable) whose factory kept handing back another
+/// `Rewindable`, past [`crate::body::MAX_REWIND_DEPTH`].
 ///
 /// The factory contract is being broken rather than a legitimate shape
 /// being refused — but a broken contract that overflows the stack is worse
@@ -198,7 +198,7 @@ impl StdError for Error {
 #[non_exhaustive]
 pub struct RewindTooDeep;
 
-/// A [`RequireVersion`](crate::RequireVersion) demand the connection in hand does not satisfy.
+/// A [`RequireVersion`](crate::caps::RequireVersion) demand the connection in hand does not satisfy.
 ///
 /// Carries both halves, because "HTTP/2 was required" and "HTTP/1.1 is
 /// what this connection negotiated" are separately actionable — the first

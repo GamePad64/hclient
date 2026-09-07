@@ -33,7 +33,7 @@
 //! is a change rather than a read of something that was already there.
 
 use crate::Rustls;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

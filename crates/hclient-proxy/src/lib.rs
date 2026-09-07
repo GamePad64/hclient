@@ -147,10 +147,10 @@ pub trait Handshake {
     /// `&mut self` because a handshake remembers what it asked for: the
     /// SOCKS5 method it offered decides which reply is legal, and no
     /// state machine can check that without keeping it.
-    fn begin(&mut self, host: &str, port: u16) -> Result<Bytes, hclient_core::Error>;
+    fn begin(&mut self, host: &str, port: u16) -> Result<Bytes, hclient_core::error::Error>;
 
     /// Consume what has arrived; answer what happens next.
-    fn advance(&mut self, from_peer: &mut BytesMut) -> Result<Step, hclient_core::Error>;
+    fn advance(&mut self, from_peer: &mut BytesMut) -> Result<Step, hclient_core::error::Error>;
 
     /// `Proxy-Authorization` for a request written in absolute-form, if
     /// this proxy wants one.
@@ -193,7 +193,7 @@ pub fn drive_for_test<H: Handshake>(
     host: &str,
     port: u16,
     mut answer: impl FnMut(&[u8]) -> Vec<u8>,
-) -> Result<(Vec<Vec<u8>>, Bytes), hclient_core::Error> {
+) -> Result<(Vec<Vec<u8>>, Bytes), hclient_core::error::Error> {
     let mut written = Vec::new();
     let mut buf = BytesMut::new();
 
@@ -213,8 +213,8 @@ pub fn drive_for_test<H: Handshake>(
                 // still asking for bytes would hang a real driver. In a
                 // test that is a bug in the fixture or in the machine,
                 // and either way it must fail rather than loop.
-                return Err(hclient_core::Error::new(
-                    hclient_core::ErrorKind::Connect,
+                return Err(hclient_core::error::Error::new(
+                    hclient_core::error::ErrorKind::Connect,
                     std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
                 ));
             }

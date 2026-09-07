@@ -17,7 +17,7 @@ use std::error::Error as StdError;
 use std::fmt::Debug;
 
 use bytes::Bytes;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_proto::lines::LineSplitter;
 use http_body::Body as HttpBody;
 

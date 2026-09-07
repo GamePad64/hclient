@@ -47,9 +47,7 @@
 //! `fetch`. [`supports_streaming_request_body`] is that decision, and it is
 //! whatwg/fetch#1470's own detection — see its doc comment.
 
-use hclient_core::{
-    CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport,
-};
+use hclient_core::caps::{CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport};
 use wasm_bindgen::{JsCast, JsValue};
 
 /// Headers that fetch forbids scripts from setting. We **declare** them
@@ -408,7 +406,7 @@ pub(crate) fn probe() -> Capabilities {
     // wholly separate global, unreachable from a `fetch`-shaped
     // `Transport`, and `src/websocket.rs` is the conclusion drawn from
     // that — this crate reaches the global through
-    // `hclient_core::WebSocketConnect`, which a transport
+    // `hclient_core::websocket::WebSocketConnect`, which a transport
     // says it can do by implementing it rather than by declaring anything
     // here.
     c.forbidden_request_headers = &FORBIDDEN_HEADERS;

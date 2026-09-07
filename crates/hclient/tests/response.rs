@@ -187,7 +187,7 @@ fn collected_json_decodes_the_body_and_still_keeps_status() {
 /// `Capabilities::default()` now honestly rejects this request.
 #[test]
 fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
-    use hclient_core::Timeouts;
+    use hclient_core::caps::Timeouts;
     use std::time::Duration;
 
     let mut caps = hclient::caps::Capabilities::default();
@@ -526,7 +526,7 @@ fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
         .unwrap_err();
     // `chunk()` does not relabel an already-classified error as
     // `ErrorKind::Body` — `MockBody::Error`
-    // is already `hclient_core::Error`, and its `kind()` (`Other`, set one
+    // is already `hclient_core::error::Error`, and its `kind()` (`Other`, set one
     // line above) must survive unchanged. `chunk_survives_a_
     // non_body_error_kind_instead_of_relabeling_it_body` (below) checks the
     // same property in a targeted way; this test does it in passing,
@@ -542,7 +542,7 @@ fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
 /// `Error::new(ErrorKind::Body, e)` unconditionally — the exact pattern
 /// `Transport::to_error`'s "already ours? pass it through" default exists
 /// against, on the response half of the exchange.
-/// `MockBody::Error` is `hclient_core::Error` already, so a body that fails
+/// `MockBody::Error` is `hclient_core::error::Error` already, so a body that fails
 /// with a real classification (`Cancelled`, chosen because it exists
 /// precisely so a caller can tell "the runtime is shutting down" apart from
 /// a genuine body failure without downcasting — see `ErrorKind::Cancelled`'s

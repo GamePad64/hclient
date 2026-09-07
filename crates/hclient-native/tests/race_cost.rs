@@ -40,8 +40,9 @@ mod fakedns;
 
 use bytes::Bytes;
 use fakedns::FakeDns;
-use hclient_core::Transport;
-use hclient_core::{RequestBody, Timeouts};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Timeouts;
 use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
@@ -400,13 +401,13 @@ fn bounded(port: u16, connect: Duration) -> http::Request<RequestBody> {
 
 /// Run one exchange to completion — head **and** body — and time it.
 ///
-/// `Error = hclient_core::Error` rather than the trait's own
+/// `Error = hclient_core::error::Error` rather than the trait's own
 /// `std::error::Error` bound, because the *kind* is what distinguishes a
 /// connect timeout from a refusal and that is the whole question here.
 /// Both members satisfy it.
 async fn exchange<T>(t: &T, req: http::Request<RequestBody>) -> (Duration, String)
 where
-    T: Transport<Error = hclient_core::Error>,
+    T: Transport<Error = hclient_core::error::Error>,
     <T::Body as http_body::Body>::Error: Display,
 {
     let started = Instant::now();
@@ -907,7 +908,7 @@ async fn m5b_dropping_the_transport_as_well_as_the_future() {
 /// file for exactly that reason.
 async fn race<N>(q: &Quic, n: &N, port: u16, head_start: Duration) -> &'static str
 where
-    N: Transport<Error = hclient_core::Error>,
+    N: Transport<Error = hclient_core::error::Error>,
     <N::Body as http_body::Body>::Error: Display,
 {
     let quic_arm = std::pin::pin!(exchange(q, get(port)));

@@ -58,7 +58,7 @@ impl<S> FuturesIo<S> {
 // A hand-written `Debug`, not `#[derive]`: `derive` would dump all 8 KiB of
 // `scratch` as a list of numbers on every format call — useless and noisy
 // in logs. The same technique is already used in
-// `hclient_core::RequestBody` (length instead of contents).
+// `hclient_core::body::RequestBody` (length instead of contents).
 impl<S: Debug> Debug for FuturesIo<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FuturesIo")

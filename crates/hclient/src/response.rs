@@ -2,7 +2,7 @@
 pub(crate) use crate::error::CharsetError;
 pub(crate) use crate::error::UnexpectedStatus;
 use bytes::{Bytes, BytesMut};
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_proto::link::Links;
 use http_body::Body as HttpBody;
 use std::error::Error as StdError;
@@ -106,7 +106,7 @@ impl<B> Response<B> {
     /// a failure to reach one. Treating it as an error here would overrule
     /// that from two layers up.
     ///
-    /// [`ErrorKind::Status`]: hclient_core::ErrorKind::Status
+    /// [`ErrorKind::Status`]: hclient_core::error::ErrorKind::Status
     pub fn error_for_status(self) -> Result<Self, Error> {
         if self.status().is_client_error() || self.status().is_server_error() {
             return Err(Error::new(
@@ -143,8 +143,8 @@ impl<B> Response<B> {
     ///
     /// It is on [`Collected`] too, for [`Self::links`]'s reason.
     ///
-    /// [`Capabilities`]: hclient_core::Capabilities
-    /// [`RequireVersion`]: hclient_core::RequireVersion
+    /// [`Capabilities`]: hclient_core::caps::Capabilities
+    /// [`RequireVersion`]: hclient_core::caps::RequireVersion
     pub fn version(&self) -> http::Version {
         self.parts.version
     }
@@ -379,7 +379,7 @@ impl Collected {
     /// a failure to reach one. Treating it as an error here would overrule
     /// that from two layers up.
     ///
-    /// [`ErrorKind::Status`]: hclient_core::ErrorKind::Status
+    /// [`ErrorKind::Status`]: hclient_core::error::ErrorKind::Status
     pub fn error_for_status(self) -> Result<Self, Error> {
         if self.status().is_client_error() || self.status().is_server_error() {
             return Err(Error::new(
@@ -405,7 +405,7 @@ impl Collected {
     /// The protocol this response was actually spoken over.
     ///
     /// [`Response::version`] has what the value is for and why nothing in
-    /// [`Capabilities`](hclient_core::Capabilities) can answer the same
+    /// [`Capabilities`](hclient_core::caps::Capabilities) can answer the same
     /// question. Why it is here as well is [`Self::links`]'s reason,
     /// with more force than either of the other two: `.collect().await?`
     /// appears in every example this crate leads with, so `Collected` is

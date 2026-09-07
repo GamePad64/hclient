@@ -390,7 +390,7 @@ mod replayability {
         struct OneShot(Option<bytes::Bytes>);
         impl http_body::Body for OneShot {
             type Data = bytes::Bytes;
-            type Error = hclient_core::Error;
+            type Error = hclient_core::error::Error;
             fn poll_frame(
                 mut self: Pin<&mut Self>,
                 _: &mut Context<'_>,
@@ -547,7 +547,7 @@ mod replayability {
             .uri("https://a/x")
             .body(RequestBody::Full(bytes::Bytes::from_static(b"payload")))
             .unwrap();
-        req.extensions_mut().insert(hclient_core::AllowEarlyData);
+        req.extensions_mut().insert(hclient_core::caps::AllowEarlyData);
 
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
@@ -560,7 +560,7 @@ mod replayability {
         assert!(
             seen[0]
                 .extensions
-                .get::<hclient_core::AllowEarlyData>()
+                .get::<hclient_core::caps::AllowEarlyData>()
                 .is_some(),
             "the caller's mark must survive to the first attempt, or this test \
              would pass against a client that strips it everywhere"
@@ -568,7 +568,7 @@ mod replayability {
         assert!(
             seen[1]
                 .extensions
-                .get::<hclient_core::AllowEarlyData>()
+                .get::<hclient_core::caps::AllowEarlyData>()
                 .is_none(),
             "the 425 replay went out still marked for early data — against the \
              very server that just refused to risk one"
@@ -608,7 +608,7 @@ mod replayability {
             .uri("https://a/first")
             .body(RequestBody::Full(bytes::Bytes::from_static(b"payload")))
             .unwrap();
-        req.extensions_mut().insert(hclient_core::AllowEarlyData);
+        req.extensions_mut().insert(hclient_core::caps::AllowEarlyData);
 
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
@@ -643,7 +643,7 @@ mod replayability {
             .uri("https://a/first")
             .body(RequestBody::Empty)
             .unwrap();
-        req.extensions_mut().insert(hclient_core::AllowEarlyData);
+        req.extensions_mut().insert(hclient_core::caps::AllowEarlyData);
 
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
@@ -682,7 +682,7 @@ mod replayability {
             .uri("https://a/first")
             .body(RequestBody::Empty)
             .unwrap();
-        req.extensions_mut().insert(hclient_core::AllowEarlyData);
+        req.extensions_mut().insert(hclient_core::caps::AllowEarlyData);
 
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
@@ -701,7 +701,7 @@ mod replayability {
             .expect("the mock")
             .requests()
             .iter()
-            .map(|r| r.extensions.get::<hclient_core::AllowEarlyData>().is_some())
+            .map(|r| r.extensions.get::<hclient_core::caps::AllowEarlyData>().is_some())
             .collect()
     }
 
@@ -733,7 +733,7 @@ mod replayability {
             .uri("https://a/x")
             .body(RequestBody::Empty)
             .unwrap();
-        req.extensions_mut().insert(hclient_core::AllowEarlyData);
+        req.extensions_mut().insert(hclient_core::caps::AllowEarlyData);
 
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
@@ -746,7 +746,7 @@ mod replayability {
         assert!(
             seen[0]
                 .extensions
-                .get::<hclient_core::AllowEarlyData>()
+                .get::<hclient_core::caps::AllowEarlyData>()
                 .is_some(),
             "the caller's mark must reach the origin it was written for, or \
              this test would pass against a client that never sends it"
@@ -754,7 +754,7 @@ mod replayability {
         assert!(
             seen[1]
                 .extensions
-                .get::<hclient_core::AllowEarlyData>()
+                .get::<hclient_core::caps::AllowEarlyData>()
                 .is_none(),
             "the mark crossed to another origin — a replay-safety judgement \
              the caller made about `a` was handed to `b`"
@@ -816,7 +816,7 @@ mod replayability {
         assert!(
             reqs[1]
                 .extensions
-                .get::<hclient_core::AllowEarlyData>()
+                .get::<hclient_core::caps::AllowEarlyData>()
                 .is_none(),
             "the control: the one type that IS stripped, on the same hop"
         );

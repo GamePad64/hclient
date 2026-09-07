@@ -40,7 +40,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::{Client, Timeouts};
-use hclient_core::{ErrorKind, Phase};
+use hclient_core::error::{ErrorKind, Phase};
 use hclient_dns_system::SystemDns;
 use hclient_native::{BetweenBytesElapsed, FirstByteTimedOut, Native};
 use hclient_rt_tokio::Tokio;
@@ -159,7 +159,7 @@ fn client(timeouts: Timeouts) -> Client {
 ///
 /// Collecting the body matters: `between_bytes` is enforced *in* the body,
 /// so a helper that stopped at the head would never reach it.
-async fn get_all(timeouts: Timeouts, addr: SocketAddr) -> Result<String, hclient_core::Error> {
+async fn get_all(timeouts: Timeouts, addr: SocketAddr) -> Result<String, hclient_core::error::Error> {
     get_all_within(PATIENCE, timeouts, addr).await
 }
 
@@ -183,7 +183,7 @@ async fn get_all_within(
     patience: Duration,
     timeouts: Timeouts,
     addr: SocketAddr,
-) -> Result<String, hclient_core::Error> {
+) -> Result<String, hclient_core::error::Error> {
     let c = client(timeouts);
     let out = tokio::time::timeout(patience, async {
         c.get(format!("http://{addr}/"))
@@ -215,7 +215,7 @@ async fn hangs(timeouts: Timeouts, addr: SocketAddr) -> bool {
             .collect()
             .await?
             .text();
-        Ok::<(), hclient_core::Error>(())
+        Ok::<(), hclient_core::error::Error>(())
     })
     .await
     .is_err()

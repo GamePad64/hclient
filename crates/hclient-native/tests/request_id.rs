@@ -21,8 +21,9 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::Client;
-use hclient_core::RequestBody;
-use hclient_core::{Attempt, Event, Hooks, RequestId, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::hooks::{Attempt, Event, Hooks, RequestId};
+use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, Prepared, StagedConnect};
 use hclient_rt_tokio::Tokio;

@@ -30,7 +30,7 @@
 //!
 //! `Hooks::WATCHING` gates the backend's clock reads, so a build of `hc`
 //! is only paying for this while `-w` is on the command line — the client
-//! is constructed with [`NoHooks`](hclient_core::NoHooks)
+//! is constructed with [`NoHooks`](hclient_core::hooks::NoHooks)
 //! otherwise. That is why `backend::build` has two arms rather than
 //! installing a recorder that discards.
 
@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use crate::error::Unknown;
-use hclient_core::{Event, Hooks};
+use hclient_core::hooks::{Event, Hooks};
 
 /// What the hooks saw, plus what the CLI measured around them.
 #[derive(Debug, Default, Clone)]
@@ -510,13 +510,13 @@ mod tests {
     /// one.
     #[test]
     fn a_second_connection_does_not_overwrite_the_firsts_timings() {
-        use hclient_core::{ConnectTiming, Connected, Event};
+        use hclient_core::hooks::{ConnectTiming, Connected, Event};
         let rec = Recorder::new();
         let uri: http::Uri = "https://example.com/".parse().unwrap();
         for tcp in [7u64, 999] {
             rec.on(&Event::Connected(
                 Connected::new(
-                    hclient_core::ConnectionId::UNWATCHED,
+                    hclient_core::hooks::ConnectionId::UNWATCHED,
                     &uri,
                     http::Version::HTTP_11,
                 )

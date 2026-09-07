@@ -127,8 +127,8 @@ use crate::error::{
 use crate::{mark, since};
 use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use hclient_core::{Error, ErrorKind};
-use hclient_core::{Hooks, NoHooks};
+use hclient_core::error::{Error, ErrorKind};
+use hclient_core::hooks::{Hooks, NoHooks};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
 use hclient_rt::{TcpConnect, TcpOpts, Timer};
@@ -557,14 +557,14 @@ fn won<H: Hooks, R: Timer>(
 #[derive(Debug)]
 pub(crate) struct Attempted {
     /// `None` for a connection with no IP address — a Unix-domain socket.
-    /// See [`hclient_core::Connected::remote`], which this
+    /// See [`hclient_core::hooks::Connected::remote`], which this
     /// field feeds and which carries the argument.
     pub(crate) remote: Option<SocketAddr>,
     pub(crate) dns: Duration,
     pub(crate) tcp: Duration,
     /// `None` for a plaintext connection and `Some` for one that
     /// handshook, so the distinction reaches
-    /// [`ConnectTiming::tls`](hclient_core::ConnectTiming::tls)
+    /// [`ConnectTiming::tls`](hclient_core::hooks::ConnectTiming::tls)
     /// as a fact rather than as a zero.
     pub(crate) tls: Option<Duration>,
 }
@@ -817,7 +817,7 @@ where
 /// replays them) and measuring its `dns` from the top would report the
 /// whole of the failed first attempt as time spent in DNS. Neither
 /// figure is a share of a total: see
-/// [`ConnectTiming`](hclient_core::ConnectTiming), which
+/// [`ConnectTiming`](hclient_core::hooks::ConnectTiming), which
 /// says so where a caller reads it.
 /// Everything a proxy changes, in one place.
 ///
@@ -910,7 +910,7 @@ where
     // The **origin's** name, never the proxy's: the tunnel is transport,
     // and a certificate is checked against who the caller asked for.
     let req = TlsRequest {
-        server_name: hclient_core::bare_host(host),
+        server_name: hclient_core::host::bare_host(host),
         alpn,
         identity,
         // No record was consulted, so there is nothing to apply — see this
@@ -980,7 +980,7 @@ where
     // the caller asked for — the socket is transport, exactly as a tunnel
     // is.
     let req = TlsRequest {
-        server_name: hclient_core::bare_host(host),
+        server_name: hclient_core::host::bare_host(host),
         alpn,
         identity,
         ech: None,
@@ -1267,7 +1267,7 @@ where
         }
         match sleep.as_mut().poll(cx) {
             Poll::Ready(()) => Poll::Ready(Err(Error::new(
-                ErrorKind::Timeout(hclient_core::Phase::Resolve),
+                ErrorKind::Timeout(hclient_core::error::Phase::Resolve),
                 ResolveTimedOut(bound),
             ))),
             Poll::Pending => Poll::Pending,
@@ -1366,7 +1366,7 @@ where
             // Not stripped anywhere else on purpose: the `Host` header and
             // h2's `:authority` (`established.rs`, `websocket.rs`) are
             // authority syntax and keep their brackets.
-            server_name: hclient_core::bare_host(host),
+            server_name: hclient_core::host::bare_host(host),
             alpn: restricted.as_deref().unwrap_or(alpn),
             identity,
             // The whole of the ECH decision, and the reason it is a

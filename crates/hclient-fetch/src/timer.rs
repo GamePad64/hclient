@@ -1,5 +1,5 @@
 //! [`BrowserClock`]: the browser's `setTimeout`, as an
-//! `hclient_core::Timer`.
+//! `hclient_core::timer::Timer`.
 //!
 //! **Why this lives here, and why that's a fact about this vertical, not a
 //! pattern.** Every other runtime capability in this project is implemented
@@ -45,7 +45,7 @@
 use crate::promise::SendJsFuture;
 use core::time::Duration;
 use futures_channel::oneshot;
-use hclient_core::Timer;
+use hclient_core::timer::Timer;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};

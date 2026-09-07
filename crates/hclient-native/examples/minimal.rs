@@ -13,7 +13,8 @@
 //! `Capabilities::tls_config` reads `TlsSupport::None`, and a hostname
 //! comes back as `ErrorKind::Resolve` naming what is missing.
 
-use hclient_core::{TlsSupport, Transport};
+use hclient_core::caps::TlsSupport;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_tls::NoTls;

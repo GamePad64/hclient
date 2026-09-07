@@ -3,11 +3,10 @@
 use std::future::poll_fn;
 use std::sync::Arc;
 
-use hclient_core::Transport;
-use hclient_core::{
-    CancelSupport, Capabilities, DecompressionSupport, Error, ErrorKind, RedirectSupport,
-    RequestBody, RequireVersion, ReuseSupport, TlsSupport, check_version,
-};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, RequireVersion, ReuseSupport, TlsSupport, check_version};
+use hclient_core::error::{Error, ErrorKind};
 
 use crate::body::{WinHttpBody, event_name};
 use crate::error::{Win32Error, WinHttpError};
@@ -61,7 +60,7 @@ impl WinHttp {
     /// rather than a default to inherit.
     ///
     /// ```no_run
-    /// # fn main() -> Result<(), hclient_core::Error> {
+    /// # fn main() -> Result<(), hclient_core::error::Error> {
     /// use hclient_winhttp::{Protocols, WinHttp};
     ///
     /// let transport = WinHttp::new()?.protocols(Protocols::HTTP2);
@@ -489,11 +488,11 @@ impl Transport for WinHttp {
 /// which is why the shared state is a `Mutex` pair rather than a cell. So
 /// `execute`'s future is `Send` by inference and this is one line of
 /// forwarding, exactly as it is for `hclient-urlsession`.
-impl hclient_core::SendTransport for WinHttp {
+impl hclient_core::transport::SendTransport for WinHttp {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
-    ) -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error> {
+    ) -> hclient_core::transport::BoxSendExchange<'_, Self::Body, Self::Error> {
         Box::pin(<Self as Transport>::execute(self, req))
     }
 }
@@ -608,7 +607,7 @@ pub(crate) fn header_block(headers: &http::HeaderMap) -> Result<String, Error> {
     Ok(out)
 }
 
-// The rewind bound moved to `hclient_core::MAX_REWIND_DEPTH`: this
+// The rewind bound moved to `hclient_core::body::MAX_REWIND_DEPTH`: this
 // crate and `hclient-wasi` had each picked 16, and two other backends had
 // no bound at all.
 
@@ -644,9 +643,9 @@ fn resolve_body(body: RequestBody) -> Result<Option<bytes::Bytes>, Error> {
             WinHttpError::Unsupported(e.to_string()),
         )
     })? {
-        hclient_core::Reduced::Empty => Ok(None),
-        hclient_core::Reduced::Bytes(b) => Ok(Some(b)),
-        hclient_core::Reduced::Streaming(_) => refuse("a streaming one"),
+        hclient_core::body::Reduced::Empty => Ok(None),
+        hclient_core::body::Reduced::Bytes(b) => Ok(Some(b)),
+        hclient_core::body::Reduced::Streaming(_) => refuse("a streaming one"),
     }
 }
 

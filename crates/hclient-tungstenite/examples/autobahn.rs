@@ -19,7 +19,7 @@
 //! worthless. So this file echoes text as text and binary as binary, polls
 //! the `Stream` to its documented end, and reports nothing of its own.
 //! Ping and pong never reach it — RFC 6455 §5.5.2 makes answering a ping
-//! the endpoint's duty and `hclient_core::Message` has no
+//! the endpoint's duty and `hclient_core::websocket::Message` has no
 //! variant for one, deliberately.
 //!
 //! The verdict comes from `/updateReports`, is written by the suite, and
@@ -40,7 +40,7 @@
 //! ```
 
 use futures_util::{SinkExt, StreamExt};
-use hclient_core::{Message, WebSocketConnect};
+use hclient_core::websocket::{Message, WebSocketConnect};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;

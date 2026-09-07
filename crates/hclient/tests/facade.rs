@@ -191,7 +191,7 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 ///   `hclient::caps::DecompressionSupport` by `tests/compression_capability.rs`,
 ///   so pointing this test at it would have duplicated a live guard and
 ///   left `EarlyDataSupport`'s re-export unexercised — `tests/too_early.rs`
-///   reaches for `hclient_core::AllowEarlyData` directly rather than
+///   reaches for `hclient_core::caps::AllowEarlyData` directly rather than
 ///   through `hclient::`, so the early-data corner was the one with no
 ///   facade check at all.
 /// - `ReuseSupport` and `CancelSupport` are the remaining enum-typed
@@ -270,7 +270,7 @@ fn mock_transport_round_trip_uses_only_facade_types() {
     // `push_response_frames_then_error` is the only spot in `hclient`'s
     // public API where `Error` arrives as a PARAMETER, not a result. The
     // error frame reaches `Response::chunk()` unchanged: `chunk()` passes
-    // an already-classified `hclient_core::Error` straight through without
+    // an already-classified `hclient_core::error::Error` straight through without
     // relabeling it as `ErrorKind::Body` (see `Response::
     // classify_body_error`) — so `kind()` here must stay the same `Other`
     // it was set up with one line above, not become `Body`.
@@ -301,7 +301,7 @@ fn mock_transport_round_trip_uses_only_facade_types() {
 
 /// `Client::capabilities()` — the forwarder that answers "what can this
 /// client do" without the caller ever writing `use
-/// hclient_core::Transport`. Before this round, the only path
+/// hclient_core::transport::Transport`. Before this round, the only path
 /// to a `&Capabilities` from a `Client<T>` was `client.transport_as::<MockTransport>().expect("the mock").capabilities()`,
 /// and `capabilities()` there is a *trait* method — calling it through the
 /// bare `&T` that `.transport_as::<MockTransport>().expect("the mock")` returns needs `Transport` in scope, which

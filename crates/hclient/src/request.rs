@@ -3,7 +3,8 @@ use crate::error::{ColonInUsername, ContentTypeIsNotOursToKeep};
 use std::error::Error as StdError;
 
 use crate::response::Response;
-use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::body::RequestBody;
+use hclient_core::error::{Error, ErrorKind};
 use hclient_proto::redirect::RedirectPolicy;
 
 /// `Tm` is the CLIENT's clock, carried along so that `send`'s response
@@ -172,8 +173,8 @@ impl<'a> RequestBuilder<'a> {
     /// who really wants a different multipart subtype has
     /// [`crate::multipart::Form::encode`] and [`Self::body`].
     ///
-    /// [`RetryKind::ViaFactory`]: hclient_core::RetryKind::ViaFactory
-    /// [`RetryKind::Impossible`]: hclient_core::RetryKind::Impossible
+    /// [`RetryKind::ViaFactory`]: hclient_core::body::RetryKind::ViaFactory
+    /// [`RetryKind::Impossible`]: hclient_core::body::RetryKind::Impossible
     pub fn multipart(mut self, form: crate::multipart::Form) -> Self {
         let boundary = match crate::multipart::Boundary::random() {
             Ok(b) => b,
@@ -424,7 +425,7 @@ impl<'a> RequestBuilder<'a> {
     /// reqwest can't do this at all (issue #2641), which forces `act-cli`
     /// to build a separate `reqwest::Client` for every component call —
     /// with its own connection pool.
-    pub fn timeouts(mut self, t: hclient_core::Timeouts) -> Self {
+    pub fn timeouts(mut self, t: hclient_core::caps::Timeouts) -> Self {
         self.extensions.insert(t);
         self
     }
@@ -505,14 +506,14 @@ impl<'a> RequestBuilder<'a> {
     /// by the transport rather than by `Client`.
     pub fn require_version(mut self, version: http::Version) -> Self {
         self.extensions
-            .insert(hclient_core::RequireVersion(version));
+            .insert(hclient_core::caps::RequireVersion(version));
         self
     }
 
     /// Which client certificate this request presents, by the label a
     /// backend was configured with.
     ///
-    /// See `hclient_core::ClientIdentity`: what travels is a name the
+    /// See `hclient_core::identity::ClientIdentity`: what travels is a name the
     /// caller invented, never a certificate and never a store query,
     /// because a name is the only value that means the same thing on
     /// Windows, macOS, PKCS#11 and Android at once. A backend that does
@@ -529,7 +530,7 @@ impl<'a> RequestBuilder<'a> {
     #[must_use]
     pub fn client_identity(mut self, name: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         self.extensions
-            .insert(hclient_core::ClientIdentity::new(name));
+            .insert(hclient_core::identity::ClientIdentity::new(name));
         self
     }
 
@@ -547,11 +548,11 @@ impl<'a> RequestBuilder<'a> {
     /// can answer the second.
     ///
     /// The mark is stripped from a `425` replay and on a cross-origin hop,
-    /// and survives an ordinary redirect. `hclient_core::AllowEarlyData`
+    /// and survives an ordinary redirect. `hclient_core::caps::AllowEarlyData`
     /// has the rest.
     #[must_use]
     pub fn allow_early_data(mut self) -> Self {
-        self.extensions.insert(hclient_core::AllowEarlyData);
+        self.extensions.insert(hclient_core::caps::AllowEarlyData);
         self
     }
 
@@ -577,7 +578,7 @@ impl<'a> RequestBuilder<'a> {
     /// # It follows every redirect, including one to another origin
     ///
     /// The client strips exactly one type on a cross-origin hop —
-    /// [`AllowEarlyData`](hclient_core::AllowEarlyData), because *"this is
+    /// [`AllowEarlyData`](hclient_core::caps::AllowEarlyData), because *"this is
     /// safe to replay"* is a judgement about one server. Everything else
     /// in the bag is cloned onto each hop unchanged, a caller's own types
     /// included.
@@ -591,7 +592,7 @@ impl<'a> RequestBuilder<'a> {
     /// **So a value that only one origin may see does not belong here.**
     /// A credential travels as an argument rather than an extension for a
     /// second reason too, given in [`crate::auth`]: extensions reach
-    /// [`Transport::execute`](hclient_core::Transport), so
+    /// [`Transport::execute`](hclient_core::transport::Transport), so
     /// any transport in the graph can read one — including a transport
     /// this workspace did not write.
     #[must_use]
@@ -611,7 +612,7 @@ impl<'a> RequestBuilder<'a> {
     /// one.
     /// The `where` clause this used to carry is gone with the type
     /// parameters: the transport's error is converted into
-    /// [`hclient_core::Error`] at the erased seam, so nothing here has to
+    /// [`hclient_core::error::Error`] at the erased seam, so nothing here has to
     /// repeat a bound about it.
     pub async fn send(self) -> Result<Response<crate::body::ClientBody>, Error> {
         if let Some(e) = self.error {

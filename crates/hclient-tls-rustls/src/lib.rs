@@ -25,7 +25,7 @@
 //! client with one identity, which is most of them.
 //!
 //! [`Rustls::with_identity`] registers a config under a **name**, and a
-//! request carrying [`hclient_core::ClientIdentity`] selects it. That is
+//! request carrying [`hclient_core::identity::ClientIdentity`] selects it. That is
 //! for a client that holds several — a tenant per certificate, a
 //! smartcard beside a software key — where the choice cannot be made at
 //! construction because it is not the same for every request.
@@ -53,7 +53,7 @@ mod stream;
 use error::UnknownIdentity;
 pub use stream::TlsStream;
 
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::collections::HashMap;
 #[cfg(feature = "quic")]

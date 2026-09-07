@@ -18,8 +18,10 @@
 //! so this is not cheating around a missing runtime.
 
 use bytes::Bytes;
-use hclient_core::Transport;
-use hclient_core::{Capabilities, Error, RequestBody};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Capabilities;
+use hclient_core::error::Error;
 use hclient_tower::{ServiceTransport, TransportService};
 use http_body::Body as _;
 use std::future::Future;
@@ -105,11 +107,11 @@ impl Transport for Gated {
     }
 }
 
-impl hclient_core::SendTransport for Gated {
+impl hclient_core::transport::SendTransport for Gated {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
-    ) -> hclient_core::BoxSendExchange<'_, NeverEnds, Error> {
+    ) -> hclient_core::transport::BoxSendExchange<'_, NeverEnds, Error> {
         Box::pin(<Self as Transport>::execute(self, req))
     }
 }
@@ -124,7 +126,7 @@ fn req() -> http::Request<RequestBody> {
 fn limited(
     g: Gated,
     max: usize,
-) -> impl hclient_core::SendTransport<Body = NeverEnds, Error = Error> {
+) -> impl hclient_core::transport::SendTransport<Body = NeverEnds, Error = Error> {
     let caps = g.capabilities().clone();
     ServiceTransport::new(ConcurrencyLimit::new(TransportService::new(g), max), caps)
 }

@@ -4,11 +4,10 @@ use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 
-use hclient_core::Transport;
-use hclient_core::{
-    CancelSupport, Capabilities, DecompressionSupport, Error, ErrorKind, RedirectSupport,
-    RequestBody, TlsSupport,
-};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, TlsSupport};
+use hclient_core::error::{Error, ErrorKind};
 use objc2::rc::Retained;
 use objc2_foundation::{
     NSData, NSMutableURLRequest, NSOperationQueue, NSString, NSURL, NSURLSession,
@@ -198,11 +197,11 @@ impl Transport for UrlSession {
 /// — a session hands work to its own queue — and `execute` awaits a
 /// channel this crate owns, so the future is `Send` by inference and this
 /// is one line of forwarding.
-impl hclient_core::SendTransport for UrlSession {
+impl hclient_core::transport::SendTransport for UrlSession {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
-    ) -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error> {
+    ) -> hclient_core::transport::BoxSendExchange<'_, Self::Body, Self::Error> {
         Box::pin(<Self as Transport>::execute(self, req))
     }
 }
@@ -211,7 +210,7 @@ impl UrlSession {
     /// Build the `NSURLRequest` and start a data task on it.
     /// Takes the request **by value**, because the body has to be: it
     /// ends up inside an `NSData` either way, and
-    /// `hclient_core::RequestBody::reduce` consumes it — which is what
+    /// `hclient_core::body::RequestBody::reduce` consumes it — which is what
     /// replaced this file's own copy of the unwrapping.
     fn start(
         &self,
@@ -251,7 +250,7 @@ impl UrlSession {
 
 // How deep a `Rewindable` factory may nest before this gives up is no
 // longer this crate's number: the bound moved to
-// `hclient_core::MAX_REWIND_DEPTH`. The constant went and its doc comment
+// `hclient_core::body::MAX_REWIND_DEPTH`. The constant went and its doc comment
 // stayed, which left three lines of `///` attached to the item below —
 // found while moving this crate's error out, by the same clippy lint that
 // finds nothing while the orphan is followed by a blank line.
@@ -289,9 +288,9 @@ fn resolve_body(body: RequestBody) -> Result<Option<bytes::Bytes>, Error> {
         .reduce()
         .map_err(|e| Error::new(ErrorKind::Unsupported, UrlSessionError(e.to_string())))?
     {
-        hclient_core::Reduced::Empty => Ok(None),
-        hclient_core::Reduced::Bytes(b) => Ok(Some(b)),
-        hclient_core::Reduced::Streaming(_) => refuse("a streaming one"),
+        hclient_core::body::Reduced::Empty => Ok(None),
+        hclient_core::body::Reduced::Bytes(b) => Ok(Some(b)),
+        hclient_core::body::Reduced::Streaming(_) => refuse("a streaming one"),
     }
 }
 

@@ -10,7 +10,7 @@
 //! [`Hooks::on`] returns `()`, and that is the whole of the contract.
 //! There is no verdict a hook can hand back, so there is nothing for the
 //! request path to branch on: this cannot grow into a second
-//! [`Capabilities`](crate::Capabilities), where a caller's declaration
+//! [`Capabilities`](crate::caps::Capabilities), where a caller's declaration
 //! changes what the transport does. A hook that wants to change the
 //! request has the request — that is `Client`'s business, one layer up,
 //! and a return value here would move the decision to a place where
@@ -76,8 +76,8 @@
 //! breaking a caller, and the one in-crate exhaustive match is what makes
 //! adding one a compile error in exactly one known place.
 //!
-//! [`Transport`]: crate::Transport
-use crate::Error;
+//! [`Transport`]: crate::transport::Transport
+use crate::error::Error;
 use core::time::Duration;
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -295,7 +295,7 @@ impl<A: Hooks, B: Hooks> Hooks for And<A, B> {
 /// variant is still one compile error in one known file — and no break at
 /// all for anybody outside.
 ///
-/// [`Capabilities`]: crate::Capabilities
+/// [`Capabilities`]: crate::caps::Capabilities
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event<'a> {
@@ -958,7 +958,7 @@ pub struct Head<'a> {
     /// it.
     ///
     /// `Some` exactly when the transport reports
-    /// [`version_reported`](crate::Capabilities::version_reported).
+    /// [`version_reported`](crate::caps::Capabilities::version_reported).
     /// `hclient-native` reads it off the status line, and off ALPN with
     /// the `http2` feature; `hclient-h3` speaks HTTP/3 and nothing else;
     /// both say `true`. `hclient-fetch` and `hclient-wasi` say `false` and
@@ -977,7 +977,7 @@ pub struct Head<'a> {
     /// distinction can live.
     ///
     /// The capability asks the same question and does not answer it in the
-    /// same place. [`Capabilities`](crate::Capabilities) is reachable from
+    /// same place. [`Capabilities`](crate::caps::Capabilities) is reachable from
     /// whoever built the transport; a [`Hooks`] impl is handed an
     /// [`Event`] and nothing else, and the same hook is written once and
     /// installed on whichever backend the target got. A hook that had to
@@ -1770,7 +1770,7 @@ mod tests {
         // One live value, so the function is not merely compiled but
         // reached — a `match` no test calls is checked by the compiler and
         // by nothing else, which is enough here and cheap to improve on.
-        let err = crate::Error::new(crate::ErrorKind::Other, std::io::Error::other("x"));
+        let err = crate::error::Error::new(crate::error::ErrorKind::Other, std::io::Error::other("x"));
         let closed = Closed {
             id: ConnectionId::UNWATCHED,
             reason: CloseReason::Failed(&err),

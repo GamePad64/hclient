@@ -1,7 +1,8 @@
 //! `NoTls` must refuse, and must say so through `Capabilities` rather than
 //! only at connect time.
 
-use hclient_core::{ErrorKind, TlsSupport};
+use hclient_core::caps::TlsSupport;
+use hclient_core::error::ErrorKind;
 use hclient_tls::{NoTls, TlsConnect, TlsRequest};
 use std::pin::Pin;
 use std::task::{Context, Poll};

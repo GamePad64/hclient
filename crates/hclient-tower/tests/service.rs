@@ -1,7 +1,9 @@
 //! The adapter is a `Service`, it carries the backend's error
 //! classification through, and it is honest about `Send`.
 
-use hclient_core::{ErrorKind, RequestBody, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::error::ErrorKind;
+use hclient_core::transport::Transport;
 use hclient_mock::MockTransport;
 use hclient_tower::TransportService;
 use http_body_util::BodyExt;
@@ -45,7 +47,7 @@ fn a_transport_becomes_a_service_and_the_response_arrives_intact() {
 #[test]
 fn the_backends_error_classification_survives_the_adapter() {
     let m = MockTransport::new();
-    m.push_transport_error(hclient_core::Error::new(
+    m.push_transport_error(hclient_core::error::Error::new(
         ErrorKind::Tls,
         std::io::Error::other("handshake refused"),
     ));

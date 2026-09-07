@@ -29,8 +29,9 @@
 mod server;
 
 use bytes::Bytes;
-use hclient_core::Transport;
-use hclient_core::{AllowEarlyData, RequestBody};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::AllowEarlyData;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
@@ -89,7 +90,7 @@ struct Feed {
 
 impl http_body::Body for Feed {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -133,7 +134,7 @@ struct Repeat {
 
 impl http_body::Body for Repeat {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -531,7 +532,7 @@ struct DataThenTrailers {
 
 impl http_body::Body for DataThenTrailers {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,

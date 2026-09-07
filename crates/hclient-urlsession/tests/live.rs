@@ -7,8 +7,8 @@
 //! evidence of anything.
 #![cfg(target_vendor = "apple")]
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_urlsession::UrlSession;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
@@ -171,7 +171,7 @@ fn the_capabilities_match_the_configuration() {
     assert!(!c.owns_cache, "and its cache likewise");
     assert_eq!(
         c.redirects,
-        hclient_core::RedirectSupport::Transparent,
+        hclient_core::caps::RedirectSupport::Transparent,
         "the delegate refuses them, so Client's policy decides"
     );
 }
@@ -201,7 +201,7 @@ fn a_streaming_body_is_refused_rather_than_dropped() {
         ),
     )
     .expect_err("a streaming body is not sendable here");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Unsupported, "{err:?}");
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Unsupported, "{err:?}");
     assert!(
         seen.recv_timeout(Duration::from_millis(300)).is_err(),
         "and nothing reached the server: a refusal must not half-send"

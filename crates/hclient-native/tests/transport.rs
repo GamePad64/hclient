@@ -32,8 +32,8 @@
 mod net_fixtures;
 
 use hclient::Client;
-use hclient_core::ErrorKind;
-use hclient_core::Transport;
+use hclient_core::error::ErrorKind;
+use hclient_core::transport::Transport;
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
@@ -188,10 +188,10 @@ async fn capabilities_are_honest_about_v01_limits() {
         caps.timeouts.between_bytes,
         "enforced since v0.2 W4's middle bullet — see tests/timeouts.rs,          where a server stalls mid-body"
     );
-    assert_eq!(caps.tls_config, hclient_core::TlsSupport::Full);
+    assert_eq!(caps.tls_config, hclient_core::caps::TlsSupport::Full);
     assert_eq!(
         caps.redirects,
-        hclient_core::RedirectSupport::Transparent,
+        hclient_core::caps::RedirectSupport::Transparent,
         "this crate follows nothing: a 3xx comes back as an ordinary response \
          and Client's redirect stage owns the chain"
     );
@@ -250,7 +250,7 @@ async fn capabilities_are_honest_about_v01_limits() {
 #[tokio::test]
 async fn undeclared_capability_fields_match_their_conservative_defaults_today() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
-    let hclient_core::Capabilities {
+    let hclient_core::caps::Capabilities {
         streaming_request_body: _,
         full_duplex,
         // `request_trailers` left this list in v0.4 and is asserted
@@ -340,7 +340,7 @@ impl StdError for FakeCancelled {}
 impl Resolve for CancelledDns {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
@@ -354,7 +354,7 @@ impl Resolve for CancelledDns {
         match rtype {
             rtype::A => Box::pin({
                 futures_util::stream::once(async {
-                    Err(hclient_core::Error::new(
+                    Err(hclient_core::error::Error::new(
                         ErrorKind::Cancelled,
                         FakeCancelled,
                     ))
@@ -362,7 +362,7 @@ impl Resolve for CancelledDns {
             }),
             rtype::AAAA => Box::pin({
                 futures_util::stream::once(async {
-                    Err(hclient_core::Error::new(
+                    Err(hclient_core::error::Error::new(
                         ErrorKind::Cancelled,
                         FakeCancelled,
                     ))
@@ -485,14 +485,14 @@ async fn connect_refused_kind_survives_the_client() {
 /// (`exchange_recovers_error_kind_through_hyper_error_not_flattening_it`,
 /// which calls `h1::exchange` directly), but through the full
 /// `Native::execute` + `Client::execute` composition instead.
-struct OneShotErrBody(Option<hclient_core::Error>);
+struct OneShotErrBody(Option<hclient_core::error::Error>);
 impl http_body::Body for OneShotErrBody {
     type Data = bytes::Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
     fn poll_frame(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::error::Error>>> {
         Poll::Ready(self.0.take().map(Err))
     }
     fn is_end_stream(&self) -> bool {
@@ -509,8 +509,8 @@ async fn streaming_request_body_error_kind_survives_the_client() {
     let addr = spawn_h1_server();
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
-    let body = hclient_core::RequestBody::Streaming(Box::new(OneShotErrBody(Some(
-        hclient_core::Error::new(ErrorKind::Body, std::io::Error::other("stream broke")),
+    let body = hclient_core::body::RequestBody::Streaming(Box::new(OneShotErrBody(Some(
+        hclient_core::error::Error::new(ErrorKind::Body, std::io::Error::other("stream broke")),
     ))));
     let err = tokio::time::timeout(BOUND, c.post(format!("http://{addr}/")).body(body).send())
         .await
@@ -697,7 +697,7 @@ struct OneUnroutableAddr;
 impl Resolve for OneUnroutableAddr {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
@@ -752,7 +752,7 @@ impl hclient_tls::TlsConnect for CertTls {
         = std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<(Self::Stream<S>, hclient_tls::TlsInfo), hclient_core::Error>,
+                    Output = Result<(Self::Stream<S>, hclient_tls::TlsInfo), hclient_core::error::Error>,
                 > + Send
                 + 'a,
         >,
@@ -778,7 +778,7 @@ impl hclient_tls::TlsConnect for CertTls {
 /// the one no constant here could have produced.
 #[test]
 fn client_certs_is_read_from_the_tls_backend_not_from_a_constant() {
-    use hclient_core::Transport;
+    use hclient_core::transport::Transport;
     let rt = hclient_rt_tokio::Tokio;
     let plain = Native::new(rt, NoOpTls, hclient_dns::IpLiteralOnly);
     let certs = Native::new(rt, CertTls, hclient_dns::IpLiteralOnly);
@@ -794,7 +794,7 @@ impl hclient_tls::TlsConnect for NoOpTls {
     /// One stub, one configuration, one identity — drawn once rather than
     /// per call, which is what `TlsConnect::config_id` requires.
     type Handshake<'a, S>
-        = std::future::Ready<Result<(S, hclient_tls::TlsInfo), hclient_core::Error>>
+        = std::future::Ready<Result<(S, hclient_tls::TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -840,7 +840,7 @@ fn declared_connect_timeout_is_actually_applied() {
     };
     assert_eq!(
         *err.kind(),
-        ErrorKind::Timeout(hclient_core::Phase::Connect),
+        ErrorKind::Timeout(hclient_core::error::Phase::Connect),
         "{err}"
     );
 }
@@ -911,7 +911,7 @@ struct FiveUnroutableAddrs;
 impl Resolve for FiveUnroutableAddrs {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
@@ -998,7 +998,7 @@ fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
     let (kind, short_attempts) = run(short);
     assert_eq!(
         kind,
-        ErrorKind::Timeout(hclient_core::Phase::Connect),
+        ErrorKind::Timeout(hclient_core::error::Phase::Connect),
         "{kind:?}"
     );
     assert!(
@@ -1013,7 +1013,7 @@ fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
     let (kind, long_attempts) = run(long);
     assert_eq!(
         kind,
-        ErrorKind::Timeout(hclient_core::Phase::Connect),
+        ErrorKind::Timeout(hclient_core::error::Phase::Connect),
         "{kind:?}"
     );
     assert!(
@@ -1036,11 +1036,11 @@ fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
 struct TwoFrames(u8);
 impl http_body::Body for TwoFrames {
     type Data = bytes::Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
     fn poll_frame(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::error::Error>>> {
         self.0 += 1;
         Poll::Ready(match self.0 {
             1 => Some(Ok(http_body::Frame::data(bytes::Bytes::from_static(
@@ -1079,7 +1079,7 @@ async fn streaming_request_body_is_actually_streamed_not_buffered() {
 
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let c = Client::builder(t).build().unwrap();
-    let body = hclient_core::RequestBody::Streaming(Box::new(TwoFrames(0)));
+    let body = hclient_core::body::RequestBody::Streaming(Box::new(TwoFrames(0)));
     let _ = tokio::time::timeout(BOUND, c.post(format!("http://{addr}/")).body(body).send())
         .await
         .expect("must not hang");
@@ -1109,7 +1109,7 @@ async fn streaming_request_body_is_actually_streamed_not_buffered() {
 /// otherwise: `chunk()` passing through whatever `h1.rs` decided does not
 /// force `h1.rs` itself to decide on a
 /// genuine, unclassified transport failure — every existing body-error test
-/// injects an already-classified `hclient_core::Error` via
+/// injects an already-classified `hclient_core::error::Error` via
 /// `RequestBody::Streaming`, which `from_hyper_error` recovers from
 /// `hyper::Error::source()` without ever reaching its `fallback` argument.
 ///
@@ -1117,7 +1117,7 @@ async fn streaming_request_body_is_actually_streamed_not_buffered() {
 /// `Content-Length` far larger than what it actually sends, then closes the
 /// connection outright. hyper's own h1 decoder — not anything this crate
 /// injects — detects the truncation and returns a `hyper::Error` whose
-/// `source()` is NOT an `hclient_core::Error` (nothing in this call chain
+/// `source()` is NOT an `hclient_core::error::Error` (nothing in this call chain
 /// ever put one there), so `from_hyper_error`'s `None => Error::new(fallback,
 /// e)` branch is what classifies it. That's the exact branch the review's
 /// mutation targets.

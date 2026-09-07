@@ -16,8 +16,8 @@
 //! agreeing with it through a mock.
 #![cfg(all(feature = "http2", not(target_family = "wasm")))]
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::{H2Opts, Native};
 use hclient_rt_tokio::Tokio;
@@ -70,7 +70,7 @@ impl TlsConnect for FakeTls {
     }
 
     type Handshake<'a, S>
-        = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
+        = std::future::Ready<Result<(S, TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -178,7 +178,7 @@ fn try_request(
     opts: H2Opts,
     addr: std::net::SocketAddr,
     path: &str,
-) -> Result<Vec<usize>, hclient_core::Error> {
+) -> Result<Vec<usize>, hclient_core::error::Error> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -356,7 +356,7 @@ fn the_header_list_ceiling_a_caller_sets_is_the_one_enforced() {
     assert!(
         matches!(
             *err.kind(),
-            hclient_core::ErrorKind::Body | hclient_core::ErrorKind::Connect
+            hclient_core::error::ErrorKind::Body | hclient_core::error::ErrorKind::Connect
         ),
         "the refusal is h2's, and which side of the head it lands on is \
          h2's business rather than this test's: {err:?}"

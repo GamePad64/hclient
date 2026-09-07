@@ -69,7 +69,7 @@
 //! capability that varies by backend, since `fn hooks` exists on four of
 //! six. This workspace's rule is that an attribute whose value would be a
 //! guess is omitted. Both `Connected` and `Head` carry a
-//! `hclient_core::RequestId` now, so a caller who installs a
+//! `hclient_core::hooks::RequestId` now, so a caller who installs a
 //! hook of their own can join it to a span on a key; the crate does not
 //! decide that for them.
 //!
@@ -88,8 +88,10 @@ pub use body::SpanBody;
 pub use context::OtelContext;
 pub use context::PropagateWhen;
 
-use hclient_core::{BoxSendExchange, SendTransport, Transport};
-use hclient_core::{Capabilities, Error, RequestBody};
+use hclient_core::transport::{BoxSendExchange, SendTransport, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Capabilities;
+use hclient_core::error::Error;
 use span::{Choice, Recorder};
 use std::future::Future;
 
@@ -105,7 +107,7 @@ use std::future::Future;
 /// decorator does* would make a neighbour's build a floor on this one's
 /// behaviour. Two spans per request is worse than either.
 ///
-/// # The error type is `hclient_core::Error`, and nothing is lost
+/// # The error type is `hclient_core::error::Error`, and nothing is lost
 ///
 /// `Instrumented` classifies through `T::to_error` before it records,
 /// because `error.type` must be a low-cardinality value and `ErrorKind` is

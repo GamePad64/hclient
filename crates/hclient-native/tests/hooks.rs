@@ -22,7 +22,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::Client;
-use hclient_core::{Event, Hooks};
+use hclient_core::hooks::{Event, Hooks};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -84,7 +84,7 @@ enum Seen {
     },
 }
 
-/// [`hclient_core::CloseReason`] with the error's category
+/// [`hclient_core::hooks::CloseReason`] with the error's category
 /// kept and the error itself dropped, so a test can compare with `==`.
 #[derive(Debug, Clone, PartialEq)]
 enum Why {
@@ -180,9 +180,9 @@ impl Hooks for Recorder {
             Event::Closed(e) => Seen::Closed {
                 id: e.id.get(),
                 reason: match e.reason {
-                    hclient_core::CloseReason::Ended => Why::Ended,
-                    hclient_core::CloseReason::Stale => Why::Stale,
-                    hclient_core::CloseReason::Failed(err) => {
+                    hclient_core::hooks::CloseReason::Ended => Why::Ended,
+                    hclient_core::hooks::CloseReason::Stale => Why::Stale,
+                    hclient_core::hooks::CloseReason::Failed(err) => {
                         Why::Failed(format!("{:?}", err.kind()))
                     }
                 },
@@ -717,8 +717,8 @@ async fn the_three_reasons_are_not_one_reason_wearing_three_names() {
 /// this test's whole subject is the extra poll.
 #[tokio::test]
 async fn a_body_polled_past_its_end_reports_one_close_and_not_two() {
-    use hclient_core::RequestBody;
-    use hclient_core::Transport;
+    use hclient_core::body::RequestBody;
+    use hclient_core::transport::Transport;
     use http_body::Body;
 
     // `without_pool`, and that is what makes the test deterministic
@@ -789,7 +789,7 @@ async fn a_connection_refused_by_a_version_demand_was_still_reported_made() {
     let mut req = http::Request::builder()
         .method("GET")
         .uri(format!("http://{addr}/"))
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .unwrap();
     req.extensions_mut()
         .insert(RequireVersion(http::Version::HTTP_2));

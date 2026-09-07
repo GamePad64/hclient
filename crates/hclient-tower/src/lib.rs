@@ -32,7 +32,7 @@
 //!
 //! **And RTN was never the only way to name a bound.** The seams a
 //! transport awaits carry associated futures now, and
-//! `hclient_core::SendTransport` is a separate trait whose
+//! `hclient_core::transport::SendTransport` is a separate trait whose
 //! impl may carry bounds `Transport` does not — so `T: SendTransport` says
 //! what `T: Transport<execute(..): Send>` would have said, on stable, and
 //! excludes nobody from the seam. RTN was measured on nightly before that
@@ -82,8 +82,10 @@ mod error;
 // private and reaches a caller only through `Error::source`.
 pub use error::WrongAuthority;
 
-use hclient_core::Transport;
-use hclient_core::{Capabilities, Error, RequestBody};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Capabilities;
+use hclient_core::error::Error;
 use std::error::Error as StdError;
 use std::future::Future;
 use std::future::poll_fn;
@@ -143,7 +145,7 @@ impl<T> TransportService<T> {
 
 impl<T> tower_service::Service<http::Request<RequestBody>> for TransportService<T>
 where
-    T: hclient_core::SendTransport + Send + Sync + 'static, // send-bound-exception: amendment-C16
+    T: hclient_core::transport::SendTransport + Send + Sync + 'static, // send-bound-exception: amendment-C16
     // The ONLY declared bound in this crate, and not its choice:
     // `Transport::to_error`'s own where-clause requires it, because
     // `Error::new` stores its source as `Arc<dyn Error + Send + Sync>` —
@@ -186,7 +188,7 @@ where
             // the point of that hook: dropping it here discards a
             // backend's whole taxonomy one layer up, leaving every `is_*`
             // predicate answering `false`.
-            match hclient_core::SendTransport::execute_send(&*inner, req).await {
+            match hclient_core::transport::SendTransport::execute_send(&*inner, req).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => Err(inner.to_error(e)),
             }
@@ -322,7 +324,7 @@ where
 trait SendSyncStatic: Send + Sync + 'static {} // send-bound-exception: amendment-C16
 impl<T: Send + Sync + 'static> SendSyncStatic for T {} // send-bound-exception: amendment-C16
 
-impl<S, B, E> hclient_core::SendTransport for ServiceTransport<S>
+impl<S, B, E> hclient_core::transport::SendTransport for ServiceTransport<S>
 where
     S: tower_service::Service<http::Request<RequestBody>, Response = http::Response<B>, Error = E>
         + Clone

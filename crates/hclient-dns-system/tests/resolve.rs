@@ -1,5 +1,5 @@
 //! `SystemDns` through the door a consumer actually uses — the `Resolve`
-//! trait, its one stream per question, and `hclient_core::Error`.
+//! trait, its one stream per question, and `hclient_core::error::Error`.
 //!
 //! **Why any of this is out here rather than in `src`.** The unit tests
 //! inside the crate reach the seams directly: `svcb::endpoints_from_answer`
@@ -19,7 +19,7 @@
 
 use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_dns::{Record, Resolve, rtype};
 use hclient_dns_system::SystemDns;
 use hclient_rt::{Blocking, Cancelled};
@@ -140,7 +140,7 @@ fn a_resolve_failure_keeps_the_name_in_its_message_and_the_io_error_in_its_sourc
 
     let failed = error
         .source()
-        .expect("hclient_core::Error chains its cause");
+        .expect("hclient_core::error::Error chains its cause");
     assert!(
         failed.to_string().contains("bad\0name"),
         "the message must say which name failed: `{failed}`"

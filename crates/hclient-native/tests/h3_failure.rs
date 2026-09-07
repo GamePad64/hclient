@@ -38,8 +38,10 @@ mod fakedns;
 mod servers;
 
 use fakedns::{FakeDns, service_record};
-use hclient_core::Transport;
-use hclient_core::{Error, ErrorKind, Phase, RequestBody, Timeouts};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Timeouts;
+use hclient_core::error::{Error, ErrorKind, Phase};
 use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
@@ -93,7 +95,7 @@ struct Hop {
 }
 
 impl Hop {
-    /// The body, or a panic naming the error — `hclient_core::Error` is not
+    /// The body, or a panic naming the error — `hclient_core::error::Error` is not
     /// `PartialEq`, and a hop that was expected to answer and did not
     /// should say why rather than say `false`.
     fn body(&self) -> &str {
@@ -335,7 +337,7 @@ async fn a_demand_for_http_3_does_not_fall_back_but_still_teaches_the_memory() {
 
     let mut req = request(&pair, None);
     req.extensions_mut()
-        .insert(hclient_core::RequireVersion(http::Version::HTTP_3));
+        .insert(hclient_core::caps::RequireVersion(http::Version::HTTP_3));
     let demanded = hop(&t, &pair, req).await;
     assert!(demanded.quic_tried >= 1);
     assert_eq!(
@@ -368,7 +370,7 @@ async fn a_demand_for_http_3_does_not_fall_back_but_still_teaches_the_memory() {
     // go first"; with it, the two directions are one decision.
     let mut req = request(&pair, None);
     req.extensions_mut()
-        .insert(hclient_core::RequireVersion(http::Version::HTTP_3));
+        .insert(hclient_core::caps::RequireVersion(http::Version::HTTP_3));
     let demanded_again = hop(&t, &pair, req).await;
     assert!(
         demanded_again.quic_tried >= 1,

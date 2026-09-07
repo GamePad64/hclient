@@ -73,8 +73,8 @@
 //! counting connections is not made wrong in the direction that looks like
 //! a leak.
 
-use hclient_core::Error;
-use hclient_core::{CloseReason, Closed, ConnectionId, Event, Hooks};
+use hclient_core::error::Error;
+use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -14,7 +14,7 @@
 //! primary review technique.
 #![cfg(feature = "otel")]
 
-use hclient_core::Transport;
+use hclient_core::transport::Transport;
 use hclient_mock::MockTransport;
 use hclient_otel::{Instrumented, OtelContext};
 use http_body_util::BodyExt;
@@ -73,10 +73,10 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
         .block_on(f)
 }
 
-fn get(uri: &str) -> http::Request<hclient_core::RequestBody> {
+fn get(uri: &str) -> http::Request<hclient_core::body::RequestBody> {
     http::Request::builder()
         .uri(uri)
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .expect("test request")
 }
 
@@ -96,7 +96,7 @@ fn a_request_carries_the_required_attributes_and_the_span_is_named_for_the_metho
                     .method(http::Method::POST)
                     .uri("https://api.test:8443/v1/things?page=2")
                     .header(http::header::USER_AGENT, "hclient/0.1")
-                    .body(hclient_core::RequestBody::Empty)
+                    .body(hclient_core::body::RequestBody::Empty)
                     .unwrap(),
             )
             .await
@@ -198,8 +198,8 @@ fn a_four_xx_is_an_error_and_names_the_status_as_the_error_type() {
 fn a_transport_failure_reports_the_error_kind_and_still_closes_the_span() {
     let exporter = recording();
     let mock = MockTransport::new();
-    mock.push_transport_error(hclient_core::Error::new(
-        hclient_core::ErrorKind::Timeout(hclient_core::Phase::Connect),
+    mock.push_transport_error(hclient_core::error::Error::new(
+        hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::Connect),
         std::io::Error::from(std::io::ErrorKind::TimedOut),
     ));
     let t = Instrumented::otel(mock);
@@ -230,7 +230,7 @@ fn network_protocol_version_is_set_exactly_where_the_capability_says_it_is_meani
     // that reports a browser's h2 traffic as HTTP/1.1.
     for reported in [false, true] {
         let exporter = recording();
-        let mut caps = hclient_core::Capabilities::default();
+        let mut caps = hclient_core::caps::Capabilities::default();
         caps.version_reported = reported;
         let mock = MockTransport::new().with_capabilities(caps);
         mock.push_response(http::Response::builder().status(200).body("ok").unwrap());
@@ -337,8 +337,8 @@ fn a_body_that_fails_mid_stream_marks_the_span() {
             .status(200)
             .body(vec!["half"])
             .unwrap(),
-        hclient_core::Error::new(
-            hclient_core::ErrorKind::Body,
+        hclient_core::error::Error::new(
+            hclient_core::error::ErrorKind::Body,
             std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
         ),
     );
@@ -353,7 +353,7 @@ fn a_body_that_fails_mid_stream_marks_the_span() {
             .await
             .expect("a second poll")
             .expect_err("fails");
-        assert_eq!(err.kind(), &hclient_core::ErrorKind::Body);
+        assert_eq!(err.kind(), &hclient_core::error::ErrorKind::Body);
     });
 
     let s = &finished(&exporter)[0];
@@ -644,7 +644,7 @@ fn the_decorator_reports_the_transport_s_own_capabilities() {
     // `Capabilities` would refuse settings the stack supports — the
     // defect `hclient-tower`'s `ServiceTransport` documents from the
     // other side.
-    let mut caps = hclient_core::Capabilities::default();
+    let mut caps = hclient_core::caps::Capabilities::default();
     caps.full_duplex = true;
     caps.version_reported = true;
     let t = Instrumented::otel(MockTransport::new().with_capabilities(caps));

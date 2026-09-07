@@ -1,20 +1,20 @@
-//! Adapter from `hclient_core::RequestBody` to the `http_body::Body`
+//! Adapter from `hclient_core::body::RequestBody` to the `http_body::Body`
 //! expected by `hyper::client::conn::http1::handshake<T, B>`.
 //!
-//! # On `Send`, and why `type Error` is `hclient_core::Error`, not `BoxError`
+//! # On `Send`, and why `type Error` is `hclient_core::error::Error`, not `BoxError`
 //!
 //! `handshake` requires `B::Error: Into<Box<dyn StdError + Send + Sync>>`
 //! and `B::Data: Send`. The first version of this file read that as "our
 //! `Error` doesn't fit — the crate itself needs a `Box<dyn Error + Send +
 //! Sync>`." That was already wrong at the time it was written:
-//! `hclient_core::Error` holds an `Arc<dyn std::error::Error + Send +
+//! `hclient_core::error::Error` holds an `Arc<dyn std::error::Error + Send +
 //! Sync + 'static>` (the core's amendment-C1, not a bare `Arc<dyn
 //! Error>`) and itself implements `Error + Send + Sync + 'static`. The
 //! standard library's blanket impl (`impl<E: Error + Send + Sync + 'a>
 //! From<E> for Box<dyn Error + Send + Sync + 'a>`) closes the required
 //! bound without a single line of our own code — `assert_bound` in the
 //! tests below checks this directly on `OutgoingBody`, not on a bare
-//! `hclient_core::Error`, because `<OutgoingBody as Body>::Error` is
+//! `hclient_core::error::Error`, because `<OutgoingBody as Body>::Error` is
 //! exactly what gets substituted into `handshake`.
 //!
 //! Which means `BoxError` isn't needed in this file at all: wrapping
@@ -35,8 +35,8 @@
 //!
 //! 1. `Dispatcher::poll_write` calls `body.poll_frame(cx)`. Our
 //!    `poll_frame` for `RequestBody::Streaming` hands back `Err(e)` with
-//!    `e: hclient_core::Error` as-is — this impl's `Self::Error` is
-//!    EXACTLY `hclient_core::Error`, no intermediate box.
+//!    `e: hclient_core::error::Error` as-is — this impl's `Self::Error` is
+//!    EXACTLY `hclient_core::error::Error`, no intermediate box.
 //! 2. The hook `crate::Error::new_user_body(e)` calls `.with(e)`, where
 //!    `.with<C: Into<Cause>>` — `Cause = Box<dyn StdError + Send +
 //!    Sync>`. `e.into()` uses the same standard-library blanket impl:
@@ -44,17 +44,17 @@
 //!    isn't lost behind the vtable — this is boxing into a `dyn`, not
 //!    serializing to a string.
 //! 3. `hyper::Error::source()` returns `Some(&**cause as &(dyn StdError +
-//!    'static))`. `downcast_ref::<hclient_core::Error>()` on that trait
+//!    'static))`. `downcast_ref::<hclient_core::error::Error>()` on that trait
 //!    object — the standard invariant method of `dyn Error + 'static`
 //!    (doesn't need `Any`, available on any `Error` type since 1.0) —
 //!    successfully recovers the original value, `ErrorKind` included.
 //!
 //! So the correct route, when `SendRequest::send_request` returns
 //! `Err(hyper::Error)` because the body failed:
-//! `err.source().and_then(|s| s.downcast_ref::<hclient_core::Error>())`
+//! `err.source().and_then(|s| s.downcast_ref::<hclient_core::error::Error>())`
 //! BEFORE wrapping the error through `Transport::to_error` — `to_error`'s
 //! default only knows how to recognize "this is already our `Error`" when
-//! `Self::Error` itself is `hclient_core::Error`, and `hyper::Error` is a
+//! `Self::Error` itself is `hclient_core::error::Error`, and `hyper::Error` is a
 //! foreign type carrying our `Error` inside its `source()`, not as
 //! itself. Pulling it out from there is the connector/driver's job, not
 //! this file's: this file only proves there's something to pull out.
@@ -124,7 +124,8 @@
 //! the refusal comes before the terminator rather than after the `200`.
 use crate::error::UndeclaredRequestTrailers;
 use bytes::Bytes;
-use hclient_core::{Error, ErrorKind, Reduced, RequestBody};
+use hclient_core::body::{Reduced, RequestBody};
+use hclient_core::error::{Error, ErrorKind};
 use http::HeaderName;
 use http_body::{Body, Frame, SizeHint};
 use std::collections::HashSet;
@@ -167,7 +168,7 @@ impl Inner {
 
 /// Request body for `hyper::client::conn::http1::handshake`.
 ///
-/// `type Error = hclient_core::Error` — see the module doc comment for why
+/// `type Error = hclient_core::error::Error` — see the module doc comment for why
 /// this isn't `Box<dyn StdError + Send + Sync>`.
 ///
 /// `pub`, not `pub(crate)`: the `body` module itself is private
@@ -211,14 +212,14 @@ pub struct OutgoingBody {
     /// knows only whether it may speak yet.
     gate: Option<Arc<ContinueGate>>,
     /// The octets this body has handed over, for
-    /// [`hclient_core::Progress`].
+    /// [`hclient_core::hooks::Progress`].
     ///
     /// **A field rather than a wrapper**, and this type's own doc three
     /// lines down already says why: `poll_frame` below is *the one place
     /// every frame of every request body passes through on its way to
     /// hyper*, and *a wrapper would be a second thing to remember to put
     /// on*. That argument was written for the trailer check and it decides
-    /// this identically. `hclient_core::Metered` is the
+    /// this identically. `hclient_core::hooks::Metered` is the
     /// wrapper the two ambient backends use, and they use it because
     /// neither has a single type like this one.
     ///
@@ -228,9 +229,9 @@ pub struct OutgoingBody {
     /// parameter would be the honest way to carry a hook, and it cannot go
     /// here: this type is named inside `hyper::client::conn::http1::SendRequest`,
     /// which the connection pool stores, so an `H` here is an `H` on the
-    /// pool. A [`Meter`](hclient_core::Meter) is `Send + Sync`
+    /// pool. A [`Meter`](hclient_core::hooks::Meter) is `Send + Sync`
     /// and concrete, so nothing about this type's auto traits moves.
-    sent: Option<Arc<hclient_core::Meter>>,
+    sent: Option<Arc<hclient_core::hooks::Meter>>,
 }
 
 /// Whether a request body withheld for `Expect: 100-continue` may go.
@@ -316,14 +317,14 @@ impl OutgoingBody {
     ///
     /// `None` — which is what an unwatched build passes — leaves this body
     /// exactly as it was.
-    pub(crate) fn counting(mut self, meter: Option<Arc<hclient_core::Meter>>) -> Self {
+    pub(crate) fn counting(mut self, meter: Option<Arc<hclient_core::hooks::Meter>>) -> Self {
         self.sent = meter;
         self
     }
 
     /// The counter, for whoever reports it. Cloned rather than borrowed
     /// because the body is about to be handed to hyper.
-    pub(crate) fn meter(&self) -> Option<Arc<hclient_core::Meter>> {
+    pub(crate) fn meter(&self) -> Option<Arc<hclient_core::hooks::Meter>> {
         self.sent.clone()
     }
 
@@ -449,7 +450,8 @@ impl Body for OutgoingBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::{ErrorKind, RequestBody};
+    use hclient_core::body::RequestBody;
+    use hclient_core::error::ErrorKind;
     use http_body_util::BodyExt;
     use std::error::Error as StdError;
 
@@ -730,7 +732,7 @@ mod tests {
         let recovered = StdError::source(&err)
             .and_then(|s| s.downcast_ref::<Error>())
             .unwrap_or_else(|| {
-                panic!("hyper::Error::source() must yield our hclient_core::Error, got: {err:?}")
+                panic!("hyper::Error::source() must yield our hclient_core::error::Error, got: {err:?}")
             });
         assert_eq!(
             recovered.kind(),

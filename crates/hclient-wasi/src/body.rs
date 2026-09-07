@@ -1,7 +1,7 @@
 //! `wasi:http` response body.
 
 use bytes::Bytes;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::fmt::Debug;
 use std::pin::Pin;

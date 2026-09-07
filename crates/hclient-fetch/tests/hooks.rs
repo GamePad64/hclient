@@ -15,8 +15,9 @@ use std::sync::atomic::Ordering;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
-use hclient_core::RequestBody;
-use hclient_core::{ConnectionId, Event, Hooks, NoHooks, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::hooks::{ConnectionId, Event, Hooks, NoHooks};
+use hclient_core::transport::Transport;
 use hclient_fetch::Fetch;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -51,11 +52,11 @@ enum Seen {
     /// and so that a test asserting an exact sequence sees one where a
     /// body was read.
     Progress {
-        direction: hclient_core::Direction,
+        direction: hclient_core::hooks::Direction,
         transferred: u64,
         expected: Option<u64>,
         /// Which request — see [`Seen::Head::request`].
-        request: hclient_core::RequestId,
+        request: hclient_core::hooks::RequestId,
     },
     Head {
         id: u64,
@@ -69,7 +70,7 @@ enum Seen {
         /// `ConnectionId::UNWATCHED`, because a browser gives a page no
         /// connection object at all, so without this there is nothing to
         /// join an event to.
-        request: hclient_core::RequestId,
+        request: hclient_core::hooks::RequestId,
         /// The `Option` `Head::version` actually is, not a `String` of
         /// it. A `String` would be the shape for an assertion about what
         /// the value *prints as*; the claim here is that there is no value,
@@ -256,7 +257,7 @@ async fn a_drained_body_reports_the_octets_the_browser_handed_over() {
     assert!(
         progress
             .iter()
-            .all(|(d, ..)| *d == hclient_core::Direction::Receiving),
+            .all(|(d, ..)| *d == hclient_core::hooks::Direction::Receiving),
         "a GET sends no body, so nothing may be reported in the other \
          direction: {progress:?}",
     );
@@ -284,7 +285,7 @@ async fn a_drained_body_reports_the_octets_the_browser_handed_over() {
 /// other — which they would also do if the transport stamped a constant.
 #[wasm_bindgen_test]
 async fn every_event_names_the_request_that_was_sent() {
-    use hclient_core::{Attempt, RequestId};
+    use hclient_core::hooks::{Attempt, RequestId};
     use http_body::Body as _;
 
     let rec = Recorder::default();
@@ -330,8 +331,8 @@ async fn every_event_names_the_request_that_was_sent() {
         .collect();
     assert!(
         seen.iter().any(|s| matches!(s, Seen::Head { .. }))
-            && directions.contains(&hclient_core::Direction::Sending)
-            && directions.contains(&hclient_core::Direction::Receiving),
+            && directions.contains(&hclient_core::hooks::Direction::Sending)
+            && directions.contains(&hclient_core::hooks::Direction::Receiving),
         "premise: the head and both directions of octets were reported: {seen:?}",
     );
     for s in &seen {
@@ -354,7 +355,7 @@ async fn every_event_names_the_request_that_was_sent() {
 /// `UNIDENTIFIED` is the understating answer and the only honest one.
 #[wasm_bindgen_test]
 async fn a_request_with_no_attempt_reports_no_identity() {
-    use hclient_core::RequestId;
+    use hclient_core::hooks::RequestId;
     use http_body::Body as _;
 
     let rec = Recorder::default();
@@ -388,8 +389,8 @@ async fn a_request_with_no_attempt_reports_no_identity() {
         .collect();
     assert!(
         seen.iter().any(|s| matches!(s, Seen::Head { .. }))
-            && directions.contains(&hclient_core::Direction::Sending)
-            && directions.contains(&hclient_core::Direction::Receiving),
+            && directions.contains(&hclient_core::hooks::Direction::Sending)
+            && directions.contains(&hclient_core::hooks::Direction::Receiving),
         "premise: the same events were reported as in the test above: {seen:?}",
     );
     for s in &seen {
@@ -673,7 +674,7 @@ fn now_ms() -> f64 {
 /// response cache are not available to a caller who wants that.
 #[wasm_bindgen_test]
 async fn a_non_send_hook_works_all_the_way_through_the_transport() {
-    use hclient_core::Transport as _;
+    use hclient_core::transport::Transport as _;
 
     let rec = Recorder::default();
     let t = Fetch::new().hooks(rec.clone());
@@ -681,7 +682,7 @@ async fn a_non_send_hook_works_all_the_way_through_the_transport() {
     let req = http::Request::builder()
         .method(http::Method::GET)
         .uri(page_url())
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .expect("request");
     let resp = t.execute(req).await.expect("the harness page");
     assert_eq!(resp.status(), 200);
@@ -738,7 +739,7 @@ fn a_send_hook_leaves_the_execute_future_send() {
 /// socket emits no event, since the vocabulary has no word for one.
 #[wasm_bindgen_test]
 async fn a_hooked_transport_can_still_open_a_websocket_and_reports_nothing_for_it() {
-    use hclient_core::WebSocketConnect;
+    use hclient_core::websocket::WebSocketConnect;
 
     let rec = Recorder::default();
     let t = Fetch::new().hooks(rec.clone());

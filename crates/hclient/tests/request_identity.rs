@@ -13,7 +13,7 @@
 #![cfg(feature = "test-util")]
 
 use hclient::mock::MockTransport;
-use hclient_core::Attempt;
+use hclient_core::hooks::Attempt;
 
 /// Every attempt this transport was handed, in order.
 fn attempts(t: &MockTransport) -> Vec<Attempt> {
@@ -50,7 +50,7 @@ fn one_send_carries_the_first_hop_and_the_first_send() {
     assert_eq!((seen[0].hop, seen[0].resend), (0, 0));
     assert_ne!(
         seen[0].id,
-        hclient_core::RequestId::UNIDENTIFIED,
+        hclient_core::hooks::RequestId::UNIDENTIFIED,
         "a request that went through `Client` is identified"
     );
 }

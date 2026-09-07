@@ -49,7 +49,7 @@
 #![forbid(unsafe_code)]
 
 use crate::TlsIdentity;
-use hclient_core::Error;
+use hclient_core::error::Error;
 use std::sync::Arc;
 
 /// Parameters for one QUIC connection's TLS.

@@ -19,7 +19,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::Client;
-use hclient_core::{Direction, Event, Hooks};
+use hclient_core::hooks::{Direction, Event, Hooks};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -288,7 +288,7 @@ async fn a_request_body_is_counted_and_the_total_matches_what_the_server_read() 
         BOUND,
         client
             .post(format!("http://{addr}/"))
-            .body(hclient_core::RequestBody::Full(bytes::Bytes::from(
+            .body(hclient_core::body::RequestBody::Full(bytes::Bytes::from(
                 payload.clone(),
             )))
             .send(),
@@ -383,7 +383,7 @@ async fn an_unwatched_transport_still_serves_the_request() {
         BOUND,
         client
             .post(format!("http://{addr}/"))
-            .body(hclient_core::RequestBody::Full(bytes::Bytes::from_static(
+            .body(hclient_core::body::RequestBody::Full(bytes::Bytes::from_static(
                 b"payload",
             )))
             .send(),
@@ -408,7 +408,7 @@ async fn an_unwatched_transport_still_serves_the_request() {
 /// accepts an `And` at all.
 #[tokio::test]
 async fn a_composed_hook_delivers_progress_to_both_halves() {
-    use hclient_core::HooksExt as _;
+    use hclient_core::hooks::HooksExt as _;
 
     let addr = server(Behaviour::answering("0123456789"));
     let one = Recorder::default();
@@ -473,7 +473,7 @@ async fn an_upload_is_reported_before_the_head_rather_than_only_after_it() {
             // `Content-Length` by hand, because a streaming body states no
             // length and this fixture reads exactly what the head declares.
             .header("content-length", &len)
-            .body(hclient_core::RequestBody::Streaming(Box::new(Chunks::new(
+            .body(hclient_core::body::RequestBody::Streaming(Box::new(Chunks::new(
                 CHUNKS, CHUNK,
             ))))
             .send(),
@@ -531,7 +531,7 @@ impl Chunks {
 
 impl http_body::Body for Chunks {
     type Data = bytes::Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,

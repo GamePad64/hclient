@@ -204,14 +204,14 @@
 //! # `ErrorKind` through `hyper::Error`
 //!
 //! `body.rs`'s module doc comment proves with a real handshake
-//! that an outgoing body error (`hclient_core::Error`) survives the trip
+//! that an outgoing body error (`hclient_core::error::Error`) survives the trip
 //! through `hyper::Error` without losing `ErrorKind` — it's recovered via
 //! `hyper::Error::source().downcast_ref()`, not lost in a `Display`
 //! string. A naive version of this file (see the task's draft) wrapped
 //! EVERY `hyper::Error` in `Error::new(fixed_kind, e)` directly — meaning
 //! an outgoing body error (`ErrorKind::Body`) that reached `conn.poll()`
 //! or the request's poll as a `hyper::Error` would be silently flattened
-//! into `ErrorKind::Connect`, even though an `hclient_core::Error` with the
+//! into `ErrorKind::Connect`, even though an `hclient_core::error::Error` with the
 //! right `ErrorKind` sits right there in that same error's `source()`.
 //! [`from_hyper_error`] is the single conversion point for every site in
 //! this file: it first tries to recover our `Error` from `source()`, and
@@ -225,8 +225,8 @@ use crate::error::{ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBefore
 use crate::established::Failed;
 use crate::pool::CheckIn;
 use bytes::Bytes;
-use hclient_core::{CloseReason, Closed, ConnectionId, Event, Hooks};
-use hclient_core::{Error, ErrorKind};
+use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body, Frame, SizeHint};
 use hyper::client::conn::http1;
 use hyper::rt::{Read, Write};
@@ -236,7 +236,7 @@ use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// The single conversion point from `hyper::Error` to `hclient_core::Error`
+/// The single conversion point from `hyper::Error` to `hclient_core::error::Error`
 /// for this file — see the module doc comment for why flattening
 /// everything into `fallback` loses an `ErrorKind` the body already set.
 fn from_hyper_error(e: hyper::Error, fallback: ErrorKind) -> Error {
@@ -287,7 +287,7 @@ where
 ///
 /// Generic over the IO type rather than boxing it — see the module doc
 /// comment's section on why nothing here is boxed.
-pub struct H1Body<I, H = hclient_core::NoHooks>
+pub struct H1Body<I, H = hclient_core::hooks::NoHooks>
 where
     I: Read + Write + Unpin,
 {
@@ -843,8 +843,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::NoHooks;
-    use hclient_core::RequestBody;
+    use hclient_core::hooks::NoHooks;
+    use hclient_core::body::RequestBody;
     use std::error::Error as StdError;
     use std::future::Future;
     use std::io;

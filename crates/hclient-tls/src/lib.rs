@@ -28,8 +28,9 @@
 #[cfg(feature = "quic")]
 pub mod quic;
 
-pub use hclient_core::{ClientCertAsk, ClientCertRequest};
-use hclient_core::{Error, ErrorKind, TlsSupport};
+pub use hclient_core::hooks::{ClientCertAsk, ClientCertRequest};
+use hclient_core::caps::TlsSupport;
+use hclient_core::error::{Error, ErrorKind};
 use std::future::Future;
 
 /// Parameters for a single TLS connection.
@@ -55,7 +56,7 @@ pub struct TlsRequest<'a> {
     /// backend here and from every backend that could exist:
     /// `rustls_pki_types::ServerName::try_from` tries a DNS name, then an
     /// IP address, and a bracket is neither. So the caller strips, with
-    /// [`hclient_core::bare_host`], before filling this field.
+    /// [`hclient_core::host::bare_host`], before filling this field.
     ///
     /// **It is the caller's and not the backend's, and the reason is that
     /// a backend cannot know.** This field is a name, not a URI: a caller
@@ -131,7 +132,7 @@ pub struct TlsRequest<'a> {
     ///    early data; which requests may go into it is therefore a
     ///    decision about the request, not about the connection. The
     ///    vocabulary for that decision already exists —
-    ///    `hclient_core::RequestBody::retry_kind()`, and the reasoning
+    ///    `hclient_core::body::RequestBody::retry_kind()`, and the reasoning
     ///    around it that v0.2 W2's retry is built on. Start there.
     /// 2. **The floor rule applies here with unusual force.** Over-claiming
     ///    a capability normally costs a buffered copy or a lost
@@ -536,7 +537,7 @@ pub trait TlsConnect: TlsIdentity {
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
 
     /// What a transport built on this implementation should advertise in
-    /// [`Capabilities::tls_config`](hclient_core::Capabilities::tls_config).
+    /// [`Capabilities::tls_config`](hclient_core::caps::Capabilities::tls_config).
     ///
     /// Defaulted to `Full` so that adding this method broke no existing
     /// implementation — every one of them does perform TLS. It exists for

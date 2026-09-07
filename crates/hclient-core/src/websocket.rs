@@ -1,6 +1,6 @@
 //! The WebSocket seam: a message channel, and the thing that opens one.
 //!
-//! # Why this is not a method on [`Transport`](super::Transport)
+//! # Why this is not a method on [`Transport`](crate::transport::Transport)
 //!
 //! The same reasoning `hclient-tls-quic`'s `QuicTlsConnect` rests on, and
 //! `hclient_rt::TcpAdoptStd` before it: the intersection between "send a
@@ -42,7 +42,7 @@
 //! - **Permessage-deflate and subprotocol negotiation** are not
 //!   supported. A subprotocol *can* be asked for, because the request
 //!   carries headers; nothing here checks what came back.
-use crate::Error;
+use crate::error::Error;
 use futures_core::Stream;
 use futures_sink::Sink;
 use std::future::Future;
@@ -88,9 +88,9 @@ pub struct CloseFrame {
 /// `futures_util::StreamExt::split` already does for any `Stream + Sink`
 /// and a seam that pre-split would take that choice away from the caller.
 ///
-/// # The error type is concrete, unlike [`Transport::Error`](crate::Transport::Error)
+/// # The error type is concrete, unlike [`Transport::Error`](crate::transport::Transport::Error)
 ///
-/// [`Transport`](super::Transport) carries `type Error` and a `to_error`
+/// [`Transport`](crate::transport::Transport) carries `type Error` and a `to_error`
 /// hook so a backend whose error is genuinely `!Send` can still implement
 /// it. That escape hatch has no subject here: it exists so a backend can
 /// keep its own *typed source* while `Client` classifies, and there is no
@@ -144,7 +144,7 @@ pub trait WebSocketConnect {
     /// # Cancellation
     ///
     /// Dropping this future before it completes stops the attempt, on
-    /// exactly the terms [`Transport::execute`](super::Transport::execute)
+    /// exactly the terms [`Transport::execute`](crate::transport::Transport::execute)
     /// states: no further bytes, nothing waited for, and the socket torn
     /// down rather than left running.
     fn websocket(

@@ -35,8 +35,10 @@ use crate::error::NoQuicArm;
 use crate::established::NativeBody as EstablishedBody;
 use crate::{ALPN_H3, Native, Prefetch as _, Prepared, Protocol, spoken_version};
 use futures_util::StreamExt as _;
-use hclient_core::check_version;
-use hclient_core::{Error, RequestBody, RequireVersion, Timeouts};
+use hclient_core::caps::check_version;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{RequireVersion, Timeouts};
+use hclient_core::error::Error;
 use hclient_dns::{Resolve, rtype};
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
@@ -148,7 +150,7 @@ where
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
-    H: hclient_core::Hooks + Clone + Unpin,
+    H: hclient_core::hooks::Hooks + Clone + Unpin,
     P: crate::proxy::Handshake + Clone,
 {
     /// [`Transport::execute`], with the choice in front of it.
@@ -618,7 +620,7 @@ where
         // see `crate::http3::arm`. `connect_boxed` hands back a handle
         // borrowed from the arm, so it cannot outlive this call.
         let Some(arm) = self.h3.as_ref().filter(|_| self.versions.h3) else {
-            return Err(Error::new(hclient_core::ErrorKind::Unsupported, NoQuicArm));
+            return Err(Error::new(hclient_core::error::ErrorKind::Unsupported, NoQuicArm));
         };
         let refused = match arm.connect_boxed(req).await {
             Ok(staged) => {
@@ -632,7 +634,7 @@ where
                     self.bound_body(
                         r.map(EstablishedBody::from_h3),
                         every,
-                        crate::Counted::already(hclient_core::ConnectionId::UNWATCHED),
+                        crate::Counted::already(hclient_core::hooks::ConnectionId::UNWATCHED),
                     )
                 });
             }

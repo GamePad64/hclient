@@ -56,7 +56,7 @@ async fn reports_connect_kind_when_everything_is_dead() {
         .expect("connect_for_test must not hang")
         .expect_err("closed port must refuse");
     assert!(
-        matches!(err.kind(), hclient_core::ErrorKind::Connect),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Connect),
         "{err}"
     );
 }

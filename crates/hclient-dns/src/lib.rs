@@ -74,7 +74,7 @@ pub use overrides::{Answer, Overrides};
 
 use bytes::Bytes;
 use futures_core::Stream;
-use hclient_core::Error;
+use hclient_core::error::Error;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -415,7 +415,7 @@ impl IpLiteralOnly {
 
     fn not_a_literal(name: &str) -> Error {
         Error::new(
-            hclient_core::ErrorKind::Resolve,
+            hclient_core::error::ErrorKind::Resolve,
             std::io::Error::other(format!(
                 "this client was built without a resolver (IpLiteralOnly); `{name}` is not an IP literal"
             )),

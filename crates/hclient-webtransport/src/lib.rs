@@ -30,7 +30,7 @@
 //! `QuicTlsConnect`'s was with `TlsConnect`, and the failure mode of
 //! forcing one onto the other is the same one: an adapter that type-checks
 //! *with an empty body*. Nothing here reuses
-//! [`Message`](hclient_core::Message).
+//! [`Message`](hclient_core::websocket::Message).
 //!
 //! # Why there is no trait here
 //!
@@ -166,7 +166,7 @@ use bytes::{Buf, Bytes};
 use h3::ConnectionState as _;
 use h3::connection::ConnectionInner;
 use h3::proto::frame::{Frame, SettingId};
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fmt::Display;

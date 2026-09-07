@@ -39,8 +39,8 @@
 #[path = "h3_server.rs"]
 mod server;
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
@@ -122,7 +122,7 @@ async fn a_connection_that_dies_mid_body_is_still_an_error() {
     // all, and as a transfer failure rather than as a success.
     assert_eq!(
         err.kind(),
-        &hclient_core::ErrorKind::Body,
+        &hclient_core::error::ErrorKind::Body,
         "the connection was up and the handshake done, so this is a \
          transfer failure: {err}"
     );

@@ -79,7 +79,7 @@ mod server;
 
 use bytes::Bytes;
 use h3::ConnectionState as _;
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_webtransport::Session;
 use server::Options;
 use std::future::poll_fn;

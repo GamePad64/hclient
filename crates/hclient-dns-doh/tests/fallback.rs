@@ -15,7 +15,7 @@
 mod support;
 
 use futures_util::StreamExt;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_dns_doh::Doh;
 use hclient_native::Native;

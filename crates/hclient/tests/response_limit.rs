@@ -12,7 +12,7 @@ use hclient::error::ResponseTooLarge;
 use hclient::mock::MockTransport;
 use std::error::Error as StdError;
 
-fn drain(c: &Client) -> Result<usize, hclient_core::Error> {
+fn drain(c: &Client) -> Result<usize, hclient_core::error::Error> {
     futures_executor::block_on(async {
         let body = c.get("https://a/x").send().await?.collect().await?;
         Ok(body.bytes().len())

@@ -46,7 +46,7 @@
 
 use bytes::Bytes;
 use hclient::Client;
-use hclient_core::RequestBody;
+use hclient_core::body::RequestBody;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -220,7 +220,7 @@ impl TlsConnect for FakeTls {
     }
 
     type Handshake<'a, S>
-        = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
+        = std::future::Ready<Result<(S, TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -299,7 +299,7 @@ async fn a_connection_that_dies_mid_request_is_still_an_error() {
     .expect("must not hang");
 
     let err = result.expect_err("the connection is gone; there is no response to wait for");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Body);
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Body);
     assert_eq!(server.requests(), 1, "the head did reach the server");
 }
 
@@ -339,7 +339,7 @@ async fn a_reset_that_is_not_no_error_still_fails_the_response_body() {
         .await
         .expect("must not hang")
         .expect_err("a body cut short by INTERNAL_ERROR is not a body");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Body);
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Body);
 }
 
 /// The write the `poll_capacity` fix alone does not reach.
@@ -394,7 +394,7 @@ struct StallsAfterOneChunk {
 
 impl http_body::Body for StallsAfterOneChunk {
     type Data = Bytes;
-    type Error = hclient_core::Error;
+    type Error = hclient_core::error::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,

@@ -37,7 +37,7 @@ pub struct Win32Error(pub u32);
 /// The Win32 code is carried rather than translated. `FormatMessage`
 /// would give a sentence in the machine's own language, which is a
 /// different thing from a code a reader can look up — and mapping the
-/// `ERROR_WINHTTP_*` range onto this workspace's [`ErrorKind`](hclient_core::ErrorKind) variant by
+/// `ERROR_WINHTTP_*` range onto this workspace's [`ErrorKind`](hclient_core::error::ErrorKind) variant by
 /// variant would be a second vocabulary invented at the boundary, which
 /// is what `hclient-fetch` and `hclient-urlsession` both refuse to do.
 #[derive(Debug, thiserror::Error)]

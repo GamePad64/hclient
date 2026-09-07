@@ -24,7 +24,7 @@
 mod server;
 
 use bytes::Bytes;
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_webtransport::{Session, TooManySessions};
 use server::Options;
 use std::error::Error as StdError;
@@ -35,7 +35,7 @@ use std::time::Duration;
 /// guard, not a claim about speed.
 const ACTED: Duration = Duration::from_secs(10);
 
-fn source_of<T: StdError + 'static>(e: &hclient_core::Error) -> &T {
+fn source_of<T: StdError + 'static>(e: &hclient_core::error::Error) -> &T {
     StdError::source(e)
         .and_then(|s| s.downcast_ref::<T>())
         .expect("the reason is typed, not a string")

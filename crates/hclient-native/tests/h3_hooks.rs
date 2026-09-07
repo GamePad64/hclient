@@ -39,8 +39,10 @@ mod server;
 #[path = "h3_wire/mod.rs"]
 mod wire;
 
-use hclient_core::{Error, ErrorKind, RequestBody};
-use hclient_core::{Event, Hooks, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::error::{Error, ErrorKind};
+use hclient_core::hooks::{Event, Hooks};
+use hclient_core::transport::Transport;
 use hclient_dns::{IpLiteralOnly, RData, Record, Resolve, rtype};
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
@@ -101,7 +103,7 @@ enum Seen {
     },
 }
 
-/// [`hclient_core::CloseReason`] with the error's category
+/// [`hclient_core::hooks::CloseReason`] with the error's category
 /// kept and the error itself dropped, so a test can compare with `==`.
 #[derive(Debug, Clone, PartialEq)]
 enum Why {
@@ -257,9 +259,9 @@ impl Hooks for Recorder {
             Event::Closed(e) => Seen::Closed {
                 id: e.id.get(),
                 reason: match e.reason {
-                    hclient_core::CloseReason::Ended => Why::Ended,
-                    hclient_core::CloseReason::Stale => Why::Stale,
-                    hclient_core::CloseReason::Failed(err) => Why::Failed(err.kind().clone()),
+                    hclient_core::hooks::CloseReason::Ended => Why::Ended,
+                    hclient_core::hooks::CloseReason::Stale => Why::Stale,
+                    hclient_core::hooks::CloseReason::Failed(err) => Why::Failed(err.kind().clone()),
                 },
             },
             // `Event` is `#[non_exhaustive]` from outside `hclient-core`, so
@@ -948,7 +950,7 @@ async fn a_replayed_0_rtt_request_reports_one_head_and_one_connection() {
     rec.seen.lock().unwrap().clear();
 
     let mut marked = get(b.addr, "/replayed");
-    marked.extensions_mut().insert(hclient_core::AllowEarlyData);
+    marked.extensions_mut().insert(hclient_core::caps::AllowEarlyData);
     let r = t.execute(marked).await.expect("replayed, not surfaced");
     assert_eq!(r.status(), 200);
     let _ = r.into_body().collect().await.expect("body");
@@ -1027,7 +1029,7 @@ async fn a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_
     let watcher = wire.release_on_early_data(Duration::from_secs(5));
 
     let mut marked = get(wire.addr, "/replayed");
-    marked.extensions_mut().insert(hclient_core::AllowEarlyData);
+    marked.extensions_mut().insert(hclient_core::caps::AllowEarlyData);
     let r = t.execute(marked).await.expect("the fallback served it");
     assert_eq!(r.status(), 200);
     let _ = r.into_body().collect().await.expect("body");
@@ -1127,7 +1129,7 @@ async fn a_connect_that_never_completes_reports_nothing() {
     let t = watched(&s.cert_der, &rec);
 
     let mut req = get(addr, "/nowhere");
-    req.extensions_mut().insert(hclient_core::Timeouts {
+    req.extensions_mut().insert(hclient_core::caps::Timeouts {
         resolve: None,
         connect: Some(Duration::from_millis(300)),
         ..Default::default()
@@ -1138,7 +1140,7 @@ async fn a_connect_that_never_completes_reports_nothing() {
         .expect_err("a black hole never answers");
     assert!(matches!(
         err.kind(),
-        ErrorKind::Timeout(hclient_core::Phase::Connect)
+        ErrorKind::Timeout(hclient_core::error::Phase::Connect)
     ));
     assert_eq!(
         rec.take(),

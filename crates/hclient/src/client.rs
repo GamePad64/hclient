@@ -9,9 +9,11 @@ use crate::error::{BadLocation, BodyVanishedBeforeRetry, RedirectRefused};
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
-use hclient_core::Timeouts;
-use hclient_core::Timer;
-use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind, UnsupportedCapability};
+use hclient_core::caps::Timeouts;
+use hclient_core::timer::Timer;
+use hclient_core::body::{RequestBody, RetryKind};
+use hclient_core::caps::Capabilities;
+use hclient_core::error::{Error, ErrorKind, UnsupportedCapability};
 use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 use hclient_proto::retry::{Outcome, RetryPolicy, RetryVerdict, retry_after_seconds};
 use std::fmt::Debug;
@@ -443,7 +445,7 @@ impl ClientBuilder {
     /// `wasm32-unknown-unknown`**, where `std` has no clock at all, so
     /// while this crate read `std`'s clock an HTTP cache in a browser was
     /// a configuration that could not run — not refused, which is what
-    /// [`Capabilities::owns_cache`](hclient_core::Capabilities) does one
+    /// [`Capabilities::owns_cache`](hclient_core::caps::Capabilities) does one
     /// line up, but aborting on the first hop that consulted it. The
     /// clock is `web-time`'s now and that configuration exists;
     /// [`Self::cookie_jar`] has the measurement. The narrowing stays
@@ -677,7 +679,7 @@ impl Client {
     ///
     /// This forwarder exists so that answering the most natural question
     /// about `Capabilities` doesn't require dragging
-    /// `hclient_core::Transport` into scope — that trait is the contract
+    /// `hclient_core::transport::Transport` into scope — that trait is the contract
     /// for backend authors rather than part of the `hclient` facade. Reaching the transport and calling the trait
     /// method was once the only path; since erasure it is **the only
     /// path at all**, because [`Self::transport_as`] hands back a
@@ -1106,7 +1108,7 @@ impl Client {
         // relaxed `fetch_add` per operation, beside a network round trip,
         // and the alternative would be a second question `Client` has no
         // way to ask — `Hooks::WATCHING` is the transport's.
-        let mut attempt_id = hclient_core::Attempt::new(hclient_core::RequestId::next());
+        let mut attempt_id = hclient_core::hooks::Attempt::new(hclient_core::hooks::RequestId::next());
 
         loop {
             // **§8.3, and it is the first thing in the loop.** Before the
@@ -1446,7 +1448,7 @@ impl Client {
                         // Stripped on a clone: the next hop is a different
                         // request and keeps whatever the caller asked for.
                         let mut retry = hp.clone();
-                        retry.extensions.remove::<hclient_core::AllowEarlyData>();
+                        retry.extensions.remove::<hclient_core::caps::AllowEarlyData>();
                         // Re-read, so an entry stored from a replay is aged
                         // from the request that actually produced it.
                         // Keeping the first attempt's stamp would fold the
@@ -1991,11 +1993,11 @@ fn read_retry_after(headers: &http::HeaderMap) -> (Option<Duration>, bool) {
 /// crate makes one snapshot per hop, a rule `hclient-mock` is where this
 /// workspace learned to pin by counting factory calls.
 #[cfg_attr(not(feature = "digest-auth"), allow(dead_code))]
-fn auth_body(snapshot: Option<&RequestBody>) -> hclient_core::BodyView<'_> {
+fn auth_body(snapshot: Option<&RequestBody>) -> hclient_core::body::BodyView<'_> {
     // `None` is a `Streaming` body, whose `rewind()` answers nothing —
     // the same answer `view()` gives for the body itself, arrived at from
     // the other side.
-    snapshot.map_or(hclient_core::BodyView::Opaque, RequestBody::view)
+    snapshot.map_or(hclient_core::body::BodyView::Opaque, RequestBody::view)
 }
 
 /// `snapshot` is the rewind taken before the attempt that got the `425`.
@@ -2046,7 +2048,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Two, and they are told apart by [`ErrorKind`](hclient_core::ErrorKind)
+    /// Two, and they are told apart by [`ErrorKind`](hclient_core::error::ErrorKind)
     /// rather than by which function you called:
     /// `Rustls::with_platform_verifier()` failing to read the OS trust
     /// store is `ErrorKind::Tls`, and a client setting the transport
@@ -2070,7 +2072,7 @@ impl Client {
     /// machine whose certificate store cannot be read — which `try_new`'s
     /// own doc listed real cases for, and which nothing in this workspace
     /// called: `try_new` had no caller outside this file.
-    pub fn new() -> Result<Self, hclient_core::Error> {
+    pub fn new() -> Result<Self, hclient_core::error::Error> {
         let transport = Self::default_native_transport()?;
         // **The machine's own proxy, honoured by default.** `HTTP_PROXY`
         // and `HTTPS_PROXY` where the environment names them, the
@@ -2106,7 +2108,7 @@ impl Client {
         };
         Self::builder(transport)
             .build()
-            .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))
+            .map_err(|e| hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e))
     }
 
     /// The construction of the default transport for [`Client::new`] —
@@ -2114,13 +2116,13 @@ impl Client {
     /// (`Rustls::with_platform_verifier()`). Its own function since there
     /// were two constructors sharing it; kept as one because the reason
     /// for the `Result` is worth a place to write down. `Result<_,
-    /// hclient_core::Error>`, not `UnsupportedCapability`:
+    /// hclient_core::error::Error>`, not `UnsupportedCapability`:
     /// `with_platform_verifier()` already returns an `Error`
     /// (`ErrorKind::Tls`) itself, and `Native::new`/`SystemDns::new` can't
     /// fail at all (ordinary constructors, no IO) — wrapping their
     /// nonexistent failure in a `Result` would have nothing to justify it.
     #[cfg(not(feature = "http3"))]
-    pub(crate) fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::Error>
+    pub(crate) fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::error::Error>
     {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
@@ -2157,7 +2159,7 @@ impl Client {
     /// `H3` — so this maps it into the `ErrorKind::Unsupported` the caller
     /// already has to handle rather than unwrapping.
     #[cfg(feature = "http3")]
-    pub(crate) fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::Error>
+    pub(crate) fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::error::Error>
     {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
@@ -2169,7 +2171,7 @@ impl Client {
         // seam stays inert either way.
         tcp.http3(quic)
             .map(|t| t.with_proxies(Vec::new()))
-            .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))
+            .map_err(|e| hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e))
     }
 }
 
@@ -2333,7 +2335,7 @@ pub(crate) mod without_a_default_transport {
         /// compiles. The `Result` is the native signature's, because that
         /// is the one the front page's `?` is written against — a caller
         /// who reaches this has one error rather than two.
-        pub fn new<'g>() -> Result<Self, hclient_core::Error>
+        pub fn new<'g>() -> Result<Self, hclient_core::error::Error>
         where
             Self: DefaultTransportFeature<'g>,
         {

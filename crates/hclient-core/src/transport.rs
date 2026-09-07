@@ -1,4 +1,6 @@
-use crate::{Capabilities, Error, ErrorKind, RequestBody};
+use crate::body::RequestBody;
+use crate::caps::Capabilities;
+use crate::error::{Error, ErrorKind};
 use bytes::Bytes;
 use std::error::Error as StdError;
 use std::future::Future;
@@ -59,10 +61,10 @@ pub trait Transport {
     ///   background either.
     ///
     /// **A backend that cannot honour this says so, in `Capabilities`.**
-    /// [`CancelSupport::None`](crate::CancelSupport::None) is the one
+    /// [`CancelSupport::None`](crate::caps::CancelSupport::None) is the one
     /// honest way out, and it is what a backend that never fills the field
     /// in already says, since it is the value
-    /// [`Capabilities::default()`](crate::Capabilities) returns. What is
+    /// [`Capabilities::default()`](crate::caps::Capabilities) returns. What is
     /// not allowed is the third option this method's documentation used to
     /// take: saying nothing at all, and leaving a caller to find out per
     /// target that a dropped future means three different things.

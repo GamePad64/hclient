@@ -45,7 +45,7 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
     .expect("must not hang");
 
     let err = result.expect_err("hostname mismatch must fail");
-    assert!(matches!(err.kind(), hclient_core::ErrorKind::Tls), "{err}");
+    assert!(matches!(err.kind(), hclient_core::error::ErrorKind::Tls), "{err}");
     // `kind()` alone doesn't distinguish this from other TLS failures - a
     // single flat `Tls` category is the seam's design, not something this
     // crate introduced or could change - but the wrapped
@@ -59,7 +59,7 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
 }
 /// Walk the source chain for an `io::Error`.
 ///
-/// `hclient_core::Error` is deliberately erased (`Arc<dyn Error>`), so the
+/// `hclient_core::error::Error` is deliberately erased (`Arc<dyn Error>`), so the
 /// io kind is reachable only from the chain — and it is the only
 /// platform-neutral way to say WHICH way the peer went away. Matching on
 /// `Display` text instead pins English strings that differ per OS:
@@ -91,7 +91,7 @@ fn io_kind(err: &(dyn StdError + 'static)) -> Option<std::io::ErrorKind> {
 /// was lost rarely, and the test then failed on its own timeout and
 /// reported a hang, which is exactly the failure it is named for and
 /// exactly what had not happened.
-async fn handshake_against<F>(serve: F) -> hclient_core::Error
+async fn handshake_against<F>(serve: F) -> hclient_core::error::Error
 where
     F: FnOnce(tokio::net::TcpStream) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
@@ -179,7 +179,7 @@ async fn peer_sending_fin_mid_handshake_is_reported_as_tls_not_a_hang() {
     })
     .await;
 
-    assert!(matches!(err.kind(), hclient_core::ErrorKind::Tls), "{err}");
+    assert!(matches!(err.kind(), hclient_core::error::ErrorKind::Tls), "{err}");
     // The `!more` branch in `Rustls::connect`'s handshake `poll_fn` is what
     // is expected to fire here — it constructs exactly this io kind.
     assert_eq!(
@@ -239,7 +239,7 @@ async fn peer_resetting_mid_handshake_is_reported_as_tls_not_a_hang() {
     })
     .await;
 
-    assert!(matches!(err.kind(), hclient_core::ErrorKind::Tls), "{err}");
+    assert!(matches!(err.kind(), hclient_core::error::ErrorKind::Tls), "{err}");
     // All three kinds mean "the peer tore the connection down", and which
     // one you get depends on whether the RST lands while we are reading or
     // while we are writing — not on anything this crate does. Linux reports

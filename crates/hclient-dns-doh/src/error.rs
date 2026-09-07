@@ -70,9 +70,9 @@ pub enum DohError {
     #[error("could not encode the DNS query: {0}")]
     Encode(String),
     /// The transport failed: no connection, a timeout, a TLS failure. The
-    /// transport's own classified [`hclient_core::Error`] is kept whole.
+    /// transport's own classified [`hclient_core::error::Error`] is kept whole.
     #[error("the DoH request failed: {0}")]
-    Transport(#[source] hclient_core::Error),
+    Transport(#[source] hclient_core::error::Error),
     /// The DoH server answered with something other than 200. RFC 8484 §4.2
     /// gives no other success status.
     #[error("the DoH server answered with HTTP status {status}")]

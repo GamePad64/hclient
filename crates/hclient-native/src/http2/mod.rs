@@ -109,7 +109,7 @@
 //! walked away, with nowhere for its errors to go.
 //!
 //! **The capability still reports `false`, and that is not a stale
-//! declaration.** [`Capabilities`](hclient_core::Capabilities) is a
+//! declaration.** [`Capabilities`](hclient_core::caps::Capabilities) is a
 //! *static* answer for the whole transport, and this transport speaks
 //! HTTP/1.1 whenever ALPN says so — what it reports is the value that
 //! holds on the worst protocol it might negotiate. Cargo also unifies
@@ -144,9 +144,9 @@
 use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
-use hclient_core::Timer;
-use hclient_core::{CloseReason, Closed, ConnectionId, Event, Hooks};
-use hclient_core::{Error, ErrorKind};
+use hclient_core::timer::Timer;
+use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body, Frame, SizeHint};
 use hyper::rt::{Read, Write};
 use std::fmt::Debug;

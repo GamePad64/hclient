@@ -9,7 +9,7 @@
 
 use futures_core::Stream;
 use futures_util::StreamExt;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use std::assert_matches;
 use std::cell::Cell;

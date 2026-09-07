@@ -209,7 +209,7 @@ fn oversized_event_is_fatal_but_does_not_lose_events_decoded_before_it() {
 /// `MockTransport::push_response_frames_then_error` (`mock.rs`) makes
 /// `MockBody::poll_frame` return `Err` after its data frames.
 /// `Response::chunk()` passes an already-classified
-/// `hclient_core::Error` through unchanged rather than
+/// `hclient_core::error::Error` through unchanged rather than
 /// re-wrapping it as `ErrorKind::Body` — this test pushes `ErrorKind::Other`
 /// specifically and only checks `is_err()`, so it doesn't pin which kind
 /// survives; `chunk_survives_a_non_body_error_kind_instead_of_relabeling_it_
@@ -223,8 +223,8 @@ fn body_error_is_fatal_but_does_not_lose_events_decoded_before_it() {
             .header("content-type", "text/event-stream")
             .body(vec!["data: a\n\n"])
             .unwrap(),
-        hclient_core::Error::new(
-            hclient_core::ErrorKind::Other,
+        hclient_core::error::Error::new(
+            hclient_core::error::ErrorKind::Other,
             std::io::Error::other("boom"),
         ),
     );

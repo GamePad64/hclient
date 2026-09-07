@@ -27,7 +27,7 @@
 //!
 //! # The counterpart this is
 //!
-//! `hclient_core::Capabilities::owns_cache` was a `bool` set by one
+//! `hclient_core::caps::Capabilities::owns_cache` was a `bool` set by one
 //! backend (`hclient-fetch`, because the browser keeps its own cache) and
 //! read by nobody. It has a reader: a `Client` configured with a cache
 //! against a transport that owns one is an `UnsupportedCapability` at

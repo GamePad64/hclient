@@ -16,7 +16,7 @@
 //!
 //! That is exactly the case `total` deliberately does not cover, and
 //! exactly what `between_bytes` is for. Holding a sleep is possible here
-//! because [`hclient_core::Timer`] carries an associated
+//! because [`hclient_core::timer::Timer`] carries an associated
 //! `Sleep` type: `Pin<Box<Tm::Sleep>>` is a box around a **concrete**
 //! type, so auto traits pass straight through it and
 //! `IdleTimeout<NativeBody<..>, Tokio>` stays `Send` exactly as
@@ -50,8 +50,8 @@
 
 use crate::error::BetweenBytesElapsed;
 use bytes::Bytes;
-use hclient_core::Timer;
-use hclient_core::{Error, ErrorKind, Phase};
+use hclient_core::timer::Timer;
+use hclient_core::error::{Error, ErrorKind, Phase};
 use http_body::{Body, Frame, SizeHint};
 use std::fmt::Debug;
 use std::pin::Pin;

@@ -119,7 +119,7 @@ mod tests {
         // It is written as a literal above rather than derived, so this
         // is what says the literal is still one of `ErrorKind`'s names.
         assert_eq!(
-            attrs::error_type(&hclient_core::ErrorKind::Body),
+            attrs::error_type(&hclient_core::error::ErrorKind::Body),
             BODY_ERROR_TYPE
         );
     }

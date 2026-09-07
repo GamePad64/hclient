@@ -6,7 +6,7 @@
 //! a refactor could take away silently.
 #![cfg(windows)]
 
-use hclient_core::{SendTransport, Transport};
+use hclient_core::transport::{SendTransport, Transport};
 use hclient_winhttp::{WinHttp, WinHttpBody};
 use static_assertions::assert_impl_all;
 
@@ -93,7 +93,7 @@ fn the_protocol_set_is_composed_and_read_from_outside() {
 /// runs on every push, so the example's chain is type-checked there
 /// instead. Keep the two in step.
 #[allow(dead_code)]
-fn the_documented_construction_type_checks() -> Result<(), hclient_core::Error> {
+fn the_documented_construction_type_checks() -> Result<(), hclient_core::error::Error> {
     use hclient_winhttp::{Protocols, WinHttp};
 
     let _transport = WinHttp::new()?.protocols(Protocols::HTTP2 | Protocols::HTTP3);

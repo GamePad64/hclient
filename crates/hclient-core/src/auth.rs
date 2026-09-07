@@ -20,7 +20,7 @@
 //! seam: `MAX_LEGS`, which is a bound `Client::run` enforces, the
 //! `Digest` scheme, and the error a flow that never finishes produces.
 
-use crate::BodyView;
+use crate::body::BodyView;
 
 /// What a flow says after seeing a response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

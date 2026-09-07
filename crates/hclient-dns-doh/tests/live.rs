@@ -59,8 +59,8 @@
 mod support;
 
 use futures_util::StreamExt;
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_dns::{IpLiteralOnly, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_dns_doh::{Doh, DohError};
 use hclient_native::Native;
@@ -132,7 +132,7 @@ const BACKOFF: Duration = Duration::from_millis(250);
 ///
 /// Set through the public `Doh::timeouts`, which is the knob a deployment on
 /// a bad link would reach for too.
-const LIVE_TIMEOUTS: hclient_core::Timeouts = hclient_core::Timeouts {
+const LIVE_TIMEOUTS: hclient_core::caps::Timeouts = hclient_core::caps::Timeouts {
     resolve: None,
     connect: Some(Duration::from_secs(5)),
     first_byte: Some(Duration::from_secs(5)),
@@ -260,7 +260,7 @@ fn chain(e: &dyn StdError) -> String {
     out
 }
 
-fn expect_addrs(items: Vec<Result<Record, hclient_core::Error>>) -> Vec<hclient_dns::Record> {
+fn expect_addrs(items: Vec<Result<Record, hclient_core::error::Error>>) -> Vec<hclient_dns::Record> {
     items
         .into_iter()
         .map(|i| i.unwrap_or_else(|e| panic!("a live lookup failed: {}", chain(&e))))
@@ -283,7 +283,7 @@ fn expect_addrs(items: Vec<Result<Record, hclient_core::Error>>) -> Vec<hclient_
 /// `DEFAULT_TIMEOUTS` puts a 2 s `connect` bound in the request's
 /// extensions and `Native` enforces it. Matching only the first left the
 /// commonest lost packet on this network unretried.
-fn is_a_lost_packet(e: &hclient_core::Error) -> bool {
+fn is_a_lost_packet(e: &hclient_core::error::Error) -> bool {
     let Some(DohError::Transport(inner)) =
         StdError::source(e).and_then(|s| s.downcast_ref::<DohError>())
     else {
@@ -291,13 +291,13 @@ fn is_a_lost_packet(e: &hclient_core::Error) -> bool {
     };
     matches!(
         inner.kind(),
-        hclient_core::ErrorKind::Connect
-            | hclient_core::ErrorKind::Timeout(hclient_core::Phase::Connect)
+        hclient_core::error::ErrorKind::Connect
+            | hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::Connect)
     )
 }
 
 /// A lookup, up to [`ATTEMPTS`] times, retrying only a lost packet.
-async fn lookup_v4(ep: Endpoint, name: &str) -> Vec<Result<Record, hclient_core::Error>> {
+async fn lookup_v4(ep: Endpoint, name: &str) -> Vec<Result<Record, hclient_core::error::Error>> {
     for attempt in 1..=ATTEMPTS {
         let got: Vec<_> = doh(ep).lookup(name, rtype::A).collect().await;
         match got.as_slice() {
@@ -320,7 +320,7 @@ async fn lookup_v4(ep: Endpoint, name: &str) -> Vec<Result<Record, hclient_core:
 async fn lookup_svcb(
     ep: Endpoint,
     name: &str,
-) -> Vec<Result<hclient_dns::Record, hclient_core::Error>> {
+) -> Vec<Result<hclient_dns::Record, hclient_core::error::Error>> {
     for attempt in 1..=ATTEMPTS {
         let got: Vec<_> = doh(ep).lookup(name, rtype::HTTPS).collect().await;
         match got.as_slice() {
@@ -486,8 +486,8 @@ async fn raw_once(
         (
             matches!(
                 e.kind(),
-                hclient_core::ErrorKind::Connect
-                    | hclient_core::ErrorKind::Timeout(hclient_core::Phase::Connect)
+                hclient_core::error::ErrorKind::Connect
+                    | hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::Connect)
             ),
             chain(&e),
         )
@@ -580,7 +580,7 @@ async fn a_certificate_presented_for_an_ip_address_validates_through_the_platfor
 /// name was wrong (`Tls: invalid dns name`, measured). This crate never had
 /// the defect: `ip_literal` and `IpLiteralOnly::literal` both strip, each
 /// with a comment about the trap; the TLS name was the one place on the
-/// path where nobody did. `hclient_core::bare_host` is the one place now.
+/// path where nobody did. `hclient_core::host::bare_host` is the one place now.
 ///
 /// The predecessor of this test asserted the failure and told whoever
 /// fixed it to come here. What replaces it asserts the success, over the

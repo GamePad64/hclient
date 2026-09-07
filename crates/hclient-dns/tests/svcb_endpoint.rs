@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use hclient_core::Error;
+use hclient_core::error::Error;
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;

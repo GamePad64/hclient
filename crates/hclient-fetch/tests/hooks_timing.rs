@@ -24,8 +24,8 @@ use std::pin::Pin;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_fetch::Fetch;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -87,7 +87,7 @@ fn get(uri: &str) -> http::Request<RequestBody> {
 /// than through `http_body_util::BodyExt` — this crate deliberately has no
 /// `http-body-util` dependency, dev or otherwise, and `lib.rs`'s own
 /// `testing::collect` drains the same way for the same reason.
-async fn drain<B: http_body::Body<Error = hclient_core::Error> + Unpin>(resp: http::Response<B>) {
+async fn drain<B: http_body::Body<Error = hclient_core::error::Error> + Unpin>(resp: http::Response<B>) {
     let mut body = resp.into_body();
     loop {
         match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {

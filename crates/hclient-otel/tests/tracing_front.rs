@@ -6,7 +6,7 @@
 //! *when did this span close*, read as a fact rather than as a clock.
 #![cfg(feature = "tracing")]
 
-use hclient_core::Transport;
+use hclient_core::transport::Transport;
 use hclient_mock::MockTransport;
 use hclient_otel::Instrumented;
 use http_body_util::BodyExt;
@@ -178,10 +178,10 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
         .block_on(f)
 }
 
-fn get(uri: &str) -> http::Request<hclient_core::RequestBody> {
+fn get(uri: &str) -> http::Request<hclient_core::body::RequestBody> {
     http::Request::builder()
         .uri(uri)
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .expect("test request")
 }
 
@@ -201,7 +201,7 @@ fn the_span_is_named_for_the_method_and_carries_the_attribute_set() {
                     .method(http::Method::DELETE)
                     .uri("https://api.test:8443/v1/thing")
                     .header(http::header::USER_AGENT, "hclient/0.1")
-                    .body(hclient_core::RequestBody::Empty)
+                    .body(hclient_core::body::RequestBody::Empty)
                     .unwrap(),
             )
             .await
@@ -302,7 +302,7 @@ fn an_unknown_method_becomes_other_and_the_original_is_kept() {
                 http::Request::builder()
                     .method(http::Method::from_bytes(b"PROPFIND").unwrap())
                     .uri("https://api.test/x")
-                    .body(hclient_core::RequestBody::Empty)
+                    .body(hclient_core::body::RequestBody::Empty)
                     .unwrap(),
             )
             .await

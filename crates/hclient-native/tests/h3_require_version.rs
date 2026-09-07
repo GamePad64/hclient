@@ -32,8 +32,10 @@
 #[path = "h3_server.rs"]
 mod server;
 
-use hclient_core::Transport;
-use hclient_core::{ErrorKind, RequestBody, RequireVersion, VersionNotAvailable};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::RequireVersion;
+use hclient_core::error::{ErrorKind, VersionNotAvailable};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
@@ -66,7 +68,7 @@ fn get(url: &str, demand: Option<http::Version>) -> http::Request<RequestBody> {
     req
 }
 
-fn refusal(e: &hclient_core::Error) -> VersionNotAvailable {
+fn refusal(e: &hclient_core::error::Error) -> VersionNotAvailable {
     assert_eq!(
         *e.kind(),
         ErrorKind::Unsupported,

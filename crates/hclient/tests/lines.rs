@@ -14,7 +14,7 @@
 use bytes::Bytes;
 use hclient::Client;
 use hclient::lines::LineStream;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use std::error::Error as _;
 
 /// A response whose body arrives as `frames`, in order.

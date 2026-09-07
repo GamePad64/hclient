@@ -40,7 +40,7 @@
 
 use hclient::error::VersionNotAvailable;
 use hclient::{Client, RequireVersion};
-use hclient_core::ErrorKind;
+use hclient_core::error::ErrorKind;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -168,22 +168,22 @@ fn client() -> Client {
 /// than through `RequestBuilder`, because `RequestBuilder` has no
 /// extension setter — the same route `tests/too_early.rs` takes to put an
 /// `AllowEarlyData` on a request, and the same one a caller has today.
-fn demanding(url: &str, v: http::Version) -> http::Request<hclient_core::RequestBody> {
+fn demanding(url: &str, v: http::Version) -> http::Request<hclient_core::body::RequestBody> {
     let mut req = http::Request::builder()
         .method("GET")
         .uri(url)
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .unwrap();
     req.extensions_mut().insert(RequireVersion(v));
     req
 }
 
 /// The same, with no demand: the control's control.
-fn plain(url: &str) -> http::Request<hclient_core::RequestBody> {
+fn plain(url: &str) -> http::Request<hclient_core::body::RequestBody> {
     http::Request::builder()
         .method("GET")
         .uri(url)
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .unwrap()
 }
 

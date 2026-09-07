@@ -13,7 +13,7 @@
 //! now is.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::Error;
+use hclient_core::error::Error;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::{Native, NotSwitchingProtocols};
 use hclient_rt_tokio::Tokio;

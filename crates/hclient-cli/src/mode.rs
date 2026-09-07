@@ -14,7 +14,7 @@
 //!   and headers and nothing else**: no body, no query, no per-request
 //!   redirect policy, no auth helper, no `require_version`, and no way to
 //!   read the response head back out of the stream it opens.
-//! - [`hclient_core::WebSocketConnect::websocket`] takes an
+//! - [`hclient_core::websocket::WebSocketConnect::websocket`] takes an
 //!   `http::Request<()>` — a URI and headers, with the method and version
 //!   fixed by RFC 6455 §4.1 — and the connector never consults the pool,
 //!   never follows a redirect and hands back no head at all.

@@ -134,7 +134,7 @@ fn response_from_stream(
 /// gap.
 async fn next_data(
     body: &mut hclient_fetch::Body,
-) -> Option<Result<bytes::Bytes, hclient_core::Error>> {
+) -> Option<Result<bytes::Bytes, hclient_core::error::Error>> {
     poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx))
         .await
         .map(|r| r.map(|f| f.into_data().unwrap_or_else(|_| bytes::Bytes::new())))
@@ -248,7 +248,7 @@ async fn mid_stream_error_is_a_typed_body_error_not_a_quiet_end() {
         .unwrap_err();
     assert_eq!(
         err.kind(),
-        &hclient_core::ErrorKind::Body,
+        &hclient_core::error::ErrorKind::Body,
         "a stream read failure is ErrorKind::Body, not Decode and not the opaque Other: {err}"
     );
 
@@ -333,7 +333,7 @@ async fn aborting_is_a_typed_body_error_not_a_quiet_end() {
         .unwrap_err();
     assert_eq!(
         err.kind(),
-        &hclient_core::ErrorKind::Body,
+        &hclient_core::error::ErrorKind::Body,
         "an aborted request is a transport failure like any other stream rejection — \
          ErrorKind::Body, not a quiet end and not a separate, uncategorized case: {err}"
     );
@@ -366,12 +366,12 @@ async fn a_non_byte_chunk_is_a_typed_decode_error_distinct_from_a_stream_error()
     let err = next_data(&mut body).await.unwrap().unwrap_err();
     assert_eq!(
         err.kind(),
-        &hclient_core::ErrorKind::Decode,
+        &hclient_core::error::ErrorKind::Decode,
         "a non-byte chunk is ErrorKind::Decode, not ErrorKind::Body: {err}"
     );
     assert_ne!(
         err.kind(),
-        &hclient_core::ErrorKind::Body,
+        &hclient_core::error::ErrorKind::Body,
         "must be distinguishable from a stream read failure by kind() alone"
     );
 }

@@ -9,7 +9,7 @@
 //! is per request and arrives after it has been answered.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::Transport as _;
+use hclient_core::transport::Transport as _;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 

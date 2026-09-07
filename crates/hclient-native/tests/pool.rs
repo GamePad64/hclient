@@ -23,8 +23,8 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::Client;
-use hclient_core::ReuseSupport;
-use hclient_core::Transport;
+use hclient_core::caps::ReuseSupport;
+use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, PoolConfig};
 use hclient_rt_tokio::Tokio;
@@ -874,7 +874,7 @@ mod alpn_guard {
         where
             S: hyper::rt::Read + hyper::rt::Write + Unpin;
         type Handshake<'a, S>
-            = std::future::Ready<Result<(S, hclient_tls::TlsInfo), hclient_core::Error>>
+            = std::future::Ready<Result<(S, hclient_tls::TlsInfo), hclient_core::error::Error>>
         where
             Self: 'a,
             S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;

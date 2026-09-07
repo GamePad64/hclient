@@ -222,20 +222,13 @@ pub use client::without_a_default_transport::DefaultTransportFeature;
 /// What a transport says it can do, and the `build()` gate that reads it.
 pub mod caps {
     pub use crate::config::check_supported;
-    pub use hclient_core::{
-        Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport, TimeoutSupport,
-        TlsSupport,
-    };
+    pub use hclient_core::caps::{Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport, TimeoutSupport, TlsSupport};
 }
 
 /// The observability seam: implement [`hooks::Hooks`] and match on
 /// [`hooks::Event`].
 pub mod hooks {
-    pub use hclient_core::{
-        And, ClientCertAsk, ClientCertRequest, CloseReason, Closed, ConnectTiming, Connected,
-        ConnectionId, Direction, Event, Head, Hooks, HooksExt, Informational, NoHooks, Progress,
-        Reused,
-    };
+    pub use hclient_core::hooks::{And, ClientCertAsk, ClientCertRequest, CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Direction, Event, Head, Hooks, HooksExt, Informational, NoHooks, Progress, Reused};
 }
 
 /// The response body and the wrappers a client puts around a transport's.
@@ -245,7 +238,7 @@ pub mod hooks {
 /// name a private type.
 pub mod body {
     pub use hclient_core::erased::BoxBody;
-    pub use hclient_core::{RetryKind, RewindFactory};
+    pub use hclient_core::body::{RetryKind, RewindFactory};
 
     pub use crate::client_body::ClientBody;
 }
@@ -417,7 +410,7 @@ pub use deadline::NoClock;
 // `UpgradeSupport` used to be on this list and is gone from the workspace:
 // four variants, every backend answering `None`, and no caller decision
 // turning on it. WebSocket is a trait a backend implements
-// (`hclient_core::WebSocketConnect`) rather than a capability
+// (`hclient_core::websocket::WebSocketConnect`) rather than a capability
 // anyone reads, so there is nothing to re-export in its place.
 // `tests/facade.rs`'s plumbing check moved
 // to `EarlyDataSupport`, and that file says why it and not another.
@@ -431,7 +424,9 @@ pub use deadline::NoClock;
 // direct dependency on `hclient-core`. `check_version` is NOT re-exported:
 // it is the seam's own comparison, for transports, and a consumer has
 // nothing to call it on.
-pub use hclient_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RequireVersion};
+pub use hclient_core::body::RequestBody;
+pub use hclient_core::caps::{AllowEarlyData, RequireVersion};
+pub use hclient_core::error::{Error, ErrorKind};
 /// When to send a request again — see [`ClientBuilder::retry`].
 ///
 /// Re-exported so a caller configuring a retry never has to name
@@ -563,7 +558,7 @@ pub type DefaultTransport = hclient_native::Native<
     hclient_rt_tokio::Tokio,
     hclient_tls_rustls::Rustls,
     hclient_dns_system::SystemDns<hclient_rt_tokio::Tokio>,
-    hclient_core::NoHooks,
+    hclient_core::hooks::NoHooks,
     // **It names `HttpConnect` even where no proxy is configured**, and
     // that is what keeps it one type. `Client::new` reads the machine's
     // settings, so on a proxied machine the transport it builds holds

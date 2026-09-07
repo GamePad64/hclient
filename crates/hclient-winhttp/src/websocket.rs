@@ -54,8 +54,8 @@ use std::task::{Context, Poll, ready};
 use bytes::{Bytes, BytesMut};
 use futures_core::Stream;
 use futures_sink::Sink;
-use hclient_core::{CloseFrame, Message, WebSocket, WebSocketConnect};
-use hclient_core::{Error, ErrorKind};
+use hclient_core::websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
+use hclient_core::error::{Error, ErrorKind};
 use windows_sys::Win32::Networking::WinHttp as w;
 
 use crate::body::event_name;

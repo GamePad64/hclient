@@ -34,8 +34,8 @@
 //! attempt log of a fake runtime).
 
 use bytes::Bytes;
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_native::{Native, SVCB_FAILURE_TTL};
 use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};
@@ -252,7 +252,7 @@ impl FakeDns {
 impl Resolve for FakeDns {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
     >
     where
         Self: 'a;

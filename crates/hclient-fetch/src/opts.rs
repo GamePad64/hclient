@@ -29,7 +29,7 @@
 //! filtered response: `status` reads `0`, the header list is empty, the
 //! body is null, and `Location` is not readable. So
 //! `Capabilities::redirects` could not honestly move from
-//! [`RedirectSupport::Internal`](hclient_core::RedirectSupport::Internal)
+//! [`RedirectSupport::Internal`](hclient_core::caps::RedirectSupport::Internal)
 //! to `Transparent` — it would claim a policy `Client` could act on for
 //! exactly the case where redirects matter and the browser gives nothing.
 //! `hclient-urlsession` is the backend that *can* report `Transparent`,

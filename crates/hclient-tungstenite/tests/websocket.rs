@@ -50,9 +50,10 @@
 use bytes::Bytes;
 use futures_sink::Sink;
 use futures_util::{SinkExt, StreamExt};
-use hclient_core::ErrorKind;
-use hclient_core::RequestBody;
-use hclient_core::{Message, Transport, WebSocketConnect};
+use hclient_core::error::ErrorKind;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
+use hclient_core::websocket::{Message, WebSocketConnect};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;

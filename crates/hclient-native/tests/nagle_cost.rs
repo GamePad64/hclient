@@ -55,8 +55,8 @@
 //!   here would mean the diagnosis is wrong.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt::TcpOpts;

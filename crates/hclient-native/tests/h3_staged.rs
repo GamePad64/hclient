@@ -20,8 +20,9 @@
 #[path = "h3_server.rs"]
 mod server;
 
-use hclient_core::Transport;
-use hclient_core::{ErrorKind, RequestBody};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::error::ErrorKind;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::{H3, H3StagedConnect as StagedConnect};
 use hclient_rt_tokio::TokioHandle;
@@ -198,7 +199,7 @@ async fn a_version_demand_this_stack_cannot_meet_hands_the_request_back() {
 
     let mut req = get(s.addr);
     req.extensions_mut()
-        .insert(hclient_core::RequireVersion(http::Version::HTTP_2));
+        .insert(hclient_core::caps::RequireVersion(http::Version::HTTP_2));
     let refused = t
         .connect(req)
         .await
@@ -209,7 +210,7 @@ async fn a_version_demand_this_stack_cannot_meet_hands_the_request_back() {
     assert!(
         request
             .extensions()
-            .get::<hclient_core::RequireVersion>()
+            .get::<hclient_core::caps::RequireVersion>()
             .is_some(),
         "the request comes back as it went in, demand included"
     );

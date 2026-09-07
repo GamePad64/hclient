@@ -96,7 +96,7 @@ pub enum RedirectSupport {
 }
 
 /// Whether dropping the future returned by
-/// [`Transport::execute`](crate::Transport::execute) stops the
+/// [`Transport::execute`](crate::transport::Transport::execute) stops the
 /// exchange — see that method's doc comment for the contract itself, of
 /// which this enum is the one honest way out.
 ///
@@ -145,7 +145,7 @@ pub enum CancelSupport {
     /// controls it.
     ///
     /// What that does and does not promise is the contract on
-    /// [`Transport::execute`](crate::Transport::execute); the
+    /// [`Transport::execute`](crate::transport::Transport::execute); the
     /// short version is that our side stops, and the server's side is not
     /// ours to promise anything about.
     Supported,
@@ -378,7 +378,7 @@ pub struct Timeouts {
 /// **after the response** — measured at 8.63 ms against a response at
 /// 8.58 ms — so it is a future, not a
 /// property of a transport, and nothing about it can live in a value that
-/// [`Transport::capabilities`](crate::Transport::capabilities)
+/// [`Transport::capabilities`](crate::transport::Transport::capabilities)
 /// determines once at construction.
 ///
 /// # Why the default is `None` with unusual force
@@ -417,7 +417,7 @@ pub enum EarlyDataSupport {
 /// for the handshake to complete, and **there is no configuration in which
 /// a request the caller did not mark ends up in early data**. Present
 /// against a transport reporting [`EarlyDataSupport::None`], it is a typed
-/// [`UnsupportedCapability`](crate::UnsupportedCapability) rather than a silent no-op.
+/// [`UnsupportedCapability`](crate::error::UnsupportedCapability) rather than a silent no-op.
 ///
 /// # What marking a request asserts, and what it does not
 ///
@@ -425,11 +425,11 @@ pub enum EarlyDataSupport {
 /// replaying it is POSSIBLE.** Those are different questions, and only the
 /// caller can answer the first one.
 ///
-/// [`RequestBody::retry_kind`](crate::RequestBody::retry_kind) answers the
+/// [`RequestBody::retry_kind`](crate::body::RequestBody::retry_kind) answers the
 /// second: `Free`, `ViaFactory`, `Impossible` — *can I send these bytes
 /// again*. A transport needs that answer, because a rejected 0-RTT request
 /// has to be replayed after the handshake and a
-/// [`RetryKind::Impossible`](crate::RetryKind::Impossible) body cannot be.
+/// [`RetryKind::Impossible`](crate::body::RetryKind::Impossible) body cannot be.
 /// So `RetryKind` is a **correctness** precondition here, and it is checked
 /// as one.
 ///
@@ -552,13 +552,13 @@ pub struct AllowEarlyData;
 /// - The **backend cannot honour demands at all**
 ///   ([`Capabilities::version_select`] is `false` — `hclient-fetch` and
 ///   `hclient-wasi`, neither of which chooses or even learns the version):
-///   a typed [`UnsupportedCapability`](crate::UnsupportedCapability) from `Client`, the same arm a
+///   a typed [`UnsupportedCapability`](crate::error::UnsupportedCapability) from `Client`, the same arm a
 ///   `RedirectPolicy` against
 ///   [`RedirectSupport::Internal`] takes. It fires whatever version was
 ///   demanded, because the backend cannot answer for any of them.
 /// - The **backend honours demands and this connection does not match**:
 ///   a typed [`VersionNotAvailable`] under
-///   [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported), raised by
+///   [`ErrorKind::Unsupported`](crate::error::ErrorKind::Unsupported), raised by
 ///   the transport before the head goes out.
 ///
 /// A transport that always speaks one version still *honours* demands —
@@ -585,7 +585,7 @@ pub struct RequireVersion(pub http::Version);
 ///
 /// `Ok(())` when there is no demand or `negotiated` satisfies it; a typed
 /// [`VersionNotAvailable`] under
-/// [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) otherwise.
+/// [`ErrorKind::Unsupported`](crate::error::ErrorKind::Unsupported) otherwise.
 ///
 /// A function here rather than a `==` at each call site so that the rule —
 /// exact match, absence means no demand — has one definition. Two
@@ -600,10 +600,10 @@ pub struct RequireVersion(pub http::Version);
 pub fn check_version(
     extensions: &http::Extensions,
     negotiated: http::Version,
-) -> Result<(), crate::Error> {
+) -> Result<(), crate::error::Error> {
     match extensions.get::<RequireVersion>() {
-        Some(&RequireVersion(required)) if required != negotiated => Err(crate::Error::new(
-            crate::ErrorKind::Unsupported,
+        Some(&RequireVersion(required)) if required != negotiated => Err(crate::error::Error::new(
+            crate::error::ErrorKind::Unsupported,
             VersionNotAvailable {
                 required,
                 negotiated,
@@ -675,7 +675,7 @@ pub struct Capabilities {
     pub redirects: RedirectSupport,
     /// What dropping an in-flight `execute` future does — see
     /// [`CancelSupport`] and the contract on
-    /// [`Transport::execute`](crate::Transport::execute).
+    /// [`Transport::execute`](crate::transport::Transport::execute).
     pub cancel_on_drop: CancelSupport,
     /// Whether a connection is reused across requests — see
     /// [`ReuseSupport`].
@@ -769,7 +769,7 @@ pub struct Capabilities {
     /// from — *a variant exists only if a caller decision turns on it*. The
     /// decision that arrived is `ClientBuilder::cache`, and a client-side
     /// cache against a transport reporting `true` is an
-    /// [`UnsupportedCapability`](crate::UnsupportedCapability) at `build()`, the same arm
+    /// [`UnsupportedCapability`](crate::error::UnsupportedCapability) at `build()`, the same arm
     /// `owns_cookie_jar` takes for a jar and [`RedirectSupport::Internal`]
     /// takes for a redirect policy.
     ///
@@ -804,7 +804,7 @@ pub struct Capabilities {
     /// `false` is for a transport that cannot answer at all:
     /// `hclient-fetch` and `hclient-wasi` neither select the version nor
     /// learn it (both also report `version_reported: false`), so a demand
-    /// against either becomes an [`UnsupportedCapability`](crate::UnsupportedCapability) from `Client` —
+    /// against either becomes an [`UnsupportedCapability`](crate::error::UnsupportedCapability) from `Client` —
     /// the same arm a `RedirectPolicy` against
     /// [`RedirectSupport::Internal`] takes.
     ///
@@ -825,9 +825,9 @@ pub struct Capabilities {
     ///
     /// The observability seam asks the same question one field over and
     /// answers it in the event rather than here, because a
-    /// [`Hooks`](crate::Hooks) impl is handed an
-    /// [`Event`](crate::Event) and no capabilities:
-    /// [`Head::version`](crate::Head::version) is `Some`
+    /// [`Hooks`](crate::hooks::Hooks) impl is handed an
+    /// [`Event`](crate::hooks::Event) and no capabilities:
+    /// [`Head::version`](crate::hooks::Head::version) is `Some`
     /// exactly when this field is `true`. Two spellings of one fact, in
     /// the two places that can each be read on their own.
     pub version_reported: bool,
@@ -1048,7 +1048,7 @@ mod tests {
         let mut e = http::Extensions::new();
         e.insert(RequireVersion(http::Version::HTTP_2));
         let err = check_version(&e, http::Version::HTTP_11).unwrap_err();
-        assert_eq!(*err.kind(), crate::ErrorKind::Unsupported);
+        assert_eq!(*err.kind(), crate::error::ErrorKind::Unsupported);
         let named = StdError::source(&err)
             .and_then(|s| s.downcast_ref::<VersionNotAvailable>())
             .expect("the source must be the typed refusal, not an opaque string");
@@ -1072,7 +1072,7 @@ mod tests {
         let mut e = http::Extensions::new();
         e.insert(RequireVersion(http::Version::HTTP_11));
         let err = check_version(&e, http::Version::HTTP_2).unwrap_err();
-        assert_eq!(*err.kind(), crate::ErrorKind::Unsupported);
+        assert_eq!(*err.kind(), crate::error::ErrorKind::Unsupported);
     }
 
     /// The message names both versions. Not a `Display` assertion for its

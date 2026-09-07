@@ -10,7 +10,8 @@ use std::time::Duration;
 use hclient::retry::{
     Backoff, RetryPolicyExt as _, RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard,
 };
-use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::body::RequestBody;
+use hclient_core::error::{Error, ErrorKind};
 use hclient_mock::MockTransport;
 
 /// A backoff short enough that a retry costs a test nothing.
@@ -55,7 +56,7 @@ fn client(mock: &MockTransport, policy: Option<Standard>) -> hclient::Client {
 #[derive(Debug, Clone, Copy)]
 struct Immediate;
 
-impl hclient_core::Timer for Immediate {
+impl hclient_core::timer::Timer for Immediate {
     type Instant = std::time::Instant;
     type Sleep = std::future::Ready<()>;
 

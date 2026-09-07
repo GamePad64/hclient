@@ -247,7 +247,7 @@ pub struct Handshaking<S> {
 
 #[derive(Debug)]
 enum Handshaking2<S> {
-    Failed(Option<hclient_core::Error>),
+    Failed(Option<hclient_core::error::Error>),
     /// Nothing has touched the socket yet: the connector and the name to
     /// verify against, waiting for a poll to supply a `Context`.
     Start(Option<(native_tls::TlsConnector, String, S)>),
@@ -256,7 +256,7 @@ enum Handshaking2<S> {
 }
 
 impl<S> Handshaking<S> {
-    pub(crate) fn failed(e: hclient_core::Error) -> Self {
+    pub(crate) fn failed(e: hclient_core::error::Error) -> Self {
         Self {
             state: Handshaking2::Failed(Some(e)),
         }
@@ -273,14 +273,14 @@ impl<S> Future for Handshaking<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    type Output = Result<TlsStream<S>, hclient_core::Error>;
+    type Output = Result<TlsStream<S>, hclient_core::error::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // `S: Unpin` is on this impl, so a plain `get_mut` and no
         // projection — the same reason `hclient-tls-rustls`'s handshake
         // needs none.
         let me = self.get_mut();
-        let tls = |e: native_tls::Error| hclient_core::Error::new(hclient_core::ErrorKind::Tls, e);
+        let tls = |e: native_tls::Error| hclient_core::error::Error::new(hclient_core::error::ErrorKind::Tls, e);
         let ptr = std::ptr::from_mut(cx).cast::<()>();
         let polled_again = "a Future is not polled after it returns Ready";
 

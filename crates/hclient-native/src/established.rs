@@ -30,15 +30,15 @@
 use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
-use hclient_core::Error;
-use hclient_core::{ConnectionId, Hooks, identify};
+use hclient_core::error::Error;
+use hclient_core::hooks::{ConnectionId, Hooks, identify};
 use http_body::{Body, Frame, SizeHint};
 use std::fmt::Debug;
 use std::sync::Arc;
 // Only the HTTP/2 arms build an `Informational` here; the HTTP/1 one hands
 // the job to hyper's own callback, installed in `crate::install_1xx`.
 #[cfg(feature = "http2")]
-use hclient_core::{Event, Informational};
+use hclient_core::hooks::{Event, Informational};
 use hyper::rt::{Read, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -94,7 +94,7 @@ where
     I: Read + Write + Unpin,
 {
     /// Which connection this is, for
-    /// [`Hooks`](hclient_core::Hooks).
+    /// [`Hooks`](hclient_core::hooks::Hooks).
     ///
     /// Stored on the protocol's own `Established` and read back through a
     /// two-line match here — the shape this module's doc describes —
@@ -474,7 +474,7 @@ impl Rewritten {
 /// to drive, this transport deliberately has no `Spawn` to drive them
 /// with, so the body does it from `poll_frame`. See `h1.rs`'s and
 /// `http2.rs`'s module docs.
-pub struct NativeBody<I, H = hclient_core::NoHooks>
+pub struct NativeBody<I, H = hclient_core::hooks::NoHooks>
 where
     I: Read + Write + Unpin,
 {
@@ -506,7 +506,7 @@ where
     #[cfg(feature = "http3")]
     H3(crate::http3::arm::SendBoxBody),
     /// **No `H`, and that is a gap rather than a decision made twice.**
-    /// The h2 body reports no [`Closed`](hclient_core::Closed)
+    /// The h2 body reports no [`Closed`](hclient_core::hooks::Closed)
     /// event: `Connected`, `Reused` and `Head` come from
     /// `Native::execute` and are protocol-agnostic, but the end of a
     /// connection is known inside the body, and h2's has three places it

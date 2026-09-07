@@ -33,8 +33,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use futures_util::{SinkExt, StreamExt};
-use hclient_core::ErrorKind;
-use hclient_core::{CloseFrame, Message, WebSocketConnect};
+use hclient_core::error::ErrorKind;
+use hclient_core::websocket::{CloseFrame, Message, WebSocketConnect};
 use hclient_fetch::Fetch;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::*;

@@ -16,8 +16,9 @@ mod fakedns;
 mod servers;
 
 use fakedns::FakeDns;
-use hclient_core::Transport as _;
-use hclient_core::{RequestBody, RequireVersion};
+use hclient_core::transport::Transport as _;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::RequireVersion;
 use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
@@ -85,7 +86,7 @@ async fn without_an_arm_the_same_demand_is_refused() {
 
     assert!(
         err.source()
-            .and_then(|s| s.downcast_ref::<hclient_core::VersionNotAvailable>())
+            .and_then(|s| s.downcast_ref::<hclient_core::error::VersionNotAvailable>())
             .is_some(),
         "the refusal must be `VersionNotAvailable`, not a bare Unsupported: {err}"
     );

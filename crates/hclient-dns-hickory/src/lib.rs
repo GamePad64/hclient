@@ -36,7 +36,7 @@
 
 use futures_core::Stream;
 use futures_util::StreamExt;
-use hclient_core::{Error, ErrorKind};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hickory_resolver::ConnectionProvider;
 use hickory_resolver::Resolver;

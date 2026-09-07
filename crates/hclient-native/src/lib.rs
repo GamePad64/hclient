@@ -137,14 +137,12 @@ pub use proxy::{
 pub use staged::{Refused, Staged, StagedConnect};
 pub use upgrade::Upgrading;
 
-use hclient_core::{
-    CancelSupport, Capabilities, ClientIdentity, Error, ErrorKind, Phase, RedirectSupport,
-    RequestBody, ReuseSupport, TimeoutSupport, Timeouts, check_version,
-};
-use hclient_core::{
-    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
-    RequestId, Reused, Transport,
-};
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, Timeouts, check_version};
+use hclient_core::error::{Error, ErrorKind, Phase};
+use hclient_core::identity::ClientIdentity;
+use hclient_core::hooks::{CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks, RequestId, Reused};
+use hclient_core::transport::Transport;
 use hclient_dns::Resolve;
 use hclient_rt::{Spawn, TcpConnect, TcpOpts, Timer};
 use hclient_tls::TlsConnect;
@@ -222,7 +220,7 @@ fn install_1xx<H>(
             g.open();
         }
         hooks.on(&Event::Informational(
-            hclient_core::Informational::new(id, resp.status(), resp.headers()).request(request),
+            hclient_core::hooks::Informational::new(id, resp.status(), resp.headers()).request(request),
         ));
     });
 }
@@ -247,9 +245,9 @@ pub(crate) struct Counted<'a> {
     id: ConnectionId,
     request: RequestId,
     /// `None` is *something below already counted this body*, which is the
-    /// QUIC arm — see `hclient_core::Counting::new`.
+    /// QUIC arm — see `hclient_core::hooks::Counting::new`.
     uri: Option<&'a http::Uri>,
-    sent: Option<std::sync::Arc<hclient_core::Meter>>,
+    sent: Option<std::sync::Arc<hclient_core::hooks::Meter>>,
 }
 
 impl<'a> Counted<'a> {
@@ -257,7 +255,7 @@ impl<'a> Counted<'a> {
         id: ConnectionId,
         request: RequestId,
         uri: &'a http::Uri,
-        sent: Option<std::sync::Arc<hclient_core::Meter>>,
+        sent: Option<std::sync::Arc<hclient_core::hooks::Meter>>,
     ) -> Self {
         Self {
             id,
@@ -296,22 +294,22 @@ impl<'a> Counted<'a> {
 /// between reads on the wire rather than the gap between whatever a
 /// wrapper above chose to pass on.
 pub type NativeBody<R, T, H> =
-    IdleTimeout<hclient_core::Counting<established::NativeBody<NativeIo<R, T>, H>, H>, R>;
+    IdleTimeout<hclient_core::hooks::Counting<established::NativeBody<NativeIo<R, T>, H>, H>, R>;
 
 /// This crate's clock, handed to `hclient_core`'s gate.
 ///
 /// The gate — *read a clock only where a hook is watching* — is
-/// `hclient_core::mark`, and lives there because four crates
+/// `hclient_core::hooks::mark`, and lives there because four crates
 /// were each writing it and one of them got it wrong in a way a mutation
 /// survived. What stays here is the only part that is this crate's: which
 /// clock.
 pub(crate) fn mark<H: Hooks, R: Timer>(rt: &R) -> Option<R::Instant> {
-    hclient_core::mark::<H, _>(|| rt.now())
+    hclient_core::hooks::mark::<H, _>(|| rt.now())
 }
 
 /// The elapsed half of the pair above.
 pub(crate) fn since<R: Timer>(rt: &R, at: Option<R::Instant>) -> Duration {
-    hclient_core::since(at, |t| rt.elapsed_since(t))
+    hclient_core::hooks::since(at, |t| rt.elapsed_since(t))
 }
 
 /// The id for a connection about to be made — or [`ConnectionId::UNWATCHED`]
@@ -369,7 +367,7 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// *inferred*, and nothing has to be declared: a `Resolve` handing back a
 /// `!Send` stream still works and still yields a `!Send` future. That is
 /// what `tests/send_future.rs` pins. Generic code cannot infer, so
-/// `hclient_core::SendTransport` is *declared* for this
+/// `hclient_core::transport::SendTransport` is *declared* for this
 /// transport, under a where-clause naming what its runtime, TLS backend
 /// and resolver promise — which is what `hclient::Client`'s own request
 /// future being `Send` rests on.
@@ -414,8 +412,8 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// now, so the reason has no subject and the fence is back.
 ///
 /// ```no_run
-/// # use hclient_core::Transport;
-/// # use hclient_core::RequestBody;
+/// # use hclient_core::transport::Transport;
+/// # use hclient_core::body::RequestBody;
 /// # use hclient_native::Native;
 /// # use hclient_dns::IpLiteralOnly;
 /// # use hclient_tls::NoTls;
@@ -430,8 +428,8 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// future — in every configuration, so this one can be a fence:
 ///
 /// ```compile_fail
-/// # use hclient_core::Transport;
-/// # use hclient_core::RequestBody;
+/// # use hclient_core::transport::Transport;
+/// # use hclient_core::body::RequestBody;
 /// # use hclient_core::{Event, Hooks};
 /// # use hclient_native::Native;
 /// # use hclient_dns::IpLiteralOnly;
@@ -994,7 +992,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
 /// caller could write and get a hookless transport from.
 impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// Send this transport's events to `hooks` — see
-    /// [`hclient_core::Hooks`] for what it hears and what it
+    /// [`hclient_core::hooks::Hooks`] for what it hears and what it
     /// costs, and [`Event`] for the vocabulary.
     ///
     /// **It returns a different type**, and that is the zero-cost
@@ -1207,7 +1205,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     #[cfg(feature = "system-proxy")]
     pub fn system_proxy(
         self,
-    ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::Error> {
+    ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::error::Error> {
         self.system_proxies_from(&crate::proxy::system::SystemProxies::detect())
     }
 
@@ -1248,9 +1246,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     pub fn system_proxies_from(
         self,
         sys: &crate::proxy::system::SystemProxies,
-    ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::Error> {
+    ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::error::Error> {
         let proxies = crate::proxy::system::http_proxies(sys)
-            .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))?;
+            .map_err(|e| hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e))?;
         Ok(self.with_proxies(proxies))
     }
 
@@ -1281,7 +1279,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # use hclient_rt::{TcpConnect, Timer};
     /// # use hclient_tls::TlsConnect;
     /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
-    /// # -> Native<R, T, D, hclient_core::NoHooks, HttpConnect> {
+    /// # -> Native<R, T, D, hclient_core::hooks::NoHooks, HttpConnect> {
     /// t.proxy(Proxy::new(HttpConnect::new(), "secure-proxy.corp", 8443)
     ///         .only_for(ProxyScheme::Https))
     ///  .and_proxy(Proxy::new(HttpConnect::new(), "proxy.corp", 8080))
@@ -1947,7 +1945,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
     where
         crate::http3::H3<R, T, D>: crate::http3::H3StagedConnect<Error = Error> + Debug,
-        <crate::http3::H3<R, T, D> as hclient_core::Transport>::Body:
+        <crate::http3::H3<R, T, D> as hclient_core::transport::Transport>::Body:
             http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
         <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
         for<'a> <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
@@ -2243,7 +2241,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # use hclient_rt::{TcpConnect, Timer};
     /// # use hclient_tls::TlsConnect;
     /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
-    /// # -> Result<Native<R, T, D>, hclient_core::Error> {
+    /// # -> Result<Native<R, T, D>, hclient_core::error::Error> {
     /// t.unix_socket("/var/run/docker.sock")
     /// # }
     /// ```
@@ -2621,7 +2619,7 @@ where
             // pass on. Nothing observable turns on the order — a body cut
             // by the idle timeout has still yielded what it yielded — and
             // the two are written in the order their arguments give.
-            let counted = hclient_core::Counting::new(
+            let counted = hclient_core::hooks::Counting::new(
                 b,
                 self.hooks.clone(),
                 count.id,
@@ -3155,7 +3153,7 @@ where
         // that reports `Progress` outlives it, so the value has to be
         // carried rather than looked up again. Gated on `H::WATCHING`
         // inside `identify`, so an unwatched build touches no map.
-        let request = hclient_core::identify::<H>(&parts.extensions);
+        let request = hclient_core::hooks::identify::<H>(&parts.extensions);
 
         // Which connections may serve this request. Computed BEFORE
         // `origin_form` below rewrites the URI into origin-form and the
@@ -3175,7 +3173,7 @@ where
         // tenant's server.
         let identity = parts
             .extensions
-            .get::<hclient_core::ClientIdentity>()
+            .get::<hclient_core::identity::ClientIdentity>()
             .cloned();
         let identity_id = match identity.as_ref().map(ClientIdentity::name) {
             None => None,
@@ -3214,7 +3212,7 @@ where
         // anything moves, which is where a `Content-Length` would have
         // come from anyway.
         let outgoing = {
-            let meter = hclient_core::meter::<H>(outgoing.expected()).map(std::sync::Arc::new);
+            let meter = hclient_core::hooks::meter::<H>(outgoing.expected()).map(std::sync::Arc::new);
             outgoing.counting(meter)
         };
         // Left exactly as it arrived — absolute URI, and no `Host:` of
@@ -3346,7 +3344,7 @@ where
             );
             let attempt =
                 std::pin::pin!(self.within_first_byte_gated(timeouts.first_byte, gate, attempt));
-            match hclient_core::Reporting::new(
+            match hclient_core::hooks::Reporting::new(
                 attempt,
                 &self.hooks,
                 id,
@@ -3594,7 +3592,7 @@ where
         let attempt =
             std::pin::pin!(self.within_first_byte_gated(timeouts.first_byte, gate, attempt));
         let resp =
-            hclient_core::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
+            hclient_core::hooks::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
                 .await
                 .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, request, &uri, began);
@@ -3653,7 +3651,7 @@ where
         self.run(Prepared::new(req)).await
     }
 
-    /// Identity: `Self::Error` is already `hclient_core::Error`, and its
+    /// Identity: `Self::Error` is already `hclient_core::error::Error`, and its
     /// category is set wherever the failure happened (`Resolve`/`Connect`/
     /// `Unsupported` in `connect::connect`, `Tls` in `TlsConnect::connect`,
     /// `Body`/`Connect` in `http1::exchange`). The hook's default would do
@@ -3809,7 +3807,7 @@ pub mod testing {
         rt: &R,
         addrs: &[std::net::IpAddr],
         port: u16,
-    ) -> Result<R::Stream, hclient_core::Error>
+    ) -> Result<R::Stream, hclient_core::error::Error>
     where
         R: hclient_rt::TcpConnect + hclient_rt::Timer,
     {
@@ -3853,7 +3851,7 @@ pub mod testing {
     /// An empty request body — what any `http1::exchange` test with nothing
     /// to send needs (a bodyless GET).
     pub fn empty_body() -> crate::body::OutgoingBody {
-        crate::body::OutgoingBody::from_request_body(hclient_core::RequestBody::Empty)
+        crate::body::OutgoingBody::from_request_body(hclient_core::body::RequestBody::Empty)
             .expect("an Empty body follows no factory chain and cannot exceed the rewind bound")
     }
 
@@ -3983,11 +3981,11 @@ pub mod testing {
     pub async fn exchange_for_test<I>(
         io: I,
         req: http::Request<crate::body::OutgoingBody>,
-    ) -> Result<http::Response<crate::established::NativeBody<I>>, hclient_core::Error>
+    ) -> Result<http::Response<crate::established::NativeBody<I>>, hclient_core::error::Error>
     where
         I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
-        use hclient_core::{ConnectionId, NoHooks};
+        use hclient_core::hooks::{ConnectionId, NoHooks};
         let est =
             crate::http1::handshake(io, ConnectionId::UNWATCHED, crate::http1::H1Opts::default())
                 .await?;
@@ -3999,7 +3997,7 @@ pub mod testing {
 
     pub async fn collect<I>(
         b: crate::established::NativeBody<I>,
-    ) -> Result<bytes::Bytes, hclient_core::Error>
+    ) -> Result<bytes::Bytes, hclient_core::error::Error>
     where
         I: hyper::rt::Read + hyper::rt::Write + Unpin,
     {
@@ -4022,7 +4020,7 @@ pub mod testing {
 /// `hclient-rt-embassy` is still a `Transport`, over a resolver that
 /// cannot promise `Send` it is still a `Transport`, and what it is not is
 /// a `SendTransport`.
-impl<R, T, D, H, P> hclient_core::SendTransport for Native<R, T, D, H, P>
+impl<R, T, D, H, P> hclient_core::transport::SendTransport for Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone + Sync + Send, // send-bound-exception: amendment-C16
     R::Stream: 'static + Send,                   // send-bound-exception: amendment-C16
@@ -4040,8 +4038,8 @@ where
 {
     fn execute_send(
         &self,
-        req: http::Request<hclient_core::RequestBody>,
-    ) -> hclient_core::BoxSendExchange<'_, Self::Body, Error> {
-        Box::pin(<Self as hclient_core::Transport>::execute(self, req))
+        req: http::Request<hclient_core::body::RequestBody>,
+    ) -> hclient_core::transport::BoxSendExchange<'_, Self::Body, Error> {
+        Box::pin(<Self as hclient_core::transport::Transport>::execute(self, req))
     }
 }

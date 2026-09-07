@@ -50,9 +50,10 @@ use core::task::{Context, Poll};
 
 use crate::error::{BodyFailure, WrongAuthority};
 use bytes::Bytes;
-use hclient_core::Capabilities;
-use hclient_core::Transport;
-use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::caps::Capabilities;
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body, Frame, SizeHint};
 
 /// [`RequestBody`] as an `http_body::Body`, which is what a server-side
@@ -105,9 +106,9 @@ impl OutgoingBody {
     pub fn new(body: RequestBody) -> Result<Self, Error> {
         Ok(Self(
             match body.reduce().map_err(|e| Error::new(ErrorKind::Body, e))? {
-                hclient_core::Reduced::Empty => Inner::Empty,
-                hclient_core::Reduced::Bytes(b) => Inner::Full(Some(b)),
-                hclient_core::Reduced::Streaming(b) => Inner::Streaming(b),
+                hclient_core::body::Reduced::Empty => Inner::Empty,
+                hclient_core::body::Reduced::Bytes(b) => Inner::Full(Some(b)),
+                hclient_core::body::Reduced::Streaming(b) => Inner::Streaming(b),
             },
         ))
     }
@@ -151,7 +152,7 @@ impl Body for OutgoingBody {
 ///
 /// **The transport is the boundary, so this is where the conversion
 /// belongs.** `BoxedTransport`'s blanket impl requires a response body
-/// whose error is `Into<hclient_core::Error>`, and a server-side body's
+/// whose error is `Into<hclient_core::error::Error>`, and a server-side body's
 /// is not: `http_body_util::Full`'s is `Infallible` and `axum::body::Body`'s
 /// is `axum::Error`. Without this an `axum::Router` could be a
 /// `Transport` and still not back a `Client`, which is the whole point.
@@ -289,7 +290,7 @@ where
 /// Its body at a concrete type is `Box::pin(self.execute(req))` — `Send`
 /// is *inferred* here rather than proven, which is the asymmetry the
 /// whole seam design rests on: proof is owed only by generic code.
-impl<S, B, E> hclient_core::SendTransport for AppTransport<S>
+impl<S, B, E> hclient_core::transport::SendTransport for AppTransport<S>
 where
     S: tower_service::Service<http::Request<OutgoingBody>, Response = http::Response<B>, Error = E>
         + Clone

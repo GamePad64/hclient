@@ -18,7 +18,7 @@
 //!
 //! - **`auth-int`.** RFC 7616 §3.4.3 hashes the request body into `A2`,
 //!   and this client refuses to buffer a caller's stream — that is the
-//!   whole shape of [`RequestBody::Streaming`](hclient_core::RequestBody).
+//!   whole shape of [`RequestBody::Streaming`](hclient_core::body::RequestBody).
 //!   A server offering `qop="auth,auth-int"` gets `auth`; one offering
 //!   `auth-int` **alone** gets a typed refusal rather than a silently
 //!   wrong response, because computing `auth` where the server asked for

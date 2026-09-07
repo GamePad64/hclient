@@ -1,8 +1,8 @@
-//! Type-erased forms of [`crate::Transport`] and [`Timer`], so
+//! Type-erased forms of [`crate::transport::Transport`] and [`Timer`], so
 //! a facade can be **one concrete type** instead of two type parameters.
 //!
 //! A backend implements one method: [`BoxedTransport`]'s blanket impl is
-//! over every [`crate::SendTransport`], and
+//! over every [`crate::transport::SendTransport`], and
 //! [`BoxedTimer`]'s over every `Timer`.
 //!
 //! # Everything boxed here declares `Send`
@@ -22,7 +22,7 @@
 //! and **requiring** one. The seams a transport awaits — `Resolve`,
 //! `TcpConnect`, `TlsConnect`, `Blocking` — carry associated futures now,
 //! so a consumer can name them while each implementor still answers for
-//! itself; and [`crate::SendTransport`] is a separate trait,
+//! itself; and [`crate::transport::SendTransport`] is a separate trait,
 //! so an impl may carry bounds `Transport` does not. `hclient-rt-embassy`
 //! is not excluded from anything: it names a plain box, and a `Native`
 //! over it is a `Transport` and not a `SendTransport`.
@@ -45,9 +45,9 @@
 //! of a stamp — *how long ago was this* — so the instant stays inside the
 //! clock that made it and `Copy` is asked of nothing erased.
 
-use crate::Error;
-use crate::RequestBody;
-use crate::Timer;
+use crate::error::Error;
+use crate::body::RequestBody;
+use crate::timer::Timer;
 use bytes::Bytes;
 use std::future::Future;
 use std::pin::Pin;
@@ -140,9 +140,9 @@ where
     }
 }
 
-/// [`crate::Transport`], with the future and the body boxed.
+/// [`crate::transport::Transport`], with the future and the body boxed.
 ///
-/// Implemented for every [`crate::SendTransport`] whose error
+/// Implemented for every [`crate::transport::SendTransport`] whose error
 /// and body error convert into [`Error`]. A backend author writes one
 /// method — `SendTransport`'s, whose body at a concrete type is
 /// `Box::pin(self.execute(req))`.
@@ -171,12 +171,12 @@ where
     note = "If this transport genuinely cannot cross a thread — a browser one, or a runtime whose IO is `!Send` — do not implement it. `Transport` alone still works and only `hclient::Client` is out of reach."
 )]
 pub trait BoxedTransport {
-    /// [`crate::Transport::execute`], boxed.
+    /// [`crate::transport::Transport::execute`], boxed.
     fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a>;
 
-    /// [`crate::Transport::capabilities`], unchanged — it was
+    /// [`crate::transport::Transport::capabilities`], unchanged — it was
     /// never generic.
-    fn capabilities(&self) -> &crate::Capabilities;
+    fn capabilities(&self) -> &crate::caps::Capabilities;
 
     /// The transport as [`std::any::Any`], so a caller can ask for its
     /// concrete type back.
@@ -193,22 +193,22 @@ pub trait BoxedTransport {
 
 impl<T> BoxedTransport for T
 where
-    T: crate::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
+    T: crate::transport::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
     T::Body: Send + 'static,                  // send-bound-exception: amendment-C14
     <T::Body as http_body::Body>::Error: Into<Error>,
     T::Error: Into<Error>,
 {
     fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a> {
         Box::pin(async move {
-            match crate::SendTransport::execute_send(self, req).await {
+            match crate::transport::SendTransport::execute_send(self, req).await {
                 Ok(resp) => Ok(resp.map(box_body)),
                 Err(e) => Err(e.into()),
             }
         })
     }
 
-    fn capabilities(&self) -> &crate::Capabilities {
-        crate::Transport::capabilities(self)
+    fn capabilities(&self) -> &crate::caps::Capabilities {
+        crate::transport::Transport::capabilities(self)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

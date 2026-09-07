@@ -298,7 +298,7 @@
 //! sitting in the workspace — including the price it pays, which is a
 //! `R: Spawn` bound on the transport.
 use crate::established::Established;
-use hclient_core::Timer;
+use hclient_core::timer::Timer;
 use hclient_tls::TlsConfigId;
 use hyper::rt::{Read, Write};
 use std::collections::HashMap;
@@ -312,7 +312,7 @@ use std::time::Duration;
 /// How this transport reuses connections.
 ///
 /// **One setting, not two.** The v0.2 design document is explicit that an
-/// idle timeout must live either in `hclient_core::Timeouts` or on the pool
+/// idle timeout must live either in `hclient_core::caps::Timeouts` or on the pool
 /// and not in both places, and it lives here. `Timeouts` describes phases
 /// of *one exchange* and travels with a request through
 /// `http::Extensions`; how long a connection may sit idle *after* an
@@ -639,7 +639,7 @@ where
     ///
     /// `now` is elapsed time on the owning transport's `Timer`, measured
     /// from the same instant `expires_at` was measured from. This function
-    /// deliberately does not read a clock of its own: `hclient_core::Timer`
+    /// deliberately does not read a clock of its own: `hclient_core::timer::Timer`
     /// is the seam through which time enters this crate, and a
     /// `std::time::Instant::now()` here would quietly disagree with a test
     /// running under `tokio::time::pause()`.
@@ -705,7 +705,7 @@ where
     /// the clone would borrow the same dead connection for ever.
     ///
     /// Keyed on [`crate::http2::SharedId`] rather than on
-    /// [`hclient_core::ConnectionId`], because every
+    /// [`hclient_core::hooks::ConnectionId`], because every
     /// connection in a build with no hook wears the same `UNWATCHED` id —
     /// see `SharedId`'s own doc.
     #[cfg(feature = "http2")]
@@ -786,7 +786,7 @@ pin_project_lite::pin_project! {
 /// behind the withdrawn claim that a spawned pool task "does not compile
 /// on this seam"; see the module doc. Naming the future means writing it
 /// out, and writing it out means the sleep has to be a field, which is why
-/// [`hclient_core::Timer`] carries an associated `Sleep` type.
+/// [`hclient_core::timer::Timer`] carries an associated `Sleep` type.
 ///
 /// # Why the state is behind a `Box`, and the sleep behind a second one
 ///
@@ -1283,7 +1283,7 @@ mod tests {
     fn parked() -> Established<NeverIo> {
         let mut h = Box::pin(crate::http1::handshake(
             NeverIo,
-            hclient_core::ConnectionId::UNWATCHED,
+            hclient_core::hooks::ConnectionId::UNWATCHED,
             crate::http1::H1Opts::default(),
         ));
         match poll_once(&mut h) {

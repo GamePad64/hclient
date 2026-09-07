@@ -56,7 +56,7 @@
 //!
 //! ## 2. What client makes the DoH request? A `Transport`, never a `Client`
 //!
-//! `C` is an [`hclient_core::Transport`], the seam one level
+//! `C` is an [`hclient_core::transport::Transport`], the seam one level
 //! below `hclient::Client`. That is the whole answer to §W3's *"a
 //! resolver's client is not the user's client"*, and it is structural
 //! rather than a rule someone has to follow: a cookie jar, a redirect
@@ -136,7 +136,7 @@
 //!
 //! **No total bound on a query.** [`Doh::timeouts`] sets `connect`,
 //! `first_byte` and `between_bytes` in the request's extensions, which is
-//! everything [`hclient_core::Timeouts`] can express — there is no `total`
+//! everything [`hclient_core::caps::Timeouts`] can express — there is no `total`
 //! there, because in `hclient` a total budget is enforced by `Client`,
 //! which this crate deliberately does not use (question 2 above). A server
 //! that answers the head promptly and then dribbles the body one byte per
@@ -168,8 +168,10 @@ pub use wire::MAX_RESPONSE_BYTES;
 
 use futures_util::StreamExt;
 use futures_util::stream;
-use hclient_core::SendTransport;
-use hclient_core::{Error, ErrorKind, RequestBody, Timeouts};
+use hclient_core::transport::SendTransport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Timeouts;
+use hclient_core::error::{Error, ErrorKind};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use http::Uri;
 use http_body_util::BodyExt;

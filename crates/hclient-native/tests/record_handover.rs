@@ -29,8 +29,9 @@ mod fakedns;
 mod servers;
 
 use fakedns::{FakeDns, service_record};
-use hclient_core::Transport;
-use hclient_core::{RequestBody, Timeouts};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::Timeouts;
 use hclient_dns::SvcbEndpoint;
 use hclient_native::H3;
 use hclient_native::Native;

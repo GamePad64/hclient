@@ -68,8 +68,11 @@
 //! take but the request itself.
 
 use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
-use hclient_core::{ConnectTiming, Connected, Event, Hooks, Reused, Transport};
-use hclient_core::{Error, ErrorKind, RequestBody, Timeouts, check_version};
+use hclient_core::hooks::{ConnectTiming, Connected, Event, Hooks, Reused};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::caps::{Timeouts, check_version};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_tls::quic::QuicTlsConnect;
 use std::fmt;
 use std::future::Future;
@@ -272,7 +275,7 @@ pub(crate) struct Admitted {
     pub(crate) timeouts: Timeouts,
     /// The client identity, read from the request and already resolved:
     /// the name for `QuicTlsRequest`, and the id for the pool key.
-    pub(crate) identity: Option<hclient_core::ClientIdentity>,
+    pub(crate) identity: Option<hclient_core::identity::ClientIdentity>,
     pub(crate) identity_id: Option<hclient_tls::TlsConfigId>,
 }
 
@@ -326,15 +329,15 @@ where
         // must.
         let identity = req
             .extensions()
-            .get::<hclient_core::ClientIdentity>()
+            .get::<hclient_core::identity::ClientIdentity>()
             .cloned();
-        let identity_id = match identity.as_ref().map(hclient_core::ClientIdentity::name) {
+        let identity_id = match identity.as_ref().map(hclient_core::identity::ClientIdentity::name) {
             None => None,
             Some(name) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, name) {
                 Some(cfg) => Some(cfg),
                 None => {
                     return Err(crate::Error::new(
-                        hclient_core::ErrorKind::Tls,
+                        hclient_core::error::ErrorKind::Tls,
                         crate::UnknownClientIdentity(name.to_owned()),
                     ));
                 }
@@ -342,9 +345,9 @@ where
         };
         if req
             .extensions()
-            .get::<hclient_core::AllowEarlyData>()
+            .get::<hclient_core::caps::AllowEarlyData>()
             .is_some()
-            && self.caps.early_data == hclient_core::EarlyDataSupport::None
+            && self.caps.early_data == hclient_core::caps::EarlyDataSupport::None
         {
             return Err(crate::http3::early::refuse_early_data("hclient-h3"));
         }
@@ -468,7 +471,7 @@ where
         let id = ConnState::id(state.as_ref());
         // Read once from the request still in hand; `Staged` keeps the
         // request, so `exchange` reads it back off the same one.
-        let request = hclient_core::identify::<H>(req.extensions());
+        let request = hclient_core::hooks::identify::<H>(req.extensions());
         match &made {
             Some(m) => self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, http::Version::HTTP_3)
@@ -504,7 +507,7 @@ where
     pub(crate) async fn finish(
         &self,
         staged: Staged<R, H>,
-    ) -> Result<http::Response<hclient_core::Counting<crate::http3::H3Body<H>, H>>, Error> {
+    ) -> Result<http::Response<hclient_core::hooks::Counting<crate::http3::H3Body<H>, H>>, Error> {
         let Staged {
             mut send,
             zero_rtt,
@@ -523,7 +526,7 @@ where
         let watch = self.watch(&conn, &state);
 
         let (parts, body) = req.into_parts();
-        let request = hclient_core::identify::<H>(&parts.extensions);
+        let request = hclient_core::hooks::identify::<H>(&parts.extensions);
         // Taken before the first attempt, because after it the body is gone
         // — but **only when there is something a replay could be needed
         // for**. `zero_rtt.is_some()` is exactly the condition: it is
@@ -544,7 +547,7 @@ where
         // once, on a connection whose early data the server refused, and
         // `Progress::expected` already says it is a claim rather than a
         // promise.
-        let sent = hclient_core::meter::<H>(body.size_hint()).map(std::sync::Arc::new);
+        let sent = hclient_core::hooks::meter::<H>(body.size_hint()).map(std::sync::Arc::new);
         let head = http::Request::from_parts(parts.clone(), ());
         let first = {
             // The upload is reported while it is happening, which on this
@@ -558,7 +561,7 @@ where
                 watch.clone(),
                 sent.clone()
             ));
-            hclient_core::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
+            hclient_core::hooks::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
                 .await
         };
 

@@ -1,10 +1,9 @@
 // `Timeouts` is defined in `hclient-core`: transports read it from
 // `http::Extensions`, and they don't depend on `hclient`.
 use crate::error::InvalidBaseUrl;
-pub use hclient_core::Timeouts;
-use hclient_core::{
-    Capabilities, Error, ErrorKind, RedirectSupport, RequireVersion, UnsupportedCapability,
-};
+pub use hclient_core::caps::Timeouts;
+use hclient_core::caps::{Capabilities, RedirectSupport, RequireVersion};
+use hclient_core::error::{Error, ErrorKind, UnsupportedCapability};
 use hclient_proto::redirect::RedirectPolicy;
 
 /// A redirect policy as the client stores it.
@@ -635,7 +634,7 @@ fn check_default_headers_supported(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::{Capabilities, TimeoutSupport};
+    use hclient_core::caps::{Capabilities, TimeoutSupport};
     use std::time::Duration;
 
     fn secs(n: u64) -> Option<Duration> {

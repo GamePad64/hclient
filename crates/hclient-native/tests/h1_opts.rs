@@ -10,8 +10,8 @@
 //! fail".
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::RequestBody;
-use hclient_core::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::{H1Opts, MaxBufSizeTooSmall, Native};
 use hclient_rt_tokio::Tokio;
@@ -46,7 +46,7 @@ fn server(count: usize, size: usize) -> u16 {
     port
 }
 
-fn fetch(port: u16, opts: H1Opts) -> Result<u16, hclient_core::Error> {
+fn fetch(port: u16, opts: H1Opts) -> Result<u16, hclient_core::error::Error> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -88,7 +88,7 @@ fn the_header_count_a_caller_sets_is_the_one_enforced() {
             .map(|_| ())
             .unwrap_err()
             .kind(),
-        &hclient_core::ErrorKind::Connect,
+        &hclient_core::error::ErrorKind::Connect,
         "the control: 153 fields is past hyper's default of 100"
     );
     assert_eq!(
@@ -132,7 +132,7 @@ fn the_head_size_a_caller_sets_is_the_one_enforced() {
         .map(|_| ())
         .unwrap_err()
         .kind(),
-        &hclient_core::ErrorKind::Connect,
+        &hclient_core::error::ErrorKind::Connect,
         "a head that will not fit the buffer is an error, not a short head"
     );
 }
@@ -155,7 +155,7 @@ fn a_buffer_below_hypers_minimum_is_refused_rather_than_panicking() {
         })
         .map(|_| ())
         .expect_err("hyper's minimum is 8192");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Unsupported, "{err:?}");
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Unsupported, "{err:?}");
     assert_eq!(
         StdError::source(&err).and_then(|s| s.downcast_ref::<MaxBufSizeTooSmall>()),
         Some(&MaxBufSizeTooSmall { asked: 4096 }),

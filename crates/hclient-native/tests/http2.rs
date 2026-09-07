@@ -242,7 +242,7 @@ impl TlsConnect for FakeTls {
     }
 
     type Handshake<'a, S>
-        = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
+        = std::future::Ready<Result<(S, TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -334,7 +334,7 @@ async fn a_live_exchange_with_an_http2_server_is_reported_as_http2() {
 #[tokio::test]
 async fn capabilities_report_the_floor_with_the_feature_on() {
     let transport = Native::new(Tokio, FakeTls::negotiating_h2(), SystemDns::new(Tokio));
-    let caps = hclient_core::Transport::capabilities(&transport);
+    let caps = hclient_core::transport::Transport::capabilities(&transport);
 
     assert!(
         !caps.full_duplex,
@@ -587,7 +587,7 @@ async fn a_request_body_reaches_the_server_over_http2() {
         BOUND,
         client
             .post(server.url("/upload"))
-            .body(hclient_core::RequestBody::Full(payload.clone().into()))
+            .body(hclient_core::body::RequestBody::Full(payload.clone().into()))
             .send(),
     )
     .await
@@ -673,13 +673,13 @@ async fn connection_specific_headers_are_stripped_rather_than_sent() {
 
 /// A `GET` carrying a demand. `RequestBuilder` has no extension setter, so
 /// this goes through `Client::execute`, the same route a caller has.
-fn demanding(url: &str, v: http::Version) -> http::Request<hclient_core::RequestBody> {
+fn demanding(url: &str, v: http::Version) -> http::Request<hclient_core::body::RequestBody> {
     let mut req = http::Request::builder()
         .method("GET")
         .uri(url)
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .unwrap();
-    req.extensions_mut().insert(hclient_core::RequireVersion(v));
+    req.extensions_mut().insert(hclient_core::caps::RequireVersion(v));
     req
 }
 
@@ -785,9 +785,9 @@ async fn an_unmarked_request_still_offers_h2() {
 #[derive(Debug, Clone, Default)]
 struct Hints(Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<u64>>>);
 
-impl hclient_core::Hooks for Hints {
-    fn on(&self, event: &hclient_core::Event<'_>) {
-        if let hclient_core::Event::Informational(e) = event {
+impl hclient_core::hooks::Hooks for Hints {
+    fn on(&self, event: &hclient_core::hooks::Event<'_>) {
+        if let hclient_core::hooks::Event::Informational(e) = event {
             self.0.lock().unwrap().push(format!(
                 "{} {}",
                 e.status.as_u16(),

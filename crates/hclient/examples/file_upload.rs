@@ -124,7 +124,7 @@ mod demo {
         // sent again — which is what lets a retry policy, or a `425 Too
         // Early`, send it. Give any part a stream and this becomes
         // `RetryKind::Impossible`, and no policy overrides that.
-        assert_eq!(req.retry_kind, hclient_core::RetryKind::ViaFactory);
+        assert_eq!(req.retry_kind, hclient_core::body::RetryKind::ViaFactory);
 
         // **The length is not visible from here, and the reason is the mock
         // keeping its own rule.** A form of byte parts has an exact size, and

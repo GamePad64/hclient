@@ -44,8 +44,9 @@
 //! absent is `tests/nagle_cost.rs`'s.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::Transport;
-use hclient_core::{ErrorKind, RequestBody};
+use hclient_core::transport::Transport;
+use hclient_core::body::RequestBody;
+use hclient_core::error::ErrorKind;
 use hclient_dns::IpLiteralOnly;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
@@ -159,7 +160,7 @@ fn every_field_set() -> TcpOpts {
 /// Two downcasts rather than a substring of the `Display` text: the
 /// message is a computed list, and a test matching on it would go green
 /// for an error that named `nodelay` inside a sentence about
-/// `local_address`. `hclient_core::Error`'s source is the
+/// `local_address`. `hclient_core::error::Error`'s source is the
 /// `std::io::Error` that `TcpOpts::reject_unsupported` built, and that
 /// error's own payload is the `UnsupportedTcpOpts`.
 fn refused_options<const MISSING: usize>(opts: TcpOpts) -> Vec<&'static str> {

@@ -34,8 +34,9 @@
 //! handshake seam, not anybody's cryptography.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::RequestBody;
-use hclient_core::{Event, Hooks, Transport};
+use hclient_core::body::RequestBody;
+use hclient_core::hooks::{Event, Hooks};
+use hclient_core::transport::Transport;
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -101,7 +102,7 @@ struct SlowDns(Duration);
 impl Resolve for SlowDns {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::Error>> + Send + 'a>,
+        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
     >
     where
         Self: 'a;
@@ -152,7 +153,7 @@ impl TlsConnect for SlowTls {
         = std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<(Self::Stream<S>, TlsInfo), hclient_core::Error>,
+                    Output = Result<(Self::Stream<S>, TlsInfo), hclient_core::error::Error>,
                 > + 'a,
         >,
     >

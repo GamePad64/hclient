@@ -7,7 +7,7 @@
 
 use crate::{Approach, Handshake, Step};
 use bytes::{Bytes, BytesMut};
-use hclient_core::Error;
+use hclient_core::error::Error;
 
 /// No proxy — and it is an **empty enum**, so `Proxy<NoProxy>` cannot be
 /// constructed and the `Option` holding one is `None` by construction

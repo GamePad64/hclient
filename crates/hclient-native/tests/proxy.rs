@@ -118,7 +118,7 @@ fn socks5_proxy(want_auth: bool) -> (SocketAddr, mpsc::Receiver<(u8, String, u16
     (addr, rx)
 }
 
-async fn get(client: &Client, url: &str) -> Result<u16, hclient_core::Error> {
+async fn get(client: &Client, url: &str) -> Result<u16, hclient_core::error::Error> {
     // The head is the whole assertion here — every fixture answers with
     // `Connection: close` and a two-byte body, so draining it would prove
     // nothing these tests are about.
@@ -252,7 +252,7 @@ async fn socks5_password_auth_is_negotiated_and_the_request_still_arrives() {
 /// them — `client_certs`' lesson, one field over.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_capability_follows_whether_a_proxy_was_configured() {
-    use hclient_core::Transport;
+    use hclient_core::transport::Transport;
     let direct = Native::new(Tokio, NoTls, IpLiteralOnly);
     assert!(!direct.capabilities().proxy);
     let via = Native::new(Tokio, NoTls, IpLiteralOnly).proxy(Proxy::new(
@@ -485,7 +485,7 @@ async fn a_proxy_that_speaks_first_is_refused() {
         .await
         .expect("must not hang")
         .expect_err("the tunnel must be refused");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Connect);
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Connect);
     // The source type, not the message: `ProxySpokeFirst(8)` names both
     // the defect and how many bytes were invented, and a test reading the
     // rendered string would pass for any wording.
@@ -642,7 +642,7 @@ async fn a_tunnel_that_dies_after_it_is_established_fails_rather_than_hangs() {
     // The handshake is where it dies, because that is the first thing
     // written into the tunnel. What is asserted is that it dies at all
     // and says so.
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Tls, "{err:?}");
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Tls, "{err:?}");
 }
 
 /// **A bypassed origin goes direct, and the same client still proxies
@@ -769,7 +769,7 @@ async fn a_socks5_upstream_failure_arrives_with_its_own_reply_code() {
             .await
             .expect("must not hang")
             .expect_err("a refused CONNECT is not a response");
-        assert_eq!(*err.kind(), hclient_core::ErrorKind::Connect);
+        assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Connect);
         let refused = StdError::source(&err)
             .and_then(|s| s.downcast_ref::<hclient_native::Socks5Refused>())
             .unwrap_or_else(|| panic!("REP={rep:#04x} must be readable off the error: {err:?}"));
@@ -788,7 +788,7 @@ async fn a_socks5_proxy_that_refuses_every_method_says_so_and_not_a_reply_code()
         .await
         .expect("must not hang")
         .expect_err("no acceptable methods is a refusal");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Connect);
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Connect);
     let source = StdError::source(&err).expect("a source");
     assert!(
         source
@@ -1130,7 +1130,7 @@ async fn a_socks4_refusal_is_a_typed_connect_error() {
         .await
         .expect("must not hang")
         .expect_err("the proxy refused");
-    assert_eq!(*err.kind(), hclient_core::ErrorKind::Connect, "{err:?}");
+    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Connect, "{err:?}");
     let refused = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<Socks4Refused>())
         .unwrap_or_else(|| panic!("the typed refusal carrying CD: {err:?}"));

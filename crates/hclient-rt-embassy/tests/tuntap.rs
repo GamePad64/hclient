@@ -57,7 +57,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, Stack, StackResources, StaticConfigV4};
 use embassy_net_tuntap::TunTapDevice;
 use embassy_time::Timer;
-use hclient_core::Timeouts;
+use hclient_core::caps::Timeouts;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt::{TcpConnect, TcpOpts};
@@ -461,7 +461,7 @@ async fn connect_timeout(stack: Stack<'static>) {
     assert!(
         matches!(
             err.kind(),
-            hclient_core::ErrorKind::Timeout(hclient_core::Phase::Connect)
+            hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::Connect)
         ),
         "expected a connect timeout, got {:?}",
         err.kind()
@@ -790,16 +790,16 @@ fn transport<const N: usize>(
 /// What it no longer covers is the `Client` layer above — redirects, the
 /// cookie jar, the cache, timeout merging — and that is target-independent
 /// logic exercised by the rest of the suite on every other backend.
-async fn get<T>(t: &T, url: &str, timeouts: Option<Timeouts>) -> Result<String, hclient_core::Error>
+async fn get<T>(t: &T, url: &str, timeouts: Option<Timeouts>) -> Result<String, hclient_core::error::Error>
 where
-    T: hclient_core::Transport<Error = hclient_core::Error>,
+    T: hclient_core::transport::Transport<Error = hclient_core::error::Error>,
     T::Body: http_body::Body<Data = bytes::Bytes> + Unpin,
-    <T::Body as http_body::Body>::Error: Into<hclient_core::Error>,
+    <T::Body as http_body::Body>::Error: Into<hclient_core::error::Error>,
 {
     let mut req = http::Request::builder()
         .method(http::Method::GET)
         .uri(url)
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .expect("request");
     if let Some(tm) = timeouts {
         req.extensions_mut().insert(tm);

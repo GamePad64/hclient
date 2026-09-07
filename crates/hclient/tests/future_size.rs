@@ -37,7 +37,7 @@ fn the_execute_future_stays_under_its_ceiling() {
     let c = Client::builder(MockTransport::new())
         .build()
         .expect("build");
-    let fut = c.execute(http::Request::new(hclient_core::RequestBody::Empty));
+    let fut = c.execute(http::Request::new(hclient_core::body::RequestBody::Empty));
     let size = std::mem::size_of_val(&fut);
     assert!(
         size <= CEILING,

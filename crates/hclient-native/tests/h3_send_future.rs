@@ -17,7 +17,7 @@
 //! what the test would have said.
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_core::Transport;
+use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::{H3, Native};
 use hclient_rt_tokio::Tokio;
@@ -34,7 +34,7 @@ fn the_exchange_future_crosses_a_thread_with_the_h3_arm_installed() {
         .expect("the two stacks agree on every capability that has one true value");
     let req = http::Request::builder()
         .uri("http://192.0.2.1/")
-        .body(hclient_core::RequestBody::Empty)
+        .body(hclient_core::body::RequestBody::Empty)
         .unwrap();
     // Never polled, like its neighbour: the property under test is the
     // future's type, and 192.0.2.1 (RFC 5737 TEST-NET-1) is unroutable.
