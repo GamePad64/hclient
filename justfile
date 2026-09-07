@@ -1262,21 +1262,27 @@ semver rev="":
       echo "::error::cargo-semver-checks is not installed, so this check could not run — and a check that could not run must not pass"
       exit 1
     fi
-    # **The crates are derived, and so is whether each is publishable
-    # yet.** A crate is gated here exactly when it declares its own
-    # literal `rust-version` — the gesture that takes it out of the
-    # family's shared floor, and the same one `just msrv` selects on — and
-    # only once crates.io has it, because before the first publish there
-    # is no baseline and cargo-semver-checks can only report *not found in
-    # registry*.
+    # **Every publishable crate is a candidate, and the registry decides
+    # which are actually checkable.** A stable published version is a
+    # baseline cargo-semver-checks can answer against; a pre-release one
+    # is not, because every step out of a pre-release is a major step and
+    # all 254 lints are skipped. So the selection is *published, and not a
+    # pre-release* — read from crates.io rather than declared here.
     #
-    # **It selected on `[package.metadata.release] shared-version` until
-    # the release tooling changed**, and that key went with cargo-release
-    # on 2026-09-07 — so this loop matched nothing and the gate reported
-    # that it had checked zero crates. It failed closed, which is what it
-    # is built to do and how this was found; a gate that had passed
-    # silently over an empty list would have been the defect this
-    # workspace names most often.
+    # **That is the same question the gate exists to ask**, which is why
+    # it needs no marker in a manifest: a crate this gate can speak for is
+    # exactly a crate with a stable baseline. Today that is `hclient-idn`
+    # and `system-resolver`; the day the family leaves `-alpha` the other
+    # 25 join it, with no edit here.
+    #
+    # **Two earlier selections were wrong and both failed closed**, which
+    # is how each was found. It read `[package.metadata.release]
+    # shared-version` until that key went with cargo-release on
+    # 2026-09-07, and then a literal `rust-version` — which is a claim
+    # about a *compiler floor* and matched these two only by coincidence,
+    # a coincidence that ended when the shared version was dissolved and
+    # all 30 crates took a literal version of their own. Neither ever
+    # meant "this crate can be semver-checked".
     #
     # Deriving both is what keeps this from going stale in either
     # direction: a second independently-versioned crate is gated the day
@@ -1305,7 +1311,7 @@ semver rev="":
       # stopping after the first candidate.
       name="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
       [ -n "$name" ] || { echo "::error::$manifest declares no package name"; exit 1; }
-      grep -q '^rust-version = "' "$manifest" || continue
+      grep -q '^publish = false' "$manifest" && continue
       latest="$(curl -sS -H "User-Agent: hclient semver gate (gamepad64@gmail.com)" \
                   "https://crates.io/api/v1/crates/$name" \
                 | sed -n 's/.*"max_version":"\([^"]*\)".*/\1/p')"
