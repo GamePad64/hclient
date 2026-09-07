@@ -1263,12 +1263,20 @@ semver rev="":
       exit 1
     fi
     # **The crates are derived, and so is whether each is publishable
-    # yet.** A crate is gated here exactly when it carries its own
-    # `[package.metadata.release] shared-version` — the same two-line
-    # gesture that gives it its own version and its own floor — and only
-    # once crates.io has it, because before the first publish there is no
-    # baseline and cargo-semver-checks can only report *not found in
+    # yet.** A crate is gated here exactly when it declares its own
+    # literal `rust-version` — the gesture that takes it out of the
+    # family's shared floor, and the same one `just msrv` selects on — and
+    # only once crates.io has it, because before the first publish there
+    # is no baseline and cargo-semver-checks can only report *not found in
     # registry*.
+    #
+    # **It selected on `[package.metadata.release] shared-version` until
+    # the release tooling changed**, and that key went with cargo-release
+    # on 2026-09-07 — so this loop matched nothing and the gate reported
+    # that it had checked zero crates. It failed closed, which is what it
+    # is built to do and how this was found; a gate that had passed
+    # silently over an empty list would have been the defect this
+    # workspace names most often.
     #
     # Deriving both is what keeps this from going stale in either
     # direction: a second independently-versioned crate is gated the day
@@ -1297,7 +1305,7 @@ semver rev="":
       # stopping after the first candidate.
       name="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
       [ -n "$name" ] || { echo "::error::$manifest declares no package name"; exit 1; }
-      grep -q "^shared-version = \"$name\"" "$manifest" || continue
+      grep -q '^rust-version = "' "$manifest" || continue
       latest="$(curl -sS -H "User-Agent: hclient semver gate (gamepad64@gmail.com)" \
                   "https://crates.io/api/v1/crates/$name" \
                 | sed -n 's/.*"max_version":"\([^"]*\)".*/\1/p')"
