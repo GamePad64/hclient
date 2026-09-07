@@ -5,8 +5,8 @@
 //! list keeps its meaning of "a justified exception in production code."
 
 use bytes::Bytes;
-use hclient_core::{Timer, Transport};
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, Timeouts, UnsupportedCapability};
+use hclient_core::{Timer, Transport};
 use static_assertions::assert_impl_all;
 use std::error::Error as StdError;
 use std::fmt::Display;

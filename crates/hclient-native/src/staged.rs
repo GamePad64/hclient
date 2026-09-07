@@ -100,9 +100,7 @@ use crate::{
     Native, NativeIo, Prepared, body, connect, connection_id, discovery, handshake_for, mark,
     negotiated_protocol, protocol_admissible, since, spoken_version, with_connect_timeout,
 };
-use hclient_core::{
-    ConnectTiming, Connected, ConnectionId, Event, Hooks, Reused, Transport,
-};
+use hclient_core::{ConnectTiming, Connected, ConnectionId, Event, Hooks, Reused, Transport};
 use hclient_core::{Error, RequestBody, Timeouts, check_version};
 use hclient_dns::Resolve;
 use hclient_rt::{TcpConnect, Timer};
@@ -391,16 +389,10 @@ where
             },
         );
         let attempt = std::pin::pin!(self.within_first_byte_gated(first_byte, gate, attempt));
-        let resp = hclient_core::Reporting::new(
-            attempt,
-            &self.hooks,
-            id,
-            request,
-            &uri,
-            sent.clone(),
-        )
-        .await
-        .map_err(established::Failed::into_error)?;
+        let resp =
+            hclient_core::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
+                .await
+                .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, request, &uri, began);
         Ok(self.bound_body(
             resp,

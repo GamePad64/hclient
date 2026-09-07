@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/GamePad64/hclient/compare/hclient-idn-v0.2.1...hclient-idn-v0.2.2) - 2026-09-07
+
+### Other
+
+- windows-strings 0.100, and both Windows crates declared once
+
 ## [0.2.1](https://github.com/GamePad64/hclient/compare/hclient-idn-v0.2.0...hclient-idn-v0.2.1) - 2026-09-06
 
 ### Added

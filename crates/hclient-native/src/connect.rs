@@ -127,8 +127,8 @@ use crate::error::{
 use crate::{mark, since};
 use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use hclient_core::{Hooks, NoHooks};
 use hclient_core::{Error, ErrorKind};
+use hclient_core::{Hooks, NoHooks};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
 use hclient_rt::{TcpConnect, TcpOpts, Timer};

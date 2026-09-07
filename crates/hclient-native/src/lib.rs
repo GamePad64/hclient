@@ -138,12 +138,12 @@ pub use staged::{Refused, Staged, StagedConnect};
 pub use upgrade::Upgrading;
 
 use hclient_core::{
-    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
-    RequestId, Reused, Transport,
-};
-use hclient_core::{
     CancelSupport, Capabilities, ClientIdentity, Error, ErrorKind, Phase, RedirectSupport,
     RequestBody, ReuseSupport, TimeoutSupport, Timeouts, check_version,
+};
+use hclient_core::{
+    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
+    RequestId, Reused, Transport,
 };
 use hclient_dns::Resolve;
 use hclient_rt::{Spawn, TcpConnect, TcpOpts, Timer};
@@ -222,8 +222,7 @@ fn install_1xx<H>(
             g.open();
         }
         hooks.on(&Event::Informational(
-            hclient_core::Informational::new(id, resp.status(), resp.headers())
-                .request(request),
+            hclient_core::Informational::new(id, resp.status(), resp.headers()).request(request),
         ));
     });
 }
@@ -296,10 +295,8 @@ impl<'a> Counted<'a> {
 /// **innermost** wrapper, next to the socket, so it measures the gap
 /// between reads on the wire rather than the gap between whatever a
 /// wrapper above chose to pass on.
-pub type NativeBody<R, T, H> = IdleTimeout<
-    hclient_core::Counting<established::NativeBody<NativeIo<R, T>, H>, H>,
-    R,
->;
+pub type NativeBody<R, T, H> =
+    IdleTimeout<hclient_core::Counting<established::NativeBody<NativeIo<R, T>, H>, H>, R>;
 
 /// This crate's clock, handed to `hclient_core`'s gate.
 ///
@@ -3217,8 +3214,7 @@ where
         // anything moves, which is where a `Content-Length` would have
         // come from anyway.
         let outgoing = {
-            let meter =
-                hclient_core::meter::<H>(outgoing.expected()).map(std::sync::Arc::new);
+            let meter = hclient_core::meter::<H>(outgoing.expected()).map(std::sync::Arc::new);
             outgoing.counting(meter)
         };
         // Left exactly as it arrived — absolute URI, and no `Host:` of
@@ -3597,16 +3593,10 @@ where
         );
         let attempt =
             std::pin::pin!(self.within_first_byte_gated(timeouts.first_byte, gate, attempt));
-        let resp = hclient_core::Reporting::new(
-            attempt,
-            &self.hooks,
-            id,
-            request,
-            &uri,
-            sent.clone(),
-        )
-        .await
-        .map_err(established::Failed::into_error)?;
+        let resp =
+            hclient_core::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
+                .await
+                .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, request, &uri, began);
         Ok(self.bound_body(
             resp,
@@ -4052,8 +4042,6 @@ where
         &self,
         req: http::Request<hclient_core::RequestBody>,
     ) -> hclient_core::BoxSendExchange<'_, Self::Body, Error> {
-        Box::pin(<Self as hclient_core::Transport>::execute(
-            self, req,
-        ))
+        Box::pin(<Self as hclient_core::Transport>::execute(self, req))
     }
 }

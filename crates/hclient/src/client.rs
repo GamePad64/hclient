@@ -1106,8 +1106,7 @@ impl Client {
         // relaxed `fetch_add` per operation, beside a network round trip,
         // and the alternative would be a second question `Client` has no
         // way to ask — `Hooks::WATCHING` is the transport's.
-        let mut attempt_id =
-            hclient_core::Attempt::new(hclient_core::RequestId::next());
+        let mut attempt_id = hclient_core::Attempt::new(hclient_core::RequestId::next());
 
         loop {
             // **§8.3, and it is the first thing in the loop.** Before the
@@ -1829,10 +1828,7 @@ impl Client {
         &self,
         hp: &mut HopParts,
         caller_owns_the_conditionals: bool,
-    ) -> std::ops::ControlFlow<
-        http::Response<Cached<hclient_core::erased::BoxBody>>,
-        Plan,
-    > {
+    ) -> std::ops::ControlFlow<http::Response<Cached<hclient_core::erased::BoxBody>>, Plan> {
         use std::ops::ControlFlow::{Break, Continue};
         let Some(cache) = self.inner.cache.as_ref() else {
             return Continue(Plan::default());
@@ -1874,10 +1870,7 @@ impl Client {
         &self,
         _: &mut HopParts,
         _: bool,
-    ) -> std::ops::ControlFlow<
-        http::Response<Cached<hclient_core::erased::BoxBody>>,
-        Plan,
-    > {
+    ) -> std::ops::ControlFlow<http::Response<Cached<hclient_core::erased::BoxBody>>, Plan> {
         std::ops::ControlFlow::Continue(Plan)
     }
 

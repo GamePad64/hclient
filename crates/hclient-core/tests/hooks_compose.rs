@@ -6,9 +6,7 @@
 //! combine. What that leaves is an order, which is observable, and a
 //! `WATCHING` rule that goes the other way from a verdict lattice.
 
-use hclient_core::{
-    CloseReason, Closed, ConnectionId, Event, Hooks, HooksExt, NoHooks,
-};
+use hclient_core::{CloseReason, Closed, ConnectionId, Event, Hooks, HooksExt, NoHooks};
 use std::cell::RefCell;
 use std::rc::Rc;
 

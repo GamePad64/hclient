@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5](https://github.com/GamePad64/hclient/compare/hclient-winhttp-v0.1.0-alpha.4...hclient-winhttp-v0.1.0-alpha.5) - 2026-09-07
+
+### Added
+
+- [**breaking**] dissolve the `unversioned` quarantine
+
+### Other
+
+- windows-strings 0.100, and both Windows crates declared once
+
 ## [0.1.0-alpha.4](https://github.com/GamePad64/hclient/compare/hclient-winhttp-v0.1.0-alpha.3...hclient-winhttp-v0.1.0-alpha.4) - 2026-09-06
 
 ### Added

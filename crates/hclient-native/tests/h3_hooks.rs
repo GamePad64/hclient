@@ -39,8 +39,8 @@ mod server;
 #[path = "h3_wire/mod.rs"]
 mod wire;
 
-use hclient_core::{Event, Hooks, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_core::{Event, Hooks, Transport};
 use hclient_dns::{IpLiteralOnly, RData, Record, Resolve, rtype};
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
@@ -259,9 +259,7 @@ impl Hooks for Recorder {
                 reason: match e.reason {
                     hclient_core::CloseReason::Ended => Why::Ended,
                     hclient_core::CloseReason::Stale => Why::Stale,
-                    hclient_core::CloseReason::Failed(err) => {
-                        Why::Failed(err.kind().clone())
-                    }
+                    hclient_core::CloseReason::Failed(err) => Why::Failed(err.kind().clone()),
                 },
             },
             // `Event` is `#[non_exhaustive]` from outside `hclient-core`, so

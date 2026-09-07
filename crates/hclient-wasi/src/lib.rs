@@ -36,11 +36,11 @@ mod hooks;
 pub use body::Body;
 
 use convert::{Payload, TrailerWatch};
-use hclient_core::{ConnectionId, Event, Head, Hooks, NoHooks, Transport};
 use hclient_core::{
     CancelSupport, Capabilities, Error, RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport,
     Timeouts, TlsSupport,
 };
+use hclient_core::{ConnectionId, Event, Head, Hooks, NoHooks, Transport};
 use wasip3::http::types::{ErrorCode, Fields, Request, RequestOptions};
 use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
 
@@ -483,8 +483,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
                 .await
                 .map_err(convert::wasi_err)?,
             Some((w, Payload::Bytes(bytes))) => {
-                let mut b =
-                    hclient_core::Metered::new(Body::from_bytes(bytes), sent.clone());
+                let mut b = hclient_core::Metered::new(Body::from_bytes(bytes), sent.clone());
                 let fut = std::pin::pin!(convert::race_send_with_body(
                     wasip3::http::client::send(wasi_request),
                     w.send_http_body(&mut b),

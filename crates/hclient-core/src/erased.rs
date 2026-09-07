@@ -194,7 +194,7 @@ pub trait BoxedTransport {
 impl<T> BoxedTransport for T
 where
     T: crate::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
-    T::Body: Send + 'static,                               // send-bound-exception: amendment-C14
+    T::Body: Send + 'static,                  // send-bound-exception: amendment-C14
     <T::Body as http_body::Body>::Error: Into<Error>,
     T::Error: Into<Error>,
 {

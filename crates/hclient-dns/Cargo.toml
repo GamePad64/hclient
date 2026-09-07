@@ -1,6 +1,6 @@
 [package]
 name = "hclient-dns"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 description = "Pluggable resolver trait for hclient"
 keywords     = ["hclient", "dns", "resolver", "seam"]
 categories   = ["network-programming"]

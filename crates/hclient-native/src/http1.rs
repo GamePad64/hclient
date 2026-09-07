@@ -843,8 +843,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::RequestBody;
     use hclient_core::NoHooks;
+    use hclient_core::RequestBody;
     use std::error::Error as StdError;
     use std::future::Future;
     use std::io;

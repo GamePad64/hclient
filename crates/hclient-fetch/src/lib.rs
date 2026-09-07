@@ -68,10 +68,8 @@ pub use timer::BrowserClock;
 // only type the module has to export.
 pub use websocket::FetchWebSocket;
 
-use hclient_core::{
-    ConnectionId, Direction, Event, Head, Hooks, Meter, NoHooks, Transport,
-};
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody};
+use hclient_core::{ConnectionId, Direction, Event, Head, Hooks, Meter, NoHooks, Transport};
 use wasm_bindgen::JsCast;
 
 /// The browser `fetch` transport.
@@ -474,8 +472,7 @@ pub mod testing {
         caps: &hclient_core::Capabilities,
         opts: &crate::opts::FetchOpts,
     ) -> Result<web_sys::Request, hclient_core::Error> {
-        crate::convert::to_web_request::<hclient_core::NoHooks>(req, caps, opts)
-            .map(|c| c.request)
+        crate::convert::to_web_request::<hclient_core::NoHooks>(req, caps, opts).map(|c| c.request)
     }
 
     pub fn check_headers(
@@ -866,11 +863,7 @@ impl<H: Hooks + Clone + Unpin> Fetch<H> {
     ) -> Result<http::Response<hclient_core::Counting<Body, H>>, Error> {
         let (uri, request, sent) = match watched {
             Some((_, uri, request, sent)) => (Some(uri), *request, sent.clone()),
-            None => (
-                None,
-                hclient_core::RequestId::UNIDENTIFIED,
-                None,
-            ),
+            None => (None, hclient_core::RequestId::UNIDENTIFIED, None),
         };
         out.map(|r| {
             r.map(|b| {

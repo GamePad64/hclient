@@ -22,8 +22,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-type Installed =
-    Native<Tokio, NoTls, IpLiteralOnly, hclient_core::NoHooks, HttpConnect>;
+type Installed = Native<Tokio, NoTls, IpLiteralOnly, hclient_core::NoHooks, HttpConnect>;
 
 /// Where a request would go, asked through the chooser a request uses
 /// rather than by reading fields back.

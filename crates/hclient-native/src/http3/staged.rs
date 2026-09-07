@@ -504,10 +504,7 @@ where
     pub(crate) async fn finish(
         &self,
         staged: Staged<R, H>,
-    ) -> Result<
-        http::Response<hclient_core::Counting<crate::http3::H3Body<H>, H>>,
-        Error,
-    > {
+    ) -> Result<http::Response<hclient_core::Counting<crate::http3::H3Body<H>, H>>, Error> {
         let Staged {
             mut send,
             zero_rtt,
@@ -561,15 +558,8 @@ where
                 watch.clone(),
                 sent.clone()
             ));
-            hclient_core::Reporting::new(
-                attempt,
-                &self.hooks,
-                id,
-                request,
-                &uri,
-                sent.clone(),
-            )
-            .await
+            hclient_core::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
+                .await
         };
 
         // The second of the three 0-RTT failure paths (`crate::http3::early` has

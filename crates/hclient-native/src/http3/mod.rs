@@ -89,12 +89,10 @@ pub use staged::{H3StagedConnect, Refused, Staged};
 
 use bytes::Bytes;
 use hclient_core::{
-    CloseReason, ConnectionId, Event, Head, Hooks, NoHooks, Transport,
-};
-use hclient_core::{
     CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
     RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, TlsSupport,
 };
+use hclient_core::{CloseReason, ConnectionId, Event, Head, Hooks, NoHooks, Transport};
 use hclient_dns::rtype;
 use hclient_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use hclient_tls::TlsConfigId;
@@ -954,14 +952,7 @@ where
         sent: Option<std::sync::Arc<hclient_core::Meter>>,
     ) -> http::Response<hclient_core::Counting<H3Body<H>, H>> {
         resp.map(|b| {
-            hclient_core::Counting::new(
-                b,
-                self.hooks.clone(),
-                id,
-                request,
-                Some(uri),
-                sent,
-            )
+            hclient_core::Counting::new(b, self.hooks.clone(), id, request, Some(uri), sent)
         })
     }
 
