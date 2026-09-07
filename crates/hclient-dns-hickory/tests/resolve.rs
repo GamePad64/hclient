@@ -591,7 +591,10 @@ impl Lookup {
     }
 
     /// The single error this lookup must have produced.
-    fn sole_error(got: Vec<Result<(), hclient_core::error::Error>>, what: Self) -> hclient_core::error::Error {
+    fn sole_error(
+        got: Vec<Result<(), hclient_core::error::Error>>,
+        what: Self,
+    ) -> hclient_core::error::Error {
         assert_eq!(
             got.len(),
             1,

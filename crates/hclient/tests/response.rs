@@ -187,7 +187,7 @@ fn collected_json_decodes_the_body_and_still_keeps_status() {
 /// `Capabilities::default()` now honestly rejects this request.
 #[test]
 fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
-    use hclient_core::caps::Timeouts;
+    use hclient_core::req::Timeouts;
     use std::time::Duration;
 
     let mut caps = hclient::caps::Capabilities::default();

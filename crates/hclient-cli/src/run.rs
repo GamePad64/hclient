@@ -423,7 +423,9 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
             }
             let bytes = read_body(path).map_err(Fail::Io)?;
             request_body_preview = Some(bytes.clone());
-            req = req.body(hclient_core::body::RequestBody::Full(bytes::Bytes::from(bytes)));
+            req = req.body(hclient_core::body::RequestBody::Full(bytes::Bytes::from(
+                bytes,
+            )));
         } else if cli.form {
             let pairs: Vec<(&str, &str)> =
                 data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();

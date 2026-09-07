@@ -8,7 +8,7 @@
 //! every backend, where the fact being refused is portable: a
 //! [`Capabilities`](crate::caps::Capabilities) field a transport does not have
 //! ([`UnsupportedCapability`]), a
-//! [`RequireVersion`](crate::caps::RequireVersion) demand a connection cannot
+//! [`RequireVersion`](crate::req::RequireVersion) demand a connection cannot
 //! meet ([`VersionNotAvailable`]), and a
 //! [`RequestBody`](crate::body::RequestBody) whose factory contract was broken
 //! ([`RewindTooDeep`]).
@@ -33,7 +33,7 @@ use std::sync::Arc;
 pub enum Phase {
     /// Name resolution alone, which is a phase a caller can distinguish
     /// and a connector mostly cannot — see
-    /// [`Timeouts::resolve`](crate::caps::Timeouts::resolve) for what it bounds
+    /// [`Timeouts::resolve`](crate::req::Timeouts::resolve) for what it bounds
     /// and why it is not
     /// [`Connect`](Self::Connect) minus the rest.
     Resolve,
@@ -198,7 +198,7 @@ impl StdError for Error {
 #[non_exhaustive]
 pub struct RewindTooDeep;
 
-/// A [`RequireVersion`](crate::caps::RequireVersion) demand the connection in hand does not satisfy.
+/// A [`RequireVersion`](crate::req::RequireVersion) demand the connection in hand does not satisfy.
 ///
 /// Carries both halves, because "HTTP/2 was required" and "HTTP/1.1 is
 /// what this connection negotiated" are separately actionable — the first

@@ -159,7 +159,10 @@ fn client(timeouts: Timeouts) -> Client {
 ///
 /// Collecting the body matters: `between_bytes` is enforced *in* the body,
 /// so a helper that stopped at the head would never reach it.
-async fn get_all(timeouts: Timeouts, addr: SocketAddr) -> Result<String, hclient_core::error::Error> {
+async fn get_all(
+    timeouts: Timeouts,
+    addr: SocketAddr,
+) -> Result<String, hclient_core::error::Error> {
     get_all_within(PATIENCE, timeouts, addr).await
 }
 

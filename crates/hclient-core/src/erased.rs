@@ -45,8 +45,8 @@
 //! of a stamp — *how long ago was this* — so the instant stays inside the
 //! clock that made it and `Copy` is asked of nothing erased.
 
-use crate::error::Error;
 use crate::body::RequestBody;
+use crate::error::Error;
 use crate::timer::Timer;
 use bytes::Bytes;
 use std::future::Future;
@@ -194,7 +194,7 @@ pub trait BoxedTransport {
 impl<T> BoxedTransport for T
 where
     T: crate::transport::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
-    T::Body: Send + 'static,                  // send-bound-exception: amendment-C14
+    T::Body: Send + 'static,                             // send-bound-exception: amendment-C14
     <T::Body as http_body::Body>::Error: Into<Error>,
     T::Error: Into<Error>,
 {

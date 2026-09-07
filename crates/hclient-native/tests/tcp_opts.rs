@@ -44,9 +44,9 @@
 //! absent is `tests/nagle_cost.rs`'s.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
 use hclient_core::error::ErrorKind;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;

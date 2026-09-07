@@ -9,11 +9,11 @@ use crate::error::{BadLocation, BodyVanishedBeforeRetry, RedirectRefused};
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
-use hclient_core::caps::Timeouts;
-use hclient_core::timer::Timer;
 use hclient_core::body::{RequestBody, RetryKind};
 use hclient_core::caps::Capabilities;
 use hclient_core::error::{Error, ErrorKind, UnsupportedCapability};
+use hclient_core::req::Timeouts;
+use hclient_core::timer::Timer;
 use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 use hclient_proto::retry::{Outcome, RetryPolicy, RetryVerdict, retry_after_seconds};
 use std::fmt::Debug;
@@ -1108,7 +1108,8 @@ impl Client {
         // relaxed `fetch_add` per operation, beside a network round trip,
         // and the alternative would be a second question `Client` has no
         // way to ask — `Hooks::WATCHING` is the transport's.
-        let mut attempt_id = hclient_core::hooks::Attempt::new(hclient_core::hooks::RequestId::next());
+        let mut attempt_id =
+            hclient_core::hooks::Attempt::new(hclient_core::hooks::RequestId::next());
 
         loop {
             // **§8.3, and it is the first thing in the loop.** Before the
@@ -1448,7 +1449,9 @@ impl Client {
                         // Stripped on a clone: the next hop is a different
                         // request and keeps whatever the caller asked for.
                         let mut retry = hp.clone();
-                        retry.extensions.remove::<hclient_core::caps::AllowEarlyData>();
+                        retry
+                            .extensions
+                            .remove::<hclient_core::req::AllowEarlyData>();
                         // Re-read, so an entry stored from a replay is aged
                         // from the request that actually produced it.
                         // Keeping the first attempt's stamp would fold the
@@ -2106,9 +2109,9 @@ impl Client {
                 .system_proxies_from_lossy(&hclient_native::proxy::system::SystemProxies::detect());
             t
         };
-        Self::builder(transport)
-            .build()
-            .map_err(|e| hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e))
+        Self::builder(transport).build().map_err(|e| {
+            hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e)
+        })
     }
 
     /// The construction of the default transport for [`Client::new`] —
@@ -2122,8 +2125,8 @@ impl Client {
     /// fail at all (ordinary constructors, no IO) — wrapping their
     /// nonexistent failure in a `Result` would have nothing to justify it.
     #[cfg(not(feature = "http3"))]
-    pub(crate) fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::error::Error>
-    {
+    pub(crate) fn default_native_transport()
+    -> Result<crate::DefaultTransport, hclient_core::error::Error> {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
         // `.with_proxies(Vec::new())` names the `P` the alias promises
@@ -2159,8 +2162,8 @@ impl Client {
     /// `H3` — so this maps it into the `ErrorKind::Unsupported` the caller
     /// already has to handle rather than unwrapping.
     #[cfg(feature = "http3")]
-    pub(crate) fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::error::Error>
-    {
+    pub(crate) fn default_native_transport()
+    -> Result<crate::DefaultTransport, hclient_core::error::Error> {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
         let tcp =
@@ -2171,7 +2174,9 @@ impl Client {
         // seam stays inert either way.
         tcp.http3(quic)
             .map(|t| t.with_proxies(Vec::new()))
-            .map_err(|e| hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e))
+            .map_err(|e| {
+                hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e)
+            })
     }
 }
 

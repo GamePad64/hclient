@@ -88,10 +88,10 @@ pub use body::SpanBody;
 pub use context::OtelContext;
 pub use context::PropagateWhen;
 
-use hclient_core::transport::{BoxSendExchange, SendTransport, Transport};
 use hclient_core::body::RequestBody;
 use hclient_core::caps::Capabilities;
 use hclient_core::error::Error;
+use hclient_core::transport::{BoxSendExchange, SendTransport, Transport};
 use span::{Choice, Recorder};
 use std::future::Future;
 

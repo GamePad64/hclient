@@ -425,7 +425,7 @@ impl<'a> RequestBuilder<'a> {
     /// reqwest can't do this at all (issue #2641), which forces `act-cli`
     /// to build a separate `reqwest::Client` for every component call —
     /// with its own connection pool.
-    pub fn timeouts(mut self, t: hclient_core::caps::Timeouts) -> Self {
+    pub fn timeouts(mut self, t: hclient_core::req::Timeouts) -> Self {
         self.extensions.insert(t);
         self
     }
@@ -506,7 +506,7 @@ impl<'a> RequestBuilder<'a> {
     /// by the transport rather than by `Client`.
     pub fn require_version(mut self, version: http::Version) -> Self {
         self.extensions
-            .insert(hclient_core::caps::RequireVersion(version));
+            .insert(hclient_core::req::RequireVersion(version));
         self
     }
 
@@ -548,11 +548,11 @@ impl<'a> RequestBuilder<'a> {
     /// can answer the second.
     ///
     /// The mark is stripped from a `425` replay and on a cross-origin hop,
-    /// and survives an ordinary redirect. `hclient_core::caps::AllowEarlyData`
+    /// and survives an ordinary redirect. `hclient_core::req::AllowEarlyData`
     /// has the rest.
     #[must_use]
     pub fn allow_early_data(mut self) -> Self {
-        self.extensions.insert(hclient_core::caps::AllowEarlyData);
+        self.extensions.insert(hclient_core::req::AllowEarlyData);
         self
     }
 
@@ -578,7 +578,7 @@ impl<'a> RequestBuilder<'a> {
     /// # It follows every redirect, including one to another origin
     ///
     /// The client strips exactly one type on a cross-origin hop —
-    /// [`AllowEarlyData`](hclient_core::caps::AllowEarlyData), because *"this is
+    /// [`AllowEarlyData`](hclient_core::req::AllowEarlyData), because *"this is
     /// safe to replay"* is a judgement about one server. Everything else
     /// in the bag is cloned onto each hop unchanged, a caller's own types
     /// included.

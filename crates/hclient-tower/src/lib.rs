@@ -82,10 +82,10 @@ mod error;
 // private and reaches a caller only through `Error::source`.
 pub use error::WrongAuthority;
 
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
 use hclient_core::caps::Capabilities;
 use hclient_core::error::Error;
+use hclient_core::transport::Transport;
 use std::error::Error as StdError;
 use std::future::Future;
 use std::future::poll_fn;

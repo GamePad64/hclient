@@ -124,7 +124,11 @@ fn a_proxy_and_a_socket_cannot_both_be_configured() {
         .unix_socket(&path)
         .map(|_| ())
         .expect_err("both decide where the connection goes");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Unsupported, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Unsupported,
+        "{err:?}"
+    );
     assert!(
         StdError::source(&err)
             .and_then(|s| s.downcast_ref::<hclient_native::ProxyAndUnixSocket>())

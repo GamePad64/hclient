@@ -45,7 +45,10 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
     .expect("must not hang");
 
     let err = result.expect_err("hostname mismatch must fail");
-    assert!(matches!(err.kind(), hclient_core::error::ErrorKind::Tls), "{err}");
+    assert!(
+        matches!(err.kind(), hclient_core::error::ErrorKind::Tls),
+        "{err}"
+    );
     // `kind()` alone doesn't distinguish this from other TLS failures - a
     // single flat `Tls` category is the seam's design, not something this
     // crate introduced or could change - but the wrapped
@@ -179,7 +182,10 @@ async fn peer_sending_fin_mid_handshake_is_reported_as_tls_not_a_hang() {
     })
     .await;
 
-    assert!(matches!(err.kind(), hclient_core::error::ErrorKind::Tls), "{err}");
+    assert!(
+        matches!(err.kind(), hclient_core::error::ErrorKind::Tls),
+        "{err}"
+    );
     // The `!more` branch in `Rustls::connect`'s handshake `poll_fn` is what
     // is expected to fire here — it constructs exactly this io kind.
     assert_eq!(
@@ -239,7 +245,10 @@ async fn peer_resetting_mid_handshake_is_reported_as_tls_not_a_hang() {
     })
     .await;
 
-    assert!(matches!(err.kind(), hclient_core::error::ErrorKind::Tls), "{err}");
+    assert!(
+        matches!(err.kind(), hclient_core::error::ErrorKind::Tls),
+        "{err}"
+    );
     // All three kinds mean "the peer tore the connection down", and which
     // one you get depends on whether the RST lands while we are reading or
     // while we are writing — not on anything this crate does. Linux reports

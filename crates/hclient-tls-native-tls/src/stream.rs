@@ -280,7 +280,9 @@ where
         // projection — the same reason `hclient-tls-rustls`'s handshake
         // needs none.
         let me = self.get_mut();
-        let tls = |e: native_tls::Error| hclient_core::error::Error::new(hclient_core::error::ErrorKind::Tls, e);
+        let tls = |e: native_tls::Error| {
+            hclient_core::error::Error::new(hclient_core::error::ErrorKind::Tls, e)
+        };
         let ptr = std::ptr::from_mut(cx).cast::<()>();
         let polled_again = "a Future is not polled after it returns Ready";
 

@@ -34,9 +34,9 @@
 mod server;
 
 use futures_util::stream;
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::transport::Transport;
 use hclient_dns::{IpLiteralOnly, RData, Record, Resolve, rtype};
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;

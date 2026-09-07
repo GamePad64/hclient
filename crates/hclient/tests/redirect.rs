@@ -259,7 +259,7 @@ fn response_headers_do_not_leak_into_the_next_hop() {
 /// `extensions` surviving to every hop, not just the first one.
 #[test]
 fn per_request_extensions_survive_a_hop_unchanged() {
-    use hclient_core::caps::Timeouts;
+    use hclient_core::req::Timeouts;
     use std::time::Duration;
 
     // Capabilities aren't decorative anymore now that `Client::execute`

@@ -732,7 +732,9 @@ mod tests {
         let recovered = StdError::source(&err)
             .and_then(|s| s.downcast_ref::<Error>())
             .unwrap_or_else(|| {
-                panic!("hyper::Error::source() must yield our hclient_core::error::Error, got: {err:?}")
+                panic!(
+                    "hyper::Error::source() must yield our hclient_core::error::Error, got: {err:?}"
+                )
             });
         assert_eq!(
             recovered.kind(),

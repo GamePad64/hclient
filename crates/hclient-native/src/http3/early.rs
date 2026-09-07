@@ -69,8 +69,8 @@
 //! see that a response was a `425`.
 
 use hclient_core::body::{RequestBody, RetryKind};
-use hclient_core::caps::AllowEarlyData;
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::req::AllowEarlyData;
 
 /// Whether this request may go into early data, and why not when it may
 /// not.

@@ -63,7 +63,7 @@ fn allow_early_data_set_on_the_builder_reaches_the_transport() {
     assert!(
         m.requests()[0]
             .extensions
-            .get::<hclient_core::caps::AllowEarlyData>()
+            .get::<hclient_core::req::AllowEarlyData>()
             .is_some(),
         "the mark reaches the transport"
     );
@@ -108,7 +108,7 @@ fn a_request_that_asked_for_none_of_them_carries_none_of_them() {
     let m = c.transport_as::<MockTransport>().expect("the mock");
     let e = &m.requests()[0].extensions;
     assert!(e.get::<hclient_core::identity::ClientIdentity>().is_none());
-    assert!(e.get::<hclient_core::caps::AllowEarlyData>().is_none());
+    assert!(e.get::<hclient_core::req::AllowEarlyData>().is_none());
 }
 
 /// A setting survives the redirect it was set before, because

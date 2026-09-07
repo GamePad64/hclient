@@ -102,7 +102,9 @@ struct SlowDns(Duration);
 impl Resolve for SlowDns {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
+        Box<
+            dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a,
+        >,
     >
     where
         Self: 'a;

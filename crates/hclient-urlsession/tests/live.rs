@@ -201,7 +201,11 @@ fn a_streaming_body_is_refused_rather_than_dropped() {
         ),
     )
     .expect_err("a streaming body is not sendable here");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Unsupported, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Unsupported,
+        "{err:?}"
+    );
     assert!(
         seen.recv_timeout(Duration::from_millis(300)).is_err(),
         "and nothing reached the server: a refusal must not half-send"

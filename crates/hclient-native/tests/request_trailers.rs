@@ -520,9 +520,9 @@ mod over_http2 {
             SystemDns::new(Tokio),
         );
         let c = Client::builder(t).build().unwrap();
-        let body = hclient_core::body::RequestBody::Streaming(Box::new(DataThenTrailers::new(Some(
-            "grpc-status",
-        ))));
+        let body = hclient_core::body::RequestBody::Streaming(Box::new(DataThenTrailers::new(
+            Some("grpc-status"),
+        )));
         let resp =
             tokio::time::timeout(BOUND, c.post(format!("https://{addr}/")).body(body).send())
                 .await

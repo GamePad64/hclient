@@ -50,10 +50,10 @@ use core::task::{Context, Poll};
 
 use crate::error::{BodyFailure, WrongAuthority};
 use bytes::Bytes;
-use hclient_core::caps::Capabilities;
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
+use hclient_core::caps::Capabilities;
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::transport::Transport;
 use http_body::{Body, Frame, SizeHint};
 
 /// [`RequestBody`] as an `http_body::Body`, which is what a server-side

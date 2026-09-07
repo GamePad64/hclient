@@ -58,9 +58,9 @@ mod server;
 #[path = "h3_wire/mod.rs"]
 mod wire;
 
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::AllowEarlyData;
+use hclient_core::req::AllowEarlyData;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;

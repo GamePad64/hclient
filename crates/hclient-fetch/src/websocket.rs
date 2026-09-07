@@ -158,8 +158,8 @@ use crate::error::{
 use bytes::Bytes;
 use futures_core::Stream;
 use futures_sink::Sink;
-use hclient_core::websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::future::Future;

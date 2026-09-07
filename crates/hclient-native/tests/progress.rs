@@ -383,9 +383,9 @@ async fn an_unwatched_transport_still_serves_the_request() {
         BOUND,
         client
             .post(format!("http://{addr}/"))
-            .body(hclient_core::body::RequestBody::Full(bytes::Bytes::from_static(
-                b"payload",
-            )))
+            .body(hclient_core::body::RequestBody::Full(
+                bytes::Bytes::from_static(b"payload"),
+            ))
             .send(),
     )
     .await
@@ -473,9 +473,9 @@ async fn an_upload_is_reported_before_the_head_rather_than_only_after_it() {
             // `Content-Length` by hand, because a streaming body states no
             // length and this fixture reads exactly what the head declares.
             .header("content-length", &len)
-            .body(hclient_core::body::RequestBody::Streaming(Box::new(Chunks::new(
-                CHUNKS, CHUNK,
-            ))))
+            .body(hclient_core::body::RequestBody::Streaming(Box::new(
+                Chunks::new(CHUNKS, CHUNK),
+            )))
             .send(),
     )
     .await

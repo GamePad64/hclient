@@ -1,9 +1,10 @@
 // `Timeouts` is defined in `hclient-core`: transports read it from
 // `http::Extensions`, and they don't depend on `hclient`.
 use crate::error::InvalidBaseUrl;
-pub use hclient_core::caps::Timeouts;
-use hclient_core::caps::{Capabilities, RedirectSupport, RequireVersion};
+use hclient_core::caps::{Capabilities, RedirectSupport};
 use hclient_core::error::{Error, ErrorKind, UnsupportedCapability};
+use hclient_core::req::RequireVersion;
+pub use hclient_core::req::Timeouts;
 use hclient_proto::redirect::RedirectPolicy;
 
 /// A redirect policy as the client stores it.

@@ -103,7 +103,10 @@ async fn rejects_an_untrusted_certificate() {
     ))
     .await
     .expect_err("must fail");
-    assert!(matches!(err.kind(), hclient_core::error::ErrorKind::Tls), "{err}");
+    assert!(
+        matches!(err.kind(), hclient_core::error::ErrorKind::Tls),
+        "{err}"
+    );
 }
 
 /// The one-line answer that decides whether a transport may offer `h2` at

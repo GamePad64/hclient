@@ -4,10 +4,12 @@ use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, TlsSupport};
+use hclient_core::caps::{
+    CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, TlsSupport,
+};
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::transport::Transport;
 use objc2::rc::Retained;
 use objc2_foundation::{
     NSData, NSMutableURLRequest, NSOperationQueue, NSString, NSURL, NSURLSession,

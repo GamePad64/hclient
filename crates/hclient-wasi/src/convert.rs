@@ -508,7 +508,10 @@ mod tests {
         // `Client`'s redirect stage handles it in full. `None` is what
         // `Capabilities::default()` returns, and would mean "there are no
         // redirects here".
-        assert_eq!(caps.redirects, hclient_core::caps::RedirectSupport::Transparent);
+        assert_eq!(
+            caps.redirects,
+            hclient_core::caps::RedirectSupport::Transparent
+        );
         assert_ne!(
             caps.redirects,
             hclient_core::caps::Capabilities::default().redirects,

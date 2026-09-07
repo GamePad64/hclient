@@ -50,8 +50,8 @@
 
 use crate::error::BetweenBytesElapsed;
 use bytes::Bytes;
-use hclient_core::timer::Timer;
 use hclient_core::error::{Error, ErrorKind, Phase};
+use hclient_core::timer::Timer;
 use http_body::{Body, Frame, SizeHint};
 use std::fmt::Debug;
 use std::pin::Pin;

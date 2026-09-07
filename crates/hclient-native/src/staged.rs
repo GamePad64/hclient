@@ -100,11 +100,11 @@ use crate::{
     Native, NativeIo, Prepared, body, connect, connection_id, discovery, handshake_for, mark,
     negotiated_protocol, protocol_admissible, since, spoken_version, with_connect_timeout,
 };
-use hclient_core::hooks::{ConnectTiming, Connected, ConnectionId, Event, Hooks, Reused};
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{Timeouts, check_version};
 use hclient_core::error::Error;
+use hclient_core::hooks::{ConnectTiming, Connected, ConnectionId, Event, Hooks, Reused};
+use hclient_core::req::{Timeouts, check_version};
+use hclient_core::transport::Transport;
 use hclient_dns::Resolve;
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
@@ -392,10 +392,16 @@ where
             },
         );
         let attempt = std::pin::pin!(self.within_first_byte_gated(first_byte, gate, attempt));
-        let resp =
-            hclient_core::hooks::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
-                .await
-                .map_err(established::Failed::into_error)?;
+        let resp = hclient_core::hooks::Reporting::new(
+            attempt,
+            &self.hooks,
+            id,
+            request,
+            &uri,
+            sent.clone(),
+        )
+        .await
+        .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, request, &uri, began);
         Ok(self.bound_body(
             resp,
@@ -446,7 +452,9 @@ where
         // Read and resolved here for the reason `Native::run` does the
         // same one file over: a name this backend has not got is a
         // refusal, never a connection with the default identity.
-        let named = req.extensions().get::<hclient_core::identity::ClientIdentity>();
+        let named = req
+            .extensions()
+            .get::<hclient_core::identity::ClientIdentity>();
         let identity_id = match named {
             None => None,
             Some(id) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, id.name()) {

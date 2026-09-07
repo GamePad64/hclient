@@ -29,9 +29,9 @@
 
 use bytes::Bytes;
 use hclient::Client;
-use hclient_core::hooks::{CloseReason, Event, Hooks};
 use hclient_core::body::RequestBody;
-use hclient_core::caps::Timeouts;
+use hclient_core::hooks::{CloseReason, Event, Hooks};
+use hclient_core::req::Timeouts;
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, PoolConfig};
 use hclient_rt::{Spawn, TcpConnect, TcpOpts, TcpOptsSupport};
@@ -1078,7 +1078,9 @@ async fn waiting_for_a_shared_connect_spends_the_callers_connect_bound() {
                 matches!(
                     e.kind(),
                     hclient_core::error::ErrorKind::Connect
-                        | hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::Connect)
+                        | hclient_core::error::ErrorKind::Timeout(
+                            hclient_core::error::Phase::Connect
+                        )
                 ),
                 "the failure is the connect's, not something further on: {e:?}"
             );
@@ -1253,7 +1255,7 @@ async fn a_demand_for_http2_is_served_by_the_shared_connection() {
         .body(RequestBody::Empty)
         .unwrap();
     req.extensions_mut()
-        .insert(hclient_core::caps::RequireVersion(http::Version::HTTP_2));
+        .insert(hclient_core::req::RequireVersion(http::Version::HTTP_2));
     let resp = tokio::time::timeout(BOUND, client.execute(req))
         .await
         .expect("must not hang")

@@ -28,9 +28,9 @@
 #[cfg(feature = "quic")]
 pub mod quic;
 
-pub use hclient_core::hooks::{ClientCertAsk, ClientCertRequest};
 use hclient_core::caps::TlsSupport;
 use hclient_core::error::{Error, ErrorKind};
+pub use hclient_core::hooks::{ClientCertAsk, ClientCertRequest};
 use std::future::Future;
 
 /// Parameters for a single TLS connection.

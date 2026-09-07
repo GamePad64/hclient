@@ -98,7 +98,11 @@ fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
         .build()
         .expect("build");
     let err = go(&c).expect_err("a refusal is a failure to reach an answer");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Redirect, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Redirect,
+        "{err:?}"
+    );
     let refused = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<RedirectRefused>())
         .unwrap_or_else(|| panic!("the typed refusal: {err:?}"));
@@ -239,7 +243,11 @@ fn every_hop_is_asked_and_the_answers_are_independent() {
         .build()
         .expect("build");
     let err = go(&c).expect_err("the second hop is refused");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Redirect, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Redirect,
+        "{err:?}"
+    );
     assert_eq!(*asked.lock().unwrap(), vec!["/two", "/three"]);
     assert_eq!(
         c.transport_as::<MockTransport>()

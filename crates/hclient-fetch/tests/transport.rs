@@ -229,7 +229,9 @@ async fn a_streaming_request_body_through_the_real_client_fails_for_the_measured
     let c = Client::builder(f).build().unwrap();
     let err = c
         .post(&url)
-        .body(hclient_core::body::RequestBody::Streaming(Box::new(NeverPolled)))
+        .body(hclient_core::body::RequestBody::Streaming(Box::new(
+            NeverPolled,
+        )))
         .send()
         .await
         .unwrap_err();

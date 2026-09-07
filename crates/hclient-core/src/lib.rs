@@ -32,9 +32,10 @@
 pub mod auth;
 pub mod body;
 pub mod caps;
-pub mod identity;
 pub mod error;
 pub mod host;
+pub mod identity;
+pub mod req;
 
 // ── the seams a backend or runtime author implements ────────────────────
 //

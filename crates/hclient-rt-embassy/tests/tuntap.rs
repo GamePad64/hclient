@@ -57,7 +57,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, Stack, StackResources, StaticConfigV4};
 use embassy_net_tuntap::TunTapDevice;
 use embassy_time::Timer;
-use hclient_core::caps::Timeouts;
+use hclient_core::req::Timeouts;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt::{TcpConnect, TcpOpts};
@@ -790,7 +790,11 @@ fn transport<const N: usize>(
 /// What it no longer covers is the `Client` layer above — redirects, the
 /// cookie jar, the cache, timeout merging — and that is target-independent
 /// logic exercised by the rest of the suite on every other backend.
-async fn get<T>(t: &T, url: &str, timeouts: Option<Timeouts>) -> Result<String, hclient_core::error::Error>
+async fn get<T>(
+    t: &T,
+    url: &str,
+    timeouts: Option<Timeouts>,
+) -> Result<String, hclient_core::error::Error>
 where
     T: hclient_core::transport::Transport<Error = hclient_core::error::Error>,
     T::Body: http_body::Body<Data = bytes::Bytes> + Unpin,

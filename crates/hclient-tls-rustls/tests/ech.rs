@@ -71,7 +71,10 @@ fn recording_peer() -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
     (addr, rx)
 }
 
-async fn connect_with(ech: Option<&[u8]>, addr: SocketAddr) -> Result<(), hclient_core::error::Error> {
+async fn connect_with(
+    ech: Option<&[u8]>,
+    addr: SocketAddr,
+) -> Result<(), hclient_core::error::Error> {
     let tls = Rustls::with_webpki_roots();
     let tcp = Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())

@@ -6,8 +6,9 @@
 
 use bytes::Bytes;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{Capabilities, Timeouts};
+use hclient_core::caps::Capabilities;
 use hclient_core::error::{Error, ErrorKind, UnsupportedCapability};
+use hclient_core::req::Timeouts;
 use hclient_core::timer::Timer;
 use hclient_core::transport::Transport;
 use static_assertions::assert_impl_all;

@@ -2,8 +2,8 @@
 //! still being written on the other half of it.
 
 use bytes::{Buf, Bytes};
-use hclient_core::hooks::Hooks;
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::hooks::Hooks;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};

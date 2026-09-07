@@ -225,8 +225,8 @@ use crate::error::{ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBefore
 use crate::established::Failed;
 use crate::pool::CheckIn;
 use bytes::Bytes;
-use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use http_body::{Body, Frame, SizeHint};
 use hyper::client::conn::http1;
 use hyper::rt::{Read, Write};
@@ -843,8 +843,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::hooks::NoHooks;
     use hclient_core::body::RequestBody;
+    use hclient_core::hooks::NoHooks;
     use std::error::Error as StdError;
     use std::future::Future;
     use std::io;

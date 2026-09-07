@@ -72,10 +72,10 @@ mod error;
 pub use error::QueueEmpty;
 
 use bytes::Bytes;
-use hclient_core::transport::Transport;
 use hclient_core::body::{RequestBody, RetryKind};
 use hclient_core::caps::Capabilities;
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::transport::Transport;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -851,7 +851,7 @@ mod tests {
     /// transport.
     #[test]
     fn extensions_round_trip_through_the_recording_so_timeouts_survive() {
-        use hclient_core::caps::Timeouts;
+        use hclient_core::req::Timeouts;
         use std::time::Duration;
 
         let m = MockTransport::new();

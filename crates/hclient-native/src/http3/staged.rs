@@ -68,11 +68,11 @@
 //! take but the request itself.
 
 use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
-use hclient_core::hooks::{ConnectTiming, Connected, Event, Hooks, Reused};
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{Timeouts, check_version};
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::hooks::{ConnectTiming, Connected, Event, Hooks, Reused};
+use hclient_core::req::{Timeouts, check_version};
+use hclient_core::transport::Transport;
 use hclient_tls::quic::QuicTlsConnect;
 use std::fmt;
 use std::future::Future;
@@ -331,7 +331,10 @@ where
             .extensions()
             .get::<hclient_core::identity::ClientIdentity>()
             .cloned();
-        let identity_id = match identity.as_ref().map(hclient_core::identity::ClientIdentity::name) {
+        let identity_id = match identity
+            .as_ref()
+            .map(hclient_core::identity::ClientIdentity::name)
+        {
             None => None,
             Some(name) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, name) {
                 Some(cfg) => Some(cfg),
@@ -345,7 +348,7 @@ where
         };
         if req
             .extensions()
-            .get::<hclient_core::caps::AllowEarlyData>()
+            .get::<hclient_core::req::AllowEarlyData>()
             .is_some()
             && self.caps.early_data == hclient_core::caps::EarlyDataSupport::None
         {
@@ -507,7 +510,8 @@ where
     pub(crate) async fn finish(
         &self,
         staged: Staged<R, H>,
-    ) -> Result<http::Response<hclient_core::hooks::Counting<crate::http3::H3Body<H>, H>>, Error> {
+    ) -> Result<http::Response<hclient_core::hooks::Counting<crate::http3::H3Body<H>, H>>, Error>
+    {
         let Staged {
             mut send,
             zero_rtt,
@@ -561,8 +565,15 @@ where
                 watch.clone(),
                 sent.clone()
             ));
-            hclient_core::hooks::Reporting::new(attempt, &self.hooks, id, request, &uri, sent.clone())
-                .await
+            hclient_core::hooks::Reporting::new(
+                attempt,
+                &self.hooks,
+                id,
+                request,
+                &uri,
+                sent.clone(),
+            )
+            .await
         };
 
         // The second of the three 0-RTT failure paths (`crate::http3::early` has

@@ -191,7 +191,7 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 ///   `hclient::caps::DecompressionSupport` by `tests/compression_capability.rs`,
 ///   so pointing this test at it would have duplicated a live guard and
 ///   left `EarlyDataSupport`'s re-export unexercised — `tests/too_early.rs`
-///   reaches for `hclient_core::caps::AllowEarlyData` directly rather than
+///   reaches for `hclient_core::req::AllowEarlyData` directly rather than
 ///   through `hclient::`, so the early-data corner was the one with no
 ///   facade check at all.
 /// - `ReuseSupport` and `CancelSupport` are the remaining enum-typed

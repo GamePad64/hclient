@@ -1130,7 +1130,11 @@ async fn a_socks4_refusal_is_a_typed_connect_error() {
         .await
         .expect("must not hang")
         .expect_err("the proxy refused");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Connect, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Connect,
+        "{err:?}"
+    );
     let refused = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<Socks4Refused>())
         .unwrap_or_else(|| panic!("the typed refusal carrying CD: {err:?}"));

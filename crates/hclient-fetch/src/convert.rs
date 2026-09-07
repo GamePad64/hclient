@@ -280,7 +280,9 @@ fn resolve_body(body: RequestBody) -> Result<ResolvedBody, Error> {
     // **five** copies of one reduction and three answers to one question.
     match body.reduce().map_err(|e| Error::new(ErrorKind::Other, e))? {
         hclient_core::body::Reduced::Empty => Ok(ResolvedBody::None),
-        hclient_core::body::Reduced::Bytes(b) => Ok(ResolvedBody::Full(js_sys::Uint8Array::from(&b[..]))),
+        hclient_core::body::Reduced::Bytes(b) => {
+            Ok(ResolvedBody::Full(js_sys::Uint8Array::from(&b[..])))
+        }
         // Carried out whole — the caller decides whether it can be sent
         // (module doc comment, point 3).
         hclient_core::body::Reduced::Streaming(b) => Ok(ResolvedBody::Streaming(b)),

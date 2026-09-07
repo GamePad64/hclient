@@ -11,8 +11,11 @@
 //! does not exist yet would otherwise ship unpinned.
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+use hclient_core::caps::{
+    CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport,
+    ReuseSupport, TlsSupport,
+};
 use hclient_core::transport::Transport;
-use hclient_core::caps::{CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport, ReuseSupport, TlsSupport};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
 use hclient_native::Native;

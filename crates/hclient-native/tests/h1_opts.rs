@@ -155,7 +155,11 @@ fn a_buffer_below_hypers_minimum_is_refused_rather_than_panicking() {
         })
         .map(|_| ())
         .expect_err("hyper's minimum is 8192");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Unsupported, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Unsupported,
+        "{err:?}"
+    );
     assert_eq!(
         StdError::source(&err).and_then(|s| s.downcast_ref::<MaxBufSizeTooSmall>()),
         Some(&MaxBufSizeTooSmall { asked: 4096 }),

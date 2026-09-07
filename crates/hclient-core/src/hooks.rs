@@ -1770,7 +1770,8 @@ mod tests {
         // One live value, so the function is not merely compiled but
         // reached — a `match` no test calls is checked by the compiler and
         // by nothing else, which is enough here and cheap to improve on.
-        let err = crate::error::Error::new(crate::error::ErrorKind::Other, std::io::Error::other("x"));
+        let err =
+            crate::error::Error::new(crate::error::ErrorKind::Other, std::io::Error::other("x"));
         let closed = Closed {
             id: ConnectionId::UNWATCHED,
             reason: CloseReason::Failed(&err),

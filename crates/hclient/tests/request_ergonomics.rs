@@ -274,7 +274,11 @@ fn a_json_body_reaches_the_wire_and_an_unserialisable_value_never_does() {
             .send()
             .await
             .expect_err("a map with a non-string key is not JSON");
-        assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Other, "{err:?}");
+        assert_eq!(
+            *err.kind(),
+            hclient_core::error::ErrorKind::Other,
+            "{err:?}"
+        );
     });
     let log = seen.lock().expect("log").clone();
     assert_eq!(log.len(), 1, "only the serialisable one was sent");

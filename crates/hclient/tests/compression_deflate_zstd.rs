@@ -287,7 +287,11 @@ fn a_corrupted_zstd_checksum_is_an_error_and_not_a_document() {
     coded[last] ^= 0xff;
     let (addr, _) = serve(coded, "zstd", true);
     let err = fetch(addr).expect_err("the frame says its content hashes to something else");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Decode, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Decode,
+        "{err:?}"
+    );
 }
 
 /// A `zstd` body cut short is an error rather than a shorter document.
@@ -296,7 +300,11 @@ fn a_corrupted_zstd_checksum_is_an_error_and_not_a_document() {
 fn a_zstd_stream_cut_short_is_an_error() {
     let (addr, _) = serve(zstd_encode(plaintext().as_bytes(), true), "zstd", false);
     let err = fetch(addr).expect_err("truncated");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Decode, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Decode,
+        "{err:?}"
+    );
 }
 
 /// **A frame declaring a window past 8 MB is refused**, RFC 8878
@@ -333,7 +341,11 @@ fn a_zstd_frame_declaring_a_window_past_the_ceiling_is_refused() {
 
     let (addr, _) = serve(frame(14), "zstd", true);
     let err = fetch(addr).expect_err("16 MiB is past the ceiling");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Decode, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Decode,
+        "{err:?}"
+    );
 }
 
 /// **Bytes after the end of the `deflate` stream are an error, not

@@ -587,7 +587,9 @@ async fn a_request_body_reaches_the_server_over_http2() {
         BOUND,
         client
             .post(server.url("/upload"))
-            .body(hclient_core::body::RequestBody::Full(payload.clone().into()))
+            .body(hclient_core::body::RequestBody::Full(
+                payload.clone().into(),
+            ))
             .send(),
     )
     .await
@@ -679,7 +681,8 @@ fn demanding(url: &str, v: http::Version) -> http::Request<hclient_core::body::R
         .uri(url)
         .body(hclient_core::body::RequestBody::Empty)
         .unwrap();
-    req.extensions_mut().insert(hclient_core::caps::RequireVersion(v));
+    req.extensions_mut()
+        .insert(hclient_core::req::RequireVersion(v));
     req
 }
 

@@ -42,7 +42,8 @@ fn execute_future_is_send_even_for_a_streaming_request_body() {
         fn poll_frame(
             mut self: Pin<&mut Self>,
             _: &mut Context<'_>,
-        ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::error::Error>>> {
+        ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::error::Error>>>
+        {
             Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
         }
     }

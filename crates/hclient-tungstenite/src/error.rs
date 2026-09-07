@@ -57,7 +57,7 @@ pub(crate) struct AcceptKeyMismatch;
 /// inventing a second vocabulary.
 ///
 /// It is deliberately **not** an `ErrorKind::Timeout`: no field of
-/// [`hclient_core::caps::Timeouts`] is in force here, and `Phase::BetweenBytes`
+/// [`hclient_core::req::Timeouts`] is in force here, and `Phase::BetweenBytes`
 /// in particular would name a bound this seam deliberately does not have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the peer did not answer a keep-alive ping within {0:?}")]

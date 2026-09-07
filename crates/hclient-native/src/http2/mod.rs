@@ -144,9 +144,9 @@
 use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
-use hclient_core::timer::Timer;
-use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
+use hclient_core::timer::Timer;
 use http_body::{Body, Frame, SizeHint};
 use hyper::rt::{Read, Write};
 use std::fmt::Debug;

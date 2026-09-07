@@ -40,9 +40,9 @@ mod fakedns;
 
 use bytes::Bytes;
 use fakedns::FakeDns;
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::Timeouts;
+use hclient_core::req::Timeouts;
+use hclient_core::transport::Transport;
 use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;

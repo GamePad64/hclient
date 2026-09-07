@@ -141,7 +141,9 @@ fn clone_does_not_require_the_transport_to_be_clone() {
             &self,
             req: http::Request<hclient_core::body::RequestBody>,
         ) -> hclient_core::transport::BoxSendExchange<'_, Self::Body, Self::Error> {
-            Box::pin(<Self as hclient_core::transport::Transport>::execute(self, req))
+            Box::pin(<Self as hclient_core::transport::Transport>::execute(
+                self, req,
+            ))
         }
     }
 

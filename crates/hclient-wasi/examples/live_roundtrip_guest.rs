@@ -362,19 +362,20 @@ async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
         .parse()
         .expect("uri");
     let mut builder = http::Request::builder().method(http::Method::POST).uri(uri);
-    let body: Box<dyn HttpBody<Data = bytes::Bytes, Error = hclient_core::error::Error> + Unpin + Send> =
-        match case {
-            TrailerCase::Undeclared => Box::new(DataThenTrailers::with_checksum_trailer()),
-            TrailerCase::Declared => {
-                builder = builder.header(http::header::TRAILER, "X-Checksum");
-                Box::new(DataThenTrailers::with_checksum_trailer())
-            }
-            TrailerCase::WrongName => {
-                builder = builder.header(http::header::TRAILER, "X-Other");
-                Box::new(DataThenTrailers::with_checksum_trailer())
-            }
-            TrailerCase::EmptyFrame => Box::new(DataThenTrailers::with_empty_trailer_frame()),
-        };
+    let body: Box<
+        dyn HttpBody<Data = bytes::Bytes, Error = hclient_core::error::Error> + Unpin + Send,
+    > = match case {
+        TrailerCase::Undeclared => Box::new(DataThenTrailers::with_checksum_trailer()),
+        TrailerCase::Declared => {
+            builder = builder.header(http::header::TRAILER, "X-Checksum");
+            Box::new(DataThenTrailers::with_checksum_trailer())
+        }
+        TrailerCase::WrongName => {
+            builder = builder.header(http::header::TRAILER, "X-Other");
+            Box::new(DataThenTrailers::with_checksum_trailer())
+        }
+        TrailerCase::EmptyFrame => Box::new(DataThenTrailers::with_empty_trailer_frame()),
+    };
     let req = builder.body(RequestBody::Streaming(body)).expect("request");
 
     let transport = hclient_wasi::WasiHttp::new();

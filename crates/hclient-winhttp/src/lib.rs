@@ -93,7 +93,7 @@
 //!
 //! **A demand is now honoured rather than refused**, which is the other
 //! half. `WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED` prevents a fallback off
-//! the mask, so a [`RequireVersion`](hclient_core::caps::RequireVersion) demand
+//! the mask, so a [`RequireVersion`](hclient_core::req::RequireVersion) demand
 //! narrows the mask for that one request and WinHTTP refuses the
 //! connection rather than quietly answering over HTTP/1.1 —
 //! [`Capabilities::version_select`](hclient_core::caps::Capabilities::version_select)

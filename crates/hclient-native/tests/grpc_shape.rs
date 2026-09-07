@@ -66,7 +66,7 @@
 use bytes::Bytes;
 use hclient::Client;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::Timeouts;
+use hclient_core::req::Timeouts;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;

@@ -38,9 +38,9 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::Client;
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
 use hclient_core::caps::CancelSupport;
+use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;

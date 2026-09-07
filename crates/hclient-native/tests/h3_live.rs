@@ -12,10 +12,11 @@ mod server;
 #[path = "h3_wire/mod.rs"]
 mod wire;
 
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{AllowEarlyData, EarlyDataSupport};
+use hclient_core::caps::EarlyDataSupport;
 use hclient_core::error::ErrorKind;
+use hclient_core::req::AllowEarlyData;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
@@ -529,7 +530,10 @@ async fn capabilities_describe_this_implementation_not_the_protocol() {
     // typed error rather than dropping it.
     assert!(!c.request_trailers, "nothing here sends request trailers");
     assert!(c.response_trailers, "H3Body yields a trailers frame");
-    assert_eq!(c.connection_reuse, hclient_core::caps::ReuseSupport::Supported);
+    assert_eq!(
+        c.connection_reuse,
+        hclient_core::caps::ReuseSupport::Supported
+    );
 }
 
 // ── `Timeouts::connect`, declared and enforced in the same change ───────
@@ -576,7 +580,7 @@ async fn a_connect_timeout_cuts_a_quic_handshake_that_never_completes() {
     let t = h3(&id.cert_der);
 
     let mut req = get(addr, "/x");
-    req.extensions_mut().insert(hclient_core::caps::Timeouts {
+    req.extensions_mut().insert(hclient_core::req::Timeouts {
         resolve: None,
         connect: Some(CONNECT_BOUND),
         ..Default::default()

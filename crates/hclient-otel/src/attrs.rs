@@ -7,8 +7,8 @@
 //! so each is pinned by a unit test rather than by reading a span out of a
 //! fixture. Nothing in this module knows which front will record it.
 
-use hclient_core::hooks::Attempt;
 use hclient_core::error::{ErrorKind, Phase};
+use hclient_core::hooks::Attempt;
 
 /// Everything §5a asks of a request, read once.
 ///

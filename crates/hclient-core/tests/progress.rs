@@ -7,7 +7,10 @@
 //! a guessed one"* can be driven by hand.
 
 use bytes::Bytes;
-use hclient_core::hooks::{Attempt, Counting, Direction, Event, Hooks, Meter, Metered, NoHooks, Progress, RequestId, identify, meter};
+use hclient_core::hooks::{
+    Attempt, Counting, Direction, Event, Hooks, Meter, Metered, NoHooks, Progress, RequestId,
+    identify, meter,
+};
 use http_body::{Frame, SizeHint};
 use std::cell::RefCell;
 use std::pin::Pin;

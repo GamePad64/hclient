@@ -89,7 +89,10 @@ pub use staged::{H3StagedConnect, Refused, Staged};
 
 use bytes::Bytes;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport};
+use hclient_core::caps::{
+    CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport,
+    ReuseSupport, TimeoutSupport, TlsSupport,
+};
 use hclient_core::error::{Error, ErrorKind, Phase};
 use hclient_core::hooks::{CloseReason, ConnectionId, Event, Head, Hooks, NoHooks};
 use hclient_core::transport::Transport;
@@ -327,7 +330,7 @@ where
     /// - `version_reported: true`, and `version_select: true` — which is
     ///   not a claim to choose anything. This transport speaks exactly one
     ///   version and *honours* a per-request
-    ///   [`RequireVersion`](hclient_core::caps::RequireVersion): `HTTP_3`
+    ///   [`RequireVersion`](hclient_core::req::RequireVersion): `HTTP_3`
     ///   proceeds, anything else is
     ///   [`VersionNotAvailable`](hclient_core::error::VersionNotAvailable) before
     ///   a packet goes out. `false` would make `Client` refuse the one
@@ -692,7 +695,7 @@ where
     /// there is no request stream for it to replay.
     ///
     /// So the rejection reached the caller as an `ErrorKind::Connect`, on a
-    /// request whose only sin was carrying [`hclient_core::caps::AllowEarlyData`].
+    /// request whose only sin was carrying [`hclient_core::req::AllowEarlyData`].
     /// It was found as a flake — 2 failures in 277 concurrent runs of this
     /// crate's suite, 0 in 846 after.
     ///

@@ -76,7 +76,11 @@ fn the_error_carries_the_status_and_the_url_of_the_hop_that_failed() {
             .error_for_status()
     })
     .expect_err("the second hop failed");
-    assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Status, "{err:?}");
+    assert_eq!(
+        *err.kind(),
+        hclient_core::error::ErrorKind::Status,
+        "{err:?}"
+    );
     let unexpected = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<UnexpectedStatus>())
         .unwrap_or_else(|| panic!("the typed status: {err:?}"));

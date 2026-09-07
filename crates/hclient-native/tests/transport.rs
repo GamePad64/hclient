@@ -340,7 +340,9 @@ impl StdError for FakeCancelled {}
 impl Resolve for CancelledDns {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
+        Box<
+            dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a,
+        >,
     >
     where
         Self: 'a;
@@ -697,7 +699,9 @@ struct OneUnroutableAddr;
 impl Resolve for OneUnroutableAddr {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
+        Box<
+            dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a,
+        >,
     >
     where
         Self: 'a;
@@ -752,7 +756,10 @@ impl hclient_tls::TlsConnect for CertTls {
         = std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<(Self::Stream<S>, hclient_tls::TlsInfo), hclient_core::error::Error>,
+                    Output = Result<
+                        (Self::Stream<S>, hclient_tls::TlsInfo),
+                        hclient_core::error::Error,
+                    >,
                 > + Send
                 + 'a,
         >,
@@ -911,7 +918,9 @@ struct FiveUnroutableAddrs;
 impl Resolve for FiveUnroutableAddrs {
     type Records<'a>
         = std::pin::Pin<
-        Box<dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a>,
+        Box<
+            dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a,
+        >,
     >
     where
         Self: 'a;

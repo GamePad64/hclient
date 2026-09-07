@@ -312,7 +312,7 @@ use std::time::Duration;
 /// How this transport reuses connections.
 ///
 /// **One setting, not two.** The v0.2 design document is explicit that an
-/// idle timeout must live either in `hclient_core::caps::Timeouts` or on the pool
+/// idle timeout must live either in `hclient_core::req::Timeouts` or on the pool
 /// and not in both places, and it lives here. `Timeouts` describes phases
 /// of *one exchange* and travels with a request through
 /// `http::Extensions`; how long a connection may sit idle *after* an

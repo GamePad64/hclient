@@ -18,10 +18,10 @@
 //! so this is not cheating around a missing runtime.
 
 use bytes::Bytes;
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
 use hclient_core::caps::Capabilities;
 use hclient_core::error::Error;
+use hclient_core::transport::Transport;
 use hclient_tower::{ServiceTransport, TransportService};
 use http_body::Body as _;
 use std::future::Future;

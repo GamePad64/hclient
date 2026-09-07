@@ -144,7 +144,7 @@ impl<B> Response<B> {
     /// It is on [`Collected`] too, for [`Self::links`]'s reason.
     ///
     /// [`Capabilities`]: hclient_core::caps::Capabilities
-    /// [`RequireVersion`]: hclient_core::caps::RequireVersion
+    /// [`RequireVersion`]: hclient_core::req::RequireVersion
     pub fn version(&self) -> http::Version {
         self.parts.version
     }

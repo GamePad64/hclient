@@ -3,10 +3,13 @@
 use std::future::poll_fn;
 use std::sync::Arc;
 
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, RequireVersion, ReuseSupport, TlsSupport, check_version};
+use hclient_core::caps::{
+    CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, ReuseSupport, TlsSupport,
+};
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::req::{RequireVersion, check_version};
+use hclient_core::transport::Transport;
 
 use crate::body::{WinHttpBody, event_name};
 use crate::error::{Win32Error, WinHttpError};

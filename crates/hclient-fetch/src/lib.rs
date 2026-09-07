@@ -431,7 +431,8 @@ pub mod testing {
     pub fn to_web_request(
         f: &crate::Fetch,
         req: http::Request<hclient_core::body::RequestBody>,
-    ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::error::Error> {
+    ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::error::Error>
+    {
         crate::convert::to_web_request::<hclient_core::hooks::NoHooks>(req, &f.caps, &f.opts)
             .map(|c| (c.request, c.abort))
     }
@@ -451,7 +452,8 @@ pub mod testing {
     pub fn to_web_request_with_caps(
         req: http::Request<hclient_core::body::RequestBody>,
         caps: &hclient_core::caps::Capabilities,
-    ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::error::Error> {
+    ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::error::Error>
+    {
         crate::convert::to_web_request::<hclient_core::hooks::NoHooks>(
             req,
             caps,
@@ -475,7 +477,8 @@ pub mod testing {
         caps: &hclient_core::caps::Capabilities,
         opts: &crate::opts::FetchOpts,
     ) -> Result<web_sys::Request, hclient_core::error::Error> {
-        crate::convert::to_web_request::<hclient_core::hooks::NoHooks>(req, caps, opts).map(|c| c.request)
+        crate::convert::to_web_request::<hclient_core::hooks::NoHooks>(req, caps, opts)
+            .map(|c| c.request)
     }
 
     pub fn check_headers(

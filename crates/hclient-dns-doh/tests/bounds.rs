@@ -10,8 +10,8 @@
 mod support;
 
 use futures_util::StreamExt;
-use hclient_core::caps::Timeouts;
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::req::Timeouts;
 use hclient_dns::{IpLiteralOnly, Record, Resolve, rtype};
 use hclient_dns_doh::{Doh, MAX_RESPONSE_BYTES};
 use hclient_native::Native;

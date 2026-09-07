@@ -47,7 +47,9 @@
 //! `fetch`. [`supports_streaming_request_body`] is that decision, and it is
 //! whatwg/fetch#1470's own detection — see its doc comment.
 
-use hclient_core::caps::{CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport};
+use hclient_core::caps::{
+    CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport,
+};
 use wasm_bindgen::{JsCast, JsValue};
 
 /// Headers that fetch forbids scripts from setting. We **declare** them

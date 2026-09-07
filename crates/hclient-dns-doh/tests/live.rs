@@ -132,7 +132,7 @@ const BACKOFF: Duration = Duration::from_millis(250);
 ///
 /// Set through the public `Doh::timeouts`, which is the knob a deployment on
 /// a bad link would reach for too.
-const LIVE_TIMEOUTS: hclient_core::caps::Timeouts = hclient_core::caps::Timeouts {
+const LIVE_TIMEOUTS: hclient_core::req::Timeouts = hclient_core::req::Timeouts {
     resolve: None,
     connect: Some(Duration::from_secs(5)),
     first_byte: Some(Duration::from_secs(5)),
@@ -260,7 +260,9 @@ fn chain(e: &dyn StdError) -> String {
     out
 }
 
-fn expect_addrs(items: Vec<Result<Record, hclient_core::error::Error>>) -> Vec<hclient_dns::Record> {
+fn expect_addrs(
+    items: Vec<Result<Record, hclient_core::error::Error>>,
+) -> Vec<hclient_dns::Record> {
     items
         .into_iter()
         .map(|i| i.unwrap_or_else(|e| panic!("a live lookup failed: {}", chain(&e))))

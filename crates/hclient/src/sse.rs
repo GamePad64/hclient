@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use crate::response::Response;
 use bytes::Bytes;
-use hclient_core::timer::Timer;
 use hclient_core::body::RequestBody;
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::timer::Timer;
 // Re-exported rather than merely imported, so the whole of SSE is behind
 // one door: `hclient::sse::{SseStream, SseEvent, Backoff, ..}`.
 pub use hclient_proto::backoff::Backoff;

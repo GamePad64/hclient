@@ -3,7 +3,7 @@
 //! `proto::redirect::decide`.
 
 use hclient_core::body::RequestBody;
-use hclient_core::caps::AllowEarlyData;
+use hclient_core::req::AllowEarlyData;
 use hclient_proto::redirect::{Follow, SENSITIVE_HEADERS};
 
 /// Everything that carries over between hops, except the body.

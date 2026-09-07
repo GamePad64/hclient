@@ -32,10 +32,10 @@
 #[path = "h3_server.rs"]
 mod server;
 
-use hclient_core::transport::Transport;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::RequireVersion;
 use hclient_core::error::{ErrorKind, VersionNotAvailable};
+use hclient_core::req::RequireVersion;
+use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;

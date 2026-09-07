@@ -220,8 +220,8 @@
 use bytes::Bytes;
 use futures_core::Stream;
 use futures_sink::Sink;
-use hclient_core::websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
 use hclient_core::error::{Error, ErrorKind};
+use hclient_core::websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
 use hclient_dns::Resolve;
 use hclient_native::{Native, NativeIo};
 use hclient_rt::{TcpConnect, Timer};
