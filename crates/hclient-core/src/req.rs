@@ -25,6 +25,26 @@ use crate::error::VersionNotAvailable;
 ///
 /// Lives in `hclient-core` because transports read it from the request's
 /// `http::Extensions`, and they don't depend on `hclient`.
+///
+/// # Not `#[non_exhaustive]`, and a `const` is the half that settles it
+///
+/// This is `TcpOpts`' argument, and it has one more leg here. Its whole
+/// use is `Timeouts { connect: Some(d), ..Default::default() }`, which
+/// the attribute forbids from outside the defining crate — the
+/// functional-update form as much as the exhaustive one, `E0639` for
+/// both, measured on a two-crate probe rather than recalled.
+///
+/// And `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is a **`const`**, where
+/// `..Default::default()` is not available at all — `Default::default()`
+/// is not a `const fn` — so the escape hatch the attribute normally
+/// leaves would not exist for that call site. A struct meant to be
+/// written down in a `const` cannot take this attribute and stay
+/// writable.
+///
+/// The growth this type is exposed to is a fifth bound, and it should
+/// cost what the fourth cost: a compile error at every literal, which is
+/// how `resolve` reached [`crate::caps::TimeoutSupport`] with an honest
+/// answer from each transport instead of a defaulted one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Timeouts {
     /// A bound on **getting an address to try**, separate from the connect

@@ -310,6 +310,29 @@ pub enum TlsSupport {
     Full,
 }
 
+/// Which of [`crate::req::Timeouts`]' bounds this transport enforces —
+/// the field-per-field mirror of that struct, so a refusal can name the
+/// bound a caller set rather than saying *timeouts*.
+///
+/// # Not `#[non_exhaustive]`, and growing is exactly why
+///
+/// This struct has grown once already — `resolve` joined three fields in
+/// v0.4 — and it grows again whenever [`crate::req::Timeouts`] does,
+/// which is the mirror working rather than a hazard. The attribute is
+/// still refused, on [`crate::req::Timeouts`]' own argument one type
+/// over: both are written as struct literals by every transport, and
+/// `#[non_exhaustive]` forbids the literal **and the functional-update
+/// form** from outside the defining crate — measured on a two-crate
+/// probe, `E0639` for `S { a, ..Default::default() }` as well as for the
+/// exhaustive form.
+///
+/// So the attribute would leave a transport author with per-field setters
+/// and nothing else, and it would cost the thing that makes the growth
+/// visible: an exhaustive literal is a **compile error** at every
+/// transport on the day a field arrives, which is how `resolve` got an
+/// honest `false` from the two ambient backends instead of a default one.
+/// A `..Default::default()` would have given them `false` silently, and
+/// silently is the direction this field exists to prevent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TimeoutSupport {
     /// Whether [`crate::req::Timeouts::resolve`] is enforced. Honestly `false` on

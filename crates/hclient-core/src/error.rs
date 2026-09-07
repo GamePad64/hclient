@@ -209,6 +209,21 @@ pub struct RewindTooDeep;
 /// `hclient_h3::RequestTrailersNotSent` takes), because a caller
 /// downcasting on it must not have to know which transport is underneath:
 /// the demand is portable, so its refusal is too.
+///
+/// # Not `#[non_exhaustive]`, and a new HTTP version is why it need not be
+///
+/// This is handed back and only read, which is the shape that usually
+/// takes the attribute. It does not, because the growth this type is
+/// exposed to arrives as a **value** rather than a field:
+/// [`http::Version`] is a newtype over a private enum with associated
+/// constants, so an `HTTP_4` upstream is one more `pub const` and every
+/// `match` on it — here and in any consumer — already needs a `_` arm.
+/// Nothing about this struct changes.
+///
+/// What would change it is a *third fact* about the refusal, and there is
+/// no candidate: the demand and what was negotiated is the whole of the
+/// question. If one ever arrives, the attribute comes with it, and the
+/// cost is bounded — nothing outside this crate constructs one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
     "the request required {required:?} and this connection negotiated {negotiated:?}; \
@@ -223,6 +238,20 @@ pub struct VersionNotAvailable {
 ///
 /// Returned from `build()` rather than silently ignored. The model is
 /// wasi:http itself, whose setters return `request-options-error::not-supported`.
+///
+/// # Not `#[non_exhaustive]`, and the reason is who builds one
+///
+/// Both fields are `&'static str` and the pair is the whole answer, so
+/// the attribute would reserve room nothing is waiting to use. What
+/// settles it is the other half: this is **constructed outside the crate
+/// that defines it** — eight literal sites in `hclient` and
+/// `hclient-fetch` today, and a transport of somebody else's that refuses
+/// a setting of its own would write a ninth. That is the combination
+/// [`crate::hooks`] records needing both halves: the attribute stops a
+/// reader breaking on a new field and stops a producer building the value
+/// at all, so taking it means adding a constructor in the same commit.
+/// Two fields, no candidate for a third, and a producer on the far side
+/// of the crate boundary is a trade with nothing on the buying side.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("backend `{backend}` does not support `{what}`")]
 pub struct UnsupportedCapability {
