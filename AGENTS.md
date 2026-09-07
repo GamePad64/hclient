@@ -317,6 +317,12 @@ surfaces at the moment they were last seen moving.
 A pre-release claims the names and promises nothing, so the next week of
 changes costs `-alpha.2` rather than a major version across the family.
 
+**The family is at `0.1.0-alpha.4` today**, with `hclient-idn` and
+`system-resolver` on `0.2.1` — they version separately, for the reason two
+sections down. The figure here is the one thing in this paragraph that
+goes stale on every release, which is why it says *today* and the
+authority is the index rather than this line.
+
 **The guard is real and it is not yet in force, which this sentence used
 to get wrong.** It read that `cargo add hclient` will not select a
 pre-release without being asked. Measured on 2026-08-29, from a fresh
@@ -327,9 +333,16 @@ asking for. So the protection begins at the first stable release, not at
 the first publication. `0.1.0` follows
 when the seams have stopped moving on their own.
 
-The version now says itself **once**, in `[workspace.package]`, where the
-previous thirty copies were thirty chances to drift with no way to see the
+The version said itself **once**, in `[workspace.package]`, where thirty
+copies before it had been thirty chances to drift with no way to see the
 drift until a crate published at the wrong number.
+
+**It says itself thirty times again now, and that is deliberate** — see
+the release section below. A shared number cannot advance for some
+members, so per-crate releases needed per-crate versions; what replaces
+the guarantee is `just versions-agree`, which resolves every requirement
+to the crate it names and compares against *that* crate's version. The
+drift the layout used to forbid is a thing a gate catches instead.
 
 Everything that used to be *do not do this as tidying-up work* is now
 either done or the owner's to time. What has **not** changed is the reason
@@ -392,27 +405,80 @@ in between are one crate wide: `hclient-tls-rustls`, then
 tree, 29 packaged, 29 verified, and its ordering identical to the one
 derived here from `cargo metadata` before either tool was consulted. The
 table is kept because that agreement is what makes the count a fact about
-the graph rather than a guess. `cargo-release` does the half cargo does not:
-the bump, including the literal version requirements — dozens of them,
-counted by `just versions-agree` rather than written down here — that must
-move with `[workspace.package].version` and that cargo gives no way to
-centralise.
+the graph rather than a guess. What cargo does not do is the **bump** —
+each crate's own version, and the literal version requirements naming it,
+dozens of them, counted by `just versions-agree` rather than written down
+here. Cargo offers no way to write `version.workspace = true` inside a
+dependency requirement, so the repetition is forced, and the tool that
+rewrites it is `release-plz`.
 
-**The policy is one shared version and every crate published on every
-release** — `cargo release <level>`, no `-p`. Its argument is that it
-removes a question rather than answering one: selecting means knowing
-which crates changed, and knowing means a step that can be forgotten,
-where publishing everything cannot forget. The cost is 23 uploads for a
-one-line fix, which for crates this size is cosmetic.
+**The policy was one shared version and every crate published on every
+release, and it ended on 2026-09-07.** Its argument was that it removed a
+question rather than answering one: selecting means knowing which crates
+changed, and knowing means a step that can be forgotten, where publishing
+everything cannot. What ended it is a tool that *computes* the set —
+`release-plz` replaced `cargo-release`, which has no change detection at
+all: measured, with a tag one commit back, a plain `cargo release patch`
+still planned all 23 uploads.
 
-**Two crates are outside that policy now, and what buys the exception is
-a measurement rather than a preference.** `system-resolver` and
-`hclient-idn` carry their own versions and their own `cargo-release`
-groups — `shared-version` takes a
-string, so a named subset is the mechanism rather than something invented
-for it. The reason is that a shared version cannot leave pre-release while
-any member still needs to, and **inside a pre-release `cargo
-semver-checks` checks nothing**: measured against 0.50.0, both
+**Every crate carries its own literal version now**, and
+`[workspace.package].version` is gone. That was the structural half:
+`version.workspace = true` made "publish everything" the only expressible
+policy, because one number cannot advance for some of 28 crates.
+
+**And it publishes everything anyway today, which is the tool being right
+rather than failing.** Asked crate by crate on a pristine tree,
+release-plz answers `hclient-otel: already up to date`, and the same for
+`hclient-tower` and `hclient-webtransport`. What produces the full sweep
+is dependency propagation: `hclient-core` changed, every crate here
+depends on it transitively — computed, 8 changed and **30 affected, 0
+untouched** — and a dependent must bump so its requirement can name a
+version that exists. The saving arrives for a change confined to a leaf
+and not for one touching the core.
+
+Two wrong causes were proposed before that measurement — `version.workspace
+= true`, and `.cargo_vcs_info.json` differing in every packaged crate.
+Both are real differences and neither was the reason; a pristine clone at
+the pre-change commit, with the shared version intact, bumped all 27
+exactly the same. **A controlled test with one variable changed is what
+settled it, and it should have come first.**
+
+**Publishing is `cargo publish --workspace`, not `release-plz release`.**
+That command calls `get_git_client(input)?` on the third line of
+`release()` — read in `release_plz_core` 0.37.2 — before any per-package
+config and before deciding whether to release at all, because it asks the
+forge which pull requests are associated with the current commit. So it
+needs a forge token on a repository with no PR flow and no GitHub
+releases, and neither `git_release_enable = false` nor `release_always =
+true` avoids it. `cargo publish --workspace` needs no forge, computes the
+upload order itself, and verifies each crate out of its own tarball.
+
+So: **release-plz decides the versions, cargo does the upload.**
+
+**Commit subjects carry a conventional-commit prefix now, and that is
+what the level is derived from.** They did not: nought of the twenty-five
+subjects before the migration parsed as one, because a subject here is the
+record of *why* and reads as a sentence. The prefix goes in front of that
+sentence rather than replacing it —
+`feat!: dissolve the \`unversioned\` quarantine` — so `feat`, `fix`,
+`chore`, `docs`, and a `!` or a `BREAKING CHANGE:` trailer for a major
+step. That is a real cost paid for computed release sets and changelogs,
+and it is the objection `docs/competitive-gaps.md` had recorded against
+release-plz before the tool was taken.
+
+**`just release-pending` is gone with the policy.** It answered which
+crates had changed since they last published, anchored on a git tag —
+which is what cargo-release could not do for itself. release-plz computes
+that set, so the recipe became a second opinion about what to publish, and
+it carried an obligation: one tag per crate per release, planted so a
+diagnostic could read them back. To see what changed, run `release-plz
+update` and read the plan; it edits the working tree and uploads nothing.
+
+**Two crates were already outside the shared version before it ended**,
+and the measurement that bought them the exception is the one that still
+explains the whole shape. `system-resolver` and `hclient-idn` left because
+a shared version cannot leave pre-release while any member still needs to,
+and **inside a pre-release `cargo semver-checks` checks nothing**: measured against 0.50.0, both
 `0.1.0-alpha.2 -> 0.1.0-alpha.2` and `0.1.0-alpha.2 -> 0.1.0` execute **0
 of its 254 lints**, because a major step permits breaking — while `0.1.0
 -> 0.1.1` executes 196 and caught a breaking change on the first try. So a
@@ -423,24 +489,42 @@ that executed nothing as well as on one that failed, because
 cargo-semver-checks prints `0 checks` beside `no semver update required`
 and exits zero.
 
-**It is a step in the `lint` job as of the first publish**, and the thing
-that made that possible is narrower than *the crate is stable*: a working
-tree at the **published** number is `no change; assume minor` and runs
-**196** checks, where the pre-release pair above is `assume major` and
-runs none. So the vacuum belongs to the pre-release rather than to equal
-version numbers, and the gate asks *has anything breaking landed since
-the last release* on every push rather than only at release time.
-Verified against the published crate: marking `Error` `#[non_exhaustive]`
-exits 100 naming the lint and the item.
+**It was a step in the `lint` job and is not any more**, because
+release-plz runs cargo-semver-checks too and does the opposite with the
+answer: it bumps the major version and reports, where the recipe *failed*.
+Both would mean a breaking change fails CI and is then released anyway.
 
-The cost is the question the policy existed to remove, coming back for one
-crate: nothing here publishes it, and nothing will notice if a bump is
-forgotten. It is the crate that can afford the trade — five public names,
-none of which moved in the week that moved six of the family's, and a use
-outside HTTP entirely. `just versions-agree` is what keeps the split
-honest: it compared every requirement against `[workspace.package]`'s
-version, which was one statement only while every crate shared it, and it
-resolves each requirement to the crate it names now.
+What that gives up is named rather than glossed, because it is real. The
+recipe also failed closed on a run that executed **zero** lints — the
+pre-release state most of this family is in, where every step is a major
+step and all 254 lints are skipped — and release-plz has no equivalent: a
+package it cannot check is one it does not bump for. The recipe still
+exists for running by hand.
+
+The thing that made it a gate at all is narrower than *the crate is
+stable*: a working tree at the **published** number is `no change; assume
+minor` and runs **196** checks, where the pre-release pair above is
+`assume major` and runs none. So the vacuum belongs to the pre-release
+rather than to equal version numbers. Verified against the published
+crate: marking `Error` `#[non_exhaustive]` exits 100 naming the lint and
+the item.
+
+**What was the exception is now the rule**, and the cost it carried is
+what every crate carries: nothing here notices a bump that was forgotten,
+because there is no single number whose absence would show.
+
+`just versions-agree` is what replaces the guarantee, and it needed **no
+change** when the shared version went — which is worth knowing, because it
+is the one gate that could have gone silently stale. It resolves every
+in-workspace requirement to the crate it *names* and compares against that
+crate's version, and it has done so since `system-resolver` left the
+shared group. The old rule is what this one implies for a family that
+happens to share a number; the exception needed no entry in a list, which
+is what kept it right when the family stopped being one.
+
+So the drift a shared version made structurally impossible is now a thing
+a gate catches rather than a thing the layout forbids. That is the honest
+cost of the trade, and it is the reason that gate is not optional.
 
 **What guarantees the set resolves is the requirement, not the matching
 numbers** — and that was written here as a reassurance, which is exactly
@@ -469,13 +553,11 @@ It is `upgrade` now. `^0.1.0-alpha.2` excludes alpha.1 outright, so this
 needs no `=` pins, and `just versions-agree` checks the **result** rather
 than the setting: a release run from an older checkout, a hand-edited
 manifest and a merge all bypass a setting, and none of them bypass a gate.
-Two things still read as mistakes and are not — an unpublished crate's
-version runs ahead of the index, and published versions go sparse per
-crate — and **publishing everything removes both**, which is the second
-argument for the policy. cargo-release does **not** work out which
-crates changed — measured, with a tag one commit back: a plain `cargo
-release patch` still planned all 23 uploads, which under this policy is
-the wanted behaviour. `docs/publishing.md` has the table, the script that derives it,
+Two things read as mistakes and are not — an unpublished crate's version
+runs ahead of the index, and published versions go sparse per crate.
+Publishing everything used to remove both; under release-plz the second is
+the intended shape rather than a symptom, and `just versions-agree` is
+what says the requirements followed. `docs/publishing.md` has the table, the script that derives it,
 and the reason the waves are **not** collapsed back to five — a version-carrying
 dev-dependency is what lets a downloaded `.crate` run its own tests, which
 distribution packagers do.
@@ -501,16 +583,35 @@ older toolchain, so if you pin an older Rust, pin an older `hclient` with it.
 In exchange nothing here carries version-shim code, and there is no MSRV
 matrix to maintain.
 
-**One crate is outside that too, and it is the same crate and the same
-argument as the shared version.** `system-resolver` declares
-`rust-version = "1.85.0"` literally. The policy above buys the *family* no
+**Two crates are outside that too, and the argument is the shared
+version's.** `system-resolver` declares `rust-version = "1.96.0"` and
+`hclient-idn` `"1.95.0"`, literally. The policy above buys the *family* no
 shim code and no matrix, and it costs a crate meant to be used from
-outside thirteen releases of reach for nothing — measured rather than
-assumed: on 1.85.0 it builds `--all-targets` and passes its 62 unit tests
-and its doctest, and every dependency's own floor is below that
-(`cfg-if` 1.32, `thiserror` 1.71, `windows-sys` 1.71, `windows-strings`
-1.82). What binds it is **edition 2024**, which is 1.85 and nothing else
-in that crate.
+outside real compiler reach.
+
+**Both floors have drifted upward since they were set, and the manifests
+say why in a way this file did not.** `system-resolver`'s read `1.85.0`
+for as long as this paragraph did, bound by **edition 2024** and nothing
+else in the crate. It is 1.96 now — `assert_matches!` in its tests
+(1.96) over what `cfg_select!` had already cost (1.95) — and its own
+manifest calls that *"a trade that has now gone the wrong way twice on
+this crate's own argument, which is that it left the family's shared MSRV
+to keep reach"*: `cfg-if` and `assert_matches` are each one small crate
+with a low floor, and dropping them bought two lines out of the lockfile
+for eleven releases of reach.
+
+It is one release stricter than a consumer needs, deliberately:
+`assert_matches!` is used only under `#[cfg(test)]`, which cargo does not
+build for a dependency, so the crate still compiles on 1.95 for anyone
+depending on it. Declaring the higher number is the under-claiming
+direction, and it keeps `just msrv` able to run the tests rather than only
+check them.
+
+**This paragraph said 1.85 four times over while the manifest said
+1.96**, which is this file's own recurring defect — a number in prose does
+not move, where `just msrv` reads the floor out of the manifest and
+refuses when the two disagree. The gate was right and the sentence was
+not.
 
 **And the three-platform promise was not being kept, which is worth
 knowing before the next argument leans on it.** For twelve days — every
@@ -556,7 +657,7 @@ which is why `just msrv` exists and has a job of its own. The objection
 above is that a pinned job restates a **moving** promise more staleley
 than the manifest does; `system-resolver`'s promise does not move, so the
 job is its only statement rather than a second copy of one — and without
-it `rust-version = "1.85.0"` would be a claim with nothing behind it,
+it a literal `rust-version` would be a claim with nothing behind it,
 which is the defect this file records against itself four times over. The
 recipe reads the floor **out of the manifest** rather than carrying a
 second copy, and refuses when the two disagree; both halves were checked
