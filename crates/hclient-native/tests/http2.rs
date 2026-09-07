@@ -334,7 +334,7 @@ async fn a_live_exchange_with_an_http2_server_is_reported_as_http2() {
 #[tokio::test]
 async fn capabilities_report_the_floor_with_the_feature_on() {
     let transport = Native::new(Tokio, FakeTls::negotiating_h2(), SystemDns::new(Tokio));
-    let caps = hclient_core::unversioned::Transport::capabilities(&transport);
+    let caps = hclient_core::Transport::capabilities(&transport);
 
     assert!(
         !caps.full_duplex,
@@ -785,9 +785,9 @@ async fn an_unmarked_request_still_offers_h2() {
 #[derive(Debug, Clone, Default)]
 struct Hints(Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<u64>>>);
 
-impl hclient_core::unversioned::Hooks for Hints {
-    fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
-        if let hclient_core::unversioned::Event::Informational(e) = event {
+impl hclient_core::Hooks for Hints {
+    fn on(&self, event: &hclient_core::Event<'_>) {
+        if let hclient_core::Event::Informational(e) = event {
             self.0.lock().unwrap().push(format!(
                 "{} {}",
                 e.status.as_u16(),

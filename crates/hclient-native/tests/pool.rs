@@ -24,7 +24,7 @@
 
 use hclient::Client;
 use hclient_core::ReuseSupport;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, PoolConfig};
 use hclient_rt_tokio::Tokio;

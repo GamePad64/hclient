@@ -338,7 +338,7 @@ fn checked_url(uri: &http::Uri) -> Result<String, Error> {
 /// support is a strictly smaller, still-honest capability — unlike a
 /// forbidden header or an unbuildable body, there's no lie in sending a
 /// request that merely can't be aborted early.
-pub(crate) fn to_web_request<H: hclient_core::unversioned::Hooks>(
+pub(crate) fn to_web_request<H: hclient_core::Hooks>(
     req: http::Request<RequestBody>,
     caps: &Capabilities,
     opts: &crate::opts::FetchOpts,
@@ -398,7 +398,7 @@ pub(crate) fn to_web_request<H: hclient_core::unversioned::Hooks>(
     // instant — there is no incremental send for this crate to observe, so
     // a bar that jumped from nothing to everything is exactly what
     // happened.
-    let sent = hclient_core::unversioned::meter::<H>(match &resolved {
+    let sent = hclient_core::meter::<H>(match &resolved {
         ResolvedBody::None => Some(0),
         ResolvedBody::Full(arr) => Some(u64::from(arr.length())),
         ResolvedBody::Streaming(b) => b.size_hint().exact(),
@@ -414,7 +414,7 @@ pub(crate) fn to_web_request<H: hclient_core::unversioned::Hooks>(
         }
         ResolvedBody::Streaming(body) => {
             let body: Box<dyn http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin + Send> = // send-bound-exception: amendment-C2
-                Box::new(hclient_core::unversioned::Metered::new(body, sent.clone()));
+                Box::new(hclient_core::Metered::new(body, sent.clone()));
             let stream = wasm_streams::ReadableStream::from_stream(BodyStream(body));
             init.set_body_opt_readable_stream(Some(&stream.into_raw()));
             // `duplex: "half"` — required, and required BEFORE the fact.
@@ -476,5 +476,5 @@ pub(crate) struct Converted {
     /// The request body's octet counter, written by the body on the
     /// browser's own task and read where `&self` is. `None` when nobody is
     /// watching.
-    pub(crate) sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
+    pub(crate) sent: Option<std::sync::Arc<hclient_core::Meter>>,
 }

@@ -7,7 +7,7 @@
 //! is worth a different retry.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{ErrorKind, Phase, RequestBody, Timeouts};
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_native::{Native, ResolveTimedOut};

@@ -127,7 +127,7 @@ use crate::error::{
 use crate::{mark, since};
 use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use hclient_core::unversioned::{Hooks, NoHooks};
+use hclient_core::{Hooks, NoHooks};
 use hclient_core::{Error, ErrorKind};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
@@ -557,14 +557,14 @@ fn won<H: Hooks, R: Timer>(
 #[derive(Debug)]
 pub(crate) struct Attempted {
     /// `None` for a connection with no IP address — a Unix-domain socket.
-    /// See [`hclient_core::unversioned::Connected::remote`], which this
+    /// See [`hclient_core::Connected::remote`], which this
     /// field feeds and which carries the argument.
     pub(crate) remote: Option<SocketAddr>,
     pub(crate) dns: Duration,
     pub(crate) tcp: Duration,
     /// `None` for a plaintext connection and `Some` for one that
     /// handshook, so the distinction reaches
-    /// [`ConnectTiming::tls`](hclient_core::unversioned::ConnectTiming::tls)
+    /// [`ConnectTiming::tls`](hclient_core::ConnectTiming::tls)
     /// as a fact rather than as a zero.
     pub(crate) tls: Option<Duration>,
 }
@@ -817,7 +817,7 @@ where
 /// replays them) and measuring its `dns` from the top would report the
 /// whole of the failed first attempt as time spent in DNS. Neither
 /// figure is a share of a total: see
-/// [`ConnectTiming`](hclient_core::unversioned::ConnectTiming), which
+/// [`ConnectTiming`](hclient_core::ConnectTiming), which
 /// says so where a caller reads it.
 /// Everything a proxy changes, in one place.
 ///

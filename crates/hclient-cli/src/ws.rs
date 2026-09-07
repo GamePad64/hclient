@@ -26,7 +26,7 @@
 //!
 //! # Two halves of one value, driven by hand
 //!
-//! [`hclient_core::unversioned::WebSocket`] is a `Stream` and a `Sink` on
+//! [`hclient_core::WebSocket`] is a `Stream` and a `Sink` on
 //! one value, deliberately, so that splitting stays the caller's choice.
 //! This driver does not split: one `select!` loop reads stdin, reads the
 //! socket and watches for an interrupt, and the send happens inside a
@@ -77,7 +77,7 @@ use anstyle::{AnsiColor, Style};
 use futures_core::Stream;
 use futures_sink::Sink;
 use hclient_core::Error;
-use hclient_core::unversioned::{CloseFrame, Message, WebSocketConnect};
+use hclient_core::{CloseFrame, Message, WebSocketConnect};
 use std::io::Write;
 use std::pin::Pin;
 

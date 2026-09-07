@@ -35,7 +35,7 @@ mod fakedns;
 mod servers;
 
 use fakedns::{FakeDns, service_record};
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{Error, ErrorKind, Phase, RequestBody, RequireVersion, Timeouts};
 use hclient_native::DEFAULT_HEAD_START;
 use hclient_native::H3;

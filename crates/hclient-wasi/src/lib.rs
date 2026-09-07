@@ -36,7 +36,7 @@ mod hooks;
 pub use body::Body;
 
 use convert::{Payload, TrailerWatch};
-use hclient_core::unversioned::{ConnectionId, Event, Head, Hooks, NoHooks, Transport};
+use hclient_core::{ConnectionId, Event, Head, Hooks, NoHooks, Transport};
 use hclient_core::{
     CancelSupport, Capabilities, Error, RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport,
     Timeouts, TlsSupport,
@@ -50,7 +50,7 @@ use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
 /// host itself decides the transfer encoding for the actual body;
 /// `upgrade` — no protocol upgrade support, and this crate implements
 /// neither `wasi:http`'s `HTTP-upgrade-failed` nor
-/// `hclient_core::unversioned::WebSocketConnect`, which is how a backend
+/// `hclient_core::WebSocketConnect`, which is how a backend
 /// says it can now (there is no capability field to read: see that
 /// trait's own module doc); `host` — the host computes it itself
 /// from `authority`. Measured by trying to send each of them —
@@ -105,7 +105,7 @@ pub struct WasiHttp<H = NoHooks> {
 
 impl<H> WasiHttp<H> {
     /// Send this transport's events to `hooks` — see
-    /// [`hclient_core::unversioned::Hooks`] for what it hears and what it
+    /// [`hclient_core::Hooks`] for what it hears and what it
     /// costs, and `crate::hooks` for the three quarters of the
     /// vocabulary `wasi:http` cannot speak.
     ///
@@ -313,11 +313,11 @@ impl<H: Hooks> WasiHttp<H> {
     fn reporting<'a, F: core::future::Future + Unpin>(
         &'a self,
         fut: F,
-        request: hclient_core::unversioned::RequestId,
+        request: hclient_core::RequestId,
         uri: &http::Uri,
-        sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
-    ) -> hclient_core::unversioned::Reporting<F, &'a H> {
-        hclient_core::unversioned::Reporting::new(
+        sent: Option<std::sync::Arc<hclient_core::Meter>>,
+    ) -> hclient_core::Reporting<F, &'a H> {
+        hclient_core::Reporting::new(
             fut,
             &self.hooks,
             ConnectionId::UNWATCHED,
@@ -337,7 +337,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
     /// than borrowing it. `NoHooks` is a ZST and `Arc`/`Rc` are the shapes
     /// a real hook arrives in, so nothing that could be installed before
     /// is excluded now.
-    type Body = hclient_core::unversioned::Counting<Body, H>;
+    type Body = hclient_core::Counting<Body, H>;
     type Error = Error;
 
     async fn execute(
@@ -359,7 +359,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
         // `H::WATCHING`, so an unwatched build touches no map; this
         // transport owns no connection, so the request id is the only
         // identity its four events carry.
-        let request = hclient_core::unversioned::identify::<H>(&parts.extensions);
+        let request = hclient_core::identify::<H>(&parts.extensions);
         let scheme = convert::scheme_of(&parts.uri)?;
 
         // Captured BEFORE the headers go into `Fields` — needed
@@ -404,20 +404,20 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
         let payload = convert::resolve_payload(body)?;
         // The request body's octet count, shared between the body that
         // writes it and the two places that report it — see
-        // `hclient_core::unversioned::Metered`. `None` under `NoHooks`, so
+        // `hclient_core::Metered`. `None` under `NoHooks`, so
         // an unwatched build allocates nothing and counts nothing.
         //
         // `expected` is what the payload itself states and nothing else: a
         // buffered body knows its length, a streaming one answers with its
         // own `size_hint`, and neither is read off a `Content-Length` this
         // crate would have had to trust somebody else for.
-        let sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>> = {
+        let sent: Option<std::sync::Arc<hclient_core::Meter>> = {
             let expected = match &payload {
                 None => Some(0),
                 Some(Payload::Bytes(b)) => Some(b.len() as u64),
                 Some(Payload::Streaming(s)) => s.size_hint().exact(),
             };
-            hclient_core::unversioned::meter::<H>(expected).map(std::sync::Arc::new)
+            hclient_core::meter::<H>(expected).map(std::sync::Arc::new)
         };
         let (writer_and_payload, contents, trailers) = match payload {
             None => {
@@ -484,7 +484,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
                 .map_err(convert::wasi_err)?,
             Some((w, Payload::Bytes(bytes))) => {
                 let mut b =
-                    hclient_core::unversioned::Metered::new(Body::from_bytes(bytes), sent.clone());
+                    hclient_core::Metered::new(Body::from_bytes(bytes), sent.clone());
                 let fut = std::pin::pin!(convert::race_send_with_body(
                     wasip3::http::client::send(wasi_request),
                     w.send_http_body(&mut b),
@@ -494,7 +494,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
             }
             Some((w, Payload::Streaming(s))) => {
                 let (watched, trailer_names_seen) = TrailerWatch::new(s);
-                let mut watched = hclient_core::unversioned::Metered::new(watched, sent.clone());
+                let mut watched = hclient_core::Metered::new(watched, sent.clone());
                 let fut = std::pin::pin!(convert::race_send_with_body(
                     wasip3::http::client::send(wasi_request),
                     w.send_http_body(&mut watched),
@@ -537,7 +537,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
         // where an absent denominator is the under-claiming direction.
         let out = http::Response::from_parts(
             resp_parts,
-            hclient_core::unversioned::Counting::new(
+            hclient_core::Counting::new(
                 Body::from_incoming(incoming),
                 self.hooks.clone(),
                 ConnectionId::UNWATCHED,
@@ -610,14 +610,14 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
 /// and always was: a `wasi:http` resource is a `u32` handle, not a claim
 /// about threads. It was named beside `hclient-fetch` every time the
 /// workspace discussed `Send` and never had the browser's problem.
-impl<H> hclient_core::unversioned::SendTransport for WasiHttp<H>
+impl<H> hclient_core::SendTransport for WasiHttp<H>
 where
     H: Hooks + Clone + Unpin + Sync, // send-bound-exception: amendment-C16
 {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
-    ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
+    ) -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error> {
         Box::pin(<Self as Transport>::execute(self, req))
     }
 }

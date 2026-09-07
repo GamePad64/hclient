@@ -11,7 +11,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::{H1Opts, MaxBufSizeTooSmall, Native};
 use hclient_rt_tokio::Tokio;

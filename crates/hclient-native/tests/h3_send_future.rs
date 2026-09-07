@@ -17,7 +17,7 @@
 //! what the test would have said.
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::{H3, Native};
 use hclient_rt_tokio::Tokio;

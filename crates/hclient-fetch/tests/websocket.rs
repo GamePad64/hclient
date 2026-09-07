@@ -1,4 +1,4 @@
-//! The browser's WebSocket, behind `hclient_core::unversioned::
+//! The browser's WebSocket, behind `hclient_core::
 //! WebSocketConnect`.
 //!
 //! # Why almost every test here runs against a stand-in constructor
@@ -34,7 +34,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use hclient_core::ErrorKind;
-use hclient_core::unversioned::{CloseFrame, Message, WebSocketConnect};
+use hclient_core::{CloseFrame, Message, WebSocketConnect};
 use hclient_fetch::Fetch;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::*;

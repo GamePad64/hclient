@@ -88,7 +88,7 @@ pub use error::{ConnectTimedOut, RequestTrailersNotSent, UnknownRequestBodyFrame
 pub use staged::{H3StagedConnect, Refused, Staged};
 
 use bytes::Bytes;
-use hclient_core::unversioned::{
+use hclient_core::{
     CloseReason, ConnectionId, Event, Head, Hooks, NoHooks, Transport,
 };
 use hclient_core::{
@@ -372,7 +372,7 @@ where
     T: QuicTlsConnect,
 {
     /// Send this transport's events to `hooks` — see
-    /// [`hclient_core::unversioned::Hooks`] for what it hears and what it
+    /// [`hclient_core::Hooks`] for what it hears and what it
     /// costs, [`Event`] for the vocabulary, and `crate::http3::hooks` for the
     /// two things QUIC cannot say in it.
     ///
@@ -596,7 +596,7 @@ where
     /// which buys two things at once: exactly one caller can report a given
     /// connection even when several arrive at the same instant, and no hook
     /// runs with the pool's mutex held — the rule
-    /// `hclient_core::unversioned::hooks` states, and the one a panicking
+    /// `hclient_core::hooks` states, and the one a panicking
     /// hook would otherwise turn into a poisoned pool.
     ///
     /// It is reported here rather than carried out to `execute`, because a
@@ -900,7 +900,7 @@ where
         head: http::Request<()>,
         body: RequestBody,
         watch: Option<Box<Watch<H>>>,
-        sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
+        sent: Option<std::sync::Arc<hclient_core::Meter>>,
     ) -> Result<http::Response<H3Body<H>>, Error> {
         let stream = send.send_request(head).await.map_err(body::stream_error)?;
         // From here on the head is on the wire, and a write-side failure
@@ -948,13 +948,13 @@ where
     fn counted(
         &self,
         resp: http::Response<H3Body<H>>,
-        id: hclient_core::unversioned::ConnectionId,
-        request: hclient_core::unversioned::RequestId,
+        id: hclient_core::ConnectionId,
+        request: hclient_core::RequestId,
         uri: &http::Uri,
-        sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
-    ) -> http::Response<hclient_core::unversioned::Counting<H3Body<H>, H>> {
+        sent: Option<std::sync::Arc<hclient_core::Meter>>,
+    ) -> http::Response<hclient_core::Counting<H3Body<H>, H>> {
         resp.map(|b| {
-            hclient_core::unversioned::Counting::new(
+            hclient_core::Counting::new(
                 b,
                 self.hooks.clone(),
                 id,
@@ -1005,7 +1005,7 @@ where
         &self,
         resp: &http::Response<H3Body<H>>,
         id: ConnectionId,
-        request: hclient_core::unversioned::RequestId,
+        request: hclient_core::RequestId,
         uri: &http::Uri,
         began: Option<R::Instant>,
     ) {
@@ -1178,7 +1178,7 @@ where
     /// one place that covers both. `Native` passes `Counted::already` for
     /// a body that came up that way, or every octet would be counted
     /// twice.
-    type Body = hclient_core::unversioned::Counting<H3Body<H>, H>;
+    type Body = hclient_core::Counting<H3Body<H>, H>;
     type Error = Error;
 
     /// `H3::stage` then `H3::finish` — the same two halves
@@ -1270,7 +1270,7 @@ where
 /// `H3StagedConnect for H3` already carries, for the same reason and named
 /// the same way: this backend's exchange crosses a thread exactly when
 /// its runtime's and its resolver's answers do.
-impl<R, T, D, H> hclient_core::unversioned::SendTransport for H3<R, T, D, H>
+impl<R, T, D, H> hclient_core::SendTransport for H3<R, T, D, H>
 where
     R: H3Runtime + Sync,      // send-bound-exception: amendment-C16
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10

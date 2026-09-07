@@ -6,7 +6,7 @@
 //!
 //! - [`TungsteniteWebSocket`], the framing: generic over the IO and the
 //!   clock, it names no transport at all, and it is what
-//!   [`hclient_core::unversioned::WebSocket`] is implemented on. Give it
+//!   [`hclient_core::WebSocket`] is implemented on. Give it
 //!   an upgraded stream and the bytes hyper had already read past, and it
 //!   speaks WebSocket over them.
 //! - [`Tungstenite`], the connector: it borrows a
@@ -220,7 +220,7 @@
 use bytes::Bytes;
 use futures_core::Stream;
 use futures_sink::Sink;
-use hclient_core::unversioned::{CloseFrame, Message, WebSocket, WebSocketConnect};
+use hclient_core::{CloseFrame, Message, WebSocket, WebSocketConnect};
 use hclient_core::{Error, ErrorKind};
 use hclient_dns::Resolve;
 use hclient_native::{Native, NativeIo};
@@ -618,7 +618,7 @@ pub struct TungsteniteWebSocket<I, Tm: Timer> {
     io: I,
     ctx: WebSocketContext,
     /// A `Stream` that has ended stays ended — the contract
-    /// `hclient_core::unversioned::WebSocket` states, held here rather
+    /// `hclient_core::WebSocket` states, held here rather
     /// than left to whatever `tungstenite` answers on a second call.
     ended: bool,
     /// `None` — no keep-alive was asked for, and nothing here ever builds
@@ -939,7 +939,7 @@ where
 /// #       R::Stream: Send + 'static, R::Instant: Send + Sync, R::Sleep: Send + 'static,
 /// #       T: hclient_tls::TlsConnect + Send + Sync + 'static, T::Stream<R::Stream>: Send + 'static,
 /// #       D: hclient_dns::Resolve + Send + Sync + 'static {
-/// use hclient_core::unversioned::WebSocketConnect;
+/// use hclient_core::WebSocketConnect;
 /// use hclient_tungstenite::Tungstenite;
 ///
 /// let native = client
@@ -969,7 +969,7 @@ where
 /// TLS backend, `TcpOpts`, `Timeouts::connect` out of the request's
 /// extensions) is the `Native`'s. The one thing that is this type's own is
 /// [`WebSocketKeepAlive`], because pings are frames.
-pub struct Tungstenite<'a, R, T, D, H = hclient_core::unversioned::NoHooks>
+pub struct Tungstenite<'a, R, T, D, H = hclient_core::NoHooks>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,

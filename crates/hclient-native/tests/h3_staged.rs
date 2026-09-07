@@ -20,7 +20,7 @@
 #[path = "h3_server.rs"]
 mod server;
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{ErrorKind, RequestBody};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::{H3, H3StagedConnect as StagedConnect};

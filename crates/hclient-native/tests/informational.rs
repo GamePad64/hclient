@@ -5,7 +5,7 @@
 //! only the order shows that.
 
 use hclient::Client;
-use hclient_core::unversioned::{Event, Hooks, Transport};
+use hclient_core::{Event, Hooks, Transport};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;

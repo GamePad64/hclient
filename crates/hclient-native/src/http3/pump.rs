@@ -166,7 +166,7 @@ impl Drop for Writer {
 /// The whole request body, as a future that can outlive `one_attempt`.
 ///
 /// `sent` counts what reaches the wire, for
-/// [`hclient_core::unversioned::Progress`]; `None` when nobody is
+/// [`hclient_core::Progress`]; `None` when nobody is
 /// watching. It is counted **here rather than in a wrapper** for
 /// `hclient-native`'s `OutgoingBody`'s reason — this is the one place
 /// every frame of a request body passes through on the QUIC path, and a
@@ -174,7 +174,7 @@ impl Drop for Writer {
 pub(crate) fn pump(
     send: SendHalf,
     body: RequestBody,
-    sent: Option<Arc<hclient_core::unversioned::Meter>>,
+    sent: Option<Arc<hclient_core::Meter>>,
 ) -> Pump {
     Box::pin(write_body(
         Writer {
@@ -189,7 +189,7 @@ pub(crate) fn pump(
 async fn write_body(
     mut w: Writer,
     body: RequestBody,
-    sent: Option<Arc<hclient_core::unversioned::Meter>>,
+    sent: Option<Arc<hclient_core::Meter>>,
 ) -> Result<(), Error> {
     let stopped = match flatten(body.reduce().map_err(|e| Error::new(ErrorKind::Body, e))?) {
         Outgoing::Buffered(None) => false,
@@ -239,7 +239,7 @@ async fn write_body(
 async fn write_stream(
     w: &mut Writer,
     body: &mut (dyn http_body::Body<Data = Bytes, Error = Error> + Unpin + Send), // send-bound-exception: amendment-C2
-    sent: Option<&hclient_core::unversioned::Meter>,
+    sent: Option<&hclient_core::Meter>,
 ) -> Result<bool, Error> {
     loop {
         let frame = poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await;

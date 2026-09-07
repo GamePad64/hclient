@@ -6,7 +6,7 @@
 //! a refactor could take away silently.
 #![cfg(windows)]
 
-use hclient_core::unversioned::{SendTransport, Transport};
+use hclient_core::{SendTransport, Transport};
 use hclient_winhttp::{WinHttp, WinHttpBody};
 use static_assertions::assert_impl_all;
 

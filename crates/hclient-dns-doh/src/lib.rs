@@ -56,7 +56,7 @@
 //!
 //! ## 2. What client makes the DoH request? A `Transport`, never a `Client`
 //!
-//! `C` is an [`hclient_core::unversioned::Transport`], the seam one level
+//! `C` is an [`hclient_core::Transport`], the seam one level
 //! below `hclient::Client`. That is the whole answer to §W3's *"a
 //! resolver's client is not the user's client"*, and it is structural
 //! rather than a rule someone has to follow: a cookie jar, a redirect
@@ -168,7 +168,7 @@ pub use wire::MAX_RESPONSE_BYTES;
 
 use futures_util::StreamExt;
 use futures_util::stream;
-use hclient_core::unversioned::SendTransport;
+use hclient_core::SendTransport;
 use hclient_core::{Error, ErrorKind, RequestBody, Timeouts};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use http::Uri;

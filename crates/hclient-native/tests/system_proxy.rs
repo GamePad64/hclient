@@ -10,7 +10,7 @@
 #![cfg(feature = "system-proxy")]
 
 use hclient::Client;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::proxy::system::testing::system_proxies;
 use hclient_native::testing::chosen_proxy;
@@ -23,7 +23,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 type Installed =
-    Native<Tokio, NoTls, IpLiteralOnly, hclient_core::unversioned::NoHooks, HttpConnect>;
+    Native<Tokio, NoTls, IpLiteralOnly, hclient_core::NoHooks, HttpConnect>;
 
 /// Where a request would go, asked through the chooser a request uses
 /// rather than by reading fields back.

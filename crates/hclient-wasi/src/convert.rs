@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn capabilities_declare_what_wasi_http_actually_does() {
         let c = super::super::WasiHttp::new();
-        let caps = hclient_core::unversioned::Transport::capabilities(&c);
+        let caps = hclient_core::Transport::capabilities(&c);
         // wasi:http 0.3 is richer than native for request body streaming…
         assert!(caps.streaming_request_body);
         assert!(caps.request_trailers && caps.response_trailers);
@@ -543,7 +543,7 @@ mod tests {
     /// `Display` (which, if wrapped, would print `Other: Tls: …`).
     #[test]
     fn to_error_is_the_identity_so_the_classification_survives_the_client() {
-        use hclient_core::unversioned::Transport as _;
+        use hclient_core::Transport as _;
 
         let t = super::super::WasiHttp::new();
         let classified = wasi_err(ErrorCode::TlsProtocolError);

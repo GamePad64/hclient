@@ -11,7 +11,7 @@
 //! does not exist yet would otherwise ship unpinned.
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{
     CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport,
     ReuseSupport, TlsSupport,

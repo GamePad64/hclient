@@ -40,7 +40,7 @@ mod fakedns;
 
 use bytes::Bytes;
 use fakedns::FakeDns;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{RequestBody, Timeouts};
 use hclient_native::H3;
 use hclient_native::Native;

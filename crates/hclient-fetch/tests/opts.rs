@@ -101,7 +101,7 @@ fn all_four_survive_being_set_at_once() {
 /// settings.
 #[wasm_bindgen_test]
 fn configuring_the_options_changes_no_capability() {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     let plain = hclient_fetch::Fetch::new();
     let configured = hclient_fetch::Fetch::new().opts(FetchOpts {
         mode: Some(RequestMode::NoCors),

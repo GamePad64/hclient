@@ -82,7 +82,7 @@
 //!
 //! fn probe2(_: Arc<dyn Transport<Body = …, Error = …>>) {}
 //! error[E0038]: the trait `Transport` is not dyn compatible
-//!   --> crates/hclient-core/src/unversioned/transport.rs:83:10
+//!   --> crates/hclient-core/src/transport.rs:83:10
 //!   = ... because method `execute` references an `impl Trait` type in its
 //!     return type
 //! ```

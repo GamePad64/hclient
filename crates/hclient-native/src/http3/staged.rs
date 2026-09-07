@@ -68,7 +68,7 @@
 //! take but the request itself.
 
 use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
-use hclient_core::unversioned::{ConnectTiming, Connected, Event, Hooks, Reused, Transport};
+use hclient_core::{ConnectTiming, Connected, Event, Hooks, Reused, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody, Timeouts, check_version};
 use hclient_tls::quic::QuicTlsConnect;
 use std::fmt;
@@ -468,7 +468,7 @@ where
         let id = ConnState::id(state.as_ref());
         // Read once from the request still in hand; `Staged` keeps the
         // request, so `exchange` reads it back off the same one.
-        let request = hclient_core::unversioned::identify::<H>(req.extensions());
+        let request = hclient_core::identify::<H>(req.extensions());
         match &made {
             Some(m) => self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, http::Version::HTTP_3)
@@ -505,7 +505,7 @@ where
         &self,
         staged: Staged<R, H>,
     ) -> Result<
-        http::Response<hclient_core::unversioned::Counting<crate::http3::H3Body<H>, H>>,
+        http::Response<hclient_core::Counting<crate::http3::H3Body<H>, H>>,
         Error,
     > {
         let Staged {
@@ -526,7 +526,7 @@ where
         let watch = self.watch(&conn, &state);
 
         let (parts, body) = req.into_parts();
-        let request = hclient_core::unversioned::identify::<H>(&parts.extensions);
+        let request = hclient_core::identify::<H>(&parts.extensions);
         // Taken before the first attempt, because after it the body is gone
         // — but **only when there is something a replay could be needed
         // for**. `zero_rtt.is_some()` is exactly the condition: it is
@@ -547,7 +547,7 @@ where
         // once, on a connection whose early data the server refused, and
         // `Progress::expected` already says it is a claim rather than a
         // promise.
-        let sent = hclient_core::unversioned::meter::<H>(body.size_hint()).map(std::sync::Arc::new);
+        let sent = hclient_core::meter::<H>(body.size_hint()).map(std::sync::Arc::new);
         let head = http::Request::from_parts(parts.clone(), ());
         let first = {
             // The upload is reported while it is happening, which on this
@@ -561,7 +561,7 @@ where
                 watch.clone(),
                 sent.clone()
             ));
-            hclient_core::unversioned::Reporting::new(
+            hclient_core::Reporting::new(
                 attempt,
                 &self.hooks,
                 id,

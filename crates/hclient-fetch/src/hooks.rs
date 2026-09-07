@@ -2,13 +2,13 @@
 //!
 //! **Two of the five events, and the pair is the point.** [`Head`] is what
 //! this backend can say about an exchange, and
-//! [`Progress`](hclient_core::unversioned::Progress) is what it can say
+//! [`Progress`](hclient_core::Progress) is what it can say
 //! about the octets — the second arrived later and did not disturb the
 //! argument below, because that argument is about *connections* and octets
 //! are not one. What is still absent is absent for the same reason it
 //! always was.
 //!
-//! The vocabulary is `hclient_core::unversioned::{Hooks, Event}` and it is
+//! The vocabulary is `hclient_core::{Hooks, Event}` and it is
 //! **unchanged** here. `hclient-native` derived the event set from a
 //! transport that dials its own sockets; `hclient-h3` was the test of
 //! whether it survived connections that are *shared*. This crate is the
@@ -18,9 +18,9 @@
 //!
 //! # Three of the five variants have no emitter here
 //!
-//! [`Connected`](hclient_core::unversioned::Connected),
-//! [`Reused`](hclient_core::unversioned::Reused) and
-//! [`Closed`](hclient_core::unversioned::Closed) are not emitted, and the
+//! [`Connected`](hclient_core::Connected),
+//! [`Reused`](hclient_core::Reused) and
+//! [`Closed`](hclient_core::Closed) are not emitted, and the
 //! reason is not that it would be awkward — there is nothing to read.
 //! `fetch()` takes a `Request` and resolves to a `Response`; the Fetch
 //! Standard exposes no connection object, no connection identity, and no
@@ -35,7 +35,7 @@
 //! `PerformanceResourceTiming` carries `domainLookupStart`/`End`,
 //! `connectStart`/`End`, `secureConnectionStart` and `nextHopProtocol` —
 //! which is very nearly
-//! [`ConnectTiming`](hclient_core::unversioned::ConnectTiming) plus
+//! [`ConnectTiming`](hclient_core::ConnectTiming) plus
 //! `Connected::version`. It was considered and rejected, on three grounds
 //! — **the first two measured in `tests/hooks_timing.rs`, the third read
 //! off the specification and said to be**:
@@ -88,7 +88,7 @@
 //!   produced — a value a caller cannot tell from an HTTP/1.1 exchange
 //!   somebody watched happen. `Capabilities::version_reported` is `false`
 //!   here and says the same thing, but a [`Hooks`] impl is handed an
-//!   [`Event`](hclient_core::unversioned::Event) and no capabilities, so
+//!   [`Event`](hclient_core::Event) and no capabilities, so
 //!   the honest value has to be in the event.
 //!
 //! `Connected::version` and `Reused::version` stayed plain, which is the
@@ -100,7 +100,7 @@
 //!
 //! Every clock read whose only purpose is an event goes through [`mark`],
 //! and `H::WATCHING` is a `const`, so on
-//! [`NoHooks`](hclient_core::unversioned::NoHooks) the `then` is a
+//! [`NoHooks`](hclient_core::NoHooks) the `then` is a
 //! compile-time `false` and there is nothing left to remove — not a
 //! branch, not a call. The same gate stands in front of the one allocation
 //! the feature needs, the clone of the request's `Uri` (see
@@ -118,7 +118,7 @@
 //! # The clock is `performance.now()`, not this crate's [`Timer`]
 //!
 //! [`crate::BrowserClock`] is this crate's
-//! [`Timer`](hclient_core::unversioned::Timer), and it reads
+//! [`Timer`](hclient_core::Timer), and it reads
 //! `Date.now()` — milliseconds since the epoch, which is what a *sleep*
 //! wants and what SSE reconnect asks it for. `Head::elapsed` is a
 //! duration, and a wall clock is the wrong instrument for one twice over:
@@ -133,7 +133,7 @@
 //! Worker, which has a `performance` and no `window`.
 
 use core::time::Duration;
-use hclient_core::unversioned::Hooks;
+use hclient_core::Hooks;
 use wasm_bindgen::{JsCast, JsValue};
 
 /// `performance.now()`: milliseconds since the time origin, monotonic.
@@ -159,7 +159,7 @@ fn now() -> f64 {
 /// the zero-cost claim and the only place this crate reads a clock for an
 /// event.
 pub(crate) fn mark<H: Hooks>() -> Option<f64> {
-    hclient_core::unversioned::mark::<H, _>(now)
+    hclient_core::mark::<H, _>(now)
 }
 
 /// The other half of [`mark`]: the interval since one, or `ZERO` when
@@ -176,7 +176,7 @@ pub(crate) fn mark<H: Hooks>() -> Option<f64> {
 /// has one: `Duration::from_secs_f64` panics on a negative, and a clock
 /// this code did not install is not this code's to trust absolutely.
 pub(crate) fn since(at: Option<f64>) -> Duration {
-    hclient_core::unversioned::since(at, |t| {
+    hclient_core::since(at, |t| {
         Duration::from_secs_f64((now() - t).max(0.0) / 1000.0)
     })
 }

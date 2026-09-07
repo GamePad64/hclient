@@ -1,8 +1,8 @@
-//! Type-erased forms of [`crate::unversioned::Transport`] and [`Timer`], so
+//! Type-erased forms of [`crate::Transport`] and [`Timer`], so
 //! a facade can be **one concrete type** instead of two type parameters.
 //!
 //! A backend implements one method: [`BoxedTransport`]'s blanket impl is
-//! over every [`crate::unversioned::SendTransport`], and
+//! over every [`crate::SendTransport`], and
 //! [`BoxedTimer`]'s over every `Timer`.
 //!
 //! # Everything boxed here declares `Send`
@@ -22,7 +22,7 @@
 //! and **requiring** one. The seams a transport awaits — `Resolve`,
 //! `TcpConnect`, `TlsConnect`, `Blocking` — carry associated futures now,
 //! so a consumer can name them while each implementor still answers for
-//! itself; and [`crate::unversioned::SendTransport`] is a separate trait,
+//! itself; and [`crate::SendTransport`] is a separate trait,
 //! so an impl may carry bounds `Transport` does not. `hclient-rt-embassy`
 //! is not excluded from anything: it names a plain box, and a `Native`
 //! over it is a `Transport` and not a `SendTransport`.
@@ -47,7 +47,7 @@
 
 use crate::Error;
 use crate::RequestBody;
-use crate::unversioned::Timer;
+use crate::Timer;
 use bytes::Bytes;
 use std::future::Future;
 use std::pin::Pin;
@@ -140,9 +140,9 @@ where
     }
 }
 
-/// [`crate::unversioned::Transport`], with the future and the body boxed.
+/// [`crate::Transport`], with the future and the body boxed.
 ///
-/// Implemented for every [`crate::unversioned::SendTransport`] whose error
+/// Implemented for every [`crate::SendTransport`] whose error
 /// and body error convert into [`Error`]. A backend author writes one
 /// method — `SendTransport`'s, whose body at a concrete type is
 /// `Box::pin(self.execute(req))`.
@@ -163,18 +163,18 @@ where
     note = "If `{Self}` is a `Result`, this is a missing `?` rather than a missing impl: `Client::new` and `default_transport` are fallible on native and infallible in a browser, so portable code differs by exactly that one character.",
     note = "`Client` boxes its transport behind `Send` and `Sync`, so it asks for the one claim `Transport` deliberately does not make.",
     note = "Implement `SendTransport` — one method, and at a concrete type its whole body is `Box::pin(self.execute(req))`, where `Send` is inferred rather than proved:",
-    note = "    impl hclient_core::unversioned::SendTransport for {Self} {{",
+    note = "    impl hclient_core::SendTransport for {Self} {{",
     note = "        fn execute_send(&self, req: http::Request<RequestBody>)",
-    note = "            -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error>",
+    note = "            -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error>",
     note = "        {{ Box::pin(self.execute(req)) }}",
     note = "    }}",
     note = "If this transport genuinely cannot cross a thread — a browser one, or a runtime whose IO is `!Send` — do not implement it. `Transport` alone still works and only `hclient::Client` is out of reach."
 )]
 pub trait BoxedTransport {
-    /// [`crate::unversioned::Transport::execute`], boxed.
+    /// [`crate::Transport::execute`], boxed.
     fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a>;
 
-    /// [`crate::unversioned::Transport::capabilities`], unchanged — it was
+    /// [`crate::Transport::capabilities`], unchanged — it was
     /// never generic.
     fn capabilities(&self) -> &crate::Capabilities;
 
@@ -193,14 +193,14 @@ pub trait BoxedTransport {
 
 impl<T> BoxedTransport for T
 where
-    T: crate::unversioned::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
+    T: crate::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
     T::Body: Send + 'static,                               // send-bound-exception: amendment-C14
     <T::Body as http_body::Body>::Error: Into<Error>,
     T::Error: Into<Error>,
 {
     fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a> {
         Box::pin(async move {
-            match crate::unversioned::SendTransport::execute_send(self, req).await {
+            match crate::SendTransport::execute_send(self, req).await {
                 Ok(resp) => Ok(resp.map(box_body)),
                 Err(e) => Err(e.into()),
             }
@@ -208,7 +208,7 @@ where
     }
 
     fn capabilities(&self) -> &crate::Capabilities {
-        crate::unversioned::Transport::capabilities(self)
+        crate::Transport::capabilities(self)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

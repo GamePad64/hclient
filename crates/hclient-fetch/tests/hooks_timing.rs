@@ -25,7 +25,7 @@ use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_fetch::Fetch;
 use wasm_bindgen::{JsCast, JsValue};
 

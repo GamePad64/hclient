@@ -265,7 +265,7 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
 )]
 fn finish<T>(backend: BackendName, cfg: &Config, transport: T) -> Result<hclient::Client, Refused>
 where
-    T: hclient_core::unversioned::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    T: hclient_core::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
 {
     // `build()` refuses a client setting the transport cannot honour, and
     // this program sets none of them here — the cookie jar and the cache

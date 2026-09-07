@@ -1,5 +1,5 @@
 //! WebSocket over the browser's own `WebSocket` global, behind
-//! [`hclient_core::unversioned::WebSocketConnect`].
+//! [`hclient_core::WebSocketConnect`].
 //!
 //! # Why this file is the acceptance for the seam rather than a second backend
 //!
@@ -158,7 +158,7 @@ use crate::error::{
 use bytes::Bytes;
 use futures_core::Stream;
 use futures_sink::Sink;
-use hclient_core::unversioned::{CloseFrame, Message, WebSocket, WebSocketConnect};
+use hclient_core::{CloseFrame, Message, WebSocket, WebSocketConnect};
 use hclient_core::{Error, ErrorKind};
 use std::collections::VecDeque;
 use std::fmt::Debug;

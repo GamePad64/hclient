@@ -39,7 +39,7 @@
 //! clock**, which is why this module's reasoning outlived the shape it was
 //! written about: `Client` was forked once more, for `DefaultTransport`,
 //! and that fork is gone with the parameters. See
-//! `hclient_core::unversioned::erased`.
+//! `hclient_core::erased`.
 //!
 //! # What it costs, said plainly
 //!
@@ -124,7 +124,7 @@ impl crate::cookie::PublicSuffixList for AnyList {
 /// The seam names its futures as associated types, which is what lets a
 /// single-threaded store answer for itself — and is exactly what makes it
 /// not `dyn`-compatible. So there are two traits, and the split is
-/// [`BoxedTransport`](hclient_core::unversioned::BoxedTransport)'s one
+/// [`BoxedTransport`](hclient_core::BoxedTransport)'s one
 /// crate over, down to the blanket impl: **a store author writes
 /// nothing**, and the boxing happens where the type is still concrete, so
 /// `Send` is inferred rather than proved.

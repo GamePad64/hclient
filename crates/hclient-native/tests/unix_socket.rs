@@ -8,7 +8,7 @@
 #![cfg(unix)]
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -200,7 +200,7 @@ fn each_socket_sees_its_own_requests() {
 /// connection whose beginning was never announced.
 #[test]
 fn the_connected_event_carries_no_address_and_is_still_emitted() {
-    use hclient_core::unversioned::{Event, Hooks};
+    use hclient_core::{Event, Hooks};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]

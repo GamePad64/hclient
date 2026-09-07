@@ -2,7 +2,7 @@
 //! still being written on the other half of it.
 
 use bytes::{Buf, Bytes};
-use hclient_core::unversioned::Hooks;
+use hclient_core::Hooks;
 use hclient_core::{Error, ErrorKind};
 use std::fmt::Debug;
 use std::pin::Pin;
@@ -68,7 +68,7 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
 /// and so that this type is `Unpin` for every `H` — `hclient-select`
 /// requires that of `<H3<..> as Transport>::Body`, and a `Box` is `Unpin`
 /// whatever it holds.
-pub struct H3Body<H = hclient_core::unversioned::NoHooks> {
+pub struct H3Body<H = hclient_core::NoHooks> {
     stream: RecvHalf,
     /// `None` once the request body has been written in full — which for
     /// an empty body is before this type exists, and for a large one may
@@ -142,7 +142,7 @@ impl<H: Hooks> H3Body<H> {
     ///
     /// Called from `poll_frame` and never from `Drop`: a hook that panicked
     /// during an unwind would abort the process, which
-    /// `hclient_core::unversioned::hooks` refuses on the grounds that an
+    /// `hclient_core::hooks` refuses on the grounds that an
     /// observability seam able to abort a program is worse than one with a
     /// hole in it.
     fn report_failure(&self, e: &Error) {

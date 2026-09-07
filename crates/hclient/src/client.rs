@@ -10,7 +10,7 @@ use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
 use hclient_core::Timeouts;
-use hclient_core::unversioned::Timer;
+use hclient_core::Timer;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind, UnsupportedCapability};
 use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 use hclient_proto::retry::{Outcome, RetryPolicy, RetryVerdict, retry_after_seconds};
@@ -38,7 +38,7 @@ use std::sync::Arc;
 use web_time::SystemTime;
 
 pub struct ClientBuilder {
-    transport: Box<hclient_core::unversioned::erased::SharedTransport>,
+    transport: Box<hclient_core::erased::SharedTransport>,
     /// The transport's type name, captured at construction: erasure loses
     /// the type, and four capability refusals name the backend.
     backend: &'static str,
@@ -48,7 +48,7 @@ pub struct ClientBuilder {
     /// ([`crate::NoClock`]), not a `None`, so that no total timeout can be
     /// configured against a client that cannot measure one. See
     /// [`Self::total_timeout`] and [`crate::NoClock`]'s doc comment.
-    timer: Arc<hclient_core::unversioned::erased::SharedTimer>,
+    timer: Arc<hclient_core::erased::SharedTimer>,
     config: Config,
     /// The jar itself, on its way to `Inner`. `Config` carries only the
     /// bit that says one was asked for — see `Config::cookies` for why the
@@ -83,7 +83,7 @@ pub struct ClientBuilder {
 impl ClientBuilder {
     pub fn new<T>(transport: T) -> Self
     where
-        T: hclient_core::unversioned::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        T: hclient_core::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
         Self {
             backend: std::any::type_name::<T>(),
@@ -531,7 +531,7 @@ impl Debug for Client {
 /// The client, and it names no type parameters at all.
 ///
 /// The transport and the clock live behind
-/// `hclient_core::unversioned::erased`, so a library takes `&Client` with
+/// `hclient_core::erased`, so a library takes `&Client` with
 /// no `where` clause. `Clone` is an `Arc` bump.
 #[derive(Clone)]
 pub struct Client {
@@ -541,8 +541,8 @@ pub struct Client {
 
 struct Inner {
     backend: &'static str,
-    transport: Box<hclient_core::unversioned::erased::SharedTransport>,
-    timer: Arc<hclient_core::unversioned::erased::SharedTimer>,
+    transport: Box<hclient_core::erased::SharedTransport>,
+    timer: Arc<hclient_core::erased::SharedTimer>,
     /// The cookie jar, if one was asked for — **here and not in `Config`**
     /// for the reason the `Config::cookies` bit records: a jar is shared
     /// state, and `Config` is cloned per handle.
@@ -590,7 +590,7 @@ struct Inner {
 impl Client {
     pub fn builder<T>(transport: T) -> ClientBuilder
     where
-        T: hclient_core::unversioned::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        T: hclient_core::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
         ClientBuilder::new(transport)
     }
@@ -653,7 +653,7 @@ impl Client {
     /// **There is deliberately no untyped `transport()` beside this**, and
     /// it existed for one commit. Three things were wrong with it and the
     /// third is the one that decides. It returned
-    /// `&hclient_core::unversioned::erased::SharedTransport`, a path this
+    /// `&hclient_core::erased::SharedTransport`, a path this
     /// facade does not re-export — so naming the return type meant adding a
     /// dependency on `hclient-core` to a crate that wanted only `hclient`,
     /// which is the tax erasure exists to remove. The name would also have
@@ -676,11 +676,9 @@ impl Client {
     /// What this client's transport can do.
     ///
     /// This forwarder exists so that answering the most natural question
-    /// about `Capabilities` doesn't require dragging `unversioned::
-    /// Transport` into scope — the trait is
-    /// deliberately in semver quarantine (see the doc comment on
-    /// `hclient-core/src/unversioned/mod.rs`) and isn't part of the
-    /// `hclient` facade. Reaching the transport and calling the trait
+    /// about `Capabilities` doesn't require dragging
+    /// `hclient_core::Transport` into scope — that trait is the contract
+    /// for backend authors rather than part of the `hclient` facade. Reaching the transport and calling the trait
     /// method was once the only path; since erasure it is **the only
     /// path at all**, because [`Self::transport_as`] hands back a
     /// concrete backend and a caller who does not know which one they hold
@@ -950,7 +948,7 @@ impl Client {
         mut auth: Option<crate::auth::SharedAuth>,
     ) -> Result<
         (
-            http::Response<Cached<hclient_core::unversioned::erased::BoxBody>>,
+            http::Response<Cached<hclient_core::erased::BoxBody>>,
             http::Uri,
         ),
         Error,
@@ -1109,7 +1107,7 @@ impl Client {
         // and the alternative would be a second question `Client` has no
         // way to ask — `Hooks::WATCHING` is the transport's.
         let mut attempt_id =
-            hclient_core::unversioned::Attempt::new(hclient_core::unversioned::RequestId::next());
+            hclient_core::Attempt::new(hclient_core::RequestId::next());
 
         loop {
             // **§8.3, and it is the first thing in the loop.** Before the
@@ -1618,7 +1616,7 @@ impl Client {
         &self,
         hp: &HopParts,
         body: RequestBody,
-    ) -> Result<http::Response<hclient_core::unversioned::erased::BoxBody>, Error> {
+    ) -> Result<http::Response<hclient_core::erased::BoxBody>, Error> {
         let resp = self
             .inner
             .transport
@@ -1832,7 +1830,7 @@ impl Client {
         hp: &mut HopParts,
         caller_owns_the_conditionals: bool,
     ) -> std::ops::ControlFlow<
-        http::Response<Cached<hclient_core::unversioned::erased::BoxBody>>,
+        http::Response<Cached<hclient_core::erased::BoxBody>>,
         Plan,
     > {
         use std::ops::ControlFlow::{Break, Continue};
@@ -1877,7 +1875,7 @@ impl Client {
         _: &mut HopParts,
         _: bool,
     ) -> std::ops::ControlFlow<
-        http::Response<Cached<hclient_core::unversioned::erased::BoxBody>>,
+        http::Response<Cached<hclient_core::erased::BoxBody>>,
         Plan,
     > {
         std::ops::ControlFlow::Continue(Plan)
@@ -1909,9 +1907,9 @@ impl Client {
         &self,
         hp: &HopParts,
         plan: Plan,
-        resp: http::Response<hclient_core::unversioned::erased::BoxBody>,
+        resp: http::Response<hclient_core::erased::BoxBody>,
         requested_at: SystemTime,
-    ) -> http::Response<Cached<hclient_core::unversioned::erased::BoxBody>> {
+    ) -> http::Response<Cached<hclient_core::erased::BoxBody>> {
         let Some(cache) = self.inner.cache.as_ref() else {
             return resp.map(Cached::live);
         };
@@ -1961,9 +1959,9 @@ impl Client {
         &self,
         _: &HopParts,
         _: Plan,
-        resp: http::Response<hclient_core::unversioned::erased::BoxBody>,
+        resp: http::Response<hclient_core::erased::BoxBody>,
         _: SystemTime,
-    ) -> http::Response<Cached<hclient_core::unversioned::erased::BoxBody>> {
+    ) -> http::Response<Cached<hclient_core::erased::BoxBody>> {
         resp.map(Cached::live)
     }
 }

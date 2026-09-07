@@ -148,7 +148,7 @@ where
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
-    H: hclient_core::unversioned::Hooks + Clone + Unpin,
+    H: hclient_core::Hooks + Clone + Unpin,
     P: crate::proxy::Handshake + Clone,
 {
     /// [`Transport::execute`], with the choice in front of it.
@@ -632,7 +632,7 @@ where
                     self.bound_body(
                         r.map(EstablishedBody::from_h3),
                         every,
-                        crate::Counted::already(hclient_core::unversioned::ConnectionId::UNWATCHED),
+                        crate::Counted::already(hclient_core::ConnectionId::UNWATCHED),
                     )
                 });
             }

@@ -55,7 +55,7 @@ fn client(mock: &MockTransport, policy: Option<Standard>) -> hclient::Client {
 #[derive(Debug, Clone, Copy)]
 struct Immediate;
 
-impl hclient_core::unversioned::Timer for Immediate {
+impl hclient_core::Timer for Immediate {
     type Instant = std::time::Instant;
     type Sleep = std::future::Ready<()>;
 

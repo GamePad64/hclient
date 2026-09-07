@@ -1,4 +1,4 @@
-//! Windows' WinHTTP behind [`Transport`](hclient_core::unversioned::Transport).
+//! Windows' WinHTTP behind [`Transport`](hclient_core::Transport).
 //!
 //! The fifth ambient backend — after `hclient-wasi`, `hclient-fetch` and
 //! `hclient-urlsession`, it owns no connection of its own — and it exists
@@ -140,7 +140,7 @@
 //! # WebSocket, and the rule this crate cited at itself
 //!
 //! [`WinHttpWebSocket`] implements
-//! [`WebSocketConnect`](hclient_core::unversioned::WebSocketConnect), and
+//! [`WebSocketConnect`](hclient_core::WebSocketConnect), and
 //! it is **in this crate** rather than one of its own. The list above used
 //! to say the opposite, citing the rule that put the framing in
 //! `hclient-tungstenite` — and that rule is about a *dependency*: a

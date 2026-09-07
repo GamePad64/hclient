@@ -1,4 +1,4 @@
-//! Apple's `URLSession` behind [`Transport`](hclient_core::unversioned::Transport).
+//! Apple's `URLSession` behind [`Transport`](hclient_core::Transport).
 //!
 //! The fourth ambient backend — after `hclient-wasi` and `hclient-fetch`,
 //! it owns no connection of its own — and the reason it exists is the list
@@ -71,7 +71,7 @@
 //! # WebSocket
 //!
 //! [`UrlSessionWebSocket`] implements
-//! [`WebSocketConnect`](hclient_core::unversioned::WebSocketConnect) over
+//! [`WebSocketConnect`](hclient_core::WebSocketConnect) over
 //! `NSURLSessionWebSocketTask`, **in this crate** rather than one of its
 //! own: the rule that puts framing in a separate crate is about a
 //! dependency to keep out of other graphs, and this costs zero crates —
@@ -90,7 +90,7 @@
 //! through the first send or receive rather than from `websocket()`; and
 //! the peer's close arrives as a **failed receive** with the code on the
 //! task, which is read back and reported as
-//! [`Message::Close`](hclient_core::unversioned::Message::Close).
+//! [`Message::Close`](hclient_core::Message::Close).
 
 mod body;
 mod delegate;

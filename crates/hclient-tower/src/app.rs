@@ -51,7 +51,7 @@ use core::task::{Context, Poll};
 use crate::error::{BodyFailure, WrongAuthority};
 use bytes::Bytes;
 use hclient_core::Capabilities;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{Error, ErrorKind, RequestBody};
 use http_body::{Body, Frame, SizeHint};
 
@@ -289,7 +289,7 @@ where
 /// Its body at a concrete type is `Box::pin(self.execute(req))` — `Send`
 /// is *inferred* here rather than proven, which is the asymmetry the
 /// whole seam design rests on: proof is owed only by generic code.
-impl<S, B, E> hclient_core::unversioned::SendTransport for AppTransport<S>
+impl<S, B, E> hclient_core::SendTransport for AppTransport<S>
 where
     S: tower_service::Service<http::Request<OutgoingBody>, Response = http::Response<B>, Error = E>
         + Clone

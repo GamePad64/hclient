@@ -69,7 +69,7 @@
 //! capability that varies by backend, since `fn hooks` exists on four of
 //! six. This workspace's rule is that an attribute whose value would be a
 //! guess is omitted. Both `Connected` and `Head` carry a
-//! `hclient_core::unversioned::RequestId` now, so a caller who installs a
+//! `hclient_core::RequestId` now, so a caller who installs a
 //! hook of their own can join it to a span on a key; the crate does not
 //! decide that for them.
 //!
@@ -88,7 +88,7 @@ pub use body::SpanBody;
 pub use context::OtelContext;
 pub use context::PropagateWhen;
 
-use hclient_core::unversioned::{BoxSendExchange, SendTransport, Transport};
+use hclient_core::{BoxSendExchange, SendTransport, Transport};
 use hclient_core::{Capabilities, Error, RequestBody};
 use span::{Choice, Recorder};
 use std::future::Future;

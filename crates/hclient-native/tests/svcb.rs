@@ -35,7 +35,7 @@
 
 use bytes::Bytes;
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_native::{Native, SVCB_FAILURE_TTL};
 use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};

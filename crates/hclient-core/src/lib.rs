@@ -16,7 +16,7 @@
 //! - [`Error`]'s source is `Send + Sync`, or a client could not build an
 //!   error from a backend's at all.
 //! - [`RequestBody`]'s rewind factory and streaming arm.
-//! - [`unversioned::erased`]'s two aliases, which a facade writes at its
+//! - [`erased`]'s two aliases, which a facade writes at its
 //!   own use site to put a transport behind an `Arc`. It is **not a
 //!   seam**: a blanket impl covers every `Transport`, so no backend
 //!   implements or is taxed by it, and one that cannot meet the bound is
@@ -34,7 +34,45 @@ mod body;
 mod caps;
 mod error;
 mod host;
-pub mod unversioned;
+
+// ── the seams a backend or runtime author implements ────────────────────
+//
+// **These lived in a `unversioned` module and no longer do.** That module
+// was a semver quarantine borrowed from `ureq`: it declared that breaking
+// changes to the seams would ship in a *minor* version rather than a
+// major, on the stated grounds that the traits had "not yet been
+// validated against every backend" — naming native, `wasi:http` and
+// fetch.
+//
+// **That condition is met.** `Transport` is implemented by nine crates
+// today, including all three it named, plus `urlsession`, `winhttp`,
+// `tower`, `mock`, `otel` and `dns-doh`. And the seams stopped moving:
+// three breaking changes in the last sixty commits, two of them in
+// August.
+//
+// So the quarantine was a promise to be unstable that nothing needed any
+// more — and it was the one part of this crate that could not be frozen,
+// which is exactly backwards for a crate whose types cross crate
+// boundaries. `hclient::Client` is meant to be passable to another
+// library by reference, and that only holds while the types in its
+// signature are one version in the graph.
+//
+// Dissolved now rather than after `0.1.0`, because moving a public path
+// is free before a stable release and a major version after it.
+pub mod erased;
+mod hooks;
+mod timer;
+mod transport;
+mod websocket;
+
+pub use hooks::{
+    And, Attempt, ClientCertAsk, ClientCertRequest, CloseReason, Closed, ConnectTiming, Connected,
+    ConnectionId, Counting, Direction, Event, Head, Hooks, HooksExt, Informational, Meter, Metered,
+    NoHooks, Progress, Reporting, RequestId, Reused, identify, mark, meter, since,
+};
+pub use timer::{Discard, Timer};
+pub use transport::{BoxSendExchange, SendTransport, Transport};
+pub use websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
 
 /// The client identity a request asks to be presented, by a name the
 /// caller invented.

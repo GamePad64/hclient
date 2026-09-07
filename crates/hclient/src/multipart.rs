@@ -337,7 +337,7 @@ impl Form {
     ///
     /// The variant handed back is decided by the parts and not by an
     /// argument — see this module's table. Public because a caller
-    /// driving a [`Transport`](hclient_core::unversioned::Transport)
+    /// driving a [`Transport`](hclient_core::Transport)
     /// directly has no [`crate::RequestBuilder`] to do it for them; they
     /// must then also set the `Content-Type` themselves, from
     /// [`Boundary::content_type`].

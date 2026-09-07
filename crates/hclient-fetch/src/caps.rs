@@ -408,7 +408,7 @@ pub(crate) fn probe() -> Capabilities {
     // wholly separate global, unreachable from a `fetch`-shaped
     // `Transport`, and `src/websocket.rs` is the conclusion drawn from
     // that — this crate reaches the global through
-    // `hclient_core::unversioned::WebSocketConnect`, which a transport
+    // `hclient_core::WebSocketConnect`, which a transport
     // says it can do by implementing it rather than by declaring anything
     // here.
     c.forbidden_request_headers = &FORBIDDEN_HEADERS;

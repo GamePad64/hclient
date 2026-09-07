@@ -127,7 +127,7 @@ fn code_of(text: &str, truncate_at_tests: bool) -> String {
 /// Not behind `require_wasmtime`: reading a capability involves no host.
 #[test]
 fn the_reuse_the_event_set_cannot_report_is_the_reuse_the_capability_denies() {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     assert_eq!(
         hclient_wasi::WasiHttp::new()
             .capabilities()

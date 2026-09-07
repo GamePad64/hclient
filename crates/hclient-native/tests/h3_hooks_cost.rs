@@ -47,7 +47,7 @@
 mod server;
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::{Event, Hooks, NoHooks, Transport};
+use hclient_core::{Event, Hooks, NoHooks, Transport};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::{H3, QuinnTask};
 use hclient_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};

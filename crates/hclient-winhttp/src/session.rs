@@ -3,7 +3,7 @@
 use std::future::poll_fn;
 use std::sync::Arc;
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{
     CancelSupport, Capabilities, DecompressionSupport, Error, ErrorKind, RedirectSupport,
     RequestBody, RequireVersion, ReuseSupport, TlsSupport, check_version,
@@ -489,11 +489,11 @@ impl Transport for WinHttp {
 /// which is why the shared state is a `Mutex` pair rather than a cell. So
 /// `execute`'s future is `Send` by inference and this is one line of
 /// forwarding, exactly as it is for `hclient-urlsession`.
-impl hclient_core::unversioned::SendTransport for WinHttp {
+impl hclient_core::SendTransport for WinHttp {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
-    ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
+    ) -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error> {
         Box::pin(<Self as Transport>::execute(self, req))
     }
 }

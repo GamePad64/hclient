@@ -298,7 +298,7 @@ where
 }
 
 /// Classifies a response body's read error — the response-half twin of
-/// `Transport::to_error`'s default (`hclient-core/src/unversioned/
+/// `Transport::to_error`'s default (`hclient-core/src/
 /// transport.rs`), and for the same reason: if `e` is already our own
 /// `Error`, its `kind()` was set at the point the backend actually
 /// classified the failure (`ErrorKind::Cancelled` from a shutting-down

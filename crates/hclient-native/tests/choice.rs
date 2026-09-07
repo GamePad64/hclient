@@ -20,7 +20,7 @@ mod fakedns;
 mod servers;
 
 use fakedns::{FakeDns, alias_record, service_record};
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{RequestBody, RequireVersion};
 use hclient_native::H3;
 use hclient_native::Native;

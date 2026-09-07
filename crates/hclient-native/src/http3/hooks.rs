@@ -1,7 +1,7 @@
 //! What this transport tells a [`Hooks`], and the two facts QUIC does not
 //! have.
 //!
-//! The vocabulary is `hclient_core::unversioned::{Hooks, Event}` and it is
+//! The vocabulary is `hclient_core::{Hooks, Event}` and it is
 //! **unchanged** here: this crate is the second backend to implement it,
 //! which is the test of whether the event set was a shape or one backend's
 //! habits. What follows is the three places the answer was not mechanical.
@@ -74,14 +74,14 @@
 //! a leak.
 
 use hclient_core::Error;
-use hclient_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks};
+use hclient_core::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // `mark` and `since` were byte-identical copies of `crate::mark` and
 // `crate::since` — the same two functions, in the same crate, four modules
-// apart. They are `hclient_core::unversioned::{mark, since}` now, which is
+// apart. They are `hclient_core::{mark, since}` now, which is
 // where the `H::WATCHING` gate belongs: four crates were each writing it,
 // and a mutation that removed one of `hclient-fetch`'s two survived the
 // whole suite.
@@ -127,7 +127,7 @@ impl ConnState {
     /// counting connections wrong.
     ///
     /// Never called from a `Drop` impl and never with a lock held — the two
-    /// rules `hclient_core::unversioned::hooks`'s module doc states.
+    /// rules `hclient_core::hooks`'s module doc states.
     pub(crate) fn closed<H: Hooks>(&self, hooks: &H, reason: CloseReason<'_>) {
         if self.told.swap(true, Ordering::SeqCst) {
             return;

@@ -104,7 +104,7 @@ use crate::connect;
 use crate::error::{EndedBeforeTheResponse, NotSwitchingProtocols};
 use crate::{Native, NativeIo};
 use bytes::Bytes;
-use hclient_core::unversioned::NoHooks;
+use hclient_core::NoHooks;
 use hclient_core::{Error, ErrorKind, Timeouts};
 use hclient_dns::Resolve;
 use hclient_rt::{TcpConnect, Timer};
@@ -271,7 +271,7 @@ where
     /// A WebSocket opened from a transport inherits everything that
     /// transport already knows — its runtime, its TLS configuration, its
     /// resolver — which is the seam's own claim
-    /// (`hclient_core::unversioned::WebSocketConnect`); the first of those
+    /// (`hclient_core::WebSocketConnect`); the first of those
     /// is the one a framing crate has to *hold*, because a keep-alive
     /// sleeps long after `upgrade` has returned and a `&R` cannot.
     pub fn runtime(&self) -> &R {

@@ -7,7 +7,7 @@
 //! a guessed one"* can be driven by hand.
 
 use bytes::Bytes;
-use hclient_core::unversioned::{
+use hclient_core::{
     Attempt, Counting, Direction, Event, Hooks, Meter, Metered, NoHooks, Progress, RequestId,
     identify, meter,
 };
@@ -132,8 +132,8 @@ fn a_receiving_total_accumulates_rather_than_reporting_deltas() {
     let counted = Counting::new(
         body,
         rec.clone(),
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
-        hclient_core::unversioned::RequestId::UNIDENTIFIED,
+        hclient_core::ConnectionId::UNWATCHED,
+        hclient_core::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -161,8 +161,8 @@ fn the_poll_that_ends_a_body_adds_no_event() {
     let counted = Counting::new(
         body,
         rec.clone(),
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
-        hclient_core::unversioned::RequestId::UNIDENTIFIED,
+        hclient_core::ConnectionId::UNWATCHED,
+        hclient_core::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -183,8 +183,8 @@ fn an_unstated_length_is_none_rather_than_a_guess() {
     let counted = Counting::new(
         body,
         rec.clone(),
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
-        hclient_core::unversioned::RequestId::UNIDENTIFIED,
+        hclient_core::ConnectionId::UNWATCHED,
+        hclient_core::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -209,8 +209,8 @@ fn a_stated_length_is_reported_as_the_denominator() {
     let counted = Counting::new(
         body,
         rec.clone(),
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
-        hclient_core::unversioned::RequestId::UNIDENTIFIED,
+        hclient_core::ConnectionId::UNWATCHED,
+        hclient_core::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -235,8 +235,8 @@ fn trailers_are_not_counted_as_body_octets() {
     let counted = Counting::new(
         body,
         rec.clone(),
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
-        hclient_core::unversioned::RequestId::UNIDENTIFIED,
+        hclient_core::ConnectionId::UNWATCHED,
+        hclient_core::RequestId::UNIDENTIFIED,
         Some(&uri()),
         None,
     );
@@ -263,8 +263,8 @@ fn a_wrapper_told_not_to_count_reports_nothing_and_still_yields_the_body() {
     let counted = Counting::new(
         body,
         rec.clone(),
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
-        hclient_core::unversioned::RequestId::UNIDENTIFIED,
+        hclient_core::ConnectionId::UNWATCHED,
+        hclient_core::RequestId::UNIDENTIFIED,
         None,
         None,
     );
@@ -296,8 +296,8 @@ fn the_send_meter_is_reported_beside_the_receive_one_and_the_two_are_distinguish
     let counted = Counting::new(
         Chunks::data(&["xyz"], SizeHint::with_exact(3)),
         rec.clone(),
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
-        hclient_core::unversioned::RequestId::UNIDENTIFIED,
+        hclient_core::ConnectionId::UNWATCHED,
+        hclient_core::RequestId::UNIDENTIFIED,
         Some(&uri()),
         Some(sent),
     );
@@ -338,8 +338,8 @@ fn a_meter_asked_twice_with_nothing_in_between_reports_once() {
     let rec = Recorder::default();
     let m = meter::<Recorder>(None).expect("watching");
     let uri = uri();
-    let id = hclient_core::unversioned::ConnectionId::UNWATCHED;
-    let req = hclient_core::unversioned::RequestId::UNIDENTIFIED;
+    let id = hclient_core::ConnectionId::UNWATCHED;
+    let req = hclient_core::RequestId::UNIDENTIFIED;
 
     m.report(&rec, id, req, &uri, Direction::Sending);
     m.add(5);
@@ -364,7 +364,7 @@ fn a_meter_asked_twice_with_nothing_in_between_reports_once() {
 fn a_progress_event_carries_what_it_was_built_with() {
     let uri = uri();
     let p = Progress::new(
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::ConnectionId::UNWATCHED,
         &uri,
         Direction::Receiving,
         7,
@@ -376,7 +376,7 @@ fn a_progress_event_carries_what_it_was_built_with() {
     assert_eq!(p.uri, &uri);
     assert_eq!(
         Progress::new(
-            hclient_core::unversioned::ConnectionId::UNWATCHED,
+            hclient_core::ConnectionId::UNWATCHED,
             &uri,
             Direction::Sending,
             0,
@@ -444,7 +444,7 @@ fn a_counting_body_reports_the_request_it_was_built_for() {
     let counted = Counting::new(
         Chunks::data(&["abc"], SizeHint::with_exact(3)),
         rec.clone(),
-        hclient_core::unversioned::ConnectionId::UNWATCHED,
+        hclient_core::ConnectionId::UNWATCHED,
         id,
         Some(&uri()),
         Some(sent),

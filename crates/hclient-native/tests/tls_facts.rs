@@ -14,7 +14,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
@@ -148,9 +148,9 @@ impl Seen {
     }
 }
 
-impl hclient_core::unversioned::Hooks for Seen {
-    fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
-        if let hclient_core::unversioned::Event::Connected(c) = event {
+impl hclient_core::Hooks for Seen {
+    fn on(&self, event: &hclient_core::Event<'_>) {
+        if let hclient_core::Event::Connected(c) = event {
             let mut g = self.0.lock().unwrap();
             if g.is_none() {
                 *g = Some(Facts {

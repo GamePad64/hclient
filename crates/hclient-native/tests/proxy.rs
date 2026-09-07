@@ -252,7 +252,7 @@ async fn socks5_password_auth_is_negotiated_and_the_request_still_arrives() {
 /// them — `client_certs`' lesson, one field over.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_capability_follows_whether_a_proxy_was_configured() {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     let direct = Native::new(Tokio, NoTls, IpLiteralOnly);
     assert!(!direct.capabilities().proxy);
     let via = Native::new(Tokio, NoTls, IpLiteralOnly).proxy(Proxy::new(

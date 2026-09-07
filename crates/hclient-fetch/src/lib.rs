@@ -64,11 +64,11 @@ pub use timer::BrowserClock;
 // The WebSocket seam, over the browser's own `WebSocket` global. Not
 // behind a feature — see `websocket.rs`'s `impl
 // WebSocketConnect` for the measurement that decided it. `Fetch` is the
-// connector (`hclient_core::unversioned::WebSocketConnect`), so this is the
+// connector (`hclient_core::WebSocketConnect`), so this is the
 // only type the module has to export.
 pub use websocket::FetchWebSocket;
 
-use hclient_core::unversioned::{
+use hclient_core::{
     ConnectionId, Direction, Event, Head, Hooks, Meter, NoHooks, Transport,
 };
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody};
@@ -123,7 +123,7 @@ impl Fetch {
 
 impl<H> Fetch<H> {
     /// Send this transport's events to `hooks` — see
-    /// [`hclient_core::unversioned::Hooks`] for what it hears and what it
+    /// [`hclient_core::Hooks`] for what it hears and what it
     /// costs, and `crate::hooks` for the three quarters of the
     /// vocabulary a browser cannot speak.
     ///
@@ -248,7 +248,7 @@ impl<H: Hooks + Clone + Unpin> Transport for Fetch<H> {
     /// reports events outlives `execute`, so it **holds** the hook rather
     /// than borrowing it. `NoHooks` is a ZST and a real hook arrives
     /// behind an `Arc` or an `Rc`, both of which are `Clone`.
-    type Body = hclient_core::unversioned::Counting<Body, H>;
+    type Body = hclient_core::Counting<Body, H>;
     type Error = Error;
 
     async fn execute(
@@ -299,7 +299,7 @@ impl<H: Hooks + Clone + Unpin> Transport for Fetch<H> {
 /// own `unsafe impl Send for JsValue` strips this too, and `Client` over
 /// this backend stops compiling — which is honest rather than a
 /// regression: a `fetch` exchange belongs to the realm that started it.
-impl<H> hclient_core::unversioned::SendTransport for Fetch<H>
+impl<H> hclient_core::SendTransport for Fetch<H>
 where
     H: Hooks + Clone + Unpin + Sync, // send-bound-exception: amendment-C16
 {
@@ -307,7 +307,7 @@ where
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
-    ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
+    ) -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error> {
         // **Not `Box::pin(self.execute(req))`, and that is the whole of
         // this crate's answer to wasm threads.**
         //
@@ -431,7 +431,7 @@ pub mod testing {
         f: &crate::Fetch,
         req: http::Request<hclient_core::RequestBody>,
     ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::Error> {
-        crate::convert::to_web_request::<hclient_core::unversioned::NoHooks>(req, &f.caps, &f.opts)
+        crate::convert::to_web_request::<hclient_core::NoHooks>(req, &f.caps, &f.opts)
             .map(|c| (c.request, c.abort))
     }
 
@@ -451,7 +451,7 @@ pub mod testing {
         req: http::Request<hclient_core::RequestBody>,
         caps: &hclient_core::Capabilities,
     ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::Error> {
-        crate::convert::to_web_request::<hclient_core::unversioned::NoHooks>(
+        crate::convert::to_web_request::<hclient_core::NoHooks>(
             req,
             caps,
             &crate::opts::FetchOpts::default(),
@@ -474,7 +474,7 @@ pub mod testing {
         caps: &hclient_core::Capabilities,
         opts: &crate::opts::FetchOpts,
     ) -> Result<web_sys::Request, hclient_core::Error> {
-        crate::convert::to_web_request::<hclient_core::unversioned::NoHooks>(req, caps, opts)
+        crate::convert::to_web_request::<hclient_core::NoHooks>(req, caps, opts)
             .map(|c| c.request)
     }
 
@@ -644,7 +644,7 @@ type Watched = Option<WatchedParts>;
 type WatchedParts = (
     f64,
     http::Uri,
-    hclient_core::unversioned::RequestId,
+    hclient_core::RequestId,
     Option<std::sync::Arc<Meter>>,
 );
 
@@ -690,7 +690,7 @@ impl<H: Hooks> Fetch<H> {
             (
                 at,
                 req.uri().clone(),
-                hclient_core::unversioned::identify::<H2>(req.extensions()),
+                hclient_core::identify::<H2>(req.extensions()),
             )
         });
 
@@ -863,18 +863,18 @@ impl<H: Hooks + Clone + Unpin> Fetch<H> {
         &self,
         out: Result<http::Response<Body>, Error>,
         watched: Option<&WatchedParts>,
-    ) -> Result<http::Response<hclient_core::unversioned::Counting<Body, H>>, Error> {
+    ) -> Result<http::Response<hclient_core::Counting<Body, H>>, Error> {
         let (uri, request, sent) = match watched {
             Some((_, uri, request, sent)) => (Some(uri), *request, sent.clone()),
             None => (
                 None,
-                hclient_core::unversioned::RequestId::UNIDENTIFIED,
+                hclient_core::RequestId::UNIDENTIFIED,
                 None,
             ),
         };
         out.map(|r| {
             r.map(|b| {
-                hclient_core::unversioned::Counting::new(
+                hclient_core::Counting::new(
                     b,
                     self.hooks.clone(),
                     ConnectionId::UNWATCHED,

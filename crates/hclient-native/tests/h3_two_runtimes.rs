@@ -38,7 +38,7 @@
 mod server;
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::{H3, H3Runtime};
 use http_body_util::BodyExt;

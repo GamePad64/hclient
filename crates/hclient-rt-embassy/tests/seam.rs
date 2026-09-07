@@ -47,7 +47,7 @@
 // so — on Linux only because the recipe passes the flag; a Windows link
 // would have been `LNK2019`.
 use embassy_executor as _;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use static_assertions::{assert_impl_all, assert_not_impl_all};
 
 type Embedded = hclient_native::Native<
@@ -80,6 +80,6 @@ fn the_embedded_transport_is_still_a_transport() {
 fn and_deliberately_not_a_send_transport() {
     // embassy cannot promise `Send`, and a bound satisfied by something
     // that cannot honour it is worse than one nothing satisfies.
-    assert_not_impl_all!(Embedded: hclient_core::unversioned::SendTransport);
-    assert_impl_all!(hclient_mock::MockTransport: hclient_core::unversioned::SendTransport);
+    assert_not_impl_all!(Embedded: hclient_core::SendTransport);
+    assert_impl_all!(hclient_mock::MockTransport: hclient_core::SendTransport);
 }

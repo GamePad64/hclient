@@ -28,7 +28,7 @@
 #[cfg(feature = "quic")]
 pub mod quic;
 
-pub use hclient_core::unversioned::{ClientCertAsk, ClientCertRequest};
+pub use hclient_core::{ClientCertAsk, ClientCertRequest};
 use hclient_core::{Error, ErrorKind, TlsSupport};
 use std::future::Future;
 

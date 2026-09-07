@@ -34,7 +34,7 @@
 mod server;
 
 use futures_util::stream;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{Error, ErrorKind, RequestBody};
 use hclient_dns::{IpLiteralOnly, RData, Record, Resolve, rtype};
 use hclient_native::H3;

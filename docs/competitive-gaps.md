@@ -1188,7 +1188,7 @@ this document could fail.
 | a blocking API | out of scope by the problem statement | design spec §9 |
 | JA3/JA4/Akamai fingerprint control | rustls closed it *not planned*; `http::HeaderMap` lowercases names, so browser header casing is unreproducible anyway. **The first half is now an open question rather than a closed one**, because niquests answered it without asking rustls: it ships a *second TLS stack* (`utls`, BoringSSL) selected at import, so the fingerprint is a property of the backend. That route is open here too — `TlsConnect` is a seam and a third backend beside `hclient-tls-rustls` and `hclient-tls-native-tls` would need no change above it. The second half is unchanged and is the harder one: header **order and casing** are as much of a fingerprint as the ClientHello, and `http::HeaderMap` gives up both, which is the same foreign-type constraint that keeps this workspace on `std` | design spec §9 |
 | `no_std` / bare metal | `http` 1.x carries `compile_error!` for it; not this project's to reverse | AGENTS.md |
-| `Ping`/`Pong` as WebSocket message variants | a browser has neither `send(ping)` nor `onping`; the variant would have no honest right-hand side | `hclient-core/src/unversioned/websocket.rs:35` |
+| `Ping`/`Pong` as WebSocket message variants | a browser has neither `send(ping)` nor `onping`; the variant would have no honest right-hand side | `hclient-core/src/websocket.rs:35` |
 | permessage-deflate, subprotocol checking | left open; the browser negotiates extensions itself and exposes no control | same file, `:46` |
 | a `RequestBuilder::extension` setter | adding one for `AllowEarlyData` and not `RequireVersion` would be arbitrary; both is a facade question |
 | ECH | no backend here applies one, and `hclient-tls-rustls` *refuses* a non-`None` ech — filling the field would make every ECH-publishing origin unreachable | AGENTS.md |
@@ -1446,11 +1446,21 @@ and `100-continue`, and with *"body data transformations (charset,
 compression)"* explicitly out of scope, the same boundary drawn here). It
 has a `Transport` trait *and* a `Resolver` trait. It has a middleware layer
 (`src/middleware.rs`). And it puts all of that in a module called
-**`unversioned`**, with the same argument this workspace's `unversioned`
-module makes — *"breaking changes … will NOT be reflected in a major version
-bump"* (`ureq-3.4.0/src/unversioned/mod.rs:1-10`). Convergent evolution,
-independently, and it is evidence that the shape is right rather than
-idiosyncratic.
+**`unversioned`**, with the argument this workspace's own quarantine
+module used to make — *"breaking changes … will NOT be reflected in a major
+version bump"* (`ureq-3.4.0/src/unversioned/mod.rs:1-10`). Convergent
+evolution, independently, and it was evidence that the shape is right
+rather than idiosyncratic.
+
+**This workspace has since dissolved its copy**, and the two are no longer
+convergent. The quarantine's own stated condition was that the seams had
+"not yet been validated against every backend"; nine crates implement
+`Transport` here today, including the three it named, and the seams have
+stopped moving. What ended it is a goal ureq does not share: a
+`&hclient::Client` is meant to be passable to another library, and that
+holds only while the types in its signature are one version in the graph —
+so a module of the core exempt from stability is exactly the wrong shape.
+ureq's reasoning stands for ureq.
 
 **The two `Transport`s are not the same seam, and that is the whole
 difference.** ureq's is a *byte stream*:
@@ -1591,7 +1601,7 @@ for 1.0* (design spec §10) list four:
 |---|---|
 | plugin traits validated against ≥3 backends | **met** — five: native, h3/select, wasi, fetch, urlsession |
 | ≥3 runtimes | **met** — tokio, smol, embassy, and quinn's through `hclient-quinn`. **`compio` is named in decision D10 as a CI runtime and does not exist here**; grepped, one hit, in a `tree-guard` *absence* check |
-| the `unversioned` quarantine is documented | not assessed here |
+| the `unversioned` quarantine is documented | dissolved 2026-09-07 |
 | **`hclient-rmcp` and `act` in production** | `hclient-rmcp` **does not exist in this workspace**. It is named as "the second verification loop" in the v0.2 plan and as an `rmcp` adapter in the architecture diagram. `act` is the *first* loop and is present as `examples/portable.rs` |
 | **not a single foreign type remains in the public API** | **flatly contradicted by AGENTS.md**, which states that `http::{Request, Response, HeaderMap, Uri, Method}` appear in the public API of ten crates and that this is necessary. See §8 |
 

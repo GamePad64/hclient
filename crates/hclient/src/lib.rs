@@ -231,7 +231,7 @@ pub mod caps {
 /// The observability seam: implement [`hooks::Hooks`] and match on
 /// [`hooks::Event`].
 pub mod hooks {
-    pub use hclient_core::unversioned::{
+    pub use hclient_core::{
         And, ClientCertAsk, ClientCertRequest, CloseReason, Closed, ConnectTiming, Connected,
         ConnectionId, Direction, Event, Head, Hooks, HooksExt, Informational, NoHooks, Progress,
         Reused,
@@ -244,7 +244,7 @@ pub mod hooks {
 /// [`body::ClientBody`] is an alias over all four, and an alias cannot
 /// name a private type.
 pub mod body {
-    pub use hclient_core::unversioned::erased::BoxBody;
+    pub use hclient_core::erased::BoxBody;
     pub use hclient_core::{RetryKind, RewindFactory};
 
     pub use crate::client_body::ClientBody;
@@ -391,16 +391,15 @@ pub use deadline::NoClock;
 // `TimeoutSupport`/`EarlyDataSupport` are `Capabilities` fields that need
 // naming to hand-assemble your own `Capabilities` for
 // `MockTransport::with_capabilities` (available even without
-// `unversioned::Transport` — `with_capabilities` is an ordinary tooling
+// `Transport` — `with_capabilities` is an ordinary tooling
 // method). `RewindFactory` is the type of the `RequestBody::Rewindable`
 // variant; not strictly blocking (it's an alias, `Arc<dyn Fn() ->
 // RequestBody + Send + Sync>` is expressible without the alias's name too),
 // re-exported for nameability and symmetry with the other variants.
 //
-// `unversioned::{Transport, Timer}` are deliberately NOT re-exported: that's
-// a quarantine contract for backend/runtime authors (see the doc comment on
-// `hclient-core/src/unversioned/mod.rs`), not part of the facade for a
-// consumer who just builds requests and reads responses. That decision had
+// `hclient_core::{Transport, Timer}` are deliberately NOT re-exported:
+// they are the contract for backend and runtime authors, not part of the
+// facade for a consumer who just builds requests and reads responses. That decision had
 // a cost — `client.transport().capabilities()` would need `Transport` in
 // scope, since `capabilities()` is a trait method there and `.transport()`
 // hands back a bare `&T` — so a `Client::capabilities()` forwarder
@@ -418,7 +417,7 @@ pub use deadline::NoClock;
 // `UpgradeSupport` used to be on this list and is gone from the workspace:
 // four variants, every backend answering `None`, and no caller decision
 // turning on it. WebSocket is a trait a backend implements
-// (`hclient_core::unversioned::WebSocketConnect`) rather than a capability
+// (`hclient_core::WebSocketConnect`) rather than a capability
 // anyone reads, so there is nothing to re-export in its place.
 // `tests/facade.rs`'s plumbing check moved
 // to `EarlyDataSupport`, and that file says why it and not another.
@@ -462,9 +461,9 @@ pub mod retry {
 // trait it must implement would force a direct dependency on
 // `hclient-core` for the one thing this feature exists to make easy.
 //
-// `Hooks` and `NoHooks` come from `unversioned`, which is the semver
-// quarantine — one backend implements this and the vocabulary has not
-// been tried against a second (see that module's own doc). Re-exporting
+// `Hooks` and `NoHooks` are a backend-author seam rather than a facade
+// type, and their own module doc records what the vocabulary still cannot
+// say — a caution now, where it used to be a semver exemption. Re-exporting
 // them here does not promise otherwise: the quarantine is a statement
 // about the trait, not about where its name is written.
 // Every URL this client is handed becomes an `http::Uri` through
@@ -564,7 +563,7 @@ pub type DefaultTransport = hclient_native::Native<
     hclient_rt_tokio::Tokio,
     hclient_tls_rustls::Rustls,
     hclient_dns_system::SystemDns<hclient_rt_tokio::Tokio>,
-    hclient_core::unversioned::NoHooks,
+    hclient_core::NoHooks,
     // **It names `HttpConnect` even where no proxy is configured**, and
     // that is what keeps it one type. `Client::new` reads the machine's
     // settings, so on a proxied machine the transport it builds holds

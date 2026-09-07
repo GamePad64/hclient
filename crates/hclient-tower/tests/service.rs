@@ -1,7 +1,7 @@
 //! The adapter is a `Service`, it carries the backend's error
 //! classification through, and it is honest about `Send`.
 
-use hclient_core::{ErrorKind, RequestBody, unversioned::Transport};
+use hclient_core::{ErrorKind, RequestBody, Transport};
 use hclient_mock::MockTransport;
 use hclient_tower::TransportService;
 use http_body_util::BodyExt;

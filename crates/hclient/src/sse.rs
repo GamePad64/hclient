@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::response::Response;
 use bytes::Bytes;
-use hclient_core::unversioned::Timer;
+use hclient_core::Timer;
 use hclient_core::{Error, ErrorKind, RequestBody};
 // Re-exported rather than merely imported, so the whole of SSE is behind
 // one door: `hclient::sse::{SseStream, SseEvent, Backoff, ..}`.
@@ -449,7 +449,7 @@ impl Debug for ReconnectingSseBuilder<'_> {
 
 pub struct ReconnectingSseBuilder<'a> {
     builder: SseBuilder<'a>,
-    timer: Arc<hclient_core::unversioned::erased::SharedTimer>,
+    timer: Arc<hclient_core::erased::SharedTimer>,
 }
 
 impl<'a> ReconnectingSseBuilder<'a> {
@@ -696,7 +696,7 @@ pub struct ReconnectingSseStream<'a> {
     url: String,
     headers: http::HeaderMap,
     options: SseOptions,
-    timer: Arc<hclient_core::unversioned::erased::SharedTimer>,
+    timer: Arc<hclient_core::erased::SharedTimer>,
     /// The last event ID observed so far, kept OUTSIDE the live
     /// `SseStream`'s own decoder so it survives the decoder being replaced
     /// on every reconnect. Snapshotted from the live stream's

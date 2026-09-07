@@ -298,7 +298,7 @@
 //! sitting in the workspace — including the price it pays, which is a
 //! `R: Spawn` bound on the transport.
 use crate::established::Established;
-use hclient_core::unversioned::Timer;
+use hclient_core::Timer;
 use hclient_tls::TlsConfigId;
 use hyper::rt::{Read, Write};
 use std::collections::HashMap;
@@ -705,7 +705,7 @@ where
     /// the clone would borrow the same dead connection for ever.
     ///
     /// Keyed on [`crate::http2::SharedId`] rather than on
-    /// [`hclient_core::unversioned::ConnectionId`], because every
+    /// [`hclient_core::ConnectionId`], because every
     /// connection in a build with no hook wears the same `UNWATCHED` id —
     /// see `SharedId`'s own doc.
     #[cfg(feature = "http2")]
@@ -786,7 +786,7 @@ pin_project_lite::pin_project! {
 /// behind the withdrawn claim that a spawned pool task "does not compile
 /// on this seam"; see the module doc. Naming the future means writing it
 /// out, and writing it out means the sleep has to be a field, which is why
-/// [`hclient_core::unversioned::Timer`] carries an associated `Sleep` type.
+/// [`hclient_core::Timer`] carries an associated `Sleep` type.
 ///
 /// # Why the state is behind a `Box`, and the sleep behind a second one
 ///
@@ -1283,7 +1283,7 @@ mod tests {
     fn parked() -> Established<NeverIo> {
         let mut h = Box::pin(crate::http1::handshake(
             NeverIo,
-            hclient_core::unversioned::ConnectionId::UNWATCHED,
+            hclient_core::ConnectionId::UNWATCHED,
             crate::http1::H1Opts::default(),
         ));
         match poll_once(&mut h) {

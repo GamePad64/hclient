@@ -93,7 +93,7 @@ type Staging<'a> = Pin<
 ///
 /// Blanket-implemented over every [`H3StagedConnect`], so `hclient-h3`
 /// implements nothing for it — the same arrangement
-/// `hclient_core::unversioned::erased::BoxedTransport` has, and for the
+/// `hclient_core::erased::BoxedTransport` has, and for the
 /// same reason: a seam a backend has to opt into is a seam backends forget.
 pub(crate) trait BoxedStagedConnect: Debug {
     /// [`H3StagedConnect::connect`], boxed.

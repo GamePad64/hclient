@@ -37,7 +37,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use hclient_core::unversioned::Timer;
+use hclient_core::Timer;
 
 /// How often a shared HTTP/2 connection sends a `PING`, and how long the
 /// peer then has to answer it.

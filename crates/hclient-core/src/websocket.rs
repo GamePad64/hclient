@@ -88,7 +88,7 @@ pub struct CloseFrame {
 /// `futures_util::StreamExt::split` already does for any `Stream + Sink`
 /// and a seam that pre-split would take that choice away from the caller.
 ///
-/// # The error type is concrete, unlike [`Transport::Error`](crate::unversioned::Transport::Error)
+/// # The error type is concrete, unlike [`Transport::Error`](crate::Transport::Error)
 ///
 /// [`Transport`](super::Transport) carries `type Error` and a `to_error`
 /// hook so a backend whose error is genuinely `!Send` can still implement

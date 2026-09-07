@@ -33,7 +33,7 @@ mod net_fixtures;
 
 use hclient::Client;
 use hclient_core::ErrorKind;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
@@ -778,7 +778,7 @@ impl hclient_tls::TlsConnect for CertTls {
 /// the one no constant here could have produced.
 #[test]
 fn client_certs_is_read_from_the_tls_backend_not_from_a_constant() {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     let rt = hclient_rt_tokio::Tokio;
     let plain = Native::new(rt, NoOpTls, hclient_dns::IpLiteralOnly);
     let certs = Native::new(rt, CertTls, hclient_dns::IpLiteralOnly);

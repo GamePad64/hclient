@@ -52,7 +52,7 @@
 //! satisfy it.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;

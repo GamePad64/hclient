@@ -792,7 +792,7 @@ fn transport<const N: usize>(
 /// logic exercised by the rest of the suite on every other backend.
 async fn get<T>(t: &T, url: &str, timeouts: Option<Timeouts>) -> Result<String, hclient_core::Error>
 where
-    T: hclient_core::unversioned::Transport<Error = hclient_core::Error>,
+    T: hclient_core::Transport<Error = hclient_core::Error>,
     T::Body: http_body::Body<Data = bytes::Bytes> + Unpin,
     <T::Body as http_body::Body>::Error: Into<hclient_core::Error>,
 {

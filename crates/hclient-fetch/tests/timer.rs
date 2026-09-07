@@ -10,7 +10,7 @@
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
-use hclient_core::unversioned::Timer;
+use hclient_core::Timer;
 use hclient_fetch::BrowserClock;
 use std::time::Duration;
 

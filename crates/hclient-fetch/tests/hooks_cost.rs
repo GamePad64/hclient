@@ -50,7 +50,7 @@ use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::{Event, Hooks, NoHooks, Transport};
+use hclient_core::{Event, Hooks, NoHooks, Transport};
 use hclient_fetch::Fetch;
 use std::cell::Cell;
 use std::rc::Rc;

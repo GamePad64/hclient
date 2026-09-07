@@ -44,7 +44,7 @@
 //! The one-sided divergence that *does* exist, and that the mutation-check
 //! below exercises, is in `Timer::Instant`, not `TcpConnect::Stream`: add
 //! `PartialEq<std::time::Instant>` to that associated type's bound
-//! (`hclient-core/src/unversioned/timer.rs`) and `Smol` (`Instant =
+//! (`hclient-core/src/timer.rs`) and `Smol` (`Instant =
 //! std::time::Instant`) satisfies it trivially via its own derived
 //! `PartialEq<Self>`, while `Tokio` (`Instant = tokio::time::Instant`, a
 //! distinct newtype that only derives `PartialEq<Self>` too, but `Self` is

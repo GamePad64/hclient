@@ -19,7 +19,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::Client;
-use hclient_core::unversioned::{Direction, Event, Hooks};
+use hclient_core::{Direction, Event, Hooks};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -408,7 +408,7 @@ async fn an_unwatched_transport_still_serves_the_request() {
 /// accepts an `And` at all.
 #[tokio::test]
 async fn a_composed_hook_delivers_progress_to_both_halves() {
-    use hclient_core::unversioned::HooksExt as _;
+    use hclient_core::HooksExt as _;
 
     let addr = server(Behaviour::answering("0123456789"));
     let one = Recorder::default();

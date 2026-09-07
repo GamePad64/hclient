@@ -96,7 +96,7 @@ pub enum RedirectSupport {
 }
 
 /// Whether dropping the future returned by
-/// [`Transport::execute`](crate::unversioned::Transport::execute) stops the
+/// [`Transport::execute`](crate::Transport::execute) stops the
 /// exchange — see that method's doc comment for the contract itself, of
 /// which this enum is the one honest way out.
 ///
@@ -145,7 +145,7 @@ pub enum CancelSupport {
     /// controls it.
     ///
     /// What that does and does not promise is the contract on
-    /// [`Transport::execute`](crate::unversioned::Transport::execute); the
+    /// [`Transport::execute`](crate::Transport::execute); the
     /// short version is that our side stops, and the server's side is not
     /// ours to promise anything about.
     Supported,
@@ -378,7 +378,7 @@ pub struct Timeouts {
 /// **after the response** — measured at 8.63 ms against a response at
 /// 8.58 ms — so it is a future, not a
 /// property of a transport, and nothing about it can live in a value that
-/// [`Transport::capabilities`](crate::unversioned::Transport::capabilities)
+/// [`Transport::capabilities`](crate::Transport::capabilities)
 /// determines once at construction.
 ///
 /// # Why the default is `None` with unusual force
@@ -675,7 +675,7 @@ pub struct Capabilities {
     pub redirects: RedirectSupport,
     /// What dropping an in-flight `execute` future does — see
     /// [`CancelSupport`] and the contract on
-    /// [`Transport::execute`](crate::unversioned::Transport::execute).
+    /// [`Transport::execute`](crate::Transport::execute).
     pub cancel_on_drop: CancelSupport,
     /// Whether a connection is reused across requests — see
     /// [`ReuseSupport`].
@@ -825,9 +825,9 @@ pub struct Capabilities {
     ///
     /// The observability seam asks the same question one field over and
     /// answers it in the event rather than here, because a
-    /// [`Hooks`](crate::unversioned::Hooks) impl is handed an
-    /// [`Event`](crate::unversioned::Event) and no capabilities:
-    /// [`Head::version`](crate::unversioned::Head::version) is `Some`
+    /// [`Hooks`](crate::Hooks) impl is handed an
+    /// [`Event`](crate::Event) and no capabilities:
+    /// [`Head::version`](crate::Head::version) is `Some`
     /// exactly when this field is `true`. Two spellings of one fact, in
     /// the two places that can each be read on their own.
     pub version_reported: bool,

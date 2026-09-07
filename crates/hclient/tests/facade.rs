@@ -232,7 +232,7 @@ fn capability_support_types_are_reachable_from_the_facade() {
 /// external consumer, depending only on `hclient` (with the `test-util`
 /// feature), builds a client on `MockTransport`, sends a request, and
 /// reads both a successful response and one broken off by an error,
-/// without ever writing `hclient_core::`/`use hclient_core::unversioned::
+/// without ever writing `hclient_core::`/`use hclient_core::
 /// Transport` — `Client::builder`, `RequestBuilder::send`,
 /// `MockTransport::requests()`, and `MockTransport::
 /// push_response_frames_then_error()` are all ordinary (non-trait) methods,
@@ -301,7 +301,7 @@ fn mock_transport_round_trip_uses_only_facade_types() {
 
 /// `Client::capabilities()` — the forwarder that answers "what can this
 /// client do" without the caller ever writing `use
-/// hclient_core::unversioned::Transport`. Before this round, the only path
+/// hclient_core::Transport`. Before this round, the only path
 /// to a `&Capabilities` from a `Client<T>` was `client.transport_as::<MockTransport>().expect("the mock").capabilities()`,
 /// and `capabilities()` there is a *trait* method — calling it through the
 /// bare `&T` that `.transport_as::<MockTransport>().expect("the mock")` returns needs `Transport` in scope, which
@@ -392,10 +392,20 @@ fn the_one_default_constructor_is_fallible_about_both_of_its_failures() {
 /// The distinction is the one this file's own doc makes: naming a type
 /// says it is re-exported and nothing more. What a caller actually writes
 /// is an `impl Hooks for MyType` with a `match` over every variant, so
-/// that is what is written below. If a variant is added this stops
-/// compiling — which is the right way round for a vocabulary in
-/// `unversioned`, and the reason `Event` is deliberately not
-/// `#[non_exhaustive]`.
+/// that is what is written below.
+///
+/// **The sentence here said `Event` is deliberately not
+/// `#[non_exhaustive]`, and it is** — checked, `hooks.rs` carries the
+/// attribute. It also placed the vocabulary in a `unversioned` module
+/// that no longer exists. Both halves were true when written and neither
+/// is now, which is this workspace's own rule about a claim outliving
+/// what it describes.
+///
+/// What the match below still does is real: a wildcard is what a new
+/// variant goes to be silently mishandled in, so this file names every
+/// arm and a variant added upstream stops it compiling — in one known
+/// place, which is what the attribute leaves room for rather than
+/// forbids.
 #[test]
 fn a_hook_can_be_written_against_the_facade_alone() {
     #[derive(Default)]

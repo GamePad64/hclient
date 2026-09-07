@@ -17,7 +17,7 @@
 #![cfg(all(feature = "http2", not(target_family = "wasm")))]
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::{H2Opts, Native};
 use hclient_rt_tokio::Tokio;

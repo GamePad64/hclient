@@ -7,7 +7,7 @@
 //! one.
 
 use bytes::Bytes;
-use hclient_core::{RequestBody, unversioned::Transport};
+use hclient_core::{RequestBody, Transport};
 use hclient_mock::{MockTransport, RecordedBody};
 
 fn post(body: RequestBody) -> http::Request<RequestBody> {

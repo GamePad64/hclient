@@ -350,7 +350,7 @@ fn holding_the_execute_future_leaves_the_connection_open() {
 /// capability, so this one runs everywhere the rest of the file compiles.
 #[test]
 fn wasi_declares_the_cancellation_it_performs() {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     assert_eq!(
         hclient_wasi::WasiHttp::new().capabilities().cancel_on_drop,
         hclient_core::CancelSupport::Supported,
@@ -530,7 +530,7 @@ fn the_counting_server_serves_two_requests_on_one_connection() {
 /// capability.
 #[test]
 fn wasi_declares_the_reuse_it_actually_gets() {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     assert_eq!(
         hclient_wasi::WasiHttp::new()
             .capabilities()

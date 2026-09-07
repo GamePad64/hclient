@@ -6,7 +6,7 @@
 //! *when did this span close*, read as a fact rather than as a clock.
 #![cfg(feature = "tracing")]
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_mock::MockTransport;
 use hclient_otel::Instrumented;
 use http_body_util::BodyExt;

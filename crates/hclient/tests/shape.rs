@@ -118,9 +118,9 @@ fn cloning_shares_one_transport_rather_than_copying_it() {
 fn clone_does_not_require_the_transport_to_be_clone() {
     #[derive(Debug)]
     struct NotClone(hclient::mock::MockTransport);
-    impl hclient_core::unversioned::Transport for NotClone {
-        type Body = <hclient::mock::MockTransport as hclient_core::unversioned::Transport>::Body;
-        type Error = <hclient::mock::MockTransport as hclient_core::unversioned::Transport>::Error;
+    impl hclient_core::Transport for NotClone {
+        type Body = <hclient::mock::MockTransport as hclient_core::Transport>::Body;
+        type Error = <hclient::mock::MockTransport as hclient_core::Transport>::Error;
         fn execute(
             &self,
             req: http::Request<hclient_core::RequestBody>,
@@ -136,12 +136,12 @@ fn clone_does_not_require_the_transport_to_be_clone() {
     // `Client`: hand the same exchange over in a form whose `Send` has a
     // name. At a concrete type — which is what a backend always is — that
     // is inference, not proof.
-    impl hclient_core::unversioned::SendTransport for NotClone {
+    impl hclient_core::SendTransport for NotClone {
         fn execute_send(
             &self,
             req: http::Request<hclient_core::RequestBody>,
-        ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
-            Box::pin(<Self as hclient_core::unversioned::Transport>::execute(
+        ) -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error> {
+            Box::pin(<Self as hclient_core::Transport>::execute(
                 self, req,
             ))
         }

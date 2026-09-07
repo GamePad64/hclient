@@ -30,11 +30,11 @@
 //! `QuicTlsConnect`'s was with `TlsConnect`, and the failure mode of
 //! forcing one onto the other is the same one: an adapter that type-checks
 //! *with an empty body*. Nothing here reuses
-//! [`Message`](hclient_core::unversioned::Message).
+//! [`Message`](hclient_core::Message).
 //!
 //! # Why there is no trait here
 //!
-//! `WebSocketConnect` lives in `hclient-core::unversioned` because two
+//! `WebSocketConnect` lives in `hclient-core` because two
 //! backends implement it, and the second one — the browser — is what
 //! proved the shape. There is exactly one thing in this workspace that can
 //! open a WebTransport session, so a trait here would be a shape nobody

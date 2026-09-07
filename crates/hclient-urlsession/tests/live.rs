@@ -8,7 +8,7 @@
 #![cfg(target_vendor = "apple")]
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_urlsession::UrlSession;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};

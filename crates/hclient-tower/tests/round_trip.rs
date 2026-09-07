@@ -7,7 +7,7 @@
 //! adapter had to exist.
 
 use hclient::Client;
-use hclient_core::{Capabilities, RedirectSupport, RequestBody, unversioned::Transport};
+use hclient_core::{Capabilities, RedirectSupport, RequestBody, Transport};
 use hclient_mock::MockTransport;
 use hclient_tower::{ServiceTransport, TransportService};
 use std::pin::Pin;
@@ -27,7 +27,7 @@ type Seen = Arc<Mutex<Vec<http::Uri>>>;
 fn stack(
     m: MockTransport,
     seen: Seen,
-) -> impl hclient_core::unversioned::SendTransport<
+) -> impl hclient_core::SendTransport<
     Error = hclient_core::Error,
     Body: http_body::Body<Error: Into<hclient_core::Error>> + Send + 'static,
 > + Clone {

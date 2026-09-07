@@ -28,7 +28,7 @@
 fn main() {
     use hclient::Client;
 
-    use hclient_core::{ErrorKind, TlsSupport, unversioned::Transport};
+    use hclient_core::{ErrorKind, TlsSupport, Transport};
     use hclient_dns::IpLiteralOnly;
     use hclient_native::Native;
     use hclient_tls::NoTls;

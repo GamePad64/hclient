@@ -15,7 +15,7 @@ Two impls and about fifteen lines.
 
 ```rust
 use bytes::Bytes;
-use hclient_core::unversioned::{SendTransport, Transport, BoxSendExchange};
+use hclient_core::{SendTransport, Transport, BoxSendExchange};
 use hclient_core::{Capabilities, Error, RequestBody};
 
 pub struct Echo { caps: Capabilities }

@@ -227,7 +227,7 @@ is `false`, so the const survives erasure as the presence of an `Option`,
 and box the rest behind a private object-safe shim. Worth writing down,
 because it is the mechanism §9 uses anyway.
 
-*The second is not.* `Event` lives in `hclient-core::unversioned`, its own
+*The second is not.* `Event` lives in `hclient-core`, its own
 doc line is **"What a transport reports"**, and its primary reader is a
 backend author. Adding `Redirect`, `Retry` or a cache disposition to it puts
 variants in front of every backend author that no backend may ever emit —
@@ -238,7 +238,7 @@ is a capability that lies"*. Reusing `Event` would add three of them on
 purpose.
 
 **Route C, which is what this proposes: a second seam, mirroring the first
-line for line, in `hclient-core::unversioned`.**
+line for line, in `hclient-core`.**
 
 ```rust
 pub trait ClientHooks {
@@ -255,7 +255,7 @@ forwarding impls, same `ClientHooksExt::and` with the same `||` on
 idea is a reader stopping to work out whether the difference means
 something."*
 
-**In `hclient-core::unversioned` rather than in `hclient`**, for two
+**In `hclient-core` rather than in `hclient`**, for two
 reasons. The vocabulary is brand new and unvalidated, and the quarantine is
 where such a thing belongs — outside it, a breaking change to an event set
 nobody has used yet costs a major version. And core already names

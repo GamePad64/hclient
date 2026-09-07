@@ -154,7 +154,7 @@ impl StdError for DummySource {}
 /// the behavioral half, exercised through a real `Client`.
 #[wasm_bindgen_test]
 fn to_error_is_the_identity_so_the_classification_survives_unwrapped() {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     let t = Fetch::new();
     let original = hclient_core::Error::new(ErrorKind::Tls, DummySource);
     let out = t.to_error(original.clone());
@@ -262,7 +262,7 @@ async fn a_streaming_request_body_through_the_real_client_fails_for_the_measured
 
 #[wasm_bindgen_test]
 fn capabilities_forwards_the_same_probe_execute_itself_consults() {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     let f = Fetch::new();
     let probed = f.capabilities_for_test();
     let via_trait = Transport::capabilities(&f);
@@ -297,7 +297,7 @@ fn assert_send<T: Send>(_: T) {}
 #[wasm_bindgen_test]
 fn execute_future_is_send_for_an_empty_request_body() {
     use hclient_core::RequestBody;
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     let t = Fetch::new();
     let req = http::Request::builder()
         .uri("https://example.com/")
@@ -310,7 +310,7 @@ fn execute_future_is_send_for_an_empty_request_body() {
 #[wasm_bindgen_test]
 fn execute_future_is_send_even_for_a_streaming_request_body() {
     use hclient_core::RequestBody;
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     let t = Fetch::new();
     let req = http::Request::builder()
         .uri("https://example.com/")
@@ -510,13 +510,13 @@ fn issue_and_poll_once(
     Box<
         dyn std::future::Future<
                 Output = Result<
-                    http::Response<<Fetch as hclient_core::unversioned::Transport>::Body>,
+                    http::Response<<Fetch as hclient_core::Transport>::Body>,
                     hclient_core::Error,
                 >,
             > + '_,
     >,
 > {
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     use std::task::{Context, Poll, Waker};
 
     install_fetch_observer();

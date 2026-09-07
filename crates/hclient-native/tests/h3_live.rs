@@ -12,7 +12,7 @@ mod server;
 #[path = "h3_wire/mod.rs"]
 mod wire;
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{AllowEarlyData, EarlyDataSupport, ErrorKind, RequestBody};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;

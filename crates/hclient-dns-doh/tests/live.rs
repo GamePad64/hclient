@@ -60,7 +60,7 @@ mod support;
 
 use futures_util::StreamExt;
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_dns::{IpLiteralOnly, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_dns_doh::{Doh, DohError};
 use hclient_native::Native;

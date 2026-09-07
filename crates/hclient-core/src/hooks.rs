@@ -57,14 +57,26 @@
 //!   no [`Closed`] event. That is a hole, and it is the one this rule
 //!   buys.
 //!
-//! # Why `unversioned`
+//! # What this vocabulary cannot say yet
 //!
 //! The event set is derived from what a connection-owning backend can
-//! observe, and backends still to come will have facts this vocabulary has
-//! no word for — a QUIC connection migrating, a transfer a background
-//! session finished after the process died. Freezing it would freeze one
-//! backend's view. See this module's parent for what `unversioned`
-//! promises.
+//! observe, and backends still to come will have facts it has no word for
+//! — a QUIC connection migrating, a transfer a background session
+//! finished after the process died.
+//!
+//! **That used to be a semver promise and is now only a caution.** These
+//! traits sat in a `unversioned` module, borrowed from `ureq`, which
+//! declared that breaking changes here would ship in a minor version
+//! rather than a major — on the stated grounds that the seams had not been
+//! validated against every backend. Nine crates implement [`Transport`]
+//! today, so the condition was met, and the module is gone.
+//!
+//! What survives it is the observation rather than the exemption:
+//! [`Event`] is `#[non_exhaustive]`, so a variant can be added without
+//! breaking a caller, and the one in-crate exhaustive match is what makes
+//! adding one a compile error in exactly one known place.
+//!
+//! [`Transport`]: crate::Transport
 use crate::Error;
 use core::time::Duration;
 use std::fmt::Display;
@@ -75,7 +87,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Somewhere to send what a transport did.
 ///
 /// Implemented by the application rather than by a backend — which makes
-/// it the one trait in `unversioned` pointing the other way. A backend
+/// it the one seam here pointing the other way. A backend
 /// *calls* it, and what it owes is written on [`Event`]'s variants.
 ///
 /// **No `Send` bound, declared or implied** (P13, settled by construction

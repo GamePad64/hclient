@@ -211,14 +211,14 @@ pub struct OutgoingBody {
     /// knows only whether it may speak yet.
     gate: Option<Arc<ContinueGate>>,
     /// The octets this body has handed over, for
-    /// [`hclient_core::unversioned::Progress`].
+    /// [`hclient_core::Progress`].
     ///
     /// **A field rather than a wrapper**, and this type's own doc three
     /// lines down already says why: `poll_frame` below is *the one place
     /// every frame of every request body passes through on its way to
     /// hyper*, and *a wrapper would be a second thing to remember to put
     /// on*. That argument was written for the trailer check and it decides
-    /// this identically. `hclient_core::unversioned::Metered` is the
+    /// this identically. `hclient_core::Metered` is the
     /// wrapper the two ambient backends use, and they use it because
     /// neither has a single type like this one.
     ///
@@ -228,9 +228,9 @@ pub struct OutgoingBody {
     /// parameter would be the honest way to carry a hook, and it cannot go
     /// here: this type is named inside `hyper::client::conn::http1::SendRequest`,
     /// which the connection pool stores, so an `H` here is an `H` on the
-    /// pool. A [`Meter`](hclient_core::unversioned::Meter) is `Send + Sync`
+    /// pool. A [`Meter`](hclient_core::Meter) is `Send + Sync`
     /// and concrete, so nothing about this type's auto traits moves.
-    sent: Option<Arc<hclient_core::unversioned::Meter>>,
+    sent: Option<Arc<hclient_core::Meter>>,
 }
 
 /// Whether a request body withheld for `Expect: 100-continue` may go.
@@ -316,14 +316,14 @@ impl OutgoingBody {
     ///
     /// `None` — which is what an unwatched build passes — leaves this body
     /// exactly as it was.
-    pub(crate) fn counting(mut self, meter: Option<Arc<hclient_core::unversioned::Meter>>) -> Self {
+    pub(crate) fn counting(mut self, meter: Option<Arc<hclient_core::Meter>>) -> Self {
         self.sent = meter;
         self
     }
 
     /// The counter, for whoever reports it. Cloned rather than borrowed
     /// because the body is about to be handed to hyper.
-    pub(crate) fn meter(&self) -> Option<Arc<hclient_core::unversioned::Meter>> {
+    pub(crate) fn meter(&self) -> Option<Arc<hclient_core::Meter>> {
         self.sent.clone()
     }
 

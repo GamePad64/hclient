@@ -30,7 +30,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use hclient_core::unversioned::{ClientCertAsk, ClientCertRequest};
+use hclient_core::{ClientCertAsk, ClientCertRequest};
 use rustls::SignatureScheme;
 use rustls::client::ResolvesClientCert;
 use rustls::sign::CertifiedKey;

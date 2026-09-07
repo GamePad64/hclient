@@ -117,7 +117,7 @@ because a pump watching only the channel passes one and fails the other.
 **`http.request.resend_count` is computable now, and the obvious mapping
 is wrong.** When this document was written a decorator saw one `execute`
 per hop and could not tell hop 2 of a redirect chain from attempt 2 of a
-retry. `hclient_core::unversioned::Attempt { id, hop, resend }` now travels
+retry. `hclient_core::Attempt { id, hop, resend }` now travels
 in the request's extensions, minted once per operation in `Client::run` and
 updated at all three send sites — the retry loop, the `425` replay and the
 authentication leg.

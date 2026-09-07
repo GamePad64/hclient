@@ -51,7 +51,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use http_body::{Body as HttpBody, Frame};
 use std::future::poll_fn;
 use std::pin::Pin;
@@ -531,9 +531,9 @@ async fn cancel_on_drop(port: u16, case: CancelCase) -> Result<(), ()> {
 #[derive(Clone, Default)]
 struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
 
-impl hclient_core::unversioned::Hooks for Recorder {
-    fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
-        use hclient_core::unversioned::Event;
+impl hclient_core::Hooks for Recorder {
+    fn on(&self, event: &hclient_core::Event<'_>) {
+        use hclient_core::Event;
         let line = match event {
             // Named individually rather than through a catch-all, so that
             // a backend that started emitting one of them shows up in the
@@ -737,7 +737,7 @@ async fn hooks_no_head(port: u16) -> Result<(), ()> {
 /// its own process: a number hard-coded on the host side would be
 /// asserting on the order the tests happen to run in.
 async fn hooks_request_id(port: u16) -> Result<(), ()> {
-    use hclient_core::unversioned::{Attempt, RequestId};
+    use hclient_core::{Attempt, RequestId};
 
     let get = |rec: &Recorder, attempt: Option<Attempt>| {
         let transport = hclient_wasi::WasiHttp::new().hooks(rec.clone());

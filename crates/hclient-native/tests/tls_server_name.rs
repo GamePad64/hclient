@@ -26,7 +26,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use futures_util::stream;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{Error, RequestBody};
 use hclient_dns::{IpLiteralOnly, RData, Record, Resolve, rtype};
 use hclient_native::Native;

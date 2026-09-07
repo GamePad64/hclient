@@ -22,7 +22,7 @@
 
 use hclient::Client;
 use hclient_core::RequestBody;
-use hclient_core::unversioned::{Attempt, Event, Hooks, RequestId, Transport};
+use hclient_core::{Attempt, Event, Hooks, RequestId, Transport};
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, Prepared, StagedConnect};
 use hclient_rt_tokio::Tokio;

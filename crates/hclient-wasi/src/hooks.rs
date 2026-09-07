@@ -2,7 +2,7 @@
 //! event out of four — and the reason is in the WIT rather than in this
 //! crate.
 //!
-//! The vocabulary is `hclient_core::unversioned::{Hooks, Event}` and it is
+//! The vocabulary is `hclient_core::{Hooks, Event}` and it is
 //! **unchanged** here. `hclient-native` derived the event set from a
 //! transport that dials its own sockets; `hclient-h3` tested it against
 //! connections that are *shared*; `hclient-fetch` and this crate test it
@@ -27,9 +27,9 @@
 //! `request-options` carries three timeouts the *guest* sets and nothing
 //! the host reports back.
 //!
-//! So [`Connected`](hclient_core::unversioned::Connected),
-//! [`Reused`](hclient_core::unversioned::Reused) and
-//! [`Closed`](hclient_core::unversioned::Closed) have no emitter here.
+//! So [`Connected`](hclient_core::Connected),
+//! [`Reused`](hclient_core::Reused) and
+//! [`Closed`](hclient_core::Closed) have no emitter here.
 //! This is not a limitation of the host either:
 //! `Capabilities::connection_reuse` is already `ReuseSupport::None` for a
 //! measured reason (`WasiHttp::new`), so even the fact a `Reused` would
@@ -43,7 +43,7 @@
 //! classified `hclient_core::Error` through `convert::wasi_err`, and
 //! reporting one as `CloseReason::Failed` would announce the end of a
 //! connection whose beginning was never announced, under
-//! [`ConnectionId::UNWATCHED`](hclient_core::unversioned::ConnectionId::UNWATCHED),
+//! [`ConnectionId::UNWATCHED`](hclient_core::ConnectionId::UNWATCHED),
 //! to a caller who is about to be handed the same error anyway.
 //!
 //! # [`Head`] is the one, and two of its five fields had no source
@@ -70,7 +70,7 @@
 //!   caller cannot tell from an HTTP/1.1 exchange somebody watched happen.
 //!   `Capabilities::version_reported` is `false` here and says the same
 //!   thing, but a [`Hooks`] impl is handed an
-//!   [`Event`](hclient_core::unversioned::Event) and no capabilities, so
+//!   [`Event`](hclient_core::Event) and no capabilities, so
 //!   the honest value has to be in the event.
 //!
 //! `Connected::version` and `Reused::version` stayed plain, which is the
@@ -82,7 +82,7 @@
 //!
 //! Every clock read whose only purpose is an event goes through [`mark`]
 //! and [`since`], and `H::WATCHING` is a `const`, so on
-//! [`NoHooks`](hclient_core::unversioned::NoHooks) the `then` is a
+//! [`NoHooks`](hclient_core::NoHooks) the `then` is a
 //! compile-time `false` and there is nothing left to remove.
 //!
 //! `hclient-native` and `hclient-h3` prove that with a counting `Timer`
@@ -127,7 +127,7 @@
 //! parameter in order to be tested.
 
 use core::time::Duration;
-use hclient_core::unversioned::Hooks;
+use hclient_core::Hooks;
 use std::time::Instant;
 
 /// A stopwatch that does not exist when nobody is watching.
@@ -136,7 +136,7 @@ use std::time::Instant;
 /// a compile-time `false` and the closure is not merely skipped, it is not
 /// there.
 pub(crate) fn mark<H: Hooks>() -> Option<Instant> {
-    hclient_core::unversioned::mark::<H, _>(Instant::now)
+    hclient_core::mark::<H, _>(Instant::now)
 }
 
 /// The other half of [`mark`]: the interval since one, or `ZERO` when
@@ -155,13 +155,13 @@ pub(crate) fn mark<H: Hooks>() -> Option<Instant> {
 /// `tests/hooks.rs`'s source check has one pattern to look for rather than
 /// two.
 pub(crate) fn since(at: Option<Instant>) -> Duration {
-    hclient_core::unversioned::since(at, |t| Instant::now().saturating_duration_since(t))
+    hclient_core::since(at, |t| Instant::now().saturating_duration_since(t))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::unversioned::{Event, NoHooks};
+    use hclient_core::{Event, NoHooks};
 
     /// A hook that does nothing but exist.
     struct Watching;

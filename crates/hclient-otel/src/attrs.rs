@@ -7,7 +7,7 @@
 //! so each is pinned by a unit test rather than by reading a span out of a
 //! fixture. Nothing in this module knows which front will record it.
 
-use hclient_core::unversioned::Attempt;
+use hclient_core::Attempt;
 use hclient_core::{ErrorKind, Phase};
 
 /// Everything §5a asks of a request, read once.
@@ -419,7 +419,7 @@ pub fn error_type(kind: &ErrorKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::unversioned::{Attempt, RequestId};
+    use hclient_core::{Attempt, RequestId};
 
     fn uri(s: &str) -> http::Uri {
         s.parse().expect("test URI")

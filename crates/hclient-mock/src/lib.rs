@@ -72,7 +72,7 @@ mod error;
 pub use error::QueueEmpty;
 
 use bytes::Bytes;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind};
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -655,7 +655,7 @@ impl http_body::Body for MockBody {
     }
 }
 
-/// A controllable [`hclient_core::unversioned::Timer`] for tests: `sleep`
+/// A controllable [`hclient_core::Timer`] for tests: `sleep`
 /// never actually waits — it records the requested `Duration` and resolves
 /// immediately — so a reconnect test (`ReconnectingSseStream`, `sse.rs`)
 /// stays on the bare `futures_executor` executor this crate's test suite
@@ -682,7 +682,7 @@ impl TestTimer {
     }
 }
 
-impl hclient_core::unversioned::Timer for TestTimer {
+impl hclient_core::Timer for TestTimer {
     /// The sum of every recorded sleep so far — a simple virtual clock,
     /// sufficient for the one thing `Timer::Instant` needs to support
     /// (`Copy + PartialOrd`), without claiming any relationship to real
@@ -711,7 +711,7 @@ impl hclient_core::unversioned::Timer for TestTimer {
 /// bound of its own: the mock's whole state is behind a `std::sync::Mutex`
 /// (see the module doc), so `execute`'s future is `Send` by ordinary
 /// inference and the impl is one line of forwarding.
-impl hclient_core::unversioned::SendTransport for MockTransport {
+impl hclient_core::SendTransport for MockTransport {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
@@ -725,7 +725,7 @@ impl hclient_core::unversioned::SendTransport for MockTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
     use std::error::Error as StdError;
 
     #[test]
@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn test_timer_sleep_resolves_immediately_without_real_waiting() {
-        use hclient_core::unversioned::Timer;
+        use hclient_core::Timer;
         use std::time::{Duration, Instant};
 
         let t = TestTimer::new();
@@ -961,7 +961,7 @@ mod tests {
 
     #[test]
     fn test_timer_records_every_sleep_call_in_order() {
-        use hclient_core::unversioned::Timer;
+        use hclient_core::Timer;
         use std::time::Duration;
 
         let t = TestTimer::new();
@@ -984,7 +984,7 @@ mod tests {
     /// see the SAME sleeps, not an independent, empty log.
     #[test]
     fn test_timer_clones_share_the_same_recording() {
-        use hclient_core::unversioned::Timer;
+        use hclient_core::Timer;
         use std::time::Duration;
 
         let original = TestTimer::new();
@@ -999,7 +999,7 @@ mod tests {
 
     #[test]
     fn test_timer_now_and_elapsed_since_track_the_virtual_clock() {
-        use hclient_core::unversioned::Timer;
+        use hclient_core::Timer;
         use std::time::Duration;
 
         let t = TestTimer::new();

@@ -33,7 +33,7 @@ fn assert_send<T: Send>(_: T) {}
 #[test]
 fn execute_future_is_send_even_for_a_streaming_request_body() {
     use hclient_core::RequestBody;
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
 
     struct OneShot(Option<bytes::Bytes>);
     impl http_body::Body for OneShot {
@@ -64,7 +64,7 @@ fn execute_future_is_send_even_for_a_streaming_request_body() {
 #[test]
 fn execute_future_is_send_for_an_empty_request_body() {
     use hclient_core::RequestBody;
-    use hclient_core::unversioned::Transport;
+    use hclient_core::Transport;
 
     let transport = hclient_wasi::WasiHttp::new();
     let req = http::Request::builder()
@@ -86,7 +86,7 @@ fn execute_future_is_send_for_an_empty_request_body() {
 #[test]
 fn a_send_hook_leaves_the_execute_future_send() {
     use hclient_core::RequestBody;
-    use hclient_core::unversioned::{Event, Hooks, Transport};
+    use hclient_core::{Event, Hooks, Transport};
 
     struct Atomic(std::sync::atomic::AtomicUsize);
     impl Hooks for Atomic {
@@ -122,7 +122,7 @@ fn a_send_hook_leaves_the_execute_future_send() {
 #[test]
 fn a_non_send_hook_still_gives_a_working_transport() {
     use hclient_core::RequestBody;
-    use hclient_core::unversioned::{Event, Hooks, Transport};
+    use hclient_core::{Event, Hooks, Transport};
 
     #[derive(Clone, Default)]
     struct Local(std::rc::Rc<std::cell::Cell<usize>>);
@@ -150,7 +150,7 @@ fn a_non_send_hook_still_gives_a_working_transport() {
 /// and the default parameter names the same type rather than a second one.
 #[test]
 fn the_no_op_hook_takes_up_no_room_in_the_transport() {
-    use hclient_core::unversioned::NoHooks;
+    use hclient_core::NoHooks;
     assert_eq!(std::mem::size_of::<NoHooks>(), 0);
     assert_eq!(
         std::mem::size_of::<hclient_wasi::WasiHttp<NoHooks>>(),

@@ -225,7 +225,7 @@ use crate::error::{ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBefore
 use crate::established::Failed;
 use crate::pool::CheckIn;
 use bytes::Bytes;
-use hclient_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks};
+use hclient_core::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use hclient_core::{Error, ErrorKind};
 use http_body::{Body, Frame, SizeHint};
 use hyper::client::conn::http1;
@@ -287,7 +287,7 @@ where
 ///
 /// Generic over the IO type rather than boxing it — see the module doc
 /// comment's section on why nothing here is boxed.
-pub struct H1Body<I, H = hclient_core::unversioned::NoHooks>
+pub struct H1Body<I, H = hclient_core::NoHooks>
 where
     I: Read + Write + Unpin,
 {
@@ -352,7 +352,7 @@ where
     /// direction that looks like a leak.
     ///
     /// **Not called from `Drop`**, deliberately — see
-    /// `hclient_core::unversioned::hooks`'s module doc: a panicking hook
+    /// `hclient_core::hooks`'s module doc: a panicking hook
     /// during an unwind aborts the process, and an observability seam
     /// that can abort a program is worse than one with a hole in it. The
     /// hole is that a cancelled request's connection is closed silently.
@@ -844,7 +844,7 @@ where
 mod tests {
     use super::*;
     use hclient_core::RequestBody;
-    use hclient_core::unversioned::NoHooks;
+    use hclient_core::NoHooks;
     use std::error::Error as StdError;
     use std::future::Future;
     use std::io;

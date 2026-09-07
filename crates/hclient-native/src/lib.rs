@@ -137,7 +137,7 @@ pub use proxy::{
 pub use staged::{Refused, Staged, StagedConnect};
 pub use upgrade::Upgrading;
 
-use hclient_core::unversioned::{
+use hclient_core::{
     CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
     RequestId, Reused, Transport,
 };
@@ -222,7 +222,7 @@ fn install_1xx<H>(
             g.open();
         }
         hooks.on(&Event::Informational(
-            hclient_core::unversioned::Informational::new(id, resp.status(), resp.headers())
+            hclient_core::Informational::new(id, resp.status(), resp.headers())
                 .request(request),
         ));
     });
@@ -248,9 +248,9 @@ pub(crate) struct Counted<'a> {
     id: ConnectionId,
     request: RequestId,
     /// `None` is *something below already counted this body*, which is the
-    /// QUIC arm — see `hclient_core::unversioned::Counting::new`.
+    /// QUIC arm — see `hclient_core::Counting::new`.
     uri: Option<&'a http::Uri>,
-    sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
+    sent: Option<std::sync::Arc<hclient_core::Meter>>,
 }
 
 impl<'a> Counted<'a> {
@@ -258,7 +258,7 @@ impl<'a> Counted<'a> {
         id: ConnectionId,
         request: RequestId,
         uri: &'a http::Uri,
-        sent: Option<std::sync::Arc<hclient_core::unversioned::Meter>>,
+        sent: Option<std::sync::Arc<hclient_core::Meter>>,
     ) -> Self {
         Self {
             id,
@@ -297,24 +297,24 @@ impl<'a> Counted<'a> {
 /// between reads on the wire rather than the gap between whatever a
 /// wrapper above chose to pass on.
 pub type NativeBody<R, T, H> = IdleTimeout<
-    hclient_core::unversioned::Counting<established::NativeBody<NativeIo<R, T>, H>, H>,
+    hclient_core::Counting<established::NativeBody<NativeIo<R, T>, H>, H>,
     R,
 >;
 
 /// This crate's clock, handed to `hclient_core`'s gate.
 ///
 /// The gate — *read a clock only where a hook is watching* — is
-/// `hclient_core::unversioned::mark`, and lives there because four crates
+/// `hclient_core::mark`, and lives there because four crates
 /// were each writing it and one of them got it wrong in a way a mutation
 /// survived. What stays here is the only part that is this crate's: which
 /// clock.
 pub(crate) fn mark<H: Hooks, R: Timer>(rt: &R) -> Option<R::Instant> {
-    hclient_core::unversioned::mark::<H, _>(|| rt.now())
+    hclient_core::mark::<H, _>(|| rt.now())
 }
 
 /// The elapsed half of the pair above.
 pub(crate) fn since<R: Timer>(rt: &R, at: Option<R::Instant>) -> Duration {
-    hclient_core::unversioned::since(at, |t| rt.elapsed_since(t))
+    hclient_core::since(at, |t| rt.elapsed_since(t))
 }
 
 /// The id for a connection about to be made — or [`ConnectionId::UNWATCHED`]
@@ -372,7 +372,7 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// *inferred*, and nothing has to be declared: a `Resolve` handing back a
 /// `!Send` stream still works and still yields a `!Send` future. That is
 /// what `tests/send_future.rs` pins. Generic code cannot infer, so
-/// `hclient_core::unversioned::SendTransport` is *declared* for this
+/// `hclient_core::SendTransport` is *declared* for this
 /// transport, under a where-clause naming what its runtime, TLS backend
 /// and resolver promise — which is what `hclient::Client`'s own request
 /// future being `Send` rests on.
@@ -417,7 +417,7 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// now, so the reason has no subject and the fence is back.
 ///
 /// ```no_run
-/// # use hclient_core::unversioned::Transport;
+/// # use hclient_core::Transport;
 /// # use hclient_core::RequestBody;
 /// # use hclient_native::Native;
 /// # use hclient_dns::IpLiteralOnly;
@@ -433,9 +433,9 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// future — in every configuration, so this one can be a fence:
 ///
 /// ```compile_fail
-/// # use hclient_core::unversioned::Transport;
+/// # use hclient_core::Transport;
 /// # use hclient_core::RequestBody;
-/// # use hclient_core::unversioned::{Event, Hooks};
+/// # use hclient_core::{Event, Hooks};
 /// # use hclient_native::Native;
 /// # use hclient_dns::IpLiteralOnly;
 /// # use hclient_tls::NoTls;
@@ -997,7 +997,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
 /// caller could write and get a hookless transport from.
 impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// Send this transport's events to `hooks` — see
-    /// [`hclient_core::unversioned::Hooks`] for what it hears and what it
+    /// [`hclient_core::Hooks`] for what it hears and what it
     /// costs, and [`Event`] for the vocabulary.
     ///
     /// **It returns a different type**, and that is the zero-cost
@@ -1284,7 +1284,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # use hclient_rt::{TcpConnect, Timer};
     /// # use hclient_tls::TlsConnect;
     /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
-    /// # -> Native<R, T, D, hclient_core::unversioned::NoHooks, HttpConnect> {
+    /// # -> Native<R, T, D, hclient_core::NoHooks, HttpConnect> {
     /// t.proxy(Proxy::new(HttpConnect::new(), "secure-proxy.corp", 8443)
     ///         .only_for(ProxyScheme::Https))
     ///  .and_proxy(Proxy::new(HttpConnect::new(), "proxy.corp", 8080))
@@ -1742,7 +1742,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// carries the hook, so a spawner that wants `Send` meets it here:
     ///
     /// ```compile_fail
-    /// use hclient_core::unversioned::{Event, Hooks};
+    /// use hclient_core::{Event, Hooks};
     /// use hclient_native::Native;
     /// use hclient_rt_tokio::Tokio;
     /// use std::{cell::Cell, rc::Rc};
@@ -1763,7 +1763,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// The control is the same hook behind an `Arc`:
     ///
     /// ```
-    /// use hclient_core::unversioned::{Event, Hooks};
+    /// use hclient_core::{Event, Hooks};
     /// use hclient_native::Native;
     /// use hclient_rt_tokio::Tokio;
     /// use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
@@ -1950,7 +1950,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
     where
         crate::http3::H3<R, T, D>: crate::http3::H3StagedConnect<Error = Error> + Debug,
-        <crate::http3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
+        <crate::http3::H3<R, T, D> as hclient_core::Transport>::Body:
             http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
         <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
         for<'a> <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
@@ -2624,7 +2624,7 @@ where
             // pass on. Nothing observable turns on the order — a body cut
             // by the idle timeout has still yielded what it yielded — and
             // the two are written in the order their arguments give.
-            let counted = hclient_core::unversioned::Counting::new(
+            let counted = hclient_core::Counting::new(
                 b,
                 self.hooks.clone(),
                 count.id,
@@ -2793,7 +2793,7 @@ where
             }
             // Reported here rather than at the drop below, and outside
             // the pool's mutex rather than inside it — the two rules the
-            // hooks seam is built on (`hclient_core::unversioned::hooks`,
+            // hooks seam is built on (`hclient_core::hooks`,
             // module doc). `Stale` is the honest reason: the peer closed
             // it while it sat idle, which is why this loop is walking
             // past it. A connection the pool itself drops for age never
@@ -3144,7 +3144,7 @@ where
         // makes the claimed timeout a silent no-op, exactly the class of
         // defect this channel exists to root out.
         // `Transport::execute`'s doc comment
-        // (`hclient-core/src/unversioned/transport.rs`) spells out the
+        // (`hclient-core/src/transport.rs`) spells out the
         // correct reading literally: "presence is not intent",
         // `.get::<Timeouts>().copied().unwrap_or_default()`, then field by
         // field — don't branch on the extension's `is_some()` as a whole.
@@ -3158,7 +3158,7 @@ where
         // that reports `Progress` outlives it, so the value has to be
         // carried rather than looked up again. Gated on `H::WATCHING`
         // inside `identify`, so an unwatched build touches no map.
-        let request = hclient_core::unversioned::identify::<H>(&parts.extensions);
+        let request = hclient_core::identify::<H>(&parts.extensions);
 
         // Which connections may serve this request. Computed BEFORE
         // `origin_form` below rewrites the URI into origin-form and the
@@ -3218,7 +3218,7 @@ where
         // come from anyway.
         let outgoing = {
             let meter =
-                hclient_core::unversioned::meter::<H>(outgoing.expected()).map(std::sync::Arc::new);
+                hclient_core::meter::<H>(outgoing.expected()).map(std::sync::Arc::new);
             outgoing.counting(meter)
         };
         // Left exactly as it arrived — absolute URI, and no `Host:` of
@@ -3350,7 +3350,7 @@ where
             );
             let attempt =
                 std::pin::pin!(self.within_first_byte_gated(timeouts.first_byte, gate, attempt));
-            match hclient_core::unversioned::Reporting::new(
+            match hclient_core::Reporting::new(
                 attempt,
                 &self.hooks,
                 id,
@@ -3597,7 +3597,7 @@ where
         );
         let attempt =
             std::pin::pin!(self.within_first_byte_gated(timeouts.first_byte, gate, attempt));
-        let resp = hclient_core::unversioned::Reporting::new(
+        let resp = hclient_core::Reporting::new(
             attempt,
             &self.hooks,
             id,
@@ -3997,7 +3997,7 @@ pub mod testing {
     where
         I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
-        use hclient_core::unversioned::{ConnectionId, NoHooks};
+        use hclient_core::{ConnectionId, NoHooks};
         let est =
             crate::http1::handshake(io, ConnectionId::UNWATCHED, crate::http1::H1Opts::default())
                 .await?;
@@ -4032,7 +4032,7 @@ pub mod testing {
 /// `hclient-rt-embassy` is still a `Transport`, over a resolver that
 /// cannot promise `Send` it is still a `Transport`, and what it is not is
 /// a `SendTransport`.
-impl<R, T, D, H, P> hclient_core::unversioned::SendTransport for Native<R, T, D, H, P>
+impl<R, T, D, H, P> hclient_core::SendTransport for Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone + Sync + Send, // send-bound-exception: amendment-C16
     R::Stream: 'static + Send,                   // send-bound-exception: amendment-C16
@@ -4051,8 +4051,8 @@ where
     fn execute_send(
         &self,
         req: http::Request<hclient_core::RequestBody>,
-    ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Error> {
-        Box::pin(<Self as hclient_core::unversioned::Transport>::execute(
+    ) -> hclient_core::BoxSendExchange<'_, Self::Body, Error> {
+        Box::pin(<Self as hclient_core::Transport>::execute(
             self, req,
         ))
     }

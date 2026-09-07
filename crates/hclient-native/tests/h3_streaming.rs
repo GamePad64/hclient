@@ -29,7 +29,7 @@
 mod server;
 
 use bytes::Bytes;
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{AllowEarlyData, RequestBody};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;

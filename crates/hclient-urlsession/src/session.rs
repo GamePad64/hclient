@@ -4,7 +4,7 @@ use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 
-use hclient_core::unversioned::Transport;
+use hclient_core::Transport;
 use hclient_core::{
     CancelSupport, Capabilities, DecompressionSupport, Error, ErrorKind, RedirectSupport,
     RequestBody, TlsSupport,
@@ -198,11 +198,11 @@ impl Transport for UrlSession {
 /// — a session hands work to its own queue — and `execute` awaits a
 /// channel this crate owns, so the future is `Send` by inference and this
 /// is one line of forwarding.
-impl hclient_core::unversioned::SendTransport for UrlSession {
+impl hclient_core::SendTransport for UrlSession {
     fn execute_send(
         &self,
         req: http::Request<RequestBody>,
-    ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
+    ) -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error> {
         Box::pin(<Self as Transport>::execute(self, req))
     }
 }

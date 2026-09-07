@@ -359,7 +359,7 @@ where
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
-    H: hclient_core::unversioned::Hooks + Clone + Unpin,
+    H: hclient_core::Hooks + Clone + Unpin,
     P: crate::proxy::Handshake + Clone,
 {
     /// Everything the QUIC arm of `Transport::execute` does, hedged or not.

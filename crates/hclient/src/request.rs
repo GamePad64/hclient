@@ -591,7 +591,7 @@ impl<'a> RequestBuilder<'a> {
     /// **So a value that only one origin may see does not belong here.**
     /// A credential travels as an argument rather than an extension for a
     /// second reason too, given in [`crate::auth`]: extensions reach
-    /// [`Transport::execute`](hclient_core::unversioned::Transport), so
+    /// [`Transport::execute`](hclient_core::Transport), so
     /// any transport in the graph can read one — including a transport
     /// this workspace did not write.
     #[must_use]

@@ -29,7 +29,7 @@
 
 use bytes::Bytes;
 use hclient::Client;
-use hclient_core::unversioned::{CloseReason, Event, Hooks};
+use hclient_core::{CloseReason, Event, Hooks};
 use hclient_core::{RequestBody, Timeouts};
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, PoolConfig};
@@ -404,14 +404,14 @@ type HeldTasks = Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()> + Send>>>>>;
 #[derive(Clone, Default)]
 struct HoldsTasks(HeldTasks);
 
-impl hclient_core::unversioned::Timer for HoldsTasks {
-    type Instant = <Tokio as hclient_core::unversioned::Timer>::Instant;
-    type Sleep = <Tokio as hclient_core::unversioned::Timer>::Sleep;
+impl hclient_core::Timer for HoldsTasks {
+    type Instant = <Tokio as hclient_core::Timer>::Instant;
+    type Sleep = <Tokio as hclient_core::Timer>::Sleep;
     fn sleep(&self, d: Duration) -> Self::Sleep {
         Tokio.sleep(d)
     }
     fn now(&self) -> Self::Instant {
-        hclient_core::unversioned::Timer::now(&Tokio)
+        hclient_core::Timer::now(&Tokio)
     }
     fn elapsed_since(&self, earlier: Self::Instant) -> Duration {
         Tokio.elapsed_since(earlier)
@@ -1287,9 +1287,9 @@ async fn a_1xx_on_a_shared_connection_reaches_the_hook() {
     #[derive(Debug, Clone, Default)]
     struct Hints(Arc<Mutex<Vec<(u16, u64)>>>);
 
-    impl hclient_core::unversioned::Hooks for Hints {
-        fn on(&self, event: &hclient_core::unversioned::Event<'_>) {
-            if let hclient_core::unversioned::Event::Informational(e) = event {
+    impl hclient_core::Hooks for Hints {
+        fn on(&self, event: &hclient_core::Event<'_>) {
+            if let hclient_core::Event::Informational(e) = event {
                 self.0
                     .lock()
                     .unwrap()

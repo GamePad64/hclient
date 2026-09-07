@@ -35,7 +35,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient_core::RequestBody;
-use hclient_core::unversioned::{Event, Hooks, NoHooks, Transport};
+use hclient_core::{Event, Hooks, NoHooks, Transport};
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};

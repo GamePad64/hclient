@@ -100,7 +100,7 @@ use crate::{
     Native, NativeIo, Prepared, body, connect, connection_id, discovery, handshake_for, mark,
     negotiated_protocol, protocol_admissible, since, spoken_version, with_connect_timeout,
 };
-use hclient_core::unversioned::{
+use hclient_core::{
     ConnectTiming, Connected, ConnectionId, Event, Hooks, Reused, Transport,
 };
 use hclient_core::{Error, RequestBody, Timeouts, check_version};
@@ -369,9 +369,9 @@ where
             .take()
             .expect("a Staged is emptied only by this method, which consumes it");
         let (parts, body) = req.into_parts();
-        let request = hclient_core::unversioned::identify::<H>(&parts.extensions);
+        let request = hclient_core::identify::<H>(&parts.extensions);
         let outgoing = body::OutgoingBody::from_request_body(body)?;
-        let sent = hclient_core::unversioned::meter::<H>(outgoing.expected())
+        let sent = hclient_core::meter::<H>(outgoing.expected())
             .map(std::sync::Arc::new)
             .inspect(|_| ());
         let outgoing = outgoing.counting(sent.clone());
@@ -391,7 +391,7 @@ where
             },
         );
         let attempt = std::pin::pin!(self.within_first_byte_gated(first_byte, gate, attempt));
-        let resp = hclient_core::unversioned::Reporting::new(
+        let resp = hclient_core::Reporting::new(
             attempt,
             &self.hooks,
             id,
@@ -469,7 +469,7 @@ where
         // Which request this connect is being paid for, read once from the
         // request still in hand — `Staged` keeps it, so `exchange` reads it
         // back off the same request rather than looking again.
-        let request = hclient_core::unversioned::identify::<H>(req.extensions());
+        let request = hclient_core::identify::<H>(req.extensions());
 
         let parts_of_key = match self.key_parts(req.uri(), identity_id) {
             Ok(p) => p,
