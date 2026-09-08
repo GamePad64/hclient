@@ -23,6 +23,19 @@
 use crate::body::BodyView;
 
 /// What a flow says after seeing a response.
+///
+/// **Not `#[non_exhaustive]`, because exhaustiveness is the mechanism.**
+/// `Client::run` branches on this to decide whether to send the request
+/// again, and a `_` arm there is where a third answer — *stop, and this
+/// is an error*, say — would be silently read as one of the two that
+/// exist. A flow that says something the client does not act on is the
+/// *silently ignored setting* defect with the setting coming from a
+/// scheme rather than a caller.
+///
+/// The cost is real and is the intended one: a third variant breaks every
+/// out-of-tree scheme's `match`, and it should, because a scheme that has
+/// not decided what the new answer means to it is a scheme that cannot
+/// keep working.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthStep {
     /// This response is the answer.

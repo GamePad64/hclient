@@ -1029,6 +1029,15 @@ pub struct Closed<'a> {
 
 /// Why a connection ended.
 ///
+/// **Not `#[non_exhaustive]`, on [`Direction`]'s split.** A hook branches
+/// on this to tell a connection that simply finished from one that was
+/// found dead at checkout from one that failed — three different things
+/// to report, and a `_` arm is where a fourth would be folded into
+/// whichever of the three the author happened to write last. That the
+/// variants are *read* rather than written does not make this the
+/// handed-back case: what decides it is whether a reader must act
+/// differently, and here every reader does.
+///
 /// Three, because three is what the code can tell apart. It deliberately
 /// does not include "the caller dropped it": that would have to be
 /// reported from a `Drop` impl, and the module doc says why no hook is

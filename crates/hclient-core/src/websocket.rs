@@ -73,6 +73,15 @@ pub enum Message {
 /// `u16` rather than an enum of the RFC 6455 §7.4 codes: this seam does
 /// not interpret them, and an enum would have to decide what a reserved
 /// or application-defined code means, and this seam has not decided.
+///
+/// Not `#[non_exhaustive]`, and the reason is who writes one. A caller
+/// closing a session writes `Message::Close(Some(CloseFrame { code,
+/// reason }))` — `hclient-cli` does it six times — so the attribute would
+/// close the literal to exactly the audience the type exists for, and buy
+/// room for a third field RFC 6455 does not have: a close frame is a code
+/// and a reason, and the wire format is fixed. That is the `TcpOpts`
+/// answer rather than the `Head` one, and the two are told apart by
+/// whether the value is *written* by a caller or only handed to them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseFrame {
     /// RFC 6455 §7.4 status code.
