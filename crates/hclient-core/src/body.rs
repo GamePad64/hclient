@@ -100,6 +100,7 @@ impl RequestBody {
         RequestBody::Rewindable(Arc::new(f))
     }
 
+    #[must_use]
     pub fn retry_kind(&self) -> RetryKind {
         match self {
             RequestBody::Empty | RequestBody::Full(_) => RetryKind::Free,
@@ -108,6 +109,7 @@ impl RequestBody {
         }
     }
 
+    #[must_use]
     pub fn rewind(&self) -> Option<RequestBody> {
         match self {
             RequestBody::Empty => Some(RequestBody::Empty),
@@ -142,6 +144,7 @@ impl RequestBody {
         }
     }
 
+    #[must_use]
     pub fn size_hint(&self) -> Option<u64> {
         match self {
             RequestBody::Empty => Some(0),

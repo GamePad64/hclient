@@ -549,6 +549,7 @@ impl ConnectionId {
     }
 
     /// The number itself, for a log line.
+    #[must_use]
     pub fn get(self) -> u64 {
         self.0
     }
@@ -625,6 +626,7 @@ impl RequestId {
     }
 
     /// The number itself, for a log line.
+    #[must_use]
     pub fn get(self) -> u64 {
         self.0
     }
@@ -1235,6 +1237,7 @@ impl<'a> Connected<'a> {
         self
     }
 
+    #[must_use]
     pub fn timing(mut self, timing: ConnectTiming) -> Self {
         self.timing = timing;
         self

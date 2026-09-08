@@ -152,21 +152,27 @@ impl Error {
         self.unsent
     }
 
+    #[must_use]
     pub fn kind(&self) -> &ErrorKind {
         &self.kind
     }
+    #[must_use]
     pub fn is_timeout(&self) -> bool {
         matches!(self.kind, ErrorKind::Timeout(_))
     }
+    #[must_use]
     pub fn is_redirect(&self) -> bool {
         matches!(self.kind, ErrorKind::Redirect)
     }
+    #[must_use]
     pub fn is_connect(&self) -> bool {
         matches!(self.kind, ErrorKind::Connect)
     }
+    #[must_use]
     pub fn is_unsupported(&self) -> bool {
         matches!(self.kind, ErrorKind::Unsupported)
     }
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         matches!(self.kind, ErrorKind::Cancelled)
     }
