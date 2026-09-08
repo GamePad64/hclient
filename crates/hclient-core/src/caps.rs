@@ -314,25 +314,28 @@ pub enum TlsSupport {
 /// the field-per-field mirror of that struct, so a refusal can name the
 /// bound a caller set rather than saying *timeouts*.
 ///
-/// # Not `#[non_exhaustive]`, and growing is exactly why
+/// # Not `#[non_exhaustive]`, and here the compile error is the feature
 ///
 /// This struct has grown once already — `resolve` joined three fields in
 /// v0.4 — and it grows again whenever [`crate::req::Timeouts`] does,
-/// which is the mirror working rather than a hazard. The attribute is
-/// still refused, on [`crate::req::Timeouts`]' own argument one type
-/// over: both are written as struct literals by every transport, and
-/// `#[non_exhaustive]` forbids the literal **and the functional-update
-/// form** from outside the defining crate — measured on a two-crate
-/// probe, `E0639` for `S { a, ..Default::default() }` as well as for the
-/// exhaustive form.
+/// which is the mirror working rather than a hazard.
 ///
-/// So the attribute would leave a transport author with per-field setters
-/// and nothing else, and it would cost the thing that makes the growth
-/// visible: an exhaustive literal is a **compile error** at every
-/// transport on the day a field arrives, which is how `resolve` got an
-/// honest `false` from the two ambient backends instead of a default one.
-/// A `..Default::default()` would have given them `false` silently, and
-/// silently is the direction this field exists to prevent.
+/// A `const fn` builder would make the attribute affordable, and that is
+/// measured rather than assumed: such a chain composes across a crate
+/// boundary on a `#[non_exhaustive]` struct, even in a `const`. **It is
+/// refused here anyway, and the mirror is what separates the two types.**
+/// A bound left unset in [`crate::req::Timeouts`] means *the caller did
+/// not ask*, so a field a caller has never heard of should be `None` and
+/// a builder gives that. A bound left unset **here** is a transport
+/// saying *I do not enforce this* — a claim, made by a value nobody
+/// wrote.
+///
+/// So an exhaustive literal is what this type wants: a new field is a
+/// compile error at every transport on the day it arrives, which is how
+/// `resolve` got an honest `false` out of the two ambient backends rather
+/// than a defaulted one. A builder — or a `..Default::default()` — would
+/// have given them `false` silently, and silently is the direction the
+/// whole capability set exists to prevent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TimeoutSupport {
     /// Whether [`crate::req::Timeouts::resolve`] is enforced. Honestly `false` on

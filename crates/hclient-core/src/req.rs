@@ -26,25 +26,53 @@ use crate::error::VersionNotAvailable;
 /// Lives in `hclient-core` because transports read it from the request's
 /// `http::Extensions`, and they don't depend on `hclient`.
 ///
-/// # Not `#[non_exhaustive]`, and a `const` is the half that settles it
+/// # Not `#[non_exhaustive]` today, and a `const` builder is what would
+/// change that
 ///
-/// This is `TcpOpts`' argument, and it has one more leg here. Its whole
-/// use is `Timeouts { connect: Some(d), ..Default::default() }`, which
-/// the attribute forbids from outside the defining crate — the
-/// functional-update form as much as the exhaustive one, `E0639` for
-/// both, measured on a two-crate probe rather than recalled.
+/// This is `TcpOpts`' argument: its whole use is
+/// `Timeouts { connect: Some(d), ..Default::default() }` — 52 of the 65
+/// literals in this workspace — and the attribute forbids the
+/// functional-update form as much as the exhaustive one from outside the
+/// defining crate, `E0639` for both, measured on a two-crate probe.
 ///
-/// And `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is a **`const`**, where
-/// `..Default::default()` is not available at all — `Default::default()`
-/// is not a `const fn` — so the escape hatch the attribute normally
-/// leaves would not exist for that call site. A struct meant to be
-/// written down in a `const` cannot take this attribute and stay
-/// writable.
+/// **What that argument is missing is a `const fn` builder**, which
+/// `TcpOpts`' own statement of it does not consider either. A chain of
+/// `const fn` methods taking `self` by value composes in a `const`, from
+/// another crate, on a `#[non_exhaustive]` struct — measured, including
+/// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS`, which is the hardest call site
+/// here because `..Default::default()` is unavailable in a `const` at
+/// all. So the construction half of the objection is answerable, and the
+/// crate that answers it is `bon`: `#[builder(const)]` generates exactly
+/// that chain, verified on this struct's own shape against 3.10.1. A
+/// plain `#[derive(bon::Builder)]` does **not** — three `E0015`s on the
+/// `const`, which is the sort of thing to check before taking a
+/// dependency rather than after.
 ///
-/// The growth this type is exposed to is a fifth bound, and it should
-/// cost what the fourth cost: a compile error at every literal, which is
-/// how `resolve` reached [`crate::caps::TimeoutSupport`] with an honest
-/// answer from each transport instead of a defaulted one.
+/// **And on construction alone a fifth bound is the case it would get
+/// right.** Absence here means *unset*, so a caller who never heard of
+/// the new field wants `None` for it and a builder gives exactly that —
+/// the opposite of [`crate::caps::TimeoutSupport`], where absence is a
+/// claim and the compile error is the feature.
+///
+/// # What actually decides it is a `match`, not a literal
+///
+/// `hclient`'s `check_timeouts_supported` destructures this struct
+/// exhaustively, and that is the gate refusing a bound the transport
+/// cannot honour. `#[non_exhaustive]` bans an exhaustive destructure
+/// from outside the defining crate as firmly as it bans a literal —
+/// `E0638`, measured — so taking the attribute forces a `..` there, and
+/// a `..` is where a newly added bound goes to be **silently unchecked**:
+/// a caller sets it, the transport does not enforce it, and `build()`
+/// says nothing.
+///
+/// That is the *silently ignored setting* defect this crate closes four
+/// times over, arriving through the door left open to prevent a different
+/// one. **A builder cannot reach it, `bon`'s included**: the gate is a
+/// reader rather than a producer, and it was checked that way rather than
+/// argued — a `bon` `#[builder(const)]` on the struct leaves the
+/// cross-crate destructure failing `E0638` exactly as before. So the
+/// attribute stays off, and the exhaustive destructure is the reason to
+/// keep it off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Timeouts {
     /// A bound on **getting an address to try**, separate from the connect
