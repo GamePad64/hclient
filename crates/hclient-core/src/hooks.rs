@@ -979,13 +979,22 @@ pub struct Head<'a> {
     /// What was spoken — or `None` where the transport could not observe
     /// it.
     ///
-    /// `Some` exactly when the transport reports
+    /// `Some` exactly when the transport emitting it reports
     /// [`version_reported`](crate::caps::Capabilities::version_reported).
     /// `hclient-native` reads it off the status line, and off ALPN with
     /// the `http2` feature; `hclient-h3` speaks HTTP/3 and nothing else;
     /// both say `true`. `hclient-fetch` and `hclient-wasi` say `false` and
     /// report `None` here: the Fetch Standard's `Response` has no protocol
     /// member, and `wasi:http@0.3.0` has no version concept at all.
+    ///
+    /// **The direction a hook can act on is the contrapositive**, and it
+    /// is the one that holds without qualification: `None` here means the
+    /// transport reports `false`, so it is a fact about the backend rather
+    /// than a field somebody forgot. The other direction is a rule about
+    /// the events a transport *emits* — a backend with no
+    /// [`Hooks`] seam reports `true` and emits no
+    /// `Head` at all, which is vacuous rather than a breach; see
+    /// [`version_reported`](crate::caps::Capabilities::version_reported).
     ///
     /// # Why an `Option`, and not `http`'s builder default
     ///

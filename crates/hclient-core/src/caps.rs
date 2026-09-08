@@ -638,6 +638,18 @@ pub struct Capabilities {
     /// [`Head::version`](crate::hooks::Head::version) is `Some`
     /// exactly when this field is `true`. Two spellings of one fact, in
     /// the two places that can each be read on their own.
+    ///
+    /// **Read that as a rule about the events a transport emits, not
+    /// about every transport.** A backend with no observability seam
+    /// emits no [`Head`](crate::hooks::Head) at all, so the `Some` side
+    /// has no producer there and the biconditional is vacuous rather than
+    /// broken — `hclient-winhttp` reports `true` here, honestly (it reads
+    /// the version out of WinHTTP's flags), and implements no
+    /// [`Hooks`](crate::hooks::Hooks). What a portable hook may conclude
+    /// is the contrapositive, which is the direction it actually needs:
+    /// a [`Head`](crate::hooks::Head) carrying `None` came from a
+    /// transport reporting `false`, so the absence is a fact about the
+    /// backend and never a field somebody forgot to fill in.
     pub version_reported: bool,
     pub timeouts: TimeoutSupport,
     pub informational_1xx: bool,
