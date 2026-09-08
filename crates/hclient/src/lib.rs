@@ -220,11 +220,23 @@ pub use client::without_a_default_transport::DefaultTransportFeature;
 // every one of these paths is a promise.
 
 /// What a transport says it can do, and the `build()` gate that reads it.
+///
+/// **Every enum a [`caps::Capabilities`] field can hold is here**, and
+/// that took a correction: `CancelSupport` and `ReuseSupport` were not
+/// re-exported, so a caller could read `cancel_on_drop`, print it with
+/// `Debug`, and not compare it against anything — the value was reachable
+/// and its vocabulary was not. Both are *reports* by
+/// [`caps::Capabilities`]' own classification, whose stated reader is the
+/// caller, and the other four reports were already here; the two were
+/// missing rather than withheld. Found by writing a consumer outside this
+/// workspace, which is the instrument this project keeps rediscovering:
+/// a test written beside the code shares the author's knowledge of where
+/// the doors are.
 pub mod caps {
     pub use crate::config::check_supported;
     pub use hclient_core::caps::{
-        Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport, TimeoutSupport,
-        TlsSupport,
+        CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport,
+        ReuseSupport, TimeoutSupport, TlsSupport,
     };
 }
 

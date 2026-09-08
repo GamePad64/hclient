@@ -194,10 +194,18 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 ///   reaches for `hclient_core::req::AllowEarlyData` directly rather than
 ///   through `hclient::`, so the early-data corner was the one with no
 ///   facade check at all.
-/// - `ReuseSupport` and `CancelSupport` are the remaining enum-typed
-///   fields and are deliberately not re-exported from `hclient`; pointing
-///   this test at one of them would mean adding a re-export to make a test
-///   compile.
+/// - `ReuseSupport` and `CancelSupport` were the remaining enum-typed
+///   fields, and this bullet used to read that they are *deliberately not
+///   re-exported*, so pointing this test at one would mean adding a
+///   re-export to make a test compile. The premise was right and the
+///   conclusion was not: a test should not drive a re-export, and the
+///   re-export was owed anyway. Both fields are **reports** by
+///   `Capabilities`' own classification, whose documented reader is the
+///   caller, so withholding their vocabulary left a caller able to read
+///   `cancel_on_drop` and unable to compare it — `Debug` and nothing
+///   else. They are re-exported now, and
+///   `every_capability_enum_is_reachable_from_the_facade` below is where
+///   that is pinned, so this test keeps its single subject.
 ///
 /// The check is a compile-time one as much as a runtime one: remove
 /// `EarlyDataSupport` from `hclient`'s `pub use` and this file — an
@@ -225,6 +233,48 @@ fn capability_support_types_are_reachable_from_the_facade() {
     assert_eq!(caps.tls_config, hclient::caps::TlsSupport::Full);
     assert_eq!(caps.early_data, hclient::caps::EarlyDataSupport::Supported);
     assert!(caps.timeouts.connect && caps.timeouts.first_byte && !caps.timeouts.between_bytes);
+}
+
+/// **Every enum a `Capabilities` field can hold is nameable from
+/// `hclient`**, which the test above deliberately does not cover: it
+/// picks one type on purpose, to be a single-subject check.
+///
+/// The gap this closes was found by writing a consumer outside the
+/// workspace rather than by reading the re-export list. `CancelSupport`
+/// and `ReuseSupport` were absent, so
+/// `matches!(c.cancel_on_drop, CancelSupport::Supported)` did not compile
+/// for anyone who was not this workspace — while the field itself was
+/// public and `Debug`-printable, which is the shape that makes such a gap
+/// invisible from inside: nothing is missing until somebody tries to
+/// *branch* on the value.
+///
+/// Written as a list of `matches!` rather than a list of `use` lines
+/// because a bare import is satisfied by any item of that name, where a
+/// `matches!` against a real field asserts that the re-exported type is
+/// the one the field actually holds.
+#[test]
+fn every_capability_enum_is_reachable_from_the_facade() {
+    let c = hclient::caps::Capabilities::default();
+    assert!(matches!(c.redirects, hclient::caps::RedirectSupport::None));
+    assert!(matches!(
+        c.cancel_on_drop,
+        hclient::caps::CancelSupport::None
+    ));
+    assert!(matches!(
+        c.connection_reuse,
+        hclient::caps::ReuseSupport::None
+    ));
+    assert!(matches!(
+        c.response_decompression,
+        hclient::caps::DecompressionSupport::None
+    ));
+    assert!(matches!(c.tls_config, hclient::caps::TlsSupport::None));
+    assert!(matches!(
+        c.early_data,
+        hclient::caps::EarlyDataSupport::None
+    ));
+    // `TimeoutSupport` is a struct rather than an enum and is covered by
+    // the test above, which builds one.
 }
 
 /// An end-to-end run through `mock`: not a set of isolated reachability
