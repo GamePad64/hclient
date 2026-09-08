@@ -26,54 +26,52 @@ use crate::error::VersionNotAvailable;
 /// Lives in `hclient-core` because transports read it from the request's
 /// `http::Extensions`, and they don't depend on `hclient`.
 ///
-/// # Not `#[non_exhaustive]` today, and a `const` builder is what would
-/// change that
+/// # `#[non_exhaustive]`, and the two things it took to afford it
 ///
-/// This is `TcpOpts`' argument: its whole use is
-/// `Timeouts { connect: Some(d), ..Default::default() }` — 52 of the 65
-/// literals in this workspace — and the attribute forbids the
-/// functional-update form as much as the exhaustive one from outside the
-/// defining crate, `E0639` for both, measured on a two-crate probe.
+/// A fifth bound is a real prospect — `resolve` joined three in v0.4 —
+/// and an out-of-tree caller should not need a major version for one. The
+/// attribute was refused twice on two objections, and both are answered
+/// rather than waived.
 ///
-/// **What that argument is missing is a `const fn` builder**, which
-/// `TcpOpts`' own statement of it does not consider either. A chain of
-/// `const fn` methods taking `self` by value composes in a `const`, from
-/// another crate, on a `#[non_exhaustive]` struct — measured, including
-/// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS`, which is the hardest call site
-/// here because `..Default::default()` is unavailable in a `const` at
-/// all. So the construction half of the objection is answerable, and the
-/// crate that answers it is `bon`: `#[builder(const)]` generates exactly
-/// that chain, verified on this struct's own shape against 3.10.1. A
-/// plain `#[derive(bon::Builder)]` does **not** — three `E0015`s on the
-/// `const`, which is the sort of thing to check before taking a
-/// dependency rather than after.
+/// **Construction, answered by `bon`.** Its whole use is
+/// `Timeouts { connect: Some(d), ..Default::default() }`, and the
+/// attribute forbids the functional-update form as firmly as the
+/// exhaustive one from outside this crate — `E0639` for both, measured on
+/// a two-crate probe. `#[builder(const)]` reopens it: `Timeouts::builder()
+/// .connect(d).build()` composes in a `const`, across a crate boundary,
+/// on a `#[non_exhaustive]` struct. The `const` matters because
+/// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is one, and there
+/// `..Default::default()` does not exist at all — `Default::default()` is
+/// not a `const fn`. A plain `#[derive(bon::Builder)]` is **not** const,
+/// three `E0015`s, which is worth checking before taking a dependency
+/// rather than after.
 ///
-/// **And on construction alone a fifth bound is the case it would get
-/// right.** Absence here means *unset*, so a caller who never heard of
-/// the new field wants `None` for it and a builder gives exactly that —
-/// the opposite of [`crate::caps::TimeoutSupport`], where absence is a
-/// claim and the compile error is the feature.
+/// **The gate, which no builder can answer.** `hclient`'s
+/// `check_timeouts_supported` refuses a bound the transport does not
+/// enforce, and it did so by destructuring this struct exhaustively — so
+/// a fifth bound was `E0027` inside the function that decides whether the
+/// bound is checked. `#[non_exhaustive]` bans a cross-crate exhaustive
+/// destructure as firmly as a literal (`E0638`), so the attribute alone
+/// would have forced a `..` there, and a `..` is where a new bound goes
+/// to be **silently unchecked**: the caller sets it, no transport
+/// enforces it, `build()` says nothing. That is the *silently ignored
+/// setting* defect this crate closes four times over, arriving through
+/// the door opened to prevent a different one.
 ///
-/// # What actually decides it is a `match`, not a literal
+/// [`Self::support_checks`] and [`Self::or`] are the answer: both
+/// destructures moved into this crate, where the attribute does not
+/// apply, and `hclient` consumes what they return. A builder answers only
+/// for **producers**, and these two are readers.
 ///
-/// `hclient`'s `check_timeouts_supported` destructures this struct
-/// exhaustively, and that is the gate refusing a bound the transport
-/// cannot honour. `#[non_exhaustive]` bans an exhaustive destructure
-/// from outside the defining crate as firmly as it bans a literal —
-/// `E0638`, measured — so taking the attribute forces a `..` there, and
-/// a `..` is where a newly added bound goes to be **silently unchecked**:
-/// a caller sets it, the transport does not enforce it, and `build()`
-/// says nothing.
-///
-/// That is the *silently ignored setting* defect this crate closes four
-/// times over, arriving through the door left open to prevent a different
-/// one. **A builder cannot reach it, `bon`'s included**: the gate is a
-/// reader rather than a producer, and it was checked that way rather than
-/// argued — a `bon` `#[builder(const)]` on the struct leaves the
-/// cross-crate destructure failing `E0638` exactly as before. So the
-/// attribute stays off, and the exhaustive destructure is the reason to
-/// keep it off.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// **The mirror image is [`crate::caps::TimeoutSupport`], and it keeps
+/// the opposite answer.** A bound left unset here means *the caller did
+/// not ask*, so a field a caller never heard of should be `None` and the
+/// builder gives exactly that. A field left unset there is a transport
+/// **claiming** it does not enforce something — a claim nobody wrote — so
+/// the exhaustive literal is the feature.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bon::Builder)]
+#[builder(const)]
+#[non_exhaustive]
 pub struct Timeouts {
     /// A bound on **getting an address to try**, separate from the connect
     /// budget that follows it.
@@ -108,6 +106,149 @@ pub struct Timeouts {
     pub connect: Option<core::time::Duration>,
     pub first_byte: Option<core::time::Duration>,
     pub between_bytes: Option<core::time::Duration>,
+}
+
+/// One bound of a [`Timeouts`], beside whether the transport enforces it
+/// and the name a refusal carries.
+///
+/// # Why [`Timeouts::support_checks`] hands back these rather than an array
+///
+/// The whole reason [`Timeouts`] is `#[non_exhaustive]` is that a fifth
+/// bound must not be a breaking change, and a `[_; 4]` return type would
+/// have made it one — the count is exactly the thing not to promise. So
+/// the method returns an iterator, the arity stays private, and a caller
+/// writes the same loop before and after a bound is added.
+///
+/// Named fields rather than a tuple for the same reason one layer down:
+/// `(bool, bool, &str)` puts two booleans side by side with nothing but
+/// position to tell *the caller asked for this* from *the transport
+/// enforces it*, and swapping them type-checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BoundSupport {
+    /// The caller set this bound.
+    pub requested: bool,
+    /// The transport enforces it.
+    pub supported: bool,
+    /// The name a refusal carries, e.g. `"connect_timeout"`.
+    pub what: &'static str,
+}
+
+impl Timeouts {
+    /// This value's bounds, falling back to `base` wherever this one is
+    /// unset — the per-request-over-client merge, field by field.
+    ///
+    /// **In this crate for [`Self::support_checks`]' reason.** A merge
+    /// that forgot a bound would drop the caller's setting silently, and
+    /// written in `hclient` under `#[non_exhaustive]` it would have to
+    /// carry a `..` — which a fifth bound joins without a word. Here the
+    /// destructure has no rest pattern, so a new bound is `E0027` on this
+    /// line, in the crate that grew it.
+    #[must_use]
+    pub fn or(&self, base: &Self) -> Self {
+        // No `..`: a bound added to this struct must fail this line.
+        let Self {
+            resolve,
+            connect,
+            first_byte,
+            between_bytes,
+        } = self;
+        Self {
+            resolve: resolve.or(base.resolve),
+            connect: connect.or(base.connect),
+            first_byte: first_byte.or(base.first_byte),
+            between_bytes: between_bytes.or(base.between_bytes),
+        }
+    }
+
+    /// This value with the connect budget replaced and the resolve bound
+    /// dropped — what a transport hands to one arm of a connection race.
+    ///
+    /// # Why this is a method and not a builder call
+    ///
+    /// The two call sites in `hclient-native` **narrow** a caller's
+    /// `Timeouts`: the resolve already happened, before the race, and each
+    /// arm gets what is left of the connect budget. Everything else the
+    /// caller set has to travel through untouched.
+    ///
+    /// A builder cannot express that, `bon`'s included, because a builder
+    /// starts from nothing: the site would have to re-list the bounds it
+    /// means to preserve —
+    /// `builder().maybe_first_byte(t.first_byte).maybe_between_bytes(..)`
+    /// — and a fifth bound would then be **dropped silently, still
+    /// compiling**. Measured on a two-crate probe before this method was
+    /// written, in both shapes: the re-listing form loses the new bound
+    /// and this one carries it with no edit at all.
+    ///
+    /// So it is the same rule as [`Self::support_checks`] a second time.
+    /// A builder answers for whoever *creates* a value; every place that
+    /// **transforms** one needs the transformation to live in the crate
+    /// that owns the fields, or a new field arrives somewhere nobody
+    /// looks.
+    #[must_use]
+    pub fn narrowed_to_connect(mut self, connect: core::time::Duration) -> Self {
+        // Field-wise rather than a literal, so a bound added to this
+        // struct is carried through here by construction — the property
+        // the doc above is about.
+        self.resolve = None;
+        self.connect = Some(connect);
+        self
+    }
+
+    /// Every bound this value sets, paired with the
+    /// [`crate::caps::TimeoutSupport`] field that says whether a transport
+    /// enforces it, and with the name a refusal carries.
+    ///
+    /// # This method is why the struct can be `#[non_exhaustive]`
+    ///
+    /// It holds the destructure that `hclient`'s
+    /// `check_timeouts_supported` used to hold, moved into the crate
+    /// where the attribute does not apply — see the type's own doc for
+    /// what the move buys. The pattern below has no `..`, so a fifth
+    /// bound is a compile error here rather than a bound nothing checks.
+    ///
+    /// # What it does not promise
+    ///
+    /// That the pairing is right. The compiler forces a new bound to be
+    /// *named*; whether it is given its own capability field is this
+    /// function's own correctness, pinned by
+    /// `every_bound_names_its_own_support_field` below rather than
+    /// asserted.
+    pub fn support_checks(
+        &self,
+        support: &crate::caps::TimeoutSupport,
+    ) -> impl Iterator<Item = BoundSupport> {
+        // No `..`: a bound added to this struct must fail this line.
+        let Self {
+            resolve,
+            connect,
+            first_byte,
+            between_bytes,
+        } = self;
+        [
+            BoundSupport {
+                requested: resolve.is_some(),
+                supported: support.resolve,
+                what: "resolve_timeout",
+            },
+            BoundSupport {
+                requested: connect.is_some(),
+                supported: support.connect,
+                what: "connect_timeout",
+            },
+            BoundSupport {
+                requested: first_byte.is_some(),
+                supported: support.first_byte,
+                what: "first_byte_timeout",
+            },
+            BoundSupport {
+                requested: between_bytes.is_some(),
+                supported: support.between_bytes,
+                what: "between_bytes_timeout",
+            },
+        ]
+        .into_iter()
+    }
 }
 
 /// The caller's per-request statement that this request may go into TLS 1.3
@@ -317,6 +458,150 @@ pub fn check_version(
 mod tests {
     use super::*;
     use std::error::Error as StdError;
+
+    /// **Each bound is paired with its own support field, and with the
+    /// name a caller reads in the refusal.**
+    ///
+    /// [`Timeouts::support_checks`]' destructure makes a new bound a
+    /// compile error; nothing about it says the *pairing* is right, and a
+    /// mis-paired row is a bound checked against another bound's
+    /// capability — a setting refused for the wrong reason, or honoured
+    /// where it should be refused. So each row is exercised alone:
+    /// exactly one bound set, exactly one support field withheld, and the
+    /// row that must complain is the row that names it.
+    ///
+    /// A table rather than four tests, because what it asserts is a
+    /// property of the whole set — that no two rows answer for each other
+    /// — and a fifth bound should extend a list rather than need a fifth
+    /// copy of a test.
+    #[test]
+    fn every_bound_names_its_own_support_field() {
+        use crate::caps::TimeoutSupport;
+        use core::time::Duration;
+
+        let all = TimeoutSupport::builder()
+            .resolve(true)
+            .connect(true)
+            .first_byte(true)
+            .between_bytes(true)
+            .build();
+        let d = Duration::from_secs(1);
+
+        // (set exactly this bound, withhold exactly this support, expect this name)
+        /// One row: build a `Timeouts` with exactly this bound set,
+        /// withhold exactly this support, and expect exactly this name.
+        type Row = (
+            fn(Duration) -> Timeouts,
+            fn(&mut TimeoutSupport),
+            &'static str,
+        );
+
+        let table: [Row; 4] = [
+            (
+                |d| Timeouts::builder().resolve(d).build(),
+                |s| s.resolve = false,
+                "resolve_timeout",
+            ),
+            (
+                |d| Timeouts::builder().connect(d).build(),
+                |s| s.connect = false,
+                "connect_timeout",
+            ),
+            (
+                |d| Timeouts::builder().first_byte(d).build(),
+                |s| s.first_byte = false,
+                "first_byte_timeout",
+            ),
+            (
+                |d| Timeouts::builder().between_bytes(d).build(),
+                |s| s.between_bytes = false,
+                "between_bytes_timeout",
+            ),
+        ];
+
+        for (build, withhold, name) in table {
+            let t = build(d);
+            let mut s = all;
+            withhold(&mut s);
+
+            let complaints: Vec<&str> = t
+                .support_checks(&s)
+                .filter(|b| b.requested && !b.supported)
+                .map(|b| b.what)
+                .collect();
+            assert_eq!(
+                complaints,
+                vec![name],
+                "setting `{name}`'s bound while withholding `{name}`'s support \
+                 must complain about `{name}` and about nothing else"
+            );
+
+            // The control: with every support granted the same bound is fine,
+            // so the row above is discriminating on the withheld field rather
+            // than complaining about everything.
+            let none: Vec<&str> = t
+                .support_checks(&all)
+                .filter(|b| b.requested && !b.supported)
+                .map(|b| b.what)
+                .collect();
+            assert!(
+                none.is_empty(),
+                "`{name}` must be accepted when its support is reported"
+            );
+        }
+    }
+
+    /// An unset bound asks nothing of a transport, whatever it reports.
+    ///
+    /// This is the property that makes a *new* bound safe to add under
+    /// `#[non_exhaustive]`: a caller who never heard of it leaves it
+    /// unset, and unset must never be a refusal.
+    #[test]
+    fn an_unset_bound_is_never_refused() {
+        use crate::caps::TimeoutSupport;
+        let refused: Vec<&str> = Timeouts::default()
+            .support_checks(&TimeoutSupport::default())
+            .filter(|b| b.requested && !b.supported)
+            .map(|b| b.what)
+            .collect();
+        assert!(refused.is_empty(), "{refused:?}");
+    }
+
+    /// The merge takes this value's bound where it has one and the base's
+    /// otherwise, per field and with no field answering for another.
+    #[test]
+    fn the_merge_is_field_by_field() {
+        use core::time::Duration;
+        let client = Timeouts::builder()
+            .connect(Duration::from_secs(1))
+            .first_byte(Duration::from_secs(2))
+            .build();
+        let request = Timeouts::builder().connect(Duration::from_secs(9)).build();
+
+        let eff = request.or(&client);
+        assert_eq!(eff.connect, Some(Duration::from_secs(9)), "request wins");
+        assert_eq!(
+            eff.first_byte,
+            Some(Duration::from_secs(2)),
+            "unset in the request, so the client's stands"
+        );
+        assert_eq!(eff.resolve, None, "set by neither");
+    }
+
+    /// A `const` is where the builder earns its place: `Default::default()`
+    /// is not a `const fn`, so a `#[non_exhaustive]` struct written into
+    /// one has no functional-update form to fall back on. Consumers do
+    /// write them — `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is one.
+    #[test]
+    fn the_builder_composes_in_a_const() {
+        use core::time::Duration;
+        const T: Timeouts = Timeouts::builder()
+            .connect(Duration::from_secs(2))
+            .first_byte(Duration::from_secs(5))
+            .build();
+        assert_eq!(T.connect, Some(Duration::from_secs(2)));
+        assert_eq!(T.between_bytes, None);
+    }
 
     #[test]
     fn an_unmarked_request_is_satisfied_by_every_version() {

@@ -96,11 +96,7 @@ where
 {
     let t = Native::new(rt.clone(), Rustls::with_webpki_roots(), SystemDns::new(rt));
     let c = Client::builder(t)
-        .timeouts(Timeouts {
-            resolve: None,
-            connect: Some(Duration::from_secs(5)),
-            ..Default::default()
-        })
+        .timeouts(Timeouts::builder().connect(Duration::from_secs(5)).build())
         .build()
         .unwrap();
     c.get(format!("http://{addr}/"))

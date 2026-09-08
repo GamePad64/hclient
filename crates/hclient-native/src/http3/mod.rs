@@ -503,12 +503,17 @@ fn capabilities(early_data: EarlyDataSupport, client_certs: bool) -> Capabilitie
     // wrapper holding a sleep, the shape `hclient_native::IdleTimeout` has.
     // Declaring either without that is the silent no-op this field exists
     // to make impossible.
-    c.timeouts = TimeoutSupport {
-        resolve: true,
-        connect: true,
-        first_byte: false,
-        between_bytes: false,
-    };
+    // `first_byte` and `between_bytes` are `false`: this stack does not
+    // enforce them where `hclient-native`'s TCP path does, which is the
+    // disagreement the pair's capability table resolves. Stated rather
+    // than defaulted — `bon` requires every member here, so a bound added
+    // later is a compile error on this line rather than a silent `false`.
+    c.timeouts = TimeoutSupport::builder()
+        .resolve(true)
+        .connect(true)
+        .first_byte(false)
+        .between_bytes(false)
+        .build();
     c
 }
 

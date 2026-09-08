@@ -392,6 +392,15 @@ fn a_capability_only_one_member_has_is_not_promised_by_the_pair() {
         "informational_1xx",
         "version_select",
         "version_reported",
+        // `resolve` was absent from this list from the day the field
+        // arrived in v0.4 until the composite was rewritten, and the
+        // composite computed it from **`connect`** on both members the
+        // whole time. Both stacks answer `true` to both, so no run could
+        // tell the two expressions apart — a capability that would have
+        // started lying the moment one member stopped bounding one of
+        // them. A list of field names is exactly as complete as the last
+        // person to extend it.
+        "timeouts.resolve",
         "timeouts.connect",
         "timeouts.first_byte",
         "timeouts.between_bytes",
@@ -431,6 +440,7 @@ fn set(c: &mut Capabilities, field: &str, v: bool) {
         "informational_1xx" => c.informational_1xx = v,
         "version_select" => c.version_select = v,
         "version_reported" => c.version_reported = v,
+        "timeouts.resolve" => c.timeouts.resolve = v,
         "timeouts.connect" => c.timeouts.connect = v,
         "timeouts.first_byte" => c.timeouts.first_byte = v,
         "timeouts.between_bytes" => c.timeouts.between_bytes = v,
@@ -449,6 +459,7 @@ fn get(c: &Capabilities, field: &str) -> bool {
         "informational_1xx" => c.informational_1xx,
         "version_select" => c.version_select,
         "version_reported" => c.version_reported,
+        "timeouts.resolve" => c.timeouts.resolve,
         "timeouts.connect" => c.timeouts.connect,
         "timeouts.first_byte" => c.timeouts.first_byte,
         "timeouts.between_bytes" => c.timeouts.between_bytes,

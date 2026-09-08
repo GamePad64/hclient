@@ -76,11 +76,11 @@ async fn end_to_end_through_the_client() {
 #[wasm_bindgen_test]
 async fn build_rejects_timeouts_fetch_cannot_express() {
     let err = Client::builder(Fetch::new())
-        .timeouts(hclient::Timeouts {
-            resolve: None,
-            connect: Some(Duration::from_secs(1)),
-            ..Default::default()
-        })
+        .timeouts(
+            hclient::Timeouts::builder()
+                .connect(Duration::from_secs(1))
+                .build(),
+        )
         .build()
         .unwrap_err();
     assert_eq!(err.what, "connect_timeout");

@@ -397,12 +397,19 @@ pub(crate) fn probe() -> Capabilities {
     // three phase timeouts (`connect`/`first_byte`/`between_bytes`) can be
     // expressed through it individually. Declaring any of the three would
     // be a capability that lies.
-    c.timeouts = TimeoutSupport {
-        resolve: false,
-        connect: false,
-        first_byte: false,
-        between_bytes: false,
-    };
+    // Every bound `false`, and every one of them stated: `bon` makes a
+    // non-`Option` member **required**, so a bound added to
+    // `TimeoutSupport` later is `Unset` here rather than a silent `false`.
+    // That is the property this type wants and `Timeouts` does not — there
+    // an unset field is *the caller did not ask*, here it is a transport
+    // claiming it does not enforce something, and a claim nobody wrote is
+    // the thing to refuse.
+    c.timeouts = TimeoutSupport::builder()
+        .resolve(false)
+        .connect(false)
+        .first_byte(false)
+        .between_bytes(false)
+        .build();
     c.tls_config = TlsSupport::None;
     // There is no `upgrade` field to set: `WebSocket` in the browser is a
     // wholly separate global, unreachable from a `fetch`-shaped

@@ -135,11 +135,8 @@ pub(crate) fn spend_connect_budget(req: &mut http::Request<RequestBody>, spent: 
     // what is left — including nothing at all, which is a bound the
     // member will answer with its own `Timeout(Connect)` one instant
     // before it would have anyway.
-    req.extensions_mut().insert(Timeouts {
-        resolve: None,
-        connect: Some(left),
-        ..timeouts
-    });
+    req.extensions_mut()
+        .insert(timeouts.narrowed_to_connect(left));
     !left.is_zero()
 }
 

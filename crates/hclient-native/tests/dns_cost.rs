@@ -109,11 +109,8 @@ fn get(uri: String) -> http::Request<RequestBody> {
         .uri(uri)
         .body(RequestBody::Empty)
         .expect("a well-formed request");
-    req.extensions_mut().insert(Timeouts {
-        resolve: None,
-        connect: Some(CONNECT),
-        ..Timeouts::default()
-    });
+    req.extensions_mut()
+        .insert(Timeouts::builder().connect(CONNECT).build());
     req
 }
 

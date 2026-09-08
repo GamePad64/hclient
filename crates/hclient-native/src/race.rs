@@ -294,11 +294,8 @@ fn set_connect(req: &mut http::Request<RequestBody>, connect: Duration) {
         .get::<Timeouts>()
         .copied()
         .unwrap_or_default();
-    req.extensions_mut().insert(Timeouts {
-        resolve: None,
-        connect: Some(connect),
-        ..timeouts
-    });
+    req.extensions_mut()
+        .insert(timeouts.narrowed_to_connect(connect));
 }
 
 /// What the caller's `Timeouts::connect` leaves for a second connect started
@@ -554,11 +551,11 @@ mod tests {
             .expect("a well-formed request");
         req.extensions_mut()
             .insert(hclient_core::req::RequireVersion(http::Version::HTTP_3));
-        req.extensions_mut().insert(Timeouts {
-            resolve: None,
-            connect: Some(Duration::from_millis(300)),
-            ..Default::default()
-        });
+        req.extensions_mut().insert(
+            Timeouts::builder()
+                .connect(Duration::from_millis(300))
+                .build(),
+        );
 
         let probe = probe(&req);
 

@@ -280,11 +280,9 @@ async fn a_reported_network_change_lets_a_failed_origin_be_tried_again() {
 /// not have been given time for.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_fallback_spends_what_is_left_of_the_connect_bound_and_no_more() {
-    let bound = Timeouts {
-        resolve: None,
-        connect: Some(Duration::from_millis(300)),
-        ..Default::default()
-    };
+    let bound = Timeouts::builder()
+        .connect(Duration::from_millis(300))
+        .build();
 
     // Arm A — the QUIC arm fails at once, so the bound has room.
     let pair = servers::start_with_quic(Quic::Rejecting);

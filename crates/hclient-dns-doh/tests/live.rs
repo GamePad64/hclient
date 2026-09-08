@@ -132,12 +132,11 @@ const BACKOFF: Duration = Duration::from_millis(250);
 ///
 /// Set through the public `Doh::timeouts`, which is the knob a deployment on
 /// a bad link would reach for too.
-const LIVE_TIMEOUTS: hclient_core::req::Timeouts = hclient_core::req::Timeouts {
-    resolve: None,
-    connect: Some(Duration::from_secs(5)),
-    first_byte: Some(Duration::from_secs(5)),
-    between_bytes: Some(Duration::from_secs(5)),
-};
+const LIVE_TIMEOUTS: hclient_core::req::Timeouts = hclient_core::req::Timeouts::builder()
+    .connect(Duration::from_secs(5))
+    .first_byte(Duration::from_secs(5))
+    .between_bytes(Duration::from_secs(5))
+    .build();
 
 /// A public DoH endpoint, and who runs it.
 #[derive(Debug, Clone, Copy)]

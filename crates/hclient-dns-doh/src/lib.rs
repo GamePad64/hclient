@@ -191,17 +191,22 @@ const DNS_MESSAGE: &str = "application/dns-message";
 /// defaults to a 5 s timeout with 2 attempts), so that a DoH lookup does
 /// not silently become the slowest thing in a connection attempt. Override
 /// with [`Doh::timeouts`].
-const DEFAULT_TIMEOUTS: Timeouts = Timeouts {
-    // `None`, and it would be a category error to set it: this is the
-    // resolver's own client, so a `resolve` bound here would be a bound on
-    // resolving the name of the thing that resolves names. `Doh::pinned`
-    // takes an IP literal and `Doh::bootstrapped` a name whose lookup is
-    // the fallback resolver's, bounded by whatever that one carries.
-    resolve: None,
-    connect: Some(Duration::from_secs(2)),
-    first_byte: Some(Duration::from_secs(5)),
-    between_bytes: Some(Duration::from_secs(5)),
-};
+// `resolve` is left unset, and it would be a category error to set it:
+// this is the resolver's own client, so a `resolve` bound here would be a
+// bound on resolving the name of the thing that resolves names.
+// `Doh::pinned` takes an IP literal and `Doh::bootstrapped` a name whose
+// lookup is the fallback resolver's, bounded by whatever that one carries.
+//
+// The builder rather than a literal because `Timeouts` is
+// `#[non_exhaustive]`, and it works in a `const` because that builder is
+// `#[builder(const)]` — which is the pair of facts the attribute needed
+// before it could be taken. `..Default::default()` would not compile here:
+// `Default::default()` is not a `const fn`.
+const DEFAULT_TIMEOUTS: Timeouts = Timeouts::builder()
+    .connect(Duration::from_secs(2))
+    .first_byte(Duration::from_secs(5))
+    .between_bytes(Duration::from_secs(5))
+    .build();
 
 /// The absence of a fallback resolver, as a type.
 ///

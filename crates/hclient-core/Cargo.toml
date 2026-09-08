@@ -14,6 +14,7 @@ repository.workspace = true
 all-features = true
 
 [dependencies]
+bon       = { workspace = true }
 bytes     = { workspace = true }
 # The two halves of the WebSocket seam's shape, and nothing else from the
 # `futures` family: both are dependency-free type-only crates, and both

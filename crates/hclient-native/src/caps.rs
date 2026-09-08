@@ -113,12 +113,20 @@ pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, 
     // `between_bytes` and `hclient-h3` does not, while `connect` is
     // enforced by both. Declaring a bound that one stack silently ignores
     // is the exact no-op v0.2 W4 made this field exist to prevent.
-    c.timeouts = hclient_core::caps::TimeoutSupport {
-        resolve: tcp.timeouts.connect && quic.timeouts.connect,
-        connect: tcp.timeouts.connect && quic.timeouts.connect,
-        first_byte: tcp.timeouts.first_byte && quic.timeouts.first_byte,
-        between_bytes: tcp.timeouts.between_bytes && quic.timeouts.between_bytes,
-    };
+    //
+    // `resolve` read `tcp.timeouts.connect && quic.timeouts.connect` until
+    // this line was rewritten — the **connect** fields of both members, on
+    // the row that reports `resolve`. Latent rather than live: both stacks
+    // answer `true` to both today, so the two expressions agree and no
+    // test could tell them apart. It would have become a capability that
+    // lies the moment one member stopped bounding one of the two, which is
+    // precisely the drift the pair exists to catch.
+    c.timeouts = hclient_core::caps::TimeoutSupport::builder()
+        .resolve(tcp.timeouts.resolve && quic.timeouts.resolve)
+        .connect(tcp.timeouts.connect && quic.timeouts.connect)
+        .first_byte(tcp.timeouts.first_byte && quic.timeouts.first_byte)
+        .between_bytes(tcp.timeouts.between_bytes && quic.timeouts.between_bytes)
+        .build();
 
     // --- the field where the stronger value is the true one -------------
     c.early_data = early_data(tcp, quic);

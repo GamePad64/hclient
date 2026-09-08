@@ -191,23 +191,19 @@ fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
     use std::time::Duration;
 
     let mut caps = hclient::caps::Capabilities::default();
-    caps.timeouts = hclient::caps::TimeoutSupport {
-        resolve: false,
-        connect: true,
-        first_byte: true,
-        between_bytes: true,
-    };
+    caps.timeouts = hclient::caps::TimeoutSupport::builder()
+        .resolve(false)
+        .connect(true)
+        .first_byte(true)
+        .between_bytes(true)
+        .build();
     let m = MockTransport::new().with_capabilities(caps);
     m.push_response(http::Response::builder().status(200).body("").unwrap());
 
     let c = Client::builder(m).build().unwrap();
     let _ = futures_executor::block_on(
         c.get("https://a/x")
-            .timeouts(Timeouts {
-                resolve: None,
-                connect: Some(Duration::from_secs(3)),
-                ..Default::default()
-            })
+            .timeouts(Timeouts::builder().connect(Duration::from_secs(3)).build())
             .send(),
     )
     .unwrap();

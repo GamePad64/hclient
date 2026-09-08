@@ -86,11 +86,7 @@ fn request(pair: &Pair, timeouts: Option<Timeouts>) -> http::Request<RequestBody
 }
 
 fn bound(connect: Duration) -> Timeouts {
-    Timeouts {
-        resolve: None,
-        connect: Some(connect),
-        ..Default::default()
-    }
+    Timeouts::builder().connect(connect).build()
 }
 
 /// What one hop did, as the **servers** saw it, plus what the caller got.

@@ -135,12 +135,13 @@ async fn an_ip_literal_asks_for_no_https_record_either() {
 #[tokio::test]
 async fn a_first_byte_bound_ends_a_lookup_a_silent_server_would_not() {
     let server = Server::spawn(|_| Reply::Silence);
-    let doh = doh(&server).timeouts(Timeouts {
-        resolve: None,
-        connect: Some(BOUND),
-        first_byte: Some(BOUND),
-        between_bytes: Some(BOUND),
-    });
+    let doh = doh(&server).timeouts(
+        Timeouts::builder()
+            .connect(BOUND)
+            .first_byte(BOUND)
+            .between_bytes(BOUND)
+            .build(),
+    );
 
     let items = tokio::time::timeout(PATIENCE, async {
         doh.lookup("example.com", rtype::A)
@@ -160,12 +161,7 @@ async fn a_first_byte_bound_ends_a_lookup_a_silent_server_would_not() {
 #[tokio::test]
 async fn the_same_silent_server_hangs_with_every_bound_unset() {
     let server = Server::spawn(|_| Reply::Silence);
-    let doh = doh(&server).timeouts(Timeouts {
-        resolve: None,
-        connect: None,
-        first_byte: None,
-        between_bytes: None,
-    });
+    let doh = doh(&server).timeouts(Timeouts::builder().build());
 
     let outcome = tokio::time::timeout(PATIENCE, async {
         doh.lookup("example.com", rtype::A)

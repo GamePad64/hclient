@@ -31,12 +31,12 @@ fn secs(n: u64) -> Option<Duration> {
 /// under test.
 fn all_timeouts_supported() -> Capabilities {
     let mut caps = Capabilities::default();
-    caps.timeouts = TimeoutSupport {
-        resolve: false,
-        connect: true,
-        first_byte: true,
-        between_bytes: true,
-    };
+    caps.timeouts = TimeoutSupport::builder()
+        .resolve(false)
+        .connect(true)
+        .first_byte(true)
+        .between_bytes(true)
+        .build();
     caps
 }
 
@@ -51,11 +51,7 @@ fn client_level_timeouts_reach_the_transport() {
     m.push_response(http::Response::builder().status(200).body("").unwrap());
 
     let c = Client::builder(m)
-        .timeouts(Timeouts {
-            resolve: None,
-            connect: secs(7),
-            ..Default::default()
-        })
+        .timeouts(Timeouts::builder().maybe_connect(secs(7)).build())
         .build()
         .unwrap();
     futures_executor::block_on(c.get("https://a/x").send()).unwrap();
@@ -82,21 +78,18 @@ fn request_timeouts_override_the_client_field_by_field() {
     m.push_response(http::Response::builder().status(200).body("").unwrap());
 
     let c = Client::builder(m)
-        .timeouts(Timeouts {
-            resolve: None,
-            connect: secs(1),
-            first_byte: secs(2),
-            between_bytes: secs(3),
-        })
+        .timeouts(
+            Timeouts::builder()
+                .maybe_connect(secs(1))
+                .maybe_first_byte(secs(2))
+                .maybe_between_bytes(secs(3))
+                .build(),
+        )
         .build()
         .unwrap();
     futures_executor::block_on(
         c.get("https://a/x")
-            .timeouts(Timeouts {
-                resolve: None,
-                first_byte: secs(9),
-                ..Default::default()
-            })
+            .timeouts(Timeouts::builder().maybe_first_byte(secs(9)).build())
             .send(),
     )
     .unwrap();
@@ -136,11 +129,7 @@ fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
     let c = Client::builder(m).build().unwrap();
     let err = futures_executor::block_on(
         c.get("https://a/x")
-            .timeouts(Timeouts {
-                resolve: None,
-                connect: secs(3),
-                ..Default::default()
-            })
+            .timeouts(Timeouts::builder().maybe_connect(secs(3)).build())
             .send(),
     )
     .expect_err(
@@ -213,19 +202,16 @@ fn an_all_none_timeouts_is_inserted_unconditionally_and_trips_no_capability_gate
 #[test]
 fn an_unsupported_resolve_timeout_is_refused_under_its_own_name() {
     let mut caps = hclient::caps::Capabilities::default();
-    caps.timeouts = hclient::caps::TimeoutSupport {
-        resolve: false,
+    caps.timeouts = hclient::caps::TimeoutSupport::builder()
+        .resolve(false)
         // The three a backend may well support while resolution is the
         // host's — which is `hclient-wasi`'s exact answer.
-        connect: true,
-        first_byte: true,
-        between_bytes: true,
-    };
+        .connect(true)
+        .first_byte(true)
+        .between_bytes(true)
+        .build();
     let err = Client::builder(MockTransport::new().with_capabilities(caps.clone()))
-        .timeouts(Timeouts {
-            resolve: secs(1),
-            ..Default::default()
-        })
+        .timeouts(Timeouts::builder().maybe_resolve(secs(1)).build())
         .build()
         .expect_err("the backend says it cannot bound resolution");
     assert_eq!(err.what, "resolve_timeout", "{err}");
@@ -234,10 +220,7 @@ fn an_unsupported_resolve_timeout_is_refused_under_its_own_name() {
     caps.timeouts.resolve = true;
     assert!(
         Client::builder(MockTransport::new().with_capabilities(caps))
-            .timeouts(Timeouts {
-                resolve: secs(1),
-                ..Default::default()
-            })
+            .timeouts(Timeouts::builder().maybe_resolve(secs(1)).build())
             .build()
             .is_ok()
     );

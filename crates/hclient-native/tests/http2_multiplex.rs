@@ -494,11 +494,11 @@ async fn a_spawner_that_never_runs_hangs_the_request_and_first_byte_is_what_cuts
         .uri(format!("https://{}/b", server.addr))
         .body(RequestBody::Empty)
         .unwrap();
-    req.extensions_mut().insert(Timeouts {
-        resolve: None,
-        first_byte: Some(Duration::from_millis(200)),
-        ..Timeouts::default()
-    });
+    req.extensions_mut().insert(
+        Timeouts::builder()
+            .first_byte(Duration::from_millis(200))
+            .build(),
+    );
     let err = tokio::time::timeout(BOUND, client.execute(req))
         .await
         .expect("the bound must turn the hang into an answer")
@@ -985,11 +985,8 @@ fn bounded(url: &str, connect: Duration) -> http::Request<RequestBody> {
         .uri(url)
         .body(RequestBody::Empty)
         .unwrap();
-    req.extensions_mut().insert(Timeouts {
-        resolve: None,
-        connect: Some(connect),
-        ..Timeouts::default()
-    });
+    req.extensions_mut()
+        .insert(Timeouts::builder().connect(connect).build());
     req
 }
 

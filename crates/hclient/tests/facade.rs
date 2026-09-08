@@ -215,12 +215,12 @@ fn capability_support_types_are_reachable_from_the_facade() {
     caps.redirects = hclient::caps::RedirectSupport::Transparent;
     caps.tls_config = hclient::caps::TlsSupport::Full;
     caps.early_data = hclient::caps::EarlyDataSupport::Supported;
-    caps.timeouts = hclient::caps::TimeoutSupport {
-        resolve: false,
-        connect: true,
-        first_byte: true,
-        between_bytes: false,
-    };
+    caps.timeouts = hclient::caps::TimeoutSupport::builder()
+        .resolve(false)
+        .connect(true)
+        .first_byte(true)
+        .between_bytes(false)
+        .build();
     assert_eq!(caps.redirects, hclient::caps::RedirectSupport::Transparent);
     assert_eq!(caps.tls_config, hclient::caps::TlsSupport::Full);
     assert_eq!(caps.early_data, hclient::caps::EarlyDataSupport::Supported);

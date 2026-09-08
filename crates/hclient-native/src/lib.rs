@@ -846,7 +846,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // request, and a request that does not ask is unaffected by every
         // line of it.
         caps.version_select = true;
-        caps.timeouts = TimeoutSupport {
+        caps.timeouts = TimeoutSupport::builder()
             // Enforced by `connect::first_address_within`, and its scope is
             // narrower than the field name suggests on purpose: it bounds
             // the wait for the **first address from either family**, not a
@@ -854,7 +854,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // resolution finished. `Timeouts::resolve`'s own doc has the
             // argument; `tests/timeouts.rs` has the server that never
             // answers a query.
-            resolve: true,
+            .resolve(true)
             // Actually enforced — see `execute`'s race between
             // `connect::connect` and `rt.sleep(d)`, below, and
             // `tests/transport.rs`'s
@@ -875,7 +875,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // race_not_a_single_attempt` pins this by counting how many
             // Happy Eyeballs attempts two different deadlines let through,
             // not merely that a timeout fires.
-            connect: true,
+            .connect(true)
             // Both enforced as of v0.2 W4's middle bullet, and declared
             // in the same commit that enforced them — the rule that item
             // was written under. Neither is the pool's idle timeout
@@ -896,9 +896,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // Both are checked from outside the client, by servers that
             // send a head and then nothing and that stop mid-body:
             // `tests/timeouts.rs`.
-            first_byte: true,
-            between_bytes: true,
-        };
+            .first_byte(true)
+            .between_bytes(true)
+            .build();
         Self {
             watch_1xx: None,
             expect_continue: None,

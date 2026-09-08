@@ -91,12 +91,12 @@ fn transparent_mock() -> MockTransport {
 fn full_mock() -> MockTransport {
     let mut caps = Capabilities::default();
     caps.redirects = RedirectSupport::Transparent;
-    caps.timeouts = TimeoutSupport {
-        resolve: false,
-        connect: true,
-        first_byte: true,
-        between_bytes: true,
-    };
+    caps.timeouts = TimeoutSupport::builder()
+        .resolve(false)
+        .connect(true)
+        .first_byte(true)
+        .between_bytes(true)
+        .build();
     MockTransport::new().with_capabilities(caps)
 }
 

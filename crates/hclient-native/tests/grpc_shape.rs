@@ -1581,11 +1581,7 @@ async fn an_idle_stream_survives_by_default_and_is_cut_only_when_asked() {
 
     // B. The same server, with a `between_bytes` bound under the gap.
     let bounded = Client::builder(transport())
-        .timeouts(Timeouts {
-            resolve: None,
-            between_bytes: Some(IDLE_GAP / 4),
-            ..Default::default()
-        })
+        .timeouts(Timeouts::builder().between_bytes(IDLE_GAP / 4).build())
         .build()
         .unwrap();
     let resp = tokio::time::timeout(

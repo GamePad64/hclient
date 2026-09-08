@@ -314,29 +314,38 @@ pub enum TlsSupport {
 /// the field-per-field mirror of that struct, so a refusal can name the
 /// bound a caller set rather than saying *timeouts*.
 ///
-/// # Not `#[non_exhaustive]`, and here the compile error is the feature
+/// # `#[non_exhaustive]`, and `bon` is what keeps the compile error
 ///
 /// This struct has grown once already — `resolve` joined three fields in
 /// v0.4 — and it grows again whenever [`crate::req::Timeouts`] does,
 /// which is the mirror working rather than a hazard.
 ///
-/// A `const fn` builder would make the attribute affordable, and that is
-/// measured rather than assumed: such a chain composes across a crate
-/// boundary on a `#[non_exhaustive]` struct, even in a `const`. **It is
-/// refused here anyway, and the mirror is what separates the two types.**
-/// A bound left unset in [`crate::req::Timeouts`] means *the caller did
-/// not ask*, so a field a caller has never heard of should be `None` and
-/// a builder gives that. A bound left unset **here** is a transport
-/// saying *I do not enforce this* — a claim, made by a value nobody
-/// wrote.
+/// **The mirror is what separates this type from
+/// [`crate::req::Timeouts`], and the two take the attribute for opposite
+/// reasons.** A bound left unset there means *the caller did not ask*, so
+/// a field a caller never heard of should be `None`. A field left unset
+/// **here** is a transport saying *I do not enforce this* — a claim, made
+/// by a value nobody wrote — and the exhaustive literal was what stopped
+/// that: a new field was a compile error at every transport on the day it
+/// arrived, which is how `resolve` got an honest `false` out of the two
+/// ambient backends rather than a defaulted one.
 ///
-/// So an exhaustive literal is what this type wants: a new field is a
-/// compile error at every transport on the day it arrives, which is how
-/// `resolve` got an honest `false` out of the two ambient backends rather
-/// than a defaulted one. A builder — or a `..Default::default()` — would
-/// have given them `false` silently, and silently is the direction the
-/// whole capability set exists to prevent.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// **`bon` keeps that property and the attribute together.** A
+/// non-`Option` member is **required** in the generated builder, so a
+/// field added here is `Unset` at every transport — measured on a
+/// two-crate probe, `E0277` naming the member — while the attribute stops
+/// an out-of-tree reader breaking on it. What the literal did by
+/// accident of exhaustiveness, the builder does on purpose, and the
+/// consumer that only *reads* the value no longer pays for it.
+///
+/// The mirror holds in the generated code too: over in `Timeouts` every
+/// member is an `Option`, which `bon` makes optional, so an unset bound
+/// there is `None` and an unset claim here is a compile error. Same
+/// derive, opposite behaviour, because the field types already said which
+/// was wanted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bon::Builder)]
+#[builder(const)]
+#[non_exhaustive]
 pub struct TimeoutSupport {
     /// Whether [`crate::req::Timeouts::resolve`] is enforced. Honestly `false` on
     /// every ambient backend: `wasi:http` and `fetch` do the resolving

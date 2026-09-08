@@ -858,11 +858,8 @@ mod tests {
         m.push_response(http::Response::builder().status(200).body("").unwrap());
 
         let mut req = http::Request::new(RequestBody::Empty);
-        req.extensions_mut().insert(Timeouts {
-            resolve: None,
-            connect: Some(Duration::from_secs(3)),
-            ..Default::default()
-        });
+        req.extensions_mut()
+            .insert(Timeouts::builder().connect(Duration::from_secs(3)).build());
 
         futures_executor::block_on(m.execute(req)).unwrap();
 
