@@ -13,8 +13,17 @@
 //! authentication, and `hclient` re-exports these under
 //! `hclient::auth` so nothing a consumer writes moves — but an
 //! **implementor** should not have to depend on a whole HTTP client to
-//! reach a two-method trait. Measured before the move: reaching it
-//! through `hclient` cost 32 crates against this crate's 16.
+//! reach a two-method trait.
+//!
+//! Measured, and the figures are the perishable half of that: on
+//! 2026-09-08, `cargo tree -e no-proc-macro,normal` counts **9** crates
+//! for `hclient-core` against **42** for `hclient` on its default
+//! features, or **21** with none. It read *32 against 16* for as long as
+//! this paragraph existed, from a measurement taken before the move and
+//! never retaken — both halves have since moved, `hclient-core`'s by this
+//! crate's own doing. **What is load-bearing is the ratio and not the
+//! numbers**: an implementor of a two-method trait pays a fraction of the
+//! facade's graph, and that stays true however either figure drifts.
 //!
 //! What stayed behind is what belongs to the client rather than to the
 //! seam: `MAX_LEGS`, which is a bound `Client::run` enforces, the

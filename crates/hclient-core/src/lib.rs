@@ -1,6 +1,43 @@
 //! Plugin contract for hclient: the traits a backend, a runtime or a
 //! resolver implements, and the vocabulary types they exchange.
 //!
+//! # Which door is yours
+//!
+//! Twelve modules, and a reader needs at most two of them. The split is
+//! not by topic but by **audience**, which is the same line the module
+//! declarations below are grouped on.
+//!
+//! **Implementing a backend, a runtime or a resolver** — you write one of
+//! these traits:
+//!
+//! | trait | in | you are writing |
+//! |---|---|---|
+//! | [`transport::Transport`] | [`transport`] | an HTTP backend; [`transport::SendTransport`] beside it if its futures are `Send` |
+//! | [`timer::Timer`] | [`timer`] | a runtime's clock |
+//! | [`websocket::WebSocketConnect`] | [`websocket`] | a backend that can open a WebSocket |
+//! | [`auth::Auth`] / [`auth::AuthFlow`] | [`auth`] | an authentication scheme — NTLM, Negotiate |
+//! | [`hooks::Hooks`] | [`hooks`] | an observer of requests and connections |
+//!
+//! **Using this crate's vocabulary** — the types those traits exchange:
+//! [`body`] for a request body and what may be replayed, [`caps`] for what
+//! a transport says it can do, [`req`] for what a caller asked of one
+//! request, [`error`] for how anything fails, and [`identity`] for an mTLS
+//! label.
+//!
+//! **Neither** — [`erased`] is how `hclient::Client` boxes a transport and
+//! a clock, and no backend author writes anything in it: its two traits
+//! carry blanket impls. [`host`] is one function.
+//!
+//! **And a caller of `hclient` needs none of this.** Every type here that
+//! a caller meets is re-exported from that crate under a shorter path —
+//! `hclient::caps`, `hclient::hooks`, `hclient::Error`. This crate is the
+//! door for whoever is *implementing* something, which is why the auth
+//! seam lives here rather than in `hclient` — an implementor of a
+//! two-method trait should not carry a whole HTTP client's graph. The
+//! measurement is in [`auth`]'s own module doc rather than repeated here,
+//! because a figure copied to a second place is a figure that goes stale
+//! in two.
+//!
 //! # The `Send` rule
 //!
 //! **The seam traits declare no `Send`/`Sync` bounds.** `Transport`,
@@ -77,11 +114,19 @@ pub mod req;
 // validated against every backend" — naming native, `wasi:http` and
 // fetch.
 //
-// **That condition is met.** `Transport` is implemented by nine crates
-// today, including all three it named, plus `urlsession`, `winhttp`,
-// `tower`, `mock`, `otel` and `dns-doh`. And the seams stopped moving:
-// three breaking changes in the last sixty commits, two of them in
-// August.
+// **That condition is met.** `Transport` is implemented by eight crates
+// today, including all three it named — `hclient-native`, `hclient-wasi`
+// and `hclient-fetch` — plus `urlsession`, `winhttp`, `tower`, `mock` and
+// `otel`. And the seams stopped moving: three breaking changes in the
+// last sixty commits, two of them in August.
+//
+// This read *nine … and `dns-doh`* until it was counted rather than
+// recalled: `hclient-dns-doh` **consumes** a transport (`C: SendTransport`,
+// so a resolver's client is not the user's client) and implements none.
+// The figure was right about the seam being validated and wrong about who
+// validated it, which is the direction that matters least — and it is
+// still a number in prose, so it is the count rather than the argument
+// that will go stale next.
 //
 // So the quarantine was a promise to be unstable that nothing needed any
 // more — and it was the one part of this crate that could not be frozen,
