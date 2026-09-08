@@ -1,3 +1,19 @@
+//! The seam a backend implements: one request in, one response out.
+//!
+//! [`Transport`] is two required methods and two associated types — plus
+//! a defaulted [`Transport::to_error`], which a backend overrides only if
+//! its own error type is not `Send + Sync`. Its future
+//! is an RPITIT — deliberately unnameable, so nothing can demand `Send` of
+//! it and a single-threaded backend can exist. [`SendTransport`] is the
+//! separate promise for whoever can make it: an impl may carry bounds the
+//! trait does not, which is what lets `hclient::Client` box a transport
+//! `Send + Sync` without excluding the ones that are not.
+//!
+//! What a backend does **not** implement is everything a client does —
+//! redirects, a cookie jar, a cache, retries, decompression. Those live
+//! above this seam, which is why a transport that reports
+//! [`crate::caps::RedirectSupport::Internal`] is refused a redirect policy
+//! at `build()` rather than silently ignoring one.
 use crate::body::RequestBody;
 use crate::caps::Capabilities;
 use crate::error::{Error, ErrorKind};

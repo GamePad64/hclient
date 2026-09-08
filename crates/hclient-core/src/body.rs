@@ -1,3 +1,22 @@
+//! What a caller sends, and what may be sent again.
+//!
+//! [`RequestBody`] is the request body as it travels: bytes, a stream, a
+//! factory that can make the bytes a second time, or nothing.
+//! [`RetryKind`] is the question a transport asks of it **before the first
+//! attempt** — *can I send this twice* — which is what lets a `425`, a
+//! rejected 0-RTT request or a retry be answered without guessing.
+//!
+//! **Two views, and they are not interchangeable.** [`Reduced`] is what a
+//! transport needs and takes the body by value, running a factory to get
+//! it; [`BodyView`] is what a *looker* gets — an auth scheme signing a
+//! payload, a log line — and borrows without ever calling one, because
+//! *one snapshot per hop* is a rule this workspace's tests pin by counting
+//! those calls.
+//!
+//! Both are exhaustive on purpose where [`RequestBody`] is not: a body
+//! shape added later is either visible bytes or it is not, and the crate
+//! that adds it owns those two matches. A `_` arm in a consumer is where a
+//! new shape would go to be silently mis-sent or mis-signed.
 use crate::error::RewindTooDeep;
 use bytes::Bytes;
 use std::fmt::Debug;

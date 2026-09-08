@@ -1,3 +1,18 @@
+//! A runtime's clock, as this workspace's seams need it.
+//!
+//! [`Timer`] is three methods over two associated types, and the shape is
+//! decided by one fact: [`Timer::Instant`] is a **stopwatch, not a
+//! calendar** — `Copy + PartialOrd` with an `elapsed_since`, and no
+//! epoch. Anything that needs a wall clock (cookie `Expires`, an HTTP
+//! cache's `Date`) reaches for one itself and says so, because anchoring a
+//! calendar to this would freeze outright under a clock whose
+//! `elapsed_since` is always zero.
+//!
+//! [`Timer::Sleep`] is an associated type rather than an RPITIT, for the
+//! reason every seam here names its futures: naming is not requiring, so
+//! each runtime answers for its own auto traits and a `Send`-boxing
+//! consumer can still write the bound. [`Discard`] is the wrapper for a
+//! sleep whose output is not `()`.
 use core::time::Duration;
 use std::future::Future;
 use std::pin::Pin;

@@ -5,6 +5,28 @@
 //! whether a connection was made or reused, not what DNS cost, not why a
 //! connection went away underneath them.
 //!
+//! # Two audiences, and the index does not separate them
+//!
+//! Everything here is public and rustdoc lists it in one alphabetical
+//! run, so it is worth saying which half is yours.
+//!
+//! **Watching** — implement [`Hooks`], match on [`Event`], and read the
+//! payload structs it carries: [`Connected`], [`Reused`], [`Head`],
+//! [`Progress`], [`Informational`], [`Closed`], and the ids and
+//! sub-values they hold. [`NoHooks`] is the do-nothing impl and
+//! [`HooksExt::and`] composes two. That is the whole of it for a caller.
+//!
+//! **Emitting** — a transport author has a second set, and none of it is
+//! meant for a hook: [`mark`], [`identify`], [`since`] and [`meter`] are
+//! the guards that make the seam cost nothing when
+//! [`Hooks::WATCHING`] is `false`, and [`Meter`], [`Counting`],
+//! [`Metered`] and [`Reporting`] are the byte-counting machinery behind
+//! [`Progress`]. They are public because four backends outside this crate
+//! call them, not because a hook should.
+//!
+//! The two halves never meet: nothing an observer touches names a helper,
+//! and nothing a helper does is visible in an [`Event`].
+//!
 //! # It reports; it does not steer
 //!
 //! [`Hooks::on`] returns `()`, and that is the whole of the contract.

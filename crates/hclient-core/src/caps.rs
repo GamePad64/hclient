@@ -1,3 +1,26 @@
+//! What a transport says it can do, read by `ClientBuilder::build`.
+//!
+//! [`Capabilities`] is one value, stored at construction — `Transport::
+//! capabilities` returns a `&Capabilities`, so a transport answers once
+//! and not per request. Everything else here is the vocabulary of one of
+//! its fields.
+//!
+//! **Every field is a gate or a report**, and the difference decides who
+//! reads it. A *gate* guards a setting a caller made on the `Client`, and
+//! `build()` refuses when the transport cannot honour it — the
+//! *silently ignored setting* defect, which this workspace has closed four
+//! times. A *report* states a fact about the transport that nothing at the
+//! client level could refuse, because the setting it describes is
+//! configured on the transport; its reader is the caller. That
+//! classification is enforced rather than described — see
+//! `every_capability_is_a_gate_or_a_report` in this module.
+//!
+//! **The stored value is a floor.** Where a transport might negotiate
+//! either of two protocols, the honest answer is the one that holds
+//! whichever it gets: an over-claimed `full_duplex` deadlocks a caller,
+//! an under-claimed one costs a buffered copy. A caller who needs to know
+//! what *this* connection can do asks [`crate::req::RequireVersion`]
+//! before the head instead.
 use http::HeaderName;
 
 /// Who follows a redirect chain: nobody, `Client`, or the backend.
