@@ -29,6 +29,37 @@
 //! this list says what kind they are.
 #![forbid(unsafe_code)]
 
+//! # What growing this crate costs, measured rather than promised
+//!
+//! Every module here is a published surface, so the question that decides
+//! the shape of all of it is *what breaks when something is added*. It
+//! was simulated rather than argued — a fifth `Timeouts` bound and its
+//! `TimeoutSupport` mirror, added on a scratch checkout and taken through
+//! the whole workspace and an out-of-tree consumer:
+//!
+//! - **A caller breaks nowhere.** A consumer crate depending on
+//!   `hclient-core` and naming all 64 public items compiles unchanged.
+//!   `Timeouts` is `#[non_exhaustive]` with a `const` builder, so a bound
+//!   nobody has heard of is `None` and asks for nothing.
+//! - **`hclient-core` breaks in exactly two places**, both `E0027`:
+//!   [`req::Timeouts::or`] and [`req::Timeouts::support_checks`], which
+//!   are the merge and the support gate. Those destructures live here
+//!   rather than in `hclient` precisely so that they are compile errors
+//!   in the crate that grew the field — under `#[non_exhaustive]` a
+//!   consumer would have to write `..`, and a `..` is where a new bound
+//!   goes to be silently unchecked and silently dropped.
+//! - **Every transport breaks once**, on `TimeoutSupport`'s builder,
+//!   because `bon` makes a non-`Option` member required. That is the
+//!   intended cost: an unset bound there is a transport *claiming* it does
+//!   not enforce something, and a claim nobody wrote is the thing to
+//!   refuse.
+//! - **`hclient` itself breaks nowhere**, because the gate consumes what
+//!   `support_checks` returns rather than destructuring the struct.
+//!
+//! So the seam is additive for the audience that only reads, and a
+//! compile error for the audience that must answer. That split is the
+//! whole design, and it is checkable again by repeating the simulation.
+//!
 pub mod auth;
 pub mod body;
 pub mod caps;
