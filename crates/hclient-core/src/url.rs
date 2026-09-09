@@ -1,4 +1,20 @@
-//! Where a URI's authority stops being URI syntax.
+//! Where a URI stops being URI syntax.
+//!
+//! One function today — [`bare_host`], which takes an IPv6 literal's
+//! brackets off — and the module is named for the question rather than
+//! for it. **That is deliberate and it is the second name this module has
+//! had**: as `host` it was named after its one function's subject, so
+//! the next piece of URI handling this workspace hoists would either have
+//! sat under a name that did not cover it or arrived as a second
+//! one-function module. Both happen: `hclient-native` holds a `Uri` on
+//! both of its stacks, and it, `hclient-dns` and `hclient-dns-doh` each
+//! parse address literals — every one a place where a fact about RFC 3986
+//! is re-derived.
+//!
+//! What belongs here is the narrow kind: a piece of URI syntax that
+//! several crates need, that `http::Uri` does not answer, and that has one
+//! right answer. Parsing, resolution and IDN are not — those are
+//! `hclient-proto`'s, which is where a URI is actually taken apart.
 
 /// The host a URI names, with an IPv6 literal's brackets removed.
 ///
@@ -27,8 +43,8 @@
 /// came from a URI from one a caller built by hand.
 ///
 /// This crate is the home because it is the only one every consumer
-/// already has. `hclient-native` and `hclient-h3` both hold a `Uri` and
-/// both feed a TLS seam; `hclient-dns` and `hclient-dns-doh` both parse
+/// already has. `hclient-native` holds a `Uri` on both of its stacks and
+/// feeds a TLS seam from each; `hclient-dns` and `hclient-dns-doh` both parse
 /// literals; `hclient-tls`, whose doc has to name the duty, depends on
 /// this crate and not on any of them. Putting it in `hclient-dns` would
 /// make a TLS server name reach through a resolver crate for a fact about

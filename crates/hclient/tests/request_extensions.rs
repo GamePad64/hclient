@@ -42,7 +42,7 @@ fn a_client_identity_set_on_the_builder_reaches_the_transport() {
     let sent = m.requests();
     let id = sent[0]
         .extensions
-        .get::<hclient_core::identity::ClientIdentity>()
+        .get::<hclient_core::tls::ClientIdentity>()
         .expect("the label reaches the transport");
     assert_eq!(id.name(), "corp");
 }
@@ -107,7 +107,7 @@ fn a_request_that_asked_for_none_of_them_carries_none_of_them() {
 
     let m = c.transport_as::<MockTransport>().expect("the mock");
     let e = &m.requests()[0].extensions;
-    assert!(e.get::<hclient_core::identity::ClientIdentity>().is_none());
+    assert!(e.get::<hclient_core::tls::ClientIdentity>().is_none());
     assert!(e.get::<hclient_core::req::AllowEarlyData>().is_none());
 }
 
@@ -140,7 +140,7 @@ fn a_setting_travels_to_the_next_hop_of_the_same_origin() {
     assert_eq!(
         sent[1]
             .extensions
-            .get::<hclient_core::identity::ClientIdentity>()
+            .get::<hclient_core::tls::ClientIdentity>()
             .map(|i| i.name().to_owned()),
         Some("corp".to_owned()),
         "the identity is a property of the operation, not of one hop"

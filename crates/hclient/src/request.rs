@@ -513,7 +513,7 @@ impl<'a> RequestBuilder<'a> {
     /// Which client certificate this request presents, by the label a
     /// backend was configured with.
     ///
-    /// See `hclient_core::identity::ClientIdentity`: what travels is a name the
+    /// See `hclient_core::tls::ClientIdentity`: what travels is a name the
     /// caller invented, never a certificate and never a store query,
     /// because a name is the only value that means the same thing on
     /// Windows, macOS, PKCS#11 and Android at once. A backend that does
@@ -530,7 +530,7 @@ impl<'a> RequestBuilder<'a> {
     #[must_use]
     pub fn client_identity(mut self, name: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         self.extensions
-            .insert(hclient_core::identity::ClientIdentity::new(name));
+            .insert(hclient_core::tls::ClientIdentity::new(name));
         self
     }
 

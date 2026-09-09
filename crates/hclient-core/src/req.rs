@@ -306,7 +306,7 @@ impl Timeouts {
 ///
 /// **A retry built for a `425` must remove this extension from the request
 /// it replays.** RFC 8470 requires it, and it is not a formality: on
-/// `hclient-h3` this mark is part of the connection pool's key, so a
+/// `hclient_native::H3` this mark is part of the connection pool's key, so a
 /// replay that kept it would ask for the early-data connection and — if
 /// that one has been evicted or closed since — would open a fresh one and
 /// go out in early data again, to the server that just refused to risk it.
@@ -403,7 +403,7 @@ pub struct AllowEarlyData;
 ///   the transport before the head goes out.
 ///
 /// A transport that always speaks one version still *honours* demands —
-/// `hclient-h3` reports `version_select: true` and answers
+/// `hclient_native::H3` reports `version_select: true` and answers
 /// `RequireVersion(HTTP_3)` by proceeding and everything else with
 /// [`crate::error::VersionNotAvailable`]. Reporting `false` there would refuse the one
 /// demand it trivially satisfies.

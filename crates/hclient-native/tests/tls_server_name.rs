@@ -9,7 +9,7 @@
 //! `[::1]` as neither a DNS name nor an address, and every resolver in this
 //! workspace strips before parsing. `connect.rs` is where the URI ends and
 //! a TLS name begins, so `connect.rs` is where the strip belongs — see
-//! `hclient_core::host::bare_host` and `hclient_tls::TlsRequest::server_name`.
+//! `hclient_core::url::bare_host` and `hclient_tls::TlsRequest::server_name`.
 //!
 //! **The assertion is that the handshake completes**, against a certificate
 //! that carries the name being dialled — an IP SAN for the two literals, a

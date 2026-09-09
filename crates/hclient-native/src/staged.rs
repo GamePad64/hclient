@@ -452,9 +452,7 @@ where
         // Read and resolved here for the reason `Native::run` does the
         // same one file over: a name this backend has not got is a
         // refusal, never a connection with the default identity.
-        let named = req
-            .extensions()
-            .get::<hclient_core::identity::ClientIdentity>();
+        let named = req.extensions().get::<hclient_core::tls::ClientIdentity>();
         let identity_id = match named {
             None => None,
             Some(id) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, id.name()) {
@@ -468,7 +466,7 @@ where
                 }
             },
         };
-        let identity = named.map(hclient_core::identity::ClientIdentity::name);
+        let identity = named.map(hclient_core::tls::ClientIdentity::name);
         // Which request this connect is being paid for, read once from the
         // request still in hand — `Staged` keeps it, so `exchange` reads it
         // back off the same request rather than looking again.

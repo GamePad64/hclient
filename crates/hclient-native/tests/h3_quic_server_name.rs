@@ -8,7 +8,7 @@
 //! becomes `rustls_pki_types::ServerName`, rejecting `[::1]` as neither a
 //! name nor an address) and `resolve`'s literal shortcut (`str::parse::
 //! <IpAddr>`, which a bracketed literal fails). See
-//! `hclient_core::host::bare_host`.
+//! `hclient_core::url::bare_host`.
 //!
 //! **The two are separated by which resolver is in play**, which is the
 //! whole reason this file has three tests rather than one:

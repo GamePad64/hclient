@@ -984,7 +984,7 @@ pub struct Head<'a> {
     /// `Some` exactly when the transport emitting it reports
     /// [`version_reported`](crate::caps::Capabilities::version_reported).
     /// `hclient-native` reads it off the status line, and off ALPN with
-    /// the `http2` feature; `hclient-h3` speaks HTTP/3 and nothing else;
+    /// the `http2` feature; its `H3` stack speaks HTTP/3 and nothing else;
     /// both say `true`. `hclient-fetch` and `hclient-wasi` say `false` and
     /// report `None` here: the Fetch Standard's `Response` has no protocol
     /// member, and `wasi:http@0.3.0` has no version concept at all.

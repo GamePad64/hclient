@@ -910,7 +910,7 @@ where
     // The **origin's** name, never the proxy's: the tunnel is transport,
     // and a certificate is checked against who the caller asked for.
     let req = TlsRequest {
-        server_name: hclient_core::host::bare_host(host),
+        server_name: hclient_core::url::bare_host(host),
         alpn,
         identity,
         // No record was consulted, so there is nothing to apply — see this
@@ -980,7 +980,7 @@ where
     // the caller asked for — the socket is transport, exactly as a tunnel
     // is.
     let req = TlsRequest {
-        server_name: hclient_core::host::bare_host(host),
+        server_name: hclient_core::url::bare_host(host),
         alpn,
         identity,
         ech: None,
@@ -1366,7 +1366,7 @@ where
             // Not stripped anywhere else on purpose: the `Host` header and
             // h2's `:authority` (`established.rs`, `websocket.rs`) are
             // authority syntax and keep their brackets.
-            server_name: hclient_core::host::bare_host(host),
+            server_name: hclient_core::url::bare_host(host),
             alpn: restricted.as_deref().unwrap_or(alpn),
             identity,
             // The whole of the ECH decision, and the reason it is a

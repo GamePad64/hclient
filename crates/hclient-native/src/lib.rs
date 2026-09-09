@@ -146,8 +146,8 @@ use hclient_core::hooks::{
     CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
     RequestId, Reused,
 };
-use hclient_core::identity::ClientIdentity;
 use hclient_core::req::{Timeouts, check_version};
+use hclient_core::tls::ClientIdentity;
 use hclient_core::transport::Transport;
 use hclient_dns::Resolve;
 use hclient_rt::{Spawn, TcpConnect, TcpOpts, Timer};
@@ -3181,7 +3181,7 @@ where
         // tenant's server.
         let identity = parts
             .extensions
-            .get::<hclient_core::identity::ClientIdentity>()
+            .get::<hclient_core::tls::ClientIdentity>()
             .cloned();
         let identity_id = match identity.as_ref().map(ClientIdentity::name) {
             None => None,

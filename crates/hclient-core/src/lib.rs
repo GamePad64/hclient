@@ -21,12 +21,13 @@
 //! **Using this crate's vocabulary** — the types those traits exchange:
 //! [`body`] for a request body and what may be replayed, [`caps`] for what
 //! a transport says it can do, [`req`] for what a caller asked of one
-//! request, [`error`] for how anything fails, and [`identity`] for an mTLS
-//! label.
+//! request, [`error`] for how anything fails, [`tls`] for what a request
+//! asks of a TLS backend, and [`url`] for the one piece of URI syntax
+//! every consumer here kept re-deriving.
 //!
 //! **Neither** — [`erased`] is how `hclient::Client` boxes a transport and
 //! a clock, and no backend author writes anything in it: its two traits
-//! carry blanket impls. [`host`] is one function.
+//! carry blanket impls.
 //!
 //! **And a caller of `hclient` needs none of this.** Every type here that
 //! a caller meets is re-exported from that crate under a shorter path —
@@ -101,9 +102,9 @@ pub mod auth;
 pub mod body;
 pub mod caps;
 pub mod error;
-pub mod host;
-pub mod identity;
 pub mod req;
+pub mod tls;
+pub mod url;
 
 // ── the seams a backend or runtime author implements ────────────────────
 //

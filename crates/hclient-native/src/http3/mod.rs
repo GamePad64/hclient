@@ -135,7 +135,7 @@ struct PoolKey {
     /// not what keeps two tenants apart. It is here because `dial` needs
     /// the *name* to hand to `QuicTlsRequest`, and the key is what `dial`
     /// is given.
-    identity: Option<hclient_core::identity::ClientIdentity>,
+    identity: Option<hclient_core::tls::ClientIdentity>,
 }
 
 type SendRequest = h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>;
@@ -779,7 +779,7 @@ where
             identity: key
                 .identity
                 .as_ref()
-                .map(hclient_core::identity::ClientIdentity::name),
+                .map(hclient_core::tls::ClientIdentity::name),
         })?;
         let endpoint = self.endpoint(addr)?;
         let mut cfg = quinn::ClientConfig::new(crypto);
@@ -803,7 +803,7 @@ where
         // for the key and once here, would be the two-places-drifting
         // problem `bare_host`'s doc is about.
         let connecting = endpoint
-            .connect_with(cfg, addr, hclient_core::host::bare_host(&key.host))
+            .connect_with(cfg, addr, hclient_core::url::bare_host(&key.host))
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
 
         // The round trip 0-RTT exists to skip, actually skipped.
@@ -1029,7 +1029,7 @@ where
         // this half of the defect only because `IpLiteralOnly::literal`
         // strips on the way in; a shortcut in front of the resolver has to
         // strip for itself.
-        if let Ok(ip) = hclient_core::host::bare_host(host).parse::<std::net::IpAddr>() {
+        if let Ok(ip) = hclient_core::url::bare_host(host).parse::<std::net::IpAddr>() {
             return Ok(SocketAddr::new(ip, port));
         }
         // v6 first, then v4. Not happy eyeballs: QUIC's connect is not a

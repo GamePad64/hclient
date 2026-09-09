@@ -581,7 +581,7 @@ async fn a_certificate_presented_for_an_ip_address_validates_through_the_platfor
 /// name was wrong (`Tls: invalid dns name`, measured). This crate never had
 /// the defect: `ip_literal` and `IpLiteralOnly::literal` both strip, each
 /// with a comment about the trap; the TLS name was the one place on the
-/// path where nobody did. `hclient_core::host::bare_host` is the one place now.
+/// path where nobody did. `hclient_core::url::bare_host` is the one place now.
 ///
 /// The predecessor of this test asserted the failure and told whoever
 /// fixed it to come here. What replaces it asserts the success, over the

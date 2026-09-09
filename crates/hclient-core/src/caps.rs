@@ -86,8 +86,8 @@ pub enum RedirectSupport {
     ///
     /// This is what `wasi:http` does: the `3xx` reaches the guest as-is.
     ///
-    /// **Reported by** `hclient-wasi`, `hclient-h3`, `hclient-native` and
-    /// `hclient-urlsession` — the last by refusing each hop in its
+    /// **Reported by** `hclient-wasi`, `hclient-native` on both of its
+    /// stacks, and `hclient-urlsession` — the last by refusing each hop in its
     /// delegate, which is a choice the platform allows rather than one it
     /// makes; see that crate's own doc.
     Transparent,
@@ -412,7 +412,7 @@ pub struct TimeoutSupport {
 pub enum EarlyDataSupport {
     /// This transport never offers early data. The conservative base, what
     /// [`Capabilities::default()`] returns, and the honest answer for every
-    /// transport in this workspace except `hclient-h3`.
+    /// transport in this workspace except `hclient_native::H3`.
     #[default]
     None,
     /// This transport can offer early data for a request the caller has
@@ -563,8 +563,8 @@ pub struct Capabilities {
     /// without being asked.
     ///
     /// `true` for `hclient-fetch` — the browser has an HTTP cache and
-    /// applies it inside `fetch()`. `false` for `hclient-native`,
-    /// `hclient-h3` and `hclient-wasi`, none of which stores a response
+    /// applies it inside `fetch()`. `false` for `hclient-native` — both
+    /// stacks — and `hclient-wasi`, neither of which stores a response
     /// anywhere. `wasi:http`'s host may well have a cache; the guest
     /// cannot see it, and a capability is a claim about what this code
     /// does rather than about what is downstream of it — the same line
@@ -604,7 +604,7 @@ pub struct Capabilities {
     /// # It says "honours", not "chooses"
     ///
     /// A transport that only ever speaks one version reports `true` if it
-    /// answers demands — `hclient-h3` does, by proceeding on
+    /// answers demands — `hclient_native::H3` does, by proceeding on
     /// `RequireVersion(HTTP_3)` and refusing everything else. Reporting
     /// `false` there would make `Client` refuse the one demand it
     /// trivially satisfies, which is the opposite of honest.

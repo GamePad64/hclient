@@ -275,7 +275,7 @@ pub(crate) struct Admitted {
     pub(crate) timeouts: Timeouts,
     /// The client identity, read from the request and already resolved:
     /// the name for `QuicTlsRequest`, and the id for the pool key.
-    pub(crate) identity: Option<hclient_core::identity::ClientIdentity>,
+    pub(crate) identity: Option<hclient_core::tls::ClientIdentity>,
     pub(crate) identity_id: Option<hclient_tls::TlsConfigId>,
 }
 
@@ -329,11 +329,11 @@ where
         // must.
         let identity = req
             .extensions()
-            .get::<hclient_core::identity::ClientIdentity>()
+            .get::<hclient_core::tls::ClientIdentity>()
             .cloned();
         let identity_id = match identity
             .as_ref()
-            .map(hclient_core::identity::ClientIdentity::name)
+            .map(hclient_core::tls::ClientIdentity::name)
         {
             None => None,
             Some(name) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, name) {

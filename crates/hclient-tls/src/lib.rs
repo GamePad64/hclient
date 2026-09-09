@@ -56,7 +56,7 @@ pub struct TlsRequest<'a> {
     /// backend here and from every backend that could exist:
     /// `rustls_pki_types::ServerName::try_from` tries a DNS name, then an
     /// IP address, and a bracket is neither. So the caller strips, with
-    /// [`hclient_core::host::bare_host`], before filling this field.
+    /// [`hclient_core::url::bare_host`], before filling this field.
     ///
     /// **It is the caller's and not the backend's, and the reason is that
     /// a backend cannot know.** This field is a name, not a URI: a caller

@@ -146,7 +146,7 @@ fn get(
         .expect("a well-formed request");
     if let Some(name) = identity {
         req.extensions_mut()
-            .insert(hclient_core::identity::ClientIdentity::new(name));
+            .insert(hclient_core::tls::ClientIdentity::new(name));
     }
     let _ = t;
     req
