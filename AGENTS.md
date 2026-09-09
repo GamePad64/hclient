@@ -323,6 +323,33 @@ sections down. The figure here is the one thing in this paragraph that
 goes stale on every release, which is why it says *today* and the
 authority is the index rather than this line.
 
+**`hclient-core` left the pre-release on 2026-09-10, and the reason is the
+gate rather than confidence.** Inside a pre-release `cargo semver-checks`
+executes **0 of its 254 lints**, because every step out of one is a major
+step — so the crate whose types cross every boundary in this family was
+the one crate no tool had ever examined. `0.1.0` gives the gate a subject:
+`just semver` selects on *published and not a pre-release*, so the crate
+enrolled with no edit to the recipe, exactly as `hclient-idn` did when it
+took the count from `196 checks across 1 crate` to `392 across 2`.
+
+What it promises is what a `0.x` promises and no more: `0.2.0` may still
+break. What it ends is breaking **silently**.
+
+Two things landed first. `bon` left the crate — its generated builders put
+`SetConnect<S>` and `IsUnset` into every setter's signature from a
+`#[doc(hidden)]` module, so a caller could meet those names and not write
+them, which is exactly the hole a freeze must not preserve. Two `const fn`
+constructors replaced them at 16 crates instead of 21. And the gate was
+checked in the failing direction against a git baseline before this
+publish — but the vacuum follows the *version numbers*, not the
+baseline's source: `alpha.7 -> alpha.7` and `alpha.7 -> 0.1.0` both run 0
+of 254 lints, and only a stable pair on both sides makes the tool execute
+anything (`0.1.0 -> 0.1.0` with a method narrowed to `pub(crate)` runs 196
+checks and fails one, naming it; the same pair unchanged runs 196 and
+passes). So this publish itself has no stable baseline to be checked
+against, and nothing can give it one — what it buys is that every release
+from the next onward is checkable.
+
 **The guard is real and it is not yet in force, which this sentence used
 to get wrong.** It read that `cargo add hclient` will not select a
 pre-release without being asked. Measured on 2026-08-29, from a fresh
