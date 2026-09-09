@@ -77,8 +77,8 @@
 //!
 //! - **A caller breaks nowhere.** A consumer crate depending on
 //!   `hclient-core` and naming all 64 public items compiles unchanged.
-//!   `Timeouts` is `#[non_exhaustive]` with a `const` builder, so a bound
-//!   nobody has heard of is `None` and asks for nothing.
+//!   `Timeouts` is `#[non_exhaustive]` with a `const fn` constructor, so a
+//!   bound nobody has heard of is `None` and asks for nothing.
 //! - **`hclient-core` breaks in exactly two places**, both `E0027`:
 //!   [`req::Timeouts::or`] and [`req::Timeouts::support_checks`], which
 //!   are the merge and the support gate. Those destructures live here
