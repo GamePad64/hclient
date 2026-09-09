@@ -169,11 +169,7 @@ impl Timeouts {
     }
 
     /// Set the resolve bound to whatever this `Option` holds, `None`
-    /// included.
-    ///
-    /// The `with_*` setters take a `Duration` because a caller writing one
-    /// down knows it is setting a bound; a caller **forwarding** one
-    /// already has an `Option` and would otherwise write a `match`.
+    /// included. See [`Self::maybe_connect`].
     #[must_use]
     pub const fn maybe_resolve(mut self, d: Option<core::time::Duration>) -> Self {
         self.resolve = d;
@@ -181,7 +177,13 @@ impl Timeouts {
     }
 
     /// Set the connect bound to whatever this `Option` holds, `None`
-    /// included. See [`Self::maybe_resolve`].
+    /// included.
+    ///
+    /// The `with_*` setters take a `Duration` because a caller writing one
+    /// down knows it is setting a bound; a caller **forwarding** one
+    /// already has an `Option` and would otherwise write a `match`. Every
+    /// bound has this form because every bound is forwarded somewhere —
+    /// `hclient`'s own timeout tests forward all four.
     #[must_use]
     pub const fn maybe_connect(mut self, d: Option<core::time::Duration>) -> Self {
         self.connect = d;
@@ -189,7 +191,7 @@ impl Timeouts {
     }
 
     /// Set the first-byte bound to whatever this `Option` holds, `None`
-    /// included. See [`Self::maybe_resolve`].
+    /// included. See [`Self::maybe_connect`].
     #[must_use]
     pub const fn maybe_first_byte(mut self, d: Option<core::time::Duration>) -> Self {
         self.first_byte = d;
@@ -197,7 +199,7 @@ impl Timeouts {
     }
 
     /// Set the between-bytes bound to whatever this `Option` holds, `None`
-    /// included. See [`Self::maybe_resolve`].
+    /// included. See [`Self::maybe_connect`].
     #[must_use]
     pub const fn maybe_between_bytes(mut self, d: Option<core::time::Duration>) -> Self {
         self.between_bytes = d;
