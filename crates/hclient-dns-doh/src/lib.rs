@@ -197,11 +197,13 @@ const DNS_MESSAGE: &str = "application/dns-message";
 // `Doh::pinned` takes an IP literal and `Doh::bootstrapped` a name whose
 // lookup is the fallback resolver's, bounded by whatever that one carries.
 //
-// The builder rather than a literal because `Timeouts` is
-// `#[non_exhaustive]`, and it works in a `const` because that builder is
-// `#[builder(const)]` — which is the pair of facts the attribute needed
-// before it could be taken. `..Default::default()` would not compile here:
-// `Default::default()` is not a `const fn`.
+// The constructor rather than a literal because `Timeouts` is
+// `#[non_exhaustive]`, which closes the literal *and*
+// `..Default::default()` to a crate outside `hclient-core`; and it works
+// in a `const` because `Timeouts::new` is a `const fn`, where
+// `Default::default()` is not. That pair is what the attribute needed
+// before it could be taken, and this `const` is the call site that
+// decided it.
 const DEFAULT_TIMEOUTS: Timeouts = Timeouts::new()
     .with_connect(Duration::from_secs(2))
     .with_first_byte(Duration::from_secs(5))
