@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.7](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.6...hclient-v0.1.0-alpha.7) - 2026-09-09
+
+### Other
+
+- [**breaking**] `host` is `url` and `identity` is `tls`
+
 ## [0.1.0-alpha.6](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.5...hclient-v0.1.0-alpha.6) - 2026-09-09
 
 ### Added

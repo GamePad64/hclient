@@ -1,6 +1,6 @@
 [package]
 name = "hclient-tower"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 description = "hclient's Transport as a tower::Service, so the tower-http middleware stack applies"
 keywords     = ["hclient", "transport", "tower", "middleware"]
 categories   = ["web-programming::http-client", "asynchronous"]
