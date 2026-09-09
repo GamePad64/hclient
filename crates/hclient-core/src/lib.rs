@@ -86,11 +86,12 @@
 //!   in the crate that grew the field — under `#[non_exhaustive]` a
 //!   consumer would have to write `..`, and a `..` is where a new bound
 //!   goes to be silently unchecked and silently dropped.
-//! - **Every transport breaks once**, on `TimeoutSupport`'s builder,
-//!   because `bon` makes a non-`Option` member required. That is the
-//!   intended cost: an unset bound there is a transport *claiming* it does
-//!   not enforce something, and a claim nobody wrote is the thing to
-//!   refuse.
+//! - **No transport breaks**, and that is the change rather than an
+//!   oversight. A claim added to `TimeoutSupport` arrives as `false` at
+//!   every transport that has not stated it, which is the only true answer
+//!   a transport can give before it implements the bound — it cannot
+//!   honestly report `true` first. The decision happens later, in one
+//!   line, in the crate that makes the claim true.
 //! - **`hclient` itself breaks nowhere**, because the gate consumes what
 //!   `support_checks` returns rather than destructuring the struct.
 //!

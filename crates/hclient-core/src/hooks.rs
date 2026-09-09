@@ -90,7 +90,7 @@
 //! traits sat in a `unversioned` module, borrowed from `ureq`, which
 //! declared that breaking changes here would ship in a minor version
 //! rather than a major — on the stated grounds that the seams had not been
-//! validated against every backend. Nine crates implement [`Transport`]
+//! validated against every backend. Eight crates implement [`Transport`]
 //! today, so the condition was met, and the module is gone.
 //!
 //! What survives it is the observation rather than the exemption:
