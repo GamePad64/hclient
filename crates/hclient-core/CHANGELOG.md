@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6](https://github.com/GamePad64/hclient/compare/hclient-core-v0.1.0-alpha.5...hclient-core-v0.1.0-alpha.6) - 2026-09-09
+
+### Added
+
+- [**breaking**] `Timeouts` and `TimeoutSupport` are `#[non_exhaustive]`, via `bon`
+- [**breaking**] hclient-core's public plane is modules, not sixty-one flat names
+
+### Fixed
+
+- thirty methods were `#[must_use]` and thirteen equally pure ones were not
+
+### Other
+
+- a biconditional was stated unconditionally, and one backend is the case
+- four modules opened straight into `use` lines, and `hooks` hid an audience
+- the crate root had no map, and two of its facts had drifted
+- what growing `hclient-core` costs, simulated rather than promised
+- three `#[non_exhaustive]` decisions were being made by silence
+- a const builder answers half the `#[non_exhaustive]` objection
+- four types in hclient-core were silent on `#[non_exhaustive]`
+- [**breaking**] `caps` held two vocabularies, and no call site used both
+
 ## [0.1.0-alpha.5](https://github.com/GamePad64/hclient/compare/hclient-core-v0.1.0-alpha.4...hclient-core-v0.1.0-alpha.5) - 2026-09-07
 
 ### Added

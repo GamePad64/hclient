@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.1.0-alpha.5...hclient-cli-v0.1.0-alpha.6) - 2026-09-09
+
+### Added
+
+- [**breaking**] hclient-core's public plane is modules, not sixty-one flat names
+
+### Other
+
+- [**breaking**] `caps` held two vocabularies, and no call site used both
+
 ## [0.1.0-alpha.5](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.1.0-alpha.4...hclient-cli-v0.1.0-alpha.5) - 2026-09-07
 
 ### Added

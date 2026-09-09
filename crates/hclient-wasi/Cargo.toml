@@ -1,6 +1,6 @@
 [package]
 name = "hclient-wasi"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 description = "hclient transport over wasi:http 0.3"
 keywords     = ["hclient", "transport", "wasi", "wasm"]
 categories   = ["web-programming::http-client", "wasm"]
