@@ -339,7 +339,9 @@ Two things landed first. `bon` left the crate — its generated builders put
 `SetConnect<S>` and `IsUnset` into every setter's signature from a
 `#[doc(hidden)]` module, so a caller could meet those names and not write
 them, which is exactly the hole a freeze must not preserve. Two `const fn`
-constructors replaced them at 16 crates instead of 21. And the gate was
+constructors replaced them, and the graph went from 21 crates to **13** —
+`bon` took its whole proc-macro subtree with it, which is more than the
+five the plan predicted. And the gate was
 checked in the failing direction against a git baseline before this
 publish — but the vacuum follows the *version numbers*, not the
 baseline's source: `alpha.7 -> alpha.7` and `alpha.7 -> 0.1.0` both run 0
