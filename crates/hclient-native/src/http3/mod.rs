@@ -508,12 +508,11 @@ fn capabilities(early_data: EarlyDataSupport, client_certs: bool) -> Capabilitie
     // disagreement the pair's capability table resolves. Stated rather
     // than defaulted — `bon` requires every member here, so a bound added
     // later is a compile error on this line rather than a silent `false`.
-    c.timeouts = TimeoutSupport::builder()
-        .resolve(true)
-        .connect(true)
-        .first_byte(false)
-        .between_bytes(false)
-        .build();
+    c.timeouts = TimeoutSupport::none()
+        .with_resolve(true)
+        .with_connect(true)
+        .with_first_byte(false)
+        .with_between_bytes(false);
     c
 }
 

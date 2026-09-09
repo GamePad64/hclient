@@ -160,10 +160,9 @@ fn a_resolver_that_never_answers_is_a_resolve_timeout_and_not_a_connect_one() {
     let err = go(
         Answering(None),
         port,
-        Timeouts::builder()
-            .resolve(Duration::from_millis(150))
-            .connect(Duration::from_secs(30))
-            .build(),
+        Timeouts::new()
+            .with_resolve(Duration::from_millis(150))
+            .with_connect(Duration::from_secs(30)),
     )
     .expect_err("nothing will ever resolve");
     assert_eq!(*err.kind(), ErrorKind::Timeout(Phase::Resolve), "{err:?}");
@@ -177,9 +176,7 @@ fn a_resolver_that_never_answers_is_a_resolve_timeout_and_not_a_connect_one() {
     let err = go(
         Answering(None),
         port,
-        Timeouts::builder()
-            .connect(Duration::from_millis(150))
-            .build(),
+        Timeouts::new().with_connect(Duration::from_millis(150)),
     )
     .expect_err("nothing will ever resolve");
     assert_eq!(
@@ -199,9 +196,7 @@ fn a_resolver_that_answers_in_time_costs_nothing() {
     let status = go(
         Answering(Some(Duration::from_millis(20))),
         port,
-        Timeouts::builder()
-            .resolve(Duration::from_millis(2000))
-            .build(),
+        Timeouts::new().with_resolve(Duration::from_millis(2000)),
     )
     .expect("the resolver answered well inside the bound");
     assert_eq!(status, 200);
@@ -224,7 +219,7 @@ fn a_resolver_that_fails_reports_the_failure_rather_than_the_bound() {
     let err = go(
         Failing,
         port,
-        Timeouts::builder().resolve(Duration::from_secs(10)).build(),
+        Timeouts::new().with_resolve(Duration::from_secs(10)),
     )
     .expect_err("the name does not resolve");
     assert_eq!(*err.kind(), ErrorKind::Resolve, "{err:?}");
@@ -297,13 +292,12 @@ fn an_address_hint_from_a_record_is_not_made_to_wait_for_the_resolver() {
         .body(RequestBody::Empty)
         .expect("request");
     req.extensions_mut().insert(
-        Timeouts::builder()
+        Timeouts::new()
             // A tenth of the connect bound below: if the hint had to wait
             // for the resolver, this would fire first and the fixture
             // would see nothing at all.
-            .resolve(Duration::from_millis(100))
-            .connect(Duration::from_secs(1))
-            .build(),
+            .with_resolve(Duration::from_millis(100))
+            .with_connect(Duration::from_secs(1)),
     );
     let _ = rt().block_on(async { transport.execute(req).await });
     assert!(

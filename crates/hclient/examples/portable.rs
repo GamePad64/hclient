@@ -290,7 +290,7 @@ where
     // being established would stop timing out at all.
     if let Some(ms) = args.timeout_ms {
         let d = Duration::from_millis(ms);
-        builder = builder.timeouts(Timeouts::builder().connect(d).first_byte(d).build());
+        builder = builder.timeouts(Timeouts::new().with_connect(d).with_first_byte(d));
     }
 
     let mut response = builder.send().await.map_err(classify)?;

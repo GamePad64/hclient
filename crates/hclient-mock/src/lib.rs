@@ -859,7 +859,7 @@ mod tests {
 
         let mut req = http::Request::new(RequestBody::Empty);
         req.extensions_mut()
-            .insert(Timeouts::builder().connect(Duration::from_secs(3)).build());
+            .insert(Timeouts::new().with_connect(Duration::from_secs(3)));
 
         futures_executor::block_on(m.execute(req)).unwrap();
 

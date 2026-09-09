@@ -229,7 +229,7 @@ async fn hangs(timeouts: Timeouts, addr: SocketAddr) -> bool {
 #[tokio::test]
 async fn a_server_that_never_answers_hits_the_first_byte_bound() {
     let addr = server(Behaviour::AnswersNever);
-    let err = get_all(Timeouts::builder().first_byte(BOUND).build(), addr)
+    let err = get_all(Timeouts::new().with_first_byte(BOUND), addr)
         .await
         .expect_err("a server that sends nothing must not produce a response");
 
@@ -262,7 +262,7 @@ async fn without_the_first_byte_bound_the_same_server_hangs() {
 #[tokio::test]
 async fn a_server_that_answers_inside_the_first_byte_bound_is_not_cut() {
     let addr = server(Behaviour::Dribbles(Duration::from_millis(10)));
-    let body = get_all(Timeouts::builder().first_byte(BOUND).build(), addr)
+    let body = get_all(Timeouts::new().with_first_byte(BOUND), addr)
         .await
         .expect("the head arrives at once, so the first_byte bound has nothing to do");
     assert_eq!(body, "0123456789");
@@ -277,7 +277,7 @@ async fn a_server_that_answers_inside_the_first_byte_bound_is_not_cut() {
 #[tokio::test]
 async fn a_body_that_goes_silent_after_the_head_hits_the_between_bytes_bound() {
     let addr = server(Behaviour::HeadThenSilence);
-    let err = get_all(Timeouts::builder().between_bytes(BOUND).build(), addr)
+    let err = get_all(Timeouts::new().with_between_bytes(BOUND), addr)
         .await
         .expect_err("a body that never arrives must not collect into a value");
 
@@ -298,7 +298,7 @@ async fn a_body_that_goes_silent_after_the_head_hits_the_between_bytes_bound() {
 #[tokio::test]
 async fn a_body_that_stalls_half_way_hits_the_between_bytes_bound() {
     let addr = server(Behaviour::StallsMidBody);
-    let err = get_all(Timeouts::builder().between_bytes(BOUND).build(), addr)
+    let err = get_all(Timeouts::new().with_between_bytes(BOUND), addr)
         .await
         .expect_err("a body that stops half way must not collect into a value");
 
@@ -332,7 +332,7 @@ async fn a_slow_but_never_silent_body_is_not_cut_by_between_bytes() {
     // than against `BOUND` — see `get_all_within`.
     let body = get_all_within(
         PATIENCE * 4,
-        Timeouts::builder().between_bytes(BOUND).build(),
+        Timeouts::new().with_between_bytes(BOUND),
         addr,
     )
     .await
@@ -348,10 +348,9 @@ async fn a_slow_but_never_silent_body_is_not_cut_by_between_bytes() {
 async fn a_silent_body_is_between_bytes_even_with_a_tighter_first_byte_bound_set() {
     let addr = server(Behaviour::HeadThenSilence);
     let err = get_all(
-        Timeouts::builder()
-            .first_byte(BOUND / 2)
-            .between_bytes(BOUND)
-            .build(),
+        Timeouts::new()
+            .with_first_byte(BOUND / 2)
+            .with_between_bytes(BOUND),
         addr,
     )
     .await
@@ -381,7 +380,7 @@ async fn a_silent_body_is_between_bytes_even_with_a_tighter_first_byte_bound_set
 #[tokio::test]
 async fn a_between_bytes_timeout_closes_the_connection_the_server_sees() {
     let (addr, closed) = server_watching(Behaviour::HeadThenSilence);
-    let c = client(Timeouts::builder().between_bytes(BOUND).build());
+    let c = client(Timeouts::new().with_between_bytes(BOUND));
     let mut resp = tokio::time::timeout(PATIENCE, c.get(format!("http://{addr}/")).send())
         .await
         .expect("the head arrives at once")

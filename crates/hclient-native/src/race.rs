@@ -551,11 +551,8 @@ mod tests {
             .expect("a well-formed request");
         req.extensions_mut()
             .insert(hclient_core::req::RequireVersion(http::Version::HTTP_3));
-        req.extensions_mut().insert(
-            Timeouts::builder()
-                .connect(Duration::from_millis(300))
-                .build(),
-        );
+        req.extensions_mut()
+            .insert(Timeouts::new().with_connect(Duration::from_millis(300)));
 
         let probe = probe(&req);
 

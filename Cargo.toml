@@ -129,32 +129,6 @@ hclient-mock  = { path = "crates/hclient-mock", version = "0.1.0-alpha.7" }
 # decides whether this crate is in the graph at all.
 hclient-idn   = { path = "crates/hclient-idn", version = "0.2.2" }
 thiserror     = "2"
-# **A generated `const` builder, for a `#[non_exhaustive]` struct that has
-# to stay writable from outside.** `hclient_core::req::Timeouts` takes the
-# attribute so a fifth bound is not a major version for every consumer,
-# and the attribute closes the struct literal and the
-# `..Default::default()` form to them — `E0639` for both. `bon`'s
-# `#[builder(const)]` reopens it, `const` included, which is what
-# `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` needs: `Default::default()` is
-# not a `const fn`, so no functional-update form exists there at all.
-#
-# It is used by `TimeoutSupport` too, and there the generated builder does
-# the opposite job: `bon` makes a non-`Option` member **required**, so a
-# field added to that struct is `Unset` at every transport rather than a
-# silent `false`. Same crate, opposite property, because absence means the
-# opposite thing in the two types.
-#
-# `default-features = false`, which drops `std`: the runtime crate is
-# `no_std`-capable and `hclient-core` is the sans-io leaf — and both wasm
-# targets still build, which is the check that matters for that leaf.
-#
-# **The cost, counted both ways.** `cargo tree -e normal` for
-# `hclient-core` goes 16 -> 21, and that is the figure `just graph` style
-# checks would see. Excluding proc-macros it is **9**: only `bon` itself
-# links, 215 lines and `no_std`-capable, MSRV 1.88 against this
-# workspace's floor of latest-stable. The other crates — `syn`, `darling`,
-# `prettyplease`, `quote` — are build-time and reach no binary.
-bon           = { version = "3.10", default-features = false }
 rstest        = { version = "0.26", default-features = false }
 hclient       = { path = "crates/hclient", version = "0.1.0-alpha.7" }
 

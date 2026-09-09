@@ -446,7 +446,7 @@ async fn connect_timeout(stack: Stack<'static>) {
     let pool = SocketPool::<2, 1536, 1536>::leak(stack);
     let rt = Embassy::new(stack, pool);
     let t = Native::new(rt, NoTls, IpLiteralOnly);
-    let bound = Timeouts::builder().connect(DEADLINE).build();
+    let bound = Timeouts::new().with_connect(DEADLINE);
 
     let started = embassy_time::Instant::now();
     let err = get(&t, BLACK_HOLE, Some(bound))
@@ -486,7 +486,7 @@ async fn connect_timeout(stack: Stack<'static>) {
     // one request per second **for the whole interface**, and the
     // black-hole attempt above just spent that budget. 300ms would be
     // measuring the neighbour cache, not the pool.
-    let generous = Timeouts::builder().connect(Duration::from_secs(10)).build();
+    let generous = Timeouts::new().with_connect(Duration::from_secs(10));
     let text = get(&t, &format!("http://{addr}/"), Some(generous))
         .await
         .expect("send after the timeout");

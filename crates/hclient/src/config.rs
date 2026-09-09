@@ -642,13 +642,12 @@ mod tests {
 
     #[test]
     fn request_overrides_client_field_by_field() {
-        let client = Timeouts::builder()
+        let client = Timeouts::new()
             .maybe_connect(secs(1))
             .maybe_first_byte(secs(2))
-            .maybe_between_bytes(secs(3))
-            .build();
+            .maybe_between_bytes(secs(3));
         let mut ext = http::Extensions::new();
-        ext.insert(Timeouts::builder().maybe_connect(secs(9)).build());
+        ext.insert(Timeouts::new().maybe_connect(secs(9)));
         let eff = effective_timeouts(&ext, &client);
         assert_eq!(eff.connect, secs(9), "request overrides");
         assert_eq!(eff.first_byte, secs(2), "the rest falls back to the client");
@@ -657,7 +656,7 @@ mod tests {
 
     #[test]
     fn client_config_used_when_request_says_nothing() {
-        let client = Timeouts::builder().maybe_connect(secs(1)).build();
+        let client = Timeouts::new().maybe_connect(secs(1));
         let eff = effective_timeouts(&http::Extensions::new(), &client);
         assert_eq!(eff.connect, secs(1));
     }
@@ -665,16 +664,15 @@ mod tests {
     #[test]
     fn unsupported_timeout_is_an_error_not_a_silent_noop() {
         let cfg = Config {
-            timeouts: Timeouts::builder().maybe_between_bytes(secs(5)).build(),
+            timeouts: Timeouts::new().maybe_between_bytes(secs(5)),
             ..Default::default()
         };
         let mut caps = Capabilities::default();
-        caps.timeouts = TimeoutSupport::builder()
-            .resolve(true)
-            .connect(true)
-            .first_byte(true)
-            .between_bytes(false)
-            .build();
+        caps.timeouts = TimeoutSupport::none()
+            .with_resolve(true)
+            .with_connect(true)
+            .with_first_byte(true)
+            .with_between_bytes(false);
         let err = check_supported(&cfg, &caps, "wasi:http").unwrap_err();
         assert_eq!(err.what, "between_bytes_timeout");
         assert_eq!(err.backend, "wasi:http");
@@ -683,16 +681,15 @@ mod tests {
     #[test]
     fn supported_config_passes() {
         let cfg = Config {
-            timeouts: Timeouts::builder().maybe_connect(secs(1)).build(),
+            timeouts: Timeouts::new().maybe_connect(secs(1)),
             ..Default::default()
         };
         let mut caps = Capabilities::default();
-        caps.timeouts = TimeoutSupport::builder()
-            .resolve(true)
-            .connect(true)
-            .first_byte(false)
-            .between_bytes(false)
-            .build();
+        caps.timeouts = TimeoutSupport::none()
+            .with_resolve(true)
+            .with_connect(true)
+            .with_first_byte(false)
+            .with_between_bytes(false);
         assert!(check_supported(&cfg, &caps, "wasi:http").is_ok());
     }
 
@@ -707,13 +704,12 @@ mod tests {
     // an artifact of `connect` being the struct's first field.
     #[test]
     fn request_overrides_first_byte_only_leaves_others_from_client() {
-        let client = Timeouts::builder()
+        let client = Timeouts::new()
             .maybe_connect(secs(1))
             .maybe_first_byte(secs(2))
-            .maybe_between_bytes(secs(3))
-            .build();
+            .maybe_between_bytes(secs(3));
         let mut ext = http::Extensions::new();
-        ext.insert(Timeouts::builder().maybe_first_byte(secs(9)).build());
+        ext.insert(Timeouts::new().maybe_first_byte(secs(9)));
         let eff = effective_timeouts(&ext, &client);
         assert_eq!(
             eff.connect,
@@ -741,16 +737,15 @@ mod tests {
     #[test]
     fn unsupported_connect_is_named_connect_not_another_phase() {
         let cfg = Config {
-            timeouts: Timeouts::builder().maybe_connect(secs(1)).build(),
+            timeouts: Timeouts::new().maybe_connect(secs(1)),
             ..Default::default()
         };
         let mut caps = Capabilities::default();
-        caps.timeouts = TimeoutSupport::builder()
-            .resolve(false)
-            .connect(false)
-            .first_byte(true)
-            .between_bytes(true)
-            .build();
+        caps.timeouts = TimeoutSupport::none()
+            .with_resolve(false)
+            .with_connect(false)
+            .with_first_byte(true)
+            .with_between_bytes(true);
         let err = check_supported(&cfg, &caps, "wasi:http").unwrap_err();
         assert_eq!(err.what, "connect_timeout");
         assert_eq!(err.backend, "wasi:http");
@@ -759,16 +754,15 @@ mod tests {
     #[test]
     fn unsupported_first_byte_is_named_first_byte_not_another_phase() {
         let cfg = Config {
-            timeouts: Timeouts::builder().maybe_first_byte(secs(1)).build(),
+            timeouts: Timeouts::new().maybe_first_byte(secs(1)),
             ..Default::default()
         };
         let mut caps = Capabilities::default();
-        caps.timeouts = TimeoutSupport::builder()
-            .resolve(true)
-            .connect(true)
-            .first_byte(false)
-            .between_bytes(true)
-            .build();
+        caps.timeouts = TimeoutSupport::none()
+            .with_resolve(true)
+            .with_connect(true)
+            .with_first_byte(false)
+            .with_between_bytes(true);
         let err = check_supported(&cfg, &caps, "wasi:http").unwrap_err();
         assert_eq!(err.what, "first_byte_timeout");
         assert_eq!(err.backend, "wasi:http");
@@ -777,16 +771,15 @@ mod tests {
     #[test]
     fn unsupported_between_bytes_is_named_between_bytes_not_another_phase() {
         let cfg = Config {
-            timeouts: Timeouts::builder().maybe_between_bytes(secs(1)).build(),
+            timeouts: Timeouts::new().maybe_between_bytes(secs(1)),
             ..Default::default()
         };
         let mut caps = Capabilities::default();
-        caps.timeouts = TimeoutSupport::builder()
-            .resolve(false)
-            .connect(true)
-            .first_byte(true)
-            .between_bytes(false)
-            .build();
+        caps.timeouts = TimeoutSupport::none()
+            .with_resolve(false)
+            .with_connect(true)
+            .with_first_byte(true)
+            .with_between_bytes(false);
         let err = check_supported(&cfg, &caps, "wasi:http").unwrap_err();
         assert_eq!(err.what, "between_bytes_timeout");
         assert_eq!(err.backend, "wasi:http");

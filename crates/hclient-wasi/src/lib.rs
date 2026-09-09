@@ -213,18 +213,17 @@ impl WasiHttp {
         // blindly retry a non-idempotent request.
         caps.request_trailers = true;
         caps.response_trailers = true;
-        caps.timeouts = TimeoutSupport::builder()
+        caps.timeouts = TimeoutSupport::none()
             // **`false`, and honestly so.** `wasi:http` 0.3's
             // `request-options` has connect-timeout, first-byte-timeout
             // and between-bytes-timeout and nothing for resolution: the
             // host resolves, and there is no moment in this guest at which
             // a bound could be applied or a failure attributed. Declaring
             // it would be the shape `Capabilities` exists to refuse.
-            .resolve(false)
-            .connect(true)
-            .first_byte(true)
-            .between_bytes(true)
-            .build();
+            .with_resolve(false)
+            .with_connect(true)
+            .with_first_byte(true)
+            .with_between_bytes(true);
         // And poorer everywhere else: the spec has no TLS, no proxy, no
         // version selection, no upgrade.
         //

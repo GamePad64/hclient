@@ -138,7 +138,7 @@ mod demo {
         // accepted the value would leave a caller believing a ceiling was in
         // force. Every capability on the seam is a gate of this shape.
         let refused = Client::builder(transport.clone())
-            .timeouts(Timeouts::builder().connect(Duration::from_secs(5)).build())
+            .timeouts(Timeouts::new().with_connect(Duration::from_secs(5)))
             .build()
             .expect_err("the mock declares no connect phase");
         println!("refused, and it says which field: {refused}");

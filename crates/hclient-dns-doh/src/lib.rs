@@ -202,11 +202,10 @@ const DNS_MESSAGE: &str = "application/dns-message";
 // `#[builder(const)]` — which is the pair of facts the attribute needed
 // before it could be taken. `..Default::default()` would not compile here:
 // `Default::default()` is not a `const fn`.
-const DEFAULT_TIMEOUTS: Timeouts = Timeouts::builder()
-    .connect(Duration::from_secs(2))
-    .first_byte(Duration::from_secs(5))
-    .between_bytes(Duration::from_secs(5))
-    .build();
+const DEFAULT_TIMEOUTS: Timeouts = Timeouts::new()
+    .with_connect(Duration::from_secs(2))
+    .with_first_byte(Duration::from_secs(5))
+    .with_between_bytes(Duration::from_secs(5));
 
 /// The absence of a fallback resolver, as a type.
 ///

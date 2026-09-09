@@ -392,7 +392,7 @@ fn get_literal(port: u16) -> http::Request<RequestBody> {
 fn bounded(port: u16, connect: Duration) -> http::Request<RequestBody> {
     let mut req = get(port);
     req.extensions_mut()
-        .insert(Timeouts::builder().connect(connect).build());
+        .insert(Timeouts::new().with_connect(connect));
     req
 }
 

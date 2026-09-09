@@ -121,12 +121,11 @@ pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, 
     // test could tell them apart. It would have become a capability that
     // lies the moment one member stopped bounding one of the two, which is
     // precisely the drift the pair exists to catch.
-    c.timeouts = hclient_core::caps::TimeoutSupport::builder()
-        .resolve(tcp.timeouts.resolve && quic.timeouts.resolve)
-        .connect(tcp.timeouts.connect && quic.timeouts.connect)
-        .first_byte(tcp.timeouts.first_byte && quic.timeouts.first_byte)
-        .between_bytes(tcp.timeouts.between_bytes && quic.timeouts.between_bytes)
-        .build();
+    c.timeouts = hclient_core::caps::TimeoutSupport::none()
+        .with_resolve(tcp.timeouts.resolve && quic.timeouts.resolve)
+        .with_connect(tcp.timeouts.connect && quic.timeouts.connect)
+        .with_first_byte(tcp.timeouts.first_byte && quic.timeouts.first_byte)
+        .with_between_bytes(tcp.timeouts.between_bytes && quic.timeouts.between_bytes);
 
     // --- the field where the stronger value is the true one -------------
     c.early_data = early_data(tcp, quic);

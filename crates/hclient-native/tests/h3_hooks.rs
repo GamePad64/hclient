@@ -1135,11 +1135,8 @@ async fn a_connect_that_never_completes_reports_nothing() {
     let t = watched(&s.cert_der, &rec);
 
     let mut req = get(addr, "/nowhere");
-    req.extensions_mut().insert(
-        hclient_core::req::Timeouts::builder()
-            .connect(Duration::from_millis(300))
-            .build(),
-    );
+    req.extensions_mut()
+        .insert(hclient_core::req::Timeouts::new().with_connect(Duration::from_millis(300)));
     let err = t
         .execute(req)
         .await

@@ -414,11 +414,10 @@ async fn every_timeout_phase_is_accepted_at_build_time_now_that_each_is_enforced
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     Client::builder(t)
         .timeouts(
-            hclient::Timeouts::builder()
-                .connect(Duration::from_secs(1))
-                .first_byte(Duration::from_secs(1))
-                .between_bytes(Duration::from_secs(1))
-                .build(),
+            hclient::Timeouts::new()
+                .with_connect(Duration::from_secs(1))
+                .with_first_byte(Duration::from_secs(1))
+                .with_between_bytes(Duration::from_secs(1)),
         )
         .build()
         .expect("all three phases are declared and enforced");
@@ -826,11 +825,7 @@ impl hclient_tls::TlsConnect for NoOpTls {
 fn declared_connect_timeout_is_actually_applied() {
     let t = Native::new(NeverConnects, NoOpTls, OneUnroutableAddr);
     let c = Client::builder(t)
-        .timeouts(
-            hclient::Timeouts::builder()
-                .connect(Duration::from_millis(50))
-                .build(),
-        )
+        .timeouts(hclient::Timeouts::new().with_connect(Duration::from_millis(50)))
         .build()
         .expect("Native declares timeouts.connect = true, so build() must accept this");
 
@@ -986,7 +981,7 @@ fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
         let rt = LoggingNeverConnects::default();
         let t = Native::new(rt.clone(), NoOpTls, FiveUnroutableAddrs);
         let c = Client::builder(t)
-            .timeouts(hclient::Timeouts::builder().connect(d).build())
+            .timeouts(hclient::Timeouts::new().with_connect(d))
             .build()
             .unwrap();
         let result = poll_bounded(

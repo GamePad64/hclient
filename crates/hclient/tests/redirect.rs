@@ -203,7 +203,7 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
     use hclient::Timeouts;
     let m = MockTransport::new(); // Capabilities::default() — timeouts unsupported
     let err = Client::builder(m)
-        .timeouts(Timeouts::builder().connect(Duration::from_secs(1)).build())
+        .timeouts(Timeouts::new().with_connect(Duration::from_secs(1)))
         .build()
         .unwrap_err();
     assert_eq!(err.what, "connect_timeout");
@@ -264,12 +264,11 @@ fn per_request_extensions_survive_a_hop_unchanged() {
     // timeout, and this test is about carrying `extensions` across hops,
     // not about the gate.
     let mut caps = hclient::caps::Capabilities::default();
-    caps.timeouts = hclient::caps::TimeoutSupport::builder()
-        .resolve(false)
-        .connect(true)
-        .first_byte(true)
-        .between_bytes(true)
-        .build();
+    caps.timeouts = hclient::caps::TimeoutSupport::none()
+        .with_resolve(false)
+        .with_connect(true)
+        .with_first_byte(true)
+        .with_between_bytes(true);
     let m = MockTransport::new().with_capabilities(caps);
     m.push_response(redirect_to("https://a/second"));
     m.push_response(http::Response::builder().status(200).body("").unwrap());
@@ -280,7 +279,7 @@ fn per_request_extensions_survive_a_hop_unchanged() {
         .body(RequestBody::Empty)
         .unwrap();
     req.extensions_mut()
-        .insert(Timeouts::builder().connect(Duration::from_secs(3)).build());
+        .insert(Timeouts::new().with_connect(Duration::from_secs(3)));
     let _ = futures_executor::block_on(c.execute(req)).unwrap();
 
     let seen = c

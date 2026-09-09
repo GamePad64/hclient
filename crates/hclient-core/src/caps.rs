@@ -337,37 +337,33 @@ pub enum TlsSupport {
 /// the field-per-field mirror of that struct, so a refusal can name the
 /// bound a caller set rather than saying *timeouts*.
 ///
-/// # `#[non_exhaustive]`, and `bon` is what keeps the compile error
+/// # `#[non_exhaustive]`, and why an added claim is `false` rather than a
+/// compile error
 ///
-/// This struct has grown once already — `resolve` joined three fields in
-/// v0.4 — and it grows again whenever [`crate::req::Timeouts`] does,
-/// which is the mirror working rather than a hazard.
+/// This struct has grown once — `resolve` joined three fields in v0.4 —
+/// and it grows again whenever [`crate::req::Timeouts`] does. The
+/// attribute keeps that additive for everyone who reads one, and
+/// [`Self::none`] plus the `with_*` setters keep it constructible for
+/// everyone who writes one.
 ///
-/// **The mirror is what separates this type from
-/// [`crate::req::Timeouts`], and the two take the attribute for opposite
-/// reasons.** A bound left unset there means *the caller did not ask*, so
-/// a field a caller never heard of should be `None`. A field left unset
-/// **here** is a transport saying *I do not enforce this* — a claim, made
-/// by a value nobody wrote — and the exhaustive literal was what stopped
-/// that: a new field was a compile error at every transport on the day it
-/// arrived, which is how `resolve` got an honest `false` out of the two
-/// ambient backends rather than a defaulted one.
+/// **It was a generated builder whose members were required**, so that a
+/// field added here was a compile error at every transport rather than a
+/// silent `false`. The argument was that an unset claim is a transport
+/// saying it does not enforce a bound, and a claim nobody wrote is the
+/// thing to refuse. **The ordering is the other way round**: a transport
+/// cannot honestly report `true` before it implements the bound, so on
+/// the day a field arrives `false` is the only true answer anywhere
+/// except the crate that added the enforcement. The compile error did not
+/// surface a decision; it demanded a diff whose content was forced.
 ///
-/// **`bon` keeps that property and the attribute together.** A
-/// non-`Option` member is **required** in the generated builder, so a
-/// field added here is `Unset` at every transport — measured on a
-/// two-crate probe, `E0277` naming the member — while the attribute stops
-/// an out-of-tree reader breaking on it. What the literal did by
-/// accident of exhaustiveness, the builder does on purpose, and the
-/// consumer that only *reads* the value no longer pays for it.
-///
-/// The mirror holds in the generated code too: over in `Timeouts` every
-/// member is an `Option`, which `bon` makes optional, so an unset bound
-/// there is `None` and an unset claim here is a compile error. Same
-/// derive, opposite behaviour, because the field types already said which
-/// was wanted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bon::Builder)]
-#[builder(const)]
+/// The history says so. `637beee7` added `resolve` together with the 95
+/// lines in `hclient-native`'s connector that enforce it: `resolve: true`
+/// appears **once**, and every other transport got a `false` carrying no
+/// information. And [`Capabilities`] has always derived `Default`, with
+/// eleven `bool` capabilities that become `false` when a transport does
+/// not set them — so the requirement was giving this struct a property
+/// its own container never had.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TimeoutSupport {
     /// Whether [`crate::req::Timeouts::resolve`] is enforced. Honestly `false` on
@@ -377,6 +373,51 @@ pub struct TimeoutSupport {
     pub connect: bool,
     pub first_byte: bool,
     pub between_bytes: bool,
+}
+
+impl TimeoutSupport {
+    /// No bound enforced — what a transport reports before it enforces
+    /// anything, and the value every field of a newly added bound takes.
+    ///
+    /// Named for what it means rather than for emptiness: this is a
+    /// transport's honest opening position, not a placeholder.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            resolve: false,
+            connect: false,
+            first_byte: false,
+            between_bytes: false,
+        }
+    }
+
+    /// This transport enforces [`crate::req::Timeouts::resolve`].
+    #[must_use]
+    pub const fn with_resolve(mut self, enforced: bool) -> Self {
+        self.resolve = enforced;
+        self
+    }
+
+    /// This transport enforces [`crate::req::Timeouts::connect`].
+    #[must_use]
+    pub const fn with_connect(mut self, enforced: bool) -> Self {
+        self.connect = enforced;
+        self
+    }
+
+    /// This transport enforces [`crate::req::Timeouts::first_byte`].
+    #[must_use]
+    pub const fn with_first_byte(mut self, enforced: bool) -> Self {
+        self.first_byte = enforced;
+        self
+    }
+
+    /// This transport enforces [`crate::req::Timeouts::between_bytes`].
+    #[must_use]
+    pub const fn with_between_bytes(mut self, enforced: bool) -> Self {
+        self.between_bytes = enforced;
+        self
+    }
 }
 
 /// Whether a transport can put a request into TLS 1.3 early data (0-RTT).

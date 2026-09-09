@@ -580,11 +580,8 @@ async fn a_connect_timeout_cuts_a_quic_handshake_that_never_completes() {
     let t = h3(&id.cert_der);
 
     let mut req = get(addr, "/x");
-    req.extensions_mut().insert(
-        hclient_core::req::Timeouts::builder()
-            .connect(CONNECT_BOUND)
-            .build(),
-    );
+    req.extensions_mut()
+        .insert(hclient_core::req::Timeouts::new().with_connect(CONNECT_BOUND));
 
     let started = std::time::Instant::now();
     let err = t
@@ -643,7 +640,7 @@ async fn a_client_may_now_set_a_connect_timeout_over_h3() {
     let (_hole, addr) = black_hole();
     let id = server::identity();
     let client = hclient::Client::builder(h3(&id.cert_der))
-        .timeouts(hclient::Timeouts::builder().connect(CONNECT_BOUND).build())
+        .timeouts(hclient::Timeouts::new().with_connect(CONNECT_BOUND))
         .build()
         .expect("the capability is declared, so the builder must accept the setting");
 

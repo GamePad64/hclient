@@ -26,51 +26,38 @@ use crate::error::VersionNotAvailable;
 /// Lives in `hclient-core` because transports read it from the request's
 /// `http::Extensions`, and they don't depend on `hclient`.
 ///
-/// # `#[non_exhaustive]`, and the two things it took to afford it
+/// # `#[non_exhaustive]`, and what it does and does not close
 ///
 /// A fifth bound is a real prospect — `resolve` joined three in v0.4 —
-/// and an out-of-tree caller should not need a major version for one. The
-/// attribute was refused twice on two objections, and both are answered
-/// rather than waived.
+/// and an out-of-tree caller should not need a major version for one.
+/// The attribute is what buys that, and the objection to it was that its
+/// whole use is `Timeouts { connect: Some(d), ..Default::default() }`,
+/// which the attribute closes from outside this crate along with the
+/// plain literal: `E0639` for both, measured on a two-crate probe.
 ///
-/// **Construction, answered by `bon`.** Its whole use is
-/// `Timeouts { connect: Some(d), ..Default::default() }`, and the
-/// attribute forbids the functional-update form as firmly as the
-/// exhaustive one from outside this crate — `E0639` for both, measured on
-/// a two-crate probe. `#[builder(const)]` reopens it: `Timeouts::builder()
-/// .connect(d).build()` composes in a `const`, across a crate boundary,
-/// on a `#[non_exhaustive]` struct. The `const` matters because
-/// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is one, and there
-/// `..Default::default()` does not exist at all — `Default::default()` is
-/// not a `const fn`. A plain `#[derive(bon::Builder)]` is **not** const,
-/// three `E0015`s, which is worth checking before taking a dependency
-/// rather than after.
+/// **What it does not close is field assignment**, and that is the fact
+/// the objection missed. `let mut t = Timeouts::new(); t.connect =
+/// Some(d);` compiles from another crate and inside a `const`, so the
+/// whole of what was needed is a `const fn` constructor —
+/// [`Self::new`] — because `Default::default()` is not one and
+/// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is a `const`. The `with_*`
+/// setters chain on top of it so a call site reads as it did before.
 ///
-/// **The gate, which no builder can answer.** `hclient`'s
-/// `check_timeouts_supported` refuses a bound the transport does not
-/// enforce, and it did so by destructuring this struct exhaustively — so
-/// a fifth bound was `E0027` inside the function that decides whether the
-/// bound is checked. `#[non_exhaustive]` bans a cross-crate exhaustive
-/// destructure as firmly as a literal (`E0638`), so the attribute alone
-/// would have forced a `..` there, and a `..` is where a new bound goes
-/// to be **silently unchecked**: the caller sets it, no transport
-/// enforces it, `build()` says nothing. That is the *silently ignored
-/// setting* defect this crate closes four times over, arriving through
-/// the door opened to prevent a different one.
+/// This was a generated `bon` builder for one release and is not any
+/// more. What that cost was a public typestate — every setter's signature
+/// named `SetConnect<S>` and `S::Connect: IsUnset`, from a module `bon`
+/// marks `#[doc(hidden)]`, so a caller could meet those names in a
+/// signature and in a compiler error and could not write them. Five
+/// crates in the graph and a hole in the public API, to reach a
+/// constructor that is nine lines.
 ///
-/// [`Self::support_checks`] and [`Self::or`] are the answer: both
-/// destructures moved into this crate, where the attribute does not
-/// apply, and `hclient` consumes what they return. A builder answers only
-/// for **producers**, and these two are readers.
-///
-/// **The mirror image is [`crate::caps::TimeoutSupport`], and it keeps
-/// the opposite answer.** A bound left unset here means *the caller did
-/// not ask*, so a field a caller never heard of should be `None` and the
-/// builder gives exactly that. A field left unset there is a transport
-/// **claiming** it does not enforce something — a claim nobody wrote — so
-/// the exhaustive literal is the feature.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bon::Builder)]
-#[builder(const)]
+/// **The mirror is [`crate::caps::TimeoutSupport`], and it takes the same
+/// shape for the reason the two look opposite.** A bound left unset here
+/// means *the caller did not ask*; a claim left unset there means *this
+/// transport does not enforce it* — and both are what a new field should
+/// say on the day it arrives, because a caller has not heard of it and a
+/// transport has not implemented it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Timeouts {
     /// A bound on **getting an address to try**, separate from the connect
@@ -135,6 +122,88 @@ pub struct BoundSupport {
 }
 
 impl Timeouts {
+    /// No bound at all — every phase waits as long as it waits.
+    ///
+    /// `const`, and that is what the type needs rather than a nicety:
+    /// [`Self`] is `#[non_exhaustive]`, which closes the struct literal
+    /// *and* `..Default::default()` to a caller outside this crate
+    /// (`E0639` for both), and `Default::default()` is not a `const fn`.
+    /// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is a `const`, so without
+    /// this there is no expression that builds one there.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            resolve: None,
+            connect: None,
+            first_byte: None,
+            between_bytes: None,
+        }
+    }
+
+    /// Bound the wait for the first address. See [`Self::resolve`].
+    #[must_use]
+    pub const fn with_resolve(mut self, d: core::time::Duration) -> Self {
+        self.resolve = Some(d);
+        self
+    }
+
+    /// Bound the connect. See [`Self::connect`].
+    #[must_use]
+    pub const fn with_connect(mut self, d: core::time::Duration) -> Self {
+        self.connect = Some(d);
+        self
+    }
+
+    /// Bound the wait for the response head. See [`Self::first_byte`].
+    #[must_use]
+    pub const fn with_first_byte(mut self, d: core::time::Duration) -> Self {
+        self.first_byte = Some(d);
+        self
+    }
+
+    /// Bound the gap between body frames. See [`Self::between_bytes`].
+    #[must_use]
+    pub const fn with_between_bytes(mut self, d: core::time::Duration) -> Self {
+        self.between_bytes = Some(d);
+        self
+    }
+
+    /// Set the resolve bound to whatever this `Option` holds, `None`
+    /// included.
+    ///
+    /// The `with_*` setters take a `Duration` because a caller writing one
+    /// down knows it is setting a bound; a caller **forwarding** one
+    /// already has an `Option` and would otherwise write a `match`.
+    #[must_use]
+    pub const fn maybe_resolve(mut self, d: Option<core::time::Duration>) -> Self {
+        self.resolve = d;
+        self
+    }
+
+    /// Set the connect bound to whatever this `Option` holds, `None`
+    /// included. See [`Self::maybe_resolve`].
+    #[must_use]
+    pub const fn maybe_connect(mut self, d: Option<core::time::Duration>) -> Self {
+        self.connect = d;
+        self
+    }
+
+    /// Set the first-byte bound to whatever this `Option` holds, `None`
+    /// included. See [`Self::maybe_resolve`].
+    #[must_use]
+    pub const fn maybe_first_byte(mut self, d: Option<core::time::Duration>) -> Self {
+        self.first_byte = d;
+        self
+    }
+
+    /// Set the between-bytes bound to whatever this `Option` holds, `None`
+    /// included. See [`Self::maybe_resolve`].
+    #[must_use]
+    pub const fn maybe_between_bytes(mut self, d: Option<core::time::Duration>) -> Self {
+        self.between_bytes = d;
+        self
+    }
+
     /// This value's bounds, falling back to `base` wherever this one is
     /// unset — the per-request-over-client merge, field by field.
     ///
@@ -479,12 +548,11 @@ mod tests {
         use crate::caps::TimeoutSupport;
         use core::time::Duration;
 
-        let all = TimeoutSupport::builder()
-            .resolve(true)
-            .connect(true)
-            .first_byte(true)
-            .between_bytes(true)
-            .build();
+        let all = TimeoutSupport::none()
+            .with_resolve(true)
+            .with_connect(true)
+            .with_first_byte(true)
+            .with_between_bytes(true);
         let d = Duration::from_secs(1);
 
         // (set exactly this bound, withhold exactly this support, expect this name)
@@ -498,22 +566,22 @@ mod tests {
 
         let table: [Row; 4] = [
             (
-                |d| Timeouts::builder().resolve(d).build(),
+                |d| Timeouts::new().with_resolve(d),
                 |s| s.resolve = false,
                 "resolve_timeout",
             ),
             (
-                |d| Timeouts::builder().connect(d).build(),
+                |d| Timeouts::new().with_connect(d),
                 |s| s.connect = false,
                 "connect_timeout",
             ),
             (
-                |d| Timeouts::builder().first_byte(d).build(),
+                |d| Timeouts::new().with_first_byte(d),
                 |s| s.first_byte = false,
                 "first_byte_timeout",
             ),
             (
-                |d| Timeouts::builder().between_bytes(d).build(),
+                |d| Timeouts::new().with_between_bytes(d),
                 |s| s.between_bytes = false,
                 "between_bytes_timeout",
             ),
@@ -572,11 +640,10 @@ mod tests {
     #[test]
     fn the_merge_is_field_by_field() {
         use core::time::Duration;
-        let client = Timeouts::builder()
-            .connect(Duration::from_secs(1))
-            .first_byte(Duration::from_secs(2))
-            .build();
-        let request = Timeouts::builder().connect(Duration::from_secs(9)).build();
+        let client = Timeouts::new()
+            .with_connect(Duration::from_secs(1))
+            .with_first_byte(Duration::from_secs(2));
+        let request = Timeouts::new().with_connect(Duration::from_secs(9));
 
         let eff = request.or(&client);
         assert_eq!(eff.connect, Some(Duration::from_secs(9)), "request wins");
@@ -595,10 +662,9 @@ mod tests {
     #[test]
     fn the_builder_composes_in_a_const() {
         use core::time::Duration;
-        const T: Timeouts = Timeouts::builder()
-            .connect(Duration::from_secs(2))
-            .first_byte(Duration::from_secs(5))
-            .build();
+        const T: Timeouts = Timeouts::new()
+            .with_connect(Duration::from_secs(2))
+            .with_first_byte(Duration::from_secs(5));
         assert_eq!(T.connect, Some(Duration::from_secs(2)));
         assert_eq!(T.between_bytes, None);
     }

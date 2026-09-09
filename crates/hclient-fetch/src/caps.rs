@@ -404,12 +404,11 @@ pub(crate) fn probe() -> Capabilities {
     // an unset field is *the caller did not ask*, here it is a transport
     // claiming it does not enforce something, and a claim nobody wrote is
     // the thing to refuse.
-    c.timeouts = TimeoutSupport::builder()
-        .resolve(false)
-        .connect(false)
-        .first_byte(false)
-        .between_bytes(false)
-        .build();
+    c.timeouts = TimeoutSupport::none()
+        .with_resolve(false)
+        .with_connect(false)
+        .with_first_byte(false)
+        .with_between_bytes(false);
     c.tls_config = TlsSupport::None;
     // There is no `upgrade` field to set: `WebSocket` in the browser is a
     // wholly separate global, unreachable from a `fetch`-shaped
