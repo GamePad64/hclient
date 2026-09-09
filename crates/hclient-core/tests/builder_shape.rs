@@ -46,9 +46,9 @@ fn a_caller_outside_the_crate_can_assign_a_field() {
 }
 
 /// **The forwarding form.** A caller that already holds an `Option` should
-/// not have to write a `match`; `connect` is the only bound forwarded in
-/// this workspace, so it is the only one with this form — a setter that
-/// exists for symmetry is a setter with no caller.
+/// not have to write a `match`. Every bound has this form because every
+/// bound is forwarded somewhere — `hclient`'s own timeout tests and its
+/// `effective_timeouts` merge forward all four.
 #[test]
 fn an_option_can_be_forwarded_without_a_match() {
     assert_eq!(
