@@ -8,6 +8,18 @@ has `docs/` and not `.notes/`, so a `.notes/` link is a pointer into the
 working copy, not a promise the file is there. The history still holds
 everything that was moved.
 
+**Plans and specs are the first audience, so they live in
+`.notes/superpowers/`** — `plans/` and `specs/` beside each other — and
+this needs saying because the skill that writes them defaults to
+`docs/superpowers/plans/`. A plan is the record of an argument somebody
+had while building; a reader who installed this crate has no use for it
+and `docs/` is what a fresh clone ships. The freeze plan landed in
+`docs/` once for exactly that reason, sat untracked for a session, and
+took nine stale links with it when it moved — eight of which pointed at
+the design spec and had been broken since *it* moved, which is this
+file's own rule about a claim being as perishable as its subject, met
+from the side where the subject is a path.
+
 Cross-platform async HTTP client. The same application code
 builds for native, browser and WASI — the transport is swapped out, not
 buried under `#[cfg]`.
