@@ -545,7 +545,7 @@ where
     /// has no answer, so an origin that publishes an HTTPS record never
     /// touches it and the fast path takes no lock.
     #[cfg(feature = "http3")]
-    alt_svc: altsvc::AltSvcCache<altsvc::AnyAltSvcStore>,
+    alt_svc: altsvc::AltSvcCache<altsvc::BoxAltSvcStore>,
     /// Origins whose HTTP/3 connect has already failed, and when.
     ///
     /// The negative half, and a different fact from
@@ -905,7 +905,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             #[cfg(feature = "http3")]
             h3: None,
             #[cfg(feature = "http3")]
-            alt_svc: altsvc::AltSvcCache::with_store(altsvc::AnyAltSvcStore::new(
+            alt_svc: altsvc::AltSvcCache::with_store(altsvc::BoxAltSvcStore::new(
                 altsvc::MemoryStore::default(),
             )),
             #[cfg(feature = "http3")]
@@ -1856,7 +1856,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         for<'a> S::Get<'a>: Send,                       // send-bound-exception: amendment-C12
         for<'a> S::Done<'a>: Send,                      // send-bound-exception: amendment-C12
     {
-        self.alt_svc = altsvc::AltSvcCache::with_store(altsvc::AnyAltSvcStore::new(store));
+        self.alt_svc = altsvc::AltSvcCache::with_store(altsvc::BoxAltSvcStore::new(store));
         self
     }
 

@@ -262,7 +262,7 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
 /// all. That is the whole of what separates it from 5.
 ///
 /// A store author still never writes the erasure:
-/// [`AnyCookieStore`](crate::erased::AnyCookieStore) is a blanket impl
+/// [`BoxCookieStore`](crate::erased::BoxCookieStore) is a blanket impl
 /// over a private object-safe trait, so `Send` is inferred where the type
 /// is still concrete, and it is demanded only on
 /// [`ClientBuilder::cookie_jar`](crate::ClientBuilder::cookie_jar).

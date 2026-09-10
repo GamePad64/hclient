@@ -156,7 +156,7 @@ pub trait AuthFlow {
 ///
 /// **Neither trait declares an auto trait**, which is this workspace's
 /// rule for a seam: the demands live where the facade *stores* the value,
-/// in [`BoxedFlow`] and in the `Arc` `RequestBuilder::auth` wraps a scheme
+/// in [`BoxFlow`] and in the `Arc` `RequestBuilder::auth` wraps a scheme
 /// into — a bound on a value the caller hands over at an opt-in call,
 /// rather than one every implementor must satisfy.
 ///
@@ -169,11 +169,11 @@ pub trait AuthFlow {
 /// removes the question along with the bound.
 pub trait Auth: std::fmt::Debug {
     /// A fresh flow for one hop.
-    fn start(&self) -> BoxedFlow;
+    fn start(&self) -> BoxFlow;
 }
 
 impl<T: Auth + ?Sized> Auth for std::sync::Arc<T> {
-    fn start(&self) -> BoxedFlow {
+    fn start(&self) -> BoxFlow {
         (**self).start()
     }
 }
@@ -184,4 +184,4 @@ impl<T: Auth + ?Sized> Auth for std::sync::Arc<T> {
 /// `Client::execute`'s future is `Send` — a property this workspace spent
 /// the whole erasure effort recovering, and which a flow that was not
 /// would take back from every caller.
-pub type BoxedFlow = Box<dyn AuthFlow + Send>; // send-bound-exception: amendment-C12
+pub type BoxFlow = Box<dyn AuthFlow + Send>; // send-bound-exception: amendment-C12

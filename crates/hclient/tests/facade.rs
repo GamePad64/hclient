@@ -59,14 +59,14 @@ fn the_re_export_only_doors_are_reachable(
     // covers and `--all-features` cannot see.
     #[cfg(feature = "cookies")]
     fn cookie_seam_types_are_nameable(
-        _l: &hclient::erased::AnyList,
-        _c: &hclient::erased::AnyCookieStore,
+        _l: &hclient::erased::BoxSuffixList,
+        _c: &hclient::erased::BoxCookieStore,
     ) {
     }
     #[cfg(feature = "cache")]
-    fn cache_seam_type_is_nameable(_s: &hclient::erased::AnyStore) {}
+    fn cache_seam_type_is_nameable(_s: &hclient::erased::BoxCacheStore) {}
     #[cfg(feature = "hsts")]
-    fn hsts_seam_type_is_nameable(_h: &hclient::erased::AnyHstsStore) {}
+    fn hsts_seam_type_is_nameable(_h: &hclient::erased::BoxHstsStore) {}
 }
 
 /// `hclient::proxy`, which is the same shape one crate over and is split

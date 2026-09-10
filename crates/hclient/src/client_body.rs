@@ -41,8 +41,8 @@ use std::task::{Context, Poll};
 
 use http_body::{Body as HttpBody, Frame, SizeHint};
 
-use hclient_core::erased::BoxBody;
 use hclient_core::error::Error;
+use hclient_core::transport::BoxBody;
 
 use crate::cached::Cached;
 use crate::deadline::Deadline;

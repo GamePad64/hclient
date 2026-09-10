@@ -754,7 +754,7 @@ fn trim_ows(mut s: &[u8]) -> &[u8] {
 
 /// An [`AltSvcStore`] of any type.
 ///
-/// `hclient::erased::AnyStore`'s counterpart, built by
+/// `hclient::erased::BoxCacheStore`'s counterpart, built by
 /// [`Native::alt_svc_store`](crate::Native::alt_svc_store) from whatever
 /// the caller supplied. The split is the same one that crate uses and for
 /// the same reason: the seam names its futures as associated types, which
@@ -769,9 +769,9 @@ fn trim_ows(mut s: &[u8]) -> &[u8] {
 /// gave up its own parameters, applied one crate down and only to this
 /// field.
 #[derive(Clone)]
-pub struct AnyAltSvcStore(Arc<dyn BoxedAltSvcStore + Send + Sync>); // send-bound-exception: amendment-C12
+pub struct BoxAltSvcStore(Arc<dyn DynAltSvcStore + Send + Sync>); // send-bound-exception: amendment-C12
 
-impl AnyAltSvcStore {
+impl BoxAltSvcStore {
     pub fn new<S>(store: S) -> Self
     where
         S: AltSvcStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -782,14 +782,14 @@ impl AnyAltSvcStore {
     }
 }
 
-impl Debug for AnyAltSvcStore {
+impl Debug for BoxAltSvcStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AnyAltSvcStore").finish_non_exhaustive()
+        f.debug_struct("BoxAltSvcStore").finish_non_exhaustive()
     }
 }
 
 /// The object-safe half of [`AltSvcStore`].
-trait BoxedAltSvcStore {
+trait DynAltSvcStore {
     fn get_boxed<'a>(
         &'a self,
         origin: &'a Origin,
@@ -803,7 +803,7 @@ trait BoxedAltSvcStore {
     fn retain_persistent_boxed(&self) -> futures_core::future::BoxFuture<'_, ()>;
 }
 
-impl<S> BoxedAltSvcStore for S
+impl<S> DynAltSvcStore for S
 where
     S: AltSvcStore,
     for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
@@ -830,7 +830,7 @@ where
     }
 }
 
-impl AltSvcStore for AnyAltSvcStore {
+impl AltSvcStore for BoxAltSvcStore {
     type Get<'a> = futures_core::future::BoxFuture<'a, Option<Entry>>;
     type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
 

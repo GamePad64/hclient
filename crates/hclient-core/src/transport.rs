@@ -20,6 +20,8 @@ use crate::error::{Error, ErrorKind};
 use bytes::Bytes;
 use std::error::Error as StdError;
 use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 /// The one seam between hclient and real HTTP.
 ///
@@ -261,3 +263,179 @@ pub trait SendTransport: Transport {
         req: http::Request<RequestBody>,
     ) -> BoxSendExchange<'_, Self::Body, Self::Error>;
 }
+
+// ── erasure ─────────────────────────────────────────────────────────────
+//
+// `hclient::Client` is one concrete type rather than two type parameters,
+// and this is how: a boxed form of the trait above, beside the trait, the
+// way `futures_core` keeps `BoxFuture` beside `Future`. A backend writes
+// none of it — the blanket impl below is over every `SendTransport`.
+
+/// A response body with its type erased, as an erased transport hands back.
+///
+/// **`Send`**, so a response body crosses a `tokio::spawn`. One `BoxBody`
+/// serves every backend, and the bound is payable only because every one
+/// of them satisfies it — including the browser's, whose body holds no JS
+/// handle across an await.
+pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + Send>>; // send-bound-exception: amendment-C14
+
+/// An erased exchange, as [`BoxTransport`] hands one back.
+pub type BoxExchange<'a> =
+    Pin<Box<dyn Future<Output = Result<http::Response<BoxBody>, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
+
+/// Erase a body, mapping its error into [`Error`] on the way.
+///
+/// Written here rather than taken from `http-body-util`: `hclient-core`
+/// depends on `http-body` and not on the util crate, and this is a dozen
+/// lines against a dependency every backend would then carry.
+///
+/// **`pub(crate)`, and it was `pub` until it was asked who calls it.** Its
+/// doc named a reader outside this workspace — an author writing a
+/// backend — and that reader does not exist, because the only call is
+/// [`BoxTransport`]'s blanket impl below, which erases a backend's body
+/// *for* it. A backend declares `type Body` and hands back its own; it
+/// never boxes one itself.
+///
+/// Checked rather than reasoned about, and the check had to be a consumer
+/// rather than a grep: a whole backend written outside this workspace —
+/// its own `Transport`, `SendTransport` and body type, reaching
+/// `hclient::Client` — compiles without naming this function, and goes on
+/// compiling with it private. The two neighbours that look identical to a
+/// grep, [`BoxTimer`] and [`BoxInstantOf`], are the counterexample that
+/// makes the method worth stating: both have **zero** mentions outside
+/// this crate too, and both are load-bearing `pub` — making either private
+/// is `E0624` at a call in `hclient`, because their blanket impls are how
+/// a caller's own `Timer` reaches the erasure. Absence from a grep is not
+/// absence of a caller.
+pub(crate) fn box_body<B>(body: B) -> BoxBody
+where
+    B: http_body::Body<Data = Bytes> + Send + 'static, // send-bound-exception: amendment-C14
+    B::Error: Into<Error>,
+{
+    Box::pin(MapErr(Box::pin(body)))
+}
+
+/// The inner body is held **already pinned**, so this needs no projection
+/// and therefore no `unsafe` — `hclient-core` is `#![forbid(unsafe_code)]`,
+/// and a newtype that has to project is how that gets quietly broken. The
+/// cost is one allocation, on a path that is boxing anyway.
+struct MapErr<B>(Pin<Box<B>>);
+
+impl<B> http_body::Body for MapErr<B>
+where
+    B: http_body::Body<Data = Bytes>,
+    B::Error: Into<Error>,
+{
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
+        self.0
+            .as_mut()
+            .poll_frame(cx)
+            .map(|o| o.map(|r| r.map_err(Into::into)))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.0.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.0.size_hint()
+    }
+}
+
+/// [`crate::transport::Transport`], with the future and the body boxed.
+///
+/// Implemented for every [`crate::transport::SendTransport`] whose error
+/// and body error convert into [`Error`]. A backend author writes one
+/// method — `SendTransport`'s, whose body at a concrete type is
+/// `Box::pin(self.execute(req))`.
+///
+/// **It was over every `Transport` and cost nothing**, which is the trade
+/// C16 made: a facade whose request future is `Send` in exchange for one
+/// method per backend and the exclusion of a backend that cannot promise
+/// it. `hclient-dns-doh`-resolving transports are the case that pays.
+// The attribute is here as well as on `SendTransport`, and that is not a
+// duplicate: `Client::builder` bounds on THIS trait, and the blanket impl
+// below means the bound the compiler reports as unsatisfied is this one.
+// Without it the error names `SendTransport` in a `note` and offers no way
+// to act on it — measured by writing a transport from outside the
+// workspace and reading what rustc actually printed.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot back an `hclient::Client`: it is a `Transport` but not a `SendTransport`",
+    label = "this transport makes no `Send` claim",
+    note = "If `{Self}` is a `Result`, this is a missing `?` rather than a missing impl: `Client::new` and `default_transport` are fallible on native and infallible in a browser, so portable code differs by exactly that one character.",
+    note = "`Client` boxes its transport behind `Send` and `Sync`, so it asks for the one claim `Transport` deliberately does not make.",
+    note = "Implement `SendTransport` — one method, and at a concrete type its whole body is `Box::pin(self.execute(req))`, where `Send` is inferred rather than proved:",
+    note = "    impl hclient_core::SendTransport for {Self} {{",
+    note = "        fn execute_send(&self, req: http::Request<RequestBody>)",
+    note = "            -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error>",
+    note = "        {{ Box::pin(self.execute(req)) }}",
+    note = "    }}",
+    note = "If this transport genuinely cannot cross a thread — a browser one, or a runtime whose IO is `!Send` — do not implement it. `Transport` alone still works and only `hclient::Client` is out of reach."
+)]
+pub trait BoxTransport {
+    /// [`crate::transport::Transport::execute`], boxed.
+    fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a>;
+
+    /// [`crate::transport::Transport::capabilities`], unchanged — it was
+    /// never generic.
+    fn capabilities(&self) -> &crate::caps::Capabilities;
+
+    /// The transport as [`std::any::Any`], so a caller can ask for its
+    /// concrete type back.
+    ///
+    /// Erasure is what makes a facade one type rather than two parameters,
+    /// and the price is exactly this: the type is gone. A caller who needs
+    /// it back — to inspect a mock's recorded requests, or to lend a
+    /// `Native` to a WebSocket connector — downcasts through here, and the
+    /// `Option` is the honest answer, because the client holds whatever
+    /// backend it was built with and nothing checked it against this
+    /// caller's guess.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl<T> BoxTransport for T
+where
+    T: crate::transport::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
+    T::Body: Send + 'static,                             // send-bound-exception: amendment-C14
+    <T::Body as http_body::Body>::Error: Into<Error>,
+    T::Error: Into<Error>,
+{
+    fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a> {
+        Box::pin(async move {
+            match crate::transport::SendTransport::execute_send(self, req).await {
+                Ok(resp) => Ok(resp.map(box_body)),
+                Err(e) => Err(e.into()),
+            }
+        })
+    }
+
+    fn capabilities(&self) -> &crate::caps::Capabilities {
+        crate::transport::Transport::capabilities(self)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A transport a facade can share between threads, erased.
+///
+/// **The bound lives on this alias rather than at the use sites, and that
+/// is a rule rather than a style.** `cargo fmt` moves a trailing comment
+/// off a line it reflows and deletes one from a `where` clause outright,
+/// so a `send-bound-exception` marker cannot survive on a long signature.
+/// A short named type is a line fmt has no reason to touch, so every use
+/// site writes `Box<SharedTransport>` and carries no marker at all.
+///
+/// The bound is one this crate chooses so a caller's value reaches a
+/// facade by erasure rather than by a type parameter — said at the use
+/// site and never on the trait. A backend that
+/// cannot satisfy it is refused at a constructor rather than taxed at the
+/// seam.
+pub type SharedTransport = dyn BoxTransport + Send + Sync; // send-bound-exception: amendment-C12

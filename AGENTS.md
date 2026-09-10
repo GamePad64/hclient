@@ -8011,6 +8011,48 @@ metadata beside it: `default` is empty or near-empty in every crate here
 by design, so a doc build without it checks the smallest part of the
 surface and publishes the same.
 
+### Erasure is named `Box*` and lives beside the trait it erases
+
+Two conventions, and both were settled by noticing the crate already
+followed them almost everywhere.
+
+**A boxed form of a trait is called `Box<Trait>`** — `BoxTransport`,
+`BoxTimer`, `BoxFlow`, `BoxBody`, `BoxSleep`, `BoxCacheStore`. Not
+`Boxed*`, not `Any*`, not `Erased*`. Three prefixes for one idea was three
+things to learn, and `futures_core`'s `BoxFuture`/`BoxStream` is the name
+a Rust reader already has. Thirteen types were renamed to reach it.
+
+Where a public newtype wraps a private object-safe trait, the trait takes
+`Dyn*` — `BoxCacheStore(Box<dyn DynCacheStore + …>)`. That is a layering
+rather than a synonym: `Box*` is what a caller names, `Dyn*` is the shape
+that makes boxing possible, and giving them one name is a compile error
+rather than a style question.
+
+`Shared*` stays for what is genuinely shared rather than boxed —
+`SharedTransport` and `SharedTimer` are unsized `dyn` behind an `Arc`, and
+`Box<SharedTransport>` is a real use site. A name that says `Box` where an
+`Arc` is meant would be worse than the inconsistency.
+
+**And the boxed form lives beside its trait, not in a module of its own.**
+`hclient-core` had an `erased` module holding both halves of the `Client`
+erasure, on the argument that what unites them is *why* they exist — one
+concrete facade type instead of two type parameters — rather than what
+they erase. That argument is real and it lost to a simpler one: the crate
+was already doing the opposite everywhere else. `BoxFlow` sits in `auth`
+beside `AuthFlow`, `BoxSendExchange` in `transport`, and `hclient`'s
+`SharedRetryPolicy` beside the policy it shares. `erased` was the outlier,
+and `futures_core` keeps `BoxFuture` in `future` rather than in an
+`erased`.
+
+Dissolving it also ended a collision worth naming: **`hclient` has its own
+`erased` module**, holding the store wrappers, so the family had two
+public modules of one name and different contents.
+
+What the split cost is one cross-module doc link that had to be qualified,
+which is the boundary announcing itself. What it buys is that a reader of
+`transport` meets `BoxTransport` where the reason for it is, and a reader
+of `timer` never meets it at all.
+
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code

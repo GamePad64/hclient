@@ -53,7 +53,7 @@
 mod demo {
 
     use hclient::Client;
-    use hclient::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxedFlow};
+    use hclient::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxFlow};
     use hclient::mock::MockTransport;
 
     /// A two-leg scheme: send nothing, read the challenge, answer it.
@@ -68,7 +68,7 @@ mod demo {
     impl Auth for Token {
         /// One flow per hop. It carries what `authorize` learned from
         /// `on_response`, which is the state a shared value could not hold.
-        fn start(&self) -> BoxedFlow {
+        fn start(&self) -> BoxFlow {
             Box::new(TokenFlow {
                 secret: self.secret.clone(),
                 challenge: None,

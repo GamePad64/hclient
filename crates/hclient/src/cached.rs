@@ -355,7 +355,7 @@ impl Recorder {
 /// every client whether or not it caches.
 ///
 /// **The store is a caller's choice and is not a type parameter**, which
-/// is [`crate::erased::AnyStore`]'s whole subject: `HttpCache<S>` here would put
+/// is [`crate::erased::BoxCacheStore`]'s whole subject: `HttpCache<S>` here would put
 /// `S` on this type, on `Client`, and — because a recording body holds one
 /// — on the public `ClientBody` alias, whose arity is not something a
 /// feature nobody in a graph asked for should change. Erasing at the store
@@ -368,7 +368,7 @@ impl Recorder {
 /// that may already be a connection pool, and could not be held across
 /// the awaits the seam now has anyway.
 #[cfg(feature = "cache")]
-pub(crate) type Cache = std::sync::Arc<crate::cache::HttpCache<crate::erased::AnyStore>>;
+pub(crate) type Cache = std::sync::Arc<crate::cache::HttpCache<crate::erased::BoxCacheStore>>;
 
 /// What the cache decided about a hop, carried from before the request
 /// goes out to after the answer comes back.

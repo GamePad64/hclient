@@ -25,9 +25,9 @@
 //! asks of a TLS backend, and [`url`] for the one piece of URI syntax
 //! every consumer here kept re-deriving.
 //!
-//! **Neither** — [`erased`] is how `hclient::Client` boxes a transport and
-//! a clock, and no backend author writes anything in it: its two traits
-//! carry blanket impls.
+//! **Neither** — the `Box*` types in [`transport`] and [`timer`] are how
+//! `hclient::Client` boxes a transport and a clock, and no backend author
+//! writes any of them: each is a blanket impl over the trait beside it.
 //!
 //! **And a caller of `hclient` needs none of this.** Every type here that
 //! a caller meets is re-exported from that crate under a shorter path —
@@ -54,9 +54,9 @@
 //! - [`error::Error`]'s source is `Send + Sync`, or a client could not build an
 //!   error from a backend's at all.
 //! - [`body::RequestBody`]'s rewind factory and streaming arm.
-//! - [`erased`]'s two aliases, which a facade writes at its
-//!   own use site to put a transport behind an `Arc`. It is **not a
-//!   seam**: a blanket impl covers every `Transport`, so no backend
+//! - [`transport::SharedTransport`] and [`timer::SharedTimer`], which a
+//!   facade writes at its own use site to put a transport behind an
+//!   `Arc`. Neither is a **seam**: a blanket impl covers every `Transport`, so no backend
 //!   implements or is taxed by it, and one that cannot meet the bound is
 //!   refused at a constructor rather than at a trait.
 //!
@@ -137,7 +137,6 @@ pub mod url;
 //
 // Dissolved now rather than after `0.1.0`, because moving a public path
 // is free before a stable release and a major version after it.
-pub mod erased;
 pub mod hooks;
 pub mod timer;
 pub mod transport;

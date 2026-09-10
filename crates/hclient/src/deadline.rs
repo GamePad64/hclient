@@ -85,7 +85,7 @@ impl Timer for NoClock {
 /// bound the caller's wait and leave the request running.
 pub(crate) async fn within<F, T>(
     op: F,
-    timer: &hclient_core::erased::SharedTimer,
+    timer: &hclient_core::timer::SharedTimer,
     total: Duration,
 ) -> Result<T, Error>
 where
@@ -213,7 +213,7 @@ pub(crate) struct Deadline<B> {
     /// `started` is a `BoxInstant`, which is the stamp *and* the clock that
     /// took it. So one `send-bound-exception` marker left this struct with
     /// the field.
-    started: hclient_core::erased::BoxInstant,
+    started: hclient_core::timer::BoxInstant,
     /// `None` — no bound was set, and this wrapper is inert. It is still
     /// in the type, because a type cannot appear and disappear with a
     /// runtime value; the cost is one `Option` test per frame.
@@ -226,7 +226,7 @@ pub(crate) struct Deadline<B> {
     /// client that never asked for a clock — see `within`); or the
     /// deadline has already fired, where it is dropped alongside `inner`
     /// so that a completed future is never polled again.
-    sleep: Option<hclient_core::erased::BoxSleep>,
+    sleep: Option<hclient_core::timer::BoxSleep>,
 }
 
 impl<B> Deadline<B> {
@@ -257,8 +257,8 @@ impl<B> Deadline<B> {
     /// Measured as one of the mutations over this change.
     pub(crate) fn new(
         inner: B,
-        timer: &hclient_core::erased::SharedTimer,
-        started: hclient_core::erased::BoxInstant,
+        timer: &hclient_core::timer::SharedTimer,
+        started: hclient_core::timer::BoxInstant,
         total: Option<Duration>,
     ) -> Self {
         let sleep = total.map(|t| {

@@ -122,7 +122,7 @@ pub const MAX_LEGS: u8 = 4;
 // **The seam itself lives in `hclient-core`**, with every other trait a
 // third party implements — see that module for why. These re-exports are
 // what keep `hclient::auth::Auth` the path it has always been.
-pub use hclient_core::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxedFlow};
+pub use hclient_core::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxFlow};
 
 /// A scheme, as the client stores it — shared by every clone.
 pub(crate) type SharedAuth = std::sync::Arc<dyn Auth + Send + Sync>; // send-bound-exception: amendment-C12
@@ -152,7 +152,7 @@ impl Digest {
 
 #[cfg(feature = "digest-auth")]
 impl Auth for Digest {
-    fn start(&self) -> BoxedFlow {
+    fn start(&self) -> BoxFlow {
         Box::new(DigestFlow {
             user: self.user.clone(),
             password: self.password.clone(),

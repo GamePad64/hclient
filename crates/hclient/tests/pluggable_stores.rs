@@ -2,7 +2,7 @@
 //! facade.
 //!
 //! Both seams have always existed one crate down — `CookieJar<P>` and
-//! `HttpCache<S>` are generic — and until `AnyList`/`AnyStore` they
+//! `HttpCache<S>` are generic — and until `BoxSuffixList`/`BoxCacheStore` they
 //! stopped at `ClientBuilder`, which took only the defaulted forms. So
 //! what is asserted here is never *that the seam works* (each crate tests
 //! its own) but that a value the caller supplied is the one the client

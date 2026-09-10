@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use hclient::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxedFlow};
+use hclient::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxFlow};
 use hclient_core::body::RequestBody;
 use hclient_mock::MockTransport;
 
@@ -26,7 +26,7 @@ struct ThreeLeg {
 }
 
 impl Auth for ThreeLeg {
-    fn start(&self) -> BoxedFlow {
+    fn start(&self) -> BoxFlow {
         Box::new(ThreeLegFlow {
             leg: 0,
             server_token: None,
@@ -112,7 +112,7 @@ fn a_three_leg_scheme_written_outside_this_crate_completes() {
 struct NeverDone;
 
 impl Auth for NeverDone {
-    fn start(&self) -> BoxedFlow {
+    fn start(&self) -> BoxFlow {
         Box::new(NeverDone)
     }
 }
@@ -242,7 +242,7 @@ fn describe(v: hclient_core::body::BodyView<'_>) -> String {
 }
 
 impl Auth for Watching {
-    fn start(&self) -> BoxedFlow {
+    fn start(&self) -> BoxFlow {
         Box::new(self.clone())
     }
 }
@@ -365,7 +365,7 @@ struct WatchingTwice {
 }
 
 impl Auth for WatchingTwice {
-    fn start(&self) -> BoxedFlow {
+    fn start(&self) -> BoxFlow {
         Box::new(self.clone())
     }
 }
@@ -434,7 +434,7 @@ fn each_leg_is_shown_the_body_that_leg_will_send() {
 struct Preemptive;
 
 impl Auth for Preemptive {
-    fn start(&self) -> BoxedFlow {
+    fn start(&self) -> BoxFlow {
         Box::new(PreemptiveFlow)
     }
 }

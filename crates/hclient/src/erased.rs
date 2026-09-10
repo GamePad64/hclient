@@ -56,7 +56,7 @@
 //! `!Send`, configured jar or not, which is the feature-unification
 //! hazard the paragraph above is about.
 //!
-//! **[`AnyList`] asks for `Sync` as well now, and a lock is what used to
+//! **[`BoxSuffixList`] asks for `Sync` as well now, and a lock is what used to
 //! supply it.** The jar sat in a `Mutex` in `Inner`, and `Mutex<T>` is
 //! `Sync` whenever `T` is `Send` — so the list's `Sync` was being
 //! manufactured by a lock rather than held by the list. Taking the lock
@@ -66,8 +66,8 @@
 //! changed is that it now says so at the setter instead of working until
 //! someone shared the client.
 //!
-//! Both wrappers implement the seam they erase, so a `CookieJar<AnyList>`
-//! and an `HttpCache<AnyStore>` are ordinary jars and caches with their
+//! Both wrappers implement the seam they erase, so a `CookieJar<BoxSuffixList>`
+//! and an `HttpCache<BoxCacheStore>` are ordinary jars and caches with their
 //! whole API — which is what lets `ClientBuilder::cookie_jar`(crate::Client::
 //! cookies) and `Client::cache` keep handing back
 //! a guard onto the real thing rather than onto a narrowed trait object.
@@ -83,12 +83,12 @@ use std::fmt::Debug;
 /// never needs to name it to configure one, only to name the jar's type
 /// when reading it back.
 #[cfg(feature = "cookies")]
-pub struct AnyList(
+pub struct BoxSuffixList(
     Box<dyn crate::cookie::PublicSuffixList + Send + Sync>, // send-bound-exception: amendment-C12
 );
 
 #[cfg(feature = "cookies")]
-impl AnyList {
+impl BoxSuffixList {
     pub fn new<P>(list: P) -> Self
     where
         P: crate::cookie::PublicSuffixList + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -101,16 +101,16 @@ impl AnyList {
 /// — a `Debug` supertrait on `PublicSuffixList` — would charge every
 /// implementor of a sans-io seam for this crate's `#[derive(Debug)]`.
 #[cfg(feature = "cookies")]
-impl Debug for AnyList {
+impl Debug for BoxSuffixList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AnyList")
+        f.debug_struct("BoxSuffixList")
             .field("has_list", &self.0.has_list())
             .finish_non_exhaustive()
     }
 }
 
 #[cfg(feature = "cookies")]
-impl crate::cookie::PublicSuffixList for AnyList {
+impl crate::cookie::PublicSuffixList for BoxSuffixList {
     fn is_public_suffix(&self, domain: &str) -> bool {
         self.0.is_public_suffix(domain)
     }
@@ -124,7 +124,7 @@ impl crate::cookie::PublicSuffixList for AnyList {
 /// The seam names its futures as associated types, which is what lets a
 /// single-threaded store answer for itself — and is exactly what makes it
 /// not `dyn`-compatible. So there are two traits, and the split is
-/// [`BoxedTransport`](hclient_core::BoxedTransport)'s one
+/// [`BoxTransport`](hclient_core::BoxTransport)'s one
 /// crate over, down to the blanket impl: **a store author writes
 /// nothing**, and the boxing happens where the type is still concrete, so
 /// `Send` is inferred rather than proved.
@@ -132,7 +132,7 @@ impl crate::cookie::PublicSuffixList for AnyList {
 /// The box is the price of erasure and it is paid once per operation, on
 /// a path that is already about to touch a `HashMap` or a socket.
 #[cfg(feature = "cache")]
-trait BoxedCacheStore {
+trait DynCacheStore {
     fn get_boxed<'a>(
         &'a self,
         key: &'a crate::cache::Key,
@@ -156,7 +156,7 @@ trait BoxedCacheStore {
 }
 
 #[cfg(feature = "cache")]
-impl<S> BoxedCacheStore for S
+impl<S> DynCacheStore for S
 where
     S: crate::cache::CacheStore,
     for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
@@ -199,16 +199,16 @@ where
 
 /// A [`CacheStore`](crate::cache::CacheStore) of any type.
 ///
-/// [`AnyList`]'s counterpart, built by
+/// [`BoxSuffixList`]'s counterpart, built by
 /// [`ClientBuilder::cache`](crate::ClientBuilder::cache) from whatever
 /// store the caller's cache was over.
 #[cfg(feature = "cache")]
-pub struct AnyStore(
-    Box<dyn BoxedCacheStore + Send + Sync>, // send-bound-exception: amendment-C12
+pub struct BoxCacheStore(
+    Box<dyn DynCacheStore + Send + Sync>, // send-bound-exception: amendment-C12
 );
 
 #[cfg(feature = "cache")]
-impl AnyStore {
+impl BoxCacheStore {
     pub fn new<S>(store: S) -> Self
     where
         S: crate::cache::CacheStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -226,14 +226,14 @@ impl AnyStore {
 /// disk or in Redis would have to be asked over the network to print
 /// itself. Printing a number a remote store might not agree with is worse
 /// than printing none.
-impl Debug for AnyStore {
+impl Debug for BoxCacheStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AnyStore").finish_non_exhaustive()
+        f.debug_struct("BoxCacheStore").finish_non_exhaustive()
     }
 }
 
 #[cfg(feature = "cache")]
-impl crate::cache::CacheStore for AnyStore {
+impl crate::cache::CacheStore for BoxCacheStore {
     type Get<'a> = futures_core::future::BoxFuture<'a, Vec<crate::cache::StoredResponse>>;
     type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
     type Len<'a> = futures_core::future::BoxFuture<'a, usize>;
@@ -268,14 +268,14 @@ impl crate::cache::CacheStore for AnyStore {
 
 /// The object-safe half of [`CookieStore`](crate::cookie::CookieStore).
 ///
-/// [`BoxedCacheStore`]'s twin, for the same reason and with the same
+/// [`BoxCacheStore`]'s twin, for the same reason and with the same
 /// split: the seam names its futures as associated types, which is what
 /// lets a single-threaded store answer for itself and is exactly what
 /// makes it not `dyn`-compatible. The blanket impl means **a store author
 /// writes nothing**, and the boxing happens where the type is still
 /// concrete, so `Send` is inferred rather than proved.
 #[cfg(feature = "cookies")]
-trait BoxedCookieStore {
+trait DynCookieStore {
     fn get_boxed<'a>(
         &'a self,
         domains: &'a [String],
@@ -300,7 +300,7 @@ trait BoxedCookieStore {
 }
 
 #[cfg(feature = "cookies")]
-impl<S> BoxedCookieStore for S
+impl<S> DynCookieStore for S
 where
     S: crate::cookie::CookieStore,
     for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
@@ -346,17 +346,17 @@ where
 
 /// A [`CookieStore`](crate::cookie::CookieStore) of any type.
 ///
-/// [`AnyStore`]'s counterpart, built by
+/// [`BoxCacheStore`]'s counterpart, built by
 /// [`ClientBuilder::cookie_jar`](crate::ClientBuilder::cookie_jar) from
-/// whatever store the caller's jar was over — so a `CookieJar<AnyList,
-/// AnyCookieStore>` is an ordinary jar with both of its seams erased.
+/// whatever store the caller's jar was over — so a `CookieJar<BoxSuffixList,
+/// BoxCookieStore>` is an ordinary jar with both of its seams erased.
 #[cfg(feature = "cookies")]
-pub struct AnyCookieStore(
-    Box<dyn BoxedCookieStore + Send + Sync>, // send-bound-exception: amendment-C12
+pub struct BoxCookieStore(
+    Box<dyn DynCookieStore + Send + Sync>, // send-bound-exception: amendment-C12
 );
 
 #[cfg(feature = "cookies")]
-impl AnyCookieStore {
+impl BoxCookieStore {
     pub fn new<S>(store: S) -> Self
     where
         S: crate::cookie::CookieStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -370,16 +370,16 @@ impl AnyCookieStore {
 
 #[cfg(feature = "cookies")]
 /// **The count is gone from the `Debug`, and it is the seam's doing** —
-/// `AnyStore`'s sentence verbatim, for the same reason: `len` is a future
+/// `BoxCacheStore`'s sentence verbatim, for the same reason: `len` is a future
 /// now, and a `Debug` cannot await one.
-impl Debug for AnyCookieStore {
+impl Debug for BoxCookieStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AnyCookieStore").finish_non_exhaustive()
+        f.debug_struct("BoxCookieStore").finish_non_exhaustive()
     }
 }
 
 #[cfg(feature = "cookies")]
-impl crate::cookie::CookieStore for AnyCookieStore {
+impl crate::cookie::CookieStore for BoxCookieStore {
     type Get<'a> = futures_core::future::BoxFuture<'a, Vec<crate::cookie::Cookie>>;
     type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
     type Len<'a> = futures_core::future::BoxFuture<'a, usize>;
@@ -413,14 +413,14 @@ impl crate::cookie::CookieStore for AnyCookieStore {
 
 /// The object-safe half of [`HstsStore`](crate::hsts::HstsStore).
 ///
-/// [`BoxedCookieStore`]'s twin, for the same reason and with the same
+/// [`BoxCookieStore`]'s twin, for the same reason and with the same
 /// split: the seam names its futures as associated types, which is what
 /// lets a single-threaded store answer for itself and is exactly what
 /// makes it not `dyn`-compatible. The blanket impl means **a store author
 /// writes nothing**, and the boxing happens where the type is still
 /// concrete, so `Send` is inferred rather than proved.
 #[cfg(feature = "hsts")]
-trait BoxedHstsStore {
+trait DynHstsStore {
     fn get_boxed<'a>(
         &'a self,
         domains: &'a [String],
@@ -431,7 +431,7 @@ trait BoxedHstsStore {
 }
 
 #[cfg(feature = "hsts")]
-impl<S> BoxedHstsStore for S
+impl<S> DynHstsStore for S
 where
     S: crate::hsts::HstsStore,
     for<'a> S::Get<'a>: Send,  // send-bound-exception: amendment-C12
@@ -456,17 +456,17 @@ where
 
 /// An [`HstsStore`](crate::hsts::HstsStore) of any type.
 ///
-/// [`AnyCookieStore`]'s counterpart, built by
+/// [`BoxCookieStore`]'s counterpart, built by
 /// [`ClientBuilder::hsts`](crate::ClientBuilder::hsts) from whatever store
 /// the caller's [`Hsts`](crate::hsts::Hsts) was over — so an
-/// `Hsts<AnyHstsStore>` is the ordinary rules with its one seam erased.
+/// `Hsts<BoxHstsStore>` is the ordinary rules with its one seam erased.
 #[cfg(feature = "hsts")]
-pub struct AnyHstsStore(
-    Box<dyn BoxedHstsStore + Send + Sync>, // send-bound-exception: amendment-C12
+pub struct BoxHstsStore(
+    Box<dyn DynHstsStore + Send + Sync>, // send-bound-exception: amendment-C12
 );
 
 #[cfg(feature = "hsts")]
-impl AnyHstsStore {
+impl BoxHstsStore {
     pub fn new<S>(store: S) -> Self
     where
         S: crate::hsts::HstsStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -478,14 +478,14 @@ impl AnyHstsStore {
 }
 
 #[cfg(feature = "hsts")]
-impl Debug for AnyHstsStore {
+impl Debug for BoxHstsStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AnyHstsStore").finish_non_exhaustive()
+        f.debug_struct("BoxHstsStore").finish_non_exhaustive()
     }
 }
 
 #[cfg(feature = "hsts")]
-impl crate::hsts::HstsStore for AnyHstsStore {
+impl crate::hsts::HstsStore for BoxHstsStore {
     type Get<'a> = futures_core::future::BoxFuture<'a, Vec<crate::hsts::Entry>>;
     type Done<'a> = futures_core::future::BoxFuture<'a, ()>;
 

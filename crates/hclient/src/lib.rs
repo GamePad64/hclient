@@ -123,7 +123,7 @@
 //! So: the seams declare none, and auto-traits still decide. The rule for
 //! where a bound is allowed is **an opt-in call that takes a value from
 //! the caller and puts it behind the facade's `Arc`** — and the types that
-//! hold such a value, like `erased::AnyStore` or
+//! hold such a value, like `erased::BoxCacheStore` or
 //! [`redirect::SharedRedirectPolicy`]. [`Client::builder`],
 //! [`ClientBuilder::total_timeout`] and [`sse::SseBuilder::with_timer`]
 //! are the shape.
@@ -211,7 +211,7 @@ pub use client::without_a_default_transport::DefaultTransportFeature;
 // caller uses.** The rest is seam vocabulary, error payloads a caller
 // reaches only through `Error::source`, and the response-body wrappers
 // that are public solely because [`body::ClientBody`] spells them out.
-// rustdoc renders one flat alphabetical list, so `AnyList` — a type nobody
+// rustdoc renders one flat alphabetical list, so `BoxSuffixList` — a type nobody
 // writes — sat above `Client`.
 //
 // Nothing here changes a type. What changes is the path a reader types,
@@ -257,7 +257,7 @@ pub mod hooks {
 /// name a private type.
 pub mod body {
     pub use hclient_core::body::{RetryKind, RewindFactory};
-    pub use hclient_core::erased::BoxBody;
+    pub use hclient_core::transport::BoxBody;
 
     pub use crate::client_body::ClientBody;
 }

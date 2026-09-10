@@ -40,7 +40,7 @@ use std::sync::Arc;
 use web_time::SystemTime;
 
 pub struct ClientBuilder {
-    transport: Box<hclient_core::erased::SharedTransport>,
+    transport: Box<hclient_core::transport::SharedTransport>,
     /// The transport's type name, captured at construction: erasure loses
     /// the type, and four capability refusals name the backend.
     backend: &'static str,
@@ -50,13 +50,15 @@ pub struct ClientBuilder {
     /// ([`crate::NoClock`]), not a `None`, so that no total timeout can be
     /// configured against a client that cannot measure one. See
     /// [`Self::total_timeout`] and [`crate::NoClock`]'s doc comment.
-    timer: Arc<hclient_core::erased::SharedTimer>,
+    timer: Arc<hclient_core::timer::SharedTimer>,
     config: Config,
     /// The jar itself, on its way to `Inner`. `Config` carries only the
     /// bit that says one was asked for — see `Config::cookies` for why the
     /// two halves live apart.
     #[cfg(feature = "cookies")]
-    jar: Option<crate::cookie::CookieJar<crate::erased::AnyList, crate::erased::AnyCookieStore>>,
+    jar: Option<
+        crate::cookie::CookieJar<crate::erased::BoxSuffixList, crate::erased::BoxCookieStore>,
+    >,
     /// The HSTS policy set, on its way to `Inner`.
     ///
     /// **No `Config` bit beside it, unlike the jar and the cache**, and
@@ -66,7 +68,7 @@ pub struct ClientBuilder {
     /// `crate::hsts`'s module doc for why a capability would be a gate
     /// with nothing to gate.
     #[cfg(feature = "hsts")]
-    hsts: Option<crate::hsts::Hsts<crate::erased::AnyHstsStore>>,
+    hsts: Option<crate::hsts::Hsts<crate::erased::BoxHstsStore>>,
     /// The cache itself, on its way to `Inner`, already behind the `Arc`
     /// it will share with every clone of the client **and with every
     /// recording response body** — see `cached::Cache`. `Config` carries
@@ -85,7 +87,7 @@ pub struct ClientBuilder {
 impl ClientBuilder {
     pub fn new<T>(transport: T) -> Self
     where
-        T: hclient_core::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        T: hclient_core::transport::BoxTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
         Self {
             backend: std::any::type_name::<T>(),
@@ -325,7 +327,7 @@ impl ClientBuilder {
     /// what stops the plain import from coming back.
     ///
     /// **The list is the caller's**, and is erased on the way in — see
-    /// [`AnyList`](crate::erased::AnyList) for why that rather than a type
+    /// [`BoxSuffixList`](crate::erased::BoxSuffixList) for why that rather than a type
     /// parameter on `Client`, and for the one `Send` bound it costs.
     /// `CookieJar::new()` is still the plain form; `CookieJar::
     /// with_public_suffix_list(NoList)` is what drops the compiled-in
@@ -341,8 +343,8 @@ impl ClientBuilder {
     {
         self.config.cookies = true;
         self.jar = Some(
-            jar.map_suffixes(crate::erased::AnyList::new)
-                .map_store(crate::erased::AnyCookieStore::new),
+            jar.map_suffixes(crate::erased::BoxSuffixList::new)
+                .map_store(crate::erased::BoxCookieStore::new),
         );
         self
     }
@@ -384,7 +386,7 @@ impl ClientBuilder {
     /// accident.
     ///
     /// **The store is the caller's and is erased on the way in** — see
-    /// [`AnyHstsStore`](crate::erased::AnyHstsStore), and
+    /// [`BoxHstsStore`](crate::erased::BoxHstsStore), and
     /// [`CookieStore`](crate::cookie::CookieStore)'s documentation for
     /// the five-way measurement that chose the seam's shape.
     #[cfg(feature = "hsts")]
@@ -394,7 +396,7 @@ impl ClientBuilder {
         for<'a> S::Get<'a>: Send,                          // send-bound-exception: amendment-C12
         for<'a> S::Done<'a>: Send,                         // send-bound-exception: amendment-C12
     {
-        self.hsts = Some(hsts.map_store(crate::erased::AnyHstsStore::new));
+        self.hsts = Some(hsts.map_store(crate::erased::BoxHstsStore::new));
         self
     }
 
@@ -469,7 +471,7 @@ impl ClientBuilder {
     ///   which now may consist of no I/O at all.
     ///
     /// **The store is the caller's**, and is erased on the way in — see
-    /// [`AnyStore`](crate::erased::AnyStore). `HttpCache::new()` is still the plain
+    /// [`BoxCacheStore`](crate::erased::BoxCacheStore). `HttpCache::new()` is still the plain
     /// form; `HttpCache::with_store(..)` is how a disk-backed or shared
     /// store gets here.
     #[cfg(feature = "cache")]
@@ -481,7 +483,7 @@ impl ClientBuilder {
         for<'a> S::Len<'a>: Send,                            // send-bound-exception: amendment-C12
     {
         self.config.cache = true;
-        self.cache = Some(Arc::new(cache.map_store(crate::erased::AnyStore::new)));
+        self.cache = Some(Arc::new(cache.map_store(crate::erased::BoxCacheStore::new)));
         self
     }
 
@@ -543,8 +545,8 @@ pub struct Client {
 
 struct Inner {
     backend: &'static str,
-    transport: Box<hclient_core::erased::SharedTransport>,
-    timer: Arc<hclient_core::erased::SharedTimer>,
+    transport: Box<hclient_core::transport::SharedTransport>,
+    timer: Arc<hclient_core::timer::SharedTimer>,
     /// The cookie jar, if one was asked for — **here and not in `Config`**
     /// for the reason the `Config::cookies` bit records: a jar is shared
     /// state, and `Config` is cloned per handle.
@@ -560,15 +562,16 @@ struct Inner {
     /// `crate::cached::Cache`'s doc makes the same argument one module
     /// over and made it first.
     #[cfg(feature = "cookies")]
-    cookies:
-        Option<crate::cookie::CookieJar<crate::erased::AnyList, crate::erased::AnyCookieStore>>,
+    cookies: Option<
+        crate::cookie::CookieJar<crate::erased::BoxSuffixList, crate::erased::BoxCookieStore>,
+    >,
     /// The RFC 6797 policy set, if one was asked for.
     ///
     /// No lock, for the jar's reason one field up: the store is where
     /// synchronisation lives, and a store that awaits cannot be held
     /// behind a `&mut` across the await.
     #[cfg(feature = "hsts")]
-    hsts: Option<crate::hsts::Hsts<crate::erased::AnyHstsStore>>,
+    hsts: Option<crate::hsts::Hsts<crate::erased::BoxHstsStore>>,
     /// The response cache, if one was asked for.
     ///
     /// Already an `Arc<Mutex<..>>` rather than a `Mutex` like the jar
@@ -592,7 +595,7 @@ struct Inner {
 impl Client {
     pub fn builder<T>(transport: T) -> ClientBuilder
     where
-        T: hclient_core::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        T: hclient_core::transport::BoxTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
         ClientBuilder::new(transport)
     }
@@ -655,7 +658,7 @@ impl Client {
     /// **There is deliberately no untyped `transport()` beside this**, and
     /// it existed for one commit. Three things were wrong with it and the
     /// third is the one that decides. It returned
-    /// `&hclient_core::erased::SharedTransport`, a path this
+    /// `&hclient_core::transport::SharedTransport`, a path this
     /// facade does not re-export — so naming the return type meant adding a
     /// dependency on `hclient-core` to a crate that wanted only `hclient`,
     /// which is the tax erasure exists to remove. The name would also have
@@ -714,8 +717,9 @@ impl Client {
     #[cfg(feature = "cookies")]
     pub fn cookies(
         &self,
-    ) -> Option<&crate::cookie::CookieJar<crate::erased::AnyList, crate::erased::AnyCookieStore>>
-    {
+    ) -> Option<
+        &crate::cookie::CookieJar<crate::erased::BoxSuffixList, crate::erased::BoxCookieStore>,
+    > {
         self.inner.cookies.as_ref()
     }
 
@@ -735,7 +739,7 @@ impl Client {
     /// hold and that hazard is gone rather than documented — the
     /// synchronisation, where a store needs any, is the store's.
     #[cfg(feature = "cache")]
-    pub fn cache(&self) -> Option<&crate::cache::HttpCache<crate::erased::AnyStore>> {
+    pub fn cache(&self) -> Option<&crate::cache::HttpCache<crate::erased::BoxCacheStore>> {
         Some(self.inner.cache.as_ref()?)
     }
 
@@ -753,7 +757,7 @@ impl Client {
     /// there is no lock here to hold across an `.await` — the
     /// synchronisation, where a store needs any, is the store's.
     #[cfg(feature = "hsts")]
-    pub fn hsts(&self) -> Option<&crate::hsts::Hsts<crate::erased::AnyHstsStore>> {
+    pub fn hsts(&self) -> Option<&crate::hsts::Hsts<crate::erased::BoxHstsStore>> {
         self.inner.hsts.as_ref()
     }
 
@@ -836,7 +840,7 @@ impl Client {
     /// `Transport::to_error` is called for an abstract `T` and its own
     /// where-clause requires the bound, `Error` storing its source as
     /// `Arc<dyn Error + Send + Sync>`. There is no abstract `T` here any
-    /// more: `BoxedTransport::execute_boxed` calls `to_error` where `Self`
+    /// more: `BoxTransport::execute_boxed` calls `to_error` where `Self`
     /// is concrete, so the bound is discharged at the blanket impl and
     /// four exception markers left this file with it. That is worth more
     /// than the ergonomics the erasure was for — the invariant's own point
@@ -950,7 +954,7 @@ impl Client {
         mut auth: Option<crate::auth::SharedAuth>,
     ) -> Result<
         (
-            http::Response<Cached<hclient_core::erased::BoxBody>>,
+            http::Response<Cached<hclient_core::transport::BoxBody>>,
             http::Uri,
         ),
         Error,
@@ -1620,7 +1624,7 @@ impl Client {
         &self,
         hp: &HopParts,
         body: RequestBody,
-    ) -> Result<http::Response<hclient_core::erased::BoxBody>, Error> {
+    ) -> Result<http::Response<hclient_core::transport::BoxBody>, Error> {
         let resp = self
             .inner
             .transport
@@ -1833,7 +1837,7 @@ impl Client {
         &self,
         hp: &mut HopParts,
         caller_owns_the_conditionals: bool,
-    ) -> std::ops::ControlFlow<http::Response<Cached<hclient_core::erased::BoxBody>>, Plan> {
+    ) -> std::ops::ControlFlow<http::Response<Cached<hclient_core::transport::BoxBody>>, Plan> {
         use std::ops::ControlFlow::{Break, Continue};
         let Some(cache) = self.inner.cache.as_ref() else {
             return Continue(Plan::default());
@@ -1875,7 +1879,7 @@ impl Client {
         &self,
         _: &mut HopParts,
         _: bool,
-    ) -> std::ops::ControlFlow<http::Response<Cached<hclient_core::erased::BoxBody>>, Plan> {
+    ) -> std::ops::ControlFlow<http::Response<Cached<hclient_core::transport::BoxBody>>, Plan> {
         std::ops::ControlFlow::Continue(Plan)
     }
 
@@ -1905,9 +1909,9 @@ impl Client {
         &self,
         hp: &HopParts,
         plan: Plan,
-        resp: http::Response<hclient_core::erased::BoxBody>,
+        resp: http::Response<hclient_core::transport::BoxBody>,
         requested_at: SystemTime,
-    ) -> http::Response<Cached<hclient_core::erased::BoxBody>> {
+    ) -> http::Response<Cached<hclient_core::transport::BoxBody>> {
         let Some(cache) = self.inner.cache.as_ref() else {
             return resp.map(Cached::live);
         };
@@ -1957,9 +1961,9 @@ impl Client {
         &self,
         _: &HopParts,
         _: Plan,
-        resp: http::Response<hclient_core::erased::BoxBody>,
+        resp: http::Response<hclient_core::transport::BoxBody>,
         _: SystemTime,
-    ) -> http::Response<Cached<hclient_core::erased::BoxBody>> {
+    ) -> http::Response<Cached<hclient_core::transport::BoxBody>> {
         resp.map(Cached::live)
     }
 }
