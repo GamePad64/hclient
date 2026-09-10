@@ -90,8 +90,7 @@ pub use staged::{H3StagedConnect, Refused, Staged};
 use bytes::Bytes;
 use hclient_core::body::RequestBody;
 use hclient_core::caps::{
-    CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport,
-    ReuseSupport, TimeoutSupport, TlsSupport,
+    Capabilities, DecompressionSupport, RedirectSupport, TimeoutSupport, TlsSupport,
 };
 use hclient_core::error::{Error, ErrorKind, Phase};
 use hclient_core::hooks::{CloseReason, ConnectionId, Event, Head, Hooks, NoHooks};
@@ -341,11 +340,7 @@ where
     ///   `first_byte` and `between_bytes` stay `false`, and the comment on
     ///   `capabilities` says what each of them would cost.
     pub fn new(rt: R, tls: T, dns: D) -> Result<Self, Error> {
-        let early_data = if tls.offers_early_data() {
-            EarlyDataSupport::Supported
-        } else {
-            EarlyDataSupport::None
-        };
+        let early_data = tls.offers_early_data();
         let client_certs = tls.presents_client_certs();
         Ok(Self {
             rt,
@@ -433,7 +428,7 @@ where
 /// consequence is the one that matters here: a field added to the struct
 /// later arrives at this transport as the conservative default rather than
 /// as a compile error somebody silences by copying the neighbouring value.
-fn capabilities(early_data: EarlyDataSupport, client_certs: bool) -> Capabilities {
+fn capabilities(early_data: bool, client_certs: bool) -> Capabilities {
     let mut c = Capabilities::default();
     // Both are `true` because `one_attempt` does both, not because HTTP/3
     // does. They were `false` for as long as `execute` wrote the whole
@@ -463,10 +458,10 @@ fn capabilities(early_data: EarlyDataSupport, client_certs: bool) -> Capabilitie
     c.redirects = RedirectSupport::Transparent;
     // Dropping the `execute` future or the body sends `STOP_SENDING` for
     // that stream, through `RequestStream`'s own `Drop`.
-    c.cancel_on_drop = CancelSupport::Supported;
+    c.cancel_on_drop = true;
     // And here it means more than it does over HTTP/1: requests share a
     // connection *concurrently*, not merely in sequence.
-    c.connection_reuse = ReuseSupport::Supported;
+    c.connection_reuse = true;
     c.response_decompression = DecompressionSupport::None;
     // Read from the TLS backend, never from a constant: the capability has
     // to come from the component that knows, and this one defaults to
@@ -1425,14 +1420,8 @@ mod tests {
         // Both directions, because a constant would be right half the time
         // and this is the capability whose over-claim costs replay
         // exposure rather than a lost optimisation.
-        assert_eq!(
-            h3(StubTls::early(true)).caps.early_data,
-            EarlyDataSupport::Supported
-        );
-        assert_eq!(
-            h3(StubTls::early(false)).caps.early_data,
-            EarlyDataSupport::None
-        );
+        assert!(h3(StubTls::early(true)).caps.early_data);
+        assert!(!h3(StubTls::early(false)).caps.early_data);
     }
 
     #[test]

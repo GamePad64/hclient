@@ -328,7 +328,9 @@ impl Timeouts {
 /// Put into `http::Extensions` on the request. Absent, the request waits
 /// for the handshake to complete, and **there is no configuration in which
 /// a request the caller did not mark ends up in early data**. Present
-/// against a transport reporting [`crate::caps::EarlyDataSupport::None`], it is a typed
+/// against a transport whose
+/// [`early_data`](crate::caps::Capabilities::early_data) is `false`, it is
+/// a typed
 /// [`UnsupportedCapability`](crate::error::UnsupportedCapability) rather than a silent no-op.
 ///
 /// # What marking a request asserts, and what it does not

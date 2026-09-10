@@ -235,8 +235,7 @@ pub use client::without_a_default_transport::DefaultTransportFeature;
 pub mod caps {
     pub use crate::config::check_supported;
     pub use hclient_core::caps::{
-        CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport,
-        ReuseSupport, TimeoutSupport, TlsSupport,
+        Capabilities, DecompressionSupport, RedirectSupport, TimeoutSupport, TlsSupport,
     };
 }
 

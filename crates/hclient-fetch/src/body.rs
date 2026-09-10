@@ -183,7 +183,8 @@ impl Debug for Body {
 ///
 /// Hence a constant read by both rather than a literal at each site — the
 /// same recipe `hclient-native`'s `reuse_of` uses for
-/// [`ReuseSupport`](hclient_core::caps::ReuseSupport), so that "what this
+/// [`connection_reuse`](hclient_core::caps::Capabilities::connection_reuse),
+/// so that "what this
 /// transport does" and "what it declares" are one fact read twice. Flipping
 /// this to `None` makes `tests/body.rs`'s
 /// `size_hint_does_not_trust_content_length_under_content_encoding` fail,

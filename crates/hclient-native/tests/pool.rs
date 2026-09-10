@@ -23,7 +23,6 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::Client;
-use hclient_core::caps::ReuseSupport;
 use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, PoolConfig};
@@ -219,24 +218,19 @@ async fn without_a_pool_each_request_gets_its_own_connection() {
 /// each one has to match what the two tests above measured from outside.
 #[tokio::test]
 async fn the_capability_reports_what_the_pool_actually_does() {
-    assert_eq!(
+    assert!(
         native().capabilities().connection_reuse,
-        ReuseSupport::Supported,
         "reuse is on by default, and the pair of tests above measured it"
     );
-    assert_eq!(
-        native().without_pool().capabilities().connection_reuse,
-        ReuseSupport::None,
-    );
-    assert_eq!(
+    assert!(!native().without_pool().capabilities().connection_reuse);
+    assert!(
         native()
             .pool(PoolConfig {
                 idle_timeout: Duration::from_secs(1),
                 max_idle_per_key: 2,
             })
             .capabilities()
-            .connection_reuse,
-        ReuseSupport::Supported,
+            .connection_reuse
     );
 }
 

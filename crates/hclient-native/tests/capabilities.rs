@@ -11,10 +11,7 @@
 //! does not exist yet would otherwise ship unpinned.
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_core::caps::{
-    CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport,
-    ReuseSupport, TlsSupport,
-};
+use hclient_core::caps::{Capabilities, DecompressionSupport, RedirectSupport, TlsSupport};
 use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
@@ -227,9 +224,9 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
     // `hclient` reads this field, so `None` would not stop a marked request
     // reaching the QUIC stack and going out in 0-RTT — the weaker-looking
     // value is the one that would be false.
-    assert_eq!(t.early_data, EarlyDataSupport::None);
-    assert_eq!(q.early_data, EarlyDataSupport::Supported);
-    assert_eq!(c.early_data, EarlyDataSupport::Supported);
+    assert!(!(t.early_data));
+    assert!(q.early_data);
+    assert!(c.early_data);
 
     // Untouched fields, to catch a floor computed from one member only: if
     // `combine` returned `Capabilities::default()` with the disagreements
@@ -239,8 +236,8 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
     assert!(c.version_select);
     assert!(c.version_reported);
     assert_eq!(c.redirects, RedirectSupport::Transparent);
-    assert_eq!(c.cancel_on_drop, CancelSupport::Supported);
-    assert_eq!(c.connection_reuse, ReuseSupport::Supported);
+    assert!(c.cancel_on_drop);
+    assert!(c.connection_reuse);
     assert_eq!(c.tls_config, TlsSupport::Full);
 }
 
@@ -249,7 +246,7 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
 ///
 /// `Native::without_pool()` is a documented setting (it restores v0.1's
 /// one-connection-per-request behaviour) and `hclient-h3` shares
-/// connections by construction. `ReuseSupport::None` is not a weaker form
+/// connections by construction. `false` is not a weaker form
 /// of `Supported`: it says every request gets a fresh connection, which is
 /// false the moment the QUIC stack answers one.
 #[tokio::test(flavor = "multi_thread")]
@@ -260,8 +257,8 @@ async fn a_pooling_disagreement_is_refused_at_construction_naming_the_field() {
 
     let err = tcp.http3(quic).expect_err("these two cannot be one");
     assert_eq!(err.field, "connection_reuse");
-    assert_eq!(err.tcp, "None");
-    assert_eq!(err.quic, "Supported");
+    assert_eq!(err.tcp, "false");
+    assert_eq!(err.quic, "true");
     // The message names the field too: a caller reading a log rather than
     // matching on the type still learns which setting to change.
     assert!(err.to_string().contains("connection_reuse"), "{err}");
@@ -306,13 +303,7 @@ fn a_disagreement_on_any_unordered_enum_is_refused_and_names_its_field() {
     // A duty owed on every dropped future, so a member that does not owe
     // it falsifies the claim. This is the contrast that makes `early_data`
     // different rather than inconsistent.
-    let (a, b) = pair(|c, on| {
-        c.cancel_on_drop = if on {
-            CancelSupport::Supported
-        } else {
-            CancelSupport::None
-        }
-    });
+    let (a, b) = pair(|c, on| c.cancel_on_drop = on);
     assert_eq!(combine(&a, &b).unwrap_err().field, "cancel_on_drop");
 
     // Getting this one wrong corrupts rather than degrades: `None` against
@@ -474,20 +465,11 @@ fn get(c: &Capabilities, field: &str) -> bool {
 fn either_member_offering_early_data_is_enough_for_the_pair_to_offer_it() {
     let none = Capabilities::default();
     let mut supported = Capabilities::default();
-    supported.early_data = EarlyDataSupport::Supported;
+    supported.early_data = true;
 
-    assert_eq!(
-        combine(&none, &supported).unwrap().early_data,
-        EarlyDataSupport::Supported
-    );
-    assert_eq!(
-        combine(&supported, &none).unwrap().early_data,
-        EarlyDataSupport::Supported
-    );
-    assert_eq!(
-        combine(&none, &none).unwrap().early_data,
-        EarlyDataSupport::None
-    );
+    assert!(combine(&none, &supported).unwrap().early_data);
+    assert!(combine(&supported, &none).unwrap().early_data);
+    assert!(!combine(&none, &none).unwrap().early_data);
 }
 
 // --- the tripwire for a field nobody decided about ----------------------

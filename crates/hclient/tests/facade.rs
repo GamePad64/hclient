@@ -222,7 +222,7 @@ fn capability_support_types_are_reachable_from_the_facade() {
     let mut caps = hclient::caps::Capabilities::default();
     caps.redirects = hclient::caps::RedirectSupport::Transparent;
     caps.tls_config = hclient::caps::TlsSupport::Full;
-    caps.early_data = hclient::caps::EarlyDataSupport::Supported;
+    caps.early_data = true;
     caps.timeouts = hclient::caps::TimeoutSupport::none()
         .with_resolve(false)
         .with_connect(true)
@@ -230,7 +230,7 @@ fn capability_support_types_are_reachable_from_the_facade() {
         .with_between_bytes(false);
     assert_eq!(caps.redirects, hclient::caps::RedirectSupport::Transparent);
     assert_eq!(caps.tls_config, hclient::caps::TlsSupport::Full);
-    assert_eq!(caps.early_data, hclient::caps::EarlyDataSupport::Supported);
+    assert!(caps.early_data);
     assert!(caps.timeouts.connect && caps.timeouts.first_byte && !caps.timeouts.between_bytes);
 }
 
@@ -241,7 +241,7 @@ fn capability_support_types_are_reachable_from_the_facade() {
 /// The gap this closes was found by writing a consumer outside the
 /// workspace rather than by reading the re-export list. `CancelSupport`
 /// and `ReuseSupport` were absent, so
-/// `matches!(c.cancel_on_drop, CancelSupport::Supported)` did not compile
+/// `matches!(c.cancel_on_drop, true)` did not compile
 /// for anyone who was not this workspace — while the field itself was
 /// public and `Debug`-printable, which is the shape that makes such a gap
 /// invisible from inside: nothing is missing until somebody tries to
@@ -255,23 +255,14 @@ fn capability_support_types_are_reachable_from_the_facade() {
 fn every_capability_enum_is_reachable_from_the_facade() {
     let c = hclient::caps::Capabilities::default();
     assert!(matches!(c.redirects, hclient::caps::RedirectSupport::None));
-    assert!(matches!(
-        c.cancel_on_drop,
-        hclient::caps::CancelSupport::None
-    ));
-    assert!(matches!(
-        c.connection_reuse,
-        hclient::caps::ReuseSupport::None
-    ));
+    assert!(!c.cancel_on_drop);
+    assert!(!c.connection_reuse);
     assert!(matches!(
         c.response_decompression,
         hclient::caps::DecompressionSupport::None
     ));
     assert!(matches!(c.tls_config, hclient::caps::TlsSupport::None));
-    assert!(matches!(
-        c.early_data,
-        hclient::caps::EarlyDataSupport::None
-    ));
+    assert!(!c.early_data);
     // `TimeoutSupport` is a struct rather than an enum and is covered by
     // the test above, which builds one.
 }

@@ -800,7 +800,7 @@ async fn m4b_a_race_against_an_origin_with_no_h3_at_all() {
 // M5 — cancellation: does dropping the loser actually stop it?
 // =========================================================================
 
-/// `CancelSupport::Supported` is a duty owed on every dropped future, and
+/// `true` is a duty owed on every dropped future, and
 /// `hclient-h3` claims it. What is measured here is whether it holds
 /// **during a connect**, which is the only moment a race ever cancels one:
 /// the future is dropped mid-handshake and the black hole is watched for

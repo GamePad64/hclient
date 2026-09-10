@@ -350,7 +350,7 @@ where
             .extensions()
             .get::<hclient_core::req::AllowEarlyData>()
             .is_some()
-            && self.caps.early_data == hclient_core::caps::EarlyDataSupport::None
+            && !self.caps.early_data
         {
             return Err(crate::http3::early::refuse_early_data("hclient-h3"));
         }

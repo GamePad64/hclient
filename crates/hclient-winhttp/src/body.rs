@@ -29,7 +29,7 @@ enum State {
 /// caller who stops polling stops the transfer — there is no background
 /// pump filling a queue behind them. Dropping this closes the request
 /// handle, which is WinHTTP's own cancellation, and is why
-/// [`CancelSupport::Supported`](hclient_core::caps::CancelSupport::Supported)
+/// [`true`](true)
 /// is an honest claim here rather than a hopeful one.
 ///
 /// # Why the handles live here rather than in the transport

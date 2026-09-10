@@ -47,9 +47,7 @@
 //! `fetch`. [`supports_streaming_request_body`] is that decision, and it is
 //! whatwg/fetch#1470's own detection — see its doc comment.
 
-use hclient_core::caps::{
-    CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport,
-};
+use hclient_core::caps::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport};
 use wasm_bindgen::{JsCast, JsValue};
 
 /// Headers that fetch forbids scripts from setting. We **declare** them
@@ -362,11 +360,11 @@ pub(crate) fn probe() -> Capabilities {
     // request go out to a real URL, drops the future, and then reads the
     // browser's own verdict on the promise it kept — a `DOMException` named
     // `AbortError`, which is a value nothing on this side can produce.
-    c.cancel_on_drop = CancelSupport::Supported;
+    c.cancel_on_drop = true;
     // The browser keeps its own connections alive across `fetch()` calls,
     // per origin, and has done since HTTP/1.1 — a caller batching work
     // against one origin is not paying for a handshake per request here.
-    // `ReuseSupport::None` would be a lie in the other direction, and the
+    // `false` would be a lie in the other direction, and the
     // rule this project applies is that a default must never be stronger
     // than the truth, not that it must always be weaker.
     //
@@ -380,7 +378,7 @@ pub(crate) fn probe() -> Capabilities {
     // browser test the way it can from a native one, and nothing in CI
     // checks it. It rests on the Fetch Standard and on how every engine
     // implements it, which is good evidence and is not a measurement.
-    c.connection_reuse = ReuseSupport::Supported;
+    c.connection_reuse = true;
     // NOT derived from `FORBIDDEN_HEADERS` containing `Accept-Encoding`
     // three fields down, even though both are true of this backend: "the
     // header cannot be sent" and "the body reaching you is already decoded"
@@ -389,7 +387,7 @@ pub(crate) fn probe() -> Capabilities {
     // It is read from `body::RESPONSE_DECOMPRESSION`, the same constant
     // `body::content_length_hint` consults to decide it may not trust
     // `Content-Length` — one fact about the browser, read twice, in the
-    // shape `hclient-native`'s `reuse_of` established for `ReuseSupport`.
+    // shape `hclient-native`'s `reuse_of` established for pooling.
     c.response_decompression = crate::body::RESPONSE_DECOMPRESSION;
     c.owns_cookie_jar = true;
     c.owns_cache = true;

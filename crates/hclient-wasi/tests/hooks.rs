@@ -128,11 +128,10 @@ fn code_of(text: &str, truncate_at_tests: bool) -> String {
 #[test]
 fn the_reuse_the_event_set_cannot_report_is_the_reuse_the_capability_denies() {
     use hclient_core::transport::Transport;
-    assert_eq!(
-        hclient_wasi::WasiHttp::new()
+    assert!(
+        !hclient_wasi::WasiHttp::new()
             .capabilities()
             .connection_reuse,
-        hclient_core::caps::ReuseSupport::None,
         "`Reused` has no emitter here partly because there is no reuse to \
          report; if this value ever moves, the event set has to be revisited \
          rather than left alone"

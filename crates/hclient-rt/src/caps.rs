@@ -413,7 +413,7 @@ pub trait TcpConnect {
     ///
     /// A default is a claim made by silence, and it must never be stronger
     /// than the truth — the rule written down on
-    /// [`CancelSupport::None`](hclient_core::caps::CancelSupport::None) and
+    /// [`false`](false) and
     /// learned from `RedirectSupport::Transparent`. `ALL` would make a
     /// backend that forgot the line claim it applies every option; `NONE`
     /// makes it understate itself, so the worst case is one refused connect

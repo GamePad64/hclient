@@ -5,9 +5,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{
-    CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, TlsSupport,
-};
+use hclient_core::caps::{Capabilities, DecompressionSupport, RedirectSupport, TlsSupport};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::transport::Transport;
 use objc2::rc::Retained;
@@ -131,7 +129,7 @@ fn capabilities(proxied: bool) -> Capabilities {
     c.redirects = RedirectSupport::Transparent;
     // `URLSessionTask::cancel` on drop, held by the body — see
     // `body::Cancelling`.
-    c.cancel_on_drop = CancelSupport::Supported;
+    c.cancel_on_drop = true;
     // `ephemeral` plus an explicit `nil`: this session keeps neither, so
     // `Client`'s own jar and cache are the ones in force.
     c.owns_cookie_jar = false;

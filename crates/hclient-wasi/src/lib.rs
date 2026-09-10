@@ -37,9 +37,7 @@ pub use body::Body;
 
 use convert::{Payload, TrailerWatch};
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{
-    CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport,
-};
+use hclient_core::caps::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport};
 use hclient_core::error::Error;
 use hclient_core::hooks::{ConnectionId, Event, Head, Hooks, NoHooks};
 use hclient_core::req::Timeouts;
@@ -254,7 +252,7 @@ impl WasiHttp {
         // at the drop, while the guest itself stays alive for another 1.5s.
         // The control run, holding the same future instead of dropping it,
         // leaves the connection open through the whole observation window.
-        caps.cancel_on_drop = CancelSupport::Supported;
+        caps.cancel_on_drop = true;
         // The guest has no socket of its own; the host makes the request
         // and the host decides whether to keep the connection. This field
         // read `Supported` until it was measured, on the reasoning that
@@ -289,7 +287,7 @@ impl WasiHttp {
         // per request and is merely pessimistic rather than deadlocked or
         // surprised. Moving it back up needs a measurement, the way this
         // move down had one.
-        caps.connection_reuse = ReuseSupport::None;
+        caps.connection_reuse = false;
         caps.tls_config = TlsSupport::None;
         caps.forbidden_request_headers = FORBIDDEN_REQUEST_HEADERS.as_slice();
         Self {

@@ -594,17 +594,16 @@ async fn an_execute_future_that_is_kept_completes_the_very_same_fetch() {
 
 /// The declaration and the measurement, in one file on purpose.
 ///
-/// `CancelSupport::None` is a legitimate answer for a backend that cannot
+/// `false` is a legitimate answer for a backend that cannot
 /// cancel — and it is therefore also the quiet way to make the two tests
 /// above stop applying here. Asserting the declared value closes that
 /// exit.
 #[wasm_bindgen_test]
 fn fetch_declares_the_cancellation_it_performs() {
-    assert_eq!(
+    assert!(
         Fetch::new().capabilities_for_test().cancel_on_drop,
-        hclient_core::caps::CancelSupport::Supported,
         "the tests in this file measure a cancellation that `Fetch` must also declare — a \
-         backend is free to declare `None`, but not to declare `None` while behaving \
+         backend is free to declare `false`, but not to declare `false` while behaving \
          otherwise, nor to quietly stop being covered by the measurement"
     );
 }

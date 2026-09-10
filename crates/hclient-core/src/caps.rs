@@ -56,8 +56,8 @@ use http::HeaderName;
 ///
 /// # Adding a variant
 ///
-/// This enum is deliberately not `#[non_exhaustive]` — see
-/// [`CancelSupport`] — so a new variant breaks an external `match`. That
+/// This enum is deliberately not `#[non_exhaustive]`, so a new variant
+/// breaks an external `match`. That
 /// cost is the point: it should arrive **with** the backend that carries
 /// it. A `libcurl` backend (`CURLOPT_FOLLOWLOCATION` plus
 /// `CURLOPT_MAXREDIRS` is a genuinely declarative policy) or WinHTTP would
@@ -117,123 +117,6 @@ pub enum RedirectSupport {
     Internal,
 }
 
-/// Whether dropping the future returned by
-/// [`Transport::execute`](crate::transport::Transport::execute) stops the
-/// exchange — see that method's doc comment for the contract itself, of
-/// which this enum is the one honest way out.
-///
-/// # Why two variants and not three
-///
-/// A third variant could split `Supported` by who performs the
-/// cancellation: the transport tearing down a socket it owns, versus the
-/// transport asking an ambient host to stop. It is not here because no
-/// caller decision turns on the difference. A capability answers a question
-/// the caller actually asks — here, "can I rely on a drop ending the
-/// exchange?" — and *who* ends it is an implementation detail. Both shapes
-/// give a guarantee of exactly the same strength, including its limit:
-/// bytes already sent are already sent, and the server may have acted on
-/// them either way.
-///
-/// The distinction is worth knowing even though it is not worth a variant:
-/// `hclient-native` owns the socket and closes it itself, while
-/// `hclient-fetch` and `hclient-wasi` ask the browser and the `wasi:http`
-/// host — `AbortController::abort()` and the Component Model's
-/// `subtask.cancel`. Only the first kind can pool connections, which is
-/// why the pool lives in `hclient-native` and nowhere else.
-///
-/// Not `#[non_exhaustive]`, deliberately: no other enum in this file is,
-/// and consistency across the capability set is worth more than reserving
-/// the right to add a variant to this one alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CancelSupport {
-    /// Dropping the future does not stop the exchange: it may run to
-    /// completion, unobserved, on a connection this transport no longer
-    /// reports on.
-    ///
-    /// The conservative base — [`Capabilities::default()`] returns this — and
-    /// here, unlike [`RedirectSupport::None`], that costs nothing. **A
-    /// default must never be stronger than the truth**: a backend that
-    /// never touches this field is read as "do not rely on a drop stopping
-    /// anything",
-    /// which is the safe reading of silence and is also exactly what a
-    /// backend that genuinely cannot cancel means. The two coincide, so
-    /// there is nothing to tell apart — whereas for redirects they did not:
-    /// `None` there is a substantive "redirects are impossible", which is a
-    /// far stronger claim than "the field was not filled in", and a
-    /// transparent backend forced to say it was misread.
-    #[default]
-    None,
-    /// Dropping the future stops the exchange, as far as this transport
-    /// controls it.
-    ///
-    /// What that does and does not promise is the contract on
-    /// [`Transport::execute`](crate::transport::Transport::execute); the
-    /// short version is that our side stops, and the server's side is not
-    /// ours to promise anything about.
-    Supported,
-}
-
-/// Whether a request may travel over a connection an earlier request
-/// already used, or whether every request opens a socket of its own.
-///
-/// # Why two variants and not three
-///
-/// The v0.2 design document asked for three, on
-/// [`RedirectSupport`]'s precedent: reuse that is ours and configurable,
-/// reuse that belongs to an ambient host and is not ours to control
-/// (`hclient-fetch`, `hclient-wasi`), and none. The middle one is not here,
-/// and the reason is a sharper reading of [`RedirectSupport`] than "the
-/// owner differs".
-///
-/// [`RedirectSupport::Internal`] earns its variant because
-/// `check_supported` **refuses** on it: `ClientBuilder::redirect` exists,
-/// it is a portable, client-level setting, and a backend that follows
-/// redirects internally would silently ignore it — so the variant is what
-/// turns a silent no-op into an `UnsupportedCapability`. That is a caller
-/// decision, made by code that can be pointed at.
-///
-/// No such setting exists for reuse. The pool is configured on the
-/// concrete transport that owns it (`hclient_native::Native::pool`),
-/// because a pool's idle timeout is a property of a connection between
-/// requests and not of any one request — so there is nothing for
-/// `check_supported` to refuse, and a caller holding a generic `T:
-/// Transport` learns nothing actionable from *who* keeps the connection
-/// alive. The question the design document itself named — "are my requests
-/// going over reused connections, because it changes how I batch work" —
-/// is answered by the two variants below, and adding "who owns it" would
-/// re-add exactly the axis [`CancelSupport`] rejected one capability
-/// earlier.
-///
-/// **The condition under which the third variant arrives**, written down
-/// so the next reader does not have to re-derive it: as soon as there is a
-/// portable, client-level pool setting that a host-managed backend would
-/// have to reject, the variant arrives *together with that setting and
-/// with its arm in `check_supported`* — the same order in which
-/// [`RedirectSupport::Transparent`] arrived, once a backend existed that
-/// was being misread without it. Not before: a variant no caller can
-/// branch on is a distinction the capability set has to carry forever for
-/// nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ReuseSupport {
-    /// Every request opens a new connection, and closes it when it is done.
-    ///
-    /// The conservative base — [`Capabilities::default()`] returns this — and,
-    /// as with [`CancelSupport::None`], silence and the substantive claim
-    /// coincide: a caller who reads this plans for a handshake per request,
-    /// which is exactly what a backend that never filled the field in will
-    /// give them.
-    #[default]
-    None,
-    /// Requests to the same origin may travel over a connection an earlier
-    /// request already used.
-    ///
-    /// Says nothing about *when* one is reused — that depends on what is
-    /// idle at the moment, and no caller can predict it per request. What
-    /// it does promise is the thing a caller batches on: a second request
-    /// to an origin need not pay for a TCP and TLS handshake again.
-    Supported,
-}
-
 /// Whether the transport hands back a response body it has already
 /// decoded, or the bytes exactly as the server put them on the wire.
 ///
@@ -264,8 +147,8 @@ pub enum ReuseSupport {
 ///
 /// # Why two variants and not three
 ///
-/// [`CancelSupport`]'s rule, applied a third time: a variant exists only
-/// if a caller decision turns on it. The third variant that suggests
+/// The rule the whole capability set follows: a variant exists only if a
+/// caller decision turns on it. The third variant that suggests
 /// itself is "the transport can decompress, if asked" — configurable
 /// rather than automatic. No transport in this workspace or outside it
 /// works that way today, and there is no client-level setting for it to
@@ -282,8 +165,8 @@ pub enum ReuseSupport {
 ///
 /// [`Self::None`] is what [`Capabilities::default()`] returns, so "the
 /// backend never filled this in" and "the backend hands the bytes over
-/// untouched" are the same value — and, as with [`CancelSupport::None`]
-/// and [`ReuseSupport::None`], that costs nothing, because the two mean
+/// untouched" are the same value — and, as with [`false`]
+/// and [`false`], that costs nothing, because the two mean
 /// the same thing to a caller: decode it yourself. The
 /// [`RedirectSupport`] problem, where `None` was a strictly stronger claim
 /// than silence and a `Transparent` backend was misread for lack of a
@@ -420,48 +303,6 @@ impl TimeoutSupport {
     }
 }
 
-/// Whether a transport can put a request into TLS 1.3 early data (0-RTT).
-///
-/// # This is the floor, and it says less than it looks like
-///
-/// [`Self::Supported`] means only *"this transport is able to offer early
-/// data"*. It never means a particular request went into early data, and it
-/// never means one was accepted. In QUIC the acceptance verdict arrives
-/// **after the response** — measured at 8.63 ms against a response at
-/// 8.58 ms — so it is a future, not a
-/// property of a transport, and nothing about it can live in a value that
-/// [`Transport::capabilities`](crate::transport::Transport::capabilities)
-/// determines once at construction.
-///
-/// # Why the default is `None` with unusual force
-///
-/// Every other capability here follows the rule that a default must not be
-/// stronger than the truth, and the cost of breaking it is a buffered copy,
-/// a lost optimisation, or — for `full_duplex` — a deadlock. This one costs
-/// **replay exposure**: early data is data an attacker who captured it can
-/// send again, at a moment of their choosing, to a server that will act on
-/// it. So [`Capabilities::default()`] reports `None`, every transport that
-/// ships today reports `None`, and a transport that forgets this field
-/// reports `None`.
-///
-/// # Reporting `Supported` is not sufficient to put anything in early data
-///
-/// It is necessary and nothing more. The gate is the caller's, per request
-/// — see [`crate::req::AllowEarlyData`] — and a transport that reports `Supported` must
-/// still refuse to place a request the caller did not mark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EarlyDataSupport {
-    /// This transport never offers early data. The conservative base, what
-    /// [`Capabilities::default()`] returns, and the honest answer for every
-    /// transport in this workspace except `hclient_native::H3`.
-    #[default]
-    None,
-    /// This transport can offer early data for a request the caller has
-    /// marked with [`crate::req::AllowEarlyData`]. See this enum's doc for the three
-    /// things it still does not mean.
-    Supported,
-}
-
 /// What the transport can do **in this process, right now**.
 ///
 /// A runtime fact, not a `cfg!`: one wasm binary runs in both Chrome
@@ -522,20 +363,65 @@ pub struct Capabilities {
     /// already followed the chain by the time anything is handed back, so
     /// either setting would silently not apply.
     pub redirects: RedirectSupport,
-    /// What dropping an in-flight `execute` future does — see
-    /// [`CancelSupport`] and the contract on
-    /// [`Transport::execute`](crate::transport::Transport::execute).
-    pub cancel_on_drop: CancelSupport,
-    /// Whether a connection is reused across requests — see
-    /// [`ReuseSupport`].
-    pub connection_reuse: ReuseSupport,
+    /// **Whether dropping an in-flight `execute` future stops the
+    /// exchange.**
+    ///
+    /// `false` says it may run to completion, unobserved, on a connection
+    /// this transport no longer reports on — the conservative base, which
+    /// [`Capabilities::default()`] returns and which costs nothing: a
+    /// backend that never touches this field is read as *do not rely on a
+    /// drop stopping anything*, and a caller who needs the guarantee asks
+    /// for it.
+    ///
+    /// `true` is a **duty owed on every dropped future**, not an
+    /// observation: the transport tears down the socket it owns, or asks
+    /// the ambient host to stop. Both shapes give a guarantee of the same
+    /// strength, including its limit — bytes already sent are already
+    /// sent, and the server may have acted on them either way — which is
+    /// why *who* performs it earns no distinction here.
+    ///
+    /// See the contract on
+    /// [`Transport::execute`](crate::transport::Transport::execute),
+    /// of which this field is the one honest way out.
+    pub cancel_on_drop: bool,
+    /// **Whether a second request to one origin can skip the handshake.**
+    ///
+    /// `false` is the conservative base — [`Capabilities::default()`]
+    /// returns it — and the honest answer for a transport that opens a
+    /// connection per exchange or owns none at all.
+    ///
+    /// `true` says only that a request *need not* pay for a new
+    /// connection, never that any particular one did: pooling is a
+    /// property of the transport, and a caller cannot ask which
+    /// connection served it.
+    pub connection_reuse: bool,
     /// Whether the transport already decoded the response body's
     /// `Content-Encoding` — see [`DecompressionSupport`].
     pub response_decompression: DecompressionSupport,
-    /// Whether the transport can put a marked request into TLS 1.3 early
-    /// data — see [`EarlyDataSupport`], which says less than its name
-    /// suggests and says so at length.
-    pub early_data: EarlyDataSupport,
+    /// **Whether this transport can put a marked request into TLS 1.3
+    /// early data (0-RTT).**
+    ///
+    /// It says less than the name suggests. `true` means only that the
+    /// transport is *able* to offer early data — never that a particular
+    /// request went into it, and never that one was accepted. In QUIC the
+    /// acceptance verdict arrives **after** the response, so it is a
+    /// future rather than a property of a transport, and nothing about it
+    /// can live in a value
+    /// [`Transport::capabilities`](crate::transport::Transport::capabilities)
+    /// settles once at construction.
+    ///
+    /// **The default is `false` with unusual force.** Every other
+    /// capability here follows the rule that a default must not be
+    /// stronger than the truth, and breaking it costs a buffered copy or
+    /// a lost optimisation. This one costs **replay exposure**: early data
+    /// is data an attacker who captured it can send again, at a moment of
+    /// their choosing, to a server that will act on it.
+    ///
+    /// **`true` is necessary and never sufficient.** The gate is the
+    /// caller's, per request — see [`crate::req::AllowEarlyData`] — and a
+    /// transport reporting `true` must still refuse to place a request the
+    /// caller did not mark.
+    pub early_data: bool,
     /// What TLS configuration this transport accepts — see [`TlsSupport`].
     ///
     /// **Reported, not a gate.** A `Client` has no TLS setting to refuse:
@@ -578,14 +464,16 @@ pub struct Capabilities {
     ///
     /// # Why a `bool` and not an enum
     ///
-    /// The same question [`CancelSupport`] and [`ReuseSupport`] were made
-    /// to answer: a variant exists only if a caller decision turns on it.
+    /// The question every capability here answers: a variant exists only
+    /// if a caller decision turns on it, and a `bool` is what a yes/no
+    /// question deserves. Four fields carried a two-variant enum for this
+    /// same shape until they did not.
     /// This field answers exactly one decision — "do I run a jar of my own
     /// for this transport?" — and it is binary. The two axes an enum would
     /// add do not carry decisions:
     ///
-    /// - *Who* owns it (the browser, an ambient host) is the split
-    ///   [`CancelSupport`] already rejected once, for the same reason.
+    /// - *Who* owns it (the browser, an ambient host) is a split this
+    ///   set rejects wherever it appears, for the same reason.
     /// - Attaching versus storing could in principle come apart, and in
     ///   practice never has: a backend that attaches cookies it did not
     ///   store, or stores cookies it will not attach, is not a shape any
@@ -626,8 +514,8 @@ pub struct Capabilities {
     ///
     /// [`Self::owns_cookie_jar`]'s answer, one field up, applies verbatim:
     /// this field settles exactly one decision — *do I run a cache of my
-    /// own for this transport?* — and it is binary. *Who* owns it is the
-    /// split [`CancelSupport`] rejected; storing versus serving could in
+    /// own for this transport?* — and it is binary. *Who* owns it is a
+    /// split this set rejects; storing versus serving could in
     /// principle come apart and in practice never has.
     ///
     /// What it deliberately does **not** answer is whether a cache-owning
@@ -769,9 +657,9 @@ mod tests {
         assert!(!full_duplex);
         assert!(!request_trailers);
         assert!(!response_trailers);
-        assert_eq!(*cancel_on_drop, CancelSupport::None);
-        assert_eq!(*connection_reuse, ReuseSupport::None);
-        assert_eq!(*early_data, EarlyDataSupport::None);
+        assert!(!cancel_on_drop);
+        assert!(!connection_reuse);
+        assert!(!early_data);
         assert_eq!(*tls_config, TlsSupport::None);
         assert!(!client_certs);
         assert!(!proxy);
@@ -822,12 +710,11 @@ mod tests {
         assert!(!request_trailers);
         assert!(!response_trailers);
         assert_eq!(redirects, RedirectSupport::None);
-        assert_eq!(cancel_on_drop, CancelSupport::None);
-        assert_eq!(connection_reuse, ReuseSupport::None);
+        assert!(!cancel_on_drop);
+        assert!(!connection_reuse);
         assert_eq!(response_decompression, DecompressionSupport::None);
-        assert_eq!(
-            early_data,
-            EarlyDataSupport::None,
+        assert!(
+            !early_data,
             "the one capability whose over-claim costs replay exposure rather \
              than a buffered copy"
         );

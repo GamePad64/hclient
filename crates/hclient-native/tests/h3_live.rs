@@ -13,7 +13,6 @@ mod server;
 mod wire;
 
 use hclient_core::body::RequestBody;
-use hclient_core::caps::EarlyDataSupport;
 use hclient_core::error::ErrorKind;
 use hclient_core::req::AllowEarlyData;
 use hclient_core::transport::Transport;
@@ -219,9 +218,8 @@ async fn early_data_is_offered_only_to_a_request_the_caller_marked() {
     // extension.
     let s = server::start(Behaviour::Echo);
     let t = h3(&s.cert_der);
-    assert_eq!(
+    assert!(
         t.capabilities().early_data,
-        EarlyDataSupport::Supported,
         "rustls offers early data, so this transport reports that it can"
     );
 
@@ -530,10 +528,7 @@ async fn capabilities_describe_this_implementation_not_the_protocol() {
     // typed error rather than dropping it.
     assert!(!c.request_trailers, "nothing here sends request trailers");
     assert!(c.response_trailers, "H3Body yields a trailers frame");
-    assert_eq!(
-        c.connection_reuse,
-        hclient_core::caps::ReuseSupport::Supported
-    );
+    assert!(c.connection_reuse);
 }
 
 // ── `Timeouts::connect`, declared and enforced in the same change ───────

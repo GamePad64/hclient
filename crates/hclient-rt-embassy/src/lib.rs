@@ -39,7 +39,7 @@
 //!
 //! `Transport::execute`'s contract is that dropping the future
 //! stops the exchange, and `hclient_native::Native` declares
-//! `CancelSupport::Supported` **structurally** — the future owns the
+//! `true` **structurally** — the future owns the
 //! socket, so dropping it closes the connection. On embassy-net that
 //! reasoning breaks at the last step, and it was measured breaking:
 //! `TcpSocket::drop` removes the socket from smoltcp's `SocketSet` before
@@ -49,7 +49,7 @@
 //!
 //! The research offered two ways out, and this crate takes the second:
 //!
-//! 1. **Declare `CancelSupport::None`.** Honest, and the mechanism exists —
+//! 1. **Declare `false`.** Honest, and the mechanism exists —
 //!    but there is nowhere to declare it from. `Capabilities` belongs to
 //!    the `Transport`, and the `Transport` here is `Native`, which
 //!    hardcodes `Supported` on the strength of its own reasoning about its

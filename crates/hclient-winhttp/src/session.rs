@@ -4,9 +4,7 @@ use std::future::poll_fn;
 use std::sync::Arc;
 
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{
-    CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, ReuseSupport, TlsSupport,
-};
+use hclient_core::caps::{Capabilities, DecompressionSupport, RedirectSupport, TlsSupport};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::req::{RequireVersion, check_version};
 use hclient_core::transport::Transport;
@@ -303,11 +301,11 @@ fn capabilities() -> Capabilities {
     // Dropping the body closes the request handle, which is WinHTTP's
     // own cancellation. Nothing is spawned here, so there is no pump to
     // outlive the caller — see `body.rs`.
-    c.cancel_on_drop = CancelSupport::Supported;
+    c.cancel_on_drop = true;
     // WinHTTP keeps connections in a per-session pool of its own. This
     // crate neither configures nor observes it; what the field says is
     // that a second request may reuse a connection, which is true.
-    c.connection_reuse = ReuseSupport::Supported;
+    c.connection_reuse = true;
     // `WINHTTP_OPTION_DECOMPRESSION` is deliberately **not** set, so
     // nothing here decodes a `Content-Encoding` and `hclient`'s own
     // decompressor does the work on every backend alike. That is the
@@ -896,7 +894,7 @@ mod tests {
     fn the_capabilities_say_what_the_crate_doc_says() {
         let c = capabilities();
         assert_eq!(c.redirects, RedirectSupport::Transparent);
-        assert_eq!(c.cancel_on_drop, CancelSupport::Supported);
+        assert!(c.cancel_on_drop);
         assert_eq!(c.response_decompression, DecompressionSupport::None);
         assert_eq!(c.tls_config, TlsSupport::None);
         assert!(c.proxy, "the whole reason this backend exists");

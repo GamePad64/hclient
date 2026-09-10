@@ -340,7 +340,7 @@ fn holding_the_execute_future_leaves_the_connection_open() {
 
 /// The declaration and the measurement are kept in one file on purpose.
 ///
-/// `CancelSupport::None` is a legitimate answer for a backend that cannot
+/// `false` is a legitimate answer for a backend that cannot
 /// cancel — and it is therefore also the quiet way to make the two tests
 /// above stop applying here. Asserting the declared value closes that
 /// exit: `WasiHttp` giving up cancellation would take an explicit edit to
@@ -351,11 +351,10 @@ fn holding_the_execute_future_leaves_the_connection_open() {
 #[test]
 fn wasi_declares_the_cancellation_it_performs() {
     use hclient_core::transport::Transport;
-    assert_eq!(
+    assert!(
         hclient_wasi::WasiHttp::new().capabilities().cancel_on_drop,
-        hclient_core::caps::CancelSupport::Supported,
         "the live runs in this file measure a cancellation that `WasiHttp` must also \
-         declare — a backend is free to declare `None`, but not to declare `None` while \
+         declare — a backend is free to declare `false`, but not to declare `false` while \
          behaving otherwise, nor to quietly stop being covered by the measurement"
     );
 }
@@ -531,13 +530,12 @@ fn the_counting_server_serves_two_requests_on_one_connection() {
 #[test]
 fn wasi_declares_the_reuse_it_actually_gets() {
     use hclient_core::transport::Transport;
-    assert_eq!(
-        hclient_wasi::WasiHttp::new()
+    assert!(
+        !hclient_wasi::WasiHttp::new()
             .capabilities()
             .connection_reuse,
-        hclient_core::caps::ReuseSupport::None,
         "the live run beside this one measures a host that opens a connection per request; a \
-         backend is free to declare `Supported` once something has been seen to reuse, but \
+         backend is free to declare `true` once something has been seen to reuse, but \
          not while the only measurement in the file says otherwise"
     );
 }

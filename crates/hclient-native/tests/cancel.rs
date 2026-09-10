@@ -39,7 +39,6 @@
 
 use hclient::Client;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::CancelSupport;
 use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
@@ -266,7 +265,7 @@ async fn dropping_a_client_send_future_closes_the_connection_too() {
 /// The declaration and the behaviour are checked in the same file on
 /// purpose.
 ///
-/// `CancelSupport::None` is a legitimate answer for a backend that cannot
+/// `false` is a legitimate answer for a backend that cannot
 /// cancel — and it is therefore also the obvious way to make the two tests
 /// above stop applying to this backend without anyone noticing. Asserting
 /// the declared value here closes that exit: dropping `Native`'s
@@ -274,11 +273,10 @@ async fn dropping_a_client_send_future_closes_the_connection_too() {
 /// quiet capability flip that leaves a green suite behind.
 #[tokio::test]
 async fn native_declares_the_cancellation_it_performs() {
-    assert_eq!(
+    assert!(
         transport().capabilities().cancel_on_drop,
-        CancelSupport::Supported,
         "the tests in this file measure a cancellation that `Native` must also declare — a \
-         backend is free to declare `None`, but not to declare `None` while behaving \
+         backend is free to declare `false`, but not to declare `false` while behaving \
          otherwise, nor to quietly stop being covered by the measurement"
     );
 }

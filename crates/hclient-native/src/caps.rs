@@ -136,10 +136,10 @@ pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, 
     // and a member that does the opposite falsifies it. There is no order
     // to fall back on and inventing one is P4's mistake.
     c.redirects = same("redirects", &tcp.redirects, &quic.redirects)?;
-    // `CancelSupport` is the clearest of them, and the contrast with
+    // `cancel_on_drop` is the clearest of them, and the contrast with
     // `early_data` below is the whole distinction: `Supported` here is a
     // **duty owed on every dropped future**, so a member that does not owe
-    // it makes the claim false, where `EarlyDataSupport::Supported` is an
+    // it makes the claim false, where `true` is an
     // ability that need not be exercised on any given request.
     c.cancel_on_drop = same("cancel_on_drop", &tcp.cancel_on_drop, &quic.cancel_on_drop)?;
     c.connection_reuse = same(
@@ -189,30 +189,24 @@ pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, 
 ///
 /// **The only field here whose answer is the stronger of the two values**,
 /// and the reason is what the variant says rather than an exception to this
-/// module's rule. [`EarlyDataSupport::Supported`] says the transport *can*
+/// module's rule. [`true`] says the transport *can*
 /// place a request the caller marked with `AllowEarlyData` into early data
 /// — it promises nothing about any particular request, and `hclient-h3`
 /// alone already does not place the first request to an origin there,
 /// because there is no session ticket yet. So "this transport can offer
-/// early data for a marked request" stays true of the pair, while
-/// [`EarlyDataSupport::None`] — "this transport never offers early data" —
-/// is false of it, and false in the direction that matters: nothing in
-/// `hclient` reads this field, so reporting `None` would not stop a marked
-/// request reaching the QUIC stack and going out in 0-RTT anyway. The
-/// weaker-looking value is the lie.
+/// early data for a marked request" stays true of the pair, while `false`
+/// — "this transport never offers early data" — is false of it, and false
+/// in the direction that matters: nothing in `hclient` reads this field,
+/// so reporting `false` would not stop a marked request reaching the QUIC
+/// stack and going out in 0-RTT anyway. The weaker-looking value is the
+/// lie.
 ///
 /// The safety decision is untouched, and it is the reason this can be said
 /// at all: early data is entered only for a request the **caller** marked,
 /// per request, and this transport does not mark anything on their behalf.
 ///
-/// [`EarlyDataSupport::Supported`]: hclient_core::caps::EarlyDataSupport::Supported
-/// [`EarlyDataSupport::None`]: hclient_core::caps::EarlyDataSupport::None
-fn early_data(tcp: &Capabilities, quic: &Capabilities) -> hclient_core::caps::EarlyDataSupport {
-    use hclient_core::caps::EarlyDataSupport::{None, Supported};
-    match (tcp.early_data, quic.early_data) {
-        (None, None) => None,
-        _ => Supported,
-    }
+fn early_data(tcp: &Capabilities, quic: &Capabilities) -> bool {
+    tcp.early_data || quic.early_data
 }
 
 /// The value if both members give it, and a [`Disagreement`] naming the

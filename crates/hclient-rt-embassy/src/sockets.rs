@@ -41,7 +41,7 @@
 //!    happens immediately rather than at the next unrelated event. The far
 //!    end sees the close as promptly as it does for any other backend in
 //!    this workspace. **This is what keeps
-//!    `CancelSupport::Supported` true**, see the crate doc.
+//!    `true` true**, see the crate doc.
 //! 2. The socket's slot is not free yet, and getting it back needs an
 //!    `await` — which is why the reclaim lives in [`SocketPool::acquire`]
 //!    (a call that already is one) and not in a background task the

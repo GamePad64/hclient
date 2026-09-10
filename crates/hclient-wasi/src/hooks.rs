@@ -31,7 +31,7 @@
 //! [`Reused`](hclient_core::hooks::Reused) and
 //! [`Closed`](hclient_core::hooks::Closed) have no emitter here.
 //! This is not a limitation of the host either:
-//! `Capabilities::connection_reuse` is already `ReuseSupport::None` for a
+//! `Capabilities::connection_reuse` is already `false` for a
 //! measured reason (`WasiHttp::new`), so even the fact a `Reused` would
 //! carry does not exist — and if a future host did pool, the guest would
 //! still not be told.

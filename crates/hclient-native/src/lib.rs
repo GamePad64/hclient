@@ -138,9 +138,7 @@ pub use staged::{Refused, Staged, StagedConnect};
 pub use upgrade::Upgrading;
 
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{
-    CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport,
-};
+use hclient_core::caps::{Capabilities, RedirectSupport, TimeoutSupport};
 use hclient_core::error::{Error, ErrorKind, Phase};
 use hclient_core::hooks::{
     CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
@@ -792,7 +790,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // from the far end rather than argued: `tests/cancel.rs`'s
         // `dropping_the_execute_future_closes_the_connection_the_server_sees`
         // has the server observe its socket close.
-        caps.cancel_on_drop = CancelSupport::Supported;
+        caps.cancel_on_drop = true;
         // Asked, not assumed. A hardcoded `TlsSupport::Full` regardless
         // of which `TlsConnect` was plugged in would make
         // `Native<R, NoTls, D>` advertise full TLS while refusing every
@@ -1465,7 +1463,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// One connection per request, closed when the response body ends —
     /// what this transport did before v0.2 W2.
     ///
-    /// `Capabilities::connection_reuse` becomes `ReuseSupport::None` to
+    /// `Capabilities::connection_reuse` becomes `false` to
     /// match, because it is derived from the same value rather than set
     /// alongside it.
     pub fn without_pool(mut self) -> Self {
@@ -1784,9 +1782,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # What it does not change
     ///
     /// `Capabilities` are untouched, and that is checked rather than
-    /// asserted: `ReuseSupport::Supported` means *"a second request to an
+    /// asserted: `true` means *"a second request to an
     /// origin need not pay for a TCP and TLS handshake again"*, which
-    /// stays exactly true, and `CancelSupport::Supported` is a duty owed
+    /// stays exactly true, and `true` is a duty owed
     /// on a dropped future, which goes on being owed — what changes is
     /// that the peer now sees a `RST_STREAM(CANCEL)` where it used to see
     /// the socket close. `full_duplex` and `response_trailers` still
@@ -2317,14 +2315,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
 /// in step by hand. The class of defect this is guarding against —
 /// a capability describing an intention rather than the code — has been
 /// caught four times in this workspace.
-fn reuse_of<I>(pool: &Pool<I>) -> ReuseSupport
+fn reuse_of<I>(pool: &Pool<I>) -> bool
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin,
 {
-    match pool.config() {
-        Some(_) => ReuseSupport::Supported,
-        None => ReuseSupport::None,
-    }
+    pool.config().is_some()
 }
 
 /// The pool-facing half of the transport. Its bounds are the ones

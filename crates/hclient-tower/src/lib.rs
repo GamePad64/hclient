@@ -261,7 +261,7 @@ impl<S> ServiceTransport<S> {
     /// is already in its channel, and dropping the future the adapter
     /// returns leaves that request to be sent and answered by somebody
     /// else. A stack with such a layer must report
-    /// `CancelSupport::None` here even when the transport underneath
+    /// `false` here even when the transport underneath
     /// reports `Supported` — that is what the "adjust for a layer that
     /// changes what the stack can do" sentence above means in the one case
     /// where the adjustment is downward.
