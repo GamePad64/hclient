@@ -56,11 +56,10 @@ use std::time::Duration;
 
 /// A response body with its type erased, as an erased transport hands back.
 ///
-/// **`Send`**, so a response body crosses a `tokio::spawn`. One `BoxBody` serves every backend, and this bound is
-/// payable only because every one of them satisfies it — which stopped
-/// being a question when `hclient-fetch`'s body stopped holding a
-/// `js_sys::JsFuture`. This doc said *not `Send`* for a vertical, directly
-/// above the line that declares it.
+/// **`Send`**, so a response body crosses a `tokio::spawn`. One `BoxBody`
+/// serves every backend, and the bound is payable only because every one
+/// of them satisfies it — including the browser's, whose body holds no JS
+/// handle across an await.
 pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + Send>>; // send-bound-exception: amendment-C14
 
 /// An erased exchange, as [`BoxedTransport`] hands one back.
