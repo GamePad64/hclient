@@ -329,50 +329,76 @@ surfaces at the moment they were last seen moving.
 A pre-release claims the names and promises nothing, so the next week of
 changes costs `-alpha.2` rather than a major version across the family.
 
-**The family is at `0.1.0-alpha.4` today**, with `hclient-idn` and
-`system-resolver` on `0.2.1` — they version separately, for the reason two
+**The family is at `0.1.0-alpha.7` today**, with `hclient-idn` and
+`system-resolver` on `0.2.2` — they version separately, for the reason two
 sections down. The figure here is the one thing in this paragraph that
 goes stale on every release, which is why it says *today* and the
-authority is the index rather than this line.
+authority is the index rather than this line — and it had drifted three
+alphas and a patch behind before anybody read it against crates.io, which
+is the prediction coming true rather than an exception to it.
 
-**`hclient-core` left the pre-release on 2026-09-10, and the reason is the
-gate rather than confidence.** Inside a pre-release `cargo semver-checks`
-executes **0 of its 254 lints**, because every step out of one is a major
-step — so the crate whose types cross every boundary in this family was
-the one crate no tool had ever examined. `0.1.0` gives the gate a subject:
-`just semver` selects on *published and not a pre-release*, so the crate
-enrolled with no edit to the recipe, exactly as `hclient-idn` did when it
-took the count from `196 checks across 1 crate` to `392 across 2`.
+**`hclient-core` was set to `0.1.0` on 2026-09-10 and is back at
+`0.1.0-alpha.8`, and the whole episode is worth keeping because nothing
+was ever published.** The argument for going stable was the gate rather
+than confidence: inside a pre-release `cargo semver-checks` executes
+**0 of its 254 lints**, because every step out of one is a major step, so
+the crate whose types cross every boundary in this family was the one
+crate no tool had ever examined. `0.1.0` would give the gate a subject,
+since `just semver` selects on *published and not a pre-release*.
 
-What it promises is what a `0.x` promises and no more: `0.2.0` may still
-break. What it ends is breaking **silently**.
+**What made the reversal free is that the number lived in the tree and
+never reached the registry.** crates.io's newest is `0.1.0-alpha.7`, so
+there was no promise to withdraw, no yank, and no consumer resolving
+against a version that was about to change meaning. A stable number in a
+manifest is an intention; a stable number in the index is the promise.
+Those are different things and only the second is expensive — which is
+the whole reason the gap between them is where a decision like this
+belongs.
 
-Two things landed first. `bon` left the crate — its generated builders put
+`alpha.8` rather than back to `alpha.7`, because that number is taken and
+the tree has moved a long way past what it holds.
+
+**And the gate un-enrolled itself, which is the property worth having.**
+`just semver` went straight back to `392 checks across 2 crate(s)` with
+no edit to the recipe, exactly as it went to that figure when
+`hclient-idn` published `0.2.0` — the selection reads the registry and
+the manifests rather than a list, so it is right on the way down as well
+as on the way up. What that costs is stated plainly: `hclient-core` is
+again a crate `cargo semver-checks` cannot examine, and it will stay one
+until a stable pair exists on both sides. The gate is honest about it
+rather than green over it, which is the distinction this file draws
+everywhere else.
+
+Two things landed before the number moved, and both stand. `bon` left the crate — its generated builders put
 `SetConnect<S>` and `IsUnset` into every setter's signature from a
 `#[doc(hidden)]` module, so a caller could meet those names and not write
 them, which is exactly the hole a freeze must not preserve. Two `const fn`
 constructors replaced them, and the graph went from 21 crates to **13** —
 `bon` took its whole proc-macro subtree with it, which is more than the
-five the plan predicted. And the gate was
-checked in the failing direction against a git baseline before this
-publish — but the vacuum follows the *version numbers*, not the
-baseline's source: `alpha.7 -> alpha.7` and `alpha.7 -> 0.1.0` both run 0
-of 254 lints, and only a stable pair on both sides makes the tool execute
-anything (`0.1.0 -> 0.1.0` with a method narrowed to `pub(crate)` runs 196
-checks and fails one, naming it; the same pair unchanged runs 196 and
-passes). So this publish itself has no stable baseline to be checked
-against, and nothing can give it one — what it buys is that every release
-from the next onward is checkable.
+five the plan predicted. And the gate was checked in the failing
+direction against a git baseline while the number was stable — the
+measurement is what survives the reversal, because **the vacuum follows
+the version numbers, not the baseline's source**: `alpha.7 -> alpha.7`
+and `alpha.7 -> 0.1.0` both run 0 of 254 lints, and only a stable pair on
+both sides makes the tool execute anything (`0.1.0 -> 0.1.0` with a
+method narrowed to `pub(crate)` runs 196 checks and fails one, naming it;
+the same pair unchanged runs 196 and passes). So a first stable publish
+can never be checked against anything, whenever it comes — what it buys
+is that every release after it is checkable, which is the argument for
+making it and is unaffected by the timing.
 
 **The guard is real and it is not yet in force, which this sentence used
 to get wrong.** It read that `cargo add hclient` will not select a
 pre-release without being asked. Measured on 2026-08-29, from a fresh
 crate against the registry: `cargo add hclient` selected
 `0.1.0-alpha.2` — because there is nothing stable for it to prefer. The
-moment `0.1.0` exists, `cargo add` takes that and a pre-release needs
-asking for. So the protection begins at the first stable release, not at
-the first publication. `0.1.0` follows
-when the seams have stopped moving on their own.
+moment a stable version exists, `cargo add` takes that and a pre-release
+needs asking for. So the protection begins at the first stable release,
+not at the first publication — and since `0.1.0` was reverted before it
+reached the index, **it has not begun**: `cargo add hclient` still
+selects a pre-release today, for want of anything stable to prefer. The
+stable number follows when the seams have stopped moving on their own,
+and this session moved several.
 
 The version said itself **once**, in `[workspace.package]`, where thirty
 copies before it had been thirty chances to drift with no way to see the
