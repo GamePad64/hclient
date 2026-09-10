@@ -202,8 +202,10 @@ impl UdpDatagrams for TokioUdpSocket {
                     }
                     return Poll::Ready(Ok(n));
                 }
-                // `try_io` cleared the readiness; go round and wait again.
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                // `try_io` cleared the readiness; go round and wait again
+                // — falling through to the loop's next iteration, same as
+                // an explicit `continue` here would.
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Poll::Ready(Err(e)),
             }
         }

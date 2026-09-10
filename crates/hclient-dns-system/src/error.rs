@@ -6,7 +6,7 @@
 //! step toward a caller reading a name without records as a broken
 //! resolver. So what is left is the two ways the *question* failed:
 //! `getaddrinfo` refusing it ([`ResolveFailed`]), and a system SVCB
-//! lookup that could not produce an RRSet it is willing to stand behind
+//! lookup that could not produce an `RRSet` it is willing to stand behind
 //! ([`SvcbLookupError`]).
 //!
 //! **Both keep somebody else's own answer rather than a category of
@@ -78,8 +78,8 @@ pub(crate) enum SvcbLookupError {
     #[error("the system resolver could not answer: {0}")]
     Resolver(#[source] system_resolver::Error),
     /// The record arrived and the decoder refused it — its RDATA is not
-    /// an HTTPS record, or one of its SvcParams is not what its key says
-    /// it is. RFC 9460 §2.2 requires rejecting the whole RRSet in that
+    /// an HTTPS record, or one of its `SvcParams` is not what its key says
+    /// it is. RFC 9460 §2.2 requires rejecting the whole `RRSet` in that
     /// case, and since the decoder now reads one record at a time that
     /// rule is a line in `svcb::wire` rather than a property of a
     /// message-level decoder.
@@ -191,7 +191,7 @@ mod tests {
                         "a caller downcasts to the resolver's own error: got `{source}`"
                     );
                 }
-                other => assert_matches!(
+                other @ SvcbLookupError::MandatoryKeyAbsent { .. } => assert_matches!(
                     other.source(),
                     None,
                     "only a wrapped failure has an underlying cause; a source invented for \

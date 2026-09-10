@@ -113,7 +113,7 @@ use support::{Rr, Server, TYPE_A, noerror};
 ///
 /// The inner transport resolves by IP literal only — it never needs a name,
 /// because `Doh::pinned` refuses an endpoint that is not one. The outer
-/// transport resolves through DoH. That this composition has a name and
+/// transport resolves through `DoH`. That this composition has a name and
 /// the infinite one does not is the whole of the guard.
 type Bootstrap = Native<Tokio, NoTls, IpLiteralOnly>;
 type Resolver = Doh<Bootstrap>;
@@ -162,17 +162,21 @@ async fn a_doh_resolver_composes_into_a_transport_and_that_transport_resolves() 
 }
 
 /// Three levels also compose, and that is not a curiosity: it is the shape
-/// of "DoH, bootstrapped through a second DoH endpoint that is pinned to a
+/// of "`DoH`, bootstrapped through a second `DoH` endpoint that is pinned to a
 /// literal", which is a real deployment — and it is exactly what a runtime
 /// cycle check would have had to tell apart from the infinite one. It does
 /// not have to be told apart, because the infinite one has no name.
 #[test]
+// The `type` and the two `fn`s below are deliberately declared where the
+// prose above explains each one, rather than hoisted to the top of the
+// function — the point of this test is the declarations themselves.
+#[allow(clippy::items_after_statements)]
 fn three_levels_of_doh_compose_because_each_one_is_a_different_type() {
     type Two = Doh<Native<Tokio, NoTls, Doh<Bootstrap>>>;
     fn accepts(_: Two) {}
     // Never called: the claim is that the type exists and satisfies the
     // bound, which is settled by this file compiling.
     let _ = accepts;
-    fn _is_a_resolver<R: Resolve>() {}
-    _is_a_resolver::<Two>();
+    fn is_a_resolver<R: Resolve>() {}
+    is_a_resolver::<Two>();
 }

@@ -181,7 +181,7 @@ fn a_cookie_the_server_set_comes_back_on_the_next_request() {
             Some("sid=abc"),
             "the jar neither stored the Set-Cookie nor attached it: {seen:?}"
         );
-    })
+    });
 }
 
 /// The control, and the reason the test above is about wiring rather than
@@ -210,7 +210,7 @@ fn without_a_jar_nothing_comes_back() {
             seen[1].cookie, None,
             "a client with no jar must send no Cookie header at all: {seen:?}"
         );
-    })
+    });
 }
 
 /// A cookie set on a **redirect response** reaches the very next hop.
@@ -241,7 +241,7 @@ fn a_cookie_set_on_a_redirect_reaches_the_next_hop() {
          consulted once for the whole operation instead of once per hop: \
          {seen:?}"
         );
-    })
+    });
 }
 
 /// The other half of "once per hop": a `Cookie` header that was right for
@@ -281,7 +281,7 @@ fn a_cookie_scoped_to_one_path_does_not_ride_a_redirect_to_another() {
             "a Cookie header attached for /one/x was carried into /two/y, which \
          is outside the path the server scoped it to: {seen:?}"
         );
-    })
+    });
 }
 
 /// A caller who sets `Cookie` themselves keeps it, and keeps it whole.
@@ -326,7 +326,7 @@ fn a_caller_set_cookie_header_is_left_alone_and_the_jar_still_learns() {
             "the jar must go on storing while a caller drives the header by \
          hand — got {after:?}"
         );
-    })
+    });
 }
 
 /// The jar is shared by every clone of the client, and readable from
@@ -361,7 +361,7 @@ fn the_jar_is_shared_by_clones_and_readable() {
             vec!["sid=abc".to_owned()],
             "a request made through a clone did not reach the original's jar"
         );
-    })
+    });
 }
 
 /// A client with no jar reports none, rather than an empty one.
@@ -370,7 +370,7 @@ fn a_client_without_a_jar_reports_none() {
     futures_executor::block_on(async {
         let c = Client::builder(transport()).build().expect("supported");
         assert!(c.cookies().is_none());
-    })
+    });
 }
 
 /// The gate: a jar of our own against a backend that keeps its own is a
@@ -399,7 +399,7 @@ fn a_jar_against_a_transport_that_keeps_its_own_is_refused_at_build() {
             err.what, "cookie_jar",
             "the refusal must name the setting: {err}"
         );
-    })
+    });
 }
 
 /// The control for the gate, and it is not ceremony: a check written as
@@ -421,7 +421,7 @@ fn the_same_jar_against_a_transport_that_keeps_none_builds() {
             "the mock is the 'keeps no jar' side of this pair"
         );
         assert!(c.cookies().is_some());
-    })
+    });
 }
 
 /// And a client that never asked for a jar builds against a jar-owning
@@ -446,5 +446,5 @@ fn no_jar_against_a_jar_owning_transport_is_fine() {
             "a client that never mentioned cookies must not be refused by a \
          backend that keeps its own jar"
         );
-    })
+    });
 }

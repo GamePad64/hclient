@@ -144,6 +144,10 @@ const fn adapt(delta: u32, numpoints: u32, first: bool) -> u32 {
 /// - **every arithmetic step is checked**, so RFC 3492's overflow
 ///   conditions are refusals rather than wraps. `char::from_u32` then
 ///   refuses surrogates and anything above U+10FFFF.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "n, i, bias, w, k, t are RFC 3492's own variable names — renaming them would make this harder to check against the spec, not easier"
+)]
 fn decode_punycode(payload: &str) -> Option<String> {
     let payload = payload.as_bytes();
     // A non-ASCII byte after `xn--` is not a digit and not a basic code

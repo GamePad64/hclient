@@ -538,7 +538,6 @@ impl Resolve for SlowDns {
                     Ok(Record::new(RData::from(IpAddr::V4(Ipv4Addr::LOCALHOST))))
                 })
             }),
-            rtype::AAAA => Box::pin(futures_util::stream::empty()),
             _ => Box::pin(futures_util::stream::empty()),
         }
     }

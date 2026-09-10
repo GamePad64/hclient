@@ -65,8 +65,7 @@ impl Resolve for CannotAsk {
     fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
         let _ = name;
         match rtype {
-            rtype::A => Box::pin(no_addresses()),
-            rtype::AAAA => Box::pin(no_addresses()),
+            rtype::A | rtype::AAAA => Box::pin(no_addresses()),
             _ => Box::pin(futures_util::stream::empty()),
         }
     }
@@ -90,8 +89,12 @@ impl Resolve for AskedFoundNothing {
     fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
         let _ = name;
         match rtype {
-            rtype::A => Box::pin(no_addresses()),
-            rtype::AAAA => Box::pin(no_addresses()),
+            rtype::A | rtype::AAAA => Box::pin(no_addresses()),
+            // Kept as its own arm though it matches the wildcard below:
+            // this is the type `AskedFoundNothing` exists to test, and
+            // writing it out says "asked, and found nothing" rather than
+            // leaving `HTTPS` to fall through the wildcard by coincidence.
+            #[allow(clippy::match_same_arms)]
             rtype::HTTPS => Box::pin(futures_util::stream::empty()),
             _ => Box::pin(futures_util::stream::empty()),
         }
@@ -114,8 +117,7 @@ impl Resolve for AskedFoundRecords {
     fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
         let _ = name;
         match rtype {
-            rtype::A => Box::pin(no_addresses()),
-            rtype::AAAA => Box::pin(no_addresses()),
+            rtype::A | rtype::AAAA => Box::pin(no_addresses()),
             rtype::HTTPS => Box::pin(futures_util::stream::iter(vec![Ok(Record::new(
                 RData::Https(endpoint("svc.example")),
             ))])),
@@ -142,8 +144,7 @@ impl Resolve for OverrodeOnlyTheLookup {
     fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
         let _ = name;
         match rtype {
-            rtype::A => Box::pin(no_addresses()),
-            rtype::AAAA => Box::pin(no_addresses()),
+            rtype::A | rtype::AAAA => Box::pin(no_addresses()),
             rtype::HTTPS => Box::pin(futures_util::stream::iter(vec![Ok(Record::new(
                 RData::Https(endpoint("unreachable.example")),
             ))])),

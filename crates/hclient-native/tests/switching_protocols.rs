@@ -131,7 +131,7 @@ fn upgrading_server(
             let Ok(sock) = sock else { continue };
             counter.fetch_add(1, Ordering::SeqCst);
             let sink = Arc::clone(&sink);
-            std::thread::spawn(move || serve(sock, requests_before_upgrade, sink));
+            std::thread::spawn(move || serve(sock, requests_before_upgrade, &sink));
         }
     });
     (addr, accepted, upgraded)
@@ -140,7 +140,7 @@ fn upgrading_server(
 fn serve(
     mut sock: std::net::TcpStream,
     requests_before_upgrade: usize,
-    sink: Arc<Mutex<Vec<AfterUpgrade>>>,
+    sink: &Arc<Mutex<Vec<AfterUpgrade>>>,
 ) {
     sock.set_read_timeout(Some(BOUND)).expect("read timeout");
     let mut buf: Vec<u8> = Vec::new();

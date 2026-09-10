@@ -881,8 +881,12 @@ async fn a_close_reason_that_is_not_utf8_is_not_a_clean_close() {
 async fn a_close_reason_over_the_limit_is_not_a_clean_close() {
     let over = BadCloseCapsule::MAX_REASON + 1;
     let mut raw = vec![0x68, 0x43];
+    // `over` is `MAX_REASON + 1` (1025), nowhere near `u32::MAX`, so the
+    // capsule length below cannot truncate.
+    #[allow(clippy::cast_possible_truncation)]
+    let len_field = 4 + over as u32;
     // The capsule length, as a four-byte QUIC varint: 4 + 1025 = 1029.
-    raw.extend_from_slice(&((4 + over as u32) | (0b10 << 30)).to_be_bytes());
+    raw.extend_from_slice(&(len_field | (0b10 << 30)).to_be_bytes());
     raw.extend_from_slice(&0u32.to_be_bytes());
     raw.extend(std::iter::repeat_n(b'x', over));
     let server = server::start(Options {

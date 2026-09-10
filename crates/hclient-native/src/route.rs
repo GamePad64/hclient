@@ -251,7 +251,7 @@ where
     /// An IP literal is skipped because it has no name to look up, and
     /// asking a real resolver for `_443._https.127.0.0.1` is a query with
     /// no answer that every request would pay for. And
-    /// `Resolve::`supports`` is **asked** rather than inferred from an
+    /// `Resolve::supports` is **asked** rather than inferred from an
     /// empty stream, which is the distinction that method exists to carry.
     ///
     /// A record that answers — either way — is the end of it. It was
@@ -504,7 +504,7 @@ where
             .await;
     }
 
-    /// Whether the highest-preference ServiceMode record under `name` lists
+    /// Whether the highest-preference `ServiceMode` record under `name` lists
     /// `h3` — and `None` when there is no such record at all.
     ///
     /// **Three states rather than two, and the third is what makes the two
@@ -523,11 +523,11 @@ where
     /// record would override that, and would also let one endpoint in an
     /// attacker-influenced answer decide the protocol for the whole origin.
     ///
-    /// **AliasMode records are skipped**, and the skip is load-bearing for
+    /// **`AliasMode` records are skipped**, and the skip is load-bearing for
     /// the same reason `hclient-native`'s selection gives: they arrive with
     /// `priority: 0` and every other field empty (RFC 9460 §2.4.1 — a
-    /// recipient MUST ignore an AliasMode record's SvcParams), and 0 is
-    /// numerically below every ServiceMode priority, so a selection that
+    /// recipient MUST ignore an `AliasMode` record's `SvcParams`), and 0 is
+    /// numerically below every `ServiceMode` priority, so a selection that
     /// did not skip them would reliably pick the one record whose ALPN list
     /// is empty and never choose QUIC at all.
     ///

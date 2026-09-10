@@ -1,6 +1,6 @@
 //! Proxy protocols, as **sans-io handshakes**.
 //!
-//! Three ship — HTTP `CONNECT`, SOCKS5 and SOCKS4a — and they share no
+//! Three ship — HTTP `CONNECT`, SOCKS5 and `SOCKS4a` — and they share no
 //! bytes, which is what makes [`Handshake`] evidence that the shape is
 //! general rather than the shape of its first caller.
 //!
@@ -147,9 +147,26 @@ pub trait Handshake {
     /// `&mut self` because a handshake remembers what it asked for: the
     /// SOCKS5 method it offered decides which reply is legal, and no
     /// state machine can check that without keeping it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a `host` this protocol cannot carry, before anything is
+    /// sent — a NUL byte or a length the wire format has no room for
+    /// (SOCKS4's unprefixed, NUL-terminated field; SOCKS5's single
+    /// length-prefix byte; `HttpConnect`'s `host:port` failing to parse
+    /// as an `http::uri::Authority`). Each implementor's own error names
+    /// its own condition.
     fn begin(&mut self, host: &str, port: u16) -> Result<Bytes, hclient_core::error::Error>;
 
     /// Consume what has arrived; answer what happens next.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the proxy's own reply is malformed (a bad
+    /// version byte, a reply longer than this protocol allows), or when
+    /// the proxy refuses the tunnel — a SOCKS `REP`/`CD` that is not
+    /// success, or an HTTP `CONNECT` response that is not `2xx`. Each
+    /// implementor's own error names which.
     fn advance(&mut self, from_peer: &mut BytesMut) -> Result<Step, hclient_core::error::Error>;
 
     /// `Proxy-Authorization` for a request written in absolute-form, if

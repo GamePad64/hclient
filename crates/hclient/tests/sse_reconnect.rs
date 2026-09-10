@@ -68,7 +68,7 @@ fn reconnects_and_sends_last_event_id() {
     let mut got = Vec::new();
     for _ in 0..2 {
         if let Some(Ok(e)) = futures_executor::block_on(s.next()) {
-            got.push(e)
+            got.push(e);
         }
     }
     assert_eq!(
@@ -797,7 +797,7 @@ fn an_explicit_empty_id_clears_last_event_id_and_no_header_is_sent_on_reconnect(
         SseEvent::Message {
             event: None,
             data: "second".into(),
-            id: Some("".into())
+            id: Some(String::new())
         },
         "an id: field with an empty value clears it — Some(\"\"), not Some(\"7\")"
     );
@@ -818,7 +818,7 @@ fn an_explicit_empty_id_clears_last_event_id_and_no_header_is_sent_on_reconnect(
             // reconnect for a message the new connection doesn't set one
             // on — NOT the stale "7", but also not `None`: "cleared" and
             // "never seen" stay distinct states even across a reconnect.
-            id: Some("".into())
+            id: Some(String::new())
         },
     );
 

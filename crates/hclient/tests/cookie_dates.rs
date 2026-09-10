@@ -269,7 +269,7 @@ fn the_parsed_date_actually_reaches_the_jar() {
             // Capped at 400 days by §5.5, which is a separate rule from the
             // parse and is asserted here so that "the date parsed" and "the
             // date survived the cap" cannot be confused for one another.
-            Some(now + Duration::from_secs(400 * 24 * 60 * 60))
+            Some(now + Duration::from_hours(9600))
         );
 
         jar.store(
@@ -295,7 +295,7 @@ fn the_platform_can_hold_the_range_the_corpus_names() {
     );
     assert!(
         UNIX_EPOCH
-            .checked_sub(Duration::from_secs(11_644_473_600))
+            .checked_sub(Duration::from_hours(3_234_576))
             .is_some()
     );
     assert!(SystemTime::now() > UNIX_EPOCH);

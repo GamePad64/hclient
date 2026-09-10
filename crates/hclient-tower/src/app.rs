@@ -139,9 +139,10 @@ impl Body for OutgoingBody {
 
     fn size_hint(&self) -> SizeHint {
         match &self.0 {
-            Inner::Empty => SizeHint::with_exact(0),
             Inner::Full(Some(b)) => SizeHint::with_exact(b.len() as u64),
-            Inner::Full(None) => SizeHint::with_exact(0),
+            // `Empty` and an already-taken `Full` are the same fact: no
+            // bytes are left to yield.
+            Inner::Empty | Inner::Full(None) => SizeHint::with_exact(0),
             Inner::Streaming(b) => b.size_hint(),
         }
     }

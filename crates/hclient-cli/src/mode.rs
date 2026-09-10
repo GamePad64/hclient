@@ -144,6 +144,13 @@ pub fn select(cli: &Cli) -> Result<Mode, String> {
 /// `items` is passed rather than read off `cli` because the grammar is
 /// classified in `run.rs`, and *which kind* an argument turned out to be
 /// is the whole of what this has to refuse.
+///
+/// It is long because the table is flat: every check below is an
+/// independent guard clause naming one flag and one reason, sharing only
+/// `flag`/`unit`/`mode` — splitting it into helpers would scatter one
+/// table a reader wants to scan in order across several functions passing
+/// the same four values around.
+#[allow(clippy::too_many_lines)]
 pub fn refuse_unusable(mode: Mode, cli: &Cli, items: &[Item]) -> Result<(), String> {
     if !mode.is_streaming() {
         return Ok(());

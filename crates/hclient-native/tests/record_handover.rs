@@ -69,7 +69,7 @@ fn get(uri: String) -> http::Request<RequestBody> {
     req
 }
 
-/// A ServiceMode record that moves a connection: the origin's service is
+/// A `ServiceMode` record that moves a connection: the origin's service is
 /// at `port`, and it speaks HTTP/1.1.
 fn record_at(port: u16) -> SvcbEndpoint {
     service_record(1, &[b"http/1.1"]).port(Some(port))

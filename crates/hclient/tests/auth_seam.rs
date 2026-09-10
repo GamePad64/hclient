@@ -275,7 +275,7 @@ fn body_seen_by_a_flow(body: RequestBody) -> Vec<String> {
 /// **A scheme that signs what it sends can see it, which is the whole of
 /// why this parameter exists.**
 ///
-/// AWS SigV4 — 31.5M downloads a quarter, more than every auth crate this
+/// AWS `SigV4` — 31.5M downloads a quarter, more than every auth crate this
 /// seam was built for put together — hashes the payload into
 /// `x-amz-content-sha256`. Written against `authorize(&method, &uri,
 /// &mut headers)` it could not be written at all, and the bytes were
@@ -289,7 +289,7 @@ fn a_buffered_body_reaches_the_flow_as_its_bytes() {
 }
 
 /// **`Empty` is a value and not an absence**, which is the distinction the
-/// three-state answer exists for: SigV4 hashes the empty string here, and
+/// three-state answer exists for: `SigV4` hashes the empty string here, and
 /// a scheme told `Opaque` instead would write `UNSIGNED-PAYLOAD` for a
 /// request that has nothing to hide.
 #[test]

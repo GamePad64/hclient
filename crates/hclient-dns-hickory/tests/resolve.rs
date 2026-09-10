@@ -333,7 +333,7 @@ async fn each_address_carries_the_ttl_of_its_own_record() {
         got,
         vec![
             SeamRecord::new(SeamData::A(Ipv4Addr::new(192, 0, 2, 1)))
-                .ttl(Some(Duration::from_secs(900))),
+                .ttl(Some(Duration::from_mins(15))),
             SeamRecord::new(SeamData::A(Ipv4Addr::new(192, 0, 2, 2)))
                 .ttl(Some(Duration::from_secs(30))),
         ],

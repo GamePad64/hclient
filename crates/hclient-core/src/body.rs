@@ -214,7 +214,7 @@ pub enum Reduced {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyView<'a> {
     /// There is no body. **Not the same as zero bytes to a scheme that
-    /// hashes payloads** — AWS SigV4 hashes the empty string here, which
+    /// hashes payloads** — AWS `SigV4` hashes the empty string here, which
     /// is a real value rather than an absence.
     Empty,
     /// The bytes that will be sent.
@@ -280,6 +280,12 @@ impl RequestBody {
     /// up to [`MAX_REWIND_DEPTH`], and refuses past it rather than
     /// recursing for ever. See [`Reduced`] for why this lives here instead
     /// of once per backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RewindTooDeep`] when a `Rewindable` chain is still
+    /// producing another `Rewindable` after [`MAX_REWIND_DEPTH`] factory
+    /// calls, rather than recursing for ever.
     pub fn reduce(self) -> Result<Reduced, RewindTooDeep> {
         let mut body = self;
         for _ in 0..MAX_REWIND_DEPTH {
@@ -302,6 +308,7 @@ impl RequestBody {
 
 #[cfg(test)]
 mod tests {
+    use http_body_util::BodyExt as _;
 
     /// The four variants collapse to the three facts a transport has, and
     /// the collapse of an empty `Full` is part of it: every backend in
@@ -318,7 +325,6 @@ mod tests {
             RequestBody::Full(Bytes::from_static(b"x")).reduce(),
             Ok(Reduced::Bytes(b)) if b == "x"
         ));
-        use http_body_util::BodyExt as _;
         let streaming = RequestBody::Streaming(Box::new(
             http_body_util::Full::new(Bytes::from_static(b"s"))
                 .map_err(|e: std::convert::Infallible| match e {}),

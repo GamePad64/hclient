@@ -30,6 +30,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// What the server announces and how it answers.
+// Five independent server-behaviour switches, each documented on its own
+// field — a fixture config, not a public API a caller composes calls
+// against, so there is no bit-flags refactor this buys.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct Options {
     /// `SETTINGS_ENABLE_WEBTRANSPORT`.
@@ -284,6 +288,10 @@ pub struct Server {
 
 impl Server {
     /// Every request the server has resolved so far.
+    ///
+    /// # Panics
+    ///
+    /// If the request log's lock is poisoned.
     pub fn requests(&self) -> Vec<SeenRequest> {
         self.state.requests.lock().unwrap().clone()
     }
@@ -306,21 +314,37 @@ impl Server {
     }
 
     /// Every capsule the server has read off the CONNECT stream.
+    ///
+    /// # Panics
+    ///
+    /// If the capsule log's lock is poisoned.
     pub fn capsules(&self) -> Vec<SeenCapsule> {
         self.state.capsules.lock().unwrap().clone()
     }
 
     /// Whether the client ended its half of the CONNECT stream with a FIN.
+    ///
+    /// # Panics
+    ///
+    /// If the flag's lock is poisoned.
     pub fn client_fin(&self) -> bool {
         *self.state.client_fin.lock().unwrap()
     }
 
     /// Every WebTransport stream the server has read to its end so far.
+    ///
+    /// # Panics
+    ///
+    /// If the stream log's lock is poisoned.
     pub fn streams(&self) -> Vec<SeenStream> {
         self.state.streams.lock().unwrap().clone()
     }
 
     /// Every datagram the server has read so far.
+    ///
+    /// # Panics
+    ///
+    /// If the datagram log's lock is poisoned.
     pub fn datagrams(&self) -> Vec<SeenDatagram> {
         self.state.datagrams.lock().unwrap().clone()
     }
@@ -332,6 +356,10 @@ impl Server {
     /// can observe proves the server saw one. It is used only where the
     /// test's own claim is about arrival, and a `false` is that claim
     /// failing.
+    ///
+    /// # Panics
+    ///
+    /// If the datagram log's lock is poisoned.
     pub async fn wait_for_datagrams(&self, n: usize, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
         while std::time::Instant::now() < deadline {
@@ -345,6 +373,10 @@ impl Server {
 
     /// The client's SETTINGS, or `None` if none had arrived when the
     /// request was resolved.
+    ///
+    /// # Panics
+    ///
+    /// If the SETTINGS slot's lock is poisoned.
     pub fn client_settings(&self) -> Option<SeenClientSettings> {
         *self.state.client_settings.lock().unwrap()
     }
@@ -354,6 +386,10 @@ impl Server {
     /// A poll rather than a sleep: the tests that use it assert on the
     /// *content* afterwards, so a `false` here is a failure to observe and
     /// not a slow machine's fault line.
+    ///
+    /// # Panics
+    ///
+    /// If the stream log's lock is poisoned.
     pub async fn wait_for_streams(&self, n: usize, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
         while std::time::Instant::now() < deadline {
@@ -366,6 +402,11 @@ impl Server {
     }
 }
 
+/// # Panics
+///
+/// Not in practice — every `.expect()` below names the specific reason the
+/// step it guards cannot fail for a self-signed cert this fixture just
+/// generated over TLS 1.3 with a ring provider.
 pub fn start(opts: Options) -> Server {
     // All three names, as in `hclient-h3`'s fixture: the tests dial the
     // literal `127.0.0.1` so that resolution is not a second thing under
@@ -483,9 +524,8 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
             let Ok(Some(resolver)) = h3.accept().await else {
                 return;
             };
-            match resolver.resolve_request().await {
-                Ok(pair) => break pair,
-                Err(_) => continue,
+            if let Ok(pair) = resolver.resolve_request().await {
+                break pair;
             }
         };
         // Read at the moment the request resolved, which is after the client's
@@ -547,7 +587,7 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
         {
             let _ = h3.shutdown(goaway.max_requests).await;
         }
-        std::future::pending::<()>().await
+        std::future::pending::<()>().await;
     });
 
     while let Ok((send, recv)) = quic.accept_bi().await {
@@ -676,6 +716,11 @@ fn take_capsule(buf: &mut Vec<u8>) -> Option<SeenCapsule> {
         at: 0,
     };
     let kind = reader.try_decode()?;
+    // A QUIC varint is up to 2^62-1; on a 32-bit target this could in
+    // principle truncate, but this fixture only ever decodes a capsule
+    // this same test binary just encoded, at sizes far under `usize::MAX`
+    // on any target it runs on.
+    #[allow(clippy::cast_possible_truncation)]
     let length = reader.try_decode()? as usize;
     let start = reader.at;
     if buf.len() < start + length {
@@ -826,6 +871,12 @@ impl VarintReader {
 /// The client half of the fixture, and deliberately not part of the crate
 /// under test: `hclient-webtransport` takes a `quinn::Connection` and has
 /// no opinion about where it came from — see its crate doc.
+///
+/// # Panics
+///
+/// Not in practice — every `.unwrap()` below is on a certificate
+/// [`start`] just generated, a literal socket address, or a connect to a
+/// server this same process is running.
 pub async fn dial(server: &Server) -> quinn::Connection {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(server.cert_der.clone()).unwrap();

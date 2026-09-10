@@ -40,7 +40,7 @@ impl SseDecoder {
             data: String::new(),
             event_type: None,
             last_event_id: None,
-            ready: Default::default(),
+            ready: VecDeque::default(),
         }
     }
 
@@ -48,7 +48,7 @@ impl SseDecoder {
     /// starting it at `None`.
     ///
     /// Exists for reconnect (`hclient`'s `ReconnectingSseStream`): WHATWG's
-    /// last event ID buffer is a property of the EventSource as a whole,
+    /// last event ID buffer is a property of the `EventSource` as a whole,
     /// not of one connection — a message dispatched on a fresh connection
     /// that hasn't sent its own `id:` field yet must still carry forward
     /// whatever id the PREVIOUS connection last established, not `None`.
@@ -69,6 +69,12 @@ impl SseDecoder {
         self.last_event_id.as_deref()
     }
 
+    /// # Errors
+    ///
+    /// [`SseError::EventTooLarge`] once the current event — including an
+    /// incomplete trailing line still buffered, so the limit cannot be
+    /// bypassed with a line that never terminates — exceeds
+    /// `max_event_size`.
     pub fn push(&mut self, chunk: &[u8]) -> Result<(), SseError> {
         self.lines.push(chunk);
         while let Some((line, consumed)) = self.lines.next_line() {
@@ -146,7 +152,7 @@ impl SseDecoder {
                     self.last_event_id = Some(String::from_utf8_lossy(value).into_owned());
                 }
             }
-            b"retry" if !value.is_empty() && value.iter().all(|b| b.is_ascii_digit()) => {
+            b"retry" if !value.is_empty() && value.iter().all(u8::is_ascii_digit) => {
                 if let Ok(ms) = core::str::from_utf8(value).unwrap_or("").parse::<u64>() {
                     self.ready
                         .push_back(SseEvent::Retry(Duration::from_millis(ms)));
@@ -185,7 +191,7 @@ mod tests {
         d.push(input).unwrap();
         let mut out = Vec::new();
         while let Some(e) = d.next() {
-            out.push(e)
+            out.push(e);
         }
         out
     }

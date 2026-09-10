@@ -47,12 +47,14 @@ pub enum Fail {
 impl Fail {
     pub fn code(&self) -> i32 {
         match self {
-            Self::Usage(_) => 2,
+            // Both are a mistake in what the caller wrote, which is what 2
+            // already means for `Usage` — `WriteOut` is that same mistake
+            // caught later, once the request has run.
+            Self::Usage(_) | Self::WriteOut(_) => 2,
             Self::Backend(_) | Self::NotBuilt { .. } => 3,
             Self::Request(_) => 4,
             Self::Status(s) if s.is_client_error() => 5,
             Self::Status(_) => 6,
-            Self::WriteOut(_) => 2,
             Self::Io(_) => 7,
         }
     }
@@ -293,6 +295,16 @@ fn print_selection(cli: &Cli, is_tty: bool) -> Result<Print, Fail> {
     })
 }
 
+/// One command line, turned into one request, sent, and printed.
+///
+/// It is long because it is one linear pipeline rather than several
+/// independent jobs: `req` is built up step by step (query, headers, body,
+/// auth, redirect policy) and each step reads state the one before it
+/// produced, so splitting it into helpers would mean threading `client`,
+/// `config`, `req`, `print` and the rest through several signatures for no
+/// reader benefit over reading it top to bottom in the order a request is
+/// actually assembled.
+#[allow(clippy::too_many_lines)]
 pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Result<(), Fail> {
     // The mode first, because it decides how the URL is read (`ws://` is
     // a URL under `--ws` and a named refusal everywhere else) and which

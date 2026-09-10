@@ -1049,7 +1049,7 @@ async fn waiting_for_a_shared_connect_spends_the_callers_connect_bound() {
         let url = server.url("/b");
         let bound = FIRST_TLS + Duration::from_millis(50);
         assert!(
-            bound - FIRST_TLS < LATER_TLS && bound > LATER_TLS,
+            bound.checked_sub(FIRST_TLS).unwrap() < LATER_TLS && bound > LATER_TLS,
             "the arm is only a discriminator between these two: what is \
              LEFT of the bound must be too little for a second handshake, \
              and the WHOLE bound must be enough for one"

@@ -65,6 +65,11 @@ pub trait UdpBind {
     /// preserves that proof rather than spending it.
     type Socket: UdpDatagrams;
 
+    /// # Errors
+    ///
+    /// Whatever the OS's `bind` syscall (or the runtime's registration of
+    /// it) returns — a port already in use, an address that does not
+    /// belong to this host, or a permission the process lacks.
     fn bind(&self, local: SocketAddr) -> std::io::Result<Self::Socket>;
 }
 
@@ -80,6 +85,12 @@ pub trait UdpBind {
 /// [`TcpAdoptStd`]: crate::TcpAdoptStd
 /// [`TcpConnect`]: crate::TcpConnect
 pub trait UdpAdoptStd: UdpBind {
+    /// # Errors
+    ///
+    /// Whatever the OS or the runtime's own reactor registration returns
+    /// while taking ownership of `s` — switching it to non-blocking mode
+    /// and registering the descriptor, both of which are OS calls that can
+    /// fail on an already-broken or already-closed descriptor.
     fn adopt(&self, s: std::net::UdpSocket) -> std::io::Result<Self::Socket>;
 }
 
@@ -91,6 +102,12 @@ pub trait UdpDatagrams {
     /// [`std::io::ErrorKind::WouldBlock`] is a real answer, not a failure:
     /// it obliges the caller to call [`poll_writable`](Self::poll_writable)
     /// before trying again.
+    ///
+    /// # Errors
+    ///
+    /// [`std::io::ErrorKind::WouldBlock`] when the socket is not currently
+    /// writable — see above — or whatever else the OS's send call answers
+    /// for this datagram.
     fn try_send(&self, t: &Datagrams<'_>) -> std::io::Result<()>;
 
     /// Wait for the socket to become writable.
@@ -131,6 +148,11 @@ pub trait UdpDatagrams {
         meta: &mut [RecvMeta],
     ) -> Poll<std::io::Result<usize>>;
 
+    /// # Errors
+    ///
+    /// Whatever the OS's `getsockname` (or equivalent) call returns for
+    /// this socket — ordinarily unreachable for a socket this trait itself
+    /// bound, but not ruled out for one adopted from elsewhere.
     fn local_addr(&self) -> std::io::Result<SocketAddr>;
 
     /// Which offloads this **socket** has.
@@ -142,7 +164,7 @@ pub trait UdpDatagrams {
     /// runtime crate. GSO, GRO and ECN are not: they are `cmsg` support on
     /// a descriptor on a kernel, and two sockets from the same runtime can
     /// answer differently — `quinn-udp`'s own unix backend carries "mac and
-    /// ios do not support IP_RECVTOS on dual-stack sockets"
+    /// ios do not support `IP_RECVTOS` on dual-stack sockets"
     /// (`quinn-udp-0.5.15/src/unix.rs:114`), i.e. a v4 socket and a
     /// dual-stack v6 socket differ on the same machine in the same process.
     /// A const would be a claim the runtime crate is not in a position to
@@ -374,8 +396,7 @@ impl Datagrams<'_> {
     /// How many datagrams this send describes.
     pub fn segments(&self) -> usize {
         match self.segment_size {
-            None => 1,
-            Some(0) => 1,
+            None | Some(0) => 1,
             Some(n) => self.contents.len().div_ceil(n),
         }
     }
@@ -412,6 +433,13 @@ impl Datagrams<'_> {
     /// `segment_size: None` and `ecn: None` passes against
     /// [`UdpCaps::NONE`], so the weakest socket still serves every caller
     /// that wanted nothing.
+    ///
+    /// # Errors
+    ///
+    /// An [`std::io::ErrorKind::Unsupported`] carrying [`UnsupportedUdpOffload`]
+    /// when this send describes more segments than `caps` declares, or —
+    /// see the asymmetry above — when `caps` claims `ecn: true` for a
+    /// codepoint it will not actually apply.
     pub fn reject_unsupported(&self, caps: UdpCaps) -> std::io::Result<()> {
         let gso = self.segments() > caps.max_send_segments;
         // Asymmetric on purpose — see this method's doc comment. A socket

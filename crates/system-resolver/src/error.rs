@@ -40,7 +40,7 @@ pub enum Error {
 
     /// This build has no backend at all — see **nothing at all**.
     ///
-    /// **nothing at all**: crate::Support::None
+    /// **nothing at all**: `crate::Support::None`
     #[error("no system resolver backend on this target")]
     Unsupported,
 
@@ -52,7 +52,7 @@ pub enum Error {
     /// platform structure's bytes as though they were RDATA is the failure
     /// this refusal exists to prevent.
     ///
-    /// the excepted list: crate::Support::AnyExcept
+    /// the excepted list: `crate::Support::AnyExcept`
     #[error("this build cannot return RR type {rtype}: the platform parses it into a structure")]
     UnsupportedType {
         /// The type that was asked for.
@@ -79,7 +79,7 @@ pub enum Error {
     NoResponse,
 
     /// The answer did not fit and the resolver's own retry did not replace
-    /// it. A truncated answer is not a complete RRSet, so it is refused
+    /// it. A truncated answer is not a complete `RRSet`, so it is refused
     /// rather than returned short.
     #[error("answer was truncated and no complete one was obtained")]
     Truncated,

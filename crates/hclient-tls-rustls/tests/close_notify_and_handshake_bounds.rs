@@ -117,6 +117,11 @@ async fn close_notify_without_a_raw_tcp_close_resolves_as_clean_eof_not_a_hang()
     })
     .await;
 
+    #[allow(
+        clippy::match_wild_err_arm,
+        reason = "the panic message already says exactly what the timeout means \
+                  for this test; `tokio::time::error::Elapsed` carries nothing else"
+    )]
     match result {
         Err(_elapsed) => panic!(
             "poll_read did not resolve within 3s after close_notify even though the peer already \

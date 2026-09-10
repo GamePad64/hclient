@@ -237,7 +237,10 @@ struct WakeAll(Mutex<Vec<Waker>>);
 
 impl WakeAll {
     fn register(&self, w: &Waker) {
-        let mut waiters = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut waiters = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `will_wake` keeps the list from growing without bound when the
         // same poller re-registers on every poll, which is the normal case.
         if !waiters.iter().any(|existing| existing.will_wake(w)) {
@@ -246,7 +249,12 @@ impl WakeAll {
     }
 
     fn wake_all(&self) {
-        let taken = std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()));
+        let taken = std::mem::take(
+            &mut *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         for w in taken {
             w.wake();
         }
@@ -407,6 +415,11 @@ where
 /// implement — as the one this path actually needs, with `UdpAdoptStd`
 /// present only because the `quinn::Runtime` trait has a method that
 /// demands it.
+///
+/// # Errors
+///
+/// Whatever [`UdpBind::bind`] returns for `local` — typically the OS
+/// refusing the bind (address in use, permission denied).
 pub fn endpoint<R>(rt: &R, local: SocketAddr) -> io::Result<quinn::Endpoint>
 where
     R: Timer + UdpAdoptStd + hclient_rt::Spawn<QuinnTask> + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C10
@@ -604,7 +617,7 @@ mod tests {
 
     #[test]
     fn a_deadline_already_past_is_a_zero_sleep_not_a_panic() {
-        let past = Instant::now() - Duration::from_secs(60);
+        let past = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
         assert_eq!(until(past), Duration::ZERO);
         // And a future one is positive, or the subtraction is backwards and
         // every timer fires immediately.

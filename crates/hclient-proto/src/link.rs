@@ -153,6 +153,11 @@ impl Link {
     }
 
     /// This link's target resolved against `base`, RFC 3986 §5.2.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`resolve_reference`]
+    /// returns for this link's target against `base` — see its `# Errors`.
     pub fn resolve(&self, base: &Uri) -> Result<Uri, UriError> {
         resolve_reference(base, &self.target)
     }
@@ -218,6 +223,7 @@ impl Links {
     /// Resolution can only fail for a reference that is not a URI at all
     /// (a raw space, a control character): `base` here is a URL that
     /// already answered a request.
+    #[must_use]
     pub fn resolved_against(mut self, base: &Uri) -> Self {
         for link in &mut self.links {
             if let Ok(resolved) = resolve_reference(base, &link.target) {

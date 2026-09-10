@@ -139,6 +139,11 @@ struct Named {
 /// is the clone this crate caches its ALPN configs to avoid — and it
 /// cannot change a handshake, only observe one: `Recording` forwards
 /// every answer verbatim.
+// `cfg` is taken by value rather than `&Arc<..>`: both callers already own
+// it and are done with it afterwards (one from a fresh `with_identity`
+// argument, the other from its own by-value parameter), so a reference
+// here would only make the caller's `Arc` outlive the call for no reason.
+#[allow(clippy::needless_pass_by_value)]
 fn recording(cfg: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig> {
     let mut cfg = (*cfg).clone();
     cfg.client_auth_cert_resolver = record::Recording::wrap(cfg.client_auth_cert_resolver.clone());
@@ -294,6 +299,12 @@ impl Rustls {
     /// verification, or the reverse — which matters because the reverse is
     /// the dangerous direction and is the one a shared pool would
     /// otherwise allow.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default crypto provider does not support the default
+    /// protocol versions — which cannot happen with the ring provider this
+    /// crate ships, since it is rustls's own safe default.
     #[cfg(feature = "dangerous-insecure")]
     pub fn danger_accept_invalid_certs() -> Self {
         // The provider the config will use, so the signature checks that
@@ -341,6 +352,12 @@ impl Rustls {
     /// WantsVerifier>` and `ConfigVerifierExt` on `ClientConfig` itself.
     /// The call is the extension method
     /// `ClientConfig::with_platform_verifier()`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `rustls_platform_verifier::ConfigVerifierExt::
+    /// with_platform_verifier` returns, wrapped as [`ErrorKind::Tls`] — a
+    /// failure to read the platform's own trust store or verifier.
     #[cfg(feature = "platform-verifier")]
     pub fn with_platform_verifier() -> Result<Self, Error> {
         use rustls_platform_verifier::ConfigVerifierExt;
@@ -457,7 +474,7 @@ impl Rustls {
 /// silently missing, and nothing in the response says so.
 /// `crates/hclient-tls-rustls/tests/ech.rs` measures both halves from the
 /// peer's side of a loopback socket: with `ech: Some(_)` not one byte
-/// arrives, and with `ech: None` the ClientHello that arrives carries the
+/// arrives, and with `ech: None` the `ClientHello` that arrives carries the
 /// name in plaintext — the leak this refusal prevents, exhibited by the
 /// same observer that asserts its absence.
 fn ech_refused() -> Error {
@@ -490,7 +507,7 @@ fn ech_refused() -> Error {
 /// honestly stays `None`, rather than becoming an approximate or
 /// outright wrong string.
 fn normalize_protocol_version(v: rustls::ProtocolVersion) -> Option<String> {
-    use rustls::ProtocolVersion::*;
+    use rustls::ProtocolVersion::{TLSv1_0, TLSv1_1, TLSv1_2, TLSv1_3};
     match v {
         TLSv1_0 => Some("TLSv1.0".to_string()),
         TLSv1_1 => Some("TLSv1.1".to_string()),
@@ -899,7 +916,7 @@ where
         // refused — see the field's own doc on why the two are different
         // answers.
         let info = TlsInfo::new()
-            .alpn(c.alpn_protocol().map(|a| a.to_vec()))
+            .alpn(c.alpn_protocol().map(<[u8]>::to_vec))
             .peer_certificates(
                 c.peer_certificates()
                     .map(|cs| cs.iter().map(|d| d.as_ref().to_vec()).collect()),

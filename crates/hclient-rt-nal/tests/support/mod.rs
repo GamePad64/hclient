@@ -1,6 +1,12 @@
 //! Two synthetic stacks: one whose connection crosses a thread and one
 //! whose does not. They are the whole subject — the adapter's claim is
 //! about which of the two it can make, so a test needs both.
+//!
+//! Every `Read`/`Write`/`TcpConnect` method below is `async fn` because the
+//! trait it implements declares it `async fn` — `embedded-io-async` and
+//! `embedded-nal-async` give no other shape to conform to, so a fixture
+//! that awaits nothing still has to be `async` to be one.
+#![allow(clippy::unused_async_trait_impl)]
 
 use core::net::SocketAddr;
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
@@ -59,10 +65,7 @@ impl TcpConnect for SendStack {
     where
         Self: 'a;
 
-    async fn connect<'a>(
-        &'a self,
-        _remote: SocketAddr,
-    ) -> Result<Self::Connection<'a>, Self::Error> {
+    async fn connect(&self, _remote: SocketAddr) -> Result<Self::Connection<'_>, Self::Error> {
         Ok(SendConn {
             to_read: self.body.iter().copied().collect(),
             log: Arc::clone(&self.log),
@@ -101,10 +104,7 @@ impl TcpConnect for LocalStack {
         = LocalConn
     where
         Self: 'a;
-    async fn connect<'a>(
-        &'a self,
-        _remote: SocketAddr,
-    ) -> Result<Self::Connection<'a>, Self::Error> {
+    async fn connect(&self, _remote: SocketAddr) -> Result<Self::Connection<'_>, Self::Error> {
         Ok(LocalConn(self.0.clone()))
     }
 }

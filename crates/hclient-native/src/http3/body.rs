@@ -126,6 +126,7 @@ impl<H> H3Body<H> {
 // Hand-written: h3's RequestStream is not Debug, and the useful thing to
 // print about a body in flight is which phase it is in, not the QPACK
 // state behind it.
+#[allow(clippy::missing_fields_in_debug)]
 impl<H> Debug for H3Body<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Body")
@@ -184,7 +185,7 @@ impl<H: Hooks> http_body::Body for H3Body<H> {
                         Ok(None) => self.phase = Phase::Trailers,
                         Err(e) => {
                             self.phase = Phase::Done;
-                            let e = stream_error(e);
+                            let e = stream_error(&e);
                             self.report_failure(&e);
                             return Poll::Ready(Some(Err(e)));
                         }
@@ -197,7 +198,7 @@ impl<H: Hooks> http_body::Body for H3Body<H> {
                         Ok(Some(t)) => Some(Ok(http_body::Frame::trailers(t))),
                         Ok(None) => None,
                         Err(e) => {
-                            let e = stream_error(e);
+                            let e = stream_error(&e);
                             self.report_failure(&e);
                             Some(Err(e))
                         }
@@ -214,6 +215,6 @@ impl<H: Hooks> http_body::Body for H3Body<H> {
 /// connection is up and the handshake is done, so the failure is in the
 /// transfer — and `Other` is reserved for a backend that genuinely has
 /// nothing to say about the category, which is not the case here.
-pub(crate) fn stream_error(e: h3::error::StreamError) -> Error {
+pub(crate) fn stream_error(e: &h3::error::StreamError) -> Error {
     Error::new(ErrorKind::Body, std::io::Error::other(e.to_string()))
 }

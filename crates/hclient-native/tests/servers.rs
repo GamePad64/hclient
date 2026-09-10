@@ -126,6 +126,11 @@ pub struct Pair {
     _threads: (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>),
 }
 
+// A curated summary, not a dump: `cert_der` is raw DER, `alt_svc` and
+// the thread handles carry no useful `Debug`, and the counters not
+// shown here are read through their own accessors where a test
+// actually needs them.
+#[allow(clippy::missing_fields_in_debug)]
 impl Debug for Pair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pair")
@@ -158,6 +163,11 @@ impl Pair {
 
     /// What both servers advertise from now on. `None` sends no field at
     /// all, which is not the same instruction as an empty one.
+    ///
+    /// # Panics
+    ///
+    /// If the mutex is poisoned — a prior panic on the serving side,
+    /// which would itself be the thing to chase.
     pub fn set_alt_svc(&self, value: Option<&str>) {
         *self.alt_svc.lock().expect("alt-svc fixture") = value.map(str::to_owned);
     }
@@ -248,6 +258,11 @@ pub fn start_with_quic(quic: Quic) -> Pair {
 }
 
 /// Start both. Returns once both are bound, so no test races them.
+///
+/// # Panics
+///
+/// If the bound TCP socket cannot report its own local address — never
+/// expected on a real host.
 pub fn start_with(quic: Quic, tcp: Tcp) -> Pair {
     let (tcp_sock, udp_sock) = bind_pair();
     let port = tcp_sock.local_addr().expect("local_addr").port();
@@ -526,6 +541,11 @@ fn start_quic(
 
 /// A `Rustls` trusting exactly this pair's certificate and nothing else —
 /// used for both members, so neither arm has an identity advantage.
+///
+/// # Panics
+///
+/// If `cert` is not a well-formed DER certificate — never expected of
+/// this module's own `identity()`.
 pub fn client_tls(cert: &rustls::pki_types::CertificateDer<'static>) -> hclient_tls_rustls::Rustls {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert.clone()).expect("a DER certificate");

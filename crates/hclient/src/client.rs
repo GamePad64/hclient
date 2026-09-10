@@ -122,6 +122,7 @@ impl ClientBuilder {
     /// `Capabilities` — same shape as `timeouts` below.
     ///
     /// [`RequestBuilder::redirect`]: crate::RequestBuilder::redirect
+    #[must_use]
     pub fn redirect<P>(mut self, policy: P) -> Self
     where
         P: RedirectPolicy + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -136,6 +137,7 @@ impl ClientBuilder {
     /// is what actually goes to the transport in `http::Extensions`. A
     /// phase the transport doesn't support is an error at `build()`, and
     /// with B1/M3 also at `execute()` for whatever the request itself set.
+    #[must_use]
     pub fn timeouts(mut self, t: Timeouts) -> Self {
         self.config.timeouts = t;
         self
@@ -158,6 +160,7 @@ impl ClientBuilder {
     /// Independent of every `Timeouts` field: `total` bounds the
     /// operation's *time*, and a body dripping under the rate this bounds
     /// is stopped by neither unless both are set.
+    #[must_use]
     pub fn response_limit(mut self, bytes: u64) -> Self {
         self.config.response_limit = Some(bytes);
         self
@@ -173,6 +176,7 @@ impl ClientBuilder {
     /// builder needs no way to be half-configured and no error to latch
     /// until `build()`. `HeaderValue::from_static("app/1.0")` is the
     /// usual form and is checked at compile time.
+    #[must_use]
     pub fn user_agent(self, value: http::HeaderValue) -> Self {
         self.default_header(http::header::USER_AGENT, value)
     }
@@ -185,6 +189,7 @@ impl ClientBuilder {
     /// forbids is an `UnsupportedCapability` at `build()` rather than a
     /// value quietly dropped — `hclient-fetch` forbids several, including
     /// `User-Agent`, because the browser writes them.
+    #[must_use]
     pub fn default_header(mut self, name: http::HeaderName, value: http::HeaderValue) -> Self {
         self.config.default_headers.insert(name, value);
         self
@@ -196,6 +201,7 @@ impl ClientBuilder {
     /// [`Self::timeouts`] and `Native::tcp_opts` take — and with the same
     /// cost, which is that a caller who sets this after
     /// [`Self::user_agent`] has replaced it.
+    #[must_use]
     pub fn default_headers(mut self, headers: http::HeaderMap) -> Self {
         self.config.default_headers = headers;
         self
@@ -243,6 +249,7 @@ impl ClientBuilder {
     /// give the request a scheme and authority, but not a path.
     /// `RequestBuilder` (`client.get("things")`) resolves the original
     /// string before parsing and has no such limitation.
+    #[must_use]
     pub fn base_url(mut self, uri: http::Uri) -> Self {
         self.config.base_url = Some(uri);
         self
@@ -260,6 +267,7 @@ impl ClientBuilder {
         self
     }
 
+    #[must_use]
     pub fn total_timeout<Tm2>(mut self, timer: Tm2, total: Duration) -> Self
     where
         Tm2: Timer + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -333,6 +341,7 @@ impl ClientBuilder {
     /// with_public_suffix_list(NoList)` is what drops the compiled-in
     /// list's 77 KiB at run time.
     #[cfg(feature = "cookies")]
+    #[must_use]
     pub fn cookie_jar<P, S>(mut self, jar: crate::cookie::CookieJar<P, S>) -> Self
     where
         P: crate::cookie::PublicSuffixList + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -390,6 +399,7 @@ impl ClientBuilder {
     /// [`CookieStore`](crate::cookie::CookieStore)'s documentation for
     /// the five-way measurement that chose the seam's shape.
     #[cfg(feature = "hsts")]
+    #[must_use]
     pub fn hsts<S>(mut self, hsts: crate::hsts::Hsts<S>) -> Self
     where
         S: crate::hsts::HstsStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -475,6 +485,7 @@ impl ClientBuilder {
     /// form; `HttpCache::with_store(..)` is how a disk-backed or shared
     /// store gets here.
     #[cfg(feature = "cache")]
+    #[must_use]
     pub fn cache<S>(mut self, cache: crate::cache::HttpCache<S>) -> Self
     where
         S: crate::cache::CacheStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -490,6 +501,12 @@ impl ClientBuilder {
     /// Checks the configuration against the transport's capabilities. Not
     /// a single silent no-op: an unsupported setting is an error, here and
     /// now.
+    ///
+    /// # Errors
+    ///
+    /// [`UnsupportedCapability`], naming the setting, when the transport's
+    /// [`Capabilities`](crate::caps::Capabilities) cannot honour something
+    /// this builder was configured with.
     pub fn build(self) -> Result<Client, UnsupportedCapability> {
         check_supported(&self.config, self.transport.capabilities(), self.backend)?;
         Ok(Client {
@@ -639,6 +656,7 @@ impl Client {
     /// feature carries [`crate::mock::TestTimer`] for exactly this),
     /// rather than reach for this method and meet
     /// `tokio::time::sleep`'s panic.
+    #[must_use]
     pub fn total_timeout(mut self, total: Duration) -> Self {
         self.config.total = Some(total);
         self
@@ -846,6 +864,13 @@ impl Client {
     /// than the ergonomics the erasure was for — the invariant's own point
     /// is that a bound declared where the type is abstract propagates to
     /// backends that cannot satisfy it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error`], with a [`kind()`](Error::kind) naming the category —
+    /// resolution, connect, TLS, redirect, a timed-out phase, a body,
+    /// decoding, an unsupported capability, cancellation from a shutting-
+    /// down runtime, or an opaque backend failure with no closer category.
     pub async fn execute(
         &self,
         req: http::Request<RequestBody>,
@@ -948,6 +973,11 @@ impl Client {
     /// this future on expiry drops whichever hop is in flight, and under
     /// `Transport::execute`'s contract that stops the exchange
     /// instead of leaving it to finish unobserved.
+    // Long because it is one loop over one request's whole life — the
+    // redirect hop, the `425` replay, the auth legs and the retry all read
+    // the same locals, and splitting it would thread them through
+    // signatures rather than shorten anything.
+    #[allow(clippy::too_many_lines)]
     async fn run(
         &self,
         req: http::Request<RequestBody>,
@@ -1023,9 +1053,9 @@ impl Client {
         // unavoidably — `Extensions` is one shared bag — and carries across
         // hops with everything else (`stages::redirect::next_hop`), which
         // costs nothing here since the value is read once, before the loop.
-        let redirect = effective_redirect(&hp.extensions, &self.config.redirect);
+        let redirect = effective_redirect(&hp.extensions, self.config.redirect.as_ref());
         check_redirect_supported(
-            &redirect,
+            redirect.as_ref(),
             self.inner.transport.capabilities(),
             self.inner.backend,
         )
@@ -1538,7 +1568,7 @@ impl Client {
             let location = resp
                 .headers()
                 .get(http::header::LOCATION)
-                .map(|v| v.as_bytes());
+                .map(http::HeaderValue::as_bytes);
             let action = decide(
                 &*redirect,
                 hops,
@@ -1675,6 +1705,14 @@ impl Client {
     /// reason `attach_cookies` gives: the two call sites carry the
     /// reasoning about *when* the upgrade happens, and burying that in a
     /// conditional would put it behind a feature flag too.
+    // The twin keeps the signature of the half it stands in for — the
+    // `async` and the `&self` are what let the call sites stay free of
+    // a `#[cfg]`, which is the whole point of the pair.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        clippy::unused_self
+    )]
     #[cfg(not(feature = "hsts"))]
     async fn upgrade_scheme(&self, _: &mut http::Uri) {}
 
@@ -1699,6 +1737,14 @@ impl Client {
         hsts.note(uri, headers, secure, SystemTime::now()).await;
     }
 
+    // The twin keeps the signature of the half it stands in for — the
+    // `async` and the `&self` are what let the call sites stay free of
+    // a `#[cfg]`, which is the whole point of the pair.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        clippy::unused_self
+    )]
     #[cfg(not(feature = "hsts"))]
     async fn note_hsts(&self, _: &http::Uri, _: &http::HeaderMap) {}
 
@@ -1745,6 +1791,14 @@ impl Client {
     /// `#[cfg]` around the call site in `run`: the call site says what
     /// happens and when, and burying it in a conditional would put the
     /// per-hop reasoning above behind a feature flag too.
+    // The twin keeps the signature of the half it stands in for — the
+    // `async` and the `&self` are what let the call sites stay free of
+    // a `#[cfg]`, which is the whole point of the pair.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        clippy::unused_self
+    )]
     #[cfg(not(feature = "cookies"))]
     async fn attach_cookies(&self, _: &mut HopParts, _: bool) {}
 
@@ -1770,6 +1824,14 @@ impl Client {
     }
 
     /// The twin without the feature — see `attach_cookies`'.
+    // The twin keeps the signature of the half it stands in for — the
+    // `async` and the `&self` are what let the call sites stay free of
+    // a `#[cfg]`, which is the whole point of the pair.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        clippy::unused_self
+    )]
     #[cfg(not(feature = "cookies"))]
     async fn store_cookies(&self, _: &http::Uri, _: &http::HeaderMap) {}
 
@@ -1799,6 +1861,14 @@ impl Client {
     }
 
     /// The twin without the feature — see `attach_cookies`'.
+    // The twin keeps the signature of the half it stands in for — the
+    // `async` and the `&self` are what let the call sites stay free of
+    // a `#[cfg]`, which is the whole point of the pair.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        clippy::unused_self
+    )]
     #[cfg(not(feature = "cache"))]
     fn cache_now(&self) -> SystemTime {
         SystemTime::UNIX_EPOCH
@@ -1874,6 +1944,14 @@ impl Client {
     /// twin exists: the call site says what happens and when, and burying
     /// it in a conditional would put the per-hop reasoning behind a feature
     /// flag too.
+    // The twin keeps the signature of the half it stands in for — the
+    // `async` and the `&self` are what let the call sites stay free of
+    // a `#[cfg]`, which is the whole point of the pair.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        clippy::unused_self
+    )]
     #[cfg(not(feature = "cache"))]
     async fn cache_before(
         &self,
@@ -1956,6 +2034,14 @@ impl Client {
     }
 
     /// The twin without the feature — see `cache_before`'.
+    // The twin keeps the signature of the half it stands in for — the
+    // `async` and the `&self` are what let the call sites stay free of
+    // a `#[cfg]`, which is the whole point of the pair.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        clippy::unused_self
+    )]
     #[cfg(not(feature = "cache"))]
     async fn cache_after(
         &self,

@@ -530,6 +530,7 @@ fn strip_connection_headers(headers: &mut http::HeaderMap) {
 pub(crate) trait On1xx: Fn(http::StatusCode, &http::HeaderMap) {}
 impl<F> On1xx for F where F: Fn(http::StatusCode, &http::HeaderMap) {}
 
+#[allow(clippy::too_many_lines)] // one h2 exchange, tested end-to-end; the steps are sequential and splitting them would scatter one flow
 pub(crate) async fn exchange<I, F>(
     est: Established<I>,
     req: http::Request<OutgoingBody>,
@@ -1130,6 +1131,7 @@ where
     id: ConnectionId,
 }
 
+#[allow(clippy::missing_fields_in_debug)] // hand-written: prints a curated summary, not `recv`/`data_done`/`ended`/`id`
 impl<I> Debug for H2Body<I>
 where
     I: Read + Write + Unpin,

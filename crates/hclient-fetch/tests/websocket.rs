@@ -31,6 +31,11 @@
 //! `ErrorKind` and not a number: asserting one engine's answer is the
 //! shape that has bitten this crate before.
 #![cfg(target_arch = "wasm32")]
+// Every counter these tests read back is a JS `Number` holding a small
+// exact integer — a construction count, a `close()` count — so comparing
+// it against `0.0` or `1.0` is exact rather than the approximate
+// comparison this lint is about.
+#![allow(clippy::float_cmp)]
 
 use futures_util::{SinkExt, StreamExt};
 use hclient_core::error::ErrorKind;
@@ -90,7 +95,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 /// that kept the view would be reading whatever wasm put there next.
 fn install(plan: &str) {
     let body = format!(
-        r#"
+        r"
         if (globalThis.__ws_real === undefined) {{
             globalThis.__ws_real = globalThis.WebSocket;
         }}
@@ -158,7 +163,7 @@ fn install(plan: &str) {
         globalThis.WebSocket = fake;
         globalThis.__ws_log = log;
         globalThis.__ws_fire = function (step) {{ fire(log.last, step); }};
-        "#
+        "
     );
     js_sys::Function::new_no_args(&body)
         .call0(&JsValue::NULL)
@@ -804,7 +809,7 @@ async fn a_handshake_against_a_server_that_is_not_a_websocket_server_fails() {
 /// other type this crate hands back is `Send`, so a caller who holds a
 /// socket beside a response body had one type deciding the auto traits of
 /// the struct around it, for a reason that was an implementation detail
-/// (`Rc<RefCell<..>>`) rather than anything about WebSockets.
+/// (`Rc<RefCell<..>>`) rather than anything about `WebSockets`.
 ///
 /// It costs no `unsafe` of its own: the state cell is `Arc<Mutex<..>>`
 /// like `promise::State` beside it, and the three `Closure`s ride

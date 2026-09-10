@@ -10,12 +10,12 @@ use hclient_core::error::{Error, ErrorKind};
 use crate::error::WinHttpError;
 use crate::sys::{Connect, Event, Exchange, Request, Session};
 
-/// Where the body is between two of WinHTTP's completions.
+/// Where the body is between two of `WinHTTP`'s completions.
 #[derive(Debug, Clone, Copy)]
 enum State {
     /// Nothing in flight; the next poll asks for bytes.
     Idle,
-    /// A buffer is loaned to WinHTTP; the next poll waits for it back.
+    /// A buffer is loaned to `WinHTTP`; the next poll waits for it back.
     Reading,
     /// The body ended, or failed. Either way there is nothing more.
     Done,
@@ -28,13 +28,13 @@ enum State {
 /// The only thing that ever calls `WinHttpReadData` is `poll_frame`, so a
 /// caller who stops polling stops the transfer — there is no background
 /// pump filling a queue behind them. Dropping this closes the request
-/// handle, which is WinHTTP's own cancellation, and is why
+/// handle, which is `WinHTTP`'s own cancellation, and is why
 /// [`true`](true)
 /// is an honest claim here rather than a hopeful one.
 ///
 /// # Why the handles live here rather than in the transport
 ///
-/// A WinHTTP request handle is the child of a connect handle, which is
+/// A `WinHTTP` request handle is the child of a connect handle, which is
 /// the child of the session's. The session is shared and is an
 /// [`Arc`]; the other two belong to this exchange alone and are dropped
 /// with it, in declaration order — request, then connect — so a child is
@@ -135,7 +135,7 @@ impl http_body::Body for WinHttpBody {
     }
 }
 
-/// WinHTTP's own name for a completion, for an error a reader can match
+/// `WinHTTP`'s own name for a completion, for an error a reader can match
 /// against the documentation.
 pub(crate) fn event_name(e: &Event) -> &'static str {
     match e {

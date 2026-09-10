@@ -1,12 +1,12 @@
 //! The one thing every other test in this crate cannot be: a query to a
-//! DoH server nobody here wrote.
+//! `DoH` server nobody here wrote.
 //!
 //! # Why this file exists
 //!
 //! Every other test in this crate answers itself. The fixture in
 //! `tests/support` and the parser in `src/wire.rs` were written by the same
 //! author, from the same reading of the same RFCs, which is precisely the
-//! arrangement in which a fixture agrees with a bug. **No live DoH
+//! arrangement in which a fixture agrees with a bug. **No live `DoH`
 //! endpoint had ever been queried**, and the sharpest consequence was not
 //! about DNS at all: `Doh::pinned` takes an **IP literal**, so every
 //! pinned deployment
@@ -98,7 +98,7 @@ const PROBE: Duration = Duration::from_secs(5);
 /// **Measured before it was chosen, on the host that wrote this file.** 240
 /// plain TCP connects to these three addresses, in three cadences: **17
 /// lost, uniformly spread** — not bursty, not correlated with rate, and
-/// nothing to do with DoH, HTTP or this crate. One SYN is therefore not
+/// nothing to do with `DoH`, HTTP or this crate. One SYN is therefore not
 /// evidence of anything, and a suite of nine tests opening sixteen
 /// connections would be red about as often as green on a single attempt.
 /// Four attempts with [`BACKOFF`] between them takes a per-exchange ~7% to
@@ -137,7 +137,7 @@ const LIVE_TIMEOUTS: hclient_core::req::Timeouts = hclient_core::req::Timeouts::
     .with_first_byte(Duration::from_secs(5))
     .with_between_bytes(Duration::from_secs(5));
 
-/// A public DoH endpoint, and who runs it.
+/// A public `DoH` endpoint, and who runs it.
 #[derive(Debug, Clone, Copy)]
 struct Endpoint {
     operator: &'static str,
@@ -502,7 +502,7 @@ async fn raw_once(
         .into_body()
         .collect()
         .await
-        .map(|c| c.to_bytes())
+        .map(http_body_util::Collected::to_bytes)
         .map_err(|e| {
             (
                 false,
@@ -625,7 +625,7 @@ async fn an_ipv6_literal_endpoint_resolves() {
 ///
 /// `crypto.cloudflare.com` rather than `cloudflare.com`, because it is the
 /// only one of the two that publishes an `ech` parameter, and the
-/// ECHConfigList with RFC 9460 §7.3's redundant length prefix is the single
+/// `ECHConfigList` with RFC 9460 §7.3's redundant length prefix is the single
 /// most delicate thing `tests/svcb.rs` builds by hand.
 ///
 /// The oracle is `dig`'s presentation form over plain UDP DNS to the same
@@ -633,11 +633,11 @@ async fn an_ipv6_literal_endpoint_resolves() {
 /// assertions still run and the comparison says so — under
 /// [`REQUIRE_MARKER`] its absence is a failure.
 ///
-/// **What is deliberately not compared: the ECHConfigList's bytes.**
+/// **What is deliberately not compared: the `ECHConfigList`'s bytes.**
 /// Cloudflare rotates that key, and two resolvers hold two snapshots of it
 /// — measured, 1.1.1.1 and 8.8.8.8 returned different payloads of identical
 /// length in the same minute. Its *length*, its two-byte prefix and the
-/// `fe0d` ECHConfig version are stable and are compared; asserting the
+/// `fe0d` `ECHConfig` version are stable and are compared; asserting the
 /// payload would be asserting the clock.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_real_https_record_parses_and_every_field_agrees_with_dig() {
@@ -834,8 +834,8 @@ fn dig(name: &str, rtype: &str, ep: Endpoint, owner: &str) -> Option<DigRecord> 
         };
         let value = value.trim_matches('"');
         match key {
-            "alpn" => rec.alpn = value.to_owned(),
-            "port" => rec.port = value.to_owned(),
+            "alpn" => value.clone_into(&mut rec.alpn),
+            "port" => value.clone_into(&mut rec.port),
             "ipv4hint" => rec.ipv4hint = join(&value.split(',').collect::<Vec<_>>()),
             "ipv6hint" => {
                 rec.ipv6hint = join(
@@ -866,7 +866,7 @@ fn unbase64_len(s: &str) -> usize {
 
 /// **The TTL a caller gets is the number the server sent.**
 ///
-/// `tests/lookup.rs` already pins "per record, not per RRset", with two
+/// `tests/lookup.rs` already pins "per record, not per `RRset`", with two
 /// fabricated TTLs. What a fixture structurally cannot show is that the
 /// number is the *server's*: a fixture's 60 and an implementation's
 /// hard-coded 60 look exactly alike. Two things here can only be true of a
@@ -885,7 +885,7 @@ fn unbase64_len(s: &str) -> usize {
 /// gave the identical TTL every time it was asked while this file was
 /// written (73691/73689, 73129/73129, 72912/72912, 72900/72900,
 /// 72387/72387 — the widest gap 2 s). Google's frontends do not share one:
-/// the same RRset came back as **703 s and 18 759 s within the same
+/// the same `RRset` came back as **703 s and 18 759 s within the same
 /// second**, and again as 847/313 and 17765/5893 in an earlier probe. So a
 /// cross-query TTL comparison there is a statement about a resolver fleet's
 /// architecture, not about this crate, and the honest place to make claim
@@ -895,7 +895,7 @@ fn unbase64_len(s: &str) -> usize {
 /// The 60 s tolerance on (1) is not slack — a caching recursive decrements
 /// once per second and the two queries are seconds apart, so equality would
 /// be asserting the clock. It still excludes every wrong answer that is not
-/// a clock: `None`, zero, a constant, and the RRset minimum.
+/// a clock: `None`, zero, a constant, and the `RRset` minimum.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_ttl_a_caller_gets_is_the_one_that_came_off_the_wire() {
     const NAME: &str = "the_ttl_a_caller_gets_is_the_one_that_came_off_the_wire";
@@ -1125,14 +1125,14 @@ async fn the_content_type_is_required_by_a_real_server_and_the_accept_is_not() {
 /// **Quad9 answers no DNS at all over HTTP/1.1, and this crate reports it
 /// as a status rather than as a parse failure.**
 ///
-/// Measured: `9.9.9.9` answers every DoH request over HTTP/1.1 with `505
+/// Measured: `9.9.9.9` answers every `DoH` request over HTTP/1.1 with `505
 /// HTTP Version Not Supported` and an HTML body reading *"this server
 /// implements RFC 8484 … and requires HTTP/2 in accordance with section 5.2
 /// of the RFC"*. §5.2 says HTTP/2 is the minimum RECOMMENDED version; Quad9
 /// reads that as a requirement.
 ///
 /// `hclient-native` speaks HTTP/1.1 unless its `http2` feature is on, so a
-/// default build of this workspace **cannot use Quad9 as a DoH resolver at
+/// default build of this workspace **cannot use Quad9 as a `DoH` resolver at
 /// all**. That is worth a test rather than a footnote, and worth two
 /// assertions rather than one: the status must be reported as
 /// `DohError::Status`, *not* as `DohError::ContentType` or

@@ -137,6 +137,48 @@ unsafe_code       = "forbid"
 missing_debug_implementations = "warn"
 unexpected_cfgs   = { level = "warn", check-cfg = [] }
 
+# `pedantic` as a warning group, and every crate takes it through
+# `[lints] workspace = true`. It is `warn` here and `-D warnings` at the
+# gate, so the two spellings agree: `just lint` fails on a pedantic
+# finding exactly as it fails on any other, and an editor shows the same
+# set without a flag nobody remembers to pass.
+#
+# What that bought, measured on the tree it landed on: 1309 findings, of
+# which 1024 carried a machine-applicable suggestion and 285 wanted a
+# decision. The second number is the one worth knowing — 68
+# `missing_errors_doc` and 48 `missing_panics_doc` are places a public
+# `Result` or a public `panic!` was never explained to a caller, which is
+# a documentation gap this workspace cares about rather than a style
+# preference.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Two of the group are switched back off, each for a reason of this
+# workspace's own rather than a taste.
+#
+# `large_futures` fires 210 times and **not once** in library source: it
+# is entirely test code awaiting a client future. This workspace already
+# bounds those, with measured ceilings rather than a lint's constant —
+# `crates/hclient/tests/future_size.rs` at 6 KiB and
+# `crates/hclient-native/tests/future_size.rs` at 24 KiB, both set from
+# the 1.81x an extra `async fn` layer was measured to cost. Clippy's
+# default is 16 KiB, so the lint would refuse `Native::execute`'s
+# perfectly intended 15,480-byte future while this workspace's own guard
+# passes it. Two checks disagreeing about one fact is what the guards
+# exist to prevent; the guards are the ones that fail closed on the
+# defect, so they win.
+large_futures = "allow"
+
+# `must_use_candidate` fires 136 times in source, and what it asks for is
+# `#[must_use]` on every getter that answers a question. That attribute
+# means *ignoring this is a bug*, which is true of `Timeouts::or` and
+# false of `Capabilities::redirects` — a caller reading a field to log it
+# is doing nothing wrong. Applying it wholesale would make the attribute
+# say nothing, and this workspace already puts it where it carries a
+# claim: the `const fn` builders on `Timeouts` and `TimeoutSupport`
+# carry it because dropping a builder's answer really is the mistake.
+must_use_candidate = "allow"
+
 # ── Releasing: `release-plz` ────────────────────────────────────────────
 #
 # **cargo-release configuration used to live here and is gone**; the tool

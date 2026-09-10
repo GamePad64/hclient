@@ -4,7 +4,7 @@
 ///
 /// # It is SSE's splitter, promoted rather than copied
 ///
-/// These are the WHATWG EventSource rules, and they were written here for
+/// These are the WHATWG `EventSource` rules, and they were written here for
 /// `SseDecoder` alone. [`crate::lines`] is the public door onto this type,
 /// opened when a general line adapter was wanted for NDJSON and log
 /// tailing: the overlap was measured before it was believed, and it is the
@@ -180,7 +180,7 @@ mod tests {
         for c in chunks {
             s.push(c);
             while let Some((l, _)) = s.next_line() {
-                out.push(l)
+                out.push(l);
             }
         }
         out

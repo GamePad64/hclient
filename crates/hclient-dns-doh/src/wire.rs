@@ -5,7 +5,7 @@
 //! when it chose that crate: no `unsafe` anywhere in its `src`, a
 //! `DecodeResult` on every path rather than a panic, and name
 //! decompression that terminates by tracking visited offsets instead of
-//! trusting a "pointers point backwards" rule. Over a DoH response that
+//! trusting a "pointers point backwards" rule. Over a `DoH` response that
 //! matters more than it does there, not less: the bytes come from an HTTP
 //! body, so a compromised or hostile endpoint chooses every one of them.
 //!
@@ -30,12 +30,12 @@
 //! | the question does not match the one sent | [`DohError::QuestionMismatch`] |
 //! | anything the decoder refuses | [`DohError::Malformed`] |
 //!
-//! `TC` deserves a note because DoH is the one transport where it should
+//! `TC` deserves a note because `DoH` is the one transport where it should
 //! never appear: the response travels over TCP-or-better with no 512-byte
 //! limit, so a truncated answer means the *server's own* upstream lookup
 //! was truncated and it passed that on. There is no retry this crate can
 //! make that the server has not already made, so it is an error rather than
-//! a partial RRSet — the same call `hclient-dns-system` makes for the same
+//! a partial `RRSet` — the same call `hclient-dns-system` makes for the same
 //! reason.
 
 use crate::error::DohError;

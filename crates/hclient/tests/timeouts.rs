@@ -22,6 +22,9 @@ use hclient::{Client, ErrorKind, Timeouts};
 use std::error::Error as StdError;
 use std::time::Duration;
 
+// Always `Some`: every call site assigns straight into a `Timeouts`
+// field, so unwrapping here would put `Some(..)` at each of them.
+#[allow(clippy::unnecessary_wraps)]
 fn secs(n: u64) -> Option<Duration> {
     Some(Duration::from_secs(n))
 }

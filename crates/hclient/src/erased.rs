@@ -68,7 +68,7 @@
 //!
 //! Both wrappers implement the seam they erase, so a `CookieJar<BoxSuffixList>`
 //! and an `HttpCache<BoxCacheStore>` are ordinary jars and caches with their
-//! whole API — which is what lets `ClientBuilder::cookie_jar`(crate::Client::
+//! whole API — which is what lets `ClientBuilder::cookie_jar`(`crate::Client::`
 //! cookies) and `Client::cache` keep handing back
 //! a guard onto the real thing rather than onto a narrowed trait object.
 

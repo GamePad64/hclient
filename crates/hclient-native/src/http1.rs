@@ -266,6 +266,7 @@ where
     pub(crate) id: ConnectionId,
 }
 
+#[allow(clippy::missing_fields_in_debug)] // hand-written: `conn` and `id` aren't printed, `closed` is derived rather than a stored field
 impl<I> Debug for Established<I>
 where
     I: Read + Write + Unpin,
@@ -326,6 +327,7 @@ where
     sender: http1::SendRequest<OutgoingBody>,
 }
 
+#[allow(clippy::missing_fields_in_debug)] // hand-written: hyper's `Incoming`/`SendRequest`/`CheckIn` aren't `Debug`, and `H` carries no bound for one
 impl<I, H> Debug for H1Body<I, H>
 where
     I: Read + Write + Unpin,
@@ -1275,9 +1277,8 @@ mod tests {
             ConnectionId::UNWATCHED,
         );
         let mut fut = std::pin::pin!(fut);
-        let failed = match poll_to_completion(fut.as_mut()) {
-            Ok(_) => panic!("the server is gone, so there is no response to have"),
-            Err(e) => e,
+        let Err(failed) = poll_to_completion(fut.as_mut()) else {
+            panic!("the server is gone, so there is no response to have")
         };
         let seen = closes.0.borrow().clone();
         (failed, seen)
@@ -1323,6 +1324,11 @@ mod tests {
     /// mutation, it would run out of polls — which is why
     /// `poll_to_completion` has a ceiling instead of waiting.
     #[test]
+    // The `is_some_and` closure below stays a closure: the method form
+    // clippy asks for is `<(dyn Error + 'static)>::is::<..>`, which
+    // rustc's own `unused_parens` then rejects — two lints wanting
+    // opposite spellings of one expression, and this is the readable one.
+    #[allow(clippy::redundant_closure_for_method_calls)]
     fn a_connection_that_ends_with_the_request_still_queued_hands_it_back() {
         let (failed, closes) = race_lost_after(1);
         // **The reason is `Ended` and the point above is `Stale`, for one
@@ -1354,7 +1360,7 @@ mod tests {
         // is `canceled: connection closed`, which describes the drop
         // [`claim_back`] performed rather than why the connection died.
         assert!(
-            StdError::source(&error).is_some_and(|s| s.is::<ConnectionEndedWithTheRequestQueued>()),
+            StdError::source(&error).is_some_and(|e| e.is::<ConnectionEndedWithTheRequestQueued>()),
             "the cause a caller reads must be the connection's, not hyper's \
              answer to our dropping its dispatcher: {error:?}"
         );
@@ -1367,7 +1373,7 @@ mod tests {
             request
                 .headers()
                 .get(http::header::HOST)
-                .map(|v| v.as_bytes()),
+                .map(http::HeaderValue::as_bytes),
             Some(&b"example.invalid"[..])
         );
     }

@@ -1246,6 +1246,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// [`SystemProxies`](crate::proxy::system::SystemProxies) once can
     /// hand it to several transports rather than asking the OS again for
     /// each.
+    /// # Errors
+    ///
+    /// Whatever [`crate::proxy::system::http_proxies`] refuses: a
+    /// configuration this client cannot express in full — more than one
+    /// proxy protocol named at once, a bypass pattern the matcher cannot
+    /// state exactly, or a proxy credential that cannot become a header.
     #[cfg(feature = "system-proxy")]
     pub fn system_proxies_from(
         self,
@@ -1372,11 +1378,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// The gate is a request body hyper pulls; on HTTP/2 the body is a
     /// `SendStream` this crate drives itself and there is nothing to
     /// withhold in the same sense.
+    #[must_use]
     pub fn expect_continue(mut self, after: Duration) -> Self {
         self.expect_continue = Some(after);
         self
     }
 
+    #[must_use]
     pub fn watching_1xx(mut self) -> Self
     where
         H: Hooks + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C2
@@ -1454,6 +1462,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// Reuse is **on by default**, with [`PoolConfig::default`]; this
     /// method is for changing the numbers, and [`Native::without_pool`] is
     /// for turning it off.
+    #[must_use]
     pub fn pool(mut self, config: PoolConfig) -> Self {
         self.pool = Pool::new(Some(config));
         self.caps.connection_reuse = reuse_of(&self.pool);
@@ -1466,6 +1475,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `Capabilities::connection_reuse` becomes `false` to
     /// match, because it is derived from the same value rather than set
     /// alongside it.
+    #[must_use]
     pub fn without_pool(mut self) -> Self {
         self.pool = Pool::new(None);
         self.caps.connection_reuse = reuse_of(&self.pool);
@@ -1535,6 +1545,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// ambient runtime is elsewhere fails in `spawn`, where it would
     /// anyway, rather than half-way through this call. See
     /// `hclient_rt_tokio::TokioHandle` for the way round that.
+    #[must_use]
     pub fn with_reaper(mut self, config: PoolConfig) -> Self
     where
         R: Clone + Spawn<Reaper<R, NativeIo<R, T>>>,
@@ -1946,6 +1957,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// fallible in a way `Native::new` is not. A caller who wants both
     /// stacks over one configuration passes the same values twice, which
     /// is what `Rustls: Clone` is for.
+    ///
+    /// # Errors
+    ///
+    /// A boxed [`caps::Disagreement`] when this transport's own
+    /// capabilities and `quic`'s cannot be combined into one true value —
+    /// see [`caps::combine`] for which field is checked and reported.
     #[cfg(feature = "http3")]
     pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
     where
@@ -2012,6 +2029,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// the two setters refuse the empty state between them, so it is
     /// unreachable rather than checked later.
     pub fn http1(mut self, on: bool) -> Result<Self, Error> {
+        // Written as "off, and h2 not available" rather than De Morgan's
+        // "not (on or h2 available)" — the two negative conditions name
+        // the empty state the doc above describes more directly than the
+        // logically equivalent disjunction would.
+        #[allow(clippy::nonminimal_bool)]
         if !on && !(self.versions.h2 && cfg!(feature = "http2")) {
             return Err(Error::new(ErrorKind::Unsupported, NoVersionsLeft));
         }
@@ -2095,6 +2117,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    #[must_use]
     #[cfg(feature = "http2")]
     pub fn multiplexed(mut self) -> Self
     where
@@ -2120,6 +2143,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `ClientBuilder::build()` makes for an unsupported capability, for
     /// the same reason — a configuration that can never work should not
     /// need traffic to say so.
+    ///
+    /// # Errors
     ///
     /// **The error names the options**, not merely their number: the
     /// source is a [`hclient_rt::UnsupportedTcpOpts`], carried inside an
@@ -2213,24 +2238,6 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
-    /// What this client accepts in an HTTP/1 **response head** — the
-    /// header count and the largest head it will buffer. See
-    /// [`H1Opts`].
-    ///
-    /// The head is the one part of a response a client must hold whole
-    /// before it can act on any of it, so it is the one part a hostile
-    /// server can make expensive without sending a body.
-    /// `h2_opts`' `max_header_list_size` is the same
-    /// guard one protocol over, and neither is complete without the other:
-    /// a transport that negotiates ALPN speaks whichever the server
-    /// picked.
-    ///
-    /// **Fallible, unlike `h2_opts`**, and the difference
-    /// is who would refuse the value. A `SETTINGS` frame is written by
-    /// this crate and there is nobody to say no; `max_buf_size` is handed
-    /// to hyper, which **panics** below 8192. A caller's number reaching a
-    /// `panic!` inside a connect is not a refusal they can act on, so it
-    /// is checked here and named.
     /// Send every request over the Unix-domain socket at `path`, whatever
     /// authority its URI names.
     ///
@@ -2278,6 +2285,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// which both shipped runtimes compute with `cfg!(unix)`
     /// — so this fails at the call that configures it rather than on the
     /// first request, which is `tcp_opts`' rule one method over.
+    ///
+    /// # Errors
+    ///
+    /// [`hclient_rt::UnixSocketsUnsupported`] when the runtime cannot
+    /// apply one, per "It is refused where the runtime says it cannot"
+    /// above; [`ProxyAndUnixSocket`] when a proxy is already configured,
+    /// per "What it replaces" above.
     pub fn unix_socket(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
         if !<R as TcpConnect>::SUPPORTS_UNIX {
             return Err(Error::new(
@@ -2292,6 +2306,26 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         Ok(self)
     }
 
+    /// What this client accepts in an HTTP/1 **response head** — the
+    /// header count and the largest head it will buffer. See
+    /// [`H1Opts`].
+    ///
+    /// The head is the one part of a response a client must hold whole
+    /// before it can act on any of it, so it is the one part a hostile
+    /// server can make expensive without sending a body.
+    /// `h2_opts`' `max_header_list_size` is the same
+    /// guard one protocol over, and neither is complete without the other:
+    /// a transport that negotiates ALPN speaks whichever the server
+    /// picked.
+    ///
+    /// # Errors
+    ///
+    /// **Fallible, unlike `h2_opts`**, and the difference
+    /// is who would refuse the value. A `SETTINGS` frame is written by
+    /// this crate and there is nobody to say no; `max_buf_size` is handed
+    /// to hyper, which **panics** below 8192. A caller's number reaching a
+    /// `panic!` inside a connect is not a refusal they can act on, so it
+    /// is checked here and named.
     pub fn h1_opts(mut self, opts: crate::http1::H1Opts) -> Result<Self, Error> {
         if let Some(asked) = opts.max_buf_size
             && asked < crate::http1::MINIMUM_MAX_BUF_SIZE
@@ -2452,6 +2486,8 @@ where
     /// Without the feature there is no h2 code to reach at all — the
     /// module is not compiled — so this is a constant and the ALPN list
     /// stays what it was before v0.2 W3.
+    // `&self` matches the half with the feature on — see `borrowed`.
+    #[allow(clippy::unused_self)]
     #[cfg(not(feature = "http2"))]
     fn may_speak_h2(&self, _parts: &KeyParts) -> bool {
         false
@@ -2463,6 +2499,10 @@ where
     /// `&'static [Protocol]`, not a `Vec`: the answer is one of two
     /// compile-time constants, and a request should not allocate to
     /// discover which.
+    // `&self` is read only by the `http2` arm below; without the feature
+    // the answer is the one constant, and dropping the receiver would
+    // fork the signature on a feature.
+    #[allow(clippy::unused_self)]
     fn pooled_candidates(&self, parts: &KeyParts) -> &'static [Protocol] {
         #[cfg(feature = "http2")]
         if self.may_speak_h2(parts) {
@@ -3126,6 +3166,7 @@ where
     /// in step: [`Transport::execute`] is this with [`Prepared::new`] —
     /// nothing looked up — and [`Prefetch::execute_prepared`] is this with
     /// whatever [`Prefetch::prepare`] found.
+    #[allow(clippy::too_many_lines)] // the whole exchange for both entry points, deliberately one body rather than two kept in step
     async fn run(&self, prepared: Prepared) -> Result<http::Response<NativeBody<R, T, H>>, Error>
     where
         D: Resolve,
@@ -3408,6 +3449,8 @@ where
         // ever removes `h2` from the list, never adds it.
         let offered_h2 = self.may_speak_h2(&parts_of_key)
             && check_version(req.extensions(), http::Version::HTTP_2).is_ok();
+        #[allow(clippy::match_same_arms)]
+        // the unreachable `(false, false)` is kept as its own honest arm rather than merged or `unreachable!` — see its comment
         let alpn: &[&[u8]] = match (offered_h2, self.versions.h1) {
             // Order is the preference: RFC 7301 leaves the choice to the
             // server, but every implementation reads the client's list as
@@ -3820,7 +3863,7 @@ pub mod testing {
     where
         R: hclient_rt::TcpConnect + hclient_rt::Timer,
     {
-        let (v6, v4): (Vec<_>, Vec<_>) = addrs.iter().copied().partition(|a| a.is_ipv6());
+        let (v6, v4): (Vec<_>, Vec<_>) = addrs.iter().copied().partition(std::net::IpAddr::is_ipv6);
         crate::connect::race_connect(
             rt,
             v6,

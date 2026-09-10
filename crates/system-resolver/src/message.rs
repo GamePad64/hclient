@@ -424,7 +424,7 @@ mod tests {
 
     /// A real answer, captured through `res_query` on Linux for
     /// `cloudflare.com` type 65: a compressed owner name, a root
-    /// TargetName, and an EDNS0 `OPT` record in the additional section
+    /// `TargetName`, and an EDNS0 `OPT` record in the additional section
     /// that this walker must not reach for.
     const REAL_ANSWER: &str = concat!(
         "825d818000010001000000010a636c6f7564666c61726503636f6d0000410001",

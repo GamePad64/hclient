@@ -159,6 +159,10 @@ fn the_local_stack_is_a_real_runtime_too() {
 // private one over a private stack — the shape the crate's own first doc
 // example needs, and which forcing `pub` used to reject with
 // `E0446: private type in public interface`.
+// Every `Read`/`Write`/`TcpConnect` method below is `async fn` because the
+// trait it implements declares it `async fn` — a fixture that awaits
+// nothing still has to be `async` to conform.
+#[allow(clippy::unused_async_trait_impl)]
 mod visibility {
     struct PrivateStack(#[allow(dead_code, reason = "only its type matters")] std::rc::Rc<()>);
     #[allow(dead_code, reason = "declared to be adapted, never connected")]
@@ -185,10 +189,10 @@ mod visibility {
             = PrivateConn
         where
             Self: 'a;
-        async fn connect<'a>(
-            &'a self,
+        async fn connect(
+            &self,
             _r: core::net::SocketAddr,
-        ) -> Result<Self::Connection<'a>, Self::Error> {
+        ) -> Result<Self::Connection<'_>, Self::Error> {
             Ok(PrivateConn)
         }
     }

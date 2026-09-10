@@ -4,20 +4,20 @@
 //! **Why this is in the trait crate and not in a backend.** It arrived in
 //! `hclient-dns-system`, where its own doc comment gave the reason it
 //! could not stay there: the rules that decide whether a record is usable
-//! at all — AliasMode versus ServiceMode (§2.4), a root TargetName meaning
+//! at all — `AliasMode` versus `ServiceMode` (§2.4), a root `TargetName` meaning
 //! the owner name (§2.5), `mandatory` semantics (§8) — "are the part of
 //! this crate most likely to be got subtly wrong, and they are identical
 //! on every platform." That argument was made about two backends inside
 //! one crate (`res_query` and `DnsQuery_UTF8`). `hclient-dns-doh` is a
 //! third, in a different crate, and it decodes the same wire format the
 //! `res_query` path does — so either the rules move to where every backend
-//! can reach them, or the DoH backend gets a second copy of them and the
+//! can reach them, or the `DoH` backend gets a second copy of them and the
 //! copies drift. They moved.
 //!
 //! **What did not move: any wire parsing.** Nothing here reads bytes.
 //! [`RawBinding`] holds no borrowed memory and no platform detail, and
 //! each backend fills it in from whatever its decoder produced — a
-//! `dns-message-parser` `ServiceBinding` on the `res_query` and DoH paths,
+//! `dns-message-parser` `ServiceBinding` on the `res_query` and `DoH` paths,
 //! an OS-parsed `DNS_SVCB_DATA` on Windows. That is what keeps this crate
 //! free of a DNS codec: a consumer who only ever uses `IpLiteralOnly` does
 //! not link one.
@@ -29,7 +29,7 @@ use bytes::Bytes;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
-/// The SvcParamKeys this client understands well enough to honour a
+/// The `SvcParamKeys` this client understands well enough to honour a
 /// `mandatory` requirement for (RFC 9460 §8).
 ///
 /// "Understood" is deliberately not the same as "has a field in
@@ -44,7 +44,7 @@ use std::time::Duration;
 /// `dohpath` is worth a second sentence now that `hclient-dns-doh` exists:
 /// that crate takes its endpoint as a whole URI from its caller and
 /// discovers nothing by DNS, so key 7 is still acted on by nothing here,
-/// and this list is still right. Recognising it would mean resolving a DoH
+/// and this list is still right. Recognising it would mean resolving a `DoH`
 /// endpoint by DNS, which is circular for the first lookup — see that
 /// crate's module doc.
 const RECOGNISED_KEYS: &[u16] = &[0, 1, 2, 3, 4, 5, 6];
@@ -53,8 +53,8 @@ const RECOGNISED_KEYS: &[u16] = &[0, 1, 2, 3, 4, 5, 6];
 ///
 /// **Why an intermediate type rather than each backend building a
 /// `SvcbEndpoint` itself.** The RFC 9460 rules that decide whether a record
-/// is usable at all — AliasMode versus ServiceMode (§2.4), a root
-/// TargetName meaning the owner name (§2.5), `mandatory` semantics (§8) —
+/// is usable at all — `AliasMode` versus `ServiceMode` (§2.4), a root
+/// `TargetName` meaning the owner name (§2.5), `mandatory` semantics (§8) —
 /// are the part of SVCB support most likely to be got subtly wrong, and
 /// they are identical on every platform. Writing them once, over a type
 /// that holds no borrowed memory and no platform detail, means no backend
@@ -68,7 +68,7 @@ pub struct RawBinding {
     pub priority: u16,
     /// The record's owner name, without a trailing dot.
     pub owner: String,
-    /// The TargetName, without a trailing dot. **Empty means the root**
+    /// The `TargetName`, without a trailing dot. **Empty means the root**
     /// (`.` on the wire), which is what §2.4.2 and §2.5 give their special
     /// meanings to.
     pub target: String,
@@ -78,7 +78,7 @@ pub struct RawBinding {
     pub ttl: Option<Duration>,
 }
 
-/// One SvcParam, reduced to what `SvcbEndpoint` can hold plus the key
+/// One `SvcParam`, reduced to what `SvcbEndpoint` can hold plus the key
 /// number of everything it cannot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 // **Both public enums in this module are deliberately exhaustive**, which
@@ -108,7 +108,7 @@ pub enum RawParam {
     Port(u16),
     Ipv4Hint(Vec<Ipv4Addr>),
     Ipv6Hint(Vec<Ipv6Addr>),
-    /// The ECHConfigList **including RFC 9460 §7.3's redundant length
+    /// The `ECHConfigList` **including RFC 9460 §7.3's redundant length
     /// prefix**, which is the form rustls parses. Backends are responsible
     /// for handing it over in that form; see each one's note, because they
     /// differ in whether the prefix survives their decoder.
@@ -119,7 +119,7 @@ pub enum RawParam {
 }
 
 impl RawParam {
-    /// The SvcParamKey this parameter came from (RFC 9460 §14.3.2).
+    /// The `SvcParamKey` this parameter came from (RFC 9460 §14.3.2).
     ///
     /// Total and closed over the enum on purpose — no `_ =>` arm — so a new
     /// variant becomes a compile error here rather than a key that silently
@@ -143,16 +143,20 @@ impl RawParam {
 ///
 /// `Ok(None)` means "well-formed but must not be used" — the two cases RFC
 /// 9460 gives for that are an unsupported `mandatory` key (§8) and an
-/// AliasMode record whose target is the root (§2.4.2, "the service is not
-/// available"). `Err` is reserved for the one client-side check RFC 9460
-/// calls malformed and no decoder makes: a `mandatory` list naming a key
-/// the record does not carry.
+/// `AliasMode` record whose target is the root (§2.4.2, "the service is not
+/// available").
 ///
 /// It hands back a [`Record`] rather than a bare [`SvcbEndpoint`] because
 /// the TTL belongs to the record and not to what the record says — so
 /// there is one field carrying it, on the type every backend already has
 /// to build, and no way to fill an endpoint's copy and forget the
 /// record's.
+///
+/// # Errors
+///
+/// `Err` is reserved for the one client-side check RFC 9460 calls
+/// malformed and no decoder makes: a `mandatory` list naming a key the
+/// record does not carry.
 pub fn endpoint_from_binding(binding: &RawBinding) -> Result<Option<Record>, SvcbRecordError> {
     // RFC 9460 §2.4.1: "In AliasMode, ... recipients MUST ignore any
     // SvcParams that are present", so none of them reach the endpoint.
@@ -202,16 +206,22 @@ pub fn endpoint_from_binding(binding: &RawBinding) -> Result<Option<Record>, Svc
     for parameter in &binding.params {
         match parameter {
             RawParam::Mandatory(key_ids) => mandatory = key_ids,
-            RawParam::Alpn(ids) => endpoint.alpn = ids.clone(),
+            RawParam::Alpn(ids) => ids.clone_into(&mut endpoint.alpn),
             RawParam::Port(port) => endpoint.port = Some(*port),
-            RawParam::Ipv4Hint(hints) => endpoint.ipv4hint = hints.clone(),
-            RawParam::Ipv6Hint(hints) => endpoint.ipv6hint = hints.clone(),
+            RawParam::Ipv4Hint(hints) => hints.clone_into(&mut endpoint.ipv4hint),
+            RawParam::Ipv6Hint(hints) => hints.clone_into(&mut endpoint.ipv6hint),
             RawParam::Ech(config_list) => {
                 endpoint.ech_config_list = Some(Bytes::from(config_list.clone()));
             }
             // Understood, but with nothing in `SvcbEndpoint` to hold it —
             // see `RECOGNISED_KEYS`. Dropped rather than given an invented
             // field.
+            //
+            // Kept separate from the arm below, though both bodies are
+            // empty: this key is *understood* and simply has no field;
+            // the next is *not modelled at all*. Merging them would lose
+            // that distinction, which `RECOGNISED_KEYS`'s doc relies on.
+            #[allow(clippy::match_same_arms)]
             RawParam::NoDefaultAlpn => {}
             // Not modelled; kept out of the endpoint, but still visible to
             // the `mandatory` check below through its key number.
@@ -246,6 +256,13 @@ pub fn endpoint_from_binding(binding: &RawBinding) -> Result<Option<Record>, Svc
 /// down once instead of once per backend. `hclient-dns-system`'s Windows
 /// path does not: `DnsQuery_UTF8` hands back records the OS has already
 /// parsed, and that path builds a [`RawBinding`] itself.
+///
+/// # Panics
+///
+/// Panics if an `ECH` `SvcParam`'s `config_list` is longer than `u16::MAX`
+/// bytes — which the decoder cannot have produced, since it read the list
+/// out of a `u16`-length-prefixed `SvcParam` in the first place (see the
+/// comment on the `ECH` arm below).
 #[cfg(feature = "codec")]
 pub fn binding_from_decoded(binding: &dns_message_parser::rr::ServiceBinding) -> RawBinding {
     use dns_message_parser::rr::ServiceParameter;

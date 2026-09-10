@@ -418,7 +418,11 @@ pub(crate) fn only_if_cached_miss<B>() -> http::Response<Cached<B>> {
 /// The version is the stored one — see
 /// [`StoredResponse::version`](crate::cache::StoredResponse::version) for
 /// why a stale truth beats `http`'s builder default.
+// By value rather than `&StoredResponse`: both call sites already own a
+// freshly-produced `StoredResponse` with no further use for it, so a
+// reference would only add a `&` at each site for no saved clone.
 #[cfg(feature = "cache")]
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn serve<B>(stored: crate::cache::StoredResponse) -> http::Response<Cached<B>> {
     let mut resp = http::Response::new(Cached::from_store(stored.body().clone()));
     *resp.status_mut() = stored.status();

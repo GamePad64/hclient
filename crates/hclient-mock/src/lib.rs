@@ -250,6 +250,12 @@ impl RecordedBody {
 
 /// Record what can be recorded **without calling anything**, which is the
 /// whole rule — see [`RecordedBody::Rewindable`].
+// The `Streaming` arm and the wildcard answer the same way and are kept
+// apart on purpose: `Streaming` names the one variant this mock could add
+// support for and chooses not to, where the wildcard exists only because
+// `RequestBody` is `#[non_exhaustive]` and needs a catch-all for whatever
+// arrives next. Folding them would erase that distinction for a reader.
+#[allow(clippy::match_same_arms)]
 fn record_body(body: &RequestBody) -> RecordedBody {
     match body {
         RequestBody::Empty => RecordedBody::Empty,
@@ -355,10 +361,16 @@ impl MockTransport {
     /// code made every request it set up for — which a `requests().len()`
     /// assertion does not, since an extra queued response is invisible to
     /// it.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn queued(&self) -> usize {
         self.shared.queue.lock().expect("mock lock poisoned").len()
     }
 
+    #[must_use]
     pub fn with_capabilities(mut self, caps: Capabilities) -> Self {
         self.caps = caps;
         self
@@ -374,6 +386,11 @@ impl MockTransport {
     /// payload built at run time: `serde_json::to_string(&value)` yields a
     /// `String`, and a test author's first attempt therefore did not
     /// compile. `impl Into<Bytes>` costs nothing and accepts both.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn push_response(&self, resp: http::Response<impl Into<Bytes>>) {
         let (parts, body) = resp.into_parts();
         let mut frames = VecDeque::new();
@@ -398,6 +415,11 @@ impl MockTransport {
     /// `Vec<Bytes>` rather than one `Bytes` for the same reason
     /// `push_response_frames` exists: a decoder that only ever sees a whole
     /// stream in one frame is not being tested as a decoder.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn push_response_bytes(&self, resp: http::Response<Vec<Bytes>>) {
         let (parts, body) = resp.into_parts();
         let frames: VecDeque<MockFrame> = body.into_iter().map(MockFrame::Data).collect();
@@ -412,6 +434,11 @@ impl MockTransport {
     /// reproduce an SSE stream split across a chunk boundary.
     /// Frames are handed back by `poll_frame` one at a time, in the order
     /// passed in.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn push_response_frames(&self, resp: http::Response<Vec<&'static str>>) {
         let (parts, body) = resp.into_parts();
         let frames: VecDeque<MockFrame> = body
@@ -429,6 +456,11 @@ impl MockTransport {
     /// demonstrates the asymmetry between `Response::chunk()` (skips
     /// trailers) and `into_parts()` + direct body polling (hands them
     /// back), see `response.rs`.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn push_response_with_trailers(
         &self,
         resp: http::Response<Vec<&'static str>>,
@@ -457,6 +489,11 @@ impl MockTransport {
     /// `Err(_) => continue` into `Err(_) => return None` left the whole
     /// suite green. A frame in the middle tells these two hypotheses
     /// apart.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn push_response_with_trailers_between_data(
         &self,
         resp: http::Response<Vec<&'static str>>,
@@ -484,6 +521,11 @@ impl MockTransport {
     /// Like `push_response_frames_then_error`, but the error isn't
     /// one-shot: the body hands it back on every subsequent poll, the way
     /// a genuinely broken connection would. See `MockFrame::RepeatingError`.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn push_response_frames_then_repeating_error(
         &self,
         resp: http::Response<Vec<&'static str>>,
@@ -514,6 +556,11 @@ impl MockTransport {
     /// category as `Body` — the same trick `Transport::to_error`'s default
     /// uses. It only wraps in `ErrorKind::Body` a foreign error type,
     /// which isn't the case here.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn push_response_frames_then_error(
         &self,
         resp: http::Response<Vec<&'static str>>,
@@ -541,6 +588,11 @@ impl MockTransport {
     /// one's category is
     /// `Other` anyway, correctly. Here the caller sets the category, so
     /// "did it reach the consumer" becomes an observable property.
+    ///
+    /// # Panics
+    ///
+    /// If the queue's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn push_transport_error(&self, err: Error) {
         self.shared
             .queue
@@ -549,6 +601,12 @@ impl MockTransport {
             .push_back(Err(err));
     }
 
+    /// Every request the transport has seen, in the order they arrived.
+    ///
+    /// # Panics
+    ///
+    /// If the log's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn requests(&self) -> Vec<RecordedRequest> {
         self.shared.seen.lock().expect("mock lock poisoned").clone()
     }
@@ -564,10 +622,14 @@ impl Transport for MockTransport {
     type Body = MockBody;
     type Error = Error;
 
-    async fn execute(
+    // No `.await` anywhere in the body — reading the queue and the log is
+    // entirely synchronous — so this returns the ready future directly
+    // rather than writing `async fn` over work that never actually
+    // suspends.
+    fn execute(
         &self,
         req: http::Request<RequestBody>,
-    ) -> Result<http::Response<Self::Body>, Self::Error> {
+    ) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>> {
         let (parts, body) = req.into_parts();
         // Read the little that's known about the body without reading it,
         // before it's dropped along with the rest of `parts`.
@@ -587,7 +649,7 @@ impl Transport for MockTransport {
                 body_size_hint,
                 body: recorded,
             });
-        match self
+        let result = match self
             .shared
             .queue
             .lock()
@@ -600,7 +662,8 @@ impl Transport for MockTransport {
             }
             Some(Err(e)) => Err(e),
             None => Err(Error::new(ErrorKind::Other, QueueEmpty)),
-        }
+        };
+        std::future::ready(result)
     }
 
     /// Identity, not wrapping — `Self::Error` is already
@@ -679,6 +742,11 @@ impl TestTimer {
     }
 
     /// Every `Duration` `sleep` was called with, in call order.
+    ///
+    /// # Panics
+    ///
+    /// If the log's lock is poisoned — another thread panicked while
+    /// holding it.
     pub fn sleeps(&self) -> Vec<Duration> {
         self.sleeps.lock().expect("TestTimer lock poisoned").clone()
     }

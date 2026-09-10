@@ -1,4 +1,4 @@
-//! The FFI boundary: WinHTTP's handles, its status callback, and the
+//! The FFI boundary: `WinHTTP`'s handles, its status callback, and the
 //! state the two sides share.
 //!
 //! **Every `unsafe` in this crate is in this file**, which is the split
@@ -9,12 +9,12 @@
 //!
 //! # The three obligations this file rests on
 //!
-//! WinHTTP in asynchronous mode is a callback API with a `dwContext`, and
+//! `WinHTTP` in asynchronous mode is a callback API with a `dwContext`, and
 //! three of its rules are load-bearing here. Each is stated at the code
 //! that depends on it, and none of them has been *observed* — see the
 //! crate doc on what has and has not been run.
 //!
-//! 1. **A buffer handed to `WinHttpReadData` belongs to WinHTTP until
+//! 1. **A buffer handed to `WinHttpReadData` belongs to `WinHTTP` until
 //!    `WINHTTP_CALLBACK_STATUS_READ_COMPLETE`.** Touching it before then
 //!    races the OS thread writing into it. [`Buf`] makes that structural
 //!    rather than a discipline: while the read is in flight there is no
@@ -22,11 +22,11 @@
 //!    the bytes even by mistake.
 //! 2. **`WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING` is the last callback a
 //!    handle receives.** That is where the `Arc<Exchange>` handed to
-//!    WinHTTP as the context is released. If it were ever *not* delivered
+//!    `WinHTTP` as the context is released. If it were ever *not* delivered
 //!    the cost is a leaked `Arc` and a leaked buffer — never a dangling
 //!    pointer, because the raw reference is what keeps the `Exchange`
 //!    alive in the first place.
-//! 3. **A handle is usable from any thread.** WinHTTP documents its
+//! 3. **A handle is usable from any thread.** `WinHTTP` documents its
 //!    handles as thread-agnostic, which is what the `Send` impls below
 //!    say; the callback arrives on a thread-pool thread, and the polling
 //!    side is wherever the caller's executor put it.
@@ -41,7 +41,7 @@
 //!
 //! # Wide strings
 //!
-//! Every WinHTTP call here takes an `LPCWSTR`, and every one of them gets
+//! Every `WinHTTP` call here takes an `LPCWSTR`, and every one of them gets
 //! a [`HSTRING`](windows_strings::HSTRING) bound to a local, passed as
 //! `.as_ptr()`. **The terminating null is inside the allocation**, which
 //! `windows-strings` reserves — so the pointer is an `LPCWSTR` by
@@ -69,17 +69,12 @@ use windows_sys::Win32::Networking::WinHttp as w;
 
 /// The default read buffer, in bytes.
 ///
-/// One buffer per exchange, allocated once and lent to WinHTTP for each
+/// One buffer per exchange, allocated once and lent to `WinHTTP` for each
 /// read — so this is the largest chunk a body can hand back, not a total.
 /// 16 KiB is `hyper`'s own initial read size for the same job.
 const READ_BUF: usize = 16 * 1024;
 
-/// A UTF-16, null-terminated copy of `s`, for the `PCWSTR` parameters.
-///
-/// Every WinHTTP call that takes one here is synchronous and copies what
-/// it needs, so the `Vec` may die at the end of the statement.
-
-/// What WinHTTP last told us, in the order it said it.
+/// What `WinHTTP` last told us, in the order it said it.
 #[derive(Debug)]
 pub(crate) enum Event {
     /// The request, headers and body are on the wire.
@@ -88,7 +83,7 @@ pub(crate) enum Event {
     HeadersAvailable,
     /// Bytes were read into the buffer. `0` is end of body.
     ReadComplete(usize),
-    /// A WebSocket receive completed: how many bytes, and what WinHTTP
+    /// A WebSocket receive completed: how many bytes, and what `WinHTTP`
     /// says they are — `WINHTTP_WEB_SOCKET_*_BUFFER_TYPE`.
     ///
     /// **A separate variant from [`ReadComplete`](Self::ReadComplete)
@@ -118,25 +113,25 @@ pub(crate) enum Event {
 ///
 /// The two variants are the whole of obligation 1 in the module doc.
 /// While a read is in flight the `Box` does not exist, so no safe code
-/// above this file can read bytes WinHTTP is still writing.
+/// above this file can read bytes `WinHTTP` is still writing.
 #[derive(Debug)]
 enum Buf {
     /// Ours. Safe to read.
     Home(BytesMut),
-    /// Lent to WinHTTP until `READ_COMPLETE` or `HANDLE_CLOSING`.
+    /// Lent to `WinHTTP` until `READ_COMPLETE` or `HANDLE_CLOSING`.
     ///
     /// **The buffer is kept here rather than given away**, which is what
     /// changed when it became a `BytesMut`: the allocation must stay alive
-    /// and unmoved for as long as WinHTTP holds the pointer `read` handed
+    /// and unmoved for as long as `WinHTTP` holds the pointer `read` handed
     /// it, and holding the `BytesMut` is how. That pointer is into the
     /// **spare capacity**, so the initialised prefix — always empty here,
     /// because every completed read is split off at once — is untouched.
     ///
     /// **This arm carries no raw pointer**, which is the second thing the
-    /// `BytesMut` bought: `read` computes the pointer, hands it to WinHTTP
+    /// `BytesMut` bought: `read` computes the pointer, hands it to `WinHTTP`
     /// and forgets it, and `reclaim` moves the buffer back out rather than
     /// reconstructing it. Moving this enum moves the `BytesMut` struct and
-    /// not its heap allocation, so what WinHTTP holds stays valid. What
+    /// not its heap allocation, so what `WinHTTP` holds stays valid. What
     /// must not happen while lent is a `reserve` on `held`, which could
     /// reallocate; nothing between `read` and `reclaim` touches it, and
     /// `take_read` refuses this arm outright.
@@ -155,7 +150,7 @@ struct Inner {
     /// the buffer must outlive the call and not move until
     /// `WRITE_COMPLETE`.
     ///
-    /// One slot, because `Sink` sends one message at a time and WinHTTP
+    /// One slot, because `Sink` sends one message at a time and `WinHTTP`
     /// documents one outstanding send per socket.
     ws_sending: Option<Bytes>,
     /// Whether this exchange has been upgraded to a WebSocket.
@@ -173,11 +168,11 @@ struct Inner {
 #[derive(Debug)]
 pub(crate) struct Exchange {
     inner: Mutex<Inner>,
-    /// What WinHTTP said, in order.
+    /// What `WinHTTP` said, in order.
     ///
     /// **An unbounded channel rather than a `VecDeque` and a hand-rolled
     /// waker**, for `hclient-urlsession`'s reason and with the same
-    /// producer: WinHTTP's status callback is a **synchronous C
+    /// producer: `WinHTTP`'s status callback is a **synchronous C
     /// function**, invoked on a thread this crate does not own, and it
     /// cannot wait. A bounded channel would make a full queue a dropped
     /// completion, which here is not a slow body but a lost `ReadComplete`
@@ -221,7 +216,7 @@ impl Exchange {
         let _ = self.tx.unbounded_send(e);
     }
 
-    /// The next thing WinHTTP said, or `Pending` with `cx` registered.
+    /// The next thing `WinHTTP` said, or `Pending` with `cx` registered.
     ///
     /// The pop / register / pop-again dance this replaced was the ordinary
     /// lost-wakeup race written out by hand — the callback can push
@@ -231,6 +226,10 @@ impl Exchange {
     /// body polls one exchange. It is there because callers hold an
     /// `Arc<Exchange>`, so this takes `&self` where `Stream::poll_next`
     /// wants `&mut`.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "Ready(None) and Pending both resolve to Poll::Pending, but for unrelated reasons — teardown ordering versus nothing being ready yet — the comment belongs to the first arm only"
+    )]
     pub(crate) fn poll_next(&self, cx: &mut Context<'_>) -> Poll<Event> {
         let mut rx = self.rx.lock().expect("winhttp receiver poisoned");
         match Pin::new(&mut *rx).poll_next(cx) {
@@ -280,7 +279,7 @@ impl Exchange {
             .take();
     }
 
-    /// The bytes WinHTTP just wrote, **split off rather than copied**.
+    /// The bytes `WinHTTP` just wrote, **split off rather than copied**.
     ///
     /// `split().freeze()` hands back a `Bytes` sharing this buffer's
     /// allocation, where `Bytes::copy_from_slice` allocated and memcpy'd
@@ -317,7 +316,7 @@ impl Exchange {
     }
 }
 
-/// Releases the `Arc<Exchange>` WinHTTP holds, and reclaims a buffer that
+/// Releases the `Arc<Exchange>` `WinHTTP` holds, and reclaims a buffer that
 /// is still lent out.
 ///
 /// Only ever called from `HANDLE_CLOSING`. The buffer half is belt and
@@ -360,10 +359,10 @@ fn reclaim(ex: &Exchange) {
     }
 }
 
-/// WinHTTP's status callback.
+/// `WinHTTP`'s status callback.
 ///
 /// Installed once on the session and inherited by every handle derived
-/// from it. It runs on a WinHTTP thread-pool thread, so it does the least
+/// from it. It runs on a `WinHTTP` thread-pool thread, so it does the least
 /// it can: reclaim a buffer, push an event, wake.
 #[allow(
     unsafe_code, // unsafe-code-exception: amendment-C18
@@ -529,7 +528,7 @@ impl WebSocket {
     ///
     /// The buffer discipline is `Request::read`'s, unchanged: `Loaned`
     /// from here until a completion reclaims it, so no safe code can read
-    /// bytes WinHTTP is still writing.
+    /// bytes `WinHTTP` is still writing.
     pub(crate) fn receive(&self, ex: &Arc<Exchange>) -> Result<(), Win32Error> {
         let (ptr, len) = {
             let mut inner = ex.inner.lock().expect("winhttp exchange poisoned");
@@ -570,6 +569,16 @@ impl WebSocket {
     /// sending, which is a half-close this seam has no way to express —
     /// [`Message::Close`] ends the stream.
     pub(crate) fn close(&self, code: u16, reason: &[u8]) -> Result<(), Win32Error> {
+        // `reason` is a caller-supplied close reason, unlike
+        // `close_status`'s `MAX_CLOSE_REASON`-bounded read buffer —
+        // nothing here caps it at RFC 6455 §5.5's 123 bytes before the
+        // call, so an oversized reason is WinHTTP's to refuse rather
+        // than this crate's. The cast itself cannot truncate: no real
+        // `&[u8]` reaches `u32::MAX` bytes.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "no real reason buffer approaches u32::MAX bytes; an actually oversized one is refused by WinHttpWebSocketClose, not silently truncated here"
+        )]
         let (ptr, len) = if reason.is_empty() {
             (std::ptr::null(), 0)
         } else {
@@ -615,7 +624,7 @@ impl WebSocket {
 /// close frame spends two of them on the code.
 const MAX_CLOSE_REASON: usize = 123;
 
-/// A WinHTTP handle, closed on drop.
+/// A `WinHTTP` handle, closed on drop.
 ///
 /// One type for all three kinds — session, connect, request — because
 /// `WinHttpCloseHandle` is the whole of what this crate does differently
@@ -672,7 +681,7 @@ fn last_error() -> Win32Error {
 /// buffer length wrong.
 ///
 /// **A refused option is returned rather than swallowed**, which is the
-/// decision the callers rest on. WinHTTP answers `ERROR_WINHTTP_INVALID_
+/// decision the callers rest on. `WinHTTP` answers `ERROR_WINHTTP_INVALID_
 /// OPTION` for an option this Windows does not have — every one of these
 /// is newer than the API itself — and .NET's `WinHttpHandler` logs that
 /// and carries on, which is the *silently ignored setting* this workspace
@@ -735,7 +744,7 @@ impl Session {
     /// the machine says to.
     ///
     /// `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY` is the whole reason this
-    /// crate exists: WPAD discovery and any PAC script are WinHTTP's to
+    /// crate exists: WPAD discovery and any PAC script are `WinHTTP`'s to
     /// run, per request, in the OS. `WINHTTP_FLAG_ASYNC` is what makes
     /// every later call complete through [`callback`] rather than
     /// blocking the caller's thread.
@@ -800,11 +809,11 @@ impl Session {
         Ok(Connect(Handle(h)))
     }
 
-    /// Asks WinHTTP to keep an idle HTTP/2 or HTTP/3 connection alive.
+    /// Asks `WinHTTP` to keep an idle HTTP/2 or HTTP/3 connection alive.
     ///
     /// `WINHTTP_OPTION_HTTP2_KEEPALIVE` and
     /// `WINHTTP_OPTION_HTTP3_KEEPALIVE` are documented on the **session**
-    /// handle and take a timeout in milliseconds, after which WinHTTP
+    /// handle and take a timeout in milliseconds, after which `WinHTTP`
     /// begins sending HTTP/2 `PING` frames or QUIC keep-alives on a
     /// connection with no activity. That is the OS holding the clock this
     /// workspace holds itself one crate over — `Native::h2_keep_alive`
@@ -868,7 +877,7 @@ impl Connect {
 pub(crate) struct Request(Handle);
 
 impl Request {
-    /// Hands WinHTTP an owned reference to the shared state.
+    /// Hands `WinHTTP` an owned reference to the shared state.
     ///
     /// Set here rather than passed to `WinHttpSendRequest`, so that a
     /// request abandoned before the send still releases it: every path to
@@ -936,7 +945,7 @@ impl Request {
     /// says only what may be negotiated **above** it.
     ///
     /// Set on the **request** handle rather than the session, although
-    /// WinHTTP accepts either. Per request is what lets a
+    /// `WinHTTP` accepts either. Per request is what lets a
     /// `RequireVersion` demand narrow the mask for one exchange without
     /// changing what every other request on this transport offers, which
     /// is the whole of `session.rs`'s `mask_for`. .NET's
@@ -950,7 +959,7 @@ impl Request {
     ///
     /// `WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED` — *"prevents protocol
     /// versions other than those enabled by
-    /// **WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL** from being used for the
+    /// **`WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL`** from being used for the
     /// request"* — and it is what makes
     /// [`Capabilities::version_select`](hclient_core::caps::Capabilities::version_select)
     /// honest here. Without it a demand could only be *checked* after the
@@ -958,7 +967,7 @@ impl Request {
     /// check placed too late: the request would already be at the server.
     ///
     /// **The buffer type is the one thing here the documentation does not
-    /// state.** Every other boolean option in WinHTTP takes a `DWORD`,
+    /// state.** Every other boolean option in `WinHTTP` takes a `DWORD`,
     /// and that is the assumption. It is a safe one to make in this
     /// direction and it is worth saying why: a wrong length is
     /// `ERROR_INVALID_PARAMETER` from `WinHttpSetOption`, which
@@ -969,11 +978,11 @@ impl Request {
         set_dword((self.0).0, w::WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED, 1)
     }
 
-    /// Which advanced version WinHTTP actually used, as the same bitmask.
+    /// Which advanced version `WinHTTP` actually used, as the same bitmask.
     ///
     /// **`WINHTTP_QUERY_VERSION` cannot answer this, and this crate's own
     /// doc named it as the way to.** That header query reads the status
-    /// line, and an HTTP/2 or HTTP/3 response has none — WinHTTP
+    /// line, and an HTTP/2 or HTTP/3 response has none — `WinHTTP`
     /// synthesises `HTTP/1.1` for the raw header block, so a client
     /// reading it reports every h2 and h3 response as HTTP/1.1.
     /// `WINHTTP_OPTION_HTTP_PROTOCOL_USED` is the option that says
@@ -1068,7 +1077,7 @@ impl Request {
         Ok(())
     }
 
-    /// The whole response head as WinHTTP holds it: the status line, the
+    /// The whole response head as `WinHTTP` holds it: the status line, the
     /// headers, CRLF-delimited, terminated by a blank line.
     ///
     /// Handed back as bytes so that `hclient_proto::head::parse_response`
@@ -1120,19 +1129,24 @@ impl Request {
         // that is not is bytes the parser refuses rather than something
         // to transcode. `to_string_lossy` would invent replacement
         // characters inside a value; this keeps the bytes WinHTTP has.
-        Ok(utf16.iter().map(|&u| u as u8).collect())
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "deliberate — a non-ASCII code unit becomes bytes the head parser refuses, per the comment above, rather than a replacement character"
+        )]
+        let bytes: Vec<u8> = utf16.iter().map(|&u| u as u8).collect();
+        Ok(bytes)
     }
 
-    /// Lends the read buffer to WinHTTP. Completes with
+    /// Lends the read buffer to `WinHTTP`. Completes with
     /// [`Event::ReadComplete`], whose `0` is end of body.
     #[allow(
         unsafe_code, // unsafe-code-exception: amendment-C18
         reason = "WinHttpReadData over a buffer this hands to WinHTTP; see obligation 1"
     )]
-    /// Asks WinHTTP to make this request a WebSocket handshake.
+    /// Asks `WinHTTP` to make this request a WebSocket handshake.
     ///
     /// `WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET`, set **before**
-    /// `WinHttpSendRequest`: it makes WinHTTP write RFC 6455's
+    /// `WinHttpSendRequest`: it makes `WinHTTP` write RFC 6455's
     /// `Upgrade: websocket`, `Connection: Upgrade`, the nonce and the
     /// version, so none of the handshake is this crate's to build. The
     /// option takes no value — the documentation says the buffer is

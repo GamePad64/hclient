@@ -198,7 +198,7 @@ async fn dropping_one_request_does_not_disturb_the_others() {
     // Poll the doomed request far enough to open its stream, then drop it.
     tokio::select! {
         _ = &mut doomed => panic!("the server holds for 400ms; this cannot finish in 50"),
-        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        () = tokio::time::sleep(Duration::from_millis(50)) => {}
     }
     drop(doomed);
 

@@ -107,7 +107,7 @@ impl TcpConnect for Tokio {
     /// a caller a named `Unsupported` error, an overstated one costs them
     /// an option silently not applied.
     /// `cfg!(unix)`, which is what `tokio::net::UnixStream` compiles on.
-    /// Understated on Windows, where AF_UNIX exists in the OS but tokio
+    /// Understated on Windows, where `AF_UNIX` exists in the OS but tokio
     /// binds no stream type for it.
     const SUPPORTS_UNIX: bool = cfg!(unix);
 

@@ -136,13 +136,30 @@ fn scale_by_kept_fraction(d: Duration, kept: f64) -> Duration {
         (0.0..=1.0).contains(&kept),
         "scale_by_kept_fraction precondition violated: kept={kept} out of [0.0, 1.0]"
     );
+    // Every cast here is bounded by the doc comment above: `kept` is in
+    // [0.0, 1.0] (checked just above), `FIXED_POINT_DENOM` is `2^32` and
+    // fits exactly in an `f64`'s 52-bit mantissa, so `keep_num` rounds to
+    // a value in `[0, 2^32]` — no sign loss (`kept >= 0.0`) and no
+    // truncation (well under `u128::MAX`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
     let keep_num = (kept * FIXED_POINT_DENOM as f64).round() as u128;
     let raw_nanos = d.as_nanos();
     let scaled_nanos = raw_nanos
         .checked_mul(keep_num)
         .expect("keep_num <= 2^32 and raw_nanos <= Duration::MAX's ~1.84e28ns keep this product inside u128::MAX — see the doc comment above")
         / FIXED_POINT_DENOM;
+    // `scaled_nanos <= raw_nanos` (since `keep_num <= FIXED_POINT_DENOM`),
+    // and `raw_nanos` came from a real `Duration`, so `scaled_nanos /
+    // 1_000_000_000` is at most that `Duration`'s whole seconds — which
+    // `Duration::new` itself accepts as a `u64`. The `% 1_000_000_000`
+    // remainder always fits `u32` by construction.
+    #[allow(clippy::cast_possible_truncation)]
     let secs = (scaled_nanos / 1_000_000_000) as u64;
+    #[allow(clippy::cast_possible_truncation)]
     let nanos = (scaled_nanos % 1_000_000_000) as u32;
     Duration::new(secs, nanos)
 }

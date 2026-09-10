@@ -15,7 +15,7 @@
 //!    incompatible proxies"*) — and **Custom-Metadata** rides along
 //!    unchanged, repeated names and `-bin` values included, in the head,
 //!    the response and the trailers alike.
-//! 2. A **Trailers-Only** response — one HEADERS block with END_STREAM and
+//! 2. A **Trailers-Only** response — one HEADERS block with `END_STREAM` and
 //!    no DATA at all — is a complete, empty-bodied response whose
 //!    `grpc-status` is readable off the head.
 //! 3. A response's **trailers** reach the caller, and DATA frame
@@ -112,7 +112,7 @@ struct Seen {
     /// alignment"*, from the other side.
     frames: Vec<usize>,
     body: Vec<u8>,
-    /// The request stream ended with END_STREAM rather than being reset or
+    /// The request stream ended with `END_STREAM` rather than being reset or
     /// cut off by the connection going away.
     complete: bool,
 }
@@ -250,7 +250,7 @@ impl Fixture {
 fn framed(payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(5 + payload.len());
     out.push(0); // Compressed-Flag: not compressed
-    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
     out.extend_from_slice(payload);
     out
 }
@@ -346,6 +346,11 @@ fn head(content_type: &str) -> http::response::Builder {
         .header("content-type", content_type)
 }
 
+// One dispatcher over every route this fixture answers, each arm a
+// self-contained slice of the gRPC wire shape under test — splitting it
+// into helpers would scatter one fixture's routes across the file for no
+// reader's benefit.
+#[allow(clippy::too_many_lines)]
 async fn handle(
     req: http::Request<h2::RecvStream>,
     mut respond: h2::server::SendResponse<Bytes>,
@@ -356,7 +361,7 @@ async fn handle(
         method: parts.method.to_string(),
         scheme: parts.uri.scheme_str().map(str::to_owned),
         path: parts.uri.path().to_owned(),
-        authority: parts.uri.authority().map(|a| a.to_string()),
+        authority: parts.uri.authority().map(std::string::ToString::to_string),
         headers: parts
             .headers
             .iter()
@@ -933,7 +938,7 @@ async fn custom_metadata_survives_in_the_head_the_response_and_the_trailers() {
         .headers()
         .get_all("x-resp-md-bin")
         .iter()
-        .map(|v| v.as_bytes())
+        .map(http::HeaderValue::as_bytes)
         .collect();
     assert_eq!(
         out,
@@ -948,18 +953,20 @@ async fn custom_metadata_survives_in_the_head_the_response_and_the_trailers() {
     assert_eq!(data, framed(b"pong"));
     let trailers = trailers.expect("Trailers carry the status and the metadata with it");
     assert_eq!(
-        trailers.get("grpc-status").map(|v| v.as_bytes()),
+        trailers.get("grpc-status").map(http::HeaderValue::as_bytes),
         Some(b"2".as_slice())
     );
     assert_eq!(
-        trailers.get("grpc-message").map(|v| v.as_bytes()),
+        trailers
+            .get("grpc-message")
+            .map(http::HeaderValue::as_bytes),
         Some(b"a%20message".as_slice()),
         "percent-encoded and untouched"
     );
     assert_eq!(
         trailers
             .get("grpc-status-details-bin")
-            .map(|v| v.as_bytes()),
+            .map(http::HeaderValue::as_bytes),
         Some(b"CAIS".as_slice()),
         "Status-Details is allowed only when Status is not OK, which is why \
          this route answers 2 rather than 0"
@@ -967,7 +974,7 @@ async fn custom_metadata_survives_in_the_head_the_response_and_the_trailers() {
     let tm: Vec<&[u8]> = trailers
         .get_all("x-trailer-md")
         .iter()
-        .map(|v| v.as_bytes())
+        .map(http::HeaderValue::as_bytes)
         .collect();
     assert_eq!(tm, vec![b"one".as_slice(), b"two".as_slice()]);
 
@@ -991,7 +998,7 @@ async fn custom_metadata_survives_in_the_head_the_response_and_the_trailers() {
 // ── 2. Trailers-Only ────────────────────────────────────────────────────
 
 /// **Trailers-Only → HTTP-Status Content-Type Trailers**, in one HEADERS
-/// frame with END_STREAM and no DATA at all.
+/// frame with `END_STREAM` and no DATA at all.
 ///
 /// The spec permits it *"for calls that produce an immediate error"*, and
 /// it is the response shape a gRPC client meets most often when something
@@ -1020,13 +1027,17 @@ async fn a_trailers_only_response_is_a_complete_response_with_no_body() {
     assert_eq!(resp.status(), 200, "HTTP-Status → \":status 200\"");
     assert_eq!(resp.version(), http::Version::HTTP_2);
     assert_eq!(
-        resp.headers().get("grpc-status").map(|v| v.as_bytes()),
+        resp.headers()
+            .get("grpc-status")
+            .map(http::HeaderValue::as_bytes),
         Some(b"5".as_slice()),
         "Trailers-Only puts Status in the SAME header block as the status \
          line, so it arrives as a response header and not as a trailer"
     );
     assert_eq!(
-        resp.headers().get("grpc-message").map(|v| v.as_bytes()),
+        resp.headers()
+            .get("grpc-message")
+            .map(http::HeaderValue::as_bytes),
         Some(b"it%20was%20not%20found".as_slice()),
         "percent-encoded, and passed through byte for byte — decoding it is \
          the caller's job and this client must not touch it"
@@ -1089,7 +1100,9 @@ async fn response_trailers_reach_the_caller_and_the_frame_split_survives() {
     .expect("the call must succeed");
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        resp.headers().get("content-type").map(|v| v.as_bytes()),
+        resp.headers()
+            .get("content-type")
+            .map(http::HeaderValue::as_bytes),
         Some(b"application/grpc+proto".as_slice())
     );
 
@@ -1107,7 +1120,7 @@ async fn response_trailers_reach_the_caller_and_the_frame_split_survives() {
     );
     let trailers = trailers.expect("Trailers are not optional: Status must be sent even when OK");
     assert_eq!(
-        trailers.get("grpc-status").map(|v| v.as_bytes()),
+        trailers.get("grpc-status").map(http::HeaderValue::as_bytes),
         Some(b"0".as_slice())
     );
 
@@ -1200,15 +1213,18 @@ async fn a_bidirectional_stream_carries_sixteen_rounds_both_ways() {
 
     // Half-close: the request stream ends, the response stream has not.
     drop(tx);
-    let (rest, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut resp_body))
+    let (leftover, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut resp_body))
         .await
         .expect("the trailers must arrive once the request stream ends");
-    assert!(rest.is_empty(), "nothing was left over after the last echo");
+    assert!(
+        leftover.is_empty(),
+        "nothing was left over after the last echo"
+    );
     assert_eq!(
         trailers
             .expect("Trailers close the call")
             .get("grpc-status")
-            .map(|v| v.as_bytes()),
+            .map(http::HeaderValue::as_bytes),
         Some(b"0".as_slice())
     );
 
@@ -1268,14 +1284,13 @@ async fn a_response_past_the_window_arrives_whole_with_its_trailers() {
     assert_eq!(
         data.len(),
         expected,
-        "{} bytes over a {WINDOW}-byte window",
-        expected
+        "{expected} bytes over a {WINDOW}-byte window"
     );
     assert_eq!(
         trailers
             .expect("the trailers are behind eight windows of data")
             .get("grpc-status")
-            .map(|v| v.as_bytes()),
+            .map(http::HeaderValue::as_bytes),
         Some(b"0".as_slice())
     );
 }
@@ -1299,10 +1314,11 @@ async fn a_response_past_the_window_arrives_whole_with_its_trailers() {
 /// chunks fit, a third does not.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_request_past_the_window_is_backpressured_rather_than_buffered() {
-    let server = spawn_server();
-    let client = client();
     const CHUNK: usize = 32 * 1024;
     const FRAMES: usize = 16;
+
+    let server = spawn_server();
+    let client = client();
     let (body, pulled) = repeat(FRAMES, CHUNK);
 
     let resp = tokio::time::timeout(BOUND, client.execute(call(&server, "/g.S/Sink", body)))
@@ -1595,7 +1611,7 @@ async fn an_idle_stream_survives_by_default_and_is_cut_only_when_asked() {
     let err = tokio::time::timeout(BOUND, async {
         loop {
             match next_frame(&mut body).await {
-                Some(Ok(_)) => continue,
+                Some(Ok(_)) => {}
                 Some(Err(e)) => return Some(e),
                 None => return None,
             }

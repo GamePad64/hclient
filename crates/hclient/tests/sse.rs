@@ -31,7 +31,7 @@ fn parses_events_from_a_response() {
 
     let mut got = Vec::new();
     while let Some(e) = futures_executor::block_on(s.next()) {
-        got.push(e.unwrap())
+        got.push(e.unwrap());
     }
 
     assert_eq!(
@@ -302,7 +302,7 @@ fn event_split_mid_field_across_frames_still_yields_two_events() {
 
     let mut got = Vec::new();
     while let Some(e) = futures_executor::block_on(s.next()) {
-        got.push(e.unwrap())
+        got.push(e.unwrap());
     }
 
     assert_eq!(
@@ -351,7 +351,7 @@ fn crlf_terminator_split_mid_event_across_frame_boundary_joins_the_data_lines() 
 
     let mut got = Vec::new();
     while let Some(e) = futures_executor::block_on(s.next()) {
-        got.push(e.unwrap())
+        got.push(e.unwrap());
     }
 
     assert_eq!(

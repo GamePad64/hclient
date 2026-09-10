@@ -83,7 +83,7 @@ fn a_cookie_for_a_sibling_domain_is_refused() {
             Err(Rejected::DomainMismatch { .. })
         );
         assert!(jar.is_empty().await);
-    })
+    });
 }
 
 /// Needs the compiled-in list, so it does not run in a
@@ -125,7 +125,7 @@ fn a_cookie_for_a_public_suffix_is_refused() {
             .await
             .expect("registrable");
         assert_eq!(sent(&jar, "https://news.bbc.co.uk/").await, "sid=ok");
-    })
+    });
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn a_domain_identical_to_the_host_survives_the_public_suffix_check_as_host_only(
         // Host-only means host-only: not to a subdomain, even though the
         // cookie's own domain string would domain-match it.
         assert_eq!(sent(&jar, "http://sub.localhost/").await, "");
-    })
+    });
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn without_a_list_every_domain_attribute_is_refused_rather_than_guessed() {
             .expect("domain identical to host");
         assert_eq!(jar.len().await, 2);
         assert!(jar.cookies().await.into_iter().all(|c| c.host_only()));
-    })
+    });
 }
 
 /// Needs the compiled-in list, so it does not run in a
@@ -195,7 +195,7 @@ fn a_host_only_cookie_does_not_reach_a_subdomain_and_a_domain_cookie_does() {
         assert_eq!(sent(&jar, "https://www.example.com/").await, "dom=2");
         // And a sibling of the *parent* sees neither.
         assert_eq!(sent(&jar, "https://notexample.com/").await, "");
-    })
+    });
 }
 
 #[test]
@@ -217,7 +217,7 @@ fn an_ip_host_takes_no_domain_but_itself() {
                 .expect("one")
                 .host_only()
         );
-    })
+    });
 }
 
 // ── the path rules ──────────────────────────────────────────────────────
@@ -242,7 +242,7 @@ fn a_string_prefix_is_not_a_path_prefix() {
         assert_eq!(sent(&jar, "https://example.com/foo").await, "p=1");
         assert_eq!(sent(&jar, "https://example.com/foo/").await, "p=1");
         assert_eq!(sent(&jar, "https://example.com/foo/bar").await, "p=1");
-    })
+    });
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn the_default_path_is_the_directory_and_not_the_resource() {
         // explicit one.
         assert_eq!(sent(&jar, "https://example.com/a/bb/x").await, "");
         assert_eq!(sent(&jar, "https://example.com/a/").await, "");
-    })
+    });
 }
 
 // ── Secure, and the name prefixes ───────────────────────────────────────
@@ -279,7 +279,7 @@ fn a_secure_cookie_is_refused_over_an_insecure_request() {
         store(&jar, "https://example.com/", "sid=x; Secure")
             .await
             .expect("over https");
-    })
+    });
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn a_secure_cookie_is_never_sent_over_an_insecure_request() {
 
         assert_eq!(sent(&jar, "https://example.com/").await, "s=1; p=2");
         assert_eq!(sent(&jar, "http://example.com/").await, "p=2");
-    })
+    });
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn loopback_over_http_counts_as_secure() {
             store(&jar, "http://10.0.0.1/", "d=4; Secure").await,
             Err(Rejected::SecureOverInsecure)
         );
-    })
+    });
 }
 
 #[test]
@@ -363,7 +363,7 @@ fn the_name_prefixes_are_enforced() {
         store(&jar, "https://example.com/", "__Host-a=1; Secure; Path=/")
             .await
             .expect("all three");
-    })
+    });
 }
 
 /// The `__Host-` clause that needs a `Domain` attribute to reach the
@@ -395,7 +395,7 @@ fn the_host_prefix_refuses_a_domain_attribute() {
             Err(Rejected::HostPrefix)
         );
         assert!(jar.is_empty().await);
-    })
+    });
 }
 
 // ── expiry ──────────────────────────────────────────────────────────────
@@ -428,7 +428,7 @@ fn max_age_zero_deletes_and_a_past_expires_deletes() {
         .expect("deletion by Expires");
         assert_eq!(sent(&jar, "https://example.com/").await, "");
         assert!(jar.is_empty().await);
-    })
+    });
 }
 
 #[test]
@@ -456,7 +456,7 @@ fn max_age_wins_over_expires() {
                 .expires(),
             Some(now() + Duration::from_secs(3600))
         );
-    })
+    });
 }
 
 #[test]
@@ -466,7 +466,7 @@ fn an_expiry_beyond_four_hundred_days_is_capped() {
         store(&jar, "https://example.com/", "a=1; Max-Age=999999999")
             .await
             .expect("stored");
-        let cap = now() + Duration::from_secs(400 * 24 * 60 * 60);
+        let cap = now() + Duration::from_hours(9600);
         assert_eq!(
             jar.cookies()
                 .await
@@ -495,7 +495,7 @@ fn an_expiry_beyond_four_hundred_days_is_capped() {
                 .expires(),
             Some(cap)
         );
-    })
+    });
 }
 
 #[test]
@@ -512,7 +512,7 @@ fn an_expired_cookie_is_not_returned() {
                 .await
                 .is_none()
         );
-    })
+    });
 }
 
 #[test]
@@ -525,13 +525,13 @@ fn a_session_cookie_has_no_expiry_and_never_ages_out() {
         let cookie = jar.cookies().await.into_iter().next().expect("one");
         assert_eq!(cookie.expires(), None);
         assert!(!cookie.persistent());
-        let much_later = now() + Duration::from_secs(10 * 365 * 24 * 3600);
+        let much_later = now() + Duration::from_hours(87600);
         assert!(
             jar.cookie_header(&uri("https://example.com/"), much_later)
                 .await
                 .is_some()
         );
-    })
+    });
 }
 
 // ── the storage model ───────────────────────────────────────────────────
@@ -564,7 +564,7 @@ fn same_name_domain_and_path_replaces_and_keeps_the_original_creation_time() {
             created,
             "§5.7: a replacement inherits the old creation time"
         );
-    })
+    });
 }
 
 /// Needs the compiled-in list, so it does not run in a
@@ -590,7 +590,7 @@ fn a_different_path_or_domain_is_a_different_cookie() {
         .await
         .expect("stored");
         assert_eq!(jar.len().await, 3);
-    })
+    });
 }
 
 #[test]
@@ -616,7 +616,7 @@ fn retrieval_puts_longer_paths_first_then_earlier_cookies() {
             sent(&jar, "https://example.com/x/y/z").await,
             "c=3; b=2; d=4; a=1"
         );
-    })
+    });
 }
 
 #[test]
@@ -662,7 +662,7 @@ fn the_bound_is_enforced_per_domain_and_evicts_the_least_recently_used() {
             .await
             .expect("stored");
         assert_eq!(jar.len().await, 3);
-    })
+    });
 }
 
 #[test]
@@ -686,7 +686,7 @@ fn the_total_bound_is_enforced_across_domains() {
             .map(|c| c.domain().to_owned())
             .collect();
         assert!(!domains.iter().any(|d| d == "a.test"), "{domains:?}");
-    })
+    });
 }
 
 #[test]
@@ -706,7 +706,7 @@ fn an_oversized_cookie_is_refused_rather_than_truncated() {
         store(&jar, "https://example.com/", "name=012345678901")
             .await
             .expect("exactly at the limit");
-    })
+    });
 }
 
 #[test]
@@ -718,7 +718,7 @@ fn a_uri_with_no_host_stores_nothing_and_matches_nothing() {
             .await
             .expect("stored");
         assert_eq!(sent(&jar, "/relative").await, "");
-    })
+    });
 }
 
 #[test]
@@ -735,7 +735,7 @@ fn store_response_keeps_going_past_a_bad_header() {
             2
         );
         assert_eq!(sent(&jar, "https://example.com/").await, "a=1; c=3");
-    })
+    });
 }
 
 /// Needs the compiled-in list, so it does not run in a
@@ -763,5 +763,5 @@ fn the_documented_example_holds() {
                 .expect("sent"),
             "sid=abc"
         );
-    })
+    });
 }

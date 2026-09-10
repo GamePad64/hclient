@@ -59,7 +59,6 @@ impl Resolve for Answering {
                     Ok(Record::new(RData::from(IpAddr::V4(Ipv4Addr::LOCALHOST))))
                 })
             }),
-            rtype::AAAA => Box::pin(futures_util::stream::empty()),
             _ => Box::pin(futures_util::stream::empty()),
         }
     }
@@ -95,7 +94,6 @@ impl Resolve for Failing {
                     ))
                 })
             }),
-            rtype::AAAA => Box::pin(futures_util::stream::empty()),
             _ => Box::pin(futures_util::stream::empty()),
         }
     }
@@ -120,12 +118,13 @@ fn request(port: u16, t: Timeouts) -> http::Request<RequestBody> {
 /// A server that accepts and answers, so that the *success* arms really do
 /// complete rather than failing one phase later for another reason.
 fn server() -> u16 {
+    use std::io::{Read as _, Write as _};
+
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
     std::thread::spawn(move || {
         for s in l.incoming() {
             let Ok(mut s) = s else { continue };
-            use std::io::{Read as _, Write as _};
             let mut buf = [0u8; 2048];
             let _ = s.read(&mut buf);
             let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
@@ -253,7 +252,6 @@ impl Resolve for Hinting {
         let _ = name;
         match rtype {
             rtype::A => Box::pin(futures_util::stream::once(std::future::pending())),
-            rtype::AAAA => Box::pin(futures_util::stream::empty()),
             rtype::HTTPS => Box::pin({
                 futures_util::stream::once(std::future::ready(Ok(Record::new(RData::Https(
                     SvcbEndpoint::new(1, "example.invalid".to_string())
@@ -309,6 +307,8 @@ fn an_address_hint_from_a_record_is_not_made_to_wait_for_the_resolver() {
 
 /// [`server`] with a count of the connections it accepted.
 fn counting_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read as _, Write as _};
+
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
     let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -317,7 +317,6 @@ fn counting_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
         for s in l.incoming() {
             let Ok(mut s) = s else { continue };
             counter.fetch_add(1, Ordering::SeqCst);
-            use std::io::{Read as _, Write as _};
             let mut buf = [0u8; 2048];
             let _ = s.read(&mut buf);
             let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");

@@ -240,20 +240,17 @@ where
             }
 
             line = lines.recv(), if !closing => {
-                match line {
-                    Some(line) => {
-                        if how == Verbosity::Verbose {
-                            writeln!(out, "{OUT}>{OUT:#} {line}").map_err(Fail::Io)?;
-                            out.flush().map_err(Fail::Io)?;
-                        }
-                        send(&mut ws, Message::Text(line)).await.map_err(Fail::Request)?;
+                if let Some(line) = line {
+                    if how == Verbosity::Verbose {
+                        writeln!(out, "{OUT}>{OUT:#} {line}").map_err(Fail::Io)?;
+                        out.flush().map_err(Fail::Io)?;
                     }
+                    send(&mut ws, Message::Text(line)).await.map_err(Fail::Request)?;
+                } else {
                     // EOF. Say goodbye and keep reading: the answer to
                     // the last line sent has not necessarily arrived.
-                    None => {
-                        closing = true;
-                        goodbye(&mut ws).await;
-                    }
+                    closing = true;
+                    goodbye(&mut ws).await;
                 }
             }
 

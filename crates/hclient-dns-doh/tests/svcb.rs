@@ -11,7 +11,7 @@
 //! wire and checks what came out the other end.
 //!
 //! The record bytes are built by hand in `support` — RFC 9460 §2.2 RDATA:
-//! a two-byte priority, a TargetName in label form, then key/length/value
+//! a two-byte priority, a `TargetName` in label form, then key/length/value
 //! triples in ascending key order.
 
 mod support;
@@ -25,7 +25,7 @@ use hclient_tls::NoTls;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use support::{FLAGS_NXDOMAIN, Rr, Server, TYPE_HTTPS, message, noerror};
 
-/// SvcParamKeys, RFC 9460 §14.3.2.
+/// `SvcParamKeys`, RFC 9460 §14.3.2.
 const KEY_MANDATORY: u16 = 0;
 const KEY_ALPN: u16 = 1;
 const KEY_PORT: u16 = 3;
@@ -57,7 +57,7 @@ async fn endpoints(server: &Server, name: &str) -> Vec<Item> {
     doh(server).lookup(name, rtype::HTTPS).collect().await
 }
 
-/// An `alpn` SvcParamValue: each id length-prefixed with one byte
+/// An `alpn` `SvcParamValue`: each id length-prefixed with one byte
 /// (RFC 9460 §7.1).
 fn alpn(ids: &[&str]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -68,7 +68,7 @@ fn alpn(ids: &[&str]) -> Vec<u8> {
     out
 }
 
-/// An ECHConfigList as it appears in the SvcParamValue: the redundant
+/// An `ECHConfigList` as it appears in the `SvcParamValue`: the redundant
 /// two-byte length prefix of RFC 9460 §7.3, then the payload.
 fn ech(payload: &[u8]) -> Vec<u8> {
     let mut out = u16::try_from(payload.len())
@@ -79,7 +79,7 @@ fn ech(payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The whole point, in one test: a ServiceMode record with the five
+/// The whole point, in one test: a `ServiceMode` record with the five
 /// parameters `SvcbEndpoint` can hold, put on the wire by a server that
 /// knows nothing about this crate, and read back field by field.
 ///
@@ -141,7 +141,7 @@ async fn a_service_mode_record_round_trips_every_field_svcbendpoint_holds() {
     assert!(doh(&server).supports(rtype::HTTPS));
 }
 
-/// RFC 9460 §2.5: a ServiceMode TargetName of `.` means the record's own
+/// RFC 9460 §2.5: a `ServiceMode` `TargetName` of `.` means the record's own
 /// owner name. Substituted here so no consumer has to know the convention.
 #[tokio::test]
 async fn a_service_mode_record_with_a_root_target_takes_its_owner_name() {
@@ -164,9 +164,9 @@ async fn a_service_mode_record_with_a_root_target_takes_its_owner_name() {
 }
 
 /// RFC 9460 §8: a record whose `mandatory` list names a key this client
-/// does not act on must be ignored — one record, not the RRSet. `dohpath`
+/// does not act on must be ignored — one record, not the `RRSet`. `dohpath`
 /// (key 7) is the registered key `hclient_dns::svcb::RECOGNISED_KEYS`
-/// deliberately excludes, and DoH is exactly where someone would expect it
+/// deliberately excludes, and `DoH` is exactly where someone would expect it
 /// to be honoured.
 #[tokio::test]
 async fn a_record_making_dohpath_mandatory_is_ignored_and_the_usable_one_is_kept() {
@@ -202,7 +202,7 @@ async fn a_record_making_dohpath_mandatory_is_ignored_and_the_usable_one_is_kept
 }
 
 /// RFC 9460 §8, the other half: a `mandatory` list naming a key the record
-/// does not carry is malformed, and malformed means the whole RRSet goes.
+/// does not carry is malformed, and malformed means the whole `RRSet` goes.
 #[tokio::test]
 async fn a_mandatory_key_the_record_does_not_carry_is_an_error() {
     let server = Server::answering(noerror(
@@ -238,7 +238,7 @@ async fn nxdomain_for_an_https_query_is_also_an_empty_stream() {
     assert!(endpoints(&server, "nope.example").await.is_empty());
 }
 
-/// A DoH failure on an SVCB lookup is an error, never an empty stream —
+/// A `DoH` failure on an SVCB lookup is an error, never an empty stream —
 /// and specifically never routed to a fallback resolver, because a
 /// fallback that reports `supports(HTTPS) == false` would answer "there
 /// are none" to a question it never asked.

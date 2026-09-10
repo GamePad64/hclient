@@ -57,7 +57,7 @@ fn an_entry_lives_exactly_as_long_as_its_ma_says() {
             !c.advertises_h3(&origin(), secs(60)).await,
             "the window is half-open: an entry whose ma has exactly run out is stale"
         );
-    })
+    });
 }
 
 /// The lifetime is measured from when the advertisement was heard, not
@@ -71,7 +71,7 @@ fn the_lifetime_starts_when_the_advertisement_was_heard() {
 
         assert!(c.advertises_h3(&origin(), secs(1_059)).await);
         assert!(!c.advertises_h3(&origin(), secs(1_060)).await);
-    })
+    });
 }
 
 /// RFC 7838 §3.1's default, exercised at the timescale it actually names:
@@ -85,7 +85,7 @@ fn a_field_with_no_ma_lives_for_the_rfcs_twenty_four_hours() {
 
         assert!(c.advertises_h3(&origin(), secs(86_399)).await);
         assert!(!c.advertises_h3(&origin(), secs(86_400)).await);
-    })
+    });
 }
 
 /// `ma=0` is a removal, and the half-open window is what makes it one
@@ -103,7 +103,7 @@ fn ma_zero_is_a_removal() {
             !c.advertises_h3(&origin(), secs(10)).await,
             "an origin that says `ma=0` has withdrawn the alternative"
         );
-    })
+    });
 }
 
 /// RFC 9110 §5.6.7's saturation, carried all the way through: a `ma`
@@ -127,7 +127,7 @@ fn an_enormous_ma_is_capped_rather_than_overflowing() {
             !c.advertises_h3(&origin(), secs(400 * 86_400 + 1)).await,
             "an unbounded ma must not outlive the cap"
         );
-    })
+    });
 }
 
 /// A stale entry is forgotten by the lookup that found it stale, rather
@@ -152,7 +152,7 @@ fn a_stale_entry_is_forgotten_and_does_not_come_back() {
             !c.advertises_h3(&origin(), secs(10)).await,
             "it was removed, so an earlier question does not revive it"
         );
-    })
+    });
 }
 
 // --- what is actionable -------------------------------------------------
@@ -172,7 +172,7 @@ fn only_h3_at_this_origin_is_remembered() {
             note(&c, field, secs(0)).await;
             assert!(!c.advertises_h3(&origin(), secs(0)).await, "{field}");
         }
-    })
+    });
 }
 
 /// An advertisement naming this origin's host explicitly is the same as
@@ -189,7 +189,7 @@ fn naming_this_origin_is_the_same_as_omitting_it() {
             note(&c, field, secs(0)).await;
             assert!(c.advertises_h3(&origin(), secs(0)).await, "{field}");
         }
-    })
+    });
 }
 
 /// The origin key is a host *and* a port, and the host is not
@@ -212,7 +212,7 @@ fn the_key_is_the_whole_origin() {
             !c.advertises_h3(&Origin::new("other.example", 443), secs(0))
                 .await
         );
-    })
+    });
 }
 
 /// The first `h3` at this origin wins. RFC 7838 gives list order no
@@ -234,7 +234,7 @@ fn the_first_actionable_h3_in_the_list_is_the_one_taken() {
             !c.advertises_h3(&origin(), secs(60)).await,
             "the second member is the first actionable one, and its ma is 60"
         );
-    })
+    });
 }
 
 // --- what a present field replaces --------------------------------------
@@ -252,7 +252,7 @@ fn a_field_that_no_longer_offers_h3_removes_what_was_stored() {
 
         note(&c, r#"h2=":443""#, secs(1)).await;
         assert!(!c.advertises_h3(&origin(), secs(1)).await);
-    })
+    });
 }
 
 /// …including a field nobody could parse. The direction is deliberate
@@ -267,7 +267,7 @@ fn a_field_that_could_not_be_parsed_at_all_also_removes() {
 
         note(&c, "!!! not a field value !!!", secs(1)).await;
         assert!(!c.advertises_h3(&origin(), secs(1)).await);
-    })
+    });
 }
 
 /// `clear` removes, which is the same outcome by a different instruction —
@@ -281,7 +281,7 @@ fn clear_removes() {
 
         note(&c, "clear", secs(1)).await;
         assert!(!c.advertises_h3(&origin(), secs(1)).await);
-    })
+    });
 }
 
 /// A later field replaces an earlier one's lifetime rather than extending
@@ -297,7 +297,7 @@ fn a_later_field_replaces_the_earlier_ones_lifetime() {
         note(&c, r#"h3=":443"; ma=10"#, secs(0)).await;
         note(&c, r#"h3=":443"; ma=86400"#, secs(0)).await;
         assert!(c.advertises_h3(&origin(), secs(1000)).await, "lengthened");
-    })
+    });
 }
 
 /// One origin's field says nothing about another's.
@@ -315,7 +315,7 @@ fn a_field_replaces_only_its_own_origins_entry() {
             c.advertises_h3(&other, secs(1)).await,
             "a neighbour's entry stands"
         );
-    })
+    });
 }
 
 // --- scope: the network change this crate cannot see --------------------
@@ -348,7 +348,7 @@ fn a_network_change_forgets_what_did_not_ask_to_persist() {
             c.advertises_h3(&persistent, secs(1)).await,
             "`persist=1` is the origin's hint that this one is not network-specific"
         );
-    })
+    });
 }
 
 /// A `persist` the RFC makes us ignore does not keep an entry alive across
@@ -367,7 +367,7 @@ fn a_persist_value_the_rfc_ignores_does_not_survive_a_network_change() {
             c.network_changed().await;
             assert!(!c.advertises_h3(&origin(), secs(0)).await, "{field}");
         }
-    })
+    });
 }
 
 /// A network change is not an expiry: a persistent entry still runs out of
@@ -381,7 +381,7 @@ fn persisting_across_a_network_change_is_not_living_for_ever() {
 
         assert!(c.advertises_h3(&origin(), secs(59)).await);
         assert!(!c.advertises_h3(&origin(), secs(60)).await);
-    })
+    });
 }
 
 /// Cheap to clone, and every clone is the same cache — a memory that
@@ -396,7 +396,7 @@ fn a_clone_is_the_same_cache() {
 
         d.network_changed().await;
         assert!(!c.advertises_h3(&origin(), secs(0)).await);
-    })
+    });
 }
 
 // ── the seam ────────────────────────────────────────────────────────────
@@ -486,7 +486,7 @@ fn the_rules_run_over_a_store_of_the_callers_own() {
             c.advertises_h3(&origin(), secs(90)).await,
             "persist=1 survives, and §2.2 is still this side of the seam"
         );
-    })
+    });
 }
 
 /// **And the store reaches the transport**, which is the half a test of

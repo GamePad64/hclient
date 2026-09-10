@@ -1,11 +1,11 @@
-//! The Autobahn TestSuite client driver: an echo client, and nothing else.
+//! The Autobahn `TestSuite` client driver: an echo client, and nothing else.
 //!
 //! # Why this exists
 //!
 //! Every fixture in `tests/websocket.rs` was written beside the
 //! implementation it observes. That is the arrangement in which a fixture
 //! can agree with a bug, and no amount of care inside one repository
-//! removes it. The Autobahn TestSuite is the external oracle: ~520 client
+//! removes it. The Autobahn `TestSuite` is the external oracle: ~520 client
 //! cases written by people who have never seen this code, driven by
 //! `wstest --mode fuzzingserver`, which serves
 //! `ws://host:9001/runCase?case=N&agent=…` and scores what comes back.

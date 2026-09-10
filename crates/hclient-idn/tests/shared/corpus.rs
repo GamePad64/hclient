@@ -37,7 +37,7 @@ struct Case {
 }
 
 /// A 64-byte label — one over the DNS limit, which UTS 46 only enforces
-/// under _VerifyDnsLength_, which is off here.
+/// under _`VerifyDnsLength`_, which is off here.
 const LABEL_64: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.de";
 
 /// A 255-byte name — over RFC 1035's 253 — made of four legal 63-byte

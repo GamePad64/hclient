@@ -76,10 +76,19 @@ impl FakeDns {
     }
 
     /// The names `lookup` was asked for, in order.
+    ///
+    /// # Panics
+    ///
+    /// If the mutex is poisoned — a prior panic on the recording side,
+    /// which would itself be the thing to chase.
     pub fn svcb_names(&self) -> Vec<String> {
         self.inner.svcb_names.lock().expect("fake dns log").clone()
     }
 
+    /// # Panics
+    ///
+    /// If the mutex is poisoned — a prior panic on the recording side,
+    /// which would itself be the thing to chase.
     pub fn svcb_lookups(&self) -> usize {
         self.inner.svcb_names.lock().expect("fake dns log").len()
     }
@@ -138,24 +147,29 @@ impl Resolve for FakeDns {
     }
 }
 
-/// A ServiceMode record: a real priority (RFC 9460 §2.4.2 — anything but
+/// A `ServiceMode` record: a real priority (RFC 9460 §2.4.2 — anything but
 /// zero) and an ALPN list.
 ///
 /// `target` is set to the origin's own name, which is also the only value
 /// this transport could act on if it read the field at all — it does not:
 /// the record is consulted for one bit, whether `h3` is in `alpn`, and
 /// addresses stay each member's own business.
+///
+/// # Panics
+///
+/// If `priority` is `0` — that is `AliasMode`, and the caller wants
+/// [`alias_record`] instead.
 pub fn service_record(priority: u16, alpn: &[&[u8]]) -> SvcbEndpoint {
     assert_ne!(priority, 0, "priority 0 is AliasMode; use `alias_record`");
     SvcbEndpoint::new(priority, "both-stacks.test".to_string())
         .alpn(alpn.iter().map(|a| a.to_vec()).collect())
 }
 
-/// An AliasMode record, as `hclient-dns-system`'s parser emits one:
+/// An `AliasMode` record, as `hclient-dns-system`'s parser emits one:
 /// `priority: 0` and every other field empty, because RFC 9460 §2.4.1 says
-/// a recipient MUST ignore an AliasMode record's SvcParams.
+/// a recipient MUST ignore an `AliasMode` record's `SvcParams`.
 ///
-/// Zero is also numerically *below* every ServiceMode priority, which is
+/// Zero is also numerically *below* every `ServiceMode` priority, which is
 /// why a selection that ranked without skipping these would choose the one
 /// record whose ALPN list is empty, every time.
 pub fn alias_record() -> SvcbEndpoint {

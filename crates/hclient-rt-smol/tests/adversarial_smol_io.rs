@@ -107,7 +107,9 @@ fn pending_before_data_is_not_confused_with_eof_or_data() {
         let mut rb = hyper::rt::ReadBuf::new(&mut store);
         match Pin::new(&mut client).poll_read(&mut cx, rb.unfilled()) {
             Poll::Pending => {}
-            other => panic!("expected Pending before any data was written, got {other:?}"),
+            other @ Poll::Ready(_) => {
+                panic!("expected Pending before any data was written, got {other:?}")
+            }
         }
         assert_eq!(rb.filled().len(), 0, "must not fill anything while Pending");
 
@@ -119,9 +121,10 @@ fn pending_before_data_is_not_confused_with_eof_or_data() {
         }))
         .await
         .unwrap();
-        if rb2.filled().is_empty() {
-            panic!("got EOF-shaped Ready before any data was ever read");
-        }
+        assert!(
+            !rb2.filled().is_empty(),
+            "got EOF-shaped Ready before any data was ever read"
+        );
         assert_eq!(rb2.filled(), b"after pending");
     });
 }
@@ -233,9 +236,10 @@ fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_eof() {
                     return;
                 }
             }
-            if out.len() > 7 {
-                panic!("read more than the 7 bytes written before the reset: {out:?}");
-            }
+            assert!(
+                out.len() <= 7,
+                "read more than the 7 bytes written before the reset: {out:?}"
+            );
         }
     });
 }
@@ -286,6 +290,9 @@ fn cursor_smaller_than_scratch_buffer() {
 fn cursor_exactly_equal_to_scratch_buffer() {
     futures_executor::block_on(async {
         let (mut client, mut server) = connected_pair().await;
+        // `i % 256` is always in 0..256, which fits `u8` — bounded by the
+        // modulus, not by `SCRATCH`.
+        #[allow(clippy::cast_possible_truncation)]
         let data: Vec<u8> = (0..SCRATCH).map(|i| (i % 256) as u8).collect();
         let writer = {
             let data = data.clone();
@@ -301,7 +308,10 @@ fn cursor_exactly_equal_to_scratch_buffer() {
 fn cursor_one_byte_larger_than_scratch_buffer() {
     futures_executor::block_on(async {
         let (mut client, mut server) = connected_pair().await;
-        let data: Vec<u8> = (0..SCRATCH + 1).map(|i| (i % 251) as u8).collect();
+        // `i % 251` is always in 0..251, which fits `u8` — bounded by the
+        // modulus, not by `SCRATCH`.
+        #[allow(clippy::cast_possible_truncation)]
+        let data: Vec<u8> = (0..=SCRATCH).map(|i| (i % 251) as u8).collect();
         let writer = {
             let data = data.clone();
             std::thread::spawn(move || server.write_all(&data).unwrap())

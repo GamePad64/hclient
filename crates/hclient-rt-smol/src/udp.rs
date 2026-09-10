@@ -231,8 +231,10 @@ impl UdpDatagrams for SmolUdpSocket {
                 }
                 // The readiness `poll_readable` reported was consumed by
                 // someone else, or the datagram was dropped between the
-                // event and the call; go round and register again.
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                // event and the call; go round and register again —
+                // falling through to the loop's next iteration, same as
+                // an explicit `continue` here would.
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Poll::Ready(Err(e)),
             }
         }

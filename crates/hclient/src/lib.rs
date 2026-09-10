@@ -365,6 +365,11 @@ pub mod proxy {
 /// `fetch`, whose constructor cannot fail, so there is no `Result` and no
 /// `?` — the same single difference `Client::new` has, for the same
 /// reason and in the same place. See [`DefaultTransport`].
+///
+/// # Errors
+///
+/// [`Error`] when the platform's TLS trust store cannot be read —
+/// `Rustls::with_platform_verifier`'s only failure.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 pub fn default_transport() -> Result<DefaultTransport, Error> {
     Client::default_native_transport()

@@ -5,8 +5,8 @@
 //! converts as an undocumented side effect of parsing; the WHATWG URL
 //! Standard *defines* host parsing as UTS 46 with named parameters, so
 //! what an engine gets right here it gets right on purpose — the mapping,
-//! the punycode encoding, non-transitional processing, CheckBidi and
-//! ContextJ, which is the half that needs the tables.
+//! the punycode encoding, non-transitional processing, `CheckBidi` and
+//! `ContextJ`, which is the half that needs the tables.
 //!
 //! # What it does not do is engine-dependent, and that was measured once
 //!
@@ -63,7 +63,7 @@
 //! # It supplies one direction, and one direction is all there is
 //!
 //! `URL.hostname` hands back the A-label whatever went in, and no JS API
-//! anywhere does ToUnicode — not `Intl`, not `URL`, not `URLPattern`.
+//! anywhere does `ToUnicode` — not `Intl`, not `URL`, not `URLPattern`.
 //! That was this backend's one narrowness while the crate had a reverse
 //! direction, and it is nobody's now: the crate converts U to A and
 //! stops, because that is the only direction an HTTP client needs.
@@ -110,6 +110,10 @@ pub(crate) type Handle = Web;
 /// Always `Some`: `URL` is in every browsing context this target runs in,
 /// windows and workers alike, and a build for it that had no `URL` would
 /// have nothing to run in.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the signature is shared across all four backend modules the cfg_select! in lib.rs picks between — Windows' and Android's find() can genuinely fail to load"
+)]
 pub(crate) fn find() -> Option<Web> {
     Some(Web)
 }

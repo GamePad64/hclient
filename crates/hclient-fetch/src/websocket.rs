@@ -266,6 +266,9 @@ fn construct(url: &str, protocols: &[String]) -> Result<web_sys::WebSocket, Erro
 /// function would see a `Blob` and report [`NotAMessage`] — which is why
 /// `binary_type_is_set_to_arraybuffer_before_anything_can_arrive` asserts
 /// the setting rather than trusting it.
+// By value for `js_err`'s reason: the one caller passes `e.data()`
+// straight through, and a borrow would only move the temporary up a line.
+#[allow(clippy::needless_pass_by_value)]
 fn decode(data: JsValue) -> Result<Message, Error> {
     if let Some(text) = data.as_string() {
         return Ok(Message::Text(text));
@@ -447,12 +450,11 @@ impl Future for Opening<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut s = self.0.lock().expect("websocket state poisoned");
-        match s.open.take() {
-            Some(verdict) => Poll::Ready(verdict),
-            None => {
-                s.waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
+        if let Some(verdict) = s.open.take() {
+            Poll::Ready(verdict)
+        } else {
+            s.waker = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 }

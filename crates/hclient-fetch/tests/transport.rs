@@ -502,6 +502,10 @@ fn get(url: &str) -> http::Request<hclient_core::body::RequestBody> {
 /// Panics if the single poll completed the future: that would mean the
 /// exchange was over before the caller could act on it, and everything
 /// downstream would be measuring nothing.
+// The return type is `Transport::execute`'s future spelled out, which is
+// what makes the helper worth having — a `type` alias here would move the
+// same words one line up and hide what the test is holding.
+#[allow(clippy::type_complexity)]
 fn issue_and_poll_once(
     t: &Fetch,
 ) -> Pin<

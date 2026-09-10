@@ -250,7 +250,7 @@ pub(crate) fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> T
 /// a use for it, and the facade's export list is already over-wide.
 pub(crate) fn effective_redirect(
     req: &http::Extensions,
-    client: &Option<SharedRedirectPolicy>,
+    client: Option<&SharedRedirectPolicy>,
 ) -> Option<SharedRedirectPolicy> {
     // `.cloned()` where this was `.copied()`: the per-request override is
     // an `Arc` now, so the clone is a refcount bump rather than a `u8`
@@ -258,7 +258,7 @@ pub(crate) fn effective_redirect(
     // hold a closure and a chain.
     req.get::<SharedRedirectPolicy>()
         .cloned()
-        .or_else(|| client.clone())
+        .or_else(|| client.cloned())
 }
 
 /// Called from `ClientBuilder::build()`. Not a single silent no-op.
@@ -357,7 +357,7 @@ pub fn check_supported(
     } = cfg;
     check_default_headers_supported(default_headers, caps, backend)?;
     check_timeouts_supported(timeouts, caps, backend)?;
-    check_redirect_supported(redirect, caps, backend)?;
+    check_redirect_supported(redirect.as_ref(), caps, backend)?;
     check_cookies_supported(*cookies, caps, backend)?;
     check_cache_supported(*cache, caps, backend)
 }
@@ -487,7 +487,7 @@ pub(crate) fn check_cookies_supported(
 /// `Config`, and the `hclient` facade already exports more plumbing than
 /// it should.
 pub(crate) fn check_redirect_supported(
-    redirect: &Option<SharedRedirectPolicy>,
+    redirect: Option<&SharedRedirectPolicy>,
     caps: &Capabilities,
     backend: &'static str,
 ) -> Result<(), UnsupportedCapability> {
@@ -626,6 +626,8 @@ mod tests {
     use hclient_core::caps::{Capabilities, TimeoutSupport};
     use std::time::Duration;
 
+    // Always `Some`: every call site assigns into a `Timeouts` field.
+    #[allow(clippy::unnecessary_wraps)]
     fn secs(n: u64) -> Option<Duration> {
         Some(Duration::from_secs(n))
     }
@@ -932,17 +934,17 @@ mod tests {
         ext.insert(on_request);
 
         assert_eq!(
-            limit_in_force(&effective_redirect(&ext, &client).unwrap()),
+            limit_in_force(&effective_redirect(&ext, client.as_ref()).unwrap()),
             7,
             "the request's policy wins"
         );
         assert_eq!(
-            limit_in_force(&effective_redirect(&http::Extensions::new(), &client).unwrap()),
+            limit_in_force(&effective_redirect(&http::Extensions::new(), client.as_ref()).unwrap()),
             3,
             "with nothing on the request, the client's stands"
         );
         assert!(
-            effective_redirect(&http::Extensions::new(), &None).is_none(),
+            effective_redirect(&http::Extensions::new(), None).is_none(),
             "and with neither, nobody asked"
         );
     }
@@ -953,9 +955,9 @@ mod tests {
         ext.insert::<SharedRedirectPolicy>(std::sync::Arc::new(
             hclient_proto::redirect::Limit::new(0),
         ));
-        let merged = effective_redirect(&ext, &None);
+        let merged = effective_redirect(&ext, None);
         let err = check_redirect_supported(
-            &merged,
+            merged.as_ref(),
             &caps_with_redirects(RedirectSupport::Internal),
             "fetch",
         )

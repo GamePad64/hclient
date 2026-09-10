@@ -343,7 +343,7 @@ mod tests {
         let got: Vec<_> =
             futures_executor::block_on(r.lookup("invalid.invalid.", rtype::A).collect());
         assert!(
-            got.iter().any(|x| x.is_err()),
+            got.iter().any(std::result::Result::is_err),
             "an empty stream is indistinguishable from \"policy filtered everything out\""
         );
         let err = got.into_iter().find_map(Result::err).unwrap();

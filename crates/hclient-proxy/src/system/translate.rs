@@ -32,6 +32,17 @@ use crate::{HttpConnect, Proxy, ProxyScheme};
 /// Empty is an ordinary answer: most machines have no proxy, and a
 /// transport that installs an empty list proxies nothing, which is what
 /// it should do.
+///
+/// # Errors
+///
+/// Refuses rather than approximates: [`SystemProxyRefused::PacScript`]
+/// when the machine's proxy is a PAC script rather than a static list;
+/// [`SystemProxyRefused::UnrepresentableBypass`] when a bypass pattern is
+/// not one this crate's matcher can state exactly;
+/// [`SystemProxyRefused::MixedProtocols`] when an entry names a non-HTTP
+/// proxy protocol; [`SystemProxyRefused::UnusableCredential`] when an
+/// entry's credentials cannot become a `Basic` header (a `:` in the
+/// username).
 pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, SystemProxyRefused> {
     // Asked first, because it is the one that makes every other answer
     // beside the point: where a script decides, the static entries are
@@ -69,7 +80,7 @@ pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, Syst
             })?;
         }
         let mut proxy = Proxy::new(protocol, entry.host(), entry.port())
-            .bypass(sys.bypass().iter().map(|p| p.to_string()));
+            .bypass(sys.bypass().iter().map(ToString::to_string));
         if sys.bypass_local() {
             proxy = proxy.bypass_local();
         }
@@ -107,7 +118,7 @@ pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, Syst
 ///
 /// - **A PAC script and static entries beside it.** The static ones are
 ///   installed, which is not a fallback of ours but the machine's own:
-///   WinINET keeps `ProxyServer` as exactly that when a script is
+///   `WinINET` keeps `ProxyServer` as exactly that when a script is
 ///   configured. Better than direct, and better than what a client that
 ///   cannot see the script at all would do.
 /// - **A PAC script alone.** Direct — which is what curl and reqwest do
@@ -165,7 +176,7 @@ pub fn http_proxies_lossy(
             }
         }
         let mut proxy = Proxy::new(protocol, entry.host(), entry.port())
-            .bypass(sys.bypass().iter().map(|p| p.to_string()));
+            .bypass(sys.bypass().iter().map(ToString::to_string));
         if sys.bypass_local() {
             proxy = proxy.bypass_local();
         }

@@ -34,7 +34,7 @@ impl Entry {
     /// used to answer. Both neighbouring seams hand back a `Vec` of one
     /// type — [`CookieStore::get`](crate::cookie::CookieStore) a
     /// `Vec<Cookie>`, [`CacheStore::get`](crate::cache::CacheStore) a
-    /// `Vec<StoredResponse>`(crate::cache::StoredResponse) — and this was
+    /// `Vec<StoredResponse>`(`crate::cache::StoredResponse`) — and this was
     /// the only one asking a caller to remember which half was which.
     ///
     /// It is also not redundant with the key it is stored under: §8.3's

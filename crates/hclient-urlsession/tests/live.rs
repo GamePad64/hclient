@@ -184,10 +184,10 @@ fn the_capabilities_match_the_configuration() {
 /// The control is the `POST` above, which sends its bytes.
 #[test]
 fn a_streaming_body_is_refused_rather_than_dropped() {
+    use http_body_util::BodyExt as _;
     let (addr, seen) = server("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     let t = UrlSession::new();
     let url = format!("http://127.0.0.1:{}/x", addr.port());
-    use http_body_util::BodyExt as _;
     let body = RequestBody::Streaming(Box::new(
         http_body_util::Full::new(bytes::Bytes::from_static(b"never sent")).map_err(|e| match e {}),
     ));

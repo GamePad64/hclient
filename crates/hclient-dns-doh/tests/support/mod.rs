@@ -1,4 +1,4 @@
-//! A DoH server on loopback, and the DNS bytes it answers with.
+//! A `DoH` server on loopback, and the DNS bytes it answers with.
 //!
 //! # Everything here is written by hand, on purpose
 //!
@@ -54,7 +54,7 @@ pub enum Reply {
     /// `200`, these bytes, and that content-type.
     Typed(&'static str, Vec<u8>),
     /// Accept the connection, read the request, and never answer. For the
-    /// tests that need the DoH query to fail.
+    /// tests that need the `DoH` query to fail.
     Silence,
 }
 
@@ -302,7 +302,7 @@ impl Rr {
 
 /// A complete DNS response message: header, one echoed question, answers.
 ///
-/// The ID is echoed as zero because that is what RFC 8484 §4.1 asks a DoH
+/// The ID is echoed as zero because that is what RFC 8484 §4.1 asks a `DoH`
 /// client to send and therefore what a server echoes.
 pub fn message(qname: &str, qtype: u16, flags: u16, answers: &[Rr]) -> Vec<u8> {
     message_in_class(qname, qtype, CLASS_IN, flags, answers)

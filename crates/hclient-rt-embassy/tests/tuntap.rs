@@ -230,12 +230,11 @@ fn scenario(name: &str) {
 /// namespace.
 fn outer(name: &str) {
     if !namespaces_available() {
-        if std::env::var_os(REQUIRE_MARKER).is_some() {
-            panic!(
-                "`unshare -Ur --net` does not work here even though {REQUIRE_MARKER} is set: the \
-                 environment is broken, not deliberately limited."
-            );
-        }
+        assert!(
+            std::env::var_os(REQUIRE_MARKER).is_none(),
+            "`unshare -Ur --net` does not work here even though {REQUIRE_MARKER} is set: the \
+             environment is broken, not deliberately limited."
+        );
         eprintln!(
             "NOTICE: unprivileged user+network namespaces are unavailable — skipping the live \
              embassy-net run `{name}`. Nothing about the embassy backend was checked by this \
@@ -288,8 +287,7 @@ fn namespaces_available() -> bool {
     std::process::Command::new("unshare")
         .args(["-Ur", "--net", "--", "true"])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// The inner half: build the link, build the stack, run the scenario under

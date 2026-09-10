@@ -97,8 +97,7 @@ impl RedirectVerdict {
     #[must_use]
     pub const fn and(self, other: Self) -> Self {
         match (self, other) {
-            (Self::Refuse(r), _) => Self::Refuse(r),
-            (_, Self::Refuse(r)) => Self::Refuse(r),
+            (Self::Refuse(r), _) | (_, Self::Refuse(r)) => Self::Refuse(r),
             (Self::Stop, _) | (_, Self::Stop) => Self::Stop,
             (Self::Follow(a), Self::Follow(b)) => Self::Follow(a.and(b)),
         }
@@ -564,12 +563,12 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn go(status: u16, from: &str, to: &str, m: Method) -> RedirectAction {
+    fn go(status: u16, from: &str, to: &str, m: &Method) -> RedirectAction {
         d6(
             &p(),
             0,
             &u(from),
-            &m,
+            m,
             StatusCode::from_u16(status).unwrap(),
             Some(to.as_bytes()),
         )
@@ -580,7 +579,7 @@ mod tests {
         for s in [300u16, 304, 305, 306] {
             assert!(
                 matches!(
-                    go(s, "https://a/", "https://b/", Method::GET),
+                    go(s, "https://a/", "https://b/", &Method::GET),
                     RedirectAction::Stop
                 ),
                 "status {s} must not be followed"
@@ -593,7 +592,7 @@ mod tests {
         for s in [301u16, 302, 303, 307, 308] {
             assert!(
                 matches!(
-                    go(s, "https://a/", "https://a/x", Method::GET),
+                    go(s, "https://a/", "https://a/x", &Method::GET),
                     RedirectAction::Follow(_)
                 ),
                 "status {s}"
@@ -603,7 +602,7 @@ mod tests {
 
     #[test]
     fn strips_sensitive_on_host_change() {
-        let RedirectAction::Follow(f) = go(302, "https://a/", "https://b/", Method::GET) else {
+        let RedirectAction::Follow(f) = go(302, "https://a/", "https://b/", &Method::GET) else {
             panic!()
         };
         assert!(f.strip_sensitive);
@@ -611,7 +610,7 @@ mod tests {
 
     #[test]
     fn strips_sensitive_on_scheme_change_same_host() {
-        let RedirectAction::Follow(f) = go(302, "https://a/", "http://a/", Method::GET) else {
+        let RedirectAction::Follow(f) = go(302, "https://a/", "http://a/", &Method::GET) else {
             panic!()
         };
         assert!(f.strip_sensitive, "downgrade https->http must strip");
@@ -619,7 +618,7 @@ mod tests {
 
     #[test]
     fn keeps_sensitive_on_same_origin() {
-        let RedirectAction::Follow(f) = go(302, "https://a/one", "https://a/two", Method::GET)
+        let RedirectAction::Follow(f) = go(302, "https://a/one", "https://a/two", &Method::GET)
         else {
             panic!()
         };
@@ -629,7 +628,8 @@ mod tests {
     #[test]
     fn post_downgrades_to_get_on_301_302_303() {
         for s in [301u16, 302, 303] {
-            let RedirectAction::Follow(f) = go(s, "https://a/", "https://a/x", Method::POST) else {
+            let RedirectAction::Follow(f) = go(s, "https://a/", "https://a/x", &Method::POST)
+            else {
                 panic!("status {s}")
             };
             assert_eq!(f.method, Method::GET, "status {s}");
@@ -640,7 +640,8 @@ mod tests {
     #[test]
     fn post_is_preserved_on_307_308() {
         for s in [307u16, 308] {
-            let RedirectAction::Follow(f) = go(s, "https://a/", "https://a/x", Method::POST) else {
+            let RedirectAction::Follow(f) = go(s, "https://a/", "https://a/x", &Method::POST)
+            else {
                 panic!()
             };
             assert_eq!(f.method, Method::POST);
@@ -650,7 +651,7 @@ mod tests {
 
     #[test]
     fn head_stays_head_on_303() {
-        let RedirectAction::Follow(f) = go(303, "https://a/", "https://a/x", Method::HEAD) else {
+        let RedirectAction::Follow(f) = go(303, "https://a/", "https://a/x", &Method::HEAD) else {
             panic!()
         };
         assert_eq!(f.method, Method::HEAD);
@@ -658,7 +659,7 @@ mod tests {
 
     #[test]
     fn resolves_relative_location() {
-        let RedirectAction::Follow(f) = go(302, "https://a/one/two", "../three", Method::GET)
+        let RedirectAction::Follow(f) = go(302, "https://a/one/two", "../three", &Method::GET)
         else {
             panic!()
         };
@@ -819,7 +820,8 @@ mod tests {
 
     #[test]
     fn keeps_sensitive_when_current_has_explicit_default_port() {
-        let RedirectAction::Follow(f) = go(302, "https://a:443/", "https://a/", Method::GET) else {
+        let RedirectAction::Follow(f) = go(302, "https://a:443/", "https://a/", &Method::GET)
+        else {
             panic!()
         };
         assert!(
@@ -830,7 +832,8 @@ mod tests {
 
     #[test]
     fn keeps_sensitive_when_location_has_explicit_default_port() {
-        let RedirectAction::Follow(f) = go(302, "https://a/", "https://a:443/", Method::GET) else {
+        let RedirectAction::Follow(f) = go(302, "https://a/", "https://a:443/", &Method::GET)
+        else {
             panic!()
         };
         assert!(
@@ -841,7 +844,7 @@ mod tests {
 
     #[test]
     fn keeps_sensitive_when_current_has_explicit_default_port_http() {
-        let RedirectAction::Follow(f) = go(302, "http://a:80/", "http://a/", Method::GET) else {
+        let RedirectAction::Follow(f) = go(302, "http://a:80/", "http://a/", &Method::GET) else {
             panic!()
         };
         assert!(
@@ -852,7 +855,7 @@ mod tests {
 
     #[test]
     fn a_genuinely_different_port_is_still_cross_origin() {
-        let RedirectAction::Follow(f) = go(302, "https://a:8443/", "https://a/", Method::GET)
+        let RedirectAction::Follow(f) = go(302, "https://a:8443/", "https://a/", &Method::GET)
         else {
             panic!()
         };
@@ -880,7 +883,7 @@ mod tests {
             ("https://a.test/", "https://A.TEST/x"),
             ("https://A.test/", "y"),
         ] {
-            let RedirectAction::Follow(f) = go(302, from, to, Method::GET) else {
+            let RedirectAction::Follow(f) = go(302, from, to, &Method::GET) else {
                 panic!("{from} -> {to} must be followed at all")
             };
             assert!(
@@ -892,7 +895,8 @@ mod tests {
 
     #[test]
     fn a_genuinely_different_host_is_still_cross_origin() {
-        let RedirectAction::Follow(f) = go(302, "https://a.test/", "https://b.test/x", Method::GET)
+        let RedirectAction::Follow(f) =
+            go(302, "https://a.test/", "https://b.test/x", &Method::GET)
         else {
             panic!()
         };
@@ -923,7 +927,7 @@ mod tests {
 
     #[test]
     fn strip_sensitive_removes_only_the_credential_headers() {
-        let RedirectAction::Follow(f) = go(302, "https://a/", "https://b/", Method::GET) else {
+        let RedirectAction::Follow(f) = go(302, "https://a/", "https://b/", &Method::GET) else {
             panic!()
         };
         assert!(f.strip_sensitive);
@@ -962,7 +966,7 @@ mod tests {
 
     #[test]
     fn raw_utf8_path_is_followed() {
-        let RedirectAction::Follow(f) = go(302, "https://a/", "/caf\u{e9}", Method::GET) else {
+        let RedirectAction::Follow(f) = go(302, "https://a/", "/caf\u{e9}", &Method::GET) else {
             panic!("raw UTF-8 path must not be rejected as InvalidLocation")
         };
         assert_eq!(f.uri, u("https://a/caf%C3%A9"));
@@ -983,7 +987,7 @@ mod tests {
             302,
             "https://a/",
             "https://m\u{fc}nchen.example/",
-            Method::GET,
+            &Method::GET,
         ) else {
             panic!("raw UTF-8 IDN host must not be rejected as InvalidLocation")
         };
@@ -998,7 +1002,7 @@ mod tests {
             302,
             "https://a/",
             "https://m\u{fc}nchen.example/",
-            Method::GET,
+            &Method::GET,
         );
         assert!(
             matches!(r, RedirectAction::InvalidLocation),
@@ -1011,7 +1015,7 @@ mod tests {
             302,
             "https://a/",
             "https://xn--mnchen-3ya.example/",
-            Method::GET,
+            &Method::GET,
         ) else {
             panic!("an A-label needs no Unicode tables and must still be followed")
         };

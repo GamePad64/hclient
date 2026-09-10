@@ -184,6 +184,12 @@ pub(crate) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
         // truncate into a larger claim. `class` and `rtype` are values
         // this crate bounds to `u16` before the cast. `res_query` writes
         // only within `anslen` and retains no pointer past its return.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "buf.len() is at most MAX_MESSAGE (65535), which fits c_int on every supported target — see the SAFETY comment above"
+        )]
+        let anslen = buf.len() as c_int;
         let written = unsafe {
             // unsafe-code-exception: amendment-C8
             res_query(
@@ -191,7 +197,7 @@ pub(crate) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
                 c_int::from(CLASS_IN),
                 c_int::from(rtype),
                 buf.as_mut_ptr(),
-                buf.len() as c_int,
+                anslen,
             )
         };
 
@@ -211,6 +217,10 @@ pub(crate) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
         // for the buffer is `classify_written`'s, one module up, where the
         // bound is unit-tested — see its doc comment for why a return
         // equal to the buffer's length is not a length.
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "written < 0 already returned above, so written is non-negative here"
+        )]
         match classify_written(written as usize, buf.len()) {
             Written::Complete(n) => {
                 buf.truncate(n);

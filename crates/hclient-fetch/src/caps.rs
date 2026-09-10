@@ -170,7 +170,7 @@ pub(crate) fn supports_duplex() -> bool {
 /// cheaper [`supports_duplex`].
 ///
 /// **Nothing observable happens.** No request is sent, no page-observable
-/// effect, no entry in DevTools' network panel: a `Request` is a value, and
+/// effect, no entry in `DevTools`' network panel: a `Request` is a value, and
 /// only `fetch()` sends one. The stream handed in is a bare, empty
 /// `new ReadableStream()` that is never enqueued to, never locked and never
 /// read — in a browser that supports streams it is merely attached to a
@@ -267,7 +267,7 @@ pub(crate) fn supports_streaming_request_body() -> bool {
 /// `Fetch::caps` — not recomputed per request. The one read that is not a
 /// prototype inspection is [`supports_streaming_request_body`], which
 /// constructs a single throwaway `Request`; that is still nothing a page,
-/// DevTools' network panel or a server can see, because constructing a
+/// `DevTools`' network panel or a server can see, because constructing a
 /// `Request` sends nothing (see that function's own doc comment). The whole
 /// crate runs on wasm32 without `target_feature = "atomics"` (the same
 /// precondition `promise.rs`'s `SingleThreaded` documents), so there is

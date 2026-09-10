@@ -1,4 +1,4 @@
-//! WebSocket over WinHTTP's own framing.
+//! WebSocket over `WinHTTP`'s own framing.
 //!
 //! # Why this is in this crate and not one of its own
 //!
@@ -14,26 +14,26 @@
 //! This crate's own *deliberately not done* list said the opposite, and
 //! said it by citing the rule rather than by applying it.
 //!
-//! # What WinHTTP does and what is left here
+//! # What `WinHTTP` does and what is left here
 //!
-//! Almost all of it is WinHTTP's. `WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET`
+//! Almost all of it is `WinHTTP`'s. `WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET`
 //! makes the handshake — the `Upgrade` and `Connection` headers, the
 //! nonce, the version, and checking the `Sec-WebSocket-Accept` that comes
 //! back. Masking, the frame headers, and the ping/pong exchange are all
 //! inside the DLL. **That is why the message-oriented seam fits a second
 //! backend it was not designed for**: `WebSocketConnect` was shaped around
 //! the browser, which also hands over messages rather than bytes, and
-//! WinHTTP turns out to be the same shape. It is the strongest evidence
+//! `WinHTTP` turns out to be the same shape. It is the strongest evidence
 //! the seam has had that its shape is not the browser's accident.
 //!
 //! Three things are left to this file:
 //!
-//! - **Fragments become messages.** WinHTTP reports a message longer than
+//! - **Fragments become messages.** `WinHTTP` reports a message longer than
 //!   the read buffer as `*_FRAGMENT` parts followed by a `*_MESSAGE`, and
 //!   the seam's `Message` is whole. So the parts are accumulated here.
 //! - **UTF-8 is checked.** `Message::Text` is a `String`, and the seam
 //!   says a backend that reads invalid UTF-8 off the wire owes an error
-//!   rather than a lossy conversion. WinHTTP does not check.
+//!   rather than a lossy conversion. `WinHTTP` does not check.
 //! - **One event queue, two readers.** `Stream` and `Sink` are on one
 //!   value and both drain the same completion channel, so each stashes a
 //!   completion that belongs to the other rather than dropping it.
@@ -42,7 +42,7 @@
 //! the seam
 //!
 //! `Message` has no `Ping`/`Pong` because a browser has neither
-//! `send(ping)` nor `onping`. WinHTTP is the same: it answers pings itself
+//! `send(ping)` nor `onping`. `WinHTTP` is the same: it answers pings itself
 //! and reports nothing, and `WINHTTP_OPTION_WEB_SOCKET_KEEPALIVE_INTERVAL`
 //! is how a caller asks for its own — a knob on the session rather than a
 //! message on the wire. So the variant would have had no honest right-hand
@@ -63,7 +63,7 @@ use crate::error::{Win32Error, WinHttpError};
 use crate::session::{WinHttp, expect, header_block, setup, split_uri};
 use crate::sys::{Event, Exchange};
 
-/// An open WebSocket over WinHTTP.
+/// An open WebSocket over `WinHTTP`.
 ///
 /// **Every handle is held, and the order they are declared in is the order
 /// they close in.** The socket first, so its close frame goes before the
@@ -87,7 +87,7 @@ pub struct WinHttpWebSocket {
     /// lose a message that is already in the buffer.
     stashed_read: Option<Event>,
     stashed_write: Option<Event>,
-    /// The parts of a message WinHTTP has reported so far.
+    /// The parts of a message `WinHTTP` has reported so far.
     partial: BytesMut,
     /// Whether the message being assembled is text — decided by the first
     /// fragment, because RFC 6455 §5.4 fixes a message's type on its
@@ -131,7 +131,7 @@ impl WinHttpWebSocket {
     ///
     /// `want_read` picks which queue this call is draining for. The event
     /// that does not belong goes to the other half's slot; one slot each
-    /// is enough because WinHTTP allows one receive and one send in flight
+    /// is enough because `WinHTTP` allows one receive and one send in flight
     /// at a time, so there can be at most one of each outstanding.
     fn poll_event(&mut self, cx: &mut Context<'_>, want_read: bool) -> Poll<Event> {
         if let Some(e) = if want_read {
@@ -160,7 +160,7 @@ impl WinHttpWebSocket {
     }
 }
 
-/// A WinHTTP failure, as this seam's error.
+/// A `WinHTTP` failure, as this seam's error.
 fn failed(e: &Event) -> Error {
     match e {
         Event::Failed(code) => Error::new(
@@ -256,17 +256,16 @@ impl Stream for WinHttpWebSocket {
                     }
                     let body = std::mem::take(&mut this.partial).freeze();
                     let msg = if this.partial_text {
-                        match String::from_utf8(body.to_vec()) {
-                            Ok(s) => Message::Text(s),
-                            Err(_) => {
-                                this.rx = Rx::Ended;
-                                return Poll::Ready(Some(Err(Error::new(
-                                    ErrorKind::Body,
-                                    WinHttpError::Unsupported(
-                                        "the peer sent a text message that is not UTF-8".to_owned(),
-                                    ),
-                                ))));
-                            }
+                        if let Ok(s) = String::from_utf8(body.to_vec()) {
+                            Message::Text(s)
+                        } else {
+                            this.rx = Rx::Ended;
+                            return Poll::Ready(Some(Err(Error::new(
+                                ErrorKind::Body,
+                                WinHttpError::Unsupported(
+                                    "the peer sent a text message that is not UTF-8".to_owned(),
+                                ),
+                            ))));
                         }
                     } else {
                         Message::Binary(body)
@@ -379,13 +378,13 @@ impl WebSocketConnect for WinHttp {
     /// RFC 6455's handshake, almost none of which is here.
     ///
     /// `ws://` and `wss://` read as `http://` and `https://` — the seam
-    /// fixes that, and it costs one match because WinHTTP is told the
+    /// fixes that, and it costs one match because `WinHTTP` is told the
     /// scheme as a flag rather than a string. Everything else the request
     /// carries goes out: **the headers are added rather than dropped**,
     /// which is the seam's own rule, and it is a rule this backend can
     /// keep where a browser cannot.
     ///
-    /// The `101` is checked by WinHTTP, not here: the
+    /// The `101` is checked by `WinHTTP`, not here: the
     /// `Sec-WebSocket-Accept` comparison is inside the DLL, and
     /// `WinHttpWebSocketCompleteUpgrade` refuses a response that is not a
     /// completed handshake.
@@ -451,10 +450,10 @@ impl WebSocketConnect for WinHttp {
     }
 }
 
-/// `ws://` and `wss://` as the two schemes WinHTTP knows.
+/// `ws://` and `wss://` as the two schemes `WinHTTP` knows.
 ///
 /// A pure function, and a test of its own, because it is the one part of
-/// the handshake this crate decides: everything else is WinHTTP's. An
+/// the handshake this crate decides: everything else is `WinHTTP`'s. An
 /// `http://` or `https://` URI passes through, which the seam requires —
 /// a caller holding an origin should not have to rewrite its scheme.
 fn ws_scheme(uri: http::Uri) -> Result<http::Uri, Error> {

@@ -165,6 +165,11 @@ where
     /// flight as the `101`, unreachable from anywhere else once this value
     /// is dropped. A caller that ignores it loses the peer's first frames
     /// for good, and no later read can recover them.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Connect`] if finishing the still-open HTTP/1 exchange
+    /// fails — the connection breaking before hyper hands the socket back.
     pub async fn finish(mut self) -> Result<(I, Bytes), Error> {
         if !self.conn_done {
             poll_fn(|cx| self.conn.poll_without_shutdown(cx))

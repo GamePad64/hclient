@@ -198,7 +198,7 @@ async fn park_one_connection(client: &Client, addr: SocketAddr) {
 
 /// The claim: with a reaper, the server sees the socket close at about the
 /// idle timeout — not at once, and not never.
-fn a_reaper_closes_an_idle_connection<H: Harness>(h: H)
+fn a_reaper_closes_an_idle_connection<H: Harness>(h: &H)
 where
     H::Rt: Spawn<Reaper<H::Rt, NativeIo<H::Rt, Rustls>>>,
     // Restated rather than inherited from `Harness::Rt`'s own bound: an
@@ -237,7 +237,7 @@ where
 
 /// The control. Same server, same request, same `PoolConfig` — the only
 /// difference is `pool` where the claim above has `with_reaper`.
-fn without_a_reaper_the_connection_stays_open<H: Harness>(h: H)
+fn without_a_reaper_the_connection_stays_open<H: Harness>(h: &H)
 where
     <H::Rt as TcpConnect>::Stream: Send + 'static,
     // What the erased `Client` asks of a transport, and therefore of the
@@ -272,20 +272,20 @@ fn tokio_harness() -> OnTokio {
 
 #[test]
 fn a_reaper_closes_an_idle_connection_on_tokio() {
-    a_reaper_closes_an_idle_connection(tokio_harness());
+    a_reaper_closes_an_idle_connection(&tokio_harness());
 }
 
 #[test]
 fn a_reaper_closes_an_idle_connection_on_smol() {
-    a_reaper_closes_an_idle_connection(OnSmol);
+    a_reaper_closes_an_idle_connection(&OnSmol);
 }
 
 #[test]
 fn without_a_reaper_the_same_connection_stays_open_on_tokio() {
-    without_a_reaper_the_connection_stays_open(tokio_harness());
+    without_a_reaper_the_connection_stays_open(&tokio_harness());
 }
 
 #[test]
 fn without_a_reaper_the_same_connection_stays_open_on_smol() {
-    without_a_reaper_the_connection_stays_open(OnSmol);
+    without_a_reaper_the_connection_stays_open(&OnSmol);
 }

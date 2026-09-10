@@ -105,6 +105,10 @@ fn without_ech_the_handshake_actually_starts() {
 /// unconditionally would pass the first assertion while lying: the whole
 /// point is that the answer tracks the IO.
 #[test]
+#[allow(
+    clippy::items_after_statements,
+    reason = "SendIo/UnsendIo/Probe/Fallback are the Send-probe fixtures this test is entirely about — they belong beside the assertions that use them, not at module scope where nothing else needs them"
+)]
 fn the_handshake_is_send_exactly_when_the_io_is() {
     fn is_send<T: Send>() {}
 

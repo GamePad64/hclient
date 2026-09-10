@@ -101,7 +101,7 @@ async fn an_aaaa_answer_reaches_the_v6_stream() {
 /// `Record::ttl` carries the record's own TTL, per record.
 ///
 /// The two records deliberately carry **different** TTLs: a resolver that
-/// took the RRset minimum, or the first record's value for both, would pass
+/// took the `RRset` minimum, or the first record's value for both, would pass
 /// a test with one record or with two equal ones.
 #[tokio::test]
 async fn each_address_carries_the_ttl_that_came_with_its_own_record() {
@@ -180,9 +180,9 @@ async fn servfail_is_an_error_and_not_an_empty_stream() {
     );
 }
 
-/// A DoH response is carried over TCP-or-better, so `TC` means the
+/// A `DoH` response is carried over TCP-or-better, so `TC` means the
 /// server's own upstream answer was cut and it passed that on. Not a
-/// partial RRSet.
+/// partial `RRSet`.
 #[tokio::test]
 async fn a_truncated_answer_is_an_error() {
     let server = Server::answering(message(
@@ -336,7 +336,7 @@ async fn a_body_that_is_not_a_dns_message_is_an_error() {
 
 /// The category is `Resolve` whatever failed underneath, because that is
 /// the operation the caller asked for. `hclient-native`'s connector reads
-/// `kind()` to decide which failure to surface, and a DoH server's own
+/// `kind()` to decide which failure to surface, and a `DoH` server's own
 /// connect failure reported as `Connect` would send anyone reading it to
 /// the wrong host entirely.
 #[tokio::test]

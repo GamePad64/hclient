@@ -14,7 +14,7 @@
 //! # The third platform to fit a seam shaped around the first
 //!
 //! `WebSocketConnect` hands over **messages**, not an upgraded socket,
-//! because that is all a browser can give. WinHTTP turned out to be the
+//! because that is all a browser can give. `WinHTTP` turned out to be the
 //! same shape, and so is this: Foundation delivers an
 //! `NSURLSessionWebSocketMessage` and takes one back, and the framing,
 //! the masking, the handshake and the ping/pong are all inside the
@@ -167,6 +167,11 @@ impl UrlSessionWebSocket {
 }
 
 /// An `NSURLSessionWebSocketMessage` as this seam's [`Message`].
+// Written as a `match` on Foundation's own discriminator rather than an
+// equality check: the `_` arm is *every non-string type*, which today is
+// `Data` alone and is the arm a new Foundation message type must land in
+// rather than be silently read as a string.
+#[allow(clippy::single_match_else)]
 fn convert(m: &NSURLSessionWebSocketMessage) -> Result<Message, Error> {
     match m.r#type() {
         // `type` says which accessor is populated, which is
@@ -357,6 +362,9 @@ impl WebSocketConnect for UrlSession {
     /// **Headers go out**, which is the seam's rule and one this backend
     /// can keep where a browser cannot: `NSMutableURLRequest` carries
     /// them, and Foundation adds its own handshake fields around them.
+    // `async` because `WebSocketConnect` declares it so; this backend
+    // reaches Foundation synchronously and has nothing to await.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn websocket(&self, req: http::Request<()>) -> Result<Self::WebSocket, Error> {
         let url = NSString::from_str(&req.uri().to_string());
         let Some(url) = NSURL::URLWithString(&url) else {

@@ -114,7 +114,7 @@ fn replaying_set_cookie_headers_keeps_the_order_while_the_clock_moves_forwards()
 
         assert_eq!(before, "a=1; b=2");
         assert_eq!(restored.cookie_header(&uri(u), t(1001)).await, Some(before));
-    })
+    });
 }
 
 /// And here is where it does break, which is what the record type is for.
@@ -171,7 +171,7 @@ fn replaying_set_cookie_headers_loses_the_order_when_the_clock_steps_back() {
             restored.restore(r, t(1000)).await.expect("should restore");
         }
         assert_eq!(restored.cookie_header(&uri(u), t(1001)).await, Some(before));
-    })
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -213,7 +213,7 @@ fn every_fact_a_cookie_has_survives_the_round_trip() {
         assert!(back.secure);
         assert!(back.http_only);
         assert_eq!(back.same_site, Some(SameSite::Lax));
-    })
+    });
 }
 
 /// The rule everybody knows about cookies, made a property of the type
@@ -238,7 +238,7 @@ fn a_session_cookie_has_no_record_at_all() {
             .expect("still held");
         assert!(!session.persistent());
         assert_eq!(session.to_record(), None);
-    })
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -269,7 +269,7 @@ fn restoring_the_same_jar_twice_does_not_duplicate_a_cookie() {
             }
         }
         assert_eq!(restored.len().await, 2);
-    })
+    });
 }
 
 #[test]
@@ -284,7 +284,7 @@ fn a_record_that_expired_while_the_process_was_down_is_dropped_rather_than_resur
             "not an error, just gone"
         );
         assert!(jar.is_empty().await);
-    })
+    });
 }
 
 /// §5.5's 400-day cap, re-applied against the restore instant. A saved
@@ -296,9 +296,9 @@ fn a_far_future_expiry_in_a_record_is_capped_on_the_way_back_in() {
         let mut r = record("a", "/", t(0), t(0));
         r.expires = SystemTime::UNIX_EPOCH + Duration::from_secs(253_402_300_799);
         jar.restore(r, t(0)).await.expect("should restore");
-        let cap = t(0) + Duration::from_secs(400 * 24 * 60 * 60);
+        let cap = t(0) + Duration::from_hours(9600);
         assert_eq!(only(&jar).await.expires, cap);
-    })
+    });
 }
 
 /// `last_access` is [`Limits`]' eviction key, so losing it replaces
@@ -343,7 +343,7 @@ fn eviction_after_a_reload_follows_use_rather_than_insertion_order() {
         );
         assert!(held.iter().any(|h| h == "first"));
         assert!(held.iter().any(|h| h == "third"));
-    })
+    });
 }
 
 /// §5.4's *last* tiebreak, once path length and creation time have both
@@ -378,7 +378,7 @@ fn a_restore_over_a_held_cookie_keeps_its_place_in_the_queue() {
             jar.cookie_header(&uri(u), t(3)).await.expect("header"),
             "x=9; y=2"
         );
-    })
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -411,7 +411,7 @@ fn a_domain_that_has_since_become_a_public_suffix_is_refused_on_restore() {
         r.domain = "github.io".to_owned();
         assert_eq!(jar.restore(r, t(0)).await, Ok(()));
         assert_eq!(jar.len().await, 1);
-    })
+    });
 }
 
 /// §5.7 makes an IP-literal host host-only unconditionally, so `store`
@@ -447,7 +447,7 @@ fn a_record_scoped_to_an_ip_literal_must_be_host_only() {
                 .await
                 .is_none()
         );
-    })
+    });
 }
 
 /// §4.1.3's durable half. There is no request to be secure over, so
@@ -482,7 +482,7 @@ fn the_name_prefixes_are_rechecked_against_the_records_own_facts() {
         let mut r = record("__Host-b", "/", t(0), t(0));
         r.secure = true;
         assert_eq!(jar.restore(r, t(0)).await, Ok(()));
-    })
+    });
 }
 
 /// §5.2.3's leading dot and case are how a `Domain` is *written*, not a
@@ -503,7 +503,7 @@ fn a_records_domain_is_normalised_the_way_the_attribute_is() {
                 .await
                 .is_some()
         );
-    })
+    });
 }
 
 #[test]
@@ -529,7 +529,7 @@ fn the_refusals_a_set_cookie_could_never_reach() {
                 path: String::new()
             })
         );
-    })
+    });
 }
 
 /// §5.2's own refusals, asked of a record because a file is at least as
@@ -559,7 +559,7 @@ fn a_hand_edited_record_meets_the_same_bounds_a_server_would() {
             jar.restore(r, t(0)).await,
             Err(Rejected::TooLarge { .. })
         ));
-    })
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -604,7 +604,7 @@ fn a_jar_saved_and_loaded_sends_the_same_cookie_header() {
             "same order, minus the session cookie a restart ends"
         );
         assert!(after.to_str().expect("ascii").starts_with("deep=1; "));
-    })
+    });
 }
 
 /// `cookie_without_the_list.rs`'s claim, asked of the load side: **a

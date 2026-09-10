@@ -496,7 +496,7 @@ impl SystemProxies {
                     out.unsupported_bypass.push(UnsupportedBypass {
                         pattern: pattern.into_boxed_str(),
                         reason,
-                    })
+                    });
                 }
             }
         }
@@ -633,7 +633,7 @@ mod tests {
         let reasons: Vec<_> = sys
             .unsupported_bypass()
             .iter()
-            .map(|u| u.reason())
+            .map(super::UnsupportedBypass::reason)
             .collect();
         assert_eq!(reasons, [BypassReason::Wildcard]);
     }

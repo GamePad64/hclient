@@ -33,7 +33,7 @@ use super::suffix::{BuiltinList, PublicSuffixList};
 /// also removes the arithmetic hazard from the other end — a server sending
 /// `Max-Age=9223372036854775807` cannot overflow anything, because the sum
 /// is never computed.
-pub(super) const MAX_EXPIRY: Duration = Duration::from_secs(400 * 24 * 60 * 60);
+pub(super) const MAX_EXPIRY: Duration = Duration::from_hours(9600);
 /// How large one cookie is allowed to be.
 ///
 /// **A refusal, and that is why it is here and not in the store.** The
@@ -70,6 +70,10 @@ impl Default for Limits {
 /// exactly two places, [`CookieJar::store`] and
 /// [`CookieJar::restore`](super::CookieJar::restore), and would be a
 /// caller's problem if the fields were public.
+// RFC 6265's own attribute set: `Secure`, `HttpOnly` and the rest are
+// independent flags a `Set-Cookie` either carries or does not, so the
+// count is the header's rather than this type's.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cookie {
     pub(super) name: String,
@@ -322,6 +326,11 @@ impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
     }
 
     /// Store one `Set-Cookie`, per RFC 6265bis §5.7.
+    ///
+    /// # Errors
+    ///
+    /// One [`Rejected`] variant per rule §5.7 states — see its own
+    /// per-variant docs for which.
     pub async fn store(
         &self,
         uri: &Uri,

@@ -144,7 +144,7 @@ async fn serve(tcp: tokio::net::TcpStream, seen: Arc<Mutex<Vec<Seen>>>) -> Resul
             seen.lock().unwrap().push(Seen {
                 method: parts.method.clone(),
                 path: path.clone(),
-                authority: parts.uri.authority().map(|a| a.to_string()),
+                authority: parts.uri.authority().map(std::string::ToString::to_string),
                 body_len,
             });
             if path == "/slow" {
@@ -258,7 +258,7 @@ impl TlsConnect for FakeTls {
                 .push(req.alpn.iter().map(|p| p.to_vec()).collect());
             Ok((
                 io,
-                TlsInfo::default().alpn(self.negotiated.map(|p| p.to_vec())),
+                TlsInfo::default().alpn(self.negotiated.map(<[u8]>::to_vec)),
             ))
         })
     }
@@ -416,6 +416,10 @@ async fn a_protocol_that_was_never_offered_is_never_spoken() {
 
     let result = tokio::time::timeout(BOUND, client(silent).get(server.url("/c")).send()).await;
 
+    // `tokio::time::timeout`'s error is `Elapsed`, which carries nothing
+    // beyond its own name — the panic message already says what
+    // happened, and printing `{e:?}` would only echo it.
+    #[allow(clippy::match_wild_err_arm)]
     match result {
         Err(_) => panic!("must not hang"),
         Ok(Ok(resp)) => {

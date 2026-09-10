@@ -542,7 +542,7 @@ mod over_http2 {
             .clone()
             .expect("the server must have decoded a trailer section");
         assert_eq!(
-            m.get("grpc-status").map(|v| v.as_bytes()),
+            m.get("grpc-status").map(http::HeaderValue::as_bytes),
             Some(&b"0"[..]),
             "the field the caller attached, decoded by `h2` from the \
              second HEADERS frame"

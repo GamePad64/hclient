@@ -78,6 +78,16 @@ hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.7" }
 unsafe_code                   = "deny"
 missing_debug_implementations = "warn"
 unexpected_cfgs               = { level = "warn", check-cfg = [] }
+# `pedantic`, and it is spelled out here rather than inherited for the
+# reason the `[lints.rust]` block above is: a crate that opts out of
+# `[lints] workspace = true` opts out of *every* workspace lint table,
+# clippy's included. The values match the workspace's own — see the root
+# `Cargo.toml` for why `large_futures` and `must_use_candidate` are the
+# two the group gives back.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+large_futures = "allow"
+must_use_candidate = "allow"
 
 [features]
 # Enables `NativeTls::danger_accept_invalid_certs`. Off by default, and a

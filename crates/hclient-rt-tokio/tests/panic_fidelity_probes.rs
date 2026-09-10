@@ -77,8 +77,8 @@ fn panic_payload_survives_intact_with_original_type_and_value() {
 
 /// Same probe, but under load: many concurrent panicking closures at once,
 /// racing against tokio's blocking-pool scheduling. If any timing window
-/// let a genuine panic slip through classify() as Cancelled instead of
-/// resume_unwind, this would surface it as a "did not panic" join failure
+/// let a genuine panic slip through `classify()` as Cancelled instead of
+/// `resume_unwind`, this would surface it as a "did not panic" join failure
 /// instead of a downcast success. See the module doc above for why this is
 /// insurance on top of a structural (source-level) argument, not the
 /// primary proof.

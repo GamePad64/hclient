@@ -380,7 +380,7 @@ where
 )]
 pub trait BoxTransport {
     /// [`crate::transport::Transport::execute`], boxed.
-    fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a>;
+    fn execute_boxed(&self, req: http::Request<RequestBody>) -> BoxExchange<'_>;
 
     /// [`crate::transport::Transport::capabilities`], unchanged — it was
     /// never generic.
@@ -406,7 +406,7 @@ where
     <T::Body as http_body::Body>::Error: Into<Error>,
     T::Error: Into<Error>,
 {
-    fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a> {
+    fn execute_boxed(&self, req: http::Request<RequestBody>) -> BoxExchange<'_> {
         Box::pin(async move {
             match crate::transport::SendTransport::execute_send(self, req).await {
                 Ok(resp) => Ok(resp.map(box_body)),

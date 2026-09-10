@@ -315,6 +315,15 @@ impl Handshake {
     ///
     /// The caller's extensions travel on the request, so a `Timeouts` in
     /// them still reaches whoever connects.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Unsupported`], naming the header, if the caller's
+    /// request already carries one of the headers this handshake sets
+    /// itself (`Connection`, `Upgrade`, the two `Sec-WebSocket-*` ones) —
+    /// or, also `Unsupported`, naming the scheme, if the URI's scheme is
+    /// not `ws`, `wss`, `http` or `https`. [`ErrorKind::Connect`] if the
+    /// generated handshake key is somehow not a valid header value.
     pub fn start(req: http::Request<()>) -> Result<(Self, http::Request<()>), Error> {
         for name in OURS {
             if req.headers().contains_key(&name) {
@@ -363,6 +372,13 @@ impl Handshake {
     /// What is left is what makes a `101` a *WebSocket* `101`. All three
     /// are refusals rather than warnings: `tests/websocket.rs` has a
     /// server for each, and deleting any of them kills a named test.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Status`], naming which check failed, if `Upgrade`
+    /// does not say `websocket`, if `Connection` carries no `upgrade`
+    /// token, or if `Sec-WebSocket-Accept` does not match the key this
+    /// handshake sent.
     pub fn accept(&self, head: &http::response::Parts) -> Result<(), Error> {
         if !head
             .headers
@@ -642,6 +658,11 @@ impl<I, Tm: Timer> TungsteniteWebSocket<I, Tm> {
     /// the server put in the same flight as the `101`; passing an empty
     /// `Bytes` when there was none is correct, dropping a non-empty one
     /// loses the peer's first frames for good.
+    // `read_buf` by value although only `to_vec` is called on it:
+    // `Bytes` is a refcounted handle meant to be handed over, the caller
+    // has no use for it afterwards, and this is public API — a borrow
+    // would change the surface to save a clone that does not happen.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(io: I, read_buf: Bytes, timer: Tm, keep_alive: Option<WebSocketKeepAlive>) -> Self {
         Self {
             io,
@@ -671,6 +692,12 @@ impl<I, Tm: Timer> TungsteniteWebSocket<I, Tm> {
 /// does not ask for. The keep-alive state is in it because an outstanding
 /// probe is exactly what a reader debugging a stalled socket wants to see
 /// — and, per §7's first question, the only place it is visible.
+///
+/// `ctx` is deliberately not printed raw: `keep_alive` and
+/// `ping_awaiting_a_pong` are the two facts inside it a reader can act
+/// on, and both are already fields here — `tungstenite`'s own frame
+/// codec and closing-state internals would be noise beside them.
+#[allow(clippy::missing_fields_in_debug)]
 impl<I: Debug, Tm: Timer> Debug for TungsteniteWebSocket<I, Tm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TungsteniteWebSocket")
@@ -763,7 +790,7 @@ where
                 // `Frame::Frame` cannot come out of `read` at all — it is
                 // a write-side variant — and is folded in here rather than
                 // given an `unreachable!`.
-                Ok(Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_)) => continue,
+                Ok(Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_)) => {}
                 // The socket has nothing, so this is the only moment
                 // `poll_next` has a `Pending` to spend on the keep-alive —
                 // and the read waker has just been registered, which is
@@ -1021,7 +1048,7 @@ where
     R: TcpConnect + Timer,
     T: TlsConnect,
 {
-    /// Open WebSockets over `native`, with no liveness bound — which is
+    /// Open `WebSockets` over `native`, with no liveness bound — which is
     /// the default and the whole of it: see [`Tungstenite::keep_alive`].
     pub fn new(native: &'a Native<R, T, D, H>) -> Self {
         Self {

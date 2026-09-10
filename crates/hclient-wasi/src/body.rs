@@ -163,9 +163,8 @@ impl HttpBody for Body {
     /// `IncomingResponseBody`.
     fn size_hint(&self) -> SizeHint {
         match &self.inner {
-            Inner::Done => SizeHint::with_exact(0),
             Inner::Buffered(Some(b)) => SizeHint::with_exact(b.len() as u64),
-            Inner::Buffered(None) => SizeHint::with_exact(0),
+            Inner::Done | Inner::Buffered(None) => SizeHint::with_exact(0),
             Inner::Incoming(i) => size_hint_honoring_end(i.is_end_stream(), i.size_hint()),
         }
     }

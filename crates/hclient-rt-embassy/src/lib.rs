@@ -117,6 +117,10 @@ pub struct Embassy<const N: usize, const TX: usize = 1536, const RX: usize = 153
 // Hand-written, and not `#[derive]`: `derive(Clone)` would demand `Clone`
 // on the const-generic parameters' types, and `embassy_net::Stack` has no
 // `Debug` to derive from either.
+#[allow(
+    clippy::expl_impl_clone_on_copy,
+    reason = "cannot derive here — see the comment above"
+)]
 impl<const N: usize, const TX: usize, const RX: usize> Clone for Embassy<N, TX, RX> {
     fn clone(&self) -> Self {
         *self
@@ -310,6 +314,10 @@ fn connect_err(e: embassy_net::tcp::ConnectError) -> std::io::Error {
 /// `[::1]:80` on an IPv4-only build gets an error naming the feature —
 /// which is a good deal more useful than the type error the naive version
 /// of this function is.
+// Unconditionally `Ok` under `--all-features` (both `proto-ipv4` and
+// `proto-ipv6` on), but genuinely fallible for a build that leaves either
+// one out — see the `#[cfg]` arms below. The `Result` is for those builds.
+#[allow(clippy::unnecessary_wraps)]
 fn endpoint(addr: SocketAddr) -> std::io::Result<embassy_net::IpEndpoint> {
     match addr {
         SocketAddr::V4(v4) => {

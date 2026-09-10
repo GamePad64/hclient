@@ -79,7 +79,7 @@
 //!
 //! **Three platforms now fit a seam shaped around the first.**
 //! `WebSocketConnect` hands over *messages* because that is all a browser
-//! can give; WinHTTP turned out to be the same shape and so is
+//! can give; `WinHTTP` turned out to be the same shape and so is
 //! Foundation, which delivers an `NSURLSessionWebSocketMessage` and takes
 //! one back with the handshake, the masking and the ping/pong inside the
 //! system. Three implementations that share no code agreeing on the shape

@@ -75,8 +75,7 @@ impl Resolve for NoAnswers {
     fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
         let _ = name;
         match rtype {
-            rtype::A => Box::pin(stream::iter(vec![refused(name)])),
-            rtype::AAAA => Box::pin(stream::iter(vec![refused(name)])),
+            rtype::A | rtype::AAAA => Box::pin(stream::iter(vec![refused(name)])),
             _ => Box::pin(futures_util::stream::empty()),
         }
     }

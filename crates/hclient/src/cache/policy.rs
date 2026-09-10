@@ -405,6 +405,14 @@ impl<S: CacheStore> HttpCache<S> {
     /// stale from the moment it lands: every later request for it is a
     /// conditional one, which is the bandwidth the cache exists to save
     /// and is a claim no heuristic had to invent.
+    ///
+    /// # Errors
+    ///
+    /// One [`NotStored`] variant per rule above: an unsafe method, a
+    /// request that stood aside, a request or response `no-store`, an
+    /// uncacheable status, `Vary: *`, neither a lifetime nor a validator,
+    /// a declared `Content-Length` over [`Limits::max_body_bytes`], or a
+    /// method/URI pair [`Key::new`] refuses.
     pub fn storing(
         &self,
         method: &Method,
@@ -469,6 +477,12 @@ impl<S: CacheStore> HttpCache<S> {
     /// body the transport truncated is exactly the one a cache must not
     /// keep, because a truncated entry served later is indistinguishable
     /// from a complete one.
+    ///
+    /// # Errors
+    ///
+    /// [`NotStored::TooLarge`] for a body over [`Limits::max_body_bytes`],
+    /// [`NotStored::LengthMismatch`] when its length disagrees with the
+    /// `Content-Length` the head declared.
     pub async fn store(&self, s: Storing, body: Bytes) -> Result<(), NotStored> {
         let len = body.len() as u64;
         if len > s.max_body_bytes {
@@ -738,7 +752,7 @@ fn is_fresh(age: Duration, lifetime: Option<Duration>, req: &RequestDirectives) 
         return false;
     }
     if let Some(min) = req.min_fresh
-        && lifetime - age < min
+        && lifetime.checked_sub(age).unwrap() < min
     {
         return false;
     }

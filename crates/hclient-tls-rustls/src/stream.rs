@@ -158,6 +158,11 @@ pub(crate) fn pump_incoming<S: Read + Unpin>(
     loop {
         conn.read_tls(&mut cursor).map_err(tls_err)?;
         conn.process_new_packets().map_err(tls_err)?;
+        // `cursor` walks `filled`, a slice this poll just read into a
+        // fixed-size buffer, so its position never exceeds `filled.len()`
+        // — far below `usize::MAX` on every platform this crate builds
+        // for, 32-bit included.
+        #[allow(clippy::cast_possible_truncation)]
         if (cursor.position() as usize) >= filled.len() {
             break;
         }

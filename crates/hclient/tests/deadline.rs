@@ -143,7 +143,7 @@ fn head_then_silence_server(head_delay: Duration) -> (std::net::SocketAddr, Arc<
                         flag.store(true, Ordering::SeqCst);
                         break;
                     }
-                    Ok(_) => continue,
+                    Ok(_) => {}
                 }
             }
         }
@@ -206,6 +206,9 @@ fn rt() -> tokio::runtime::Runtime {
 const GUARD: Duration = Duration::from_secs(6);
 
 /// The guard, applied — named so the panic says which wait never ended.
+// `tokio::time::error::Elapsed` carries nothing beyond "it elapsed" — there
+// is no field to name here, so `Err(_)` is the whole of the information.
+#[allow(clippy::match_wild_err_arm)]
 async fn guarded<F: std::future::Future>(what: &str, f: F) -> F::Output {
     match tokio::time::timeout(GUARD, f).await {
         Ok(v) => v,
@@ -259,7 +262,7 @@ fn a_body_that_dribbles_for_ever_is_cut_at_the_total_deadline() {
         let mut last = None;
         while let Some(frame) = resp.chunk().await {
             match frame {
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(e) => {
                     last = Some(e);
                     break;
@@ -326,7 +329,7 @@ fn a_body_that_goes_silent_for_ever_after_the_head_is_cut_at_the_total_deadline(
 
         let err = loop {
             match resp.chunk().await {
-                Some(Ok(_)) => continue,
+                Some(Ok(_)) => {}
                 Some(Err(e)) => break e,
                 None => panic!(
                     "a body under a Content-Length of ten million must not end \
@@ -399,7 +402,7 @@ fn the_body_races_what_is_left_of_the_bound_rather_than_a_second_copy_of_it() {
             .expect("the head arrives, late but inside the bound");
         let err = loop {
             match resp.chunk().await {
-                Some(Ok(_)) => continue,
+                Some(Ok(_)) => {}
                 Some(Err(e)) => break e,
                 None => panic!("the body must not end cleanly"),
             }
@@ -458,7 +461,7 @@ fn a_body_that_never_yields_is_cut_by_the_elapsed_check_alone() {
         assert_eq!(resp.status(), 200);
         loop {
             match resp.chunk().await {
-                Some(Ok(_)) => continue,
+                Some(Ok(_)) => {}
                 Some(Err(e)) => break Some(e),
                 None => break None,
             }

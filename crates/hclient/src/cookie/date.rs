@@ -78,25 +78,18 @@ pub(crate) fn parse_cookie_date(input: &[u8]) -> Option<i64> {
             && let Some(t) = run(match_time, token)
         {
             time = Some(t);
-            continue;
-        }
-        if day.is_none()
+        } else if day.is_none()
             && let Some(d) = run(number(1, 2), token)
         {
             day = Some(d);
-            continue;
-        }
-        if month.is_none()
+        } else if month.is_none()
             && let Some(m) = run(match_month, token)
         {
             month = Some(m);
-            continue;
-        }
-        if year.is_none()
+        } else if year.is_none()
             && let Some(y) = run(number(2, 4), token)
         {
             year = Some(y);
-            continue;
         }
     }
 
@@ -138,6 +131,8 @@ pub(crate) fn parse_cookie_date(input: &[u8]) -> Option<i64> {
     // The civil types rather than `jiff::Timestamp` for the reason
     // `hclient-cache`'s `civil` records: `Timestamp::MAX` is
     // `9999-12-30T22:00Z`, which is inside the range §5.1.1 allows.
+    // Kept beside the comment explaining it rather than hoisted to the top.
+    #[allow(clippy::items_after_statements)]
     const EPOCH: DateTime = jiff::civil::datetime(1970, 1, 1, 0, 0, 0, 0);
 
     let date = Date::new(

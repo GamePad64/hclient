@@ -130,6 +130,7 @@ impl<B: Unpin, Tm: Timer> Unpin for IdleTimeout<B, Tm> {}
 
 /// Hand-written for the reason `hclient::body::Deadline`'s is: `#[derive(Debug)]`
 /// would demand `Debug` of the clock, which [`Timer`] does not ask for.
+#[allow(clippy::missing_fields_in_debug)]
 impl<B: Debug, Tm: Timer> Debug for IdleTimeout<B, Tm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdleTimeout")
@@ -199,7 +200,9 @@ where
     /// An expired body has not "ended": it failed. Saying `true` would let
     /// a caller conclude the response was complete.
     fn is_end_stream(&self) -> bool {
-        self.inner.as_ref().is_some_and(|b| b.is_end_stream())
+        self.inner
+            .as_ref()
+            .is_some_and(http_body::Body::is_end_stream)
     }
 
     fn size_hint(&self) -> SizeHint {

@@ -133,6 +133,14 @@ impl Scheduler {
     /// Advances the state machine. `elapsed` is the time since the attempt
     /// started, on the caller's clock (see the struct's doc comment on
     /// monotonicity).
+    ///
+    /// # Panics
+    ///
+    /// Does not panic. Both `checked_sub(elapsed).unwrap()` calls below sit
+    /// directly behind an `elapsed < next_at` (respectively
+    /// `elapsed < resolution_delay`) check on the same values, so the
+    /// subtraction cannot underflow — the `unwrap` documents that as a
+    /// checked fact rather than trusting the ordering silently.
     pub fn poll(&mut self, elapsed: Duration) -> HeAction {
         // Nothing left to offer, and both resolvers have confirmed no new
         // addresses are coming: report it immediately, without waiting out
@@ -147,14 +155,14 @@ impl Scheduler {
         if let Some(last) = self.last_start {
             let next_at = last + self.cfg.attempt_delay;
             if elapsed < next_at {
-                return HeAction::Wait(next_at - elapsed);
+                return HeAction::Wait(next_at.checked_sub(elapsed).unwrap());
             }
         }
 
         // RFC 8305 §3: while AAAA hasn't arrived and the resolver isn't
         // done, hold IPv4 back for the Resolution Delay.
         if self.v6.is_empty() && !self.v6_done && elapsed < self.cfg.resolution_delay {
-            return HeAction::Wait(self.cfg.resolution_delay - elapsed);
+            return HeAction::Wait(self.cfg.resolution_delay.checked_sub(elapsed).unwrap());
         }
 
         // RFC 8305 §4: IPv6 goes first; after `first_family_count`
@@ -572,7 +580,11 @@ mod tests {
             resolution_delay_ms in 0u64..200,
             attempt_delay_ms in 0u64..500,
         ) {
+            // `v6_n`/`v4_n` are proptest-bounded to `0..6` above, well
+            // under either target width.
+            #[allow(clippy::cast_possible_truncation)]
             let v6_addrs: Vec<IpAddr> = (0..v6_n as u16).map(v6).collect();
+            #[allow(clippy::cast_possible_truncation)]
             let v4_addrs: Vec<IpAddr> = (0..v4_n as u8).map(v4).collect();
 
             let cfg = HeConfig {

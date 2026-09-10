@@ -123,6 +123,13 @@ use http::Uri;
 /// A-label either, so a nonsense `xn--` label reaches DNS instead of being
 /// rejected here. `url` checked those; nothing else in this client did or
 /// does.
+///
+/// # Errors
+///
+/// [`UriError::NonAsciiHost`] for a non-ASCII host without the `idn`
+/// feature, [`UriError::NotAnIdn`] for a name the IDNA implementation
+/// refuses with it on, or [`UriError::NotAUri`] when the (possibly
+/// rewritten) string still does not parse as a URI — see above.
 pub fn parse(s: &str) -> Result<Uri, UriError> {
     match to_ascii(s)? {
         Some(rewritten) => parse_ascii(&rewritten),
@@ -199,6 +206,12 @@ fn parse_ascii(s: &str) -> Result<Uri, UriError> {
 /// so it could never have survived this function, and an HTTP request
 /// never sends one. `#s/../x` is still a fragment and not a path, so the
 /// dot segments in it are not touched before it is dropped.
+///
+/// # Errors
+///
+/// [`UriError::UnusableBase`] when `base` has no scheme or no authority —
+/// resolution needs both. Otherwise whatever [`parse`] returns for the
+/// recomposed string — see its `# Errors`.
 pub fn resolve_reference(base: &Uri, reference: &str) -> Result<Uri, UriError> {
     let unusable = || UriError::UnusableBase {
         base: base.to_string(),
@@ -614,7 +627,7 @@ mod tests {
     /// `/a/b/c` — `c` isn't a directory, the merge gives `/a/b/`, then
     /// `../` strips `b`: what's left is `/a/d`. The expectation of "/d" in
     /// this test's first version was a bug in the test, not the code —
-    /// merge and remove_dot_segments apply in sequence, not in place of
+    /// merge and `remove_dot_segments` apply in sequence, not in place of
     /// each other.
     #[test]
     fn dot_segments_are_removed_after_the_merge_not_instead_of_it() {

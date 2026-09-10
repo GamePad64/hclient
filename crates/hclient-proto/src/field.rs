@@ -55,6 +55,10 @@ use winnow::token::{any, none_of, take_while};
 use winnow::{ModalResult, Parser};
 
 /// RFC 9110 §5.6.2 `token`.
+///
+/// # Errors
+///
+/// A winnow parse error when `i` does not begin with at least one `tchar`.
 pub fn token<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
     take_while(1.., |c: char| {
         c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
@@ -66,12 +70,23 @@ pub fn token<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
 ///
 /// It also stands in for `BWS`: the two are the same production and
 /// differ only in what a *sender* may write.
+///
+/// # Errors
+///
+/// Never fails — `OWS` matches zero or more spaces, so an input with none
+/// still succeeds, consuming nothing. `ModalResult` only because that is
+/// the shared parser signature.
 pub fn ows(i: &mut &str) -> ModalResult<()> {
     space0.void().parse_next(i)
 }
 
 /// RFC 9110 §5.6.4 `quoted-string`, **unescaped** — for a value that is
 /// free text, where a `\"` is a quote the caller should see.
+///
+/// # Errors
+///
+/// A winnow parse error when `i` does not begin with `"` or has no closing
+/// `"`.
 pub fn quoted_string(i: &mut &str) -> ModalResult<String> {
     delimited(
         '"',
@@ -90,6 +105,11 @@ pub fn quoted_string(i: &mut &str) -> ModalResult<String> {
 /// A `quoted-pair` is still consumed, so this ends where the string ends;
 /// what it does not do is spend an allocation removing backslashes from
 /// values whose grammar cannot contain one.
+///
+/// # Errors
+///
+/// A winnow parse error when `i` does not begin with `"` or has no closing
+/// `"`.
 pub fn quoted_string_raw<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
     delimited(
         '"',

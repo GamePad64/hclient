@@ -1,7 +1,7 @@
 //! RFC 9460 client semantics over a decoded HTTPS record.
 //!
 //! **The wire parsing is not done here.** `domain` decodes the record —
-//! NLnet Labs', `no_std`-capable, and chosen over `dns-message-parser`
+//! `NLnet` Labs', `no_std`-capable, and chosen over `dns-message-parser`
 //! for one reason above the rest: [`Https::parse`] takes a parser over
 //! **one record's RDATA**, which is the only shape `system-resolver` can
 //! hand over on all five of its platforms. The previous decoder exposed
@@ -21,10 +21,10 @@
 //! a panic or a hang.
 //!
 //! **Three things the change bought, each pinned by a test below.** An
-//! AliasMode record carrying SvcParams is now *ignored* per §2.4.1
-//! instead of rejecting the whole RRSet, which this crate had recorded as
+//! `AliasMode` record carrying `SvcParams` is now *ignored* per §2.4.1
+//! instead of rejecting the whole `RRSet`, which this crate had recorded as
 //! a deliberate divergence and which the shared client rules had always
-//! implemented correctly and never been reached with. An RRSet larger
+//! implemented correctly and never been reached with. An `RRSet` larger
 //! than a DNS message can frame is answered rather than refused, because
 //! the 65535-octet limit was the envelope's and never the resolver's. And
 //! a compression pointer inside RDATA — which §2.2 forbids and a
@@ -149,7 +149,7 @@ mod wire {
     /// that could not be read at all.
     ///
     /// **RFC 9460 §2.2 — "If any RRs are malformed, the client MUST reject
-    /// the entire RRSet" — is the `?` in the loop**, and it is worth
+    /// the entire `RRSet`" — is the `?` in the loop**, and it is worth
     /// naming because it used to be somebody else's. `Dns::decode` failed
     /// the whole message on one bad record, so the rule was obeyed by a
     /// property of the decoder rather than by a line here. Reading records
@@ -173,7 +173,7 @@ mod wire {
     /// every backend in this workspace produces.
     ///
     /// **The bytes are parsed where they arrive, and that is narrower than
-    /// what came before.** RFC 9460 §2.2 requires SVCB TargetName to be
+    /// what came before.** RFC 9460 §2.2 requires SVCB `TargetName` to be
     /// sent uncompressed; a non-conformant sender's compression pointer is
     /// resolved against the parser's octets, and those are this record's
     /// own RDATA and nothing else — so the only bytes a pointer can reach
@@ -206,7 +206,7 @@ mod wire {
         })
     }
 
-    /// One decoded SvcParam, in `RawParam`'s vocabulary.
+    /// One decoded `SvcParam`, in `RawParam`'s vocabulary.
     ///
     /// **The three keys `domain` models and this workspace does not become
     /// `Other`, and that is load-bearing rather than tidy.** `dohpath`
@@ -271,7 +271,7 @@ mod tests {
 
     /// RR type 65, RFC 9460 §14.1.
     const TYPE_HTTPS: u16 = 65;
-    /// SvcParamKeys, RFC 9460 §14.3.2, for building test records.
+    /// `SvcParamKeys`, RFC 9460 §14.3.2, for building test records.
     const KEY_MANDATORY: u16 = 0;
     const KEY_ALPN: u16 = 1;
     const KEY_NO_DEFAULT_ALPN: u16 = 2;
@@ -355,8 +355,8 @@ mod tests {
             .expect("a type 65 query answers an HTTPS record")
     }
 
-    fn endpoints(records: Vec<Record>) -> Result<Vec<hclient_dns::Record>, SvcbLookupError> {
-        endpoints_from_records(&records)
+    fn endpoints(records: &[Record]) -> Result<Vec<hclient_dns::Record>, SvcbLookupError> {
+        endpoints_from_records(records)
     }
 
     // ---- what the decoder does not let a test get wrong -------------
@@ -388,8 +388,8 @@ mod tests {
         let h2 = one_record(1, "", &[(KEY_ALPN, vec![2, b'h', b'2'])]);
         let h3 = one_record(1, "", &[(KEY_ALPN, vec![2, b'h', b'3'])]);
         assert_ne!(
-            endpoints(h2).expect("decodes"),
-            endpoints(h3).expect("decodes"),
+            endpoints(&h2).expect("decodes"),
+            endpoints(&h3).expect("decodes"),
             "two records differing only inside a parameter must differ after decoding, or              every assertion in this module is comparing key numbers"
         );
     }
@@ -418,7 +418,7 @@ mod tests {
                 ("example.com", TYPE_HTTPS, bad),
             ],
         );
-        let err = endpoints(msg).expect_err("a one-byte port is not a port");
+        let err = endpoints(&msg).expect_err("a one-byte port is not a port");
         assert_matches!(
             err,
             SvcbLookupError::Malformed(_),
@@ -434,7 +434,7 @@ mod tests {
             "example.com",
             &[("owner.example.com", TYPE_HTTPS, svcb_rdata(1, "", &[]))],
         );
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         assert_eq!(
             https(&got[0]).target,
             "owner.example.com",
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn an_aliasmode_record_keeps_its_target_and_carries_no_params() {
         let msg = one_record(0, "alias.example.com", &[]);
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         assert_eq!(got.len(), 1);
         assert_eq!(
             https(&got[0]).priority,
@@ -471,17 +471,17 @@ mod tests {
 
     /// **The divergence from RFC 9460 that used to be pinned here is
     /// gone, and the test that pinned it named this exact outcome.**
-    /// §2.4.1 says a recipient MUST *ignore* SvcParams found in an
-    /// AliasMode record — the record stays usable. `dns-message-parser`
-    /// read SvcParams only when `priority != 0`, so such a record left
+    /// §2.4.1 says a recipient MUST *ignore* `SvcParams` found in an
+    /// `AliasMode` record — the record stays usable. `dns-message-parser`
+    /// read `SvcParams` only when `priority != 0`, so such a record left
     /// bytes unconsumed and failed the whole message; this crate accepted
     /// that as a fail-safe divergence and wrote down what would end it:
     /// *"if this test ever fails, upstream started honouring §2.4.1 and
-    /// `endpoint_from_binding`'s AliasMode branch becomes reachable with
+    /// `endpoint_from_binding`'s `AliasMode` branch becomes reachable with
     /// real parameters for the first time."*
     ///
     /// It failed on the first run after the decoder changed. Upstream did
-    /// nothing; the record is read by a decoder that parses SvcParams
+    /// nothing; the record is read by a decoder that parses `SvcParams`
     /// whatever the priority says, and the shared client rules — which had
     /// implemented §2.4.1 correctly all along — finally get to apply it.
     ///
@@ -499,7 +499,7 @@ mod tests {
                 (KEY_PORT, vec![0x01, 0xbb]),
             ],
         );
-        let got = endpoints(msg).expect("RFC 9460 §2.4.1: ignore the params, keep the record");
+        let got = endpoints(&msg).expect("RFC 9460 §2.4.1: ignore the params, keep the record");
         assert_eq!(got.len(), 1);
         assert_eq!(
             https(&got[0]).priority,
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn an_aliasmode_record_targeting_the_root_is_dropped_as_no_service() {
-        let got = endpoints(one_record(0, "", &[])).expect("not malformed, just unusable");
+        let got = endpoints(&one_record(0, "", &[])).expect("not malformed, just unusable");
         assert!(
             got.is_empty(),
             "RFC 9460 §2.4.2: an AliasMode target of `.` means the service does not exist — \
@@ -552,7 +552,7 @@ mod tests {
                 ("example.com", TYPE_HTTPS, requires_dohpath),
             ],
         );
-        let got = endpoints(msg).expect("an unsupported mandatory key is not malformed");
+        let got = endpoints(&msg).expect("an unsupported mandatory key is not malformed");
         assert_eq!(
             got.len(),
             1,
@@ -571,7 +571,7 @@ mod tests {
                 (KEY_ALPN, vec![2, b'h', b'2']),
             ],
         );
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         assert_eq!(got.len(), 1);
         assert_eq!(https(&got[0]).alpn, vec![b"h2".to_vec()]);
     }
@@ -584,7 +584,7 @@ mod tests {
             &[(KEY_MANDATORY, KEY_PORT.to_be_bytes().to_vec())],
         );
         assert_eq!(
-            endpoints(msg),
+            endpoints(&msg),
             Err(SvcbLookupError::MandatoryKeyAbsent { key: KEY_PORT }),
             "RFC 9460 §8: a key declared mandatory has to be there — a check the decoder does \
              not make, because it is about the record as a whole"
@@ -604,7 +604,7 @@ mod tests {
                 (31337, vec![0xde, 0xad, 0xbe, 0xef]),
             ],
         );
-        let got = endpoints(msg).expect("an unknown key is not malformed");
+        let got = endpoints(&msg).expect("an unknown key is not malformed");
         assert_eq!(got.len(), 1, "the record must survive the unknown key");
         assert_eq!(https(&got[0]).alpn, vec![b"h2".to_vec()]);
         assert_eq!(https(&got[0]).target, "svc.example.com");
@@ -625,7 +625,7 @@ mod tests {
                 (KEY_NO_DEFAULT_ALPN, vec![]),
             ],
         );
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         assert_eq!(
             got.len(),
             1,
@@ -634,9 +634,9 @@ mod tests {
         assert_eq!(https(&got[0]).alpn, vec![b"h2".to_vec()]);
     }
 
-    /// The ECHConfigList must come out byte-for-byte as it went in,
+    /// The `ECHConfigList` must come out byte-for-byte as it went in,
     /// **including the two-byte length prefix** RFC 9460 §7.3 makes part of
-    /// the SvcParamValue — that prefixed form is what rustls parses.
+    /// the `SvcParamValue` — that prefixed form is what rustls parses.
     ///
     /// This is the test that caught the decoder stripping it: written as a
     /// plain round-trip, it failed with `Some([254, 13, 0, 1, 2])` against
@@ -646,10 +646,13 @@ mod tests {
     #[test]
     fn the_ech_config_list_round_trips_including_its_length_prefix() {
         let payload = [0xfeu8, 0x0d, 0x00, 0x01, 0x02];
-        let mut ech = (payload.len() as u16).to_be_bytes().to_vec();
+        let mut ech = u16::try_from(payload.len())
+            .expect("under 64 KiB")
+            .to_be_bytes()
+            .to_vec();
         ech.extend_from_slice(&payload);
         let msg = one_record(1, "svc.example.com", &[(KEY_ECH, ech.clone())]);
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         assert_eq!(
             got[0]
                 .rdata
@@ -666,7 +669,7 @@ mod tests {
     #[test]
     fn a_port_is_carried_through() {
         let msg = one_record(1, "svc.example.com", &[(KEY_PORT, vec![0x01, 0xbb])]);
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         assert_eq!(https(&got[0]).port, Some(443));
     }
 
@@ -685,14 +688,14 @@ mod tests {
                 ),
             ],
         );
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         assert_eq!(got.len(), 1);
         assert_eq!(https(&got[0]).target, "svc.example.com");
     }
 
     #[test]
     fn a_response_with_no_answers_is_empty_rather_than_an_error() {
-        assert_eq!(endpoints(response("example.com", &[])), Ok(Vec::new()));
+        assert_eq!(endpoints(&response("example.com", &[])), Ok(Vec::new()));
     }
 
     // ---- the semantics both backends share ------------------------------
@@ -846,7 +849,7 @@ mod tests {
 
     // ---- more than one record ------------------------------------------
 
-    /// Every usable record in the RRSet reaches the caller, not just the
+    /// Every usable record in the `RRSet` reaches the caller, not just the
     /// first one the loop happens to find. Ordering is deliberately not
     /// asserted: `Resolve` promises none (see the `hclient-dns` module doc),
     /// and priority selection is the consumer's, so this checks the set.
@@ -872,7 +875,7 @@ mod tests {
                 ),
             ],
         );
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         let mut seen: Vec<(u16, &str)> = got
             .iter()
             .map(|e| (https(e).priority, https(e).target.as_str()))
@@ -892,7 +895,7 @@ mod tests {
 
     // ---- the ECHConfigList's length prefix, at more than one length -----
 
-    /// The prefix RFC 9460 §7.3 makes part of the SvcParamValue is written
+    /// The prefix RFC 9460 §7.3 makes part of the `SvcParamValue` is written
     /// back on as a **two-byte, big-endian** length. One five-byte payload
     /// cannot tell that apart from a single byte, or from a constant: 300
     /// can, because its high byte is not zero and its low byte is 44.
@@ -900,6 +903,8 @@ mod tests {
     fn the_ech_length_prefix_is_two_big_endian_bytes_of_the_real_length(
         #[values(1, 5, 255, 300)] payload_len: usize,
     ) {
+        // `i % 251` is always under 251, so the cast to `u8` cannot truncate.
+        #[allow(clippy::cast_possible_truncation)]
         let payload: Vec<u8> = (0..payload_len).map(|i| (i % 251) as u8).collect();
         let mut ech = u16::try_from(payload.len())
             .expect("under 64 KiB")
@@ -907,7 +912,7 @@ mod tests {
             .to_vec();
         ech.extend_from_slice(&payload);
         let msg = one_record(1, "svc.example.com", &[(KEY_ECH, ech.clone())]);
-        let got = endpoints(msg).expect("valid");
+        let got = endpoints(&msg).expect("valid");
         assert_eq!(
             got[0]
                 .rdata
@@ -966,18 +971,18 @@ mod tests {
     /// **A known asymmetry, pinned so it is a decision rather than a
     /// surprise.** `endpoint_from_binding` walks the `mandatory` list in
     /// wire order and stops at the first key that is either absent (an
-    /// error, which rejects the whole RRSet) or unrecognised (drop this
+    /// error, which rejects the whole `RRSet`) or unrecognised (drop this
     /// record only). So one record that is both — naming an absent key AND
     /// an unrecognised one — resolves differently depending on which comes
     /// first in a list whoever wrote the record chose the order of.
     ///
     /// Both outcomes are safe in isolation: neither yields an endpoint from
     /// the offending record. What differs is the fate of the OTHER records
-    /// in the RRSet, and that is worth knowing: a server (or anyone able to
+    /// in the `RRSet`, and that is worth knowing: a server (or anyone able to
     /// inject a record) can pick "reject everything" or "drop just this
     /// one" by ordering two numbers. RFC 9460 §8 reads as if the malformed
     /// check settles it — a record whose `mandatory` names an absent key is
-    /// malformed, and §2.2 rejects the RRSet for a malformed record —
+    /// malformed, and §2.2 rejects the `RRSet` for a malformed record —
     /// which would mean checking every key for presence before acting on
     /// any of them.
     #[rstest]
@@ -1099,7 +1104,7 @@ mod tests {
         assert_matches!(refused, Err(SvcbLookupError::Malformed(_)));
     }
 
-    /// **An RRSet far larger than a DNS message could carry is answered
+    /// **An `RRSet` far larger than a DNS message could carry is answered
     /// rather than refused**, which is the capability the envelope cost.
     /// This test is the previous one inverted: the same thousand records
     /// used to exceed the 65535 octets a message is framed by, and
@@ -1131,7 +1136,7 @@ mod tests {
 
     /// **A record of another type is stepped over, not rejected.** A CNAME
     /// beside the answer is ordinary, and on the platforms that hand over
-    /// a whole message it arrives here; refusing the RRSet because of it
+    /// a whole message it arrives here; refusing the `RRSet` because of it
     /// would make every aliased name unreachable over h3.
     #[test]
     fn a_record_of_another_type_beside_the_answer_is_stepped_over() {

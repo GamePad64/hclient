@@ -41,6 +41,10 @@ pub(crate) struct Bundled;
 pub(crate) type Handle = Bundled;
 
 /// Always `Some`: the tables are in the binary.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the signature is shared across all four backend modules the cfg_select! in lib.rs picks between — Windows' and Android's find() can genuinely fail to load"
+)]
 pub(crate) fn find() -> Option<Bundled> {
     Some(Bundled)
 }

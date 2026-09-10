@@ -117,7 +117,7 @@ fn flatten(body: Reduced) -> Outgoing {
 /// frame whose length header promises bytes that never come. RFC 9114 §7.1:
 /// *"When a stream terminates cleanly, if the last frame on the stream was
 /// truncated, this MUST be treated as a connection error of type
-/// H3_FRAME_ERROR."* h3's own server does exactly that
+/// `H3_FRAME_ERROR`."* h3's own server does exactly that
 /// (`h3-0.0.8/src/connection.rs:564`), and on this transport a connection
 /// error is not one request's problem — requests share connections, so it
 /// takes every neighbour down with it.
@@ -172,6 +172,7 @@ impl Drop for Writer {
 /// `hclient-native`'s `OutgoingBody`'s reason — this is the one place
 /// every frame of a request body passes through on the QUIC path, and a
 /// wrapper would be a second thing to remember to put on.
+#[allow(clippy::similar_names)] // `send` (the write half) and `sent` (the byte-counting hook) — see the doc above
 pub(crate) fn pump(
     send: SendHalf,
     body: RequestBody,
@@ -263,7 +264,7 @@ async fn write_stream(
             // An empty data frame is a legal thing for a producer to yield
             // and not a thing to put on the wire: a zero-length DATA frame
             // costs a header and says nothing.
-            Ok(data) if data.is_empty() => continue,
+            Ok(data) if data.is_empty() => {}
             Ok(data) => {
                 let n = data.len() as u64;
                 if crate::http3::write_after_head(w.send.send_data(data).await)? {

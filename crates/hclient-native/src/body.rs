@@ -724,9 +724,8 @@ mod tests {
         // `poll_write` — see the module doc comment.
         let _ = poll_once(conn.as_mut());
 
-        let err = match poll_once(send_fut.as_mut()) {
-            Ok(_) => panic!("a failed body must fail send_request"),
-            Err(e) => e,
+        let Err(err) = poll_once(send_fut.as_mut()) else {
+            panic!("a failed body must fail send_request")
         };
 
         let recovered = StdError::source(&err)

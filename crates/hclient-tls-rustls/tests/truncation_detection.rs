@@ -11,8 +11,8 @@
 //! Four tests, three requested plus one added after mutation testing showed
 //! the requested pair alone doesn't isolate this fix (see below):
 //! - `close_notify_and_a_bare_fin_are_observably_different_at_the_stream_level`
-//!   - the direct, stream-level check: same "no close_notify, socket held
-//!     open" vs. "bare FIN, no close_notify" pair, asserting that the FIN
+//!   - the direct, stream-level check: same "no `close_notify`, socket held
+//!     open" vs. "bare FIN, no `close_notify`" pair, asserting that the FIN
 //!     case produces `UnexpectedEof` rather than merely not hanging.
 //! - `complete_response_survives_an_unclean_close_after_it` - a full,
 //!   `Content-Length`-satisfied response followed by a bare FIN (no
@@ -36,7 +36,7 @@ use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::Rustls;
 use hyper::body::Bytes;
 use std::future::poll_fn;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,12 +110,11 @@ fn spawn_response_server(response_head: String, body: &'static [u8]) -> (SocketA
                         break;
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(_) => break,
             }
         }
 
-        use std::io::Write as _;
         conn.writer().write_all(response_head.as_bytes()).unwrap();
         conn.writer().write_all(body).unwrap();
         while conn.wants_write() {

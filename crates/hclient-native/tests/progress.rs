@@ -130,7 +130,7 @@ fn server(behaviour: Behaviour) -> SocketAddr {
         for sock in listener.incoming() {
             let Ok(sock) = sock else { continue };
             let behaviour = behaviour.clone();
-            std::thread::spawn(move || serve(sock, behaviour));
+            std::thread::spawn(move || serve(sock, &behaviour));
         }
     });
     addr
@@ -140,7 +140,7 @@ fn server(behaviour: Behaviour) -> SocketAddr {
 /// and answers. Deliberately not a general HTTP server: every request
 /// this file sends declares a length, so counting to it is enough and
 /// leaves nothing to guess about where the body ended.
-fn serve(mut sock: std::net::TcpStream, behaviour: Behaviour) {
+fn serve(mut sock: std::net::TcpStream, behaviour: &Behaviour) {
     sock.set_read_timeout(Some(BOUND)).expect("read timeout");
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -457,14 +457,15 @@ async fn a_composed_hook_delivers_progress_to_both_halves() {
 /// machine changes nothing.
 #[tokio::test]
 async fn an_upload_is_reported_before_the_head_rather_than_only_after_it() {
+    const CHUNKS: usize = 8;
+    const CHUNK: usize = 8 * 1024;
+
     let behaviour = Behaviour::answering("ok");
     let read_by_server = behaviour.request_octets.clone();
     let addr = server(behaviour);
     let rec = Recorder::default();
     let client = Client::builder(watched(&rec)).build().expect("build");
 
-    const CHUNKS: usize = 8;
-    const CHUNK: usize = 8 * 1024;
     let len = (CHUNKS * CHUNK).to_string();
     let resp = tokio::time::timeout(
         BOUND,

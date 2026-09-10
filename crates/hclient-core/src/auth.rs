@@ -95,7 +95,7 @@ impl<'a> AuthRequest<'a> {
     ///
     /// **Three states, because two would make "there is nothing to hash"
     /// and "there is something and you cannot have it" the same answer** —
-    /// and a signing scheme must tell them apart: AWS SigV4 hashes the
+    /// and a signing scheme must tell them apart: AWS `SigV4` hashes the
     /// empty string for the first and writes `UNSIGNED-PAYLOAD` for the
     /// second, and getting that backwards produces a signature the server
     /// rejects with nothing in the rejection to say why.

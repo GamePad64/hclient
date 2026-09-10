@@ -140,6 +140,11 @@ pub struct Held {
     pub entered: usize,
 }
 
+// A curated summary, not a dump: the mutex-guarded fields and the
+// thread handle carry no useful `Debug` for a reader of a failing
+// test — `seen`, `hold_until` and `held` are read through their own
+// accessors where a test actually needs them.
+#[allow(clippy::missing_fields_in_debug)]
 impl Debug for Wire {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Wire").field("addr", &self.addr).finish()
@@ -155,7 +160,7 @@ impl Wire {
         let seen: Arc<Mutex<Vec<Packet>>> = Arc::new(Mutex::new(Vec::new()));
         let hold_until: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
         let held: Arc<Mutex<Held>> = Arc::new(Mutex::new(Held::default()));
-        let (log, hold, holds) = (seen.clone(), hold_until.clone(), held.clone());
+        let (log, until, holds) = (seen.clone(), hold_until.clone(), held.clone());
 
         // Two plain blocking threads, deliberately: this is the observer,
         // and it must not share an executor with either endpoint under
@@ -183,7 +188,7 @@ impl Wire {
                 // early — which is what lets a test hold until an EVENT
                 // rather than for a duration it had to guess.
                 loop {
-                    let Some(t) = *hold.lock().unwrap() else {
+                    let Some(t) = *until.lock().unwrap() else {
                         break;
                     };
                     let now = Instant::now();
@@ -384,6 +389,12 @@ fn varint(d: &[u8]) -> Option<(u64, usize)> {
 /// Initial and its 0-RTT packets into one datagram**, so a reader that
 /// looked only at the front would report `Initial` and conclude that no
 /// early data was ever sent.
+// The `u64` lengths this walks come from `varint`, decoded off a UDP
+// datagram this test's own `hclient-h3` client wrote — bounded by a real
+// datagram's own size ceiling (~65 KiB), far under `usize::MAX` on every
+// target this file builds for (it is gated off wasm), so the `as usize`
+// below never truncates in practice.
+#[allow(clippy::cast_possible_truncation)]
 fn packets(mut d: &[u8]) -> Vec<Packet> {
     let mut out = Vec::new();
     let stop = |out: &mut Vec<Packet>, kind: Kind, len: usize| {

@@ -4,6 +4,14 @@
 //! ordinary generic form here doesn't conflict with it, and the exception
 //! list keeps its meaning of "a justified exception in production code."
 
+// `Transport::execute` and `WebSocketConnect::websocket` return `impl
+// Future` (an RPITIT), and `async fn` is the idiomatic way to implement
+// one — these fixtures stand in for real transports, so writing them as
+// plain functions returning `std::future::ready(..)` would obscure the
+// property under test (that the seam is RPITIT-shaped) rather than
+// clarify it. None of these fixture bodies happens to need an `.await`.
+#![allow(clippy::unused_async_trait_impl)]
+
 use bytes::Bytes;
 use hclient_core::body::RequestBody;
 use hclient_core::caps::Capabilities;

@@ -164,11 +164,7 @@ pub struct SendJsFuture {
 // its `Debug` by hand rather than deriving it.
 impl Debug for SendJsFuture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ready = self
-            .state
-            .lock()
-            .map(|s| s.result.is_some())
-            .unwrap_or(false);
+        let ready = self.state.lock().is_ok_and(|s| s.result.is_some());
         f.debug_struct("SendJsFuture")
             .field("ready", &ready)
             .field("completed", &self.completed)
@@ -177,6 +173,11 @@ impl Debug for SendJsFuture {
 }
 
 impl SendJsFuture {
+    // The promise is taken by value although only `then` is called on it:
+    // every caller hands over one it just made — `window.fetch_with_str(..)`,
+    // a timer's own promise — and this future conceptually owns the thing it
+    // is waiting on, which a borrow would stop saying.
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn new(promise: js_sys::Promise) -> Self {
         let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::default()));
 
@@ -187,6 +188,10 @@ impl SendJsFuture {
         // is the same trick js-sys 0.3.103's `JsFuture::from` uses in its
         // own `finish` (`futures/mod.rs:165-188`), verified against that
         // source directly.
+        #[allow(
+            clippy::items_after_statements,
+            reason = "deliberately local — finish is a private helper for the two closures built immediately below it, and belongs beside the doc comment explaining it rather than at module scope"
+        )]
         fn finish(state: &Mutex<State>, result: Result<JsValue, JsValue>) {
             let waker = {
                 let mut s = state.lock().expect("promise state poisoned");
@@ -249,15 +254,12 @@ impl Future for SendJsFuture {
              violates the Future contract"
         );
         let mut s = this.state.lock().expect("promise state poisoned");
-        match s.result.take() {
-            Some(r) => {
-                this.completed = true;
-                Poll::Ready(r)
-            }
-            None => {
-                s.waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
+        if let Some(r) = s.result.take() {
+            this.completed = true;
+            Poll::Ready(r)
+        } else {
+            s.waker = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 }

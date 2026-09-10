@@ -67,6 +67,15 @@ use std::fmt::Debug;
 /// `Native::without_pool`), and a rule whose other arms can only be
 /// exercised by a member that does not exist yet would otherwise be
 /// unpinned.
+///
+/// # Errors
+///
+/// [`Disagreement`] on the first field where `tcp` and `quic` report
+/// different claims that neither the weaker-claim-wins rule nor
+/// `early_data`'s stronger-claim-wins rule can reconcile — `redirects`,
+/// `cancel_on_drop`, `connection_reuse`, `response_decompression` and
+/// `tls_config` are checked in that order, and the error names whichever
+/// one disagrees first.
 pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, Disagreement> {
     // Built from `Capabilities::default()` and filled in field by field, for
     // the reason every backend here does the same: the struct is

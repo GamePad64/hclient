@@ -93,7 +93,7 @@
 //!    **Nothing in `policy.rs` can repair this**, and the reason is this
 //!    consequence: with no error word there is no way to tell "ICU set a
 //!    bit we ignore" from "this name is genuinely not an IDN". Converting
-//!    label by label would fix two of the four bits and break CheckBidi,
+//!    label by label would fix two of the four bits and break `CheckBidi`,
 //!    which is a property of the whole name. So the divergence stands,
 //!    and it is bounded rather than merely admitted:
 //!    `tests/differential.rs`'s
@@ -146,6 +146,10 @@ pub(crate) type Handle = Foundation;
 
 /// Always `Some`: Foundation cannot be absent on an Apple target. The
 /// acceptance gate in `lib.rs` is what decides whether it is *usable*.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the signature is shared across all four backend modules the cfg_select! in lib.rs picks between — Windows' and Android's find() can genuinely fail to load"
+)]
 pub(crate) fn find() -> Option<Foundation> {
     Some(Foundation)
 }

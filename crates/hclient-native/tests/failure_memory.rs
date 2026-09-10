@@ -43,7 +43,10 @@ fn a_failure_lives_exactly_as_long_as_the_ttl_says() {
     f.note(&origin(), secs(0));
 
     assert!(f.suppressed(&origin(), secs(0)));
-    assert!(f.suppressed(&origin(), H3_FAILURE_TTL - Duration::from_nanos(1)));
+    assert!(f.suppressed(
+        &origin(),
+        H3_FAILURE_TTL.checked_sub(Duration::from_nanos(1)).unwrap()
+    ));
     assert!(
         !f.suppressed(&origin(), H3_FAILURE_TTL),
         "the window is half-open"
@@ -57,7 +60,10 @@ fn the_window_starts_when_the_connect_failed() {
     let f = H3Failures::default();
     f.note(&origin(), secs(1_000));
 
-    assert!(f.suppressed(&origin(), secs(1_000) + H3_FAILURE_TTL - secs(1)));
+    assert!(f.suppressed(
+        &origin(),
+        (secs(1_000) + H3_FAILURE_TTL).checked_sub(secs(1)).unwrap()
+    ));
     assert!(!f.suppressed(&origin(), secs(1_000) + H3_FAILURE_TTL));
 }
 
@@ -70,7 +76,10 @@ fn a_second_failure_restarts_the_window() {
     f.note(&origin(), secs(0));
     f.note(&origin(), secs(100));
 
-    assert!(f.suppressed(&origin(), secs(100) + H3_FAILURE_TTL - secs(1)));
+    assert!(f.suppressed(
+        &origin(),
+        (secs(100) + H3_FAILURE_TTL).checked_sub(secs(1)).unwrap()
+    ));
     assert!(!f.suppressed(&origin(), secs(100) + H3_FAILURE_TTL));
 }
 

@@ -1,4 +1,4 @@
-//! Windows' WinHTTP behind [`Transport`](hclient_core::transport::Transport).
+//! Windows' `WinHTTP` behind [`Transport`](hclient_core::transport::Transport).
 //!
 //! The fifth ambient backend — after `hclient-wasi`, `hclient-fetch` and
 //! `hclient-urlsession`, it owns no connection of its own — and it exists
@@ -8,7 +8,7 @@
 //!
 //! **The system proxy, including a PAC script the OS evaluates.** This is
 //! the sharpest of the four and the one with a name already in this
-//! workspace: `hclient-proxy`'s `system` feature reads WinINET's settings
+//! workspace: `hclient-proxy`'s `system` feature reads `WinINET`'s settings
 //! and **refuses** a machine whose proxy is an auto-config script, because
 //! nothing there runs JavaScript — `SystemProxyRefused::PacScript`, whose
 //! own doc calls ignoring it *a policy violation, and on a network where
@@ -16,10 +16,10 @@
 //! client's side*. That error names `hclient-urlsession` as the answer on
 //! Apple platforms and had no Windows answer to name. This is it:
 //! `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY` hands the whole question —
-//! WPAD discovery, the script, its per-URL verdict — to WinHTTP, which
+//! WPAD discovery, the script, its per-URL verdict — to `WinHTTP`, which
 //! runs it in the OS.
 //!
-//! **Enterprise roots and SChannel policy.** Trust decisions are the
+//! **Enterprise roots and `SChannel` policy.** Trust decisions are the
 //! machine's: roots pushed by Group Policy or MDM, revocation
 //! configuration, FIPS mode, and whatever a future Windows adds. That is a
 //! fact about the device rather than a preference, which is the argument
@@ -34,7 +34,7 @@
 //!
 //! # What it deliberately does NOT take from the OS
 //!
-//! WinHTTP will follow redirects and keep cookies for you, and this
+//! `WinHTTP` will follow redirects and keep cookies for you, and this
 //! transport **turns both off**, for the reason `hclient-urlsession` turns
 //! off three: they are portable behaviour this workspace already
 //! implements once, and a caller must not lose `hclient`'s versions by
@@ -53,14 +53,14 @@
 //! that way. `hclient-fetch` and `hclient-urlsession` both report
 //! [`true`](true):
 //! the platform decodes the body and there is no way to ask it not to.
-//! WinHTTP decodes only when asked — `WINHTTP_OPTION_DECOMPRESSION`,
+//! `WinHTTP` decodes only when asked — `WINHTTP_OPTION_DECOMPRESSION`,
 //! opt-in since Windows 8.1 — so **not asking** leaves `Content-Encoding`
 //! on the wire and `hclient`'s own `gzip`/`brotli`/`deflate`/`zstd` in
 //! force, identically to `hclient-native`. That is what this reports, and
 //! it is a choice rather than a limitation.
 //!
-//! There is no cache decision to make: WinHTTP has no response cache at
-//! all, unlike WinINET, so [`Capabilities::owns_cache`](hclient_core::caps::Capabilities::owns_cache)
+//! There is no cache decision to make: `WinHTTP` has no response cache at
+//! all, unlike `WinINET`, so [`Capabilities::owns_cache`](hclient_core::caps::Capabilities::owns_cache)
 //! is `false` by construction rather than by a call.
 //!
 //! # HTTP/2 and HTTP/3, and the read-back that the obvious call gets wrong
@@ -78,7 +78,7 @@
 //! oblige reading `WINHTTP_QUERY_VERSION` back on every response to keep
 //! [`Capabilities::version_reported`](hclient_core::caps::Capabilities::version_reported)
 //! honest. It would not: `WINHTTP_QUERY_VERSION` reads the **status
-//! line**, an HTTP/2 or HTTP/3 response has none, and WinHTTP synthesises
+//! line**, an HTTP/2 or HTTP/3 response has none, and `WinHTTP` synthesises
 //! `HTTP/1.1` into the raw header block this crate already parses. A
 //! client following that instruction reports every h2 and h3 response as
 //! HTTP/1.1 — which is the capability that lies the paragraph was written
@@ -87,14 +87,14 @@
 //! bypasses the status line entirely once it reads non-zero.
 //!
 //! It is queried on **every** response, including where nothing was
-//! enabled, so the claim rests on what WinHTTP reports rather than on the
+//! enabled, so the claim rests on what `WinHTTP` reports rather than on the
 //! mask's documented `0x0` default still being the default on a Windows
 //! nobody here has seen.
 //!
 //! **A demand is now honoured rather than refused**, which is the other
 //! half. `WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED` prevents a fallback off
 //! the mask, so a [`RequireVersion`](hclient_core::req::RequireVersion) demand
-//! narrows the mask for that one request and WinHTTP refuses the
+//! narrows the mask for that one request and `WinHTTP` refuses the
 //! connection rather than quietly answering over HTTP/1.1 —
 //! [`Capabilities::version_select`](hclient_core::caps::Capabilities::version_select)
 //! is `true`. Without that option a demand could only be *noticed* after
@@ -119,7 +119,7 @@
 //!   [`RequestBody::Streaming`](hclient_core::body::RequestBody::Streaming) is a
 //!   typed `Unsupported` error rather than a silent empty body, which is
 //!   the same refusal `hclient-urlsession` makes and for the same reason.
-//! - **The rest of the HTTP/2 and HTTP/3 knobs.** WinHTTP documents
+//! - **The rest of the HTTP/2 and HTTP/3 knobs.** `WinHTTP` documents
 //!   `WINHTTP_OPTION_HTTP2_RECEIVE_WINDOW` (the pair `H2Opts` calls
 //!   `initial_stream_window`/`connection_window` one crate over, through a
 //!   `WINHTTP_HTTP2_RECEIVE_WINDOW` struct rather than a `DWORD`),
@@ -151,11 +151,11 @@
 //! crate already names. `hclient-fetch` is the precedent that fits, and
 //! it keeps its seam impl at home for the same reason.
 //!
-//! **Almost none of RFC 6455 is here.** WinHTTP writes the handshake,
+//! **Almost none of RFC 6455 is here.** `WinHTTP` writes the handshake,
 //! checks the `Sec-WebSocket-Accept`, masks, frames, and answers pings.
 //! What is left is assembling fragments into messages, checking that a
 //! text message is UTF-8 — the seam requires an error rather than a lossy
-//! conversion, and WinHTTP does not check — and routing one completion
+//! conversion, and `WinHTTP` does not check — and routing one completion
 //! queue to two readers, since `Stream` and `Sink` are on one value.
 //!
 //! That a message-oriented seam designed around the browser fitted a
@@ -164,12 +164,12 @@
 //!
 //! # What has not been observed
 //!
-//! Every claim here about *what WinHTTP does* is read from its
+//! Every claim here about *what `WinHTTP` does* is read from its
 //! documentation and from `windows-sys` 0.61's declarations. **No line of
 //! this crate has been run**: it is cross-checked with `cargo check
 //! --target x86_64-pc-windows-msvc --all-targets` and nothing more, for
 //! want of a Windows machine. The async contract this leans on hardest —
-//! that a buffer handed to `WinHttpReadData` is WinHTTP's until
+//! that a buffer handed to `WinHttpReadData` is `WinHTTP`'s until
 //! `READ_COMPLETE`, and that `HANDLE_CLOSING` is the last callback a
 //! handle ever gets — is stated in `sys.rs` where the code depends on it,
 //! so the next person with a Windows box knows exactly what to check.

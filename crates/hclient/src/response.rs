@@ -107,6 +107,12 @@ impl<B> Response<B> {
     /// that from two layers up.
     ///
     /// [`ErrorKind::Status`]: hclient_core::error::ErrorKind::Status
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Status`] for a `4xx` or `5xx` response, carrying an
+    /// [`UnexpectedStatus`] with the status and the URL — see the opening
+    /// line above.
     pub fn error_for_status(self) -> Result<Self, Error> {
         if self.status().is_client_error() || self.status().is_server_error() {
             return Err(Error::new(
@@ -233,9 +239,12 @@ where
         loop {
             let frame = poll_fn(|cx| Pin::new(&mut self.body).poll_frame(cx)).await;
             match frame {
+                // An `if let` here would lose the `Err` arm, and with it
+                // the one word saying what the skipped frame was.
+                #[allow(clippy::single_match)]
                 Some(Ok(f)) => match f.into_data() {
                     Ok(d) => return Some(Ok(d)),
-                    Err(_) => continue, // trailers
+                    Err(_) => {} // trailers
                 },
                 Some(Err(e)) => {
                     self.sealed = true;
@@ -284,6 +293,11 @@ where
         crate::lines::LineStream::new(self, crate::lines::DEFAULT_MAX_LINE)
     }
 
+    /// # Errors
+    ///
+    /// Whatever reading the body fails with: the backend's own
+    /// [`ErrorKind`] where the body's error already carries one, and
+    /// [`ErrorKind::Body`] otherwise.
     pub async fn collect(mut self) -> Result<Collected, Error> {
         let mut acc = BytesMut::new();
         while let Some(c) = self.chunk().await {
@@ -380,6 +394,12 @@ impl Collected {
     /// that from two layers up.
     ///
     /// [`ErrorKind::Status`]: hclient_core::error::ErrorKind::Status
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Status`] for a `4xx` or `5xx` response, carrying an
+    /// [`UnexpectedStatus`] with the status and the URL — see the opening
+    /// line above.
     pub fn error_for_status(self) -> Result<Self, Error> {
         if self.status().is_client_error() || self.status().is_server_error() {
             return Err(Error::new(
@@ -468,6 +488,11 @@ impl Collected {
     /// different answer depending on what an unrelated crate switched on —
     /// and the difference is silent, since `windows-1251` bytes would come
     /// back as plausible text instead of as an error.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Decode`] when the body is not valid UTF-8 — see the
+    /// opening line above.
     pub fn text(&self) -> Result<String, Error> {
         String::from_utf8(self.body.to_vec()).map_err(|e| Error::new(ErrorKind::Decode, e))
     }
@@ -502,6 +527,11 @@ impl Collected {
     /// UTF-8 or UTF-16 byte order mark is decoded as that and the declared
     /// label is overridden. That is the rule every browser follows, and
     /// the BOM is not part of the returned text.
+    ///
+    /// # Errors
+    ///
+    /// [`CharsetError::UnknownLabel`] or [`CharsetError::Malformed`] —
+    /// the last two bullets above say which.
     #[cfg(feature = "charset")]
     pub fn text_with_charset(&self) -> Result<String, Error> {
         let Some(label) = self
@@ -564,6 +594,11 @@ impl Collected {
     /// aren't needed by a consumer who only streams the body or reads it
     /// as bytes — see the comment on the feature in Cargo.toml about the
     /// cost on wasm.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Decode`] when the body does not parse as `T` — see
+    /// above for why a `4xx` should be handled first instead.
     #[cfg(feature = "json")]
     pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
         serde_json::from_slice(&self.body).map_err(|e| Error::new(ErrorKind::Decode, e))

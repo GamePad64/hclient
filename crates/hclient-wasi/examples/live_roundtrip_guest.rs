@@ -79,10 +79,7 @@ impl wasip3::exports::cli::run::Guest for Guest {
                 eprintln!("port must be numeric: {e}");
                 std::process::abort()
             });
-        let mode = args
-            .get(2)
-            .map(String::as_str)
-            .unwrap_or("response-roundtrip");
+        let mode = args.get(2).map_or("response-roundtrip", String::as_str);
 
         match mode {
             "response-roundtrip" => response_roundtrip(port).await,
@@ -115,6 +112,10 @@ impl wasip3::exports::cli::run::Guest for Guest {
 /// a syntactically valid URI authority*, and RFC 3986's `reg-name` is
 /// ASCII. This asks the host rather than the document. It sends nothing:
 /// what is measured is the setter, so no server and no port are needed.
+// Kept `async` though it never awaits: every sibling arm of the `match
+// mode` dispatch above is `.await`ed, and this is called the same way —
+// dropping `async` here would make this arm's call the odd one out.
+#[allow(clippy::unused_async)]
 async fn idn_authority() -> Result<(), ()> {
     use wasip3::http::types::{ErrorCode, Fields, Request};
 
@@ -492,7 +493,7 @@ async fn cancel_on_drop(port: u16, case: CancelCase) -> Result<(), ()> {
             );
             return Err(());
         }
-        Either::Right((_, exec)) => exec,
+        Either::Right(((), exec)) => exec,
     };
 
     match case {

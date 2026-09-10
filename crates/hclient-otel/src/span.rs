@@ -103,7 +103,7 @@ impl Recorder {
             Choice::Otel(tracer) => Front::Otel(otel_front::open(
                 tracer,
                 req,
-                crate::context::parent_of(extensions),
+                &crate::context::parent_of(extensions),
             )),
             #[cfg(not(any(feature = "tracing", feature = "otel")))]
             Choice::Nothing => Front::Nothing,
@@ -227,7 +227,7 @@ mod tracing_front {
     /// running `tracing-opentelemetry` 0.33 over this front exports a
     /// span named `GET` with `kind = Client`, parented on the caller's
     /// own span and sharing its trace — so the bridge really does give
-    /// OTel for nothing, and `otel.kind` is consumed rather than passed
+    /// `OTel` for nothing, and `otel.kind` is consumed rather than passed
     /// through as an attribute.
     ///
     /// **Every number is recorded as `i64`, and that is not cosmetic.**
@@ -235,7 +235,7 @@ mod tracing_front {
     /// `u16` or a `u64` field to a **string** and only an `i64` to an
     /// integer — probed directly, four fields, at creation and after it.
     /// `server.port`, `http.response.status_code` and
-    /// `http.request.resend_count` are `int` in the OTel registry, so
+    /// `http.request.resend_count` are `int` in the `OTel` registry, so
     /// recording them in their natural width would put quoted numbers in
     /// front of every collector that groups on them. A plain `tracing`
     /// subscriber cannot tell the two apart, so the widening costs
@@ -327,7 +327,7 @@ mod otel_front {
     pub(super) fn open(
         tracer: &opentelemetry::global::BoxedTracer,
         req: &attrs::Request<'_>,
-        parent: Context,
+        parent: &Context,
     ) -> Context {
         let mut kv = Vec::with_capacity(9);
         kv.push(KeyValue::new("http.request.method", req.method));
@@ -361,7 +361,7 @@ mod otel_front {
         let builder = SpanBuilder::from_name(req.method)
             .with_kind(SpanKind::Client)
             .with_attributes(kv);
-        let span = tracer.build_with_context(builder, &parent);
+        let span = tracer.build_with_context(builder, parent);
         parent.with_span(span)
     }
 

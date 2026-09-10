@@ -257,9 +257,10 @@ fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_eof() {
         let mut rb = ReadBuf::new(&mut store);
         match HyperRead::poll_read(Pin::new(&mut io), &mut cx, rb.unfilled()) {
             Poll::Ready(Ok(())) => {
-                if rb.filled().is_empty() {
-                    panic!("must not report EOF before the error surfaces");
-                }
+                assert!(
+                    !rb.filled().is_empty(),
+                    "must not report EOF before the error surfaces"
+                );
                 out.extend_from_slice(rb.filled());
             }
             Poll::Ready(Err(e)) => {
@@ -331,6 +332,9 @@ fn caller_buffer_smaller_than_scratch() {
 #[test]
 fn caller_buffer_exactly_equal_to_scratch() {
     // Boundary: want = remaining().min(scratch.len()) == SCRATCH exactly.
+    // `i % 256` is always in 0..256, which fits `u8` — bounded by the
+    // modulus, not by `SCRATCH`.
+    #[allow(clippy::cast_possible_truncation)]
     let data: Vec<u8> = (0..SCRATCH).map(|i| (i % 256) as u8).collect();
     let io = FuturesIo::new(Exact {
         data: data.clone(),
@@ -346,7 +350,10 @@ fn caller_buffer_larger_than_scratch_by_one_byte() {
     // 8-byte destination). remaining() == SCRATCH + 1 forces two internal
     // reads through the scratch buffer to fill one hyper poll_read call's
     // worth of *capacity*, and the shim must not panic indexing `scratch`.
-    let data: Vec<u8> = (0..SCRATCH + 1).map(|i| (i % 251) as u8).collect();
+    // `i % 251` is always in 0..251, which fits `u8` — bounded by the
+    // modulus, not by `SCRATCH`.
+    #[allow(clippy::cast_possible_truncation)]
+    let data: Vec<u8> = (0..=SCRATCH).map(|i| (i % 251) as u8).collect();
     let io = FuturesIo::new(Exact {
         data: data.clone(),
         at: 0,
@@ -450,8 +457,8 @@ struct WriteRecorder {
 }
 
 /// Wrapped in Arc<Mutex<_>> so the test can inspect it after handing
-/// ownership of a clone-like handle into FuturesIo. Since futures_io::AsyncWrite
-/// needs a concrete Unpin type owned by FuturesIo, we use a small handle type.
+/// ownership of a clone-like handle into `FuturesIo`. Since `futures_io::AsyncWrite`
+/// needs a concrete Unpin type owned by `FuturesIo`, we use a small handle type.
 struct RecorderHandle(Arc<Mutex<WriteRecorder>>);
 
 impl AsyncWrite for RecorderHandle {

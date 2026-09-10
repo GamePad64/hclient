@@ -257,7 +257,7 @@ pub struct SvcbEndpoint {
 
 impl SvcbEndpoint {
     /// The two fields an HTTPS record cannot be without: RFC 9460's
-    /// `SvcPriority` and `TargetName`. Everything else is a SvcParam,
+    /// `SvcPriority` and `TargetName`. Everything else is a `SvcParam`,
     /// which is by definition optional — and a resolver that learns to
     /// parse a new one should not break every consumer, which is what the
     /// setters are for.
@@ -292,35 +292,35 @@ impl SvcbEndpoint {
         self
     }
 
-    /// The `alpn` SvcParam — the protocols the origin says it speaks.
+    /// The `alpn` `SvcParam` — the protocols the origin says it speaks.
     #[must_use]
     pub fn alpn(mut self, alpn: Vec<Vec<u8>>) -> Self {
         self.alpn = alpn;
         self
     }
 
-    /// The `port` SvcParam.
+    /// The `port` `SvcParam`.
     #[must_use]
     pub fn port(mut self, port: Option<u16>) -> Self {
         self.port = port;
         self
     }
 
-    /// The `ipv4hint` SvcParam.
+    /// The `ipv4hint` `SvcParam`.
     #[must_use]
     pub fn ipv4hint(mut self, hints: Vec<Ipv4Addr>) -> Self {
         self.ipv4hint = hints;
         self
     }
 
-    /// The `ipv6hint` SvcParam.
+    /// The `ipv6hint` `SvcParam`.
     #[must_use]
     pub fn ipv6hint(mut self, hints: Vec<Ipv6Addr>) -> Self {
         self.ipv6hint = hints;
         self
     }
 
-    /// The `ech` SvcParam, carried verbatim. A connector passes it on only
+    /// The `ech` `SvcParam`, carried verbatim. A connector passes it on only
     /// to a TLS backend that says it applies one — see
     /// `TlsConnect::applies_ech`, and the measurement behind that gate.
     #[must_use]
@@ -457,6 +457,12 @@ impl Resolve for IpLiteralOnly {
             // A literal of the other family has no record of this type,
             // and that is not an error — the same answer the two
             // methods this replaced gave by returning nothing.
+            //
+            // Kept as a separate arm from the one below, though the code
+            // is identical: this one is "wrong family", the next is "no
+            // records of any type, `supports` already said so" — merging
+            // them loses that distinction.
+            #[allow(clippy::match_same_arms)]
             (Some(_), rtype::A | rtype::AAAA) => None,
             // Any other type: this resolver has no records at all, which
             // `supports` says in advance.

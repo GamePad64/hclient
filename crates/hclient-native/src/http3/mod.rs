@@ -337,6 +337,15 @@ where
     ///   together, the same scope `hclient-native` gives the same setting.
     ///   `first_byte` and `between_bytes` stay `false`, and the comment on
     ///   `capabilities` says what each of them would cost.
+    ///
+    /// # Errors
+    ///
+    /// Never today — construction does no I/O, so this always returns
+    /// `Ok`. `Result` is the signature because building an `H3` is a seam
+    /// other members of this family can fail at (a TLS or DNS backend
+    /// validating its configuration eagerly), and a fallible constructor
+    /// here matches that rather than one that panics if a future member
+    /// needs to fail.
     pub fn new(rt: R, tls: T, dns: D) -> Result<Self, Error> {
         let early_data = tls.offers_early_data();
         let client_certs = tls.presents_client_certs();
@@ -399,6 +408,7 @@ where
 
     /// Ping an idle pooled connection this often. See
     /// [`DEFAULT_KEEP_ALIVE`], which is what this starts at.
+    #[must_use]
     pub fn keep_alive_interval(mut self, d: Duration) -> Self {
         self.keep_alive = Some(d);
         self
@@ -414,6 +424,7 @@ where
     /// burst of requests and then goes quiet for a long time, that is the
     /// right trade — the connection was going to be replaced anyway, and
     /// this way it is not being pinged in the meantime.
+    #[must_use]
     pub fn without_keep_alive(mut self) -> Self {
         self.keep_alive = None;
         self
@@ -600,6 +611,7 @@ where
     /// It is reported here rather than carried out to `execute`, because a
     /// connect that then fails or times out must not swallow the fact that
     /// the pooled connection really was found dead.
+    #[allow(clippy::similar_names)] // `stale` (a removed dead entry) and `state` (a new connection's `ConnState`) are this codebase's own vocabulary
     async fn checkout(
         &self,
         key: &PoolKey,
@@ -893,6 +905,7 @@ where
     /// had: everything except the one tolerated write failure is the
     /// request failing, and it is reported as such rather than as a
     /// response that happens to be missing its request.
+    #[allow(clippy::similar_names)] // `send` (the request handle) and `sent` (the byte-counting hook) are this module's established names
     async fn one_attempt(
         send: &mut SendRequest,
         head: http::Request<()>,
@@ -900,7 +913,10 @@ where
         watch: Option<Box<Watch<H>>>,
         sent: Option<std::sync::Arc<hclient_core::hooks::Meter>>,
     ) -> Result<http::Response<H3Body<H>>, Error> {
-        let stream = send.send_request(head).await.map_err(body::stream_error)?;
+        let stream = send
+            .send_request(head)
+            .await
+            .map_err(|e| body::stream_error(&e))?;
         // From here on the head is on the wire, and a write-side failure
         // stops meaning what it meant a line ago. See `write_after_head`.
         let (writer, mut reader) = stream.split();
@@ -924,7 +940,7 @@ where
                         Poll::Pending => {}
                     }
                 }
-                head.as_mut().poll(cx).map_err(body::stream_error)
+                head.as_mut().poll(cx).map_err(|e| body::stream_error(&e))
             })
             .await?
         };
@@ -962,9 +978,9 @@ where
     fn watch(
         &self,
         conn: &quinn::Connection,
-        state: &Option<Arc<ConnState>>,
+        state: Option<&Arc<ConnState>>,
     ) -> Option<Box<Watch<H>>> {
-        let state = state.clone()?;
+        let state = state.cloned()?;
         Some(Box::new(Watch::new(
             self.hooks.clone(),
             conn.clone(),
@@ -986,8 +1002,16 @@ where
     /// difference between this transport and one that does not share
     /// connections: over HTTP/1 a failed exchange is a failed connection,
     /// and here it usually is not.
-    fn report_failed(&self, watch: &Option<Box<Watch<H>>>, e: &Error) {
-        if let Some(w) = watch.as_deref() {
+    ///
+    /// `&self` is unused — the work is entirely `Watch::failed`'s — and
+    /// stays anyway: this sits beside `counted`, `watch` and
+    /// `report_head`, called the same `self.report_failed(..)` way from
+    /// every site in `staged.rs`, and making the one member of that
+    /// family that happens not to touch `self.hooks` an associated
+    /// function would break that uniform shape for no reader's benefit.
+    #[allow(clippy::unused_self)]
+    fn report_failed(&self, watch: Option<&Watch<H>>, e: &Error) {
+        if let Some(w) = watch {
             w.failed(e);
         }
     }
@@ -1141,7 +1165,7 @@ pub(crate) fn write_after_head(r: Result<(), h3::error::StreamError>) -> Result<
     match r {
         Ok(()) => Ok(false),
         Err(h3::error::StreamError::RemoteTerminate { .. }) => Ok(true),
-        Err(e) => Err(body::stream_error(e)),
+        Err(e) => Err(body::stream_error(&e)),
     }
 }
 

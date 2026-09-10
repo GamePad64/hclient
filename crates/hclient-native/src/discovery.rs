@@ -50,11 +50,11 @@
 //!   name has no addresses), and that is a resolver-facing question the
 //!   `Resolve` seam does not answer today.
 //!
-//! # AliasMode is skipped, and skipping it is load-bearing
+//! # `AliasMode` is skipped, and skipping it is load-bearing
 //!
-//! `endpoint_from_binding` in `hclient-dns-system` emits AliasMode records
+//! `endpoint_from_binding` in `hclient-dns-system` emits `AliasMode` records
 //! as an endpoint with `priority: 0` and every other field empty (RFC 9460
-//! §2.4.1: a recipient MUST ignore the SvcParams of an AliasMode record).
+//! §2.4.1: a recipient MUST ignore the `SvcParams` of an `AliasMode` record).
 //! Priority 0 is also numerically the *lowest*, so a selection that took
 //! the minimum priority without checking would pick the alias every time
 //! and act on an endpoint that carries nothing — discovery would look
@@ -154,10 +154,7 @@ pub(crate) struct NegativeCache {
 impl Debug for NegativeCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NegativeCache")
-            .field(
-                "suppressed",
-                &self.until.lock().map(|m| m.len()).unwrap_or(0),
-            )
+            .field("suppressed", &self.until.lock().map_or(0, |m| m.len()))
             .finish()
     }
 }
@@ -251,7 +248,7 @@ impl From<SvcbEndpoint> for Endpoint {
 /// The HTTPS record this connection should be made under, or `None` when
 /// there is none to act on.
 ///
-/// **The lowest ServiceMode priority wins, and nothing else is tried.** RFC
+/// **The lowest `ServiceMode` priority wins, and nothing else is tried.** RFC
 /// 9460 §2.4.2 ranks alternatives by priority and expects a client to fall
 /// back through them; this connector uses the first-ranked endpoint and
 /// then, if the connection fails, the origin's own addresses — which is
@@ -271,7 +268,7 @@ impl From<SvcbEndpoint> for Endpoint {
 /// shutting down — `ErrorKind::Cancelled`) still reaches the caller
 /// through `connect::drive`'s own machinery, with its kind intact.
 ///
-/// **The target name is not resolved.** RFC 9460 §2.5 lets a ServiceMode
+/// **The target name is not resolved.** RFC 9460 §2.5 lets a `ServiceMode`
 /// record point at another name whose addresses should be used; this
 /// connector uses the record's hints and the *origin's* addresses, and
 /// nothing else. A record whose target differs from the origin and carries
@@ -444,13 +441,13 @@ pub enum Discovered<'a> {
     /// as it does for a request nobody prepared.
     NotConsulted,
     /// Looked, and there is no record to act on: the origin publishes
-    /// none, the lookup failed, or every answer was an AliasMode record.
+    /// none, the lookup failed, or every answer was an `AliasMode` record.
     ///
     /// **Distinct from [`Self::NotConsulted`] on purpose**, and it is the
     /// half a plain `Option` gets wrong: this is an answer, and a caller
     /// holding it knows not to ask again.
     NoRecord,
-    /// The first-ranked ServiceMode record's ALPN list, RFC 9460 §7.1, as
+    /// The first-ranked `ServiceMode` record's ALPN list, RFC 9460 §7.1, as
     /// the record gave it.
     ///
     /// An empty list is a record that names no protocol, which is not the
@@ -541,6 +538,7 @@ impl Prepared {
 /// Hand-written for [`crate::Native`]'s reason: a derive would print a
 /// whole request, and what is worth seeing here is which of the three
 /// states the record is in.
+#[allow(clippy::missing_fields_in_debug)] // deliberate: prints the state, not the full request — see doc above
 impl Debug for Prepared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Prepared")

@@ -168,9 +168,13 @@ impl StdError for ComponentError {}
 /// feature. All three are the caller's argument being wrong, which is
 /// exactly the split this function exists to make; matching the inner
 /// `InvalidUri` alone would have classified the other two as `internal`.
+// Taking `&Error` would save nothing here and cost both call sites their
+// `.map_err(classify)` shorthand — `map_err` hands the error over by value,
+// so a reference parameter needs a closure at each site instead.
+#[allow(clippy::needless_pass_by_value)]
 fn classify(e: hclient::Error) -> ComponentError {
     if e.source()
-        .is_some_and(|s| s.is::<hclient::error::UriError>())
+        .is_some_and(<dyn std::error::Error + 'static>::is::<hclient::error::UriError>)
     {
         ComponentError::InvalidArgs(e.to_string())
     } else {
@@ -230,6 +234,14 @@ fn status_headers_metadata(status: u16, headers: &http::HeaderMap) -> Vec<(Strin
 /// line here mentions a target or a runtime, and it still builds for
 /// native, `wasm32-wasip2` and `wasm32-unknown-unknown` from this one
 /// source with no `#[cfg]`.
+///
+/// # Errors
+///
+/// [`ComponentError::InvalidArgs`] when `args.url` fails to parse (via
+/// `classify`, matching on a [`hclient::error::UriError`] source) —
+/// unparseable, an unusable base, or a non-ASCII host without the `idn`
+/// feature. [`ComponentError::Internal`] for every other failure `send()`
+/// or reading the response body can produce.
 pub async fn fetch<S>(client: &Client, args: FetchArgs, ctx: &mut S) -> Result<(), ComponentError>
 where
     S: ContentSink,
@@ -304,7 +316,7 @@ where
     let content_type = resp_headers
         .get(http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     // Stream response body chunks
     let mut first_chunk = true;

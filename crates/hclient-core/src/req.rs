@@ -511,6 +511,13 @@ pub struct RequireVersion(pub http::Version);
 /// places it where the protocol is first known and no head has been
 /// written, and pins that placement with a test that asserts the server
 /// saw nothing.
+///
+/// # Errors
+///
+/// A typed [`crate::error::VersionNotAvailable`] under
+/// [`ErrorKind::Unsupported`](crate::error::ErrorKind::Unsupported) when a
+/// [`RequireVersion`] demand is present and `negotiated` does not match it
+/// exactly.
 pub fn check_version(
     extensions: &http::Extensions,
     negotiated: http::Version,
@@ -552,14 +559,6 @@ mod tests {
         use crate::caps::TimeoutSupport;
         use core::time::Duration;
 
-        let all = TimeoutSupport::none()
-            .with_resolve(true)
-            .with_connect(true)
-            .with_first_byte(true)
-            .with_between_bytes(true);
-        let d = Duration::from_secs(1);
-
-        // (set exactly this bound, withhold exactly this support, expect this name)
         /// One row: build a `Timeouts` with exactly this bound set,
         /// withhold exactly this support, and expect exactly this name.
         type Row = (
@@ -568,6 +567,14 @@ mod tests {
             &'static str,
         );
 
+        let all = TimeoutSupport::none()
+            .with_resolve(true)
+            .with_connect(true)
+            .with_first_byte(true)
+            .with_between_bytes(true);
+        let d = Duration::from_secs(1);
+
+        // (set exactly this bound, withhold exactly this support, expect this name)
         let table: [Row; 4] = [
             (
                 |d| Timeouts::new().with_resolve(d),

@@ -156,10 +156,10 @@ where
 
 /// The graceful half: the peer sends FIN in the middle of the handshake.
 ///
-/// The server DRAINS the ClientHello before closing, and that is the whole
+/// The server DRAINS the `ClientHello` before closing, and that is the whole
 /// point of this version. Closing a socket that still has unread data
 /// queued makes the OS send RST instead of FIN — always on macOS and
-/// Windows, and on Linux depending on whether the ClientHello had landed
+/// Windows, and on Linux depending on whether the `ClientHello` had landed
 /// yet. The old single test did not drain, so which of the two error
 /// shapes it got was a race: it failed on `macos-latest` with `Connection
 /// reset by peer (os error 54)` and on `windows-latest` with `os error

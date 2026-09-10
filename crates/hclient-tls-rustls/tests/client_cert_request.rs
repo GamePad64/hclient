@@ -19,6 +19,7 @@ use hclient_tls_rustls::Rustls;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 
 mod server;
 
@@ -113,7 +114,6 @@ fn spawn_asking(client_ca: &[u8]) -> (SocketAddr, Vec<u8>) {
                     // One read is enough to drive the handshake to
                     // completion on this side; the client only needs the
                     // handshake, never a byte of application data.
-                    use tokio::io::AsyncReadExt;
                     let mut buf = [0u8; 64];
                     let _ = tls.read(&mut buf).await;
                 });

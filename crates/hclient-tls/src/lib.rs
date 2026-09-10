@@ -202,7 +202,7 @@ pub struct TlsInfo {
     ///
     /// A `String`, not an enum defined by this crate: version enums differ
     /// across backends (rustls, native-tls over OpenSSL/SChannel/
-    /// SecureTransport) in exactly which variants they carry, and defining
+    /// `SecureTransport`) in exactly which variants they carry, and defining
     /// a unifying enum here would mean either lagging behind a new backend
     /// or carrying variants a given backend will never produce. So that
     /// two backends don't name the same version differently, the value
@@ -402,7 +402,7 @@ impl TlsConfigId {
 /// The alternative — leaving `config_id` on `TlsConnect` alone and having
 /// the QUIC side require `T: TlsConnect + QuicTlsConnect` — is cheaper
 /// today and forecloses a TLS backend that speaks QUIC and not TCP.
-/// SChannel and Security.framework both support QUIC natively, so that is
+/// `SChannel` and Security.framework both support QUIC natively, so that is
 /// not a hypothetical shape, merely an absent one.
 pub trait TlsIdentity {
     /// Which trust configuration this connector applies — see
@@ -584,7 +584,7 @@ pub trait TlsConnect: TlsIdentity {
     }
 
     /// Whether a non-`None` [`TlsRequest::ech`] would actually be applied
-    /// — that is, whether this backend encrypts the ClientHello with the
+    /// — that is, whether this backend encrypts the `ClientHello` with the
     /// config it is handed, rather than refusing the request.
     ///
     /// **`false` today for every backend in this workspace**, and that is

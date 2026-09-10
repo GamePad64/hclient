@@ -73,12 +73,11 @@ fn wasi_transport_round_trips_a_real_response_through_wasmtime() {
     };
 
     let (stdout, stderr, status) = run_guest_against_mock_server(&wasmtime, None, drain_headers);
-    if !status.success() || !stdout.contains("ROUNDTRIP_OK") {
-        panic!(
-            "live wasi:http round-trip failed (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
-            status.code(),
-        );
-    }
+    assert!(
+        !(!status.success() || !stdout.contains("ROUNDTRIP_OK")),
+        "live wasi:http round-trip failed (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+        status.code(),
+    );
 }
 
 /// On a live run, a `Streaming` request body really does emit trailers
@@ -103,13 +102,12 @@ fn wasi_transport_rejects_streaming_request_trailers_without_a_trailer_header() 
         Some("request-trailers-undeclared"),
         drain_request_fully,
     );
-    if !status.success() || !stdout.contains("TRAILERS_REJECTED_OK") {
-        panic!(
-            "expected WasiHttp::execute to reject undeclared streaming request trailers \
-             (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
-            status.code(),
-        );
-    }
+    assert!(
+        !(!status.success() || !stdout.contains("TRAILERS_REJECTED_OK")),
+        "expected WasiHttp::execute to reject undeclared streaming request trailers \
+         (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+        status.code(),
+    );
 }
 
 /// Symmetry to the test above: the same `Streaming` stream with
@@ -128,13 +126,12 @@ fn wasi_transport_accepts_streaming_request_trailers_when_declared() {
         Some("request-trailers-declared"),
         drain_request_fully,
     );
-    if !status.success() || !stdout.contains("TRAILERS_ACCEPTED_OK") {
-        panic!(
-            "expected WasiHttp::execute to accept declared streaming request trailers \
-             (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
-            status.code(),
-        );
-    }
+    assert!(
+        !(!status.success() || !stdout.contains("TRAILERS_ACCEPTED_OK")),
+        "expected WasiHttp::execute to accept declared streaming request trailers \
+         (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+        status.code(),
+    );
 }
 
 /// On a live run, `Trailer:` present but naming a DIFFERENT field (`X-Other`)
@@ -154,13 +151,12 @@ fn wasi_transport_rejects_streaming_request_trailers_with_the_wrong_declared_nam
         Some("request-trailers-wrong-name"),
         drain_request_fully,
     );
-    if !status.success() || !stdout.contains("TRAILERS_REJECTED_OK") {
-        panic!(
-            "expected WasiHttp::execute to reject a Trailer: header naming the wrong field \
-             (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
-            status.code(),
-        );
-    }
+    assert!(
+        !(!status.success() || !stdout.contains("TRAILERS_REJECTED_OK")),
+        "expected WasiHttp::execute to reject a Trailer: header naming the wrong field \
+         (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+        status.code(),
+    );
 }
 
 /// On a live run, the body emits an empty trailers frame
@@ -179,13 +175,12 @@ fn wasi_transport_accepts_an_empty_trailers_frame_without_a_trailer_header() {
         Some("request-trailers-empty-frame"),
         drain_request_fully,
     );
-    if !status.success() || !stdout.contains("TRAILERS_ACCEPTED_OK") {
-        panic!(
-            "expected WasiHttp::execute to accept an empty trailers frame \
-             (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
-            status.code(),
-        );
-    }
+    assert!(
+        !(!status.success() || !stdout.contains("TRAILERS_ACCEPTED_OK")),
+        "expected WasiHttp::execute to accept an empty trailers frame \
+         (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+        status.code(),
+    );
 }
 
 /// How long the mock server watches the connection before concluding the
@@ -657,7 +652,7 @@ fn drain_request_fully(stream: &mut std::net::TcpStream) {
     loop {
         match stream.read(&mut buf) {
             Ok(0) => break,
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
@@ -835,13 +830,12 @@ fn require_wasmtime(test_name: &str) -> Option<PathBuf> {
     if let Some(p) = find_wasmtime() {
         return Some(p);
     }
-    if std::env::var_os(REQUIRE_MARKER).is_some() {
-        panic!(
-            "`wasmtime` not found even though `{REQUIRE_MARKER}` is set (`{test_name}`) — the \
-             `wasip2` job was supposed to install it before this test; the environment is \
-             broken, not deliberately limited the way a laptop without wasmtime is."
-        );
-    }
+    assert!(
+        std::env::var_os(REQUIRE_MARKER).is_none(),
+        "`wasmtime` not found even though `{REQUIRE_MARKER}` is set (`{test_name}`) — the \
+         `wasip2` job was supposed to install it before this test; the environment is \
+         broken, not deliberately limited the way a laptop without wasmtime is."
+    );
     eprintln!(
         "NOTICE: `wasmtime` not found — skipping the live run `{test_name}`. This environment \
          can't confirm it against a real host."
@@ -990,13 +984,12 @@ fn build_guest() -> PathBuf {
         .output()
         .expect("failed to spawn cargo build for the guest");
 
-    if !output.status.success() {
-        panic!(
-            "failed to build live_roundtrip_guest for wasm32-wasip2 \
-             (is the `wasm32-wasip2` rustup target installed?)\n--- stderr ---\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    assert!(
+        output.status.success(),
+        "failed to build live_roundtrip_guest for wasm32-wasip2 \
+         (is the `wasm32-wasip2` rustup target installed?)\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
@@ -1017,6 +1010,9 @@ fn build_guest() -> PathBuf {
         // A `cdylib` with no `fn main()` doesn't count as "executable" to
         // cargo (this field stays `null`) — the path to the `.wasm`
         // comes from `filenames`.
+        // `cargo build --message-format=json`'s own output, not user
+        // input — the extension is always lowercase.
+        #[allow(clippy::case_sensitive_file_extension_comparisons)]
         let wasm = msg
             .get("filenames")
             .and_then(|f| f.as_array())

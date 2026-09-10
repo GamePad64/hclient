@@ -1,4 +1,4 @@
-//! TLS through the platform's own stack — SChannel on Windows,
+//! TLS through the platform's own stack — `SChannel` on Windows,
 //! Security.framework on Apple targets, OpenSSL elsewhere — behind the same
 //! [`TlsConnect`] seam `hclient-tls-rustls` implements.
 //!
@@ -100,11 +100,16 @@ impl Default for NativeTls {
 /// Hand-written because neither `native_tls::Identity` nor
 /// `native_tls::Certificate` implements `Debug`, and both are secrets or
 /// near-secrets: printing their contents would be worse than useless.
+/// `insecure` and `config_id` carry no such risk and are printed plainly —
+/// `insecure` especially so, since whether a connector skips certificate
+/// validation is exactly the kind of thing debug output should not hide.
 impl Debug for NativeTls {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeTls")
             .field("identity", &self.identity.as_ref().map(|_| "<set>"))
             .field("extra_roots", &self.roots.len())
+            .field("insecure", &self.insecure)
+            .field("config_id", &self.config_id)
             .finish()
     }
 }
@@ -117,6 +122,7 @@ impl NativeTls {
     }
 
     /// A client certificate, for mutual TLS.
+    #[must_use]
     pub fn identity(mut self, identity: native_tls::Identity) -> Self {
         self.identity = Some(identity);
         self.config_id = TlsConfigId::new_unique();
@@ -141,7 +147,7 @@ impl NativeTls {
     /// subsumes the second is a fact about the platform rather than about
     /// the setting. Measured in `native-tls` 0.2.18: the OpenSSL backend
     /// implements the certificate flag as `set_verify(NONE)`, which drops
-    /// the name check with everything else, while SChannel and
+    /// the name check with everything else, while `SChannel` and
     /// Security.framework forward the two independently. A development
     /// certificate is routinely for a name the caller is not using, so
     /// setting only the first would make this method mean different
@@ -157,6 +163,7 @@ impl NativeTls {
     /// [`TlsConfigId`], so a connection established under verification
     /// cannot be handed to a client built this way, or the reverse.
     #[cfg(feature = "dangerous-insecure")]
+    #[must_use]
     pub fn danger_accept_invalid_certs(mut self) -> Self {
         self.insecure = true;
         self.config_id = TlsConfigId::new_unique();
@@ -166,6 +173,7 @@ impl NativeTls {
     /// An extra trust root, *in addition to* the platform store — not
     /// instead of it. `native-tls` offers no way to replace the store, and
     /// this method does not pretend otherwise.
+    #[must_use]
     pub fn add_root_certificate(mut self, cert: native_tls::Certificate) -> Self {
         self.roots.push(cert);
         self.config_id = TlsConfigId::new_unique();

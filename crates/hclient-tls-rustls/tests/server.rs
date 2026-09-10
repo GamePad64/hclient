@@ -3,7 +3,13 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// # Panics
+///
+/// Panics if generating the self-signed certificate, building the server
+/// config, or binding the listener fails — any of which means the test
+/// fixture itself is broken, not the code under test.
 pub fn spawn_tls_echo() -> (SocketAddr, Vec<u8>) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = cert.cert.der().to_vec();
@@ -41,7 +47,6 @@ pub fn spawn_tls_echo() -> (SocketAddr, Vec<u8>) {
                         return;
                     };
                     let mut buf = [0u8; 1024];
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     while let Ok(n) = tls.read(&mut buf).await {
                         if n == 0 {
                             break;

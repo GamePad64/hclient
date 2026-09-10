@@ -40,7 +40,7 @@
 //! This task's draft showed `race_connect` with exactly two event sources
 //! at the moment of `HeAction::Wait`: attempts (`attempts.next()`) and the
 //! timer (`rt.sleep(d)`). `select_biased!`/`select!` from `futures-util`
-//! can handle that (FusedFuture on both arms), but `drive` below is fed by
+//! can handle that (`FusedFuture` on both arms), but `drive` below is fed by
 //! TWO MORE sources, the DNS streams, and `select_biased!` doesn't support
 //! conditionally-excluded arms — an arm that must go silent forever once
 //! its family's stream has finished can't be expressed in the macro's
@@ -285,6 +285,7 @@ pub(crate) fn wants_tls(uri: &Uri) -> Result<bool, Error> {
 /// interval, stamped when *that* attempt was launched rather than when
 /// the race was. On a staggered race the two differ by the whole
 /// stagger, which is precisely the number a caller is trying to find.
+#[allow(clippy::too_many_lines)] // Happy Eyeballs' state machine, tested end-to-end; splitting it would scatter one algorithm
 async fn drive<R, V6, V4, H>(
     rt: &R,
     mut sched: Scheduler,
@@ -393,6 +394,10 @@ where
                 })
                 .await;
 
+                // `Attempt(Err)` and `TimedOut` are both no-ops here and
+                // are kept apart for the comment each carries: merging
+                // them would delete the reason either one is a no-op.
+                #[allow(clippy::match_same_arms)]
                 match ev {
                     // **The family is checked rather than guaranteed.**
                     // Asking for `AAAA` used to be a different method
@@ -1091,7 +1096,7 @@ where
         // Already asked, for this request's own authority. No second
         // query — and no second chance to ask, because `Looked(None)` is
         // an answer.
-        already => already,
+        already @ Prefetched::Looked(_) => already,
     };
     let endpoint = found.actionable();
 
@@ -1259,6 +1264,7 @@ where
         // An `Ok` from either family is an address to try. An `Err` is
         // not: a family that failed leaves the other one still worth
         // waiting for, and if both fail `done` below ends the wait.
+        #[allow(clippy::items_after_statements)] // kept beside the comment explaining it, not at the top of the closure
         fn any<S>(a: &Answers<S>) -> bool {
             a.seen.iter().any(Result::is_ok)
         }
@@ -1545,7 +1551,7 @@ mod tests {
             *self.clock.borrow()
         }
         fn elapsed_since(&self, earlier: Duration) -> Duration {
-            *self.clock.borrow() - earlier
+            (*self.clock.borrow()).checked_sub(earlier).unwrap()
         }
     }
 

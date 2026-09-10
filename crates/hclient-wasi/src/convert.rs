@@ -882,6 +882,9 @@ mod tests {
     /// Variant list checked against
     /// `wasip3-0.7.0+wasi-0.3.0/src/service.rs:161-206`, the same source
     /// `wasi_err`'s own doc comment cites.
+    // One test walking every `ErrorCode` variant by name, so it is exactly
+    // as long as the variant list it checks against.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn wasi_err_gives_every_error_code_variant_the_category_it_is_documented_to_have() {
         use hclient_core::error::Phase;

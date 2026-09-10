@@ -62,13 +62,13 @@ fn counting_server() -> (SocketAddr, Counters) {
             let Ok(sock) = sock else { continue };
             c.accepted.fetch_add(1, Ordering::SeqCst);
             let heads = c.heads.clone();
-            std::thread::spawn(move || serve(sock, heads));
+            std::thread::spawn(move || serve(sock, &heads));
         }
     });
     (addr, counters)
 }
 
-fn serve(mut sock: std::net::TcpStream, heads: Arc<AtomicUsize>) {
+fn serve(mut sock: std::net::TcpStream, heads: &Arc<AtomicUsize>) {
     sock.set_read_timeout(Some(BOUND)).expect("read timeout");
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 1024];

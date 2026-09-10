@@ -455,7 +455,15 @@ async fn a_body_that_fails_mid_stream_errors_the_stream_instead_of_ending_it() {
         return; // see `browser_streams` — `Request.body` does not exist here
     }
 
+    #[allow(
+        clippy::items_after_statements,
+        reason = "test-local fixture — kept beside the one test that uses it rather than promoted to module scope"
+    )]
     struct FailsAfterOne(bool);
+    #[allow(
+        clippy::items_after_statements,
+        reason = "the impl belongs beside the type it is for"
+    )]
     impl http_body::Body for FailsAfterOne {
         type Data = Bytes;
         type Error = hclient_core::error::Error;
@@ -658,6 +666,10 @@ async fn nested_rewindable_resolves_through_every_level() {
 #[wasm_bindgen_test]
 fn a_factory_that_never_bottoms_out_is_a_bounded_error_not_a_hang() {
     let f = hclient_fetch::Fetch::new();
+    #[allow(
+        clippy::items_after_statements,
+        reason = "must be a named fn to recurse via RequestBody::rewindable(infinite) — a closure can't self-reference this way, and it exists only for this one test"
+    )]
     fn infinite() -> RequestBody {
         RequestBody::rewindable(infinite)
     }

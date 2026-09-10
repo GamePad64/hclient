@@ -14,7 +14,7 @@
 //! **The tempting repair is worse than the absence, and the first
 //! version of this paragraph was wrong about why.** It read that
 //! `Context::current()` is *empty* under `tracing-opentelemetry` because
-//! that bridge keeps the OTel span in the tracing span's extensions and
+//! that bridge keeps the `OTel` span in the tracing span's extensions and
 //! never pushes it onto the `Context` stack. Measured instead of
 //! believed, on a scratch consumer running `tracing-opentelemetry` 0.33:
 //! the bridge has `with_context_activation`, **on by default**, and
@@ -32,13 +32,13 @@
 //! is better than implying it exists* — settles it either way.
 //!
 //! **What the same measurement confirms is the front's actual value**:
-//! under the bridge this span exports as an OTel span named `GET`, kind
+//! under the bridge this span exports as an `OTel` span named `GET`, kind
 //! `Client`, parented on the caller's span and sharing its trace. So
-//! §7's *"anyone with `tracing-opentelemetry` gets OTel for nothing"* is
+//! §7's *"anyone with `tracing-opentelemetry` gets `OTel` for nothing"* is
 //! true of everything except the header.
 //!
 //! What would close it is `tracing_opentelemetry::OpenTelemetrySpanExt`,
-//! which can read the OTel context of a `tracing` span. Taking it would
+//! which can read the `OTel` context of a `tracing` span. Taking it would
 //! mean this crate choosing the caller's bridge crate and its version for
 //! them, and it is a third feature rather than a change to these two. Not
 //! built; recorded here so the next reader does not re-derive it.

@@ -204,9 +204,10 @@ async fn read_n<S: HyperRead + Unpin>(stream: &mut S, n: usize) -> Vec<u8> {
             let mut rb = ReadBuf::new(&mut store);
             match Pin::new(&mut *stream).poll_read(cx, rb.unfilled()) {
                 Poll::Ready(Ok(())) => {
-                    if rb.filled().is_empty() {
-                        panic!("EOF before {n} bytes arrived, got {out:?}");
-                    }
+                    assert!(
+                        !rb.filled().is_empty(),
+                        "EOF before {n} bytes arrived, got {out:?}"
+                    );
                     out.extend_from_slice(rb.filled());
                 }
                 Poll::Ready(Err(e)) => panic!("read failed: {e}"),

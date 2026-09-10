@@ -559,10 +559,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pool")
             .field("config", &self.inner.config)
-            .field(
-                "idle_keys",
-                &self.inner.idle.lock().map(|m| m.len()).unwrap_or(0),
-            )
+            .field("idle_keys", &self.inner.idle.lock().map_or(0, |m| m.len()))
             .finish()
     }
 }
@@ -879,6 +876,7 @@ where
     }
 }
 
+#[allow(clippy::missing_fields_in_debug)] // hand-written: `R` and `R::Instant` carry no `Debug` bound here, `sleep` is machinery
 impl<R, I> Debug for Reaper<R, I>
 where
     R: Timer,
@@ -1045,6 +1043,7 @@ where
 }
 
 #[cfg(feature = "http2")]
+#[allow(clippy::missing_fields_in_debug)] // hand-written: `pool` is the shared handle, not worth printing beside `key`
 impl<I> Debug for Connecting<I>
 where
     I: Read + Write + Unpin,

@@ -24,7 +24,7 @@ const OP_TIMEOUT: Duration = Duration::from_secs(10);
 /// The peer is not the subject — this crate's client is — and building
 /// the peer here on `native-tls` cost the test its two most valuable
 /// platforms: `Identity::from_pkcs8` is an OpenSSL-shaped constructor
-/// that SChannel and Security.framework both refuse. The manifest carries
+/// that `SChannel` and Security.framework both refuse. The manifest carries
 /// the measurement.
 fn spawn_tls_server() -> SocketAddr {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();

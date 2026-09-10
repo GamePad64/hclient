@@ -90,7 +90,7 @@ fn an_endpoint_with_no_host_is_refused_by_both_constructors() {
 
 /// Cleartext DNS to a host that is not this machine is what RFC 8484
 /// exists to prevent, and a resolver that accepted it would give a caller
-/// the confidentiality guarantee of plain DNS under the name DoH.
+/// the confidentiality guarantee of plain DNS under the name `DoH`.
 #[rstest]
 #[case::literal("http://1.1.1.1/dns-query")]
 #[case::name("http://dns.example/dns-query")]
@@ -113,7 +113,7 @@ fn a_cleartext_endpoint_off_this_machine_is_refused(#[case] endpoint: &str) {
     assert_matches!(applicable, Some(EndpointError::NotConfidential { .. }));
 }
 
-/// The loopback exception, which exists for a local DoH proxy and not for
+/// The loopback exception, which exists for a local `DoH` proxy and not for
 /// this test suite — though this test suite is what it lets be cheap.
 #[rstest]
 #[case::v4("http://127.0.0.1:5353/dns-query")]

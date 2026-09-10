@@ -37,7 +37,7 @@ pub(super) fn from_h2_error(e: h2::Error, fallback: ErrorKind) -> Error {
 ///
 /// # `NO_ERROR` is the server's statement that the response was complete
 ///
-/// It is also the only evidence available: the END_STREAM that would have
+/// It is also the only evidence available: the `END_STREAM` that would have
 /// proved it has been overwritten by the time anything here can look, and
 /// the frames arrive in one `Connection::poll` in any case. RFC 9113 §8.1
 /// defines the code as meaning exactly this — *"after sending a complete

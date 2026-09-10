@@ -4,7 +4,7 @@
 //! than defaulted quietly. It is visible in the **type**: `Doh<C>` is
 //! `Doh<C, NoFallback>`; `with_fallback` produces `Doh<C, F>`. These tests
 //! check that the type is telling the truth, and — the part that is easy
-//! to get wrong — that a fallback does **not** get consulted when DoH
+//! to get wrong — that a fallback does **not** get consulted when `DoH`
 //! answered.
 //!
 //! The fallback used here is a stub resolver holding one address, written
@@ -29,10 +29,10 @@ use support::{FLAGS_SERVFAIL, Rr, Server, TYPE_A, message, noerror};
 type Item = Result<Record, Error>;
 
 /// The address the fallback hands back. Distinct from every address any
-/// DoH fixture in this file returns, so which resolver answered is never
+/// `DoH` fixture in this file returns, so which resolver answered is never
 /// in doubt.
 const FROM_FALLBACK: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 9);
-/// The address the DoH server hands back.
+/// The address the `DoH` server hands back.
 const FROM_DOH: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 
 fn transport() -> Native<Tokio, NoTls, hclient_dns::IpLiteralOnly> {
@@ -40,7 +40,7 @@ fn transport() -> Native<Tokio, NoTls, hclient_dns::IpLiteralOnly> {
 }
 
 /// An endpoint nothing is listening on: `connect` fails immediately, which
-/// is the "the DoH server is unreachable" case in its cheapest form.
+/// is the "the `DoH` server is unreachable" case in its cheapest form.
 fn dead_endpoint() -> http::Uri {
     "http://127.0.0.1:1/dns-query".parse().expect("a valid uri")
 }
@@ -58,7 +58,7 @@ fn addrs(items: &[Item]) -> Vec<IpAddr> {
         .collect()
 }
 
-/// The default. A DoH failure is a resolution failure, and nothing else
+/// The default. A `DoH` failure is a resolution failure, and nothing else
 /// answers.
 #[tokio::test]
 async fn without_a_fallback_an_unreachable_doh_server_is_a_resolution_failure() {
@@ -82,7 +82,7 @@ async fn with_a_fallback_an_unreachable_doh_server_resolves_through_it() {
     assert_eq!(addrs(&items), vec![IpAddr::V4(FROM_FALLBACK)]);
 }
 
-/// A DoH server that answers SERVFAIL has failed, not answered — so the
+/// A `DoH` server that answers SERVFAIL has failed, not answered — so the
 /// fallback applies to it too. This is a different code path from a
 /// connect failure (the exchange completed and the message decoded), and
 /// it is the one a resolver behind a broken upstream actually hits.
@@ -96,12 +96,12 @@ async fn a_servfail_also_reaches_the_fallback() {
     assert_eq!(addrs(&items), vec![IpAddr::V4(FROM_FALLBACK)]);
 }
 
-/// **The half that is easy to get wrong.** A DoH answer is never
+/// **The half that is easy to get wrong.** A `DoH` answer is never
 /// second-guessed: a resolver that asked the fallback on every lookup, or
-/// that merged the two, would turn a working DoH deployment into one that
+/// that merged the two, would turn a working `DoH` deployment into one that
 /// leaks every query to the plaintext resolver anyway.
 ///
-/// Checked twice over — the address returned is the DoH one, and the stub
+/// Checked twice over — the address returned is the `DoH` one, and the stub
 /// counts how many times it was asked.
 #[tokio::test]
 async fn a_successful_doh_answer_never_consults_the_fallback() {
@@ -153,8 +153,8 @@ async fn nxdomain_is_an_answer_and_does_not_reach_the_fallback() {
     );
 }
 
-/// The conflation `with_fallback`'s doc comment names as deliberate: DoH
-/// failed, the fallback has nothing of this family, so the DoH error is
+/// The conflation `with_fallback`'s doc comment names as deliberate: `DoH`
+/// failed, the fallback has nothing of this family, so the `DoH` error is
 /// what surfaces. `Stub` answers only v4, so a v6 lookup exercises it.
 #[tokio::test]
 async fn a_fallback_with_nothing_to_say_leaves_the_doh_error_standing() {
@@ -172,7 +172,7 @@ async fn a_fallback_with_nothing_to_say_leaves_the_doh_error_standing() {
 
 /// The fallback's own errors are its answer, and pass through — a fallback
 /// that says "this name does not exist" must not be overwritten by "the
-/// DoH server was unreachable", which is a true statement about a
+/// `DoH` server was unreachable", which is a true statement about a
 /// different question.
 #[tokio::test]
 async fn a_fallback_that_errors_reports_its_own_error() {

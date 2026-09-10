@@ -65,7 +65,7 @@
 //!    `TypeError`, so what reaches the caller is
 //!    [`crate::Fetch`]'s `ErrorKind::Connect`, not the typed cause. That is
 //!    a real limit of the Fetch API rather than a shortcut taken here; the
-//!    message survives where a human can read it (DevTools), and
+//!    message survives where a human can read it (`DevTools`), and
 //!    `tests/convert.rs` drains the built `Request`'s own stream to pin the
 //!    policy at the layer that still has it.
 use crate::error::{
@@ -85,6 +85,11 @@ use wasm_bindgen::{JsCast, JsValue};
 /// further — every failure mode this file CAN name ahead of time
 /// (forbidden header, bad URL, unsupported body) is caught earlier and
 /// never reaches this function with a category to lose.
+// Taken by value, which is wasm-bindgen's own convention for a handle:
+// every caller hands over a temporary it has just produced — a caught
+// rejection value — so a `&JsValue` would cost each of them a local bound
+// for no reason but this lint.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn js_err(v: JsValue) -> Error {
     Error::new(ErrorKind::Other, JsError(js_message(&v)))
 }
@@ -169,7 +174,7 @@ fn verify_headers_survived(
 /// silently truncating or mangling it.
 fn build_headers(h: &http::HeaderMap) -> Result<web_sys::Headers, Error> {
     let headers = web_sys::Headers::new().map_err(js_err)?;
-    for (name, value) in h.iter() {
+    for (name, value) in h {
         let value = value.to_str().map_err(|_| {
             Error::new(
                 ErrorKind::Unsupported,
@@ -312,7 +317,7 @@ fn resolve_body(body: RequestBody) -> Result<ResolvedBody, Error> {
 /// comes into it.
 fn checked_url(uri: &http::Uri) -> Result<String, Error> {
     match uri.scheme_str() {
-        Some("http") | Some("https") => Ok(uri.to_string()),
+        Some("http" | "https") => Ok(uri.to_string()),
         Some(other) => Err(Error::new(
             ErrorKind::Unsupported,
             BadUrl(format!(

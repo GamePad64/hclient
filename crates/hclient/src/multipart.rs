@@ -73,7 +73,7 @@
 //! Field names and file names are written **as UTF-8, directly**, which
 //! RFC 7578 §5.1.2 permits in as many words, and with three bytes
 //! escaped: LF as `%0A`, CR as `%0D` and `"` as `%22`. That is the WHATWG
-//! HTML rule and is what Chromium, WebKit and Firefox emit; all three
+//! HTML rule and is what Chromium, `WebKit` and Firefox emit; all three
 //! moved to it from backslash-escaping.
 //!
 //! There is no `filename*`. RFC 7578 §4.2 is unusually blunt about it —
@@ -136,6 +136,11 @@ impl Boundary {
     /// and the 32 hex characters are the whole of the guarantee. Every
     /// character is an HTTP token character, so [`Self::content_type`]
     /// never has to quote one of these.
+    ///
+    /// # Errors
+    ///
+    /// [`MultipartError::NoEntropy`] when the OS's entropy source is
+    /// unavailable.
     pub fn random() -> Result<Self, MultipartError> {
         let mut raw = [0u8; 16];
         getrandom::fill(&mut raw).map_err(|e| MultipartError::NoEntropy(Box::new(e)))?;
@@ -149,6 +154,12 @@ impl Boundary {
     /// that was written against a fixed value. It is validated rather
     /// than trusted because an unchecked boundary does not fail loudly —
     /// it produces a request that parses as one empty part.
+    ///
+    /// # Errors
+    ///
+    /// [`MultipartError::InvalidBoundary`] when `value` is empty, over 70
+    /// characters, ends with a space, or contains a byte RFC 2046 §5.1.1's
+    /// `bcharsnospace` (plus space) does not allow.
     pub fn new(value: impl Into<String>) -> Result<Self, MultipartError> {
         let value = value.into();
         // `bcharsnospace := DIGIT / ALPHA / "'" / "(" / ")" / "+" / "_"
@@ -179,6 +190,12 @@ impl Boundary {
     /// token characters, so a bare parameter carrying one is not the
     /// value the receiver would read back. [`Self::random`] never
     /// produces one; [`Self::new`] can.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: both constructors restrict a `Boundary`'s bytes
+    /// to RFC 2046 §5.1.1's `bcharsnospace` (plus space), which are all
+    /// valid header-value bytes either bare or quoted.
     pub fn content_type(&self) -> http::HeaderValue {
         let token = self
             .0
@@ -240,12 +257,14 @@ impl Part {
     }
 
     /// The `filename` parameter of this part's `Content-Disposition`.
+    #[must_use]
     pub fn file_name(mut self, name: impl Into<String>) -> Self {
         self.file_name = Some(name.into());
         self
     }
 
     /// This part's `Content-Type`.
+    #[must_use]
     pub fn mime(mut self, value: impl Into<String>) -> Self {
         self.content_type = Some(value.into());
         self
@@ -329,6 +348,7 @@ impl Form {
     /// Appends a part. Order is preserved: RFC 7578 §5.3 makes the order
     /// of same-named parts significant, and a receiver reading them into
     /// a list would otherwise get someone else's order.
+    #[must_use]
     pub fn part(mut self, part: Part) -> Self {
         self.parts.push(part);
         self
@@ -342,6 +362,12 @@ impl Form {
     /// directly has no [`crate::RequestBuilder`] to do it for them; they
     /// must then also set the `Content-Type` themselves, from
     /// [`Boundary::content_type`].
+    ///
+    /// # Errors
+    ///
+    /// One [`MultipartError`] variant per rule its own per-variant docs
+    /// state — a field or file name that cannot become a header value, or
+    /// a part body nested deeper than this crate rewinds.
     pub fn encode(self, boundary: &Boundary) -> Result<RequestBody, MultipartError> {
         let mut segments = Vec::with_capacity(self.parts.len() * 3 + 1);
         for part in self.parts {
@@ -1009,6 +1035,9 @@ mod tests {
     /// A test body: a queue of chunks, and a `size_hint` it is *told*
     /// rather than one it works out — so a test can hand the encoder a
     /// stream that does and does not know its own length.
+    // `chunks` names what the queue holds rather than repeating the
+    // struct: a `Chunks` with a field called `queue` would read worse.
+    #[allow(clippy::struct_field_names)]
     struct Chunks {
         chunks: VecDeque<Vec<u8>>,
         declared: Option<u64>,

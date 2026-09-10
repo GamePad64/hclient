@@ -152,7 +152,7 @@ fn spawn_server() -> (std::net::SocketAddr, Arc<Mutex<Vec<Observed>>>) {
                         // frames — which it does at the client's
                         // `SETTINGS_MAX_FRAME_SIZE`, and that is how the
                         // frame-size test below observes it.
-                        let _ = send.send_data(bytes::Bytes::from_static(&[b'x'; BODY]), true);
+                        let _ = send.send_data(bytes::Bytes::from(vec![b'x'; BODY]), true);
                     }
                 });
             }
@@ -234,11 +234,11 @@ fn the_stream_window_a_caller_sets_is_the_one_the_peer_is_granted() {
     one_request(H2Opts::default(), addr);
     one_request(
         H2Opts {
-            initial_window_size: Some(RAISED_WINDOW as u32),
+            initial_window_size: Some(u32::try_from(RAISED_WINDOW).unwrap()),
             // Raised with it: the connection window would otherwise cap
             // the stream at 65 535 whatever the stream setting says, which
             // is the trap the setter's doc names.
-            initial_connection_window_size: Some(RAISED_WINDOW as u32),
+            initial_connection_window_size: Some(u32::try_from(RAISED_WINDOW).unwrap()),
             ..H2Opts::default()
         },
         addr,
@@ -314,7 +314,7 @@ fn raising_only_the_stream_window_leaves_the_connection_as_the_ceiling() {
     let (addr, seen) = spawn_server();
     one_request(
         H2Opts {
-            initial_window_size: Some(RAISED_WINDOW as u32),
+            initial_window_size: Some(u32::try_from(RAISED_WINDOW).unwrap()),
             ..H2Opts::default()
         },
         addr,
@@ -376,7 +376,7 @@ fn the_header_list_ceiling_a_caller_sets_is_the_one_enforced() {
 /// This also pins the claim `H2Opts`' own doc makes and nothing else
 /// asserted: with every field `None`, this client sends a `SETTINGS` frame
 /// with **no entries at all**.
-fn settings_frame(listener: std::net::TcpListener) -> Vec<(u16, u32)> {
+fn settings_frame(listener: &std::net::TcpListener) -> Vec<(u16, u32)> {
     use std::io::Read as _;
 
     let (mut sock, _) = listener.accept().expect("accept");
@@ -419,7 +419,7 @@ fn provoke_settings(opts: H2Opts) -> Vec<(u16, u32)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
 
-    let reader = std::thread::spawn(move || settings_frame(listener));
+    let reader = std::thread::spawn(move || settings_frame(&listener));
 
     let t = transport(opts);
     let rt = tokio::runtime::Builder::new_current_thread()

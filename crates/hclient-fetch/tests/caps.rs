@@ -62,7 +62,7 @@ fn forbidden_headers_are_listed_not_silently_dropped() {
     let names: Vec<_> = c
         .forbidden_request_headers
         .iter()
-        .map(|h| h.as_str())
+        .map(http::header::HeaderName::as_str)
         .collect();
     for must in [
         "host",
@@ -147,7 +147,7 @@ fn the_probe_follows_the_browsers_behaviour_in_both_directions() {
 
     // --- the Firefox shape: stringifies, so it never looks at `duplex` ---
     let real = install(
-        r#"
+        r"
         const real = globalThis.Request;
         const fake = function (url, init) {
             // Deliberately does NOT touch init.duplex — that is the point.
@@ -158,7 +158,7 @@ fn the_probe_follows_the_browsers_behaviour_in_both_directions() {
         fake.prototype = real.prototype;
         globalThis.Request = fake;
         return real;
-        "#,
+        ",
     );
     let saw_firefox = hclient_fetch::testing::supports_streaming_request_body_for_test();
     restore(&real);
@@ -171,7 +171,7 @@ fn the_probe_follows_the_browsers_behaviour_in_both_directions() {
 
     // --- the Chrome shape: reads `duplex`, invents no Content-Type ---
     let real = install(
-        r#"
+        r"
         const real = globalThis.Request;
         const fake = function (url, init) {
             if (init) { void init.duplex; }
@@ -182,7 +182,7 @@ fn the_probe_follows_the_browsers_behaviour_in_both_directions() {
         fake.prototype = real.prototype;
         globalThis.Request = fake;
         return real;
-        "#,
+        ",
     );
     let saw_chrome = hclient_fetch::testing::supports_streaming_request_body_for_test();
     restore(&real);

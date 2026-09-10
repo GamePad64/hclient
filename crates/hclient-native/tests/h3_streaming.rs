@@ -336,7 +336,7 @@ async fn dropping_a_streaming_request_mid_upload_resets_it_and_leaves_the_connec
     let mut doomed = Box::pin(t.execute(post(s.addr, "/abandoned", body)));
     tokio::select! {
         _ = &mut doomed => panic!("the server answers only at the end of the body"),
-        _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+        () = tokio::time::sleep(Duration::from_millis(150)) => {}
     }
     let pulled_at_drop = pulled.load(Ordering::SeqCst);
     assert!(
@@ -419,7 +419,7 @@ async fn dropping_a_buffered_upload_mid_write_leaves_the_connection_too() {
     let mut doomed = Box::pin(t.execute(post(s.addr, "/abandoned", body)));
     tokio::select! {
         _ = &mut doomed => panic!("a 4 MiB body cannot be read by a 40ms-per-frame reader in 150ms"),
-        _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+        () = tokio::time::sleep(Duration::from_millis(150)) => {}
     }
     drop(doomed);
 

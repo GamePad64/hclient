@@ -144,7 +144,7 @@ impl Wire {
         let mut out = vec![0x80 | opcode];
         match payload.len() {
             n if n < 126 => out.push(u8::try_from(n).expect("under 126")),
-            n if n <= usize::from(u16::MAX) => {
+            n if u16::try_from(n).is_ok() => {
                 out.push(126);
                 out.extend_from_slice(&u16::try_from(n).expect("under 65536").to_be_bytes());
             }

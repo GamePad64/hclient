@@ -25,7 +25,7 @@
 //! `Err(invalid uri character)` — and never converts back, because
 //! nothing downstream takes a U-label. A direction with no caller is a
 //! surface that has to be right on four backends for nobody, and one of
-//! them could not supply it at all: no JS API performs ToUnicode. So the
+//! them could not supply it at all: no JS API performs `ToUnicode`. So the
 //! crate is one direction, every backend is one function, and the
 //! acceptance probe asks one question. Which implementation answers is decided by the
 //! target and, where the target has a choice, by the one feature this
@@ -101,7 +101,7 @@
 //! | `CheckHyphens` | false | `Hyphens::Allow` |
 //! | `VerifyDnsLength` | false | `DnsLength::Ignore` |
 //! | `CheckBidi` | true | always on in `idna`, not configurable |
-//! | `CheckJoiners` (ContextJ) | true | always on in `idna`, not configurable |
+//! | `CheckJoiners` (`ContextJ`) | true | always on in `idna`, not configurable |
 //! | `UseSTD3ASCIIRules` | false | plus the WHATWG deny list, which is not the same set |
 //! | `IgnoreInvalidPunycode` | false | always off in `idna`, not configurable |
 //!
@@ -205,7 +205,7 @@
 //!
 //! **One direction, and it is declared rather than discovered.**
 //! `URL.hostname` hands back the A-label whatever went in, and no JS API
-//! performs ToUnicode. That was this backend's one narrowness while the
+//! performs `ToUnicode`. That was this backend's one narrowness while the
 //! crate had a reverse direction, and the narrowness outlived it: there
 //! is one direction now, so every backend supplies exactly what every
 //! other does.

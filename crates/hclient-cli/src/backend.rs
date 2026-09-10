@@ -168,6 +168,12 @@ pub fn rustls_transport(cfg: &Config) -> Result<RustlsTransport, Refused> {
     ))
 }
 
+// `NativeTls::new()` cannot fail, unlike `rustls_transport`'s platform
+// verifier a few lines up — but both are called through the same `?` at
+// every call site (`choose` below, `run.rs`'s two backend arms), and
+// dropping the wrap here would be the one arm that needed a different
+// shape from its sibling for no reason a caller can see.
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(feature = "native-tls")]
 pub fn native_tls_transport(cfg: &Config) -> Result<NativeTlsTransport, Refused> {
     let tls = if cfg.insecure {

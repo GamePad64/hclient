@@ -1,4 +1,4 @@
-//! A transport resolving through DoH crosses a thread.
+//! A transport resolving through `DoH` crosses a thread.
 //!
 //! This was the last `!Send` in the workspace and it was invisible: the
 //! property is lost at a `Box<dyn Stream>` inside this crate and shows up

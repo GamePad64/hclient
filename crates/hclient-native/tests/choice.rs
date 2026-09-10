@@ -155,7 +155,7 @@ async fn a_resolver_that_cannot_do_svcb_never_chooses_quic() {
     );
 }
 
-/// An AliasMode record does not hide the ServiceMode one behind it.
+/// An `AliasMode` record does not hide the `ServiceMode` one behind it.
 ///
 /// `priority: 0` with every parameter empty sorts *below* every real
 /// record, so a selection that ranked by priority without skipping these

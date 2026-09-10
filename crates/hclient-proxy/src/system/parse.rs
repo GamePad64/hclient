@@ -94,14 +94,13 @@ pub(crate) fn entry(
 fn split_authority(authority: &str) -> Result<(&str, Option<u16>), ParseError> {
     if let Some(rest) = authority.strip_prefix('[') {
         let (host, after) = rest.split_once(']').ok_or(ParseError::NoHost)?;
-        return match after {
-            "" => Ok((host, None)),
-            _ => {
-                let p = after
-                    .strip_prefix(':')
-                    .ok_or(ParseError::BadPort(after.into()))?;
-                Ok((host, Some(port(p)?)))
-            }
+        return if after.is_empty() {
+            Ok((host, None))
+        } else {
+            let p = after
+                .strip_prefix(':')
+                .ok_or(ParseError::BadPort(after.into()))?;
+            Ok((host, Some(port(p)?)))
         };
     }
     match authority.rsplit_once(':') {
@@ -174,6 +173,10 @@ pub(crate) enum Bypass {
 /// applied one layer up, where the caller can still see it.
 pub(crate) fn bypass(pattern: &str) -> Bypass {
     let p = pattern.trim().to_ascii_lowercase();
+    #[allow(
+        clippy::match_same_arms,
+        reason = "\"\" and \"<-loopback>\" both resolve to AlreadyTrue for unrelated reasons — an absent list versus a specific Windows setting already honoured — collapsing the arms would blur that distinction"
+    )]
     match p.as_str() {
         "" => return Bypass::AlreadyTrue,
         "*" => return Bypass::Everything,
@@ -194,9 +197,10 @@ pub(crate) fn bypass(pattern: &str) -> Bypass {
     // under it. Anywhere else, a `*` is a wildcard this workspace does
     // not have.
     if let Some(rest) = p.strip_prefix("*.") {
-        return match rest.contains('*') {
-            true => Bypass::Unsupported(BypassReason::Wildcard),
-            false => Bypass::Pattern(format!(".{rest}").into_boxed_str()),
+        return if rest.contains('*') {
+            Bypass::Unsupported(BypassReason::Wildcard)
+        } else {
+            Bypass::Pattern(format!(".{rest}").into_boxed_str())
         };
     }
     if p.contains('*') {

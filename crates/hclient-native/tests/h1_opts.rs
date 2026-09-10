@@ -35,7 +35,8 @@ fn server(count: usize, size: usize) -> u16 {
             let mut head =
                 String::from("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n");
             for i in 0..count {
-                head.push_str(&format!("x-pad-{i}: {}\r\n", "v".repeat(size)));
+                use std::fmt::Write as _;
+                let _ = write!(head, "x-pad-{i}: {}\r\n", "v".repeat(size));
             }
             head.push_str("\r\n");
             let _ = s.write_all(head.as_bytes());

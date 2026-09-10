@@ -72,6 +72,7 @@ impl<'a> RequestBuilder<'a> {
     /// The first build error wins and survives further calls — it isn't
     /// overwritten by a second invalid pair, and isn't lost if a valid
     /// `header()` call follows it.
+    #[must_use]
     pub fn header(mut self, name: &str, value: &str) -> Self {
         if self.error.is_some() {
             return self;
@@ -120,11 +121,13 @@ impl<'a> RequestBuilder<'a> {
     /// reject something — say, the `Capabilities::forbidden_request_headers`
     /// filter planned for v0.2 — it becomes observable again, and it must
     /// come back TOGETHER with a test that goes red without it.
+    #[must_use]
     pub fn headers(mut self, headers: http::HeaderMap) -> Self {
         self.headers.extend(headers);
         self
     }
 
+    #[must_use]
     pub fn body(mut self, body: RequestBody) -> Self {
         self.body = body;
         self.multipart = None;
@@ -175,6 +178,7 @@ impl<'a> RequestBuilder<'a> {
     ///
     /// [`RetryKind::ViaFactory`]: hclient_core::body::RetryKind::ViaFactory
     /// [`RetryKind::Impossible`]: hclient_core::body::RetryKind::Impossible
+    #[must_use]
     pub fn multipart(mut self, form: crate::multipart::Form) -> Self {
         let boundary = match crate::multipart::Boundary::random() {
             Ok(b) => b,
@@ -205,6 +209,7 @@ impl<'a> RequestBuilder<'a> {
     /// which is **not** RFC 3986 percent-encoding: a space is `+`, and
     /// only `*-._` survive as punctuation. That is the set a form parser
     /// on the other end will undo.
+    #[must_use]
     pub fn query<K: AsRef<str>, V: AsRef<str>>(
         mut self,
         pairs: impl IntoIterator<Item = (K, V)>,
@@ -243,6 +248,7 @@ impl<'a> RequestBuilder<'a> {
     /// Sets `Content-Type` only if the caller has not — the same rule
     /// `Host:` follows one layer down, and for the same reason: a caller
     /// who set it meant it.
+    #[must_use]
     pub fn form<K: AsRef<str>, V: AsRef<str>>(
         mut self,
         pairs: impl IntoIterator<Item = (K, V)>,
@@ -274,6 +280,7 @@ impl<'a> RequestBuilder<'a> {
     /// Sets `Content-Type` only if the caller has not, the same rule
     /// [`Self::form`] follows.
     #[cfg(feature = "json")]
+    #[must_use]
     pub fn json<V: serde::Serialize + ?Sized>(mut self, value: &V) -> Self {
         match serde_json::to_vec(value) {
             Ok(bytes) => {
@@ -302,6 +309,7 @@ impl<'a> RequestBuilder<'a> {
     /// §2 makes the colon the separator, so `a:b` and `a` with password
     /// `b` would produce identical bytes and one of the two callers would
     /// be silently wrong.
+    #[must_use]
     pub fn basic_auth(mut self, user: &str, password: &str) -> Self {
         if user.contains(':') {
             self.fail(ColonInUsername);
@@ -386,6 +394,7 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// `Authorization: Bearer`, RFC 6750 §2.1.
+    #[must_use]
     pub fn bearer_auth(self, token: &str) -> Self {
         self.authorization(&format!("Bearer {token}"))
     }
@@ -425,6 +434,7 @@ impl<'a> RequestBuilder<'a> {
     /// reqwest can't do this at all (issue #2641), which forces `act-cli`
     /// to build a separate `reqwest::Client` for every component call —
     /// with its own connection pool.
+    #[must_use]
     pub fn timeouts(mut self, t: hclient_core::req::Timeouts) -> Self {
         self.extensions.insert(t);
         self
@@ -471,6 +481,7 @@ impl<'a> RequestBuilder<'a> {
     /// reads a `RedirectPolicy`.
     ///
     /// [`ClientBuilder::redirect`]: crate::ClientBuilder::redirect
+    #[must_use]
     pub fn redirect<P>(mut self, policy: P) -> Self
     where
         P: RedirectPolicy + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -504,6 +515,7 @@ impl<'a> RequestBuilder<'a> {
     ///
     /// Stored in `Extensions`, the same channel `timeouts` uses, and read
     /// by the transport rather than by `Client`.
+    #[must_use]
     pub fn require_version(mut self, version: http::Version) -> Self {
         self.extensions
             .insert(hclient_core::req::RequireVersion(version));
@@ -614,6 +626,13 @@ impl<'a> RequestBuilder<'a> {
     /// parameters: the transport's error is converted into
     /// [`hclient_core::error::Error`] at the erased seam, so nothing here has to
     /// repeat a bound about it.
+    ///
+    /// # Errors
+    ///
+    /// The first invalid header name/value or malformed JSON body given
+    /// to this builder, deferred to here rather than panicking at the
+    /// setter, or — once the request itself is well formed — whatever
+    /// [`Client::execute`](crate::Client::execute) returns.
     pub async fn send(self) -> Result<Response<crate::body::ClientBody>, Error> {
         if let Some(e) = self.error {
             return Err(e);

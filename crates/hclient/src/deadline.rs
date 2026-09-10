@@ -69,7 +69,7 @@ impl Timer for NoClock {
         std::future::pending()
     }
     fn now(&self) -> Self::Instant {}
-    fn elapsed_since(&self, _: Self::Instant) -> Duration {
+    fn elapsed_since(&self, (): Self::Instant) -> Duration {
         Duration::ZERO
     }
 }
@@ -328,13 +328,17 @@ impl<B: Unpin> Unpin for Deadline<B> {}
 
 /// Hand-written: `#[derive(Debug)]` would require `Tm::Instant: Debug`,
 /// which [`Timer`] does not ask for, so the derive would not compile for a
-/// clock whose instant is not `Debug`. The instant is not printed.
+/// clock whose instant is not `Debug`. The instant is not printed, and
+/// neither is `sleep`: it is a `BoxSleep`, a pinned future, printing which
+/// would say nothing about whether it has fired. `finish_non_exhaustive`
+/// is the honest way to say both fields are deliberately left out, rather
+/// than forgotten.
 impl<B: Debug> Debug for Deadline<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Deadline")
             .field("inner", &self.inner)
             .field("total", &self.total)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -412,7 +416,9 @@ where
     fn is_end_stream(&self) -> bool {
         // An expired body has not "ended": it failed. Saying `true` here
         // would let a caller conclude the response was complete.
-        self.inner.as_ref().is_some_and(|b| b.is_end_stream())
+        self.inner
+            .as_ref()
+            .is_some_and(http_body::Body::is_end_stream)
     }
 
     fn size_hint(&self) -> http_body::SizeHint {

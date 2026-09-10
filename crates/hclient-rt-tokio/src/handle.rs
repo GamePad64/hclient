@@ -90,6 +90,11 @@ impl TokioHandle {
     /// ours. There is exactly one way to fail — no runtime — and wrapping
     /// it would add a name without adding information, while losing the
     /// `kind()` tokio already exposes.
+    ///
+    /// # Errors
+    ///
+    /// tokio's own [`tokio::runtime::TryCurrentError`] when this is called
+    /// outside a tokio runtime — see above.
     pub fn current() -> Result<Self, tokio::runtime::TryCurrentError> {
         tokio::runtime::Handle::try_current().map(Self)
     }

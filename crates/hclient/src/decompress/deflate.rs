@@ -142,6 +142,13 @@ impl DeflateStream {
     /// With an empty input slice and no output, the next iteration makes
     /// no progress and breaks, so the extra call costs one iteration and
     /// cannot spin.
+    // The two `u64 -> usize` casts below cannot lose anything: `written` is
+    // the growth in `total_out` from one `decompress` call, which can write
+    // at most `DEFLATE_CHUNK` (16 KiB) bytes into the slice it was handed;
+    // the growth in `total_in` fed to `consumed` is bounded the same way by
+    // `bytes[consumed..].len()`, itself a `usize`. Both stay far under
+    // `usize::MAX` on every target this crate builds for.
+    #[allow(clippy::cast_possible_truncation)]
     fn drive(
         dec: &mut flate2::Decompress,
         done: &mut bool,

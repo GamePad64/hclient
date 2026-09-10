@@ -60,7 +60,7 @@ use http::HeaderName;
 /// breaks an external `match`. That
 /// cost is the point: it should arrive **with** the backend that carries
 /// it. A `libcurl` backend (`CURLOPT_FOLLOWLOCATION` plus
-/// `CURLOPT_MAXREDIRS` is a genuinely declarative policy) or WinHTTP would
+/// `CURLOPT_MAXREDIRS` is a genuinely declarative policy) or `WinHTTP` would
 /// be candidates, and both would also need the seam to start carrying the
 /// merged policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -155,6 +155,12 @@ pub enum TlsSupport {
 /// eleven `bool` capabilities that become `false` when a transport does
 /// not set them — so the requirement was giving this struct a property
 /// its own container never had.
+// A capability that answers yes or no is a `bool`, not a two-variant enum
+// or a differently-shaped struct — deliberate, see AGENTS.md "A capability
+// that answers yes or no is a `bool`". Each field here answers a separate
+// yes/no question about a separate bound; splitting them apart would not
+// make any one of them less of a bool.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TimeoutSupport {
@@ -248,6 +254,12 @@ impl TimeoutSupport {
 /// `every_capability_is_a_gate_or_a_report` in this module destructures
 /// the struct with no `..`, so a field added later is a compile error
 /// until somebody decides which kind it is.
+// A capability that answers yes or no is a `bool` — deliberate, see
+// AGENTS.md "A capability that answers yes or no is a `bool`". Each of
+// these is a separate gate or report over a separate question; the count
+// is the vocabulary this type exists to hold, not a sign it should be
+// restructured.
+#[allow(clippy::struct_excessive_bools)]
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct Capabilities {
@@ -507,7 +519,7 @@ pub struct Capabilities {
     /// emits no [`Head`](crate::hooks::Head) at all, so the `Some` side
     /// has no producer there and the biconditional is vacuous rather than
     /// broken — `hclient-winhttp` reports `true` here, honestly (it reads
-    /// the version out of WinHTTP's flags), and implements no
+    /// the version out of `WinHTTP`'s flags), and implements no
     /// [`Hooks`](crate::hooks::Hooks). What a portable hook may conclude
     /// is the contrapositive, which is the direction it actually needs:
     /// a [`Head`](crate::hooks::Head) carrying `None` came from a

@@ -437,6 +437,7 @@ where
     // connection rather than once per request — so it is a decision for
     // whoever needs it, not a lint fix.
     #[allow(clippy::result_large_err)]
+    #[allow(clippy::too_many_lines)] // one connection attempt, including the pool checkout and TLS; tested end-to-end
     async fn stage(
         &self,
         req: http::Request<RequestBody>,
@@ -455,16 +456,17 @@ where
         let named = req.extensions().get::<hclient_core::tls::ClientIdentity>();
         let identity_id = match named {
             None => None,
-            Some(id) => match hclient_tls::TlsIdentity::config_id_for(&self.tls, id.name()) {
-                Some(cfg) => Some(cfg),
-                None => {
+            Some(id) => {
+                if let Some(cfg) = hclient_tls::TlsIdentity::config_id_for(&self.tls, id.name()) {
+                    Some(cfg)
+                } else {
                     let e = Error::new(
                         hclient_core::error::ErrorKind::Tls,
                         crate::UnknownClientIdentity(id.name().to_owned()),
                     );
                     return Err((e, req));
                 }
-            },
+            }
         };
         let identity = named.map(hclient_core::tls::ClientIdentity::name);
         // Which request this connect is being paid for, read once from the

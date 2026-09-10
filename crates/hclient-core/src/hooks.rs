@@ -1223,6 +1223,7 @@ impl<'a> Connected<'a> {
     /// three would let a caller set two and forget the third, which is
     /// the shape `Native::hooks` dropping the `1xx` installer while
     /// keeping its capability already cost this workspace once.
+    #[must_use]
     pub fn tls(
         mut self,
         version: Option<&'a str>,

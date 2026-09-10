@@ -124,10 +124,7 @@ pub struct H3Failures {
 impl Debug for H3Failures {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Failures")
-            .field(
-                "suppressed",
-                &self.entries.lock().map(|m| m.len()).unwrap_or(0),
-            )
+            .field("suppressed", &self.entries.lock().map_or(0, |m| m.len()))
             .finish()
     }
 }
@@ -145,6 +142,11 @@ impl H3Failures {
     /// closed is gone. That agrees with the cache next door, which is worth
     /// more than either choice is on its own: two memories consulted for
     /// one request should not disagree about what "expired" means.
+    ///
+    /// # Panics
+    ///
+    /// If the internal mutex is poisoned by another thread panicking while
+    /// holding it.
     pub fn suppressed(&self, origin: &Origin, now: Duration) -> bool {
         let mut entries = self.entries.lock().expect("h3 failure memory poisoned");
         match entries.get(origin) {
@@ -163,6 +165,11 @@ impl H3Failures {
     /// extending from the previous deadline, so an origin that fails once
     /// and then is never tried again is forgotten [`H3_FAILURE_TTL`] later
     /// and not longer.
+    ///
+    /// # Panics
+    ///
+    /// If the internal mutex is poisoned by another thread panicking while
+    /// holding it.
     pub fn note(&self, origin: &Origin, now: Duration) {
         self.entries
             .lock()
@@ -180,6 +187,11 @@ impl H3Failures {
     /// nothing ever claimed that a failure to reach it belongs to the
     /// origin rather than to the path, and a failure remembered across a
     /// network change is exactly the entry that is now certainly wrong.
+    ///
+    /// # Panics
+    ///
+    /// If the internal mutex is poisoned by another thread panicking while
+    /// holding it.
     pub fn network_changed(&self) {
         self.entries
             .lock()

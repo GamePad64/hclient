@@ -249,7 +249,7 @@ fn dual_stack_is_available() -> bool {
 /// same as a hardcoded `true` — which is why the `ecn: true` mutation has
 /// survived since v0.3. **v4-mapped traffic to a dual-stack socket is
 /// where the families come apart**: `quinn-udp`'s own unix backend
-/// carries "mac and ios do not support IP_RECVTOS on dual-stack sockets",
+/// carries "mac and ios do not support `IP_RECVTOS` on dual-stack sockets",
 /// so there the codepoint cannot come back, and a socket claiming it can
 /// is making a claim the kernel will not keep.
 ///

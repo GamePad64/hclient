@@ -512,7 +512,7 @@ where
                     Ok(data) => {
                         *fed = true;
                         match decoder.push(&data) {
-                            Ok(out) if out.is_empty() => continue,
+                            Ok(out) if out.is_empty() => {}
                             Ok(out) => return Poll::Ready(Some(Ok(http_body::Frame::data(out)))),
                             Err(e) => {
                                 let token = decoder.token();

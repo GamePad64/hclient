@@ -203,14 +203,26 @@ pub struct ConnTiming {
 }
 
 impl ConnTiming {
+    /// # Panics
+    ///
+    /// If the mutex is poisoned — a prior panic on the recording side,
+    /// which would itself be the thing to chase.
     pub fn first_request(&self) -> Option<Duration> {
         *self.first_request.lock().unwrap()
     }
+    /// # Panics
+    ///
+    /// If the mutex is poisoned — a prior panic on the recording side,
+    /// which would itself be the thing to chase.
     pub fn handshake_done(&self) -> Option<Duration> {
         *self.handshake_done.lock().unwrap()
     }
 }
 
+// A curated summary, not a dump: `cert_der` is raw DER with nothing a
+// reader would want printed, and the counters and thread handles are
+// read through their own accessors where a test actually needs them.
+#[allow(clippy::missing_fields_in_debug)]
 impl Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server").field("addr", &self.addr).finish()
@@ -228,11 +240,21 @@ impl Server {
         self.requests.load(Ordering::SeqCst)
     }
     /// One [`ConnTiming`] per accepted connection, in accept order.
+    ///
+    /// # Panics
+    ///
+    /// If the mutex is poisoned — a prior panic on the recording side,
+    /// which would itself be the thing to chase.
     pub fn timings(&self) -> Vec<Arc<ConnTiming>> {
         self.timings.lock().unwrap().clone()
     }
     /// One [`BodyReport`] per request whose body was read, in the order the
     /// reads finished.
+    ///
+    /// # Panics
+    ///
+    /// If the mutex is poisoned — a prior panic on the recording side,
+    /// which would itself be the thing to chase.
     pub fn bodies(&self) -> Vec<BodyReport> {
         self.bodies.lock().unwrap().clone()
     }
@@ -242,6 +264,11 @@ impl Server {
     /// server's own record, so the test never has to guess how long a
     /// reset takes to arrive. Returns `false` if it did not happen inside
     /// `within`, so a caller can fail with its own message.
+    ///
+    /// # Panics
+    ///
+    /// If the mutex is poisoned — a prior panic on the recording side,
+    /// which would itself be the thing to chase.
     pub async fn wait_for_bodies(&self, n: usize, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
         while std::time::Instant::now() < deadline {
@@ -275,6 +302,10 @@ impl Clone for Identity {
     }
 }
 
+/// # Panics
+///
+/// If `rcgen` cannot mint a self-signed certificate for these three
+/// names — never expected on a real host.
 pub fn identity() -> Identity {
     // All three names: the tests dial the literal `127.0.0.1` (so the
     // resolver is not a second thing under test), and rcgen turns an
@@ -369,10 +400,17 @@ pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<Duration>) -> 
 /// Opt-in rather than the default, because taking this path would start the
 /// h3 layer before the handshake finished for every other test in this
 /// suite — changing what they measure for the benefit of one that needs it.
+///
+/// # Panics
+///
+/// If the v4 loopback fails to bind — never expected on a real host.
 pub fn start_watching_early_data(behaviour: Behaviour) -> Server {
     start_inner(behaviour, None, identity(), true, v4(), None).expect("a v4 loopback bind")
 }
 
+/// # Panics
+///
+/// If the v4 loopback fails to bind — never expected on a real host.
 pub fn start_full(behaviour: Behaviour, idle: Option<Duration>, id: Identity) -> Server {
     start_inner(behaviour, idle, id, false, v4(), None).expect("a v4 loopback bind")
 }
@@ -389,6 +427,11 @@ fn v4() -> SocketAddr {
 /// `tests/quic_server_name.rs` is about. `None` rather than a panic for the
 /// same reason `an_endpoint_is_bound_in_the_peers_address_family` skips its
 /// v6 half in `src/lib.rs` — a host without IPv6 is a fact about the host.
+///
+/// # Panics
+///
+/// If the literal `"[::1]:0"` fails to parse — never expected, since it
+/// is a fixed, well-formed address.
 pub fn start_on_v6(behaviour: Behaviour) -> Option<Server> {
     start_inner(
         behaviour,
@@ -400,6 +443,11 @@ pub fn start_on_v6(behaviour: Behaviour) -> Option<Server> {
     )
 }
 
+// One linear assembly — TLS config, transport config, the endpoint, the
+// accept-loop thread — for a single self-contained test server. Splitting
+// it into helpers would scatter one setup across the file for no reader's
+// benefit.
+#[allow(clippy::too_many_lines)]
 fn start_inner(
     behaviour: Behaviour,
     idle: Option<Duration>,
@@ -459,15 +507,12 @@ fn start_inner(
             .build()
             .unwrap();
         rt.block_on(async move {
-            let endpoint = match quinn::Endpoint::server(cfg, bind) {
-                Ok(e) => e,
-                // The only expected failure is "this host has no IPv6", and
-                // the caller has to be able to tell it apart from a server
-                // that bound and then went quiet.
-                Err(_) => {
-                    let _ = tx.send(None);
-                    return;
-                }
+            // The only expected failure is "this host has no IPv6", and
+            // the caller has to be able to tell it apart from a server
+            // that bound and then went quiet.
+            let Ok(endpoint) = quinn::Endpoint::server(cfg, bind) else {
+                let _ = tx.send(None);
+                return;
             };
             tx.send(Some(endpoint.local_addr().unwrap())).unwrap();
             while let Some(incoming) = endpoint.accept().await {
@@ -661,6 +706,11 @@ fn start_inner(
 
 /// A `Rustls` that trusts exactly this server's certificate, and nothing
 /// else.
+///
+/// # Panics
+///
+/// If `cert` is not a well-formed DER certificate — never expected of
+/// this module's own `identity()`.
 pub fn client_tls(cert: &rustls::pki_types::CertificateDer<'static>) -> hclient_tls_rustls::Rustls {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert.clone()).unwrap();

@@ -64,6 +64,14 @@ pub struct ResponseHead {
 /// The `usize` is how many bytes the head occupied, **including** its
 /// terminating CRLF. Everything after that in `buf` belongs to whoever
 /// comes next, which for a `CONNECT` tunnel is the origin.
+///
+/// # Errors
+///
+/// A [`HeadError`] when `buf` does not begin with a well-formed status
+/// line and header block — including the three shapes this module's own
+/// doc says it refuses: a bare LF, an obs-fold continuation, and
+/// whitespace before a header's colon. An incomplete head is `Ok(None)`,
+/// not an error — see above.
 pub fn parse_response(buf: &[u8]) -> Result<Option<(ResponseHead, usize)>, HeadError> {
     let mut input = Partial::new(buf);
     match head.parse_next(&mut input) {
@@ -79,6 +87,10 @@ pub fn parse_response(buf: &[u8]) -> Result<Option<(ResponseHead, usize)>, HeadE
 /// slice form: what follows a `CONNECT` response head is the origin's
 /// first bytes, and they must survive as a `Bytes` rather than be copied
 /// out of a borrow that is about to end.
+///
+/// # Errors
+///
+/// Whatever [`parse_response`] returns for `buf` — see its `# Errors`.
 pub fn parse_response_bytes(buf: &mut Bytes) -> Result<Option<ResponseHead>, HeadError> {
     match parse_response(buf)? {
         None => Ok(None),

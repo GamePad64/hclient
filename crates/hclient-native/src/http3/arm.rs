@@ -102,7 +102,7 @@ pub(crate) trait BoxStagedConnect: Debug {
     /// reason the staged pair exists rather than `execute`: a QUIC connect
     /// that fails must leave the request available to be sent over TCP,
     /// and a request already handed to a stream is not.
-    fn connect_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> Staging<'a>;
+    fn connect_boxed(&self, req: http::Request<RequestBody>) -> Staging<'_>;
 }
 
 /// A connection staged by a [`BoxStagedConnect`], with one thing left to

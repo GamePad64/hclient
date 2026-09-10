@@ -20,7 +20,7 @@ use crate::{Approach, Handshake, Step, take};
 /// SOCKS4 grants with `CD = 90`. Not `0`, unlike SOCKS5's `REP`.
 const SOCKS4_GRANTED: u8 = 90;
 
-/// SOCKS4a: `CONNECT` by name, through a protocol that predates IPv6.
+/// `SOCKS4a`: `CONNECT` by name, through a protocol that predates IPv6.
 #[derive(Debug, Clone, Default)]
 pub struct Socks4 {
     userid: Box<str>,
@@ -38,6 +38,12 @@ impl Socks4 {
     /// the protocol gives it no secrecy — it travels in the clear and is
     /// checked, if at all, against a service on the client's own host —
     /// and marking it would claim a property it does not have.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Socks4HandshakeError::NulInUserid`] when `userid`
+    /// contains a NUL byte — the wire form is NUL-terminated, so one
+    /// inside the value would end the field early.
     pub fn userid(mut self, userid: impl Into<Box<str>>) -> Result<Self, Socks4HandshakeError> {
         let userid = userid.into();
         if userid.as_bytes().contains(&0) {

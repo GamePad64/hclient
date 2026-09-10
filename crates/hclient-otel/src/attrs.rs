@@ -104,7 +104,7 @@ const OTHER: &str = "_OTHER";
 /// differ.
 ///
 /// **The nine methods RFC 9110 registers are a closed set, and that is
-/// what makes the span name safe.** OTel's rule is that an unknown method
+/// what makes the span name safe.** `OTel`'s rule is that an unknown method
 /// MUST become `_OTHER`, with the original in
 /// `http.request.method_original` — so a caller who invents a method per
 /// request cannot put one in a span name, and the name stays one of ten
@@ -261,8 +261,8 @@ fn is_sensitive_query_key(key: &str) -> bool {
 #[must_use]
 pub fn server_port(uri: &http::Uri) -> Option<u16> {
     uri.port_u16().or_else(|| match uri.scheme_str() {
-        Some("https") | Some("wss") => Some(443),
-        Some("http") | Some("ws") => Some(80),
+        Some("https" | "wss") => Some(443),
+        Some("http" | "ws") => Some(80),
         _ => None,
     })
 }
@@ -275,7 +275,7 @@ pub fn server_port(uri: &http::Uri) -> Option<u16> {
 /// resending (e.g. redirection, authorization failure, 503 Server
 /// Unavailable, network issues, or any other)"*.
 ///
-/// [`Attempt`] splits the same total on a line OTel does not draw:
+/// [`Attempt`] splits the same total on a line `OTel` does not draw:
 /// `hop` counts redirects and `resend` counts everything else about one
 /// hop. Reading `resend` alone is the mapping the field names invite, and
 /// it reports `0` for the third hop of a redirect chain — which is exactly
@@ -296,13 +296,13 @@ pub fn resend_count(extensions: &http::Extensions) -> Option<u32> {
 ///
 /// *Third send, first hop* and *first send, third hop* are different
 /// failures and the sum cannot tell them apart, so both halves travel
-/// beside the standard attribute under names that are visibly not OTel's.
+/// beside the standard attribute under names that are visibly not `OTel`'s.
 #[must_use]
 pub fn attempt(extensions: &http::Extensions) -> Option<Attempt> {
     extensions.get::<Attempt>().copied()
 }
 
-/// `network.protocol.version`, as the OTel registry spells it.
+/// `network.protocol.version`, as the `OTel` registry spells it.
 ///
 /// **Only ever called where `Capabilities::version_reported` is true** —
 /// the biconditional `Head::version` already established one seam over.
@@ -407,6 +407,13 @@ pub fn error_type(kind: &ErrorKind) -> &'static str {
         ErrorKind::Status => "Status",
         ErrorKind::Unsupported => "Unsupported",
         ErrorKind::Cancelled => "Cancelled",
+        // Named rather than folded into the wildcard below: this arm says
+        // "this variant *is* `Other`", where the wildcard says "this
+        // variant did not exist when this match was written" — the two
+        // read identically today and must not be collapsed into one, or a
+        // future `ErrorKind` addition would be indistinguishable from the
+        // one that already means exactly that.
+        #[allow(clippy::match_same_arms)]
         ErrorKind::Other => "Other",
         // Same shape one enum up, and the same reason it is not
         // `unreachable!`: `ErrorKind` is `#[non_exhaustive]`, so a variant

@@ -70,7 +70,7 @@ impl<C> NalIo<C> {
     }
 }
 
-fn io_err<E: embedded_io_async::Error>(e: E) -> io::Error {
+fn io_err<E: embedded_io_async::Error>(e: &E) -> io::Error {
     // `embedded_io_async::ErrorKind` is a superset of what `io::ErrorKind`
     // spells the same way, so the kind is carried rather than flattened
     // into `Other` — a transport above this can then tell a refused
@@ -114,7 +114,7 @@ impl<C: embedded_io_async::Read + Unpin> hyper::rt::Read for NalIo<C> {
         let Self { conn, scratch } = &mut *self;
         let n = {
             let mut fut = pin!(conn.read(&mut scratch[..want]));
-            ready!(fut.as_mut().poll(cx)).map_err(io_err)?
+            ready!(fut.as_mut().poll(cx)).map_err(|e| io_err(&e))?
         };
         // `n == 0` is end of stream, and filling nothing is how a
         // `hyper::rt::Read` reports one.
@@ -130,12 +130,12 @@ impl<C: embedded_io_async::Write + Unpin> hyper::rt::Write for NalIo<C> {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let mut fut = pin!(self.conn.write(buf));
-        Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(io_err))
+        Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(|e| io_err(&e)))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut fut = pin!(self.conn.flush());
-        Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(io_err))
+        Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(|e| io_err(&e)))
     }
 
     /// **A flush, and hyper will believe it was a half-close.**
@@ -155,6 +155,6 @@ impl<C: embedded_io_async::Write + Unpin> hyper::rt::Write for NalIo<C> {
     /// that never sees the FIN.
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut fut = pin!(self.conn.flush());
-        Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(io_err))
+        Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(|e| io_err(&e)))
     }
 }

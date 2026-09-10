@@ -170,6 +170,11 @@ impl Wire {
                 }
                 let mut n = [0u8; 8];
                 n.copy_from_slice(&self.buf[2..10]);
+                // The client under test never sends a frame anywhere near
+                // `usize::MAX` bytes — this suite's largest message is 8
+                // MiB — so a truncated length here would show up as a
+                // wrong slice length a few lines down, not silently.
+                #[allow(clippy::cast_possible_truncation)]
                 (u64::from_be_bytes(n) as usize, 10)
             }
             n => (n, 2),
@@ -198,9 +203,14 @@ impl Wire {
     /// A server-to-client frame, which RFC 6455 §5.1 forbids to be masked.
     fn frame_bytes(opcode: u8, payload: &[u8]) -> Vec<u8> {
         let mut out = vec![0x80 | opcode];
+        // Each cast below is bounded by the match arm that reaches it —
+        // `n < 126` for the `u8` and `u16::try_from(n).is_ok()` for the
+        // `u16` — so neither can truncate; clippy cannot see a guard as a
+        // bound.
+        #[allow(clippy::cast_possible_truncation)]
         match payload.len() {
             n if n < 126 => out.push(n as u8),
-            n if n <= usize::from(u16::MAX) => {
+            n if u16::try_from(n).is_ok() => {
                 out.push(126);
                 out.extend_from_slice(&(n as u16).to_be_bytes());
             }
@@ -774,6 +784,8 @@ async fn a_ping_is_answered_with_a_pong_which_is_what_releases_the_next_message(
 #[tokio::test]
 async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
     const SIZE: usize = 8 * 1024 * 1024;
+    // `i % 251` is always `< 251`, so the cast to `u8` cannot truncate.
+    #[allow(clippy::cast_possible_truncation)]
     let payload: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
 
     let (release_tx, release_rx) = mpsc::channel::<()>();

@@ -17,6 +17,8 @@ fn public_api_types_are_reachable_from_the_facade() {
     // The trait, its default implementation, and one ready-made — all
     // reachable through the facade without naming `hclient-proto`.
     let _p: hclient::redirect::Limit = hclient::redirect::Limit::default();
+    // Kept next to its one call site, which is the assertion.
+    #[allow(clippy::items_after_statements)]
     fn takes_a_policy(_: &dyn hclient::redirect::RedirectPolicy) {}
     takes_a_policy(&hclient::redirect::Forbid);
     // `check_supported` takes this and returns that.
@@ -98,6 +100,10 @@ fn response_collected_and_request_builder_are_reachable_from_the_facade<B>(
 /// no constructor without a transport exists, so reachability and shape
 /// (generic arity) are checked by compiling a function that's never called.
 #[allow(dead_code)]
+// The typed `let _: T = ..` bindings ARE the check — this function is
+// never called, so it is the type ascription that asserts reachability
+// and shape, not any effect of the binding.
+#[allow(clippy::no_effect_underscore_binding)]
 fn sse_types_are_reachable_from_the_facade<B>(_s: hclient::sse::SseStream<B>) {
     let _event: hclient::sse::SseEvent = hclient::sse::SseEvent::Comment(String::new());
     let _limit: usize = hclient::sse::DEFAULT_MAX_EVENT_SIZE;
@@ -407,7 +413,9 @@ fn the_one_default_constructor_is_fallible_about_both_of_its_failures() {
     let _client_no_param: hclient::Client = client;
 
     // The type is the assertion: an `UnsupportedCapability` could not name
-    // the trust-store cause, which is why the narrow one is gone.
+    // the trust-store cause, which is why the narrow one is gone. Kept next
+    // to its one call site, which is the assertion.
+    #[allow(clippy::items_after_statements)]
     fn takes_the_wide_error(_: fn() -> Result<hclient::Client, hclient::Error>) {}
     takes_the_wide_error(hclient::Client::new);
 }

@@ -2,7 +2,7 @@
 //!
 //! [`EndpointError`] is raised at **construction** and [`DohError`] at a
 //! **lookup**, and the split is the crate's bootstrap argument written as
-//! types: which constructor compiles is what says whether the DoH server's
+//! types: which constructor compiles is what says whether the `DoH` server's
 //! own name gets resolved, so the mistakes that question admits —
 //! a literal handed to `bootstrapped`, a name handed to `pinned`, a
 //! cleartext endpoint that is not this machine — are caught on the line
@@ -73,7 +73,7 @@ pub enum DohError {
     /// transport's own classified [`hclient_core::error::Error`] is kept whole.
     #[error("the DoH request failed: {0}")]
     Transport(#[source] hclient_core::error::Error),
-    /// The DoH server answered with something other than 200. RFC 8484 §4.2
+    /// The `DoH` server answered with something other than 200. RFC 8484 §4.2
     /// gives no other success status.
     #[error("the DoH server answered with HTTP status {status}")]
     Status { status: u16 },
@@ -92,7 +92,7 @@ pub enum DohError {
     #[error("could not read the DoH response body: {0}")]
     Body(String),
     /// The bytes were not a DNS message. RFC 9460 §2.2 requires rejecting
-    /// the whole RRSet when any record is malformed, which is what a
+    /// the whole `RRSet` when any record is malformed, which is what a
     /// whole-message decode failure already gives: no half-parsed answer
     /// reaches a caller.
     #[error("the DoH server's answer is not a valid DNS message: {0}")]
@@ -101,7 +101,7 @@ pub enum DohError {
     #[error("the DoH server echoed a query rather than answering one")]
     NotAResponse,
     /// `TC` was set. See this module's doc for why this is an error over
-    /// DoH specifically.
+    /// `DoH` specifically.
     #[error("the DoH server's answer was truncated")]
     Truncated,
     /// RCODE was neither NOERROR nor NXDOMAIN. RFC 1035 §4.1.1 / RFC 6895

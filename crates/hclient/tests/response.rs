@@ -330,7 +330,7 @@ fn into_parts_lets_you_poll_the_trailer_frame_directly() {
 
     match pinned.as_mut().poll_frame(&mut cx) {
         Poll::Ready(Some(Ok(f))) => {
-            assert_eq!(f.into_data().unwrap(), bytes::Bytes::from_static(b"data"))
+            assert_eq!(f.into_data().unwrap(), bytes::Bytes::from_static(b"data"));
         }
         other => panic!("expected the data frame, got {other:?}"),
     }
@@ -354,6 +354,7 @@ fn into_parts_lets_you_poll_the_trailer_frame_directly() {
 /// `version()` not at all.
 #[test]
 fn version_and_into_parts_expose_the_full_response_head() {
+    use http_body::Body as _;
     let m = MockTransport::new();
     m.push_response(
         http::Response::builder()
@@ -373,12 +374,11 @@ fn version_and_into_parts_expose_the_full_response_head() {
     assert_eq!(parts.headers.get("x-k").unwrap(), "v");
 
     // The body handed back by into_parts() is the real, unread one.
-    use http_body::Body as _;
     let waker = std::task::Waker::noop();
     let mut cx = Context::from_waker(waker);
     match Pin::new(&mut body).poll_frame(&mut cx) {
         Poll::Ready(Some(Ok(f))) => {
-            assert_eq!(f.into_data().unwrap(), bytes::Bytes::from_static(b"body"))
+            assert_eq!(f.into_data().unwrap(), bytes::Bytes::from_static(b"body"));
         }
         other => panic!("expected the data frame via the raw body, got {other:?}"),
     }

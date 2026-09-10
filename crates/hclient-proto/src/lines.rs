@@ -26,7 +26,7 @@
 //!
 //! # Three terminators, and a lone CR is one of them
 //!
-//! `LF`, `CRLF` and a bare `CR`, which is the set the WHATWG EventSource
+//! `LF`, `CRLF` and a bare `CR`, which is the set the WHATWG `EventSource`
 //! rules already fixed here.
 //!
 //! **One grammar rather than two**, which is `head.rs`'s argument in this
@@ -47,7 +47,7 @@
 //!
 //! Exactly one `EF BB BF` at the very start of the stream, which is what
 //! every text reader does with an encoding marker (Python's `utf-8-sig`,
-//! .NET's `StreamReader`) and what the EventSource rules require. A second
+//! .NET's `StreamReader`) and what the `EventSource` rules require. A second
 //! one is ordinary data. The cost lands on a caller splitting something
 //! that is not text, and it is three bytes of a body that opens with them.
 

@@ -296,8 +296,8 @@ mod tests {
         assert_eq!(c.kind(), &ErrorKind::Connect);
         // The clone must share the same source, not copy or lose it: the
         // source pointers of the original and the clone must match.
-        let a = StdError::source(&e).unwrap() as *const dyn StdError;
-        let b = StdError::source(&c).unwrap() as *const dyn StdError;
+        let a = std::ptr::from_ref::<dyn StdError>(StdError::source(&e).unwrap());
+        let b = std::ptr::from_ref::<dyn StdError>(StdError::source(&c).unwrap());
         assert!(std::ptr::eq(a, b));
     }
 

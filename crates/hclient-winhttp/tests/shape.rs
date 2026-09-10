@@ -11,7 +11,7 @@ use hclient_winhttp::{WinHttp, WinHttpBody};
 use static_assertions::assert_impl_all;
 
 /// The transport crosses threads, which is what `SendTransport` promises
-/// on its behalf. A WinHTTP handle has no thread affinity and the
+/// on its behalf. A `WinHTTP` handle has no thread affinity and the
 /// completion callback runs on a pool thread, so this is a property of
 /// the API rather than of this crate — and losing it would mean
 /// `hclient::Client` stopped accepting this backend.

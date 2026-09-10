@@ -610,12 +610,12 @@ fn every_shipped_runtime_declares_the_option_this_transport_asks_for() {
         assert!(
             <hclient_rt_tokio::TokioHandle as TcpConnect>::APPLIES.nodelay,
             "TokioHandle"
-        )
+        );
     };
     const {
         assert!(
             <hclient_rt_smol::Smol as TcpConnect>::APPLIES.nodelay,
             "Smol"
-        )
+        );
     };
 }

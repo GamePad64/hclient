@@ -8011,6 +8011,110 @@ metadata beside it: `default` is empty or near-empty in every crate here
 by design, so a doc build without it checks the smallest part of the
 surface and publishes the same.
 
+### `clippy::pedantic` is on, and the two lints refused are refused for reasons of this workspace's own
+
+`[workspace.lints.clippy]` sets `pedantic = { level = "warn", priority =
+-1 }`. `warn` rather than `deny` because `just lint` already passes
+`-D warnings`, so the gate fails on a pedantic finding exactly as it
+fails on any other, and an editor shows the same set with no flag
+anybody has to remember. `priority = -1` is what lets a single lint be
+given back by name without the group overriding it.
+
+**Measured before it was decided: 1309 findings, of which 1024 carried a
+machine-applicable suggestion.** `cargo clippy --fix` took those in one
+pass. The three biggest groups are the ones a reader meets rather than
+the ones a compiler does — `doc_markdown` at 282, `must_use_candidate`
+at 179, `semicolon_if_nothing_returned` at 86 — and the 285 that
+remained are the ones that wanted a decision.
+
+**What the group is actually worth here is the documentation half.** 68
+`missing_errors_doc` and 48 `missing_panics_doc` are public functions
+that return a `Result` or can panic and never told a caller when. Many
+already explained the failure in prose — `check_version`'s doc states
+its exact error type and condition in its second paragraph — so the fix
+there is the `# Errors` heading rustdoc looks for, over text that was
+already right. The rest were genuine gaps on a crate that had just
+frozen its public interface.
+
+**`large_futures` is given back, and it is the one that would have been
+a second check disagreeing with a first.** It fires 210 times and **not
+once in library source**: every site is a test awaiting a client future.
+This workspace already bounds those, with ceilings it measured rather
+than a constant somebody picked — 6 KiB in `hclient/tests/future_size.rs`
+and 24 KiB in `hclient-native`'s, both derived from the 1.81x an extra
+`async fn` layer was measured to cost. Clippy's default is 16 KiB, so
+the lint would refuse `Native::execute`'s deliberate 15,480-byte future
+while this workspace's own guard passes it. Two checks disagreeing about
+one fact is what those guards exist to prevent, and the guard is the one
+that fails closed on the defect.
+
+**`must_use_candidate` is given back because the attribute would stop
+meaning anything.** `#[must_use]` says *ignoring this is a bug*. That is
+true of `Timeouts::or` and false of `Capabilities::redirects` — reading
+a capability to log it is not a mistake. Applied to all 136 source
+sites it would be noise on the ones that carry a real claim, and it is
+already where it earns its place: on the `const fn` builders, where
+dropping the answer really is the error.
+
+**The sharpest finding is not a lint at all — it is which crates the
+group could not see.** Seven crates spell out their own `[lints.rust]`
+for the `unsafe_code` exemption, and a crate that opts out of
+`[lints] workspace = true` opts out of **every** workspace lint table,
+clippy's included. So each needed its own `[lints.clippy]` block. Worse,
+most of them build only for a target the workspace run never touches:
+`hclient-fetch` on wasm, `hclient-urlsession` on Apple, `hclient-winhttp`
+on Windows. Checked on their own targets they carried **443 further
+findings** that `cargo clippy --workspace` reports zero of. That is this
+file's *a green `--workspace` run is a claim about the workspace, not
+about any crate in it*, met from a fourth direction — and the reason the
+per-crate and per-target recipes exist rather than the sweep alone.
+
+**What the cast lints found, checked one at a time rather than
+blanket-allowed.** `cast_possible_truncation` fires on wire-format and
+FFI arithmetic, which is where a truncation is a defect rather than a
+style question. SOCKS5's four are all genuinely bounded — `password_auth`
+refuses a credential over 255 bytes at the setter with a test beside it,
+and `HostTooLong` guards the other — so they take an `#[allow]` naming
+the check that bounds them. `hclient-urlsession`'s was not: `statusCode`
+is an `NSInteger` and `as u16` would wrap an out-of-range value into a
+plausible status, so it is `u16::try_from` now, falling back where a
+delegate with no readable status always fell back. **An `#[allow]` that
+names the bound is a claim somebody can check; a bare one is a claim
+nobody can** — 117 allows landed and every one carries its reason.
+
+**Two lints ask for opposite spellings of one expression, which is worth
+knowing before obeying either.** `redundant_closure_for_method_calls`
+wants `is_some_and(|e| e.is::<T>())` written as the method path, and the
+only path that names it is `<(dyn Error + 'static)>::is::<T>` — which
+rustc's own `unused_parens` then rejects. The closure stays, with an
+`#[allow]` naming the pair, because a lint that cannot be satisfied is a
+lint to answer rather than to chase.
+
+**A `#[cfg(not(feature = ..))]` twin fires `unused_self` and
+`unused_async`, and obeying that would fork a signature on a feature.**
+Ten such stubs across `hclient` and `hclient-native` exist to keep the
+call sites free of a `#[cfg]` — the feature-on half needs the `&self` and
+the `async`, the twin does not, and the point of the pair is that a caller
+cannot tell them apart. They carry an `#[allow]` saying so. **Every one is
+invisible to `--all-features`**, which is the workspace run: they surface
+only under `just test-no-default`, the recipe this file records as having
+once printed `error:` and exited zero.
+
+**And the sharpest cost was a defect the sweep itself introduced.**
+`ref_option` is a good lint — `&Option<T>` really should be
+`Option<&T>` — and applying it to `config::effective_redirect` and
+`check_redirect_supported` changed two signatures and left **six call
+sites stale**, so `hclient` stopped compiling. `cargo clippy` was green
+over it, because clippy checks the crate it is given and those callers
+live behind `--all-targets`' test build. What caught it was
+`cargo nextest run --workspace`, run because a clean lint is not a claim
+that the code builds. The same pass changed
+`TungsteniteWebSocket::new`'s `read_buf` from `Bytes` to `&Bytes` —
+**public API**, for a borrow the body's own `to_vec()` makes pointless;
+that one is reverted with the reason written where the parameter is.
+**A lint that rewrites a signature is a refactor, and a refactor is
+checked by building, not by re-running the linter.**
+
 ### A capability that answers yes or no is a `bool`
 
 `Capabilities` carried eleven `bool` fields and four two-variant enums —

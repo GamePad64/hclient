@@ -57,6 +57,9 @@ fn rt() -> tokio::runtime::Runtime {
 const GUARD: Duration = Duration::from_secs(6);
 
 /// The guard, applied — named so the panic says which wait never ended.
+// `tokio::time::error::Elapsed` carries nothing beyond "it elapsed" — there
+// is no field to name here, so `Err(_)` is the whole of the information.
+#[allow(clippy::match_wild_err_arm)]
 async fn guarded<F: std::future::Future>(what: &str, f: F) -> F::Output {
     match tokio::time::timeout(GUARD, f).await {
         Ok(v) => v,
@@ -289,7 +292,7 @@ fn the_replay_spends_what_is_left_of_the_total_rather_than_a_fresh_one() {
         "the replay restarted the clock: {elapsed:?} is past both answers"
     );
     assert!(
-        elapsed >= TOTAL - Duration::from_millis(50),
+        elapsed >= TOTAL.checked_sub(Duration::from_millis(50)).unwrap(),
         "it gave up before the bound: {elapsed:?}"
     );
     assert_eq!(
@@ -615,7 +618,7 @@ mod replayability {
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
 
-        assert_eq!(marks(&c), vec![true, false, true], "{}", MARKS);
+        assert_eq!(marks(&c), vec![true, false, true], "{MARKS}");
     }
 
     /// And with no `425` anywhere, the mark survives every hop untouched.
@@ -651,7 +654,7 @@ mod replayability {
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
 
-        assert_eq!(marks(&c), vec![true, true], "{}", MARKS);
+        assert_eq!(marks(&c), vec![true, true], "{MARKS}");
     }
 
     /// A **cross-origin** redirect drops the mark, where the same-origin
@@ -691,7 +694,7 @@ mod replayability {
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
 
-        assert_eq!(marks(&c), vec![true, false], "{}", MARKS);
+        assert_eq!(marks(&c), vec![true, false], "{MARKS}");
     }
 
     const MARKS: &str = "one bool per request the transport was handed, in order: \

@@ -426,6 +426,12 @@ impl Session {
     /// Nothing is spawned and no timer is read. A caller who wants a bound
     /// on any of this puts one around the future, which is the same answer
     /// `Timeouts` gives one layer up.
+    ///
+    /// # Errors
+    ///
+    /// `uri` is not `https://` (see [`NotHttps`]), the h3 client fails to
+    /// build on `conn`, the peer's SETTINGS never announce WebTransport, or
+    /// the CONNECT gets a non-2xx answer ([`SessionRefused`]).
     pub async fn connect(conn: quinn::Connection, uri: &http::Uri) -> Result<Self, Error> {
         check_https(uri)?;
         // No authority check follows, and that is a fact about `http::Uri`
@@ -444,7 +450,7 @@ impl Session {
                 conn.clone(),
             ))
             .await
-            .map_err(connect_error)?;
+            .map_err(|e| connect_error(&e))?;
 
         let peer = settings_announce_webtransport(&mut driver.inner, &send).await?;
 
@@ -540,6 +546,11 @@ impl Session {
     /// it to the caller is what makes the returned `quinn::SendStream`
     /// honest: there is no second step whose omission would put
     /// application bytes where a header belongs.
+    ///
+    /// # Errors
+    ///
+    /// The QUIC connection cannot open a new stream (lost or reset), or the
+    /// stream is reset before the header finishes writing.
     pub async fn open_bi(&self) -> Result<(quinn::SendStream, quinn::RecvStream), Error> {
         let (mut send, recv) = self
             .shared
@@ -606,6 +617,11 @@ impl Session {
     ///
     /// [`AlreadyClosed`] on a second call, and whatever the wire says if
     /// the write itself fails.
+    ///
+    /// # Panics
+    ///
+    /// If the send half's lock is poisoned — another thread panicked while
+    /// holding it.
     pub async fn close(&self, error_code: u32, reason: &str) -> Result<(), Error> {
         if reason.len() > BadCloseCapsule::MAX_REASON {
             return Err(Error::new(
@@ -633,7 +649,7 @@ impl Session {
         writer
             .send_data(Bytes::from(close_capsule(error_code, reason)))
             .await
-            .map_err(stream_error)?;
+            .map_err(|e| stream_error(&e))?;
         // The FIN, and it is a `drop` rather than `h3`'s `finish()` on
         // purpose. `quinn::SendStream::drop` finishes the stream, so the
         // FIN lands either way; `finish()` would additionally write `h3`'s
@@ -644,6 +660,8 @@ impl Session {
     }
 
     /// Wait for the session to end, and say whether it ended cleanly.
+    ///
+    /// # Errors
     ///
     /// `Ok` is a clean close — the peer's `CLOSE_WEBTRANSPORT_SESSION`
     /// capsule, or a bare FIN on the CONNECT stream, which
@@ -685,6 +703,11 @@ impl Session {
     /// `DRAIN_WEBTRANSPORT_SESSION` is one of them: it is skipped rather
     /// than surfaced, because a drain is not an end and this method answers
     /// one question.
+    ///
+    /// # Panics
+    ///
+    /// If the receive half's lock is poisoned — another thread panicked
+    /// while holding it.
     pub async fn closed(&self) -> Result<SessionClose, Error> {
         poll_fn(|cx| {
             self.connect_recv
@@ -767,6 +790,10 @@ impl Session {
     /// The first has two variants and both are reachable from here: the
     /// peer's SETTINGS are checked on this line, and the connection's own
     /// answer arrives from quinn.
+    // `Bytes` is this crate's currency for a payload, and cloning one is an
+    // `Arc` bump rather than a copy — so taking it by value is the ordinary
+    // shape for a caller who already owns one, not a needless restriction.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
         if !self.shared.peer_datagrams {
             return Err(Error::new(
@@ -834,10 +861,15 @@ impl Session {
     ///
     /// The one thing it does not do is the RFC's other arm: an ID above
     /// `2^60 - 1` is illegal and "MUST be treated as an HTTP/3 connection
-    /// error of type H3_DATAGRAM_ERROR". Such an ID cannot equal any
+    /// error of type `H3_DATAGRAM_ERROR`". Such an ID cannot equal any
     /// session's, so it is dropped rather than escalated; closing the
     /// connection from here is deliberately not done rather than
     /// half-done.
+    ///
+    /// # Errors
+    ///
+    /// The QUIC connection is lost. A malformed or misaddressed datagram is
+    /// not an error — see above — it is discarded and the wait continues.
     pub async fn recv_datagram(&self) -> Result<Bytes, Error> {
         let quarter = self.quarter_stream_id();
         loop {
@@ -930,11 +962,11 @@ async fn establish(slot: Slot, uri: &http::Uri) -> Result<Session, Error> {
         .body(())
         .map_err(|e| Error::new(ErrorKind::Connect, e))?;
 
-    let mut stream = send.send_request(req).await.map_err(stream_error)?;
+    let mut stream = send.send_request(req).await.map_err(|e| stream_error(&e))?;
     // Deliberately no `finish()`: the CONNECT stream stays open for
     // the life of the session, and finishing it is how the draft says
     // "the session is over".
-    let resp = stream.recv_response().await.map_err(stream_error)?;
+    let resp = stream.recv_response().await.map_err(|e| stream_error(&e))?;
     if !resp.status().is_success() {
         return Err(Error::new(
             ErrorKind::Connect,
@@ -1362,7 +1394,7 @@ async fn settings_announce_webtransport(
                 std::io::Error::other(format!("first control frame was {other:?}, not SETTINGS")),
             ));
         }
-        Err(e) => return Err(connect_error(e)),
+        Err(e) => return Err(connect_error(&e)),
     };
 
     let settings = send.settings();
@@ -1429,6 +1461,10 @@ struct PeerSettings {
 /// it saturates to the largest encodable value, which cannot be mistaken
 /// for a valid ID.
 fn put_varint(buf: &mut Vec<u8>, v: u64) {
+    // Each cast is bounded by the `if`/`else if` immediately above it —
+    // `v < 1 << 6` fits `u8`, `v < 1 << 14` fits `u16`, `v < 1 << 30` fits
+    // `u32` — so none of the three can truncate.
+    #[allow(clippy::cast_possible_truncation)]
     if v < (1 << 6) {
         buf.push(v as u8);
     } else if v < (1 << 14) {
@@ -1496,11 +1532,11 @@ fn send_datagram_error(e: quinn::SendDatagramError) -> Error {
     }
 }
 
-fn connect_error(e: h3::error::ConnectionError) -> Error {
+fn connect_error(e: &h3::error::ConnectionError) -> Error {
     Error::new(ErrorKind::Connect, std::io::Error::other(e.to_string()))
 }
 
-fn stream_error(e: h3::error::StreamError) -> Error {
+fn stream_error(e: &h3::error::StreamError) -> Error {
     Error::new(ErrorKind::Connect, std::io::Error::other(e.to_string()))
 }
 

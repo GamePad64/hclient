@@ -21,7 +21,7 @@
 //!
 //! Concurrency never depended on it, and the `LocalSet` test below stays
 //! for that reason: a `!Send` future bars a `spawn`, not two requests in
-//! flight. It is what a caller over `hclient-tls-native-tls` or a DoH
+//! flight. It is what a caller over `hclient-tls-native-tls` or a `DoH`
 //! resolver still has, both of which cannot make the `Send` claim — see
 //! their own docs for why.
 #![cfg(all(not(target_family = "wasm"), feature = "default-transport"))]

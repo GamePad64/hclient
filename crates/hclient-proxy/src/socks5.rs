@@ -52,6 +52,11 @@ impl Socks5 {
     /// RFC 1929. Each of the two is length-prefixed with a single byte, so
     /// neither may exceed 255 bytes — refused here rather than truncated
     /// on the wire.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Socks5HandshakeError::CredentialTooLong`] when `user` or
+    /// `password` is longer than 255 bytes.
     pub fn password_auth(mut self, user: &str, password: &str) -> Result<Self, Error> {
         if user.len() > 255 || password.len() > 255 {
             return Err(handshake(Socks5HandshakeError::CredentialTooLong));
@@ -87,6 +92,9 @@ impl Handshake for Socks5 {
         // `begin` rather than one discovered three round trips in.
         let mut request = BytesMut::with_capacity(7 + host_bytes.len());
         request.put_slice(&[SOCKS5_VERSION, 0x01, 0x00, 0x03]);
+        // Bounded: `host_bytes.len() > 255` is refused as `HostTooLong`
+        // a dozen lines above, so this cast is exact.
+        #[allow(clippy::cast_possible_truncation)]
         request.put_u8(host_bytes.len() as u8);
         request.put_slice(host_bytes);
         request.put_u16(port);
@@ -104,6 +112,9 @@ impl Handshake for Socks5 {
         };
         let mut greeting = BytesMut::with_capacity(2 + self.offered.len());
         greeting.put_u8(SOCKS5_VERSION);
+        // Bounded by construction: `offered` is built one line above and
+        // holds at most two methods.
+        #[allow(clippy::cast_possible_truncation)]
         greeting.put_u8(self.offered.len() as u8);
         greeting.put_slice(&self.offered);
 
@@ -139,8 +150,14 @@ impl Handshake for Socks5 {
                         // `expect_version` is not used on its reply.
                         let mut msg = BytesMut::with_capacity(3 + user.len() + password.len());
                         msg.put_u8(0x01);
+                        // Both bounded: `password_auth` refuses either
+                        // over 255 bytes as `CredentialTooLong`, at the
+                        // setter rather than here, so RFC 1929's
+                        // one-octet lengths are exact.
+                        #[allow(clippy::cast_possible_truncation)]
                         msg.put_u8(user.len() as u8);
                         msg.put_slice(user.as_bytes());
+                        #[allow(clippy::cast_possible_truncation)]
                         msg.put_u8(password.len() as u8);
                         msg.put_slice(password.as_bytes());
                         self.state = State::AwaitingAuthReply;

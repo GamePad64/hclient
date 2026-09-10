@@ -30,7 +30,7 @@
 //! `Record::ttl` is `Option<Duration>` because `getaddrinfo` does not
 //! expose one — the system backend returns `None` and is right to. hickory
 //! parses records itself, so the TTL is present, and every address carries
-//! its own rather than the RRset's minimum: a caller doing Happy Eyeballs
+//! its own rather than the `RRset`'s minimum: a caller doing Happy Eyeballs
 //! or its own caching wants the value the server actually sent.
 #![forbid(unsafe_code)]
 
@@ -279,7 +279,7 @@ mod tests {
             SvcParamValue::Ipv4Hint(_) => SvcParamKey::Ipv4Hint,
             SvcParamValue::Ipv6Hint(_) => SvcParamKey::Ipv6Hint,
             SvcParamValue::EchConfigList(_) => SvcParamKey::EchConfigList,
-            other => unreachable!("no wire key for {other:?}"),
+            other @ SvcParamValue::Unknown(_) => unreachable!("no wire key for {other:?}"),
         }
     }
 
@@ -362,9 +362,9 @@ mod tests {
         assert_eq!(to_endpoint(&one(value)), expected);
     }
 
-    /// AliasMode is SvcPriority 0 (RFC 9460 §2.4.2). It has to arrive as 0:
+    /// `AliasMode` is `SvcPriority` 0 (RFC 9460 §2.4.2). It has to arrive as 0:
     /// a mapping that treated 0 as "unset" would present every alias record
-    /// as a ServiceMode one, and the caller would try to connect to a target
+    /// as a `ServiceMode` one, and the caller would try to connect to a target
     /// that is only meant to be followed.
     #[test]
     fn priority_zero_arrives_as_zero_rather_than_as_a_default() {
@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(e.target, "example.net.");
     }
 
-    /// RFC 9460 §2.5.2: a ServiceMode target of `.` means "use the owner
+    /// RFC 9460 §2.5.2: a `ServiceMode` target of `.` means "use the owner
     /// name". Resolving that is the caller's business — this crate hands
     /// over what the server sent, and `.` must survive as `.` rather than
     /// collapsing to an empty string that no comparison would match.

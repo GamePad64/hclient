@@ -17,12 +17,12 @@
 //!
 //! # The bootstrap is the design problem, not the protocol
 //!
-//! DoH resolves a name by making an HTTP request, and an HTTP request needs
+//! `DoH` resolves a name by making an HTTP request, and an HTTP request needs
 //! a name resolved. Three questions come out of that, and this crate
 //! answers all three in its **constructors and its type**, not in prose,
 //! because prose is not read at the call site.
 //!
-//! ## 1. What resolves the DoH server's own name?
+//! ## 1. What resolves the `DoH` server's own name?
 //!
 //! Whatever resolver the transport you hand to this crate already carries —
 //! and which of the four possible shapes that is, you state by picking a
@@ -38,7 +38,7 @@
 //! - [`Doh::bootstrapped`] — the endpoint's host is a **name**, resolved by
 //!   the inner transport's own resolver, once per connection it opens.
 //!   Pass a transport carrying `SystemDns` and the system resolver runs
-//!   once, for the DoH host; pass one carrying a resolver of fixed
+//!   once, for the `DoH` host; pass one carrying a resolver of fixed
 //!   addresses and the bootstrap is caller-supplied. This crate does not
 //!   need to distinguish them — both are "the inner transport knows how".
 //!
@@ -49,12 +49,12 @@
 //! construction rather than a surprise in production.
 //!
 //! Shape 4 of §W3 — RFC 9461 `dohpath` discovery — is deliberately not
-//! here. Discovering a DoH endpoint by DNS is circular for the first
+//! here. Discovering a `DoH` endpoint by DNS is circular for the first
 //! lookup; `hclient_dns::svcb`'s `RECOGNISED_KEYS` still excludes key 7,
 //! and a record that makes it mandatory is still one this client refuses to
 //! use.
 //!
-//! ## 2. What client makes the DoH request? A `Transport`, never a `Client`
+//! ## 2. What client makes the `DoH` request? A `Transport`, never a `Client`
 //!
 //! `C` is an [`hclient_core::transport::Transport`], the seam one level
 //! below `hclient::Client`. That is the whole answer to §W3's *"a
@@ -68,15 +68,15 @@
 //!
 //! **The cycle §W3 asked about is real, and the type system does refuse
 //! it** — but not by any check of ours, and it is worth being exact about
-//! the mechanism because the escape hatch is one line away. A DoH resolver
-//! whose transport resolves through the same DoH resolver would have the
+//! the mechanism because the escape hatch is one line away. A `DoH` resolver
+//! whose transport resolves through the same `DoH` resolver would have the
 //! type `Native<R, T, Doh<Native<R, T, Doh<Native<…>>>>>`, which has no
 //! finite spelling: writing it needs a type alias that mentions itself, and
 //! `rustc` answers `E0072`/`E0391` — a size or cycle error at compile time,
 //! never a stack overflow at run time. `tests/no_cycle.rs` carries the
 //! recursive definitions in a comment, the four compiler transcripts they
 //! actually produce, and next to them the *finite* two-level composition,
-//! which does compile and is the shape a caller wants (a DoH resolver over
+//! which does compile and is the shape a caller wants (a `DoH` resolver over
 //! a transport that resolves by IP literal only).
 //!
 //! **The escape hatch, named where it can be found:** the guard is a
@@ -93,20 +93,20 @@
 //! object-safe `Resolve` or a blanket `impl Transport for Box<T>`. Neither
 //! would be a change to this crate.
 //!
-//! ## 3. What happens when the DoH server is unreachable?
+//! ## 3. What happens when the `DoH` server is unreachable?
 //!
 //! **It fails closed, and the alternative is visible in the type.**
-//! `Doh<C>` is `Doh<C, NoFallback>`: a DoH failure is a resolution failure,
+//! `Doh<C>` is `Doh<C, NoFallback>`: a `DoH` failure is a resolution failure,
 //! full stop. [`Doh::with_fallback`] returns a `Doh<C, F>` for the caller's
 //! `F: Resolve`, and that type is then written into the transport that
 //! holds it — `Native<R, T, Doh<C, SystemDns<R>>>` says on its face that
-//! this client will resolve through the system when its DoH server is down.
+//! this client will resolve through the system when its `DoH` server is down.
 //!
 //! Neither behaviour is a good default for everyone, which is exactly why
 //! neither is silent. Failing closed leaves a working network unusable the
-//! moment the DoH endpoint is unreachable. Failing open silently defeats
-//! the reason someone chose DoH: an attacker who can drop packets to the
-//! DoH endpoint can, for the price of that one denial of service, move
+//! moment the `DoH` endpoint is unreachable. Failing open silently defeats
+//! the reason someone chose `DoH`: an attacker who can drop packets to the
+//! `DoH` endpoint can, for the price of that one denial of service, move
 //! every subsequent lookup onto the plaintext resolver they were being kept
 //! away from. The second is a downgrade attack and it costs one dropped
 //! connection to mount, so it is not something to arrive at by accident —
@@ -124,7 +124,7 @@
 //! that drops type 65.
 //!
 //! `Record::ttl` is filled from the record's own TTL, per record
-//! rather than per RRset, for the same reason `hclient-dns-hickory` gives:
+//! rather than per `RRset`, for the same reason `hclient-dns-hickory` gives:
 //! a caller doing its own caching wants the value the server actually sent.
 //!
 //! # What it deliberately does not do
@@ -188,7 +188,7 @@ const DNS_MESSAGE: &str = "application/dns-message";
 /// byte, 5 s between body frames.
 ///
 /// Chosen to sit in the same range as a stub resolver's own (`resolv.conf`
-/// defaults to a 5 s timeout with 2 attempts), so that a DoH lookup does
+/// defaults to a 5 s timeout with 2 attempts), so that a `DoH` lookup does
 /// not silently become the slowest thing in a connection attempt. Override
 /// with [`Doh::timeouts`].
 // `resolve` is left unset, and it would be a category error to set it:
@@ -214,7 +214,7 @@ const DEFAULT_TIMEOUTS: Timeouts = Timeouts::new()
 /// `Doh<C>` means `Doh<C, NoFallback>` and fails closed. This is a
 /// [`Resolve`] whose every stream is empty, which is what makes the rule in
 /// [`Doh::with_fallback`] uniform: "the fallback produced nothing, so the
-/// DoH error stands" and "there is no fallback" are the same code path
+/// `DoH` error stands" and "there is no fallback" are the same code path
 /// rather than two.
 ///
 /// `supports` answers `false` for every type, which is correct
@@ -258,10 +258,10 @@ impl Resolve for NoFallback {
     }
 }
 
-/// A [`Resolve`] that asks a DoH server over the transport `C`.
+/// A [`Resolve`] that asks a `DoH` server over the transport `C`.
 ///
 /// Read this crate's module doc before the methods: the three decisions
-/// that matter — what resolves the DoH host, what makes the request, and
+/// that matter — what resolves the `DoH` host, what makes the request, and
 /// what happens when it fails — are made by which constructor you call and
 /// what `F` is, and they are the reason the API looks the way it does.
 #[derive(Debug, Clone)]
@@ -273,7 +273,7 @@ pub struct Doh<C, F = NoFallback> {
 }
 
 impl<C> Doh<C, NoFallback> {
-    /// A DoH endpoint whose host is an **IP literal**: no bootstrap, no
+    /// A `DoH` endpoint whose host is an **IP literal**: no bootstrap, no
     /// name to resolve, no cycle to worry about.
     ///
     /// `https://1.1.1.1/dns-query`, `https://[2606:4700:4700::1111]/dns-query`.
@@ -283,7 +283,7 @@ impl<C> Doh<C, NoFallback> {
     ///
     /// **The cost of pinning, which is real and which this crate cannot
     /// mitigate:** an address that stops answering leaves this resolver
-    /// with nothing to ask, and DoH is then not slow but absent. There is
+    /// with nothing to ask, and `DoH` is then not slow but absent. There is
     /// no discovery here to route around it, by construction (see the
     /// module doc on RFC 9461). A deployment that pins should either track
     /// the provider's published addresses or take [`Doh::with_fallback`]
@@ -299,17 +299,25 @@ impl<C> Doh<C, NoFallback> {
     ///
     /// The question is still open on **macOS and Windows**, and by more
     /// than a missing runner: those two do not use rustls's own webpki path
-    /// at all but hand the chain to Security.framework and to CryptoAPI,
+    /// at all but hand the chain to Security.framework and to `CryptoAPI`,
     /// which apply their own name-matching rules. Linux is therefore not
     /// evidence about them. Run `just test-doh-live` on either and the
     /// answer is one line of output.
     ///
     /// **`http://` is accepted for a loopback literal, and that is not a
-    /// concession to tests.** A local DoH proxy on `127.0.0.1` — the
+    /// concession to tests.** A local `DoH` proxy on `127.0.0.1` — the
     /// `dnscrypt-proxy` and `cloudflared` deployment shape — never puts a
     /// query on a network, so the confidentiality TLS buys against a
     /// network observer is not at stake. Any other cleartext endpoint is
     /// [`EndpointError::NotConfidential`].
+    ///
+    /// # Errors
+    ///
+    /// [`EndpointError::NotAnIpLiteral`] if `endpoint`'s host is a name
+    /// rather than a literal — this constructor refuses a name, see
+    /// [`Self::bootstrapped`] — and [`EndpointError::NotConfidential`] for
+    /// a cleartext endpoint that is not a loopback literal, per the note
+    /// above.
     pub fn pinned(client: C, endpoint: Uri) -> Result<Self, EndpointError> {
         let host = host_of(&endpoint)?;
         let Some(addr) = ip_literal(host) else {
@@ -321,12 +329,12 @@ impl<C> Doh<C, NoFallback> {
         Ok(Self::build(client, endpoint))
     }
 
-    /// A DoH endpoint whose host is a **name**, resolved by the resolver
+    /// A `DoH` endpoint whose host is a **name**, resolved by the resolver
     /// the transport `client` already carries.
     ///
     /// Which of §W3's bootstrap shapes that is depends entirely on what you
     /// pass: a transport over `SystemDns` is "the system resolver, once,
-    /// for the DoH host"; a transport over a resolver holding fixed
+    /// for the `DoH` host"; a transport over a resolver holding fixed
     /// addresses for that name is "caller-supplied bootstrap addresses".
     /// This crate cannot tell them apart and does not need to.
     ///
@@ -338,6 +346,13 @@ impl<C> Doh<C, NoFallback> {
     /// work, but it would be a `bootstrapped` that bootstraps nothing, and
     /// the point of having two constructors is that the one you called is
     /// true.
+    ///
+    /// # Errors
+    ///
+    /// [`EndpointError::IsAnIpLiteral`] if `endpoint`'s host is already a
+    /// literal — use [`Self::pinned`] instead — and
+    /// [`EndpointError::NotConfidential`] for a cleartext endpoint, since a
+    /// bootstrapped endpoint has no loopback exception to make one safe.
     pub fn bootstrapped(client: C, endpoint: Uri) -> Result<Self, EndpointError> {
         let host = host_of(&endpoint)?;
         if let Some(_addr) = ip_literal(host) {
@@ -360,25 +375,25 @@ impl<C> Doh<C, NoFallback> {
 }
 
 impl<C, F> Doh<C, F> {
-    /// Fail **open** to `fallback` when the DoH query fails.
+    /// Fail **open** to `fallback` when the `DoH` query fails.
     ///
-    /// The rule, exactly: a lookup that fails at the DoH layer — no
+    /// The rule, exactly: a lookup that fails at the `DoH` layer — no
     /// connection, a non-200, a body that is not a DNS message, a SERVFAIL
     /// — is retried against `fallback`, and **whatever the fallback's
     /// stream yields is the answer, including its errors**. Only if the
-    /// fallback yields *nothing at all* does the DoH error surface, which
+    /// fallback yields *nothing at all* does the `DoH` error surface, which
     /// is what makes [`NoFallback`] (whose streams are always empty) mean
     /// "fail closed" without a second code path.
     ///
     /// That last clause has one consequence worth stating, because it is a
-    /// deliberate conflation and not an oversight: if DoH fails and the
+    /// deliberate conflation and not an oversight: if `DoH` fails and the
     /// fallback genuinely has no record of that family, the caller sees the
-    /// **DoH error**, not an empty stream. It is the honest answer — DoH
+    /// **`DoH` error**, not an empty stream. It is the honest answer — `DoH`
     /// failed, so nobody established that the family is absent — but it
     /// does mean an empty answer from the fallback is not distinguishable
     /// here from a fallback that could not answer.
     ///
-    /// A DoH answer that *succeeded* is never second-guessed: NXDOMAIN and
+    /// A `DoH` answer that *succeeded* is never second-guessed: NXDOMAIN and
     /// an empty answer section are answers, and asking the fallback for a
     /// second opinion on them would be the downgrade the module doc
     /// describes, on every lookup rather than only under attack.
@@ -525,7 +540,7 @@ where
     /// The whole of one family's lookup, as the `Vec` the stream is built
     /// from.
     ///
-    /// A `Vec` rather than a genuinely incremental stream because one DoH
+    /// A `Vec` rather than a genuinely incremental stream because one `DoH`
     /// query is one HTTP request: every address arrives in the same
     /// response, so there is nothing to hand out early. The `Stream` in
     /// `Resolve` is there so that A and AAAA can proceed independently
@@ -674,10 +689,10 @@ where
 
 impl From<DohError> for Error {
     /// Always [`ErrorKind::Resolve`], including when the cause was a
-    /// connect failure or a timeout inside the DoH transport.
+    /// connect failure or a timeout inside the `DoH` transport.
     ///
     /// The category names *which operation failed for the caller*, and the
-    /// caller asked this object to resolve a name. A DoH server that cannot
+    /// caller asked this object to resolve a name. A `DoH` server that cannot
     /// be connected to is not the user's connection failing — the user's
     /// connection has not been attempted, and reporting `Connect` would
     /// send anyone reading `kind()` looking at the wrong host entirely. The

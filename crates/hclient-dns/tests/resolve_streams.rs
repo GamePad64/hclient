@@ -46,6 +46,9 @@ impl Stream for AddressesOnDemand {
             return Poll::Ready(None);
         }
         self.produced.set(so_far + 1);
+        // `so_far` is 0 or 1 here — the `== 2` check above already
+        // returned for anything higher — so the cast never truncates.
+        #[allow(clippy::cast_possible_truncation)]
         Poll::Ready(Some(Ok(v4(so_far as u8 + 1))))
     }
 }

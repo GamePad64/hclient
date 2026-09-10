@@ -130,6 +130,9 @@ where
 
     /// Without the feature there is no shared variant to be, so every
     /// entry is taken — the verb this pool had before v0.4.
+    // `&self` matches the half with the feature on, which is what lets
+    // the call sites stay free of a `#[cfg]`.
+    #[allow(clippy::unused_self)]
     #[cfg(not(feature = "http2"))]
     pub(crate) fn borrowed(&self) -> Option<Established<I>> {
         None
@@ -440,8 +443,7 @@ impl Rewritten {
             crate::proxy::Via::Direct => {
                 let pq = uri
                     .path_and_query()
-                    .map(|p| p.as_str())
-                    .unwrap_or("/")
+                    .map_or("/", http::uri::PathAndQuery::as_str)
                     .to_owned();
                 if let Ok(u) = pq.parse::<http::Uri>() {
                     *req.uri_mut() = u;

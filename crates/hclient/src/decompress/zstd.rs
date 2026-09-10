@@ -8,7 +8,7 @@
 //! allocate
 //!
 //! RFC 8878 §3.1.1.1.2: *"To properly decode compressed data, a decoder
-//! will need to allocate a buffer of at least Window_Size bytes"*, and
+//! will need to allocate a buffer of at least `Window_Size` bytes"*, and
 //! `Window_Size` is declared in the frame header by whoever compressed
 //! it — up to 3.75 TB. The same section grants the defence and names the
 //! number to use:

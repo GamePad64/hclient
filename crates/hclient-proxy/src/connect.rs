@@ -50,6 +50,13 @@ impl HttpConnect {
     /// password is encoded once at configuration time instead of on every
     /// connect — and so that a value which cannot be a header is refused
     /// here rather than at the first request.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the base64-encoded credential cannot become a
+    /// valid HTTP header value — `http::HeaderValue::from_str` refusing
+    /// it, which base64 output does not do in practice but which this
+    /// call surfaces rather than assumes.
     pub fn basic_auth(mut self, user: &str, password: &str) -> Result<Self, Error> {
         let raw = hclient_proto::encode::base64(format!("{user}:{password}").as_bytes());
         let mut v = http::HeaderValue::from_str(&format!("Basic {raw}"))

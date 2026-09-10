@@ -36,8 +36,7 @@ fn is_event_stream_content_type(v: &str) -> bool {
         return false;
     }
     match v.as_bytes().get(MIME.len()) {
-        None => true,
-        Some(b';') => true,
+        None | Some(b';') => true,
         Some(b) => b.is_ascii_whitespace(),
     }
 }
@@ -133,6 +132,12 @@ where
     /// an error (204 in particular means "stop forever", not "empty
     /// stream"); `Content-Type` ≠ `text/event-stream` is also an error,
     /// not a silent coercion of the content type.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Status`] when the status is not 200,
+    /// [`ErrorKind::Decode`] when `Content-Type` is not
+    /// `text/event-stream` — see above.
     pub fn new(resp: Response<B>, max_event_size: usize) -> Result<Self, Error> {
         Self::new_with_decoder(resp, SseDecoder::new(max_event_size))
     }
@@ -340,6 +345,7 @@ impl<'a> SseBuilder<'a> {
     /// The first invalid `(name, value)` pair wins and survives further
     /// calls — see `RequestBuilder::header`'s doc comment for the identical
     /// contract and the reasoning behind it.
+    #[must_use]
     pub fn header(mut self, name: &str, value: &str) -> Self {
         if self.error.is_some() {
             return self;
@@ -357,6 +363,7 @@ impl<'a> SseBuilder<'a> {
         self
     }
 
+    #[must_use]
     pub fn options(mut self, o: SseOptions) -> Self {
         self.options = o;
         self
@@ -423,6 +430,12 @@ impl<'a> SseBuilder<'a> {
     /// A single connection attempt, exactly [`SseStream::new`]'s contract —
     /// no reconnect, because there is no timer to wait out a backoff delay
     /// with. For reconnect, add [`with_timer`](Self::with_timer) first.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Client::execute`] returns for the connection attempt
+    /// itself, plus [`SseStream::new`]'s own errors once a response
+    /// arrives.
     pub async fn connect(self) -> Result<SseStream<crate::body::ClientBody>, Error> {
         if let Some(e) = self.error {
             return Err(e);
@@ -455,12 +468,14 @@ pub struct ReconnectingSseBuilder<'a> {
 
 impl<'a> ReconnectingSseBuilder<'a> {
     /// Forwards to [`SseBuilder::header`] — see its doc comment.
+    #[must_use]
     pub fn header(mut self, name: &str, value: &str) -> Self {
         self.builder = self.builder.header(name, value);
         self
     }
 
     /// Forwards to [`SseBuilder::options`] — see its doc comment.
+    #[must_use]
     pub fn options(mut self, o: SseOptions) -> Self {
         self.builder = self.builder.options(o);
         self
@@ -475,6 +490,12 @@ impl<'a> ReconnectingSseBuilder<'a> {
     /// started yet. Reconnect (with backoff) only applies to a stream that
     /// was successfully opened at least once and later dropped — see
     /// `ReconnectingSseStream::next`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Client::execute`] returns for the connection attempt
+    /// itself, plus [`SseStream::new`]'s own errors once a response
+    /// arrives.
     pub async fn connect(self) -> Result<ReconnectingSseStream<'a>, Error> {
         if let Some(e) = self.builder.error {
             return Err(e);
@@ -635,7 +656,12 @@ pub(crate) fn jitter() -> f64 {
     if getrandom::fill(&mut buf).is_err() {
         return 0.0;
     }
-    (u64::from_le_bytes(buf) as f64) / (u64::MAX as f64)
+    // Normalising a random u64 into [0.0, 1.0) by dividing by u64::MAX
+    // inherently loses precision in the low bits of the draw; that is the
+    // whole point of the conversion, not a defect in it.
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = (u64::from_le_bytes(buf) as f64) / (u64::MAX as f64);
+    ratio
 }
 
 /// The delay before the next (re)connect attempt — pure, and taking
@@ -735,7 +761,7 @@ impl Debug for ReconnectingSseStream<'_> {
     }
 }
 
-impl<'a> ReconnectingSseStream<'a> {
+impl ReconnectingSseStream<'_> {
     /// The last event ID seen, across any number of reconnects — the value
     /// that would go out as `Last-Event-ID` on the NEXT reconnect (subject
     /// to the same "only if non-empty" rule `open` applies).
@@ -749,7 +775,7 @@ impl<'a> ReconnectingSseStream<'a> {
     /// comment): a freshly (re)opened decoder starts AT LEAST as current as
     /// the cache, and only ever moves forward from there via its own new
     /// `id:` lines. Per WHATWG the last event ID buffer is a property of
-    /// the EventSource as a whole, not of one connection — the seeding is
+    /// the `EventSource` as a whole, not of one connection — the seeding is
     /// what makes that true here, this accessor just reads whichever
     /// source currently has the freshest value on hand.
     pub fn last_event_id(&self) -> Option<&str> {
@@ -994,6 +1020,10 @@ mod reconnect_tests {
     /// above were extracted to avoid.
     #[test]
     #[cfg(feature = "test-util")]
+    // `a`/`b`/`m`/`s` mirror the event data ("a", "b") and roles (mock,
+    // stream) the comments below already name; longer names would not add
+    // information here.
+    #[allow(clippy::many_single_char_names)]
     fn attempt_resets_to_zero_after_a_successful_reopen_not_just_once() {
         use crate::client::Client;
         use crate::mock::{MockTransport, TestTimer};

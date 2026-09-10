@@ -12,15 +12,15 @@
 //! IMPORTANT design note for whoever extends this file: the first version
 //! of the buffer-size tests asserted "explicit request > default/untouched
 //! baseline" and failed in this exact sandbox - not because `build_socket`
-//! ignored the option, but because an *unset* SO_SNDBUF/SO_RCVBUF uses
+//! ignored the option, but because an *unset* `SO_SNDBUF/SO_RCVBUF` uses
 //! Linux's dynamic auto-tuning, which had already grown to ~3.68 MB on this
 //! box, comfortably above a pinned 1 MiB request (which the kernel doubles
-//! on readback to ~2 MiB, per its usual SO_SNDBUF/SO_RCVBUF accounting).
+//! on readback to ~2 MiB, per its usual `SO_SNDBUF/SO_RCVBUF` accounting).
 //! So "pinned value > default" is not a reliable signal of "the setter took
 //! effect" - it can go either way depending on how aggressively the host's
 //! defaults auto-tune. Do not resurrect that comparison; instead this file
 //! requests two *different* explicit sizes and checks the readback is
-//! monotonic in what was asked for, which isolates "does build_socket's
+//! monotonic in what was asked for, which isolates "does `build_socket`'s
 //! setter work" from "how does this host's auto-tuned default compare
 //! today".
 use hclient_rt::{TcpConnect, TcpOpts};

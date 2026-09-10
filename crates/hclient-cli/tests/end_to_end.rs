@@ -54,7 +54,7 @@ fn serve(status: u16, content_type: &str, body: &str) -> (SocketAddr, Arc<Mutex<
                 if reader.read_line(&mut line).is_err() || line.is_empty() {
                     return;
                 }
-                seen.line = line.trim_end().to_owned();
+                line.trim_end().clone_into(&mut seen.line);
                 loop {
                     let mut h = String::new();
                     if reader.read_line(&mut h).is_err() {

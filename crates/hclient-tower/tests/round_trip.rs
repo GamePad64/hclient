@@ -50,7 +50,7 @@ fn stack(
 fn a_request_travels_client_through_the_layer_and_back() {
     let m = MockTransport::new();
     m.push_response(http::Response::builder().status(200).body("ok").unwrap());
-    let seen: Seen = Default::default();
+    let seen = Seen::default();
 
     let c = Client::builder(stack(m, Arc::clone(&seen)))
         .build()
@@ -85,7 +85,7 @@ fn the_clients_redirect_stage_still_runs_with_a_layer_underneath() {
             .body("arrived")
             .unwrap(),
     );
-    let seen: Seen = Default::default();
+    let seen = Seen::default();
 
     let c = Client::builder(stack(m, Arc::clone(&seen)))
         .build()

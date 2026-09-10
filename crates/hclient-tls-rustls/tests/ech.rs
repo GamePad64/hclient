@@ -3,7 +3,7 @@
 //! # Why the observer is a socket rather than an error
 //!
 //! `assert!(connect(..).is_err())` would pass for a backend that sent a
-//! ClientHello, leaked the server name, and *then* returned an error —
+//! `ClientHello`, leaked the server name, and *then* returned an error —
 //! which is the failure this refusal exists to prevent, not the behaviour
 //! it asks for. So the assertion below belongs to the peer: a plain
 //! `TcpListener` that records every byte it is sent. With `ech: Some(_)`
@@ -15,7 +15,7 @@
 //! listener nobody ever connected to, or against an observer that cannot
 //! see anything. So the same fixture runs a second time with `ech: None`,
 //! and then the server MUST see the server name in the clear, inside the
-//! plaintext ClientHello. That is the thing ECH is for; showing that this
+//! plaintext `ClientHello`. That is the thing ECH is for; showing that this
 //! observer can see it is what makes its silence in the first test worth
 //! something.
 
@@ -30,11 +30,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 /// The name the client asks to have protected. Long and unmistakable, so
-/// that finding it inside a ClientHello is not a coincidence.
+/// that finding it inside a `ClientHello` is not a coincidence.
 const SERVER_NAME: &str = "secret-name-that-must-not-leak.example.com";
 
 /// How long the observer waits for bytes that should not come. Short: it
-/// bounds only the negative test, and a ClientHello on loopback is written
+/// bounds only the negative test, and a `ClientHello` on loopback is written
 /// in microseconds.
 const QUIET_WINDOW: Duration = Duration::from_millis(500);
 

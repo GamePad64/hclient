@@ -134,6 +134,13 @@ pub trait QuicTlsConnect: TlsIdentity {
     ///
     /// The cost is honest and bounded: this crate depends on `quinn-proto`,
     /// and nothing else in the workspace has to.
+    ///
+    /// # Errors
+    ///
+    /// A backend refuses rather than substitutes: an
+    /// [`identity`](QuicTlsRequest::identity) naming a label this backend
+    /// has not registered is an error naming the label, never a config
+    /// built with the default identity instead.
     fn quic_client_config(
         &self,
         req: QuicTlsRequest<'_>,

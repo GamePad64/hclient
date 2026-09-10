@@ -869,7 +869,7 @@ async fn dropping_a_streaming_request_mid_upload_stops_pulling_and_leaves_the_po
     let mut doomed = Box::pin(client.post(server.url("/slow")).body(body).send());
     tokio::select! {
         _ = &mut doomed => panic!("/slow answers only at the end of the body"),
-        _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        () = tokio::time::sleep(Duration::from_millis(200)) => {}
     }
     let pulled_at_drop = pulled.load(Ordering::SeqCst);
     assert!(

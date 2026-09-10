@@ -340,6 +340,11 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
     type Body = hclient_core::hooks::Counting<Body, H>;
     type Error = Error;
 
+    // The exchange's stages — request conversion, the `wasi:http` call,
+    // reading the head, wiring the hook — are sequential and each is
+    // commented where it happens; splitting them into helper functions
+    // would scatter that narrative rather than shorten it.
+    #[allow(clippy::too_many_lines)]
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
@@ -460,18 +465,23 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
         drop(transmitted);
         wasi_request
             .set_method(&convert::to_wasi_method(&parts.method))
-            .map_err(|_| convert::rejected("method"))?;
+            .map_err(|()| convert::rejected("method"))?;
         wasi_request
             .set_scheme(Some(&scheme))
-            .map_err(|_| convert::rejected("scheme"))?;
+            .map_err(|()| convert::rejected("scheme"))?;
         if let Some(a) = parts.uri.authority() {
             wasi_request
                 .set_authority(Some(a.as_str()))
-                .map_err(|_| convert::rejected("authority"))?;
+                .map_err(|()| convert::rejected("authority"))?;
         }
         wasi_request
-            .set_path_with_query(parts.uri.path_and_query().map(|p| p.as_str()))
-            .map_err(|_| convert::rejected("path_with_query"))?;
+            .set_path_with_query(
+                parts
+                    .uri
+                    .path_and_query()
+                    .map(http::uri::PathAndQuery::as_str),
+            )
+            .map_err(|()| convert::rejected("path_with_query"))?;
 
         // `send` and the body write are not dropped (see the doc comments
         // on `convert::resolve_send`/`race_send_with_body`):

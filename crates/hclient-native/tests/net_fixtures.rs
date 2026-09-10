@@ -55,6 +55,10 @@ use std::net::{IpAddr, SocketAddr};
 /// Only safe to use for a SINGLE candidate address (its IP and port must
 /// be used together) — see `dead_and_live` below for the two-address
 /// fallback case, which needs a different construction entirely.
+///
+/// # Panics
+///
+/// If the loopback bind fails — never expected on a real host.
 pub fn closed_port() -> SocketAddr {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
@@ -70,6 +74,11 @@ pub fn closed_port() -> SocketAddr {
 /// (`127.0.0.1`) — there is no listener whose own IP or port `dead` is
 /// derived from, so there is nothing for a caller to accidentally reuse
 /// the way the bug this function replaced did (see the module doc).
+///
+/// # Panics
+///
+/// If the loopback bind fails, or if `127.0.0.2` fails to parse as an
+/// `IpAddr` — neither expected on a real host.
 pub fn dead_and_live() -> (IpAddr, SocketAddr) {
     let live = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let live_addr = live.local_addr().unwrap();

@@ -26,7 +26,7 @@
 //!
 //! `hclient-tls-rustls` needs none of this: rustls is sans-io, so its
 //! handshake is a loop over buffers this workspace owns and there is no
-//! `Context` to smuggle. `native-tls` fronts SChannel, Security.framework
+//! `Context` to smuggle. `native-tls` fronts `SChannel`, Security.framework
 //! and OpenSSL through one synchronous `Read`/`Write` interface, and hands
 //! back `HandshakeError::WouldBlock` when the stream underneath is not
 //! ready. Bridging that to a poll-based world means giving the synchronous

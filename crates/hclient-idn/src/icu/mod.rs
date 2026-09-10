@@ -105,7 +105,7 @@ pub(crate) use imp::Icu;
 )]
 pub(crate) const UIDNA_USE_STD3_RULES: u32 = 0x0002;
 
-/// `UIDNA_CHECK_BIDI`. `idna` applies CheckBidi unconditionally — it is
+/// `UIDNA_CHECK_BIDI`. `idna` applies `CheckBidi` unconditionally — it is
 /// not one of its configurable flags — so this must be on to match.
 #[cfg_attr(
     idna_backend,
@@ -119,7 +119,7 @@ pub(crate) const UIDNA_USE_STD3_RULES: u32 = 0x0002;
 )]
 pub(crate) const UIDNA_CHECK_BIDI: u32 = 0x0004;
 
-/// `UIDNA_CHECK_CONTEXTJ`. Same story: `idna`'s CheckJoiners is always
+/// `UIDNA_CHECK_CONTEXTJ`. Same story: `idna`'s `CheckJoiners` is always
 /// true, so ZWJ/ZWNJ context rules have to be on here too.
 #[cfg_attr(
     idna_backend,
@@ -163,7 +163,7 @@ pub(crate) const UIDNA_NONTRANSITIONAL_TO_ASCII: u32 = 0x0010;
 )]
 pub(crate) const UIDNA_NONTRANSITIONAL_TO_UNICODE: u32 = 0x0020;
 
-/// `UIDNA_CHECK_CONTEXTO`. **Deliberately not set**: UTS 46 makes ContextO
+/// `UIDNA_CHECK_CONTEXTO`. **Deliberately not set**: UTS 46 makes `ContextO`
 /// optional and `idna` does not implement it, so setting it would reject
 /// names the bundled path accepts.
 #[allow(
@@ -237,7 +237,7 @@ pub(crate) const UIDNA_ERROR_HYPHEN_3_4: u32 = 0x0020;
 /// The first three are _VerifyDnsLength=false_, the last three are
 /// _CheckHyphens=false_. Nothing else is masked: a disallowed code point,
 /// a leading combining mark, bad punycode, a dot inside a decoded label,
-/// an invalid ACE label, a bidi violation or a ContextJ violation all
+/// an invalid ACE label, a bidi violation or a `ContextJ` violation all
 /// stand, because `idna` rejects all of those too.
 #[cfg_attr(
     idna_backend,

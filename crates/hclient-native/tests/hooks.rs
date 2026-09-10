@@ -248,13 +248,13 @@ fn server(behaviour: Behaviour) -> (SocketAddr, Arc<AtomicUsize>) {
             let Ok(sock) = sock else { continue };
             counter.fetch_add(1, Ordering::SeqCst);
             let behaviour = behaviour.clone();
-            std::thread::spawn(move || serve(sock, behaviour));
+            std::thread::spawn(move || serve(sock, &behaviour));
         }
     });
     (addr, accepted)
 }
 
-fn serve(mut sock: std::net::TcpStream, behaviour: Behaviour) {
+fn serve(mut sock: std::net::TcpStream, behaviour: &Behaviour) {
     sock.set_read_timeout(Some(BOUND)).expect("read timeout");
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 1024];
@@ -614,6 +614,10 @@ async fn a_truncated_body_closes_the_connection_with_the_failure() {
 /// request finds it dead, reports it `Stale`, and pays for a fresh
 /// connection — and the server's accept count is what says the fresh
 /// connection was real.
+// `closed` (the server's counter) and `closes` (the hook's recorded
+// events) are deliberately paired names for two different views of the
+// same fact — renaming either would lose the pairing.
+#[allow(clippy::similar_names)]
 #[tokio::test]
 async fn a_pooled_connection_the_server_closed_while_idle_is_reported_stale() {
     let closed = Arc::new(AtomicUsize::new(0));

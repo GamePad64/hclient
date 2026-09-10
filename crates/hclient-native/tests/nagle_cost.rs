@@ -326,8 +326,14 @@ fn median(mut v: Vec<f64>) -> f64 {
 
 /// The head cost of every sample, plus the wire log of the first one.
 fn report(arm: &str, samples: &[Sample], wire: &Wire) {
-    let heads: Vec<f64> = samples.iter().map(|s| ms(s.head - s.start)).collect();
-    let bodies: Vec<f64> = samples.iter().map(|s| ms(s.end - s.head)).collect();
+    let heads: Vec<f64> = samples
+        .iter()
+        .map(|s| ms(s.head.checked_sub(s.start).unwrap()))
+        .collect();
+    let bodies: Vec<f64> = samples
+        .iter()
+        .map(|s| ms(s.end.checked_sub(s.head).unwrap()))
+        .collect();
     let lo = heads.iter().copied().fold(f64::INFINITY, f64::min);
     let hi = heads.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     println!("\n== {arm} ==");
@@ -351,15 +357,15 @@ fn report(arm: &str, samples: &[Sample], wire: &Wire) {
     for f in wire.flights_of(conn) {
         println!(
             "    +{:8.3} ms  {:5} bytes   (+{:.3} ms since the previous read)",
-            ms(f.at - s.start),
+            ms(f.at.checked_sub(s.start).unwrap()),
             f.len,
-            ms(f.at - prev)
+            ms(f.at.checked_sub(prev).unwrap())
         );
         prev = f.at;
     }
     println!(
         "    +{:8.3} ms  response head at the client",
-        ms(s.head - s.start)
+        ms(s.head.checked_sub(s.start).unwrap())
     );
 }
 

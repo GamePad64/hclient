@@ -48,9 +48,12 @@ fn rt() -> tokio::runtime::Runtime {
 /// in — a decoder that only ever meets a whole stream in one buffer is not
 /// being tested as a streaming decoder.
 fn plaintext() -> String {
-    (0..4000)
-        .map(|i| format!("line {i}: the quick brown fox jumps over the lazy dog\n"))
-        .collect()
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    for i in 0..4000 {
+        let _ = writeln!(s, "line {i}: the quick brown fox jumps over the lazy dog");
+    }
+    s
 }
 
 type Seen = Arc<Mutex<Vec<String>>>;
@@ -264,7 +267,14 @@ fn a_zstd_body_from_the_reference_encoder_arrives_as_plaintext() {
 #[test]
 fn concatenated_zstd_frames_are_one_body() {
     let first = plaintext();
-    let second: String = (0..2000).map(|i| format!("second {i}\n")).collect();
+    let second = {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        for i in 0..2000 {
+            let _ = writeln!(s, "second {i}");
+        }
+        s
+    };
     let mut coded = zstd_encode(first.as_bytes(), true);
     coded.extend_from_slice(&zstd_encode(second.as_bytes(), false));
     let (addr, _) = server(coded, "zstd");

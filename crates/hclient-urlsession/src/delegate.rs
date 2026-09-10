@@ -177,7 +177,15 @@ define_class!(
             completion_handler: &block2::DynBlock<dyn Fn(NSURLSessionResponseDisposition)>,
         ) {
             if let Some(http) = response.downcast_ref::<NSHTTPURLResponse>() {
-                let status = http::StatusCode::from_u16(http.statusCode() as u16)
+                // `statusCode` is an `NSInteger`, so a value outside
+                // `u16` is representable even though no HTTP response
+                // carries one. `try_into` refuses it where an `as` cast
+                // would wrap into a plausible status; either way the
+                // fallback is `OK`, which is what a delegate with no
+                // readable status has always reported.
+                let status = u16::try_from(http.statusCode())
+                    .ok()
+                    .and_then(|c| http::StatusCode::from_u16(c).ok())
                     .unwrap_or(http::StatusCode::OK);
                 let mut headers = http::HeaderMap::new();
                 let all = http.allHeaderFields();

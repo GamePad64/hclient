@@ -8,6 +8,7 @@
 //! one tenant's certificate to another tenant's server, which no comment
 //! about unreachability is worth risking.
 
+use hclient_rt::TcpConnect;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::Rustls;
 use std::sync::Arc;
@@ -33,7 +34,6 @@ async fn an_unregistered_label_is_refused_before_the_handshake() {
         .with_no_client_auth();
     let tls = Rustls::from_config(Arc::new(cfg));
 
-    use hclient_rt::TcpConnect;
     let tcp = hclient_rt_tokio::Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
@@ -71,7 +71,6 @@ async fn a_registered_label_still_connects() {
         .with_no_client_auth();
     let tls = Rustls::from_config(Arc::new(cfg.clone())).with_identity("corp", Arc::new(cfg));
 
-    use hclient_rt::TcpConnect;
     let tcp = hclient_rt_tokio::Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await

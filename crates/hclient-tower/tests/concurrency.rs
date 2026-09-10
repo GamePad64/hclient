@@ -137,6 +137,11 @@ fn limited(
 /// Both halves matter. Without the first assertion a limit of zero would
 /// pass; without the second, a limit that never let anything through would.
 #[test]
+// `g`/`t` are the fixture and the transport under test, and `a`/`b`/`c` are
+// three interchangeable concurrent requests racing for two permits — naming
+// them `request_a`/`request_b`/`request_c` would not make any of the
+// assertions below easier to follow.
+#[allow(clippy::many_single_char_names)]
 fn a_third_request_does_not_reach_the_transport_until_a_permit_frees_up() {
     let g = Gated::new();
     let t = limited(g.clone(), 2);
@@ -182,7 +187,7 @@ fn a_third_request_does_not_reach_the_transport_until_a_permit_frees_up() {
 ///
 /// Here the same contract is checked from the other side, against the real
 /// layer rather than a hand-written double: `ConcurrencyLimit::call`
-/// panics with "max requests in-flight; poll_ready must be called first"
+/// panics with "max requests in-flight; `poll_ready` must be called first"
 /// when its permit was not reserved, so deleting the readiness drive from
 /// the adapter turns this test into a panic rather than a silent
 /// overshoot. `round_trip.rs`'s double proves readiness is driven;

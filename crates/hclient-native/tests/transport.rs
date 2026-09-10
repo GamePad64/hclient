@@ -718,7 +718,6 @@ impl Resolve for OneUnroutableAddr {
                     std::net::Ipv4Addr::new(203, 0, 113, 7),
                 ))))])
             }),
-            rtype::AAAA => Box::pin(futures_util::stream::empty()),
             _ => Box::pin(futures_util::stream::empty()),
         }
     }
@@ -935,7 +934,6 @@ impl Resolve for FiveUnroutableAddrs {
                     ))))
                 }))
             }),
-            rtype::AAAA => Box::pin(futures_util::stream::empty()),
             _ => Box::pin(futures_util::stream::empty()),
         }
     }
@@ -1152,7 +1150,7 @@ async fn truncated_response_body_reports_body_kind_from_the_h1_layer() {
             .await
             .expect("must not hang")
         {
-            Some(Ok(_)) => continue,
+            Some(Ok(_)) => {}
             Some(Err(e)) => {
                 err = Some(e);
                 break;

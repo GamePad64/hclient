@@ -337,12 +337,13 @@ fn tls_origin() -> (SocketAddr, CertificateDer<'static>, mpsc::Receiver<String>)
                 let acceptor = acceptor.clone();
                 let tx = tx.clone();
                 tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
                     let Ok(mut tls) = acceptor.accept(tcp).await else {
                         return;
                     };
                     let sni = tls.get_ref().1.server_name().unwrap_or("<none>").to_owned();
                     let _ = tx.send(sni);
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut buf = [0u8; 1024];
                     let _ = tls.read(&mut buf).await;
                     let _ = tls.write_all(ok_response()).await;
@@ -1012,7 +1013,7 @@ async fn a_bypass_belongs_to_its_own_proxy_and_falls_through_to_the_next() {
 
 // ── SOCKS4 / SOCKS4a ────────────────────────────────────────────────────
 
-/// A SOCKS4a proxy that reports the request it decoded and then answers
+/// A `SOCKS4a` proxy that reports the request it decoded and then answers
 /// HTTP itself, in `socks5_proxy`'s shape and for its reason: the origin's
 /// own behaviour is not what these tests are about.
 ///
@@ -1068,7 +1069,7 @@ fn socks4_proxy(cd: u8) -> (SocketAddr, mpsc::Receiver<(String, String, u16)>) {
     (addr, rx)
 }
 
-/// **The whole SOCKS4a exchange**: the userid and the *unresolved host*
+/// **The whole `SOCKS4a` exchange**: the userid and the *unresolved host*
 /// reach the proxy, and the response comes back through the tunnel.
 ///
 /// The host is the assertion that matters. A connector that resolved

@@ -131,6 +131,9 @@ async fn a_second_session_is_a_peer_of_the_first() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_peers_limit_comes_off_the_settings_frame() {
     for limit in [1u64, 3] {
+        // `limit` is one of the two small literals in the loop header
+        // above, so the cast to `usize` cannot truncate on any target.
+        #[allow(clippy::cast_possible_truncation)]
         let srv = server::start(Options {
             // Exactly the CONNECTs this arm sends: the refused one never
             // leaves, and the fixture answers a fixed number before it

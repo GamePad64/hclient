@@ -97,7 +97,7 @@ fn counting_server(behaviour: Behaviour) -> (SocketAddr, Arc<AtomicUsize>) {
             let Ok(sock) = sock else { continue };
             counter.fetch_add(1, Ordering::SeqCst);
             let behaviour = behaviour.clone();
-            std::thread::spawn(move || serve(sock, behaviour));
+            std::thread::spawn(move || serve(sock, &behaviour));
         }
     });
     (addr, accepted)
@@ -105,7 +105,7 @@ fn counting_server(behaviour: Behaviour) -> (SocketAddr, Arc<AtomicUsize>) {
 
 /// One connection: read a request head, answer it, repeat until the peer
 /// goes away (or until the first response, when the behaviour says so).
-fn serve(mut sock: std::net::TcpStream, behaviour: Behaviour) {
+fn serve(mut sock: std::net::TcpStream, behaviour: &Behaviour) {
     sock.set_read_timeout(Some(BOUND))
         .expect("set_read_timeout");
     let mut buf: Vec<u8> = Vec::new();

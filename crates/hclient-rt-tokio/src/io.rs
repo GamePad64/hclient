@@ -273,6 +273,9 @@ mod tests {
         // panics.
         let (mut client, mut server) = connected_pair();
         let len = SCRATCH + 137;
+        // `i % 251` is always in 0..251, which fits `u8` — bounded by the
+        // modulus, not by `len`.
+        #[allow(clippy::cast_possible_truncation)]
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
         let writer = {
             let data = data.clone();

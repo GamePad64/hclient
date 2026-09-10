@@ -1,4 +1,4 @@
-//! The transport: one WinHTTP session, one exchange per request.
+//! The transport: one `WinHTTP` session, one exchange per request.
 
 use std::future::poll_fn;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use crate::body::{WinHttpBody, event_name};
 use crate::error::{Win32Error, WinHttpError};
 use crate::sys::{Event, Exchange, Session};
 
-/// WinHTTP as a [`Transport`].
+/// `WinHTTP` as a [`Transport`].
 ///
 /// See the crate documentation for what it takes from the OS, what it
 /// deliberately does not, and what has not been observed running.
@@ -28,13 +28,23 @@ impl WinHttp {
     /// A session under this crate's own user agent.
     ///
     /// The name reaches the wire only where a caller sets no
-    /// `User-Agent` of their own: `WinHttpOpen`'s agent is what WinHTTP
+    /// `User-Agent` of their own: `WinHttpOpen`'s agent is what `WinHTTP`
     /// falls back to, and a header added here replaces it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when `WinHttpOpen` fails, surfaced as
+    /// `WinHttpError::Call { call: "WinHttpOpen", .. }`.
     pub fn new() -> Result<Self, Error> {
         Self::with_user_agent(concat!("hclient-winhttp/", env!("CARGO_PKG_VERSION")))
     }
 
     /// A session under `agent`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when `WinHttpOpen` fails, surfaced as
+    /// `WinHttpError::Call { call: "WinHttpOpen", .. }`.
     pub fn with_user_agent(agent: &str) -> Result<Self, Error> {
         let session = Session::open(agent).map_err(|e| {
             Error::new(
@@ -77,14 +87,14 @@ impl WinHttp {
     ///
     /// Nothing at construction: the mask is set per request, so a
     /// transport that enables nothing makes exactly the calls it made
-    /// before this method existed. HTTP/1.1 is not switchable — WinHTTP
+    /// before this method existed. HTTP/1.1 is not switchable — `WinHTTP`
     /// documents the mask's `0x0` default as *"restricts the request to
     /// HTTP/1.1 and prior"* — so this widens what may be negotiated and
     /// never narrows it.
     ///
     /// # A version this Windows has never heard of is a refusal
     ///
-    /// HTTP/3 reaches WinHTTP later than HTTP/2, and both are later than
+    /// HTTP/3 reaches `WinHTTP` later than HTTP/2, and both are later than
     /// the option that carries them. An OS without one answers
     /// `ERROR_WINHTTP_INVALID_OPTION`, and this crate reports it rather
     /// than continuing over HTTP/1.1 — .NET's `WinHttpHandler` logs *"HTTP/2
@@ -100,23 +110,27 @@ impl WinHttp {
 
     /// Keeps an idle HTTP/2 or HTTP/3 connection alive, in the OS.
     ///
-    /// After `every` of no activity WinHTTP sends HTTP/2 `PING` frames or
+    /// After `every` of no activity `WinHTTP` sends HTTP/2 `PING` frames or
     /// QUIC keep-alives on the connection. It is the answer this backend
     /// can give and `hclient-native` cannot give for free: there,
     /// `h2_keep_alive` needs `multiplexed()` and a spawned driver to send
-    /// the ping, and here the connection is WinHTTP's and so is the
+    /// the ping, and here the connection is `WinHTTP`'s and so is the
     /// clock.
     ///
-    /// # Two refusals rather than a rounded value
+    /// # Errors
     ///
-    /// WinHTTP documents a floor of five seconds on the HTTP/2 option —
+    /// Two refusals rather than a rounded value, plus the FFI call
+    /// itself:
+    ///
+    /// `WinHTTP` documents a floor of five seconds on the HTTP/2 option —
     /// *"callers cannot set a timeout value less than 5000
     /// milliseconds"* — so a shorter interval is refused **naming the
     /// floor** rather than raised to it. Raising it would be this crate
     /// answering a question the caller asked, which is the reason
     /// `Standard::max_retry_after` stops a retry rather than shortening
     /// the wait one crate over. A duration that does not fit a `DWORD` of
-    /// milliseconds is refused for the same reason.
+    /// milliseconds is refused for the same reason. And `WinHttpSetOption`
+    /// itself can fail, surfaced as `WinHttpError::Call`.
     ///
     /// # It is inert without [`protocols`](Self::protocols)
     ///
@@ -152,7 +166,7 @@ impl WinHttp {
 
 /// The advanced HTTP versions a request may negotiate, above HTTP/1.1.
 ///
-/// WinHTTP's `WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL` bitmask, as two
+/// `WinHTTP`'s `WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL` bitmask, as two
 /// fields: `WINHTTP_PROTOCOL_FLAG_HTTP2` (`0x1`) and
 /// `WINHTTP_PROTOCOL_FLAG_HTTP3` (`0x2`). Both off is the mask's
 /// documented default and means HTTP/1.1 and prior, which is what this
@@ -167,7 +181,7 @@ impl WinHttp {
 /// staying exhaustive was about exactly that expression, and a bitmask
 /// does not need it.
 ///
-/// `empty()` is the default, which is WinHTTP's own: the option's
+/// `empty()` is the default, which is `WinHTTP`'s own: the option's
 /// documented `0x0` means HTTP/1.1 and prior.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Protocols(ProtocolFlags);
@@ -183,14 +197,14 @@ bitflags::bitflags! {
 }
 
 impl Protocols {
-    /// Neither — HTTP/1.1 and prior, WinHTTP's documented default.
+    /// Neither — HTTP/1.1 and prior, `WinHTTP`'s documented default.
     pub const NONE: Self = Self(ProtocolFlags::empty());
     /// Offer HTTP/2.
     pub const HTTP2: Self = Self(ProtocolFlags::HTTP2);
     /// Offer HTTP/3.
     ///
     /// QUIC, so UDP: a network that blocks it is a network where this
-    /// costs a fallback rather than a failure — WinHTTP still offers
+    /// costs a fallback rather than a failure — `WinHTTP` still offers
     /// HTTP/1.1, and HTTP/2 if that is set too — unless a
     /// [`RequireVersion`] demand has taken the fallback away, which is
     /// what that demand is for.
@@ -224,7 +238,7 @@ impl std::ops::BitOr for Protocols {
 }
 
 impl Protocols {
-    /// The bitmask WinHTTP wants.
+    /// The bitmask `WinHTTP` wants.
     fn bits(self) -> u32 {
         self.0.bits()
     }
@@ -247,7 +261,7 @@ fn version_used(flags: u32, from_status_line: http::Version) -> http::Version {
     }
 }
 
-/// The mask for one request, and whether WinHTTP must refuse to fall off
+/// The mask for one request, and whether `WinHTTP` must refuse to fall off
 /// it.
 ///
 /// A **pure function of what this transport enables and what this request
@@ -262,7 +276,7 @@ fn version_used(flags: u32, from_status_line: http::Version) -> http::Version {
 /// [`RequireVersion`] is an exact match, so `RequireVersion(HTTP_2)`
 /// leaves `0x1` and takes HTTP/3 *off* even where the transport offers
 /// it. The `bool` is `WINHTTP_OPTION_HTTP_PROTOCOL_REQUIRED`, which turns
-/// the narrowed mask from an offer into a condition: without it WinHTTP
+/// the narrowed mask from an offer into a condition: without it `WinHTTP`
 /// would fall back to HTTP/1.1 and the demand could only be *noticed*
 /// after the head, which is [`check_version`]'s own definition of a check
 /// placed too late.
@@ -421,21 +435,18 @@ impl Transport for WinHttp {
         let raw = request
             .raw_headers()
             .map_err(|e| setup("WinHttpQueryHeaders", e))?;
-        let head = match hclient_proto::head::parse_response(&raw)
+        // The head is WinHTTP's own copy of a message it has already
+        // finished receiving, so an incomplete one is not "wait for
+        // more" — there is no more.
+        let Some((head, _)) = hclient_proto::head::parse_response(&raw)
             .map_err(|e| Error::new(ErrorKind::Body, WinHttpError::Head(e)))?
-        {
-            Some((head, _)) => head,
-            // The head is WinHTTP's own copy of a message it has already
-            // finished receiving, so an incomplete one is not "wait for
-            // more" — there is no more.
-            None => {
-                return Err(Error::new(
-                    ErrorKind::Body,
-                    WinHttpError::Unsupported(
-                        "WinHTTP handed back a response head that stops mid-message".to_owned(),
-                    ),
-                ));
-            }
+        else {
+            return Err(Error::new(
+                ErrorKind::Body,
+                WinHttpError::Unsupported(
+                    "WinHTTP handed back a response head that stops mid-message".to_owned(),
+                ),
+            ));
         };
 
         // What WinHTTP *used*, which the status line cannot say for h2
@@ -484,7 +495,7 @@ impl Transport for WinHttp {
 
 /// The `Send` half of the seam.
 ///
-/// A WinHTTP handle is not bound to the thread that made it, and the
+/// A `WinHTTP` handle is not bound to the thread that made it, and the
 /// completion callback is called on an arbitrary thread pool thread —
 /// which is why the shared state is a `Mutex` pair rather than a cell. So
 /// `execute`'s future is `Send` by inference and this is one line of
@@ -498,7 +509,7 @@ impl hclient_core::transport::SendTransport for WinHttp {
     }
 }
 
-/// A synchronous WinHTTP call that failed while setting the exchange up.
+/// A synchronous `WinHTTP` call that failed while setting the exchange up.
 pub(crate) fn setup(call: &'static str, source: Win32Error) -> Error {
     Error::new(ErrorKind::Connect, WinHttpError::Call { call, source })
 }
@@ -523,7 +534,7 @@ pub(crate) async fn expect(ex: &Arc<Exchange>, expected: &'static str) -> Result
     }
 }
 
-/// The four things WinHTTP wants a request split into.
+/// The four things `WinHTTP` wants a request split into.
 ///
 /// `WinHttpConnect` takes the host and port, `WinHttpOpenRequest` takes
 /// the target and a secure flag — so the URI is taken apart here rather
@@ -575,13 +586,13 @@ pub(crate) fn split_uri(uri: &http::Uri) -> Result<(bool, String, u16, String), 
 
 /// The caller's headers as one CRLF-delimited block.
 ///
-/// **`Host` and `Content-Length` are left to WinHTTP**, which writes both
+/// **`Host` and `Content-Length` are left to `WinHTTP`**, which writes both
 /// from the connect handle and from `WinHttpSendRequest`'s length
 /// argument. Sending a second copy of either is the one way a header
 /// block can make a message ambiguous rather than merely wrong.
 ///
 /// A value that is not text is **refused, never skipped**. `http` allows
-/// any visible byte in a header value and WinHTTP takes a wide string, so
+/// any visible byte in a header value and `WinHTTP` takes a wide string, so
 /// there are values this boundary cannot carry — and dropping one would
 /// send a request the caller did not write, which is the silent-omission
 /// defect this workspace refuses everywhere.
@@ -795,7 +806,7 @@ mod tests {
         assert_eq!(port, 8080);
     }
 
-    /// A URI with no path is `/` on the wire. WinHTTP would accept an
+    /// A URI with no path is `/` on the wire. `WinHTTP` would accept an
     /// empty target and send a malformed request line.
     #[test]
     fn an_absent_path_becomes_a_slash() {
@@ -803,19 +814,19 @@ mod tests {
         assert_eq!(target, "/");
     }
 
-    /// A scheme WinHTTP has no flag for is refused rather than guessed:
+    /// A scheme `WinHTTP` has no flag for is refused rather than guessed:
     /// defaulting to `http` would send the request somewhere the caller
     /// did not ask for.
     #[test]
     fn a_scheme_winhttp_cannot_speak_is_refused() {
         let e = split_uri(&uri("ftp://example.com/x")).unwrap_err();
         assert!(
-            format!("{e}").contains("ftp") || format!("{:?}", e).contains("ftp"),
+            format!("{e}").contains("ftp") || format!("{e:?}").contains("ftp"),
             "the refusal must name the scheme it refused: {e:?}"
         );
     }
 
-    /// Both are WinHTTP's to write — from the connect handle and from
+    /// Both are `WinHTTP`'s to write — from the connect handle and from
     /// `WinHttpSendRequest`'s length — and a second copy of either is the
     /// one way a header block makes a message ambiguous.
     #[test]
@@ -895,7 +906,7 @@ mod tests {
         let c = capabilities();
         assert_eq!(c.redirects, RedirectSupport::Transparent);
         assert!(c.cancel_on_drop);
-        assert_eq!(c.response_decompression, false);
+        assert!(!c.response_decompression);
         assert_eq!(c.tls_config, TlsSupport::None);
         assert!(c.proxy, "the whole reason this backend exists");
         assert!(!c.owns_cookie_jar, "WINHTTP_DISABLE_COOKIES is set");

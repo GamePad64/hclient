@@ -364,6 +364,11 @@ impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
     /// time. Any other order is still correct wherever the creation times
     /// differ, which is the case that mattered.
     ///
+    /// # Errors
+    ///
+    /// One [`Rejected`] variant — the bullets above say which record
+    /// facts are re-checked in place of a request's.
+    ///
     /// ```
     /// use std::time::{Duration, SystemTime};
     /// use http::{HeaderValue, Uri};

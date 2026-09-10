@@ -1,6 +1,6 @@
 //! Two types for one fact: what the OS said, and where it said it.
 //!
-//! Everything this crate can report is WinHTTP's own answer. [`Win32Error`]
+//! Everything this crate can report is `WinHTTP`'s own answer. [`Win32Error`]
 //! is the code and nothing else, and [`WinHttpError`] is the place it came
 //! from — a named call, an asynchronous completion, a TLS check, a step
 //! the state machine did not expect. Neither is a translation: mapping the
@@ -13,16 +13,16 @@
 //! Win32 code says *what* failed and never *what was being attempted*, and
 //! on an asynchronous API those are far apart: the code arrives on a
 //! callback, sometimes for a call made three steps earlier. So the
-//! surrounding variant carries the call's own name, spelled as WinHTTP's
+//! surrounding variant carries the call's own name, spelled as `WinHTTP`'s
 //! documentation spells it, which is the half a reader can act on.
 //!
 //! [`WinHttpError`] is re-exported at the crate root, where it has always
 //! been, so no consumer's `use` line moves. [`Win32Error`] keeps exactly
 //! the reach it had: named in a public field, and not exported.
 
-/// What WinHTTP said went wrong, as a Win32 error code.
+/// What `WinHTTP` said went wrong, as a Win32 error code.
 ///
-/// The code and nothing more: WinHTTP's own `FormatMessage` text needs
+/// The code and nothing more: `WinHTTP`'s own `FormatMessage` text needs
 /// `winhttp.dll` loaded as a message source, and mapping the codes onto
 /// this workspace's `ErrorKind` at this layer would be a second
 /// vocabulary invented at the boundary — the same reason
@@ -32,7 +32,7 @@
 #[error("WinHTTP error {0}")]
 pub struct Win32Error(pub u32);
 
-/// What WinHTTP said went wrong.
+/// What `WinHTTP` said went wrong.
 ///
 /// The Win32 code is carried rather than translated. `FormatMessage`
 /// would give a sentence in the machine's own language, which is a
@@ -43,10 +43,10 @@ pub struct Win32Error(pub u32);
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WinHttpError {
-    /// A synchronous WinHTTP call returned failure.
+    /// A synchronous `WinHTTP` call returned failure.
     #[error("`{call}` failed: {source}")]
     Call {
-        /// The WinHTTP function, spelled as the documentation spells it.
+        /// The `WinHTTP` function, spelled as the documentation spells it.
         call: &'static str,
         /// `GetLastError` immediately afterwards.
         source: Win32Error,
@@ -62,7 +62,7 @@ pub enum WinHttpError {
     Tls(u32),
     /// A completion arrived for a call this crate had not made.
     ///
-    /// Reported rather than ignored: WinHTTP's asynchronous model is a
+    /// Reported rather than ignored: `WinHTTP`'s asynchronous model is a
     /// sequence, and a step out of order means the state machine here
     /// disagrees with the one in the OS. Continuing would mean guessing.
     #[error("WinHTTP reported `{got}` where `{expected}` was expected")]
@@ -72,11 +72,11 @@ pub enum WinHttpError {
         /// What this crate was waiting for.
         expected: &'static str,
     },
-    /// The head WinHTTP handed back is not one this workspace's RFC 9112
+    /// The head `WinHTTP` handed back is not one this workspace's RFC 9112
     /// §4 parser accepts.
     #[error("the response head did not parse: {0}")]
     Head(#[from] hclient_proto::head::HeadError),
-    /// The request cannot be expressed to WinHTTP at all.
+    /// The request cannot be expressed to `WinHTTP` at all.
     #[error("{0}")]
     Unsupported(String),
 }

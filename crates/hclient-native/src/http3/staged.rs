@@ -527,7 +527,7 @@ where
         // stream on the same connection, and both attempts' bodies report
         // through the same `ConnState`, which is what keeps one
         // connection's end to one event.
-        let watch = self.watch(&conn, &state);
+        let watch = self.watch(&conn, state.as_ref());
 
         let (parts, body) = req.into_parts();
         let request = hclient_core::hooks::identify::<H>(&parts.extensions);
@@ -591,12 +591,12 @@ where
         };
         let Some(verdict) = zero_rtt else {
             // Nothing went into early data, so this error is the caller's.
-            self.report_failed(&watch, &e);
+            self.report_failed(watch.as_deref(), &e);
             return Err(e);
         };
         if verdict.await {
             // Early data was accepted; the failure is a real one.
-            self.report_failed(&watch, &e);
+            self.report_failed(watch.as_deref(), &e);
             return Err(e);
         }
         let Some(body) = spare else {
@@ -605,7 +605,7 @@ where
             // returns `None` for. Kept as a typed error rather than an
             // `unwrap`, because the two checks live in different files and
             // the invariant between them is not one the compiler holds.
-            self.report_failed(&watch, &e);
+            self.report_failed(watch.as_deref(), &e);
             return Err(e);
         };
         let head = http::Request::from_parts(parts, ());
@@ -615,7 +615,7 @@ where
                 Ok(self.counted(resp, id, request, &uri, sent))
             }
             Err(e) => {
-                self.report_failed(&watch, &e);
+                self.report_failed(watch.as_deref(), &e);
                 Err(e)
             }
         }

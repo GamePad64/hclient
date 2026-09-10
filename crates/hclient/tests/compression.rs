@@ -55,9 +55,12 @@ fn rt() -> tokio::runtime::Runtime {
 /// in more than one frame — a decoder that only ever meets a whole stream
 /// in one buffer is not being tested as a streaming decoder.
 fn plaintext() -> String {
-    (0..4000)
-        .map(|i| format!("line {i}: the quick brown fox jumps over the lazy dog\n"))
-        .collect()
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    for i in 0..4000 {
+        let _ = writeln!(s, "line {i}: the quick brown fox jumps over the lazy dog");
+    }
+    s
 }
 
 fn gzip(data: &[u8]) -> Vec<u8> {
@@ -332,7 +335,6 @@ fn a_stream_the_server_cuts_short_is_an_error_not_a_shorter_document() {
     assert_eq!(
         *err.kind(),
         hclient::ErrorKind::Decode,
-        "{} of {full_len} bytes arrived and the client called it a success: {err:?}",
-        short_len
+        "{short_len} of {full_len} bytes arrived and the client called it a success: {err:?}"
     );
 }

@@ -5,7 +5,7 @@
 //! closes. A record's port is "used" when the connection arrives at that
 //! port; a hint "reaches Happy Eyeballs" when a connection arrives at the
 //! hinted address with nothing else to derive it from; an ALPN offer is
-//! what the ClientHello on the wire actually lists. Nothing here reads a
+//! what the `ClientHello` on the wire actually lists. Nothing here reads a
 //! field of `Native`, and nothing asserts on an error message where a
 //! socket can answer instead.
 //!
@@ -14,7 +14,7 @@
 //! Everything asserted here happens in the client's **first flight**, so a
 //! peer that answered would only add ways for the test to fail for
 //! unrelated reasons (a certificate this test never provisioned, for
-//! one). It accepts, reads the ClientHello, and drops the socket; the
+//! one). It accepts, reads the `ClientHello`, and drops the socket; the
 //! request therefore always ends in an error, and the error is never the
 //! observation. The same construction as
 //! `hclient-tls-rustls/tests/ech.rs`, which is where the technique — and
@@ -48,12 +48,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The origin every test asks for. Long and unmistakable, so that finding
-/// it inside a ClientHello is not a coincidence — see
+/// it inside a `ClientHello` is not a coincidence — see
 /// [`the_name_a_record_asked_to_protect_goes_out_in_the_clear`].
 const ORIGIN: &str = "svcb-origin-that-must-be-visible.example";
 
 /// How long the peer waits for a first flight that should already be on
-/// its way. Only bounds the failure case: a ClientHello on loopback is
+/// its way. Only bounds the failure case: a `ClientHello` on loopback is
 /// written in microseconds, and the read loop below stops as soon as the
 /// record is complete rather than waiting this out.
 const READ_WINDOW: Duration = Duration::from_millis(500);
@@ -119,7 +119,7 @@ impl Peer {
 }
 
 /// Whether `buf` holds a complete TLS record (5-byte header plus its
-/// declared length). A ClientHello is one record, so this is what lets the
+/// declared length). A `ClientHello` is one record, so this is what lets the
 /// peer answer immediately instead of waiting out [`READ_WINDOW`].
 fn tls_record_complete(buf: &[u8]) -> bool {
     if buf.len() < 5 {
@@ -131,12 +131,12 @@ fn tls_record_complete(buf: &[u8]) -> bool {
 
 // --- reading the ClientHello -------------------------------------------
 
-/// The ALPN protocol list a ClientHello offers, or `None` if there is no
+/// The ALPN protocol list a `ClientHello` offers, or `None` if there is no
 /// ALPN extension in it.
 ///
 /// A parser rather than a substring search, and the difference is not
 /// pedantry: `\x02h2` occurs in a 32-byte random field roughly once in
-/// half a million ClientHellos, which is exactly the kind of test that
+/// half a million `ClientHellos`, which is exactly the kind of test that
 /// fails once a year and is dismissed as flaky. This walks the structure
 /// (RFC 8446 §4.1.2 for the message, RFC 7301 §3.1 for the extension) and
 /// returns `None` for anything it cannot read, so a malformed flight is a
@@ -298,7 +298,7 @@ impl Resolve for FakeDns {
     }
 }
 
-/// A ServiceMode record (priority 1) with nothing set — each test adds the
+/// A `ServiceMode` record (priority 1) with nothing set — each test adds the
 /// one parameter it is about.
 fn service_record() -> SvcbEndpoint {
     SvcbEndpoint::new(1, ORIGIN.to_string())
@@ -343,7 +343,12 @@ impl Skewed {
     /// Moves this runtime's idea of elapsed time forward by `d`, for
     /// everything that reads it through `Timer`.
     fn advance(&self, d: Duration) {
-        self.skew.fetch_add(d.as_millis() as u64, Ordering::SeqCst);
+        // `d` is always a small, test-chosen duration — `u64::MAX`
+        // milliseconds is over 584 million years, so the fallback is
+        // unreachable in practice and only there to avoid a second
+        // `unwrap` on a value nothing here can produce.
+        let millis = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        self.skew.fetch_add(millis, Ordering::SeqCst);
     }
 }
 
@@ -573,7 +578,7 @@ async fn the_name_a_record_asked_to_protect_goes_out_in_the_clear() {
 /// RFC 9460 §7.1: a client offers the protocols it supports *from the
 /// SVCB-ALPN set*, which is the record's `alpn` plus the scheme's default
 /// (`http/1.1`). A record advertising only `http/1.1` therefore withdraws
-/// `h2` from the offer — visible in the ClientHello and nowhere else.
+/// `h2` from the offer — visible in the `ClientHello` and nowhere else.
 ///
 /// Needs the `http2` feature: without it this transport offers `http/1.1`
 /// alone whatever any record says, so there would be nothing for a record
@@ -600,7 +605,7 @@ async fn the_record_narrows_the_alpn_offer() {
     );
 }
 
-/// **`Native::http1(false)` withdraws `http/1.1` from the ClientHello**,
+/// **`Native::http1(false)` withdraws `http/1.1` from the `ClientHello`**,
 /// which is the guarantee `Capabilities::full_duplex` rests on when that
 /// setter raises the floor.
 ///
@@ -690,8 +695,8 @@ async fn h3_in_a_record_is_never_offered_on_the_tcp_path() {
 
 // --- AliasMode ----------------------------------------------------------
 
-/// An AliasMode record (priority 0) carries no parameters at all — RFC
-/// 9460 §2.4.1 — and sorts *below* every ServiceMode record. A selection
+/// An `AliasMode` record (priority 0) carries no parameters at all — RFC
+/// 9460 §2.4.1 — and sorts *below* every `ServiceMode` record. A selection
 /// that took the lowest priority without skipping it would pick the alias
 /// every time and act on an endpoint with nothing in it: discovery would
 /// look wired up and do nothing.

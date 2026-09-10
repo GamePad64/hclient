@@ -33,8 +33,12 @@ impl Resolve for Canned {
     fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
         let _ = name;
         match rtype {
-            rtype::A => Box::pin(futures_util::stream::empty()),
-            rtype::AAAA => Box::pin(futures_util::stream::empty()),
+            // Kept as its own arm though it matches the wildcard below:
+            // this mock `supports` address types and this says explicitly
+            // that it has none, rather than leaving them to fall through
+            // the wildcard by coincidence.
+            #[allow(clippy::match_same_arms)]
+            rtype::A | rtype::AAAA => Box::pin(futures_util::stream::empty()),
             rtype::HTTPS => Box::pin({
                 futures_util::stream::iter(
                     self.0
@@ -68,7 +72,7 @@ fn endpoint(target: &str) -> SvcbEndpoint {
     SvcbEndpoint::new(1, target.to_owned())
 }
 
-/// A real ECHConfigList is a length-prefixed binary structure: it contains
+/// A real `ECHConfigList` is a length-prefixed binary structure: it contains
 /// NUL bytes, it is not valid UTF-8, and `rustls` parses the wire bytes
 /// rather than a rendering of them. So the assertion is on the bytes
 /// themselves, not on their length or on `is_some()` — a field that

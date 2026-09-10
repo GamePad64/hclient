@@ -197,6 +197,10 @@ impl TcpOpts {
 /// One `bool` per field of `TcpOpts`, not a count and not a bitflags crate:
 /// the error a caller gets has to name the option it asked for, and a
 /// field-per-field mirror is the only shape that can.
+// Deliberately many bools, one per `TcpOpts` field — see this type's own
+// doc above and AGENTS.md "A capability that answers yes or no is a
+// `bool`".
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TcpOptsSupport {
@@ -345,6 +349,12 @@ impl TcpOpts {
     /// A runtime whose [`TcpConnect::APPLIES`] is [`TcpOptsSupport::ALL`]
     /// need not call this at all — the call is a no-op by construction,
     /// which `reject_unsupported_is_a_no_op_against_all` pins.
+    ///
+    /// # Errors
+    ///
+    /// An [`std::io::ErrorKind::Unsupported`] carrying [`UnsupportedTcpOpts`]
+    /// when a field this caller set is one `can` says the runtime cannot
+    /// apply, naming every such field rather than just the first.
     pub fn reject_unsupported(&self, can: TcpOptsSupport) -> std::io::Result<()> {
         let missing = TcpOptsSupport {
             nodelay: self.nodelay && !can.nodelay,
@@ -522,6 +532,13 @@ pub trait TcpConnect {
 /// applied outside the runtime, and the runtime only adopts the finished
 /// socket.
 pub trait TcpAdoptStd: TcpConnect {
+    /// # Errors
+    ///
+    /// Whatever the OS or the runtime's own reactor registration returns
+    /// while taking ownership of `std` — switching it to non-blocking mode
+    /// and handing the descriptor to the runtime's async socket type, both
+    /// of which are OS calls that can fail on an already-broken or
+    /// already-closed descriptor.
     fn adopt(&self, std: std::net::TcpStream) -> std::io::Result<Self::Stream>;
 }
 
@@ -896,7 +913,7 @@ mod tests {
         struct Immediate;
         impl<F: std::future::Future<Output = ()>> Spawn<F> for Immediate {
             fn spawn(&self, f: F) {
-                futures_executor::block_on(f)
+                futures_executor::block_on(f);
             }
         }
         let done = std::rc::Rc::new(std::cell::Cell::new(false));

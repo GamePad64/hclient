@@ -83,7 +83,7 @@ enum Behaviour {
 /// `a_between_bytes_timeout_closes_the_connection_the_server_sees` gets an
 /// observer for the one half of this bound that a returned error does not
 /// show.
-fn serve(mut sock: TcpStream, behaviour: Behaviour, closed: mpsc::Sender<()>) {
+fn serve(mut sock: TcpStream, behaviour: Behaviour, closed: &mpsc::Sender<()>) {
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 1024];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -131,7 +131,7 @@ fn server_watching(behaviour: Behaviour) -> (SocketAddr, mpsc::Receiver<()>) {
         for sock in listener.incoming() {
             let Ok(sock) = sock else { continue };
             let tx = tx.clone();
-            std::thread::spawn(move || serve(sock, behaviour, tx));
+            std::thread::spawn(move || serve(sock, behaviour, &tx));
         }
     });
     (addr, rx)
@@ -197,6 +197,10 @@ async fn get_all_within(
             .text()
     })
     .await;
+    // `tokio::time::timeout`'s error is `Elapsed`, which carries nothing
+    // beyond its own name — the panic message already says what
+    // happened, and printing `{e:?}` would only echo it.
+    #[allow(clippy::match_wild_err_arm)]
     match out {
         Ok(r) => r,
         Err(_) => panic!(
@@ -389,7 +393,7 @@ async fn a_between_bytes_timeout_closes_the_connection_the_server_sees() {
     let err = tokio::time::timeout(PATIENCE, async {
         loop {
             match resp.chunk().await {
-                Some(Ok(_)) => continue,
+                Some(Ok(_)) => {}
                 Some(Err(e)) => break e,
                 None => panic!("a body that never arrives must not end cleanly"),
             }

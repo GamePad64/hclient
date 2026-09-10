@@ -246,7 +246,7 @@ impl Default for AltSvcCache<MemoryStore> {
 /// computed. RFC 7838 sets no ceiling of its own — its `ma` is a
 /// freshness lifetime with a 24-hour default — and nothing in it obliges
 /// a client to honour a lease longer than it intends to live.
-const MAX_LEASE: Duration = Duration::from_secs(400 * 24 * 60 * 60);
+const MAX_LEASE: Duration = Duration::from_hours(9600);
 
 /// One remembered advertisement — the whole of what an
 /// [`AltSvcStore`] holds.
@@ -338,10 +338,7 @@ pub struct MemoryStore {
 impl Debug for MemoryStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemoryStore")
-            .field(
-                "advertised",
-                &self.entries.lock().map(|m| m.len()).unwrap_or(0),
-            )
+            .field("advertised", &self.entries.lock().map_or(0, |m| m.len()))
             .finish()
     }
 }

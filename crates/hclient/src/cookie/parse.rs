@@ -98,6 +98,11 @@ fn split_once_on_equals(segment: &[u8]) -> (&[u8], &[u8]) {
 
 impl SetCookie {
     /// RFC 6265bis §5.2, on the raw header bytes.
+    ///
+    /// # Errors
+    ///
+    /// One [`ParseError`] variant per rule §5.2 states — see its own
+    /// per-variant docs for which.
     pub fn parse(header: &[u8]) -> Result<Self, ParseError> {
         let mut input = header;
         // Infallible: `segment`'s `rest` arm matches anything, the empty

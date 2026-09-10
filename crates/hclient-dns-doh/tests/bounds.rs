@@ -1,4 +1,4 @@
-//! The three things a DoH resolver must not let a server decide: how long
+//! The three things a `DoH` resolver must not let a server decide: how long
 //! it waits, how many bytes it reads, and whether it asks at all.
 //!
 //! Each is checked against a server built to abuse it, and — for the
@@ -195,7 +195,7 @@ async fn the_default_timeouts_are_not_none() {
 
 // ── the byte count ──────────────────────────────────────────────────────
 
-/// The response body length is chosen by the server, and a DoH endpoint is
+/// The response body length is chosen by the server, and a `DoH` endpoint is
 /// something a client talks to before it has decided to trust anything.
 ///
 /// `MAX_RESPONSE_BYTES` is the largest a DNS message can be, so the cut can

@@ -120,7 +120,7 @@ use store::candidate_domains;
 /// (*"the UA … refreshes the expiry time"*). A host asserting less than
 /// 400 days is unaffected, which is every real deployment —
 /// `max-age=31536000`, one year, is what the common guidance says.
-pub const MAX_AGE_CAP: Duration = Duration::from_secs(400 * 24 * 60 * 60);
+pub const MAX_AGE_CAP: Duration = Duration::from_hours(9600);
 
 /// The RFC 6797 rules over a [`HstsStore`].
 ///
