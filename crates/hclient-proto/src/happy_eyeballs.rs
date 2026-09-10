@@ -584,6 +584,7 @@ mod tests {
             // under either target width.
             #[allow(clippy::cast_possible_truncation)]
             let v6_addrs: Vec<IpAddr> = (0..v6_n as u16).map(v6).collect();
+            // `v4_n` is proptest-bounded to `0..6` above, as `v6_n` is.
             #[allow(clippy::cast_possible_truncation)]
             let v4_addrs: Vec<IpAddr> = (0..v4_n as u8).map(v4).collect();
 

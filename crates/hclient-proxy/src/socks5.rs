@@ -157,6 +157,7 @@ impl Handshake for Socks5 {
                         #[allow(clippy::cast_possible_truncation)]
                         msg.put_u8(user.len() as u8);
                         msg.put_slice(user.as_bytes());
+                        // Bounded at the setter too — see the pair above.
                         #[allow(clippy::cast_possible_truncation)]
                         msg.put_u8(password.len() as u8);
                         msg.put_slice(password.as_bytes());

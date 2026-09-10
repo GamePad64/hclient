@@ -159,6 +159,8 @@ fn scale_by_kept_fraction(d: Duration, kept: f64) -> Duration {
     // remainder always fits `u32` by construction.
     #[allow(clippy::cast_possible_truncation)]
     let secs = (scaled_nanos / 1_000_000_000) as u64;
+    // The `% 1_000_000_000` remainder fits `u32` by construction — the
+    // same bound the comment above states for the pair.
     #[allow(clippy::cast_possible_truncation)]
     let nanos = (scaled_nanos % 1_000_000_000) as u32;
     Duration::new(secs, nanos)

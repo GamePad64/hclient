@@ -8090,6 +8090,30 @@ rustc's own `unused_parens` then rejects. The closure stays, with an
 `#[allow]` naming the pair, because a lint that cannot be satisfied is a
 lint to answer rather than to chase.
 
+**The rule about allows is a gate now, and writing it found four that
+were not.** *An allow naming its bound is a claim somebody can check; a
+bare one is a claim nobody can* was held by habit alone, which is this
+file's own recurring defect with the subject changed:
+`scripts/every-allow-names-its-reason.sh` reads all 123 and refuses one
+with nothing beside it. Three spellings count — a comment above, a
+trailing one after, and rustc's own `reason = ".."` — because a rule that
+refuses a legible form invites the bare allow it exists to prevent. It
+found four on its first run, and the sharpest was a reason `cargo fmt`
+had moved to the line *below* its attribute, where a reader arriving at
+the attribute meets nothing. What it deliberately does not check is
+whether a reason is **true**; nothing can. What it ends is the allow
+there is no way to argue with.
+
+**And wiring it up found that four of the eight invariant gates had no CI
+step at all** — `errors-in-error-rs`, `no-crate-for-what-std-does` and
+`versions-agree` besides this one, the first three since they were
+written. They ran for anyone typing `just invariants` and on no push.
+**`ci-mirrors-just` could not see it, and that is the interesting half**:
+it asserts every `run:` names a recipe that exists, which is the converse
+of every gate having a `run:`. A check with a direction has a blind side,
+and this one's is the side the gates live on. All eight have a step now,
+49 calls across 49 steps.
+
 **A `#[cfg(not(feature = ..))]` twin fires `unused_self` and
 `unused_async`, and obeying that would fork a signature on a feature.**
 Ten such stubs across `hclient` and `hclient-native` exist to keep the

@@ -1513,7 +1513,7 @@ fuzz-smoke:
 # ── invariants no build can express ─────────────────────────────────────
 
 # the text scans, together
-invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs no-crate-for-what-std-does versions-agree ci-mirrors-just
+invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs no-crate-for-what-std-does allows-name-their-reason versions-agree ci-mirrors-just
 
 # the ast-grep rules, their own corpus tests, and a fail-closed glob check
 ast-grep:
@@ -1539,6 +1539,11 @@ errors-in-error-rs:
 # `assert_matches`, each with the macro that replaced it
 no-crate-for-what-std-does:
     ./scripts/no-crate-for-what-std-does.sh
+
+# every `#[allow(clippy::..)]` says why — the rule `clippy::pedantic`
+# arrived with, held by a check rather than by habit
+allows-name-their-reason:
+    ./scripts/every-allow-names-its-reason.sh
 
 # every in-workspace requirement names the workspace version
 versions-agree:

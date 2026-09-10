@@ -523,6 +523,19 @@ jobs:
         run: just no-send-or-sync
       - name: unsafe_code stays forbidden by declaration
         run: just unsafe-policy
+      # These four are `invariants` dependencies that had no step of their
+      # own, so they ran for anyone typing `just invariants` and never on a
+      # push — three of them since they were written. `ci-mirrors-just`
+      # could not see it: it checks that every `run:` names a real recipe,
+      # which is the converse of every gate having a `run:`.
+      - name: every error type lives in a file named `error.rs`
+        run: just errors-in-error-rs
+      - name: no crate for a job `core` or `std` now does itself
+        run: just no-crate-for-what-std-does
+      - name: "every `#[allow(clippy::..)]` says why"
+        run: just allows-name-their-reason
+      - name: every in-workspace requirement names its target's version
+        run: just versions-agree
       - name: "every `run:` in this file is a call to a recipe that exists"
         run: just ci-mirrors-just
 

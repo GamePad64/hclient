@@ -3449,8 +3449,10 @@ where
         // ever removes `h2` from the list, never adds it.
         let offered_h2 = self.may_speak_h2(&parts_of_key)
             && check_version(req.extensions(), http::Version::HTTP_2).is_ok();
+        // The unreachable `(false, false)` is kept as its own honest arm
+        // rather than merged or made an `unreachable!` — see its comment
+        // below for why the arm states the case instead of denying it.
         #[allow(clippy::match_same_arms)]
-        // the unreachable `(false, false)` is kept as its own honest arm rather than merged or `unreachable!` — see its comment
         let alpn: &[&[u8]] = match (offered_h2, self.versions.h1) {
             // Order is the preference: RFC 7301 leaves the choice to the
             // server, but every implementation reads the client's list as
