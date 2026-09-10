@@ -117,8 +117,8 @@ winnow         = { version = "1.0", default-features = false, features = ["alloc
 # of the facade can switch it off. Building `hclient-proto` on its own
 # still gets `idn`, since that is its own default.
 hclient-proto = { path = "crates/hclient-proto", version = "0.1.0-alpha.6", default-features = false }
-hclient-core  = { path = "crates/hclient-core", version = "0.1.0-alpha.8" }
-hclient-mock  = { path = "crates/hclient-mock", version = "0.1.0-alpha.8" }
+hclient-core  = { path = "crates/hclient-core", version = "0.1.0-alpha.9" }
+hclient-mock  = { path = "crates/hclient-mock", version = "0.1.0-alpha.9" }
 # Default features left ON, and the opposite of `hclient-proto` above:
 # this crate's default is `platform`, which is
 # not a choice a consumer makes but a fact about the target — the bundled
@@ -130,7 +130,7 @@ hclient-mock  = { path = "crates/hclient-mock", version = "0.1.0-alpha.8" }
 hclient-idn   = { path = "crates/hclient-idn", version = "0.2.3" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
-hclient       = { path = "crates/hclient", version = "0.1.0-alpha.8" }
+hclient       = { path = "crates/hclient", version = "0.1.0-alpha.9" }
 
 [workspace.lints.rust]
 unsafe_code       = "forbid"

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.9](https://github.com/GamePad64/hclient/compare/hclient-tower-v0.1.0-alpha.8...hclient-tower-v0.1.0-alpha.9) - 2026-09-10
+
+### Other
+
+- [**breaking**] a trait a `dyn` is taken of is `Dyn*`, not `Box*`
+
 ## [0.1.0-alpha.8](https://github.com/GamePad64/hclient/compare/hclient-tower-v0.1.0-alpha.7...hclient-tower-v0.1.0-alpha.8) - 2026-09-10
 
 ### Other
