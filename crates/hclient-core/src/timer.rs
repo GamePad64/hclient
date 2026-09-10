@@ -100,31 +100,31 @@ impl<F: Future + Unpin> Future for Discard<F> {
 // `Timer`, and the instant is erased as a *question* — how long ago was
 // this — because `Copy` on a trait object is not a thing.
 
-/// An erased sleep, as [`BoxTimer`] hands one back.
+/// An erased sleep, as [`DynTimer`] hands one back.
 ///
 /// `Send`, for [`crate::transport::BoxBody`]'s reason and inseparably from
 /// it: a response body holds a sleep — that is how a total timeout cuts a
 /// silent body — so the two answer the same question.
 pub type BoxSleep = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>; // send-bound-exception: amendment-C14
 
-/// A moment a [`BoxTimer`] recorded, which can be asked how long ago it
+/// A moment a [`DynTimer`] recorded, which can be asked how long ago it
 /// was and nothing else.
 ///
 /// One method on purpose: it is what lets an erased clock exist at all.
 /// See this module's own doc.
-pub trait BoxInstantOf {
+pub trait DynInstant {
     /// How long since this stamp was taken, on the clock that took it.
     fn elapsed(&self) -> Duration;
 }
 
-/// A stamp a [`BoxTimer`] took, erased.
+/// A stamp a [`DynTimer`] took, erased.
 ///
 /// Not `Send`, for [`BoxSleep`]'s reason: the same body holds the stamp the
 /// sleep was computed from.
-pub type BoxInstant = Box<dyn BoxInstantOf + Send>; // send-bound-exception: amendment-C14
+pub type BoxInstant = Box<dyn DynInstant + Send>; // send-bound-exception: amendment-C14
 
-/// [`Timer`], with the sleep boxed and the instant behind [`BoxInstantOf`].
-pub trait BoxTimer {
+/// [`Timer`], with the sleep boxed and the instant behind [`DynInstant`].
+pub trait DynTimer {
     /// [`Timer::now`], as a stamp that outlives the borrow.
     fn now_boxed(&self) -> BoxInstant;
 
@@ -135,22 +135,22 @@ pub trait BoxTimer {
 /// A clock a facade can share between threads, erased.
 ///
 /// [`crate::transport::SharedTransport`]'s reasoning, for the other seam.
-pub type SharedTimer = dyn BoxTimer + Send + Sync; // send-bound-exception: amendment-C12
+pub type SharedTimer = dyn DynTimer + Send + Sync; // send-bound-exception: amendment-C12
 
-/// The stamp the blanket [`BoxTimer`] hands out: the clock and the moment
+/// The stamp the blanket [`DynTimer`] hands out: the clock and the moment
 /// together, so `elapsed` is answered by the clock that took it.
 struct Stamp<Tm: Timer> {
     timer: Tm,
     at: Tm::Instant,
 }
 
-impl<Tm: Timer> BoxInstantOf for Stamp<Tm> {
+impl<Tm: Timer> DynInstant for Stamp<Tm> {
     fn elapsed(&self) -> Duration {
         self.timer.elapsed_since(self.at)
     }
 }
 
-impl<Tm> BoxTimer for Tm
+impl<Tm> DynTimer for Tm
 where
     Tm: Timer + Clone + Send + 'static, // send-bound-exception: amendment-C14
     Tm::Instant: Send,                  // send-bound-exception: amendment-C14

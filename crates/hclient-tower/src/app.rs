@@ -152,7 +152,7 @@ impl Body for OutgoingBody {
 /// workspace's.
 ///
 /// **The transport is the boundary, so this is where the conversion
-/// belongs.** `BoxTransport`'s blanket impl requires a response body
+/// belongs.** `DynTransport`'s blanket impl requires a response body
 /// whose error is `Into<hclient_core::error::Error>`, and a server-side body's
 /// is not: `http_body_util::Full`'s is `Infallible` and `axum::body::Body`'s
 /// is `axum::Error`. Without this an `axum::Router` could be a

@@ -66,8 +66,8 @@ promise withheld rather than a seam closed.
 
 Since 2026-08-28 the compiler prints the impl to write, with the paths
 filled in, at the line where `Client::builder` refused. That attribute is
-on `BoxedTransport` rather than on `SendTransport`, because the blanket
-impl makes `BoxedTransport` the bound rustc reports as unsatisfied — which
+on `DynTransport` rather than on `SendTransport`, because the blanket
+impl makes `DynTransport` the bound rustc reports as unsatisfied — which
 was found by reading what it actually printed rather than by reasoning
 about which trait was missing.
 

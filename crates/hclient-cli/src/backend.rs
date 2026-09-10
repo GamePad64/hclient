@@ -260,7 +260,7 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
 /// The half that is the same for every backend, so an arm above is one
 /// expression and the two cannot drift.
 ///
-/// The bound is `BoxTransport`, which `hclient-core` carries a blanket
+/// The bound is `DynTransport`, which `hclient-core` carries a blanket
 /// impl of — so this names no transport type and neither do the arms'
 /// return values. That is the erasure paying for itself: with a generic
 /// `Client` this function's signature would have had to name one
@@ -271,7 +271,7 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
 )]
 fn finish<T>(backend: BackendName, cfg: &Config, transport: T) -> Result<hclient::Client, Refused>
 where
-    T: hclient_core::transport::BoxTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    T: hclient_core::transport::DynTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
 {
     // `build()` refuses a client setting the transport cannot honour, and
     // this program sets none of them here — the cookie jar and the cache

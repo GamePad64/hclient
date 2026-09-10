@@ -124,7 +124,7 @@ impl crate::cookie::PublicSuffixList for BoxSuffixList {
 /// The seam names its futures as associated types, which is what lets a
 /// single-threaded store answer for itself — and is exactly what makes it
 /// not `dyn`-compatible. So there are two traits, and the split is
-/// [`BoxTransport`](hclient_core::BoxTransport)'s one
+/// [`DynTransport`](hclient_core::DynTransport)'s one
 /// crate over, down to the blanket impl: **a store author writes
 /// nothing**, and the boxing happens where the type is still concrete, so
 /// `Send` is inferred rather than proved.

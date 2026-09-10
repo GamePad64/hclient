@@ -38,7 +38,7 @@
 //! **With `http3` too, and this file was gated out of that configuration
 //! for two weeks after it stopped being true.** The gate read
 //! `not(feature = "http3")`, because the QUIC arm erased through
-//! `Box<dyn BoxStaged<'_>>` and `Staging<'a>` and declaring `Send` there
+//! `Box<dyn DynStaged<'_>>` and `Staging<'a>` and declaring `Send` there
 //! needed `StagedConnect::connect`'s RPITIT future named. It carries
 //! associated futures now, so the arm declares `Send` and the workspace's
 //! own `--all-features` run — which is where this file was *not* being

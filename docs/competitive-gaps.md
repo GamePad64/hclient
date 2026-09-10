@@ -894,13 +894,13 @@ shape this document exists to make visible.
 a trait object is indeed not a thing, and fixing `Instant` to a concrete
 type is indeed impossible for the reason given: the three shipped clocks
 disagree (`tokio::time::Instant`, `std::time::Instant`, and `NoClock`'s
-`()`). The way out is neither. `ErasedInstant` answers *how long ago was
+`()`). The way out is neither. `DynInstant` answers *how long ago was
 this* and nothing else, so the instant never leaves the clock that made it
 and `Copy` is asked of nothing erased.
 
 **Wrong twice: `Transport`'s RPITIT is not a wall.** Return type notation is
 still `E0658` on 1.98, and it is not on the path: the boxed future declares
-no `Send`, so there is nothing to prove and `BoxedTransport` takes a
+no `Send`, so there is nothing to prove and `DynTransport` takes a
 **blanket impl** over every `Transport`. No backend author writes anything —
 which is better than the per-backend trait this section proposed as the
 buildable `Send` version.

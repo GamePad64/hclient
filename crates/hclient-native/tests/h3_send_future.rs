@@ -4,7 +4,7 @@
 //! `send_future.rs` builds `Native::new(..)` and asserts the property on
 //! the default stack. That is the row that used to be the hard one, and
 //! it is not this one: the h3 arm reaches `Native` through
-//! `http3::arm`'s erasure — `Box<dyn BoxStaged<'_>>` — which exists so
+//! `http3::arm`'s erasure — `Box<dyn DynStaged<'_>>` — which exists so
 //! that `H3`'s bounds stay off `Native`'s `Transport` impl, and an erased
 //! future is exactly where a `Send` goes missing. This workspace has
 //! written that row down as `Send` since amendment C15 moved the bounds

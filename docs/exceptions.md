@@ -14,7 +14,7 @@ Neither rule is absolute, and the exceptions are the point of this
 document. Each one is numbered, and **the code must cite its number**:
 
 ```rust
-pub type SharedTransport = dyn BoxedTransport + Send + Sync; // send-bound-exception: amendment-C12
+pub type SharedTransport = dyn DynTransport + Send + Sync; // send-bound-exception: amendment-C12
 ```
 
 The two families never mix. A `Send` exception cites

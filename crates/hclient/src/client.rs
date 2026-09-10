@@ -87,7 +87,7 @@ pub struct ClientBuilder {
 impl ClientBuilder {
     pub fn new<T>(transport: T) -> Self
     where
-        T: hclient_core::transport::BoxTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        T: hclient_core::transport::DynTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
         Self {
             backend: std::any::type_name::<T>(),
@@ -612,7 +612,7 @@ struct Inner {
 impl Client {
     pub fn builder<T>(transport: T) -> ClientBuilder
     where
-        T: hclient_core::transport::BoxTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        T: hclient_core::transport::DynTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
         ClientBuilder::new(transport)
     }
@@ -858,7 +858,7 @@ impl Client {
     /// `Transport::to_error` is called for an abstract `T` and its own
     /// where-clause requires the bound, `Error` storing its source as
     /// `Arc<dyn Error + Send + Sync>`. There is no abstract `T` here any
-    /// more: `BoxTransport::execute_boxed` calls `to_error` where `Self`
+    /// more: `DynTransport::execute_boxed` calls `to_error` where `Self`
     /// is concrete, so the bound is discharged at the blanket impl and
     /// four exception markers left this file with it. That is worth more
     /// than the ergonomics the erasure was for — the invariant's own point

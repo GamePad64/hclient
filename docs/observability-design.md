@@ -416,7 +416,7 @@ would shut every single-threaded runtime out of observability.
 **`ClientHooks` cannot keep that, and the reason is structural.** `Client`
 is `Send + Sync` — asserted in `hclient/tests/shape.rs` — because `Inner`
 lives in an `Arc` and stores `Box<SharedTransport>`, which is
-`dyn BoxedTransport + Send + Sync`. Anything else stored beside it must be
+`dyn DynTransport + Send + Sync`. Anything else stored beside it must be
 `Send + Sync` too. So the setter reads:
 
 ```rust

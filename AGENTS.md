@@ -1292,7 +1292,7 @@ constructor* unconditional rather than the bounds.
 What is true is narrower: a field typed `Option<H3<R, T, D>>` would pull
 `H3<R, T, D>: Transport` into `impl Transport for Native`'s where-clause,
 because `execute` has to route to it — and *that* is unconditional. An
-**erased** field is not: `Option<Box<dyn BoxedTransport + Send + Sync>>`,
+**erased** field is not: `Option<Box<dyn DynTransport + Send + Sync>>`,
 whose blanket impl `hclient-core` already carries, leaves `execute` calling
 `execute_boxed` and demanding nothing of `R` or `T`, with every bound on an
 opt-in `Native::http3()` that `Native::new(Embassy, NoTls, IpLiteralOnly)`
@@ -1996,7 +1996,7 @@ the `UpgradeSupport` question asked of the pattern that replaced it:
 capability tables. None is a distinction with one reachable side.
 
 **Three of thirty-five traits are named in no test**, and all three are
-the erasure traits — `BoxedTransport`, `BoxedTimer`, `ErasedInstant` —
+the erasure traits — `DynTransport`, `DynTimer`, `DynInstant` —
 which every `Client` test exercises without naming.
 
 **The first finding was a claim with no check**, and it is the row this
@@ -2866,7 +2866,7 @@ is where a new variant goes to be silently mishandled. `Reduced` is
 exhaustive, owned by the crate that would add one, and already carries the
 factory arm's depth bound.
 
-And the response body needed mapping the other way. `BoxedTransport`'s
+And the response body needed mapping the other way. `DynTransport`'s
 blanket impl requires `<T::Body>::Error: Into<Error>`, which a server-side
 body does not satisfy — `Full`'s is `Infallible`, axum's is `axum::Error`.
 Without `IncomingBody` an `axum::Router` could be a `Transport` and still
@@ -4332,7 +4332,7 @@ stall a body belonging to another handle — is gone rather than reworded.
 
 **Associated futures, not `async fn`**, for `TcpConnect::Connecting`'s
 reason: `Client` boxes its cache `Send + Sync`, and an RPITIT cannot be
-bounded. `AnyStore` is the erased half, and it is `BoxedTransport`'s split
+bounded. `AnyStore` is the erased half, and it is `DynTransport`'s split
 one crate over — a private object-safe trait with a blanket impl, so **a
 store author writes nothing** and `Send` is inferred where the type is
 still concrete.
@@ -7018,9 +7018,9 @@ erasure removes.
 `docs/competitive-gaps.md` §G13 said `Transport`'s RPITIT needs return type
 notation (`E0658` on 1.98, true) and that `Timer::Instant: Copy` is
 permanent (also true). Both are irrelevant: the boxed future declares no
-`Send`, so there is nothing to prove and `BoxedTransport` gets a **blanket
+`Send`, so there is nothing to prove and `DynTransport` gets a **blanket
 impl** over every `Transport` — a backend author writes nothing — and
-`ErasedInstant` answers *how long ago was this*, so the instant never
+`DynInstant` answers *how long ago was this*, so the instant never
 crosses the boundary and `Copy` is asked of nothing.
 
 **The first attempt at this was abandoned, and the reason it was abandoned
@@ -7246,7 +7246,7 @@ one, so the whole thing was built on nightly under `--cfg rtn_probe` to
 see what it actually costs.
 
 **It works.** `T: Transport<execute(..): Send> + Sync` on
-`BoxedTransport`'s blanket impl, `Send` on `BoxExchange`, the same
+`DynTransport`'s blanket impl, `Send` on `BoxExchange`, the same
 treatment for `http3::arm`'s three boxes with
 `StagedConnect<connect(..): Send, exchange(..): Send>` and its bounds on
 the opt-in `Native::http3`, and `Send` on `hclient-tower`'s `type Future`
@@ -8219,17 +8219,43 @@ third variant serves; if the answer is a hypothetical backend, it is a
 Two conventions, and both were settled by noticing the crate already
 followed them almost everywhere.
 
-**A boxed form of a trait is called `Box<Trait>`** — `BoxTransport`,
-`BoxTimer`, `BoxFlow`, `BoxBody`, `BoxSleep`, `BoxCacheStore`. Not
+**A boxed form of a trait is called `Box<Trait>`** — `BoxBody`,
+`BoxSleep`, `BoxInstant`, `BoxFlow`, `BoxExchange`, `BoxCacheStore`. Not
 `Boxed*`, not `Any*`, not `Erased*`. Three prefixes for one idea was three
 things to learn, and `futures_core`'s `BoxFuture`/`BoxStream` is the name
 a Rust reader already has. Thirteen types were renamed to reach it.
 
-Where a public newtype wraps a private object-safe trait, the trait takes
-`Dyn*` — `BoxCacheStore(Box<dyn DynCacheStore + …>)`. That is a layering
-rather than a synonym: `Box*` is what a caller names, `Dyn*` is the shape
-that makes boxing possible, and giving them one name is a compile error
-rather than a style question.
+**The object-safe trait a `dyn` is taken of is `Dyn*`**, and that is a
+layering rather than a synonym: `Box*` is what a caller names, `Dyn*` is
+the shape that makes boxing possible. `BoxCacheStore(Box<dyn
+DynCacheStore + …>)` is the pattern, and `BoxInstant = Box<dyn
+DynInstant>` is the same thing one crate down.
+
+**Three traits carried the wrong half of that pair for a week**, which is
+what asking *what is actually named `Box`* found. `BoxTransport`,
+`BoxTimer` and `BoxInstantOf` are object-safe traits — `SharedTransport`
+is literally `dyn BoxTransport + Send + Sync` — so each was a trait
+wearing the name of the box taken of it, in a workspace whose own rule
+two paragraphs up says otherwise. They are `DynTransport`, `DynTimer` and
+`DynInstant` now — and asking the question with a grep that did not
+assume `pub` found two more, `BoxStaged` and `BoxStagedConnect` in
+`hclient-native`'s QUIC arm, `pub(crate)` and the same shape again
+(`Box<dyn BoxStaged<'a> + Send>`). Five in total, not three, which is why
+the sweep was worth running rather than reasoning about.
+
+**The `Of` suffix is the tell worth keeping.** `BoxInstantOf` was named
+that way to dodge a collision with the `BoxInstant` alias beside it, and
+a suffix that exists only to make a wrong name compile is the wrong name
+announcing itself. Under the convention there is no collision to dodge:
+the trait is `DynInstant` and the alias is `Box<dyn DynInstant>`. The
+rule's own sentence had said this — *giving them one name is a compile
+error rather than a style question* — and the error had been answered
+with a suffix instead of the rule.
+
+**It cost nothing because `hclient-core` is at an unpublished
+`0.1.0-alpha.8`**, which is the same window the stable-version reversal
+used. None of the three is re-exported from a crate root, so the change
+is 26 references across seven files and no consumer's `use` line.
 
 `Shared*` stays for what is genuinely shared rather than boxed —
 `SharedTransport` and `SharedTimer` are unsized `dyn` behind an `Arc`, and
@@ -8253,7 +8279,7 @@ public modules of one name and different contents.
 
 What the split cost is one cross-module doc link that had to be qualified,
 which is the boundary announcing itself. What it buys is that a reader of
-`transport` meets `BoxTransport` where the reason for it is, and a reader
+`transport` meets `DynTransport` where the reason for it is, and a reader
 of `timer` never meets it at all.
 
 ### Vertical 2 (native): what's proven

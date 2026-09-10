@@ -279,7 +279,7 @@ pub trait SendTransport: Transport {
 /// handle across an await.
 pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + Send>>; // send-bound-exception: amendment-C14
 
-/// An erased exchange, as [`BoxTransport`] hands one back.
+/// An erased exchange, as [`DynTransport`] hands one back.
 pub type BoxExchange<'a> =
     Pin<Box<dyn Future<Output = Result<http::Response<BoxBody>, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
 
@@ -292,7 +292,7 @@ pub type BoxExchange<'a> =
 /// **`pub(crate)`, and it was `pub` until it was asked who calls it.** Its
 /// doc named a reader outside this workspace — an author writing a
 /// backend — and that reader does not exist, because the only call is
-/// [`BoxTransport`]'s blanket impl below, which erases a backend's body
+/// [`DynTransport`]'s blanket impl below, which erases a backend's body
 /// *for* it. A backend declares `type Body` and hands back its own; it
 /// never boxes one itself.
 ///
@@ -301,7 +301,7 @@ pub type BoxExchange<'a> =
 /// its own `Transport`, `SendTransport` and body type, reaching
 /// `hclient::Client` — compiles without naming this function, and goes on
 /// compiling with it private. The two neighbours that look identical to a
-/// grep, [`BoxTimer`] and [`BoxInstantOf`], are the counterexample that
+/// grep, [`DynTimer`] and [`DynInstant`], are the counterexample that
 /// makes the method worth stating: both have **zero** mentions outside
 /// this crate too, and both are load-bearing `pub` — making either private
 /// is `E0624` at a call in `hclient`, because their blanket impls are how
@@ -378,7 +378,7 @@ where
     note = "    }}",
     note = "If this transport genuinely cannot cross a thread — a browser one, or a runtime whose IO is `!Send` — do not implement it. `Transport` alone still works and only `hclient::Client` is out of reach."
 )]
-pub trait BoxTransport {
+pub trait DynTransport {
     /// [`crate::transport::Transport::execute`], boxed.
     fn execute_boxed(&self, req: http::Request<RequestBody>) -> BoxExchange<'_>;
 
@@ -399,7 +399,7 @@ pub trait BoxTransport {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-impl<T> BoxTransport for T
+impl<T> DynTransport for T
 where
     T: crate::transport::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
     T::Body: Send + 'static,                             // send-bound-exception: amendment-C14
@@ -438,4 +438,4 @@ where
 /// site and never on the trait. A backend that
 /// cannot satisfy it is refused at a constructor rather than taxed at the
 /// seam.
-pub type SharedTransport = dyn BoxTransport + Send + Sync; // send-bound-exception: amendment-C12
+pub type SharedTransport = dyn DynTransport + Send + Sync; // send-bound-exception: amendment-C12

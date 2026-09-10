@@ -12,7 +12,7 @@
 //! additive. `Native<Embassy, NoTls, IpLiteralOnly>` would stop compiling
 //! for a caller who never asked for HTTP/3 and cannot opt out.
 //!
-//! Behind `dyn`, `execute` calls [`BoxStagedConnect::connect_boxed`] and
+//! Behind `dyn`, `execute` calls [`DynStagedConnect::connect_boxed`] and
 //! demands nothing of `R` or `T`. Every bound lives on
 //! [`crate::Native::http3`], which such a caller never writes.
 //!
@@ -20,7 +20,7 @@
 //!
 //! `H3StagedConnect::exchange` takes `&self` **and** the handle, so an
 //! erased handle has to carry the transport it came from. That is
-//! [`StagedOver`], and it is why [`BoxStaged`] exists rather than the
+//! [`StagedOver`], and it is why [`DynStaged`] exists rather than the
 //! handle being a `Box<dyn Any>` the connector downcasts: a downcast can
 //! be given the wrong handle and panic, where a borrow cannot be given
 //! anything at all.
@@ -57,7 +57,7 @@ use std::pin::Pin;
 /// Caught by that assertion rather than by reading.
 pub(crate) type SendBoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = CoreError> + Send>>; // send-bound-exception: amendment-C12
 
-/// What [`BoxStaged::exchange_boxed`] hands back.
+/// What [`DynStaged::exchange_boxed`] hands back.
 type SendExchange<'a> =
     Pin<Box<dyn Future<Output = Result<http::Response<SendBoxBody>, CoreError>> + Send + 'a>>; // send-bound-exception: amendment-C15
 
@@ -71,11 +71,11 @@ type SendExchange<'a> =
 /// manifest. The concrete `H3` satisfies both anyway: quinn requires them
 /// of the runtime it is given.
 /// The staged handle, named so its `Send` marker survives `cargo fmt`.
-pub(crate) type SendHandle<'a> = Box<dyn BoxStaged<'a> + Send + 'a>; // send-bound-exception: amendment-C15
+pub(crate) type SendHandle<'a> = Box<dyn DynStaged<'a> + Send + 'a>; // send-bound-exception: amendment-C15
 
-pub(crate) type Arm = dyn BoxStagedConnect + Send + Sync; // send-bound-exception: amendment-C12
+pub(crate) type Arm = dyn DynStagedConnect + Send + Sync; // send-bound-exception: amendment-C12
 
-/// What [`BoxStagedConnect::connect_boxed`] hands back, named because
+/// What [`DynStagedConnect::connect_boxed`] hands back, named because
 /// the type outgrew its line — and `clippy::type_complexity` said so
 /// before a reader had to.
 ///
@@ -93,9 +93,9 @@ type Staging<'a> = Pin<
 ///
 /// Blanket-implemented over every [`H3StagedConnect`], so `hclient-h3`
 /// implements nothing for it — the same arrangement
-/// `hclient_core::transport::BoxTransport` has, and for the
+/// `hclient_core::transport::DynTransport` has, and for the
 /// same reason: a seam a backend has to opt into is a seam backends forget.
-pub(crate) trait BoxStagedConnect: Debug {
+pub(crate) trait DynStagedConnect: Debug {
     /// [`H3StagedConnect::connect`], boxed.
     ///
     /// `Refused` carries the request back untouched, which is the whole
@@ -105,9 +105,9 @@ pub(crate) trait BoxStagedConnect: Debug {
     fn connect_boxed(&self, req: http::Request<RequestBody>) -> Staging<'_>;
 }
 
-/// A connection staged by a [`BoxStagedConnect`], with one thing left to
+/// A connection staged by a [`DynStagedConnect`], with one thing left to
 /// do to it.
-pub(crate) trait BoxStaged<'a> {
+pub(crate) trait DynStaged<'a> {
     /// [`H3StagedConnect::exchange`], boxed. Takes `Box<Self>` because a
     /// staged connection is spent exactly once.
     ///
@@ -126,7 +126,7 @@ struct StagedOver<'a, T: H3StagedConnect> {
     staged: T::Staged,
 }
 
-impl<T> BoxStagedConnect for T
+impl<T> DynStagedConnect for T
 where
     T: H3StagedConnect<Error = CoreError> + Debug + Sync + 'static, // send-bound-exception: amendment-C15
     for<'a> T::Connecting<'a>: Send, // send-bound-exception: amendment-C15
@@ -147,7 +147,7 @@ where
     }
 }
 
-impl<'a, T> BoxStaged<'a> for StagedOver<'a, T>
+impl<'a, T> DynStaged<'a> for StagedOver<'a, T>
 where
     T: H3StagedConnect<Error = CoreError> + Sync, // send-bound-exception: amendment-C15
     for<'b> T::Exchanging<'b>: Send,              // send-bound-exception: amendment-C15

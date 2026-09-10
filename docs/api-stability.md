@@ -255,7 +255,7 @@ where under an alias it would depend on whether they happened to type
 
 ## Erased types per seam — `BoxedResolve`, `BoxedTcpConnect`, … — and why one is enough
 
-Asked whether the `BoxedTransport` pattern should be repeated for the
+Asked whether the `DynTransport` pattern should be repeated for the
 other seams, so that a `Native` could be one concrete type instead of
 `Native<R, T, D, H, P>`.
 
