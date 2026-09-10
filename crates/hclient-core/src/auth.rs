@@ -157,8 +157,8 @@ pub trait AuthFlow {
 /// **Neither trait declares an auto trait**, which is this workspace's
 /// rule for a seam: the demands live where the facade *stores* the value,
 /// in [`BoxedFlow`] and in the `Arc` `RequestBuilder::auth` wraps a scheme
-/// into, and are amendment C12's shape —
-/// a bound on a value the caller hands over at an opt-in call.
+/// into — a bound on a value the caller hands over at an opt-in call,
+/// rather than one every implementor must satisfy.
 ///
 /// The rule was reached the hard way here. A `pub trait AuthFlow: Send`
 /// carries its `send-bound-exception` marker on the same line as the

@@ -356,9 +356,9 @@ pub enum TlsSupport {
 /// except the crate that added the enforcement. The compile error did not
 /// surface a decision; it demanded a diff whose content was forced.
 ///
-/// The history says so. `637beee7` added `resolve` together with the 95
-/// lines in `hclient-native`'s connector that enforce it: `resolve: true`
-/// appears **once**, and every other transport got a `false` carrying no
+/// The one time it happened says so. `resolve` arrived together with the
+/// connector code in `hclient-native` that enforces it, and `true` was
+/// written **once**: every other transport got a `false` carrying no
 /// information. And [`Capabilities`] has always derived `Default`, with
 /// eleven `bool` capabilities that become `false` when a transport does
 /// not set them — so the requirement was giving this struct a property

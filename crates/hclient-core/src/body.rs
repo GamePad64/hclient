@@ -38,9 +38,9 @@ pub enum RetryKind {
     Impossible,
 }
 
-/// `Send + Sync` bounds — a documented exception to the crate invariant
-/// "declare `Send`/`Sync` nowhere" (spec amendment-C2, sibling of C1 on
-/// [`crate::error::Error`]). Without them `RequestBody` would be `!Send`, so
+/// `Send + Sync` bounds — one of the few places this crate declares an
+/// auto trait at all, and it is declared here rather than on a seam for a
+/// reason a caller can check. Without them `RequestBody` would be `!Send`, so
 /// `http::Request<RequestBody>` would be `!Send`, so the future
 /// `Transport::execute` returns would be `!Send` for every backend —
 /// `tokio::spawn(client.get(u).send())` would never build. `Sync` is only
@@ -123,8 +123,8 @@ impl RequestBody {
     ///
     /// The match is here rather than in a consumer because `RequestBody`
     /// is `#[non_exhaustive]`, so an exhaustive one is legal only inside
-    /// this crate (amendment C6). A variant added later is a compile
-    /// error on this line, which is the point.
+    /// this crate. A variant added later is a compile error on this line,
+    /// which is the point.
     ///
     /// **That it cannot run a factory is enforced by the signature rather
     /// than by care.** Borrowing `self` means the answer borrows from

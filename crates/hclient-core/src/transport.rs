@@ -166,10 +166,9 @@ pub trait Transport {
     /// that doesn't need categorization.
     ///
     /// The where-clause is unavoidable here: the default's body calls
-    /// `Error::new`, which requires `Send + Sync + 'static` from the source
-    /// (amendment-C1 — erasure into `Arc<dyn Error>` doesn't let
-    /// auto-traits through). A default "for any `Self::Error`" cannot
-    /// exist.
+    /// `Error::new`, which requires `Send + Sync + 'static` from the
+    /// source, because erasure into `Arc<dyn Error>` does not let auto
+    /// traits through. A default "for any `Self::Error`" cannot exist.
     ///
     /// The name is `to_error`, not `into_error`: by Rust convention `into_*`
     /// consumes `self`, and here it is `&self` — the backend is making a
@@ -213,9 +212,9 @@ pub trait Transport {
 /// What [`SendTransport::execute_send`] hands back: the same exchange
 /// [`Transport::execute`] produces, in a form whose `Send` has a **name**.
 ///
-/// Named as an alias rather than written out at each site for the reason
-/// `docs/exceptions.md` records under C12: `cargo fmt` reflows the long
-/// form and carries the marker comment away with it.
+/// An alias rather than the written-out form at each site, because the
+/// long form is a line `cargo fmt` reflows — and a reflowed line carries
+/// its trailing comment away with it.
 pub type BoxSendExchange<'a, B, E> =
     std::pin::Pin<Box<dyn Future<Output = Result<http::Response<B>, E>> + Send + 'a>>; // send-bound-exception: amendment-C16
 

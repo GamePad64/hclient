@@ -7,19 +7,19 @@
 //!
 //! # Everything boxed here declares `Send`
 //!
-//! The future, body, sleep and instant all carry it (amendments C14 and
-//! C16), so a facade built on these hands back a request future and a
-//! response body that cross a thread.
+//! The future, body, sleep and instant all carry it, so a facade built on
+//! these hands back a request future and a response body that cross a
+//! thread.
 //!
-//! **This module said the opposite for two verticals, and the reasoning
-//! was sound at the time.** It read that declaring `Send` on the boxed
-//! future would mean proving `Transport::execute`'s RPITIT `Send` for a
-//! generic `T` — true, and unnameable — and that following the bound down
-//! to where it *could* be proven would put it on seven seam methods,
-//! excluding a single-threaded runtime such as `hclient-rt-embassy`.
+//! **The bound looks impossible at first, and the way out is worth
+//! knowing.** Declaring `Send` on the boxed future appears to require
+//! proving `Transport::execute`'s RPITIT `Send` for a generic `T`, which
+//! is unnameable — and following the bound down to where it *could* be
+//! proven would put it on seven seam methods, excluding a
+//! single-threaded runtime.
 //!
-//! What that argument missed is the difference between **naming** a bound
-//! and **requiring** one. The seams a transport awaits — `Resolve`,
+//! What that reasoning misses is the difference between **naming** a
+//! bound and **requiring** one. The seams a transport awaits — `Resolve`,
 //! `TcpConnect`, `TlsConnect`, `Blocking` — carry associated futures now,
 //! so a consumer can name them while each implementor still answers for
 //! itself; and [`crate::transport::SendTransport`] is a separate trait,
@@ -56,8 +56,7 @@ use std::time::Duration;
 
 /// A response body with its type erased, as an erased transport hands back.
 ///
-/// **`Send`** (amendment C14), so a response body crosses a
-/// `tokio::spawn`. One `BoxBody` serves every backend, and this bound is
+/// **`Send`**, so a response body crosses a `tokio::spawn`. One `BoxBody` serves every backend, and this bound is
 /// payable only because every one of them satisfies it — which stopped
 /// being a question when `hclient-fetch`'s body stopped holding a
 /// `js_sys::JsFuture`. This doc said *not `Send`* for a vertical, directly
@@ -225,9 +224,9 @@ where
 /// A short named type is a line fmt has no reason to touch, so every use
 /// site writes `Box<SharedTransport>` and carries no marker at all.
 ///
-/// The bound is amendment C12's criterion: one this crate chooses so a
-/// caller's value reaches a facade by erasure rather than by a type
-/// parameter, said at the use site and never on the trait. A backend that
+/// The bound is one this crate chooses so a caller's value reaches a
+/// facade by erasure rather than by a type parameter — said at the use
+/// site and never on the trait. A backend that
 /// cannot satisfy it is refused at a constructor rather than taxed at the
 /// seam.
 pub type SharedTransport = dyn BoxedTransport + Send + Sync; // send-bound-exception: amendment-C12

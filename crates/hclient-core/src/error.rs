@@ -60,7 +60,7 @@ pub enum ErrorKind {
     /// The capability behind the failed operation was pulled out from under
     /// it before it could finish — typically, the runtime is shutting down
     /// while the task was still queued (see `hclient_rt::Cancelled`,
-    /// returned by `Blocking::run`, `amendment-C5`).
+    /// returned by `Blocking::run`).
     ///
     /// A separate variant, not `Other`: `Other` is the honest answer for a
     /// GENUINELY opaque backend error (the default `Transport::to_error`,

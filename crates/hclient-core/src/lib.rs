@@ -60,11 +60,9 @@
 //!   implements or is taxed by it, and one that cannot meet the bound is
 //!   refused at a constructor rather than at a trait.
 //!
-//! Every such site carries a `send-bound-exception` marker naming the
-//! amendment that admits it, and
-//! `scripts/no-send-or-sync-in-the-core-surface.sh` fails closed on one
-//! that does not. `grep` is therefore the authority on which sites exist;
-//! this list says what kind they are.
+//! The list above says what kinds of site exist; the source is the
+//! authority on which ones do, and every one of them is marked where it
+//! is written.
 #![forbid(unsafe_code)]
 
 //! # What growing this crate costs, measured rather than promised

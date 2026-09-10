@@ -583,7 +583,7 @@ impl Display for ConnectionId {
 /// extensions are readable by any transport in the graph, including one
 /// this workspace did not write. A counter tells such a transport nothing;
 /// a `traceparent` would hand it a cross-service correlator. Propagation
-/// belongs to a transport decorator — `docs/otel-design.md` §3.
+/// belongs to a transport decorator rather than to this seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(u64);
 
@@ -840,8 +840,8 @@ impl ClientCertAsk {
 /// What a server asked for when it requested a client certificate.
 ///
 /// Read by whoever wants to *choose* one — a rule, or a person.
-/// `docs/mtls-design.md` §3.4 has why this leaves the handshake at all:
-/// an automatic choice is a synchronous resolver and needs none of it,
+/// Why this leaves the handshake at all: an automatic choice is a
+/// synchronous resolver and needs none of it,
 /// where an interactive one cannot wait inside a handshake and must
 /// observe, abandon, choose and redial.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1161,8 +1161,8 @@ impl<'a> Progress<'a> {
     /// Which request these octets belong to.
     ///
     /// Read **once**, where the counter is built, and carried on the
-    /// wrapper: this event fires per frame, so a lookup per event would be
-    /// work on the one path §9 of `docs/observability-design.md` measures.
+    /// wrapper: this event fires per frame, so a lookup per event would
+    /// be work on the hottest path this seam has.
     #[must_use]
     pub fn request(mut self, request: RequestId) -> Self {
         self.request = request;

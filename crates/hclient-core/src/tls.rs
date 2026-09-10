@@ -29,8 +29,7 @@ use std::borrow::Cow;
 /// What the name resolves to is the TLS backend's business, and that is
 /// the only thing that can be the same on Windows, macOS, PKCS#11 and
 /// Android at once: a certificate has no representation all four share,
-/// and a store query is four different queries. See
-/// `docs/mtls-design.md`.
+/// and a store query is four different queries.
 ///
 /// A backend that does not know the name **refuses**; it does not connect
 /// with its default identity.
