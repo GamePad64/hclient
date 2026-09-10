@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.1.0-alpha.7...hclient-cli-v0.1.0-alpha.8) - 2026-09-10
+
+### Other
+
+- take `clippy::pedantic`, and the two lints refused have reasons of this workspace's own
+- [**breaking**] erasure is `Box*` and lives beside the trait it erases
+
 ## [0.1.0-alpha.7](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.1.0-alpha.6...hclient-cli-v0.1.0-alpha.7) - 2026-09-09
 
 ### Other

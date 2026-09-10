@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.7...hclient-v0.1.0-alpha.8) - 2026-09-10
+
+### Other
+
+- take `clippy::pedantic`, and the two lints refused have reasons of this workspace's own
+- [**breaking**] `DecompressionSupport` is a `bool` too — there are two parties, not three
+- [**breaking**] three capabilities were two-variant enums answering a yes/no question
+- [**breaking**] erasure is `Box*` and lives beside the trait it erases
+- [**breaking**] `bon` leaves `hclient-core`, and two `const fn` replace it
+
 ## [0.1.0-alpha.7](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.6...hclient-v0.1.0-alpha.7) - 2026-09-09
 
 ### Other

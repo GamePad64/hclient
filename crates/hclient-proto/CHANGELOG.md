@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0-alpha.5...hclient-proto-v0.1.0-alpha.6) - 2026-09-10
+
+### Other
+
+- every `#[allow(clippy::..)]` says why, and four gates that never ran on a push
+- take `clippy::pedantic`, and the two lints refused have reasons of this workspace's own
+
 ## [0.1.0-alpha.5](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0-alpha.4...hclient-proto-v0.1.0-alpha.5) - 2026-09-07
 
 ### Other

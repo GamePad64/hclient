@@ -13,7 +13,7 @@ name = "hclient-idn"
 # and a use outside HTTP entirely — nothing here depends on `hclient`'s
 # mechanisms, and `cargo tree -i` names `hclient-proto` as its only
 # in-workspace consumer.
-version = "0.2.2"
+version = "0.2.3"
 description = "IDN (UTS 46) domain-to-ASCII and back, through whatever UTS 46 the platform already carries"
 keywords     = ["hclient", "idn", "uts46", "punycode", "idna"]
 categories   = ["internationalization", "encoding"]

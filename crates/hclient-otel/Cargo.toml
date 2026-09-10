@@ -1,6 +1,6 @@
 [package]
 name = "hclient-otel"
-version = "0.1.0-alpha.7"
+version = "0.1.0-alpha.8"
 description = "OpenTelemetry for hclient: a Transport decorator that opens a span per request and injects traceparent"
 keywords     = ["hclient", "opentelemetry", "tracing", "observability", "http-client"]
 categories   = ["web-programming::http-client", "development-tools::debugging"]

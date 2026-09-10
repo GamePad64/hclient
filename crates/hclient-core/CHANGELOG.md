@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8](https://github.com/GamePad64/hclient/compare/hclient-core-v0.1.0-alpha.7...hclient-core-v0.1.0-alpha.8) - 2026-09-10
+
+### Added
+
+- `hclient-core` leaves the pre-release, so the surface has a gate
+
+### Other
+
+- `hclient-core` back to a pre-release — `0.1.0-alpha.8`
+- take `clippy::pedantic`, and the two lints refused have reasons of this workspace's own
+- [**breaking**] `DecompressionSupport` is a `bool` too — there are two parties, not three
+- [**breaking**] three capabilities were two-variant enums answering a yes/no question
+- [**breaking**] erasure is `Box*` and lives beside the trait it erases
+- one more sentence addressed to the project rather than the reader
+- fifteen places told a consumer to read something they do not have
+- the false uniqueness claim survived in the test file nobody re-read
+- there is no `const` builder any more, only a `const fn` constructor
+- the second copy of the implementor count was still nine
+- put the `maybe_*` forwarding rationale on `maybe_connect`
+- [**breaking**] `bon` leaves `hclient-core`, and two `const fn` replace it
+
 ## [0.1.0-alpha.7](https://github.com/GamePad64/hclient/compare/hclient-core-v0.1.0-alpha.6...hclient-core-v0.1.0-alpha.7) - 2026-09-09
 
 ### Other

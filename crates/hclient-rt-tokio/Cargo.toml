@@ -1,6 +1,6 @@
 [package]
 name = "hclient-rt-tokio"
-version = "0.1.0-alpha.7"
+version = "0.1.0-alpha.8"
 description = "hclient runtime capabilities implemented on top of tokio"
 keywords     = ["hclient", "runtime", "tokio", "async"]
 categories   = ["asynchronous"]
@@ -26,7 +26,7 @@ udp = ["dep:quinn-udp"]
 
 [dependencies]
 futures-core = { workspace = true }
-hclient-rt = { path = "../hclient-rt", version = "0.1.0-alpha.7" }
+hclient-rt = { path = "../hclient-rt", version = "0.1.0-alpha.8" }
 quinn-udp  = { version = "0.6", default-features = false, optional = true }
 hyper      = { version = "1.11", default-features = false }
 socket2    = { version = "0.6", features = ["all"] }
