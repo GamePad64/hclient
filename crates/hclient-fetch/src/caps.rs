@@ -383,7 +383,7 @@ pub(crate) fn probe() -> Capabilities {
     // three fields down, even though both are true of this backend: "the
     // header cannot be sent" and "the body reaching you is already decoded"
     // are different claims that coincide here by accident (see
-    // `DecompressionSupport`'s own doc comment, which says so at the seam).
+    // `response_decompression`'s own doc comment, which says so at the seam).
     // It is read from `body::RESPONSE_DECOMPRESSION`, the same constant
     // `body::content_length_hint` consults to decide it may not trust
     // `Content-Length` — one fact about the browser, read twice, in the

@@ -117,7 +117,6 @@ use futures_channel::{mpsc, oneshot};
 use futures_core::Stream;
 use futures_util::StreamExt;
 use futures_util::future::{Either, select};
-use hclient_core::caps::DecompressionSupport;
 use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::fmt::Debug;
@@ -189,7 +188,7 @@ impl Debug for Body {
 /// this to `None` makes `tests/body.rs`'s
 /// `size_hint_does_not_trust_content_length_under_content_encoding` fail,
 /// which is what "read twice" is worth.
-pub(crate) const RESPONSE_DECOMPRESSION: DecompressionSupport = DecompressionSupport::Internal;
+pub(crate) const RESPONSE_DECOMPRESSION: bool = true;
 
 /// The `size_hint` this body can honestly offer BEFORE any byte has been
 /// read — see the module doc comment's `size_hint` section for why
@@ -199,7 +198,7 @@ fn content_length_hint(resp: &web_sys::Response) -> SizeHint {
     // Not `true` unconditionally: `Content-Length` is only untrustworthy
     // here BECAUSE the browser already reversed the coding — see
     // [`RESPONSE_DECOMPRESSION`], the single declaration of that fact.
-    let already_decoded = matches!(RESPONSE_DECOMPRESSION, DecompressionSupport::Internal);
+    let already_decoded = RESPONSE_DECOMPRESSION;
     let trustworthy = match headers.get("content-encoding") {
         Ok(Some(v)) => {
             let v = v.trim();

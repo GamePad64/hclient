@@ -11,7 +11,7 @@
 //! does not exist yet would otherwise ship unpinned.
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_core::caps::{Capabilities, DecompressionSupport, RedirectSupport, TlsSupport};
+use hclient_core::caps::{Capabilities, RedirectSupport, TlsSupport};
 use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
@@ -306,15 +306,9 @@ fn a_disagreement_on_any_unordered_enum_is_refused_and_names_its_field() {
     let (a, b) = pair(|c, on| c.cancel_on_drop = on);
     assert_eq!(combine(&a, &b).unwrap_err().field, "cancel_on_drop");
 
-    // Getting this one wrong corrupts rather than degrades: `None` against
+    // Getting this one wrong corrupts rather than degrades: `false` against
     // a member that already decoded makes `Client` decode twice.
-    let (a, b) = pair(|c, on| {
-        c.response_decompression = if on {
-            DecompressionSupport::Internal
-        } else {
-            DecompressionSupport::None
-        }
-    });
+    let (a, b) = pair(|c, on| c.response_decompression = on);
     assert_eq!(combine(&a, &b).unwrap_err().field, "response_decompression");
 
     let (a, b) = pair(|c, on| {

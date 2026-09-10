@@ -54,7 +54,7 @@
 //! - **Telling a caller which `deflate` arrived.** See above: the wire
 //!   does not distinguish them, so neither does the accessor.
 //! - **Tidying the headers of a transport that decoded for us.** Under
-//!   [`DecompressionSupport::Internal`] the response may still carry a
+//!   [`true`] the response may still carry a
 //!   `Content-Encoding` and a `Content-Length` describing the wire rather
 //!   than the body handed over — `fetch` does exactly that, and
 //!   `hclient-fetch`'s `Body::size_hint` is built around it. This module
@@ -85,7 +85,7 @@ use std::sync::OnceLock;
 
 use crate::response::classify_body_error;
 use bytes::Bytes;
-use hclient_core::caps::{Capabilities, DecompressionSupport};
+use hclient_core::caps::Capabilities;
 use hclient_core::error::{Error, ErrorKind};
 use std::error::Error as StdError;
 use std::fmt::Debug;
@@ -321,7 +321,7 @@ impl Decoders {
 /// [`Capabilities::forbidden_request_headers`], even though the one
 /// transport in this workspace that decodes internally also forbids
 /// `Accept-Encoding`: those are different claims that coincide there by
-/// accident (`DecompressionSupport`'s doc comment says so at the seam).
+/// accident (`response_decompression`'s doc comment says so at the seam).
 /// The two are read here for two different purposes, and the third branch
 /// below is what keeps them apart — a transport that forbids the header
 /// while decoding nothing gets no header from us AND still gets its
@@ -340,7 +340,7 @@ pub(crate) fn negotiate(
     // The transport already decodes, and chose what to ask for. Decoding
     // again would corrupt every compressed response, and an
     // `Accept-Encoding` of ours could only contradict the one it sent.
-    if caps.response_decompression == DecompressionSupport::Internal {
+    if caps.response_decompression {
         return Decoders::none();
     }
     if available.is_empty() {
@@ -594,9 +594,9 @@ fn decode_error(coding: &'static str, source: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_core::caps::{Capabilities, DecompressionSupport};
+    use hclient_core::caps::Capabilities;
 
-    fn caps(d: DecompressionSupport) -> Capabilities {
+    fn caps(d: bool) -> Capabilities {
         let mut c = Capabilities::default();
         c.response_decompression = d;
         c
@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn an_internal_transport_gets_no_header_and_no_decoding() {
         let mut h = http::HeaderMap::new();
-        let d = negotiate(&mut h, &caps(DecompressionSupport::Internal), ALL);
+        let d = negotiate(&mut h, &caps(true), ALL);
         assert!(d.is_empty(), "decoding twice would corrupt every response");
         assert!(!h.contains_key(http::header::ACCEPT_ENCODING));
     }
@@ -782,7 +782,7 @@ mod tests {
     /// claims come apart here, and the answers must differ.
     #[test]
     fn a_transport_that_forbids_the_header_but_decodes_nothing_still_gets_decoding() {
-        let mut c = caps(DecompressionSupport::None);
+        let mut c = caps(false);
         c.forbidden_request_headers = &[http::header::ACCEPT_ENCODING];
         let mut h = http::HeaderMap::new();
         let d = negotiate(&mut h, &c, ALL);
@@ -813,7 +813,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("zstd"),
         );
-        let d = negotiate(&mut h, &caps(DecompressionSupport::None), ALL);
+        let d = negotiate(&mut h, &caps(false), ALL);
         assert_eq!(
             h[http::header::ACCEPT_ENCODING],
             "zstd",

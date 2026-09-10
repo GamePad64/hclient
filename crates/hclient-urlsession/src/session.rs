@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{Capabilities, DecompressionSupport, RedirectSupport, TlsSupport};
+use hclient_core::caps::{Capabilities, RedirectSupport, TlsSupport};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::transport::Transport;
 use objc2::rc::Retained;
@@ -138,7 +138,7 @@ fn capabilities(proxied: bool) -> Capabilities {
     // so**, which is the same shape `hclient-fetch` reports for the same
     // reason: it also sets `Accept-Encoding` on its own, and a body
     // handed back has already been decoded.
-    c.response_decompression = DecompressionSupport::Internal;
+    c.response_decompression = true;
     // `None`, the same value `hclient-fetch` reports and for the same
     // reason: no TLS configuration is reachable through this seam. The
     // trust decisions are the OS's — which is the whole reason to be here

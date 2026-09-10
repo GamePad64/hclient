@@ -89,9 +89,7 @@ pub use staged::{H3StagedConnect, Refused, Staged};
 
 use bytes::Bytes;
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{
-    Capabilities, DecompressionSupport, RedirectSupport, TimeoutSupport, TlsSupport,
-};
+use hclient_core::caps::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport};
 use hclient_core::error::{Error, ErrorKind, Phase};
 use hclient_core::hooks::{CloseReason, ConnectionId, Event, Head, Hooks, NoHooks};
 use hclient_core::transport::Transport;
@@ -462,7 +460,7 @@ fn capabilities(early_data: bool, client_certs: bool) -> Capabilities {
     // And here it means more than it does over HTTP/1: requests share a
     // connection *concurrently*, not merely in sequence.
     c.connection_reuse = true;
-    c.response_decompression = DecompressionSupport::None;
+    c.response_decompression = false;
     // Read from the TLS backend, never from a constant: the capability has
     // to come from the component that knows, and this one defaults to
     // `None` in the trait for a reason whose cost is replay exposure.

@@ -234,9 +234,7 @@ pub use client::without_a_default_transport::DefaultTransportFeature;
 /// the doors are.
 pub mod caps {
     pub use crate::config::check_supported;
-    pub use hclient_core::caps::{
-        Capabilities, DecompressionSupport, RedirectSupport, TimeoutSupport, TlsSupport,
-    };
+    pub use hclient_core::caps::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport};
 }
 
 /// The observability seam: implement [`hooks::Hooks`] and match on

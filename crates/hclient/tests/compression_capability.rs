@@ -36,7 +36,6 @@
 
 use bytes::Bytes;
 use hclient::caps::Capabilities;
-use hclient::caps::DecompressionSupport;
 use hclient::mock::MockTransport;
 use hclient::{Client, ErrorKind};
 use std::error::Error as StdError;
@@ -88,7 +87,7 @@ const GZIP_BLOB: &[u8] = &[
 
 const PLAINTEXT: &str = "hello, gzip — the plaintext this test asserts on\n";
 
-fn caps(decompression: DecompressionSupport) -> Capabilities {
+fn caps(decompression: bool) -> Capabilities {
     let mut c = Capabilities::default();
     c.response_decompression = decompression;
     c
@@ -110,7 +109,7 @@ fn get(c: &Client) -> Result<hclient::Collected, hclient::Error> {
 /// and not about a build with no decoder in it.
 #[test]
 fn the_baseline_transport_does_get_its_body_decoded() {
-    let m = MockTransport::new().with_capabilities(caps(DecompressionSupport::None));
+    let m = MockTransport::new().with_capabilities(caps(false));
     let c = Client::builder(m).build().expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
@@ -156,7 +155,7 @@ fn the_baseline_transport_does_get_its_body_decoded() {
 /// `ErrorKind::Decode`.
 #[test]
 fn against_a_transport_that_decodes_for_itself_the_client_does_neither() {
-    let m = MockTransport::new().with_capabilities(caps(DecompressionSupport::Internal));
+    let m = MockTransport::new().with_capabilities(caps(true));
     let c = Client::builder(m).build().expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
@@ -194,14 +193,14 @@ fn against_a_transport_that_decodes_for_itself_the_client_does_neither() {
 /// The two claims come apart here, and the answers must differ.
 ///
 /// This transport forbids `Accept-Encoding` — like `fetch` — but declares
-/// `DecompressionSupport::None`: it hands the bytes over as they arrived.
+/// `false`: it hands the bytes over as they arrived.
 /// A client that read the forbidden-header list as its decompression gate
 /// would skip decoding and hand a caller a gzip stream. A client that
 /// ignored the forbidden-header list would send a header the transport
 /// promises to reject.
 #[test]
 fn a_transport_that_forbids_the_header_but_decodes_nothing_still_gets_its_body_decoded() {
-    let mut caps = caps(DecompressionSupport::None);
+    let mut caps = caps(false);
     caps.forbidden_request_headers = &[http::header::ACCEPT_ENCODING];
     let c = Client::builder(MockTransport::new().with_capabilities(caps))
         .build()
@@ -236,10 +235,9 @@ fn a_transport_that_forbids_the_header_but_decodes_nothing_still_gets_its_body_d
 /// same surprise as overriding the header.
 #[test]
 fn a_caller_who_sets_accept_encoding_gets_their_header_and_the_undecoded_body() {
-    let c =
-        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
-            .build()
-            .expect("supported");
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
         .push_response_bytes(
@@ -283,10 +281,9 @@ fn a_caller_who_sets_accept_encoding_gets_their_header_and_the_undecoded_body() 
 /// over bytes nothing can read — is the corruption this test names.
 #[test]
 fn an_unknown_coding_is_left_untouched_rather_than_half_handled() {
-    let c =
-        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
-            .build()
-            .expect("supported");
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
         .push_response_bytes(
@@ -315,10 +312,9 @@ fn an_unknown_coding_is_left_untouched_rather_than_half_handled() {
 /// to a caller who asked for text, with no indication anything went wrong.
 #[test]
 fn a_body_that_is_not_the_coding_it_claims_is_a_decode_error() {
-    let c =
-        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
-            .build()
-            .expect("supported");
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
         .push_response_bytes(
@@ -343,10 +339,9 @@ fn a_body_that_is_not_the_coding_it_claims_is_a_decode_error() {
 /// decode perfectly well.
 #[test]
 fn a_truncated_stream_is_an_error_not_a_shorter_document() {
-    let c =
-        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
-            .build()
-            .expect("supported");
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
         .push_response_bytes(
@@ -388,10 +383,9 @@ fn a_truncated_stream_is_an_error_not_a_shorter_document() {
 #[cfg(feature = "brotli")]
 #[test]
 fn a_truncated_brotli_stream_is_an_error_not_a_shorter_document() {
-    let c =
-        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
-            .build()
-            .expect("supported");
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
         .push_response_bytes(
@@ -417,10 +411,9 @@ fn a_truncated_brotli_stream_is_an_error_not_a_shorter_document() {
 #[cfg(feature = "brotli")]
 #[test]
 fn a_whole_brotli_stream_decodes() {
-    let c =
-        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
-            .build()
-            .expect("supported");
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
         .push_response_bytes(
@@ -445,10 +438,9 @@ fn a_whole_brotli_stream_decodes() {
 /// the path where re-labelling would look most natural.
 #[test]
 fn an_error_from_underneath_keeps_its_category_through_the_decoder() {
-    let c =
-        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
-            .build()
-            .expect("supported");
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
         .push_response_frames_then_error(
@@ -477,10 +469,9 @@ struct NotADecodeProblem;
 /// truncated one.
 #[test]
 fn an_empty_body_under_a_content_encoding_is_not_a_truncated_stream() {
-    let c =
-        Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
-            .build()
-            .expect("supported");
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
     c.transport_as::<MockTransport>()
         .expect("the mock")
         .push_response_bytes(

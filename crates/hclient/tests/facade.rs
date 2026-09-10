@@ -179,21 +179,13 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 /// facade — not upgrade, so it needs a different field rather than one
 /// fewer.
 ///
-/// `EarlyDataSupport` is that field, picked over the other candidates on
-/// three grounds:
-///
-/// - It is a `Capabilities` field with an enum type re-exported from
-///   `hclient`, and its `Capabilities::default()` value (`None`) differs from
-///   the one set here (`Supported`), so the fixture sets it to something
-///   distinguishable and the assertion can fail.
-/// - Nothing else reaches it through the facade. `DecompressionSupport`,
-///   the other enum-typed capability re-exported here, is already named as
-///   `hclient::caps::DecompressionSupport` by `tests/compression_capability.rs`,
-///   so pointing this test at it would have duplicated a live guard and
-///   left `EarlyDataSupport`'s re-export unexercised — `tests/too_early.rs`
-///   reaches for `hclient_core::req::AllowEarlyData` directly rather than
-///   through `hclient::`, so the early-data corner was the one with no
-///   facade check at all.
+/// **The field it pins has moved twice, and the reason it needs one at all
+/// has not.** It was `EarlyDataSupport`, chosen because that enum was
+/// re-exported from `hclient` and its default differed from the value set
+/// here, so the assertion could fail. `early_data` is a `bool` now — the
+/// enum answered a yes/no question and four of them were converted — so
+/// what remains nameable through the facade is the enums that genuinely
+/// carry more than two states: `RedirectSupport` and `TlsSupport`.
 /// - `ReuseSupport` and `CancelSupport` were the remaining enum-typed
 ///   fields, and this bullet used to read that they are *deliberately not
 ///   re-exported*, so pointing this test at one would mean adding a
@@ -257,10 +249,7 @@ fn every_capability_enum_is_reachable_from_the_facade() {
     assert!(matches!(c.redirects, hclient::caps::RedirectSupport::None));
     assert!(!c.cancel_on_drop);
     assert!(!c.connection_reuse);
-    assert!(matches!(
-        c.response_decompression,
-        hclient::caps::DecompressionSupport::None
-    ));
+    assert!(!c.response_decompression);
     assert!(matches!(c.tls_config, hclient::caps::TlsSupport::None));
     assert!(!c.early_data);
     // `TimeoutSupport` is a struct rather than an enum and is covered by

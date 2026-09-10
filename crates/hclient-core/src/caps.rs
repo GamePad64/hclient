@@ -117,97 +117,6 @@ pub enum RedirectSupport {
     Internal,
 }
 
-/// Whether the transport hands back a response body it has already
-/// decoded, or the bytes exactly as the server put them on the wire.
-///
-/// The question a caller asks of this is "must I reverse a
-/// `Content-Encoding` myself, and may I ask for one?" — both halves at
-/// once, because they are one fact about the transport. `hclient`'s
-/// `Client` is that caller: it reads this field and nothing else to decide
-/// whether to advertise `Accept-Encoding` and whether to decode.
-///
-/// # Why this is NOT read off `forbidden_request_headers`
-///
-/// `hclient-fetch` lists [`http::header::ACCEPT_ENCODING`] among its
-/// forbidden request headers, and it also decompresses internally, so on
-/// that one backend the two answers coincide — which is exactly what makes
-/// deriving one from the other tempting and wrong. "This header cannot be
-/// sent" and "the body reaching you is already decoded" are different
-/// claims: a transport that forbids the header while decompressing nothing
-/// is perfectly coherent (a proxy-shaped backend that pins its own
-/// `Accept-Encoding`, say), and a client that inferred "already decoded"
-/// from "header forbidden" would hand that caller compressed bytes
-/// labelled as plaintext. That is the "capability that lies" defect this
-/// workspace has caught four times, which is why this is its own field.
-///
-/// The reverse inference is just as wrong and is the one `Client`
-/// implements: a `None` transport that forbids `Accept-Encoding` gets no
-/// header from us and still gets its response decoded, because a
-/// `Content-Encoding` the server applied unbidden is still ours to reverse.
-///
-/// # Why two variants and not three
-///
-/// The rule the whole capability set follows: a variant exists only if a
-/// caller decision turns on it. The third variant that suggests
-/// itself is "the transport can decompress, if asked" — configurable
-/// rather than automatic. No transport in this workspace or outside it
-/// works that way today, and there is no client-level setting for it to
-/// answer: `Client` does not offer "decompress, but at the transport
-/// layer". A variant no caller can branch on is a distinction the
-/// capability set carries forever for nothing.
-///
-/// **The condition under which it arrives**, on
-/// [`RedirectSupport::Transparent`]'s precedent: together with the setting
-/// that asks for it and its arm in `check_supported`, once a backend
-/// exists that is being misread without it. Not before.
-///
-/// # Silence and the substantive claim coincide here
-///
-/// [`Self::None`] is what [`Capabilities::default()`] returns, so "the
-/// backend never filled this in" and "the backend hands the bytes over
-/// untouched" are the same value — and, as with [`false`]
-/// and [`false`], that costs nothing, because the two mean
-/// the same thing to a caller: decode it yourself. The
-/// [`RedirectSupport`] problem, where `None` was a strictly stronger claim
-/// than silence and a `Transparent` backend was misread for lack of a
-/// third value, does not arise.
-///
-/// Not `#[non_exhaustive]`, for consistency with every other enum in this
-/// file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DecompressionSupport {
-    /// The response body arrives exactly as it came off the wire: a
-    /// `Content-Encoding` the server applied is still applied, and
-    /// reversing it belongs to whoever reads the body.
-    ///
-    /// The conservative base — [`Capabilities::default()`] returns this — and
-    /// the honest answer for every transport that moves bytes rather than
-    /// interpreting them: `hclient-native` (hyper hands the body through
-    /// as it arrives) and `hclient-wasi` (`wasi:http` 0.3 defines no
-    /// content-coding behaviour of its own) are both this.
-    #[default]
-    None,
-    /// The transport decodes `Content-Encoding` itself, before a single
-    /// byte reaches us, and chooses what to ask for — so `Accept-Encoding`
-    /// is not ours to set either, and decoding again would corrupt every
-    /// compressed response.
-    ///
-    /// Named after [`RedirectSupport::Internal`], and for the same shape
-    /// of reason: the backend does it, we neither control nor see it. The
-    /// example is again the browser — `hclient-fetch` reports this,
-    /// derived from the same in-crate fact its `Body::size_hint` already
-    /// rests on (a `Content-Length` under a `Content-Encoding` describes
-    /// bytes this transport never yields, because the browser has already
-    /// reversed the coding).
-    ///
-    /// Note what this does NOT promise: that the response headers were
-    /// tidied up afterwards. `fetch` leaves `Content-Encoding` and
-    /// `Content-Length` on the response describing the wire, not the body
-    /// you get — which is precisely why the size hint has to distrust
-    /// them.
-    Internal,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TlsSupport {
     #[default]
@@ -395,9 +304,34 @@ pub struct Capabilities {
     /// property of the transport, and a caller cannot ask which
     /// connection served it.
     pub connection_reuse: bool,
-    /// Whether the transport already decoded the response body's
-    /// `Content-Encoding` — see [`DecompressionSupport`].
-    pub response_decompression: DecompressionSupport,
+    /// **Who reverses a `Content-Encoding`: this transport, or the client
+    /// above it.**
+    ///
+    /// `false` — the conservative base, and what
+    /// [`Capabilities::default()`] returns — says the body arrives exactly
+    /// as it came off the wire, encoding still applied, and reversing it
+    /// belongs to whoever reads it. That is the honest answer for every
+    /// transport that moves bytes rather than interpreting them.
+    ///
+    /// `true` says the transport decoded it already, before a single byte
+    /// reached the client, and chose what to ask for — so `Accept-Encoding`
+    /// is the transport's to set and a client that added its own would be
+    /// asking for a coding it will never see. The browser is the case:
+    /// `fetch` decodes inside itself.
+    ///
+    /// **What it does not promise is that the headers were tidied up
+    /// afterwards.** `fetch` leaves `Content-Encoding` and
+    /// `Content-Length` on the response describing the wire rather than
+    /// the body you get, which is why a size hint must distrust them.
+    ///
+    /// **Silence and the substantive claim coincide**, and here that costs
+    /// nothing: "the backend never filled this in" and "the backend hands
+    /// the bytes over untouched" mean the same thing to a caller — decode
+    /// it yourself. The [`RedirectSupport`] problem, where the default was
+    /// a strictly stronger claim than silence and a `Transparent` backend
+    /// was misread for want of a third value, does not arise, because
+    /// there is no third party who could decode.
+    pub response_decompression: bool,
     /// **Whether this transport can put a marked request into TLS 1.3
     /// early data (0-RTT).**
     ///
@@ -640,7 +574,7 @@ mod tests {
         // The gates, at their conservative base: each is the value that
         // refuses a caller's setting rather than silently dropping it.
         assert_eq!(*redirects, RedirectSupport::None);
-        assert_eq!(*response_decompression, DecompressionSupport::None);
+        assert!(!response_decompression);
         assert!(!owns_cookie_jar);
         assert!(!owns_cache);
         assert!(!version_select);
@@ -712,7 +646,7 @@ mod tests {
         assert_eq!(redirects, RedirectSupport::None);
         assert!(!cancel_on_drop);
         assert!(!connection_reuse);
-        assert_eq!(response_decompression, DecompressionSupport::None);
+        assert!(!response_decompression);
         assert!(
             !early_data,
             "the one capability whose over-claim costs replay exposure rather \

@@ -51,7 +51,7 @@
 //! **Decompression is the one where this backend is better placed than
 //! either of its ambient siblings**, and it takes a decision to keep it
 //! that way. `hclient-fetch` and `hclient-urlsession` both report
-//! [`DecompressionSupport::Internal`](hclient_core::caps::DecompressionSupport::Internal):
+//! [`true`](true):
 //! the platform decodes the body and there is no way to ask it not to.
 //! WinHTTP decodes only when asked — `WINHTTP_OPTION_DECOMPRESSION`,
 //! opt-in since Windows 8.1 — so **not asking** leaves `Content-Encoding`

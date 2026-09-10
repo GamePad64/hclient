@@ -4,7 +4,7 @@ use std::future::poll_fn;
 use std::sync::Arc;
 
 use hclient_core::body::RequestBody;
-use hclient_core::caps::{Capabilities, DecompressionSupport, RedirectSupport, TlsSupport};
+use hclient_core::caps::{Capabilities, RedirectSupport, TlsSupport};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::req::{RequireVersion, check_version};
 use hclient_core::transport::Transport;
@@ -312,7 +312,7 @@ fn capabilities() -> Capabilities {
     // decision `hclient-fetch` and `hclient-urlsession` cannot make: both
     // must report `Internal` because their platform decodes underneath
     // them.
-    c.response_decompression = DecompressionSupport::None;
+    c.response_decompression = false;
     // SChannel's configuration is the machine's, and this crate exposes
     // no way to change it. `None` is the honest report of a stack whose
     // trust decisions are not the caller's to make here — which is the
@@ -895,7 +895,7 @@ mod tests {
         let c = capabilities();
         assert_eq!(c.redirects, RedirectSupport::Transparent);
         assert!(c.cancel_on_drop);
-        assert_eq!(c.response_decompression, DecompressionSupport::None);
+        assert_eq!(c.response_decompression, false);
         assert_eq!(c.tls_config, TlsSupport::None);
         assert!(c.proxy, "the whole reason this backend exists");
         assert!(!c.owns_cookie_jar, "WINHTTP_DISABLE_COOKIES is set");

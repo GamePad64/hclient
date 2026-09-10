@@ -8011,6 +8011,43 @@ metadata beside it: `default` is empty or near-empty in every crate here
 by design, so a doc build without it checks the smallest part of the
 surface and publishes the same.
 
+### A capability that answers yes or no is a `bool`
+
+`Capabilities` carried eleven `bool` fields and four two-variant enums —
+`CancelSupport`, `ReuseSupport`, `EarlyDataSupport`, `DecompressionSupport`,
+each `None | Supported` — for the same shape. All four are `bool` now.
+
+**What the enums bought was nothing.** None had an `impl` block. The one
+comparison at a call site was `== EarlyDataSupport::None`, which is what
+`!` does. And no doc anywhere explained why an enum rather than a `bool`:
+three carried a *"why two variants and not three"* section, which answers
+a different question while eleven `bool` siblings sat in the same struct.
+
+**The usual argument is a third variant later, and this crate's own
+history runs the other way.** `RedirectSupport` *lost* two variants, under
+the rule that a variant exists only if a caller decision turns on it.
+These shrink rather than grow, and each removed enum's doc said so about
+itself: the third value it named had no producer and no reader.
+
+`DecompressionSupport` was held back one commit on the reading that
+`None | Internal` names *who* decodes rather than *whether* — and it is
+still binary, because there are exactly two parties. Either the transport
+hands over decoded bytes (and owns `Accept-Encoding`), or it hands over
+the wire bytes and the client decodes. No third party can decode a body
+nobody else has.
+
+**What stays an enum is what has a third state that is really reachable.**
+`RedirectSupport` is `None | Transparent | Internal`, and the middle one
+exists because *the backend does not follow redirects* and *the backend
+follows them where we cannot see* are different facts a caller acts on
+differently. `TlsSupport` is the same shape. `TimeoutSupport` is a struct
+of four `bool`s because it answers four questions rather than one.
+
+The rule: **a capability field is a `bool` unless a third state is
+reachable and a caller branches on it.** Ask which caller decision the
+third variant serves; if the answer is a hypothetical backend, it is a
+`bool`.
+
 ### Erasure is named `Box*` and lives beside the trait it erases
 
 Two conventions, and both were settled by noticing the crate already
