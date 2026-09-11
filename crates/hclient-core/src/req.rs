@@ -539,6 +539,79 @@ mod tests {
     use super::*;
     use std::error::Error as StdError;
 
+    /// **The narrowing keeps every bound it does not touch, and drops
+    /// exactly the one it must.**
+    ///
+    /// [`Timeouts::narrowed_to_connect`] has two callers, both on the QUIC
+    /// path (`hclient-native`'s `route` and `race`), and both need a probe
+    /// bounded by what is *left* of the caller's connect budget — which is
+    /// the arithmetic this workspace states as *a bound a server can
+    /// double is not a bound*. Neither caller is reachable without a
+    /// network, so the property is pinned here, where the method is a pure
+    /// function of its input.
+    ///
+    /// What a mutation found is that replacing the whole body with
+    /// `Default::default()` — every bound `None`, so nothing is bounded at
+    /// all — left all 2372 tests green. The three assertions below are the
+    /// three halves of that: `connect` becomes the value asked for,
+    /// `resolve` is cleared because the probe is past resolution, and the
+    /// two body bounds ride through untouched, since narrowing a connect
+    /// says nothing about how long a body may take.
+    #[test]
+    fn narrowing_to_a_connect_bound_keeps_the_body_bounds_and_drops_resolve() {
+        let before = Timeouts::new()
+            .with_resolve(core::time::Duration::from_millis(10))
+            .with_connect(core::time::Duration::from_millis(500))
+            .with_first_byte(core::time::Duration::from_millis(20))
+            .with_between_bytes(core::time::Duration::from_millis(30));
+
+        let after = before.narrowed_to_connect(core::time::Duration::from_millis(120));
+
+        assert_eq!(
+            after.connect,
+            Some(core::time::Duration::from_millis(120)),
+            "the probe is bounded by what was left, not by the original"
+        );
+        assert_eq!(
+            after.resolve, None,
+            "the probe has an address already; a resolve bound would bound a query off its path"
+        );
+        assert_eq!(
+            after.first_byte, before.first_byte,
+            "narrowing a connect says nothing about the head"
+        );
+        assert_eq!(
+            after.between_bytes, before.between_bytes,
+            "nor about the gaps between frames"
+        );
+    }
+
+    /// The control for the test above, and the half that makes it a claim
+    /// about *narrowing* rather than about four fields.
+    ///
+    /// A body replaced by `Default::default()` answers `None` everywhere,
+    /// which the assertions above would catch. A body that merely *kept*
+    /// the caller's own `connect` would not — it passes three of the four
+    /// — so this asserts the one thing that separates them: the value must
+    /// be the one passed in, even where the caller's own bound was longer.
+    #[test]
+    fn the_narrowed_bound_is_the_one_passed_in_and_never_the_callers_own() {
+        let generous = Timeouts::new().with_connect(core::time::Duration::from_secs(30));
+        let narrowed = generous.narrowed_to_connect(core::time::Duration::from_millis(1));
+        assert_eq!(narrowed.connect, Some(core::time::Duration::from_millis(1)));
+        assert_ne!(
+            narrowed.connect, generous.connect,
+            "a narrowing that returns the caller's own bound has narrowed nothing"
+        );
+
+        // Zero is a real answer rather than an absent one: `route` writes
+        // it deliberately for a race winner with nothing left, and the
+        // member answers with its own `Timeout(Connect)`. `None` there
+        // would mean *unbounded*, which is the opposite.
+        let spent = generous.narrowed_to_connect(core::time::Duration::ZERO);
+        assert_eq!(spent.connect, Some(core::time::Duration::ZERO));
+    }
+
     /// **Each bound is paired with its own support field, and with the
     /// name a caller reads in the refusal.**
     ///

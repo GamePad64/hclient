@@ -347,3 +347,105 @@ fn the_answer_is_marked_sensitive() {
         .expect("the answer");
     assert!(v.is_sensitive(), "{v:?}");
 }
+
+/// **The method reaches `A2`, and a `GET` answer would not do.**
+///
+/// RFC 7616 §3.4.2 hashes `method:request-target` into `A2`, so the same
+/// credentials against the same target answer differently for `POST` than
+/// for `GET`. Nothing in this file asserted that: the two `POST` tests
+/// beside it stop at a `401` — one for a `Streaming` body, one for
+/// `auth-int` — so neither reaches the hash at all, and every other test
+/// here sends `GET`.
+///
+/// That gap is what a mutation found. Replacing `AuthRequest::method`
+/// with `Method::default()` — which *is* `GET` — leaves this crate's whole
+/// suite green, so the one value the hash depends on was travelling
+/// unchecked. The assertion is recomputed rather than pinned to a literal:
+/// `cnonce` is drawn from the OS per request and echoed in the header, so
+/// the expected `response` is built from what the server actually saw.
+/// A digest that ignored the method would produce the `GET` answer, which
+/// is asserted absent in the same breath — without that half the test
+/// passes for a client that hashes nothing at all.
+#[test]
+fn the_method_goes_into_a2_so_a_post_does_not_answer_like_a_get() {
+    use hclient_core::body::RequestBody;
+
+    let c = Client::builder(challenge_then(ok()))
+        .build()
+        .expect("build");
+    let got = futures_executor::block_on(async {
+        c.post("https://a.test/dir/index.html?q=1")
+            .digest_auth("Mufasa", "Circle of Life")
+            .body(RequestBody::Full(bytes::Bytes::from_static(b"x")))
+            .send()
+            .await?
+            .collect()
+            .await
+    })
+    .expect("the second request succeeds");
+    assert_eq!(got.status(), 200);
+
+    let t = c.transport_as::<MockTransport>().expect("the mock");
+    assert_eq!(t.requests().len(), 2, "one challenge, one answer");
+    assert_eq!(
+        t.requests()[1].method,
+        http::Method::POST,
+        "the replay is the caller's request, not a rewritten one"
+    );
+
+    let auth = sent(t, 1).expect("the answer");
+    let cnonce = field(&auth, "cnonce").expect("qop=auth carries a cnonce");
+    // Through the public entry point rather than the private parser: the
+    // test reads the fixture the way the client does.
+    let value = http::HeaderValue::from_static(CHALLENGE);
+    let challenge = hclient::auth::digest::best_challenge(std::iter::once(&value))
+        .expect("the fixture's own challenge");
+
+    let target = "/dir/index.html?q=1";
+    let expected = hclient::auth::digest::answer(
+        &challenge,
+        "Mufasa",
+        "Circle of Life",
+        &http::Method::POST,
+        target,
+        &cnonce,
+    );
+    let want = field(&expected, "response").expect("a response field");
+    let answered = field(&auth, "response").expect("a response field");
+    assert_eq!(answered, want, "the answer must be the one POST produces");
+
+    // The control, and the half that makes the assertion above mean
+    // something: the `GET` answer over identical inputs is a *different*
+    // string, so a client that dropped the method would fail here.
+    let as_get = hclient::auth::digest::answer(
+        &challenge,
+        "Mufasa",
+        "Circle of Life",
+        &http::Method::GET,
+        target,
+        &cnonce,
+    );
+    let as_if_get = field(&as_get, "response").expect("a response field");
+    assert_ne!(
+        want, as_if_get,
+        "if these agree the test discriminates nothing"
+    );
+    assert_ne!(
+        answered, as_if_get,
+        "the client answered as if the method were GET"
+    );
+}
+
+/// Reads one `name="value"` or `name=value` out of a challenge or an
+/// answer. Enough for this file: every field it is asked for is one the
+/// client itself wrote, so the general grammar is `digest.rs`'s problem
+/// and not a test helper's.
+fn field(header: &str, name: &str) -> Option<String> {
+    let at = header.find(&format!("{name}="))? + name.len() + 1;
+    let rest = &header[at..];
+    Some(if let Some(inner) = rest.strip_prefix('"') {
+        inner[..inner.find('"')?].to_owned()
+    } else {
+        rest.split(',').next()?.trim().to_owned()
+    })
+}
