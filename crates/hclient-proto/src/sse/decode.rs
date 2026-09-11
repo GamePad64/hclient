@@ -381,6 +381,47 @@ mod tests {
         );
     }
 
+    /// **An event of exactly the limit is not oversized.**
+    ///
+    /// `max_event_size` is a ceiling, and the two comparisons that enforce
+    /// it — one per complete line, one for the bytes still buffered in an
+    /// unterminated one — both read `>`. A mutation run found each of them
+    /// survivable as `>=`, which turns the ceiling into a value the
+    /// decoder refuses: every event sized exactly to the caller's limit
+    /// becomes a fatal error, and `oversized_event_is_a_fatal_error`
+    /// beside this one cannot see it, because it feeds 27 bytes into a
+    /// limit of 16.
+    ///
+    /// Both sites are exercised, because they answer about different
+    /// bytes: the first about lines already terminated, the second about
+    /// an incomplete line the limit must still charge for — the check that
+    /// stops an infinite line from bypassing the bound. A fix to one that
+    /// missed the other leaves half the boundary wrong.
+    #[test]
+    fn an_event_of_exactly_the_limit_is_accepted_at_both_bounds() {
+        // Terminated lines: `data: 0123456789\n` is 17 on the wire, so a
+        // limit of 17 is the exact boundary. One byte more must fail, and
+        // that pair is what says the limit is still enforced at all.
+        let mut d = SseDecoder::new(17);
+        d.push(b"data: 0123456789\n\n")
+            .expect("an event of exactly the limit fits");
+
+        let mut d = SseDecoder::new(16);
+        d.push(b"data: 0123456789\n\n")
+            .expect_err("one byte over must still be refused");
+
+        // The unterminated-line bound, which is a different expression
+        // over different bytes: nothing has been dispatched, so the whole
+        // charge comes from what sits in the splitter.
+        let mut d = SseDecoder::new(16);
+        d.push(b"data: 0123456789")
+            .expect("a buffered line of exactly the limit fits");
+
+        let mut d = SseDecoder::new(15);
+        d.push(b"data: 0123456789")
+            .expect_err("one byte over, buffered, must still be refused");
+    }
+
     #[test]
     fn oversized_event_is_a_fatal_error() {
         let mut d = SseDecoder::new(16);

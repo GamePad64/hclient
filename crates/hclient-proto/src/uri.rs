@@ -528,6 +528,19 @@ fn remove_dot_segments(path: &str) -> String {
         }
         // D: a bare `.` or `..` is a complete path and contributes
         // nothing.
+        //
+        // **Unreachable from [`resolve_reference`], and kept anyway.**
+        // RFC 3986 §5.2.4 lists it, and this function is written to the
+        // algorithm rather than to its reachable subset — but a mutation
+        // run found the `||` here survivable as `&&`, which is what a
+        // branch nothing can enter looks like from outside. Probed rather
+        // than reasoned about: every reference that could name this path
+        // (`.`, `..`, `./`, `../`, `/.`, `/..`) is consumed by A, B or C
+        // first, because a base carrying an authority gives the merged
+        // path a leading `/`; and a base *without* one is refused before
+        // this function is called at all. So the arm has no test, and a
+        // test asserting it through the public entry point would assert
+        // nothing.
         else if input == "." || input == ".." {
             input = "";
         }

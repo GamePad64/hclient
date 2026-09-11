@@ -229,3 +229,53 @@ fn composing_two_permits_takes_the_longer_wait_whichever_order() {
     assert_eq!(RetryVerdict::permit().and(short), short);
     assert_eq!(short.and(RetryVerdict::permit()), short);
 }
+
+/// **A `Retry-After` that is not `1*DIGIT` is refused, and the empty
+/// string is one of those.**
+///
+/// RFC 9110 §10.2.3's `delta-seconds` grammar is one or more digits, so a
+/// sign, a decimal point, the `HTTP-date` form and an empty value all land
+/// in the same place: `None`, which this module's own doc calls a
+/// narrowing with a direction — the failure is to stop rather than to
+/// retry sooner than the server asked.
+///
+/// A mutation run found the `||` in that guard survivable as `&&`, which
+/// leaves the emptiness test unreachable: `"".bytes().all(..)` is
+/// vacuously true, so an empty header would parse as zero seconds and a
+/// retry would go out immediately against a server that asked for a wait
+/// it never got to name. The rows below are the grammar's corners, with
+/// the two digit strings as the control that says the refusals are not
+/// simply everything.
+#[test]
+fn a_retry_after_outside_the_digit_grammar_is_refused_including_the_empty_one() {
+    assert_eq!(retry_after_seconds("0"), Some(Duration::ZERO));
+    assert_eq!(retry_after_seconds("120"), Some(Duration::from_secs(120)));
+
+    // The row the mutation exposed: nothing at all, and whitespace that
+    // trims down to nothing, are both outside `1*DIGIT`.
+    assert_eq!(
+        retry_after_seconds(""),
+        None,
+        "an empty value names no wait"
+    );
+    assert_eq!(retry_after_seconds("   "), None, "nor does whitespace");
+
+    // **`"+5"` is the row that discriminates, and it took a probe to find
+    // it.** The guard's two halves overlap almost everywhere — an empty
+    // string fails `parse` anyway, and `"-1"` is refused by both — so the
+    // mutation this test exists for survives all of the obvious rows. A
+    // leading `+` is the one input `u64::from_str` accepts and `1*DIGIT`
+    // does not, which is exactly what the digit check is there to catch.
+    assert_eq!(
+        retry_after_seconds("+5"),
+        None,
+        "`u64::from_str` takes a leading plus; RFC 9110's `1*DIGIT` does not"
+    );
+    assert_eq!(retry_after_seconds("-1"), None, "nor is a minus a digit");
+    assert_eq!(retry_after_seconds("1.5"), None, "nor is a decimal point");
+    assert_eq!(
+        retry_after_seconds("Wed, 21 Oct 2015 07:28:00 GMT"),
+        None,
+        "the HTTP-date form is deliberately unparsed — it needs a calendar"
+    );
+}
