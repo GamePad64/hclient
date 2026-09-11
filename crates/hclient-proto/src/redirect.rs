@@ -563,6 +563,102 @@ mod tests {
         s.parse().unwrap()
     }
 
+    /// One hop, for the policies that read nothing but the two URIs.
+    fn hop<'a>(from: &'a Uri, to: &'a Uri, method: &'a Method) -> ProposedRedirect<'a> {
+        ProposedRedirect::new(from, to, StatusCode::FOUND, method, false, 0, &[])
+    }
+
+    /// **`HttpsOnly` refuses exactly the downgrade and nothing else.**
+    ///
+    /// This policy had no test anywhere in the workspace — a mutation run
+    /// found all three of its comparisons survivable, which is the whole
+    /// condition. It is curl's `--proto-redir`, so what it must get right
+    /// is one asymmetry: leaving `https` is refused, *arriving* at it is
+    /// not, and a hop that was never `https` to begin with is none of this
+    /// policy's business.
+    ///
+    /// The four rows are the four corners of that condition. Three of them
+    /// are the controls: a policy that refused every hop, or refused by
+    /// the wrong operand, passes a test that only asserts the first row.
+    #[test]
+    fn https_only_refuses_the_downgrade_and_permits_the_other_three_corners() {
+        let m = Method::GET;
+        for (from, to, refused) in [
+            ("https://a/", "http://b/", true),
+            ("https://a/", "https://b/", false),
+            // Arriving at `https` is an upgrade, which this policy has no
+            // opinion about — refusing it would make the name a lie.
+            ("http://a/", "https://b/", false),
+            // Neither end is `https`, so nothing was downgraded.
+            ("http://a/", "http://b/", false),
+        ] {
+            let (f, t) = (u(from), u(to));
+            let got = HttpsOnly.follow(&hop(&f, &t, &m));
+            let is_refusal = matches!(got, RedirectVerdict::Refuse(_));
+            assert_eq!(
+                is_refusal, refused,
+                "{from} -> {to}: expected refused={refused}, got {got:?}"
+            );
+        }
+    }
+
+    /// **Composing two grants intersects them, and never unions them.**
+    ///
+    /// [`Allow`]'s own rule is that it may only ever gain fields that
+    /// switch a protection *off*, so `and` is the operation that keeps a
+    /// chain of policies from handing back more than any one of them gave.
+    /// A mutation run found both `&&` replaceable by `||` with all 2375
+    /// tests green — which is composition *widening* permission, the one
+    /// direction this type exists to forbid.
+    ///
+    /// The table is every pair, because that is what separates `&&` from
+    /// `||`: the two agreeing rows pass under either operator, and only
+    /// the mixed ones discriminate. Both fields are exercised
+    /// independently, so a fix to one that missed the other still fails.
+    #[test]
+    fn two_grants_compose_by_intersection_so_neither_field_can_be_widened() {
+        let yes = Allow::everything();
+        let no = Allow::default();
+        let method_only = Allow {
+            preserve_method: true,
+            keep_credentials: false,
+        };
+        let creds_only = Allow {
+            preserve_method: false,
+            keep_credentials: true,
+        };
+
+        assert_eq!(yes.and(yes), yes, "both granted everything");
+        assert_eq!(no.and(no), no, "neither granted anything");
+
+        // The rows that tell `&&` from `||`: one policy grants, the other
+        // withholds, and the answer must be the withholding one.
+        assert_eq!(
+            yes.and(no),
+            no,
+            "a grant one policy withheld must not survive composition"
+        );
+        assert_eq!(no.and(yes), no, "and the same in the other order");
+
+        // Field-wise rather than all-or-nothing, so a mutation to one
+        // field alone is caught.
+        assert_eq!(
+            method_only.and(creds_only),
+            no,
+            "two disjoint grants intersect to nothing, not to both"
+        );
+        assert_eq!(
+            yes.and(method_only),
+            method_only,
+            "only the field both gave survives"
+        );
+        assert_eq!(
+            yes.and(creds_only),
+            creds_only,
+            "and the same for the other"
+        );
+    }
+
     fn go(status: u16, from: &str, to: &str, m: &Method) -> RedirectAction {
         d6(
             &p(),

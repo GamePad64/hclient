@@ -6,7 +6,9 @@
 use core::time::Duration;
 
 use hclient_proto::backoff::Backoff;
-use hclient_proto::retry::{Outcome, RetryStatuses, Standard, Stop, Verdict, retry_after_seconds};
+use hclient_proto::retry::{
+    Outcome, RetryStatuses, RetryVerdict, Standard, Stop, Verdict, retry_after_seconds,
+};
 
 fn status(code: u16) -> Outcome {
     Outcome::status(http::StatusCode::from_u16(code).unwrap(), None, false)
@@ -182,4 +184,48 @@ fn retry_after_reads_delta_seconds_and_refuses_the_rest() {
     assert_eq!(retry_after_seconds("1.5"), None);
     assert_eq!(retry_after_seconds(""), None);
     assert_eq!(retry_after_seconds("soon"), None);
+}
+
+/// **Composing two permissions takes the longer wait, never the shorter
+/// one.**
+///
+/// `and` is a meet, and for a *permitter* the conservative direction is
+/// up: a guard may lengthen a wait and may not shorten one, which is the
+/// same asymmetry that makes `Standard::max_retry_after` cap by
+/// **stopping** rather than by waiting less. Waiting less than a server
+/// asked is the one behaviour `Retry-After` exists to prevent.
+///
+/// A mutation run found all three comparisons at that line survivable —
+/// `>` as `<`, `>=`, or `==` — with the whole workspace green, so the
+/// direction was unasserted. The rows below are what tells them apart: a
+/// pair that differs, in both orders, plus the equal pair that every
+/// variant gets right and which therefore discriminates nothing on its
+/// own.
+#[test]
+fn composing_two_permits_takes_the_longer_wait_whichever_order() {
+    let short = RetryVerdict::After(Duration::from_millis(10));
+    let long = RetryVerdict::After(Duration::from_millis(900));
+
+    assert_eq!(
+        short.and(long),
+        long,
+        "a guard that wants longer must get longer"
+    );
+    assert_eq!(long.and(short), long, "and the order must not decide it");
+
+    // The control: equal inputs are answered the same by `<`, `>`, `>=`
+    // and `==` alike, so this row is here to show what the two above are
+    // carrying rather than to carry anything itself.
+    assert_eq!(long.and(long), long);
+
+    // `Stop` beats any wait, from either side — the arm above the
+    // comparison, and the reason a permitter composed with a refusal is a
+    // refusal rather than the longest of the two.
+    assert_eq!(RetryVerdict::Stop.and(long), RetryVerdict::Stop);
+    assert_eq!(long.and(RetryVerdict::Stop), RetryVerdict::Stop);
+
+    // `permit()` is `After(ZERO)`, so it must lose to every real wait
+    // rather than win as "no opinion".
+    assert_eq!(RetryVerdict::permit().and(short), short);
+    assert_eq!(short.and(RetryVerdict::permit()), short);
 }
