@@ -777,20 +777,11 @@ impl hclient_core::timer::Timer for TestTimer {
     }
 }
 
-/// The `Send` half of the seam, which this backend satisfies without a
-/// bound of its own: the mock's whole state is behind a `std::sync::Mutex`
-/// (see the module doc), so `execute`'s future is `Send` by ordinary
-/// inference and the impl is one line of forwarding.
-impl hclient_core::transport::SendTransport for MockTransport {
-    fn execute_send(
-        &self,
-        req: http::Request<RequestBody>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<http::Response<MockBody>, Error>> + Send + '_>, // send-bound-exception: amendment-C16
-    > {
-        Box::pin(<Self as Transport>::execute(self, req))
-    }
-}
+// The `Send` half of the seam, which this backend satisfies without a
+// bound of its own: the mock's whole state is behind a `std::sync::Mutex`
+// (see the module doc), so `execute`'s future is `Send` by ordinary
+// inference and the impl is one line of forwarding.
+hclient_core::send_transport!(MockTransport);
 
 #[cfg(test)]
 mod tests {

@@ -614,20 +614,15 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
     }
 }
 
-/// The `Send` half of the seam, satisfied with no bound beyond the hook's.
-///
-/// This backend is `Send` **throughout** — transport, future and body —
-/// and always was: a `wasi:http` resource is a `u32` handle, not a claim
-/// about threads. It was named beside `hclient-fetch` every time the
-/// workspace discussed `Send` and never had the browser's problem.
-impl<H> hclient_core::transport::SendTransport for WasiHttp<H>
-where
-    H: Hooks + Clone + Unpin + Sync, // send-bound-exception: amendment-C16
-{
-    fn execute_send(
-        &self,
-        req: http::Request<RequestBody>,
-    ) -> hclient_core::transport::BoxSendExchange<'_, Self::Body, Self::Error> {
-        Box::pin(<Self as Transport>::execute(self, req))
-    }
-}
+// The `Send` half of the seam, satisfied with no bound beyond the hook's.
+//
+// This backend is `Send` **throughout** — transport, future and body —
+// and always was: a `wasi:http` resource is a `u32` handle, not a claim
+// about threads. It was named beside `hclient-fetch` every time the
+// workspace discussed `Send` and never had the browser's problem.
+// `Sync` on the hook is what the boxed future costs: it holds `&self`
+// across the await, so `&WasiHttp<H>` crosses the thread with it.
+hclient_core::send_transport!(
+    for<H> WasiHttp<H>
+    where H: Hooks + Clone + Unpin + Sync, // send-bound-exception: amendment-C16
+);

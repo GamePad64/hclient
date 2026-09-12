@@ -286,28 +286,21 @@ where
     }
 }
 
-/// The `Send` half, which every backend in this workspace owes.
-///
-/// Its body at a concrete type is `Box::pin(self.execute(req))` — `Send`
-/// is *inferred* here rather than proven, which is the asymmetry the
-/// whole seam design rests on: proof is owed only by generic code.
-impl<S, B, E> hclient_core::transport::SendTransport for AppTransport<S>
-where
-    S: tower_service::Service<http::Request<OutgoingBody>, Response = http::Response<B>, Error = E>
-        + Clone
-        + Send // send-bound-exception: amendment-C16
-        + Sync // send-bound-exception: amendment-C16
-        + 'static, // send-bound-exception: amendment-C16
-    S::Future: Send + 'static, // send-bound-exception: amendment-C16
-    B: http_body::Body<Data = Bytes> + Unpin + Send + 'static, // send-bound-exception: amendment-C16
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,  // send-bound-exception: amendment-C1
-    E: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C16
-{
-    fn execute_send(
-        &self,
-        req: http::Request<RequestBody>,
-    ) -> Pin<Box<dyn Future<Output = Result<http::Response<IncomingBody<B>>, Error>> + Send + '_>> // send-bound-exception: amendment-C16
-    {
-        Box::pin(<Self as Transport>::execute(self, req))
-    }
-}
+// The `Send` half, which every backend in this workspace owes.
+//
+// Its body at a concrete type is `Box::pin(self.execute(req))` — `Send`
+// is *inferred* here rather than proven, which is the asymmetry the
+// whole seam design rests on: proof is owed only by generic code.
+hclient_core::send_transport!(
+    for<S, B, E> AppTransport<S>
+    where
+        S: tower_service::Service<http::Request<OutgoingBody>, Response = http::Response<B>, Error = E>
+            + Clone
+            + Send // send-bound-exception: amendment-C16
+            + Sync // send-bound-exception: amendment-C16
+            + 'static, // send-bound-exception: amendment-C16
+        S::Future: Send + 'static, // send-bound-exception: amendment-C16
+        B: http_body::Body<Data = Bytes> + Unpin + Send + 'static, // send-bound-exception: amendment-C16
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,  // send-bound-exception: amendment-C1
+        E: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C16
+);

@@ -4060,42 +4060,34 @@ pub mod testing {
     }
 }
 
-/// The `Send` half of the seam — what makes `hclient::Client`'s request
-/// future crossable, and the reason the four runtime seams carry
-/// associated futures at all.
-///
-/// **Every bound here is nameable, and that is the whole design.** A
-/// generic impl must *prove* its future `Send`, which means naming every
-/// future it awaits; `impl Future` has no name, so this impl could not
-/// have been written while `TcpConnect`, `TlsConnect`, `Blocking` and
-/// `Resolve` returned RPITITs. They return associated types now, so the
-/// proof is a list of ordinary bounds — and one this transport's own
-/// pieces may fail without being excluded from anything: `Native` over
-/// `hclient-rt-embassy` is still a `Transport`, over a resolver that
-/// cannot promise `Send` it is still a `Transport`, and what it is not is
-/// a `SendTransport`.
-impl<R, T, D, H, P> hclient_core::transport::SendTransport for Native<R, T, D, H, P>
-where
-    R: TcpConnect + Timer + Clone + Sync + Send, // send-bound-exception: amendment-C16
-    R::Stream: 'static + Send,                   // send-bound-exception: amendment-C16
-    R::Instant: Send + Sync,                     // send-bound-exception: amendment-C16
-    R::Sleep: Send,                              // send-bound-exception: amendment-C16
-    for<'a> R::Connecting<'a>: Send,             // send-bound-exception: amendment-C16
-    for<'a> R::ConnectingUnix<'a>: Send,         // send-bound-exception: amendment-C16
-    T: TlsConnect + Sync + Send,                 // send-bound-exception: amendment-C16
-    T::Stream<R::Stream>: 'static + Send,        // send-bound-exception: amendment-C16
-    for<'a> T::Handshake<'a, R::Stream>: Send,   // send-bound-exception: amendment-C16
-    D: Resolve + Sync + Send,                    // send-bound-exception: amendment-C16
-    for<'a> D::Records<'a>: Send,                // send-bound-exception: amendment-C16
-    H: Hooks + Clone + Unpin + Sync + Send,      // send-bound-exception: amendment-C16
-    P: crate::proxy::Handshake + Clone + Sync + Send, // send-bound-exception: amendment-C16
-{
-    fn execute_send(
-        &self,
-        req: http::Request<hclient_core::body::RequestBody>,
-    ) -> hclient_core::transport::BoxSendExchange<'_, Self::Body, Error> {
-        Box::pin(<Self as hclient_core::transport::Transport>::execute(
-            self, req,
-        ))
-    }
-}
+// The `Send` half of the seam — what makes `hclient::Client`'s request
+// future crossable, and the reason the four runtime seams carry
+// associated futures at all.
+//
+// **Every bound here is nameable, and that is the whole design.** A
+// generic impl must *prove* its future `Send`, which means naming every
+// future it awaits; `impl Future` has no name, so this impl could not
+// have been written while `TcpConnect`, `TlsConnect`, `Blocking` and
+// `Resolve` returned RPITITs. They return associated types now, so the
+// proof is a list of ordinary bounds — and one this transport's own
+// pieces may fail without being excluded from anything: `Native` over
+// `hclient-rt-embassy` is still a `Transport`, over a resolver that
+// cannot promise `Send` it is still a `Transport`, and what it is not is
+// a `SendTransport`.
+hclient_core::send_transport!(
+    for<R, T, D, H, P> Native<R, T, D, H, P>
+    where
+        R: TcpConnect + Timer + Clone + Sync + Send, // send-bound-exception: amendment-C16
+        R::Stream: 'static + Send,                   // send-bound-exception: amendment-C16
+        R::Instant: Send + Sync,                     // send-bound-exception: amendment-C16
+        R::Sleep: Send,                              // send-bound-exception: amendment-C16
+        for<'a> R::Connecting<'a>: Send,             // send-bound-exception: amendment-C16
+        for<'a> R::ConnectingUnix<'a>: Send,         // send-bound-exception: amendment-C16
+        T: TlsConnect + Sync + Send,                 // send-bound-exception: amendment-C16
+        T::Stream<R::Stream>: 'static + Send,        // send-bound-exception: amendment-C16
+        for<'a> T::Handshake<'a, R::Stream>: Send,   // send-bound-exception: amendment-C16
+        D: Resolve + Sync + Send,                    // send-bound-exception: amendment-C16
+        for<'a> D::Records<'a>: Send,                // send-bound-exception: amendment-C16
+        H: Hooks + Clone + Unpin + Sync + Send,      // send-bound-exception: amendment-C16
+        P: crate::proxy::Handshake + Clone + Sync + Send, // send-bound-exception: amendment-C16
+);

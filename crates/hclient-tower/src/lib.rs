@@ -324,20 +324,13 @@ where
 trait SendSyncStatic: Send + Sync + 'static {} // send-bound-exception: amendment-C16
 impl<T: Send + Sync + 'static> SendSyncStatic for T {} // send-bound-exception: amendment-C16
 
-impl<S, B, E> hclient_core::transport::SendTransport for ServiceTransport<S>
-where
-    S: tower_service::Service<http::Request<RequestBody>, Response = http::Response<B>, Error = E>
-        + Clone
-        + SendSyncStatic,
-    S::Future: Send + 'static, // send-bound-exception: amendment-C16
-    B: http_body::Body<Data = bytes::Bytes> + Send + 'static, // send-bound-exception: amendment-C16
-    E: StdError + Send + 'static, // send-bound-exception: amendment-C16
-{
-    fn execute_send(
-        &self,
-        req: http::Request<RequestBody>,
-    ) -> Pin<Box<dyn Future<Output = Result<http::Response<B>, E>> + Send + '_>> // send-bound-exception: amendment-C16
-    {
-        Box::pin(<Self as Transport>::execute(self, req))
-    }
-}
+hclient_core::send_transport!(
+    for<S, B, E> ServiceTransport<S>
+    where
+        S: tower_service::Service<http::Request<RequestBody>, Response = http::Response<B>, Error = E>
+            + Clone
+            + SendSyncStatic,
+        S::Future: Send + 'static, // send-bound-exception: amendment-C16
+        B: http_body::Body<Data = bytes::Bytes> + Send + 'static, // send-bound-exception: amendment-C16
+        E: StdError + Send + 'static, // send-bound-exception: amendment-C16
+);

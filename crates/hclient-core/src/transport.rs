@@ -439,3 +439,137 @@ where
 /// cannot satisfy it is refused at a constructor rather than taxed at the
 /// seam.
 pub type SharedTransport = dyn DynTransport + Send + Sync; // send-bound-exception: amendment-C12
+
+/// Writes the [`SendTransport`] impl a backend owes, so that forgetting it
+/// is not a thing that happens.
+///
+/// # Why a macro rather than a blanket impl
+///
+/// A blanket `impl<T: Transport> SendTransport for T` cannot exist: proving
+/// [`Transport::execute`]'s future `Send` for a *generic* `T` means naming
+/// an RPITIT, which is return type notation — unstable, and measured in
+/// this workspace as `E0658` on every nightly tried. At a **concrete**
+/// type `Send` is inferred instead, and a macro is how the impl is written
+/// where the type is concrete while the text lives in one place.
+///
+/// The asymmetry is the whole design, and it is why this is not ceremony:
+/// `Transport` demands no `Send` — which is what lets `hclient-rt-embassy`
+/// exist — and `SendTransport` is the promise a backend makes when it can.
+///
+/// # It refuses a backend that cannot make the claim
+///
+/// Applied to a transport whose future holds an `Rc`, this does not paper
+/// over anything: the expansion fails with *future cannot be sent between
+/// threads safely*, naming the `Box::pin`. Checked in that direction
+/// before it was believed. So the macro does not hand out the promise —
+/// each type still answers for itself, and a backend that genuinely cannot
+/// cross a thread simply does not invoke it.
+///
+/// # Usage
+///
+/// For a concrete transport:
+///
+/// ```
+/// # use hclient_core::body::RequestBody;
+/// # use hclient_core::caps::Capabilities;
+/// # use hclient_core::error::Error;
+/// # use hclient_core::transport::Transport;
+/// # use bytes::Bytes;
+/// # pub struct MyTransport(Capabilities);
+/// # pub struct MyBody;
+/// # impl http_body::Body for MyBody {
+/// #     type Data = Bytes;
+/// #     type Error = Error;
+/// #     fn poll_frame(
+/// #         self: std::pin::Pin<&mut Self>,
+/// #         _: &mut std::task::Context<'_>,
+/// #     ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
+/// #         std::task::Poll::Ready(None)
+/// #     }
+/// # }
+/// # impl Transport for MyTransport {
+/// #     type Body = MyBody;
+/// #     type Error = Error;
+/// #     async fn execute(
+/// #         &self,
+/// #         _: http::Request<RequestBody>,
+/// #     ) -> Result<http::Response<MyBody>, Error> {
+/// #         Ok(http::Response::new(MyBody))
+/// #     }
+/// #     fn capabilities(&self) -> &Capabilities { &self.0 }
+/// # }
+/// hclient_core::send_transport!(MyTransport);
+/// ```
+///
+/// For a generic one, the bounds `Send` needs go after the type, in the
+/// shape a `where` clause takes — which is `hclient-native`'s case, where
+/// there are fourteen of them:
+///
+/// ```
+/// # use hclient_core::body::RequestBody;
+/// # use hclient_core::caps::Capabilities;
+/// # use hclient_core::error::Error;
+/// # use hclient_core::transport::Transport;
+/// # use bytes::Bytes;
+/// # pub struct Generic<H>(Capabilities, H);
+/// # pub struct MyBody;
+/// # impl http_body::Body for MyBody {
+/// #     type Data = Bytes;
+/// #     type Error = Error;
+/// #     fn poll_frame(
+/// #         self: std::pin::Pin<&mut Self>,
+/// #         _: &mut std::task::Context<'_>,
+/// #     ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
+/// #         std::task::Poll::Ready(None)
+/// #     }
+/// # }
+/// # impl<H: Clone> Transport for Generic<H> {
+/// #     type Body = MyBody;
+/// #     type Error = Error;
+/// #     async fn execute(
+/// #         &self,
+/// #         _: http::Request<RequestBody>,
+/// #     ) -> Result<http::Response<MyBody>, Error> {
+/// #         Ok(http::Response::new(MyBody))
+/// #     }
+/// #     fn capabilities(&self) -> &Capabilities { &self.0 }
+/// # }
+/// hclient_core::send_transport!(for<H> Generic<H> where H: Clone + Sync + Send);
+/// ```
+///
+/// # What it deliberately does not cover
+///
+/// A backend whose `execute_send` is **not** `Box::pin(self.execute(req))`
+/// writes the impl by hand, and `hclient-fetch` is that backend: its
+/// future holds a `js_sys::Promise` across an await, so under
+/// `-Ctarget-feature=+atomics` no box can be `Send` and the repair is a
+/// channel rather than an allocation. A macro that tried to serve that
+/// case would be a second implementation of it.
+#[macro_export]
+macro_rules! send_transport {
+    // The concrete form: one type, no bounds to restate.
+    ($t:ty) => {
+        impl $crate::transport::SendTransport for $t {
+            fn execute_send(
+                &self,
+                req: ::http::Request<$crate::body::RequestBody>,
+            ) -> $crate::transport::BoxSendExchange<'_, Self::Body, Self::Error> {
+                ::std::boxed::Box::pin(<Self as $crate::transport::Transport>::execute(self, req))
+            }
+        }
+    };
+    // The generic form: parameters, the type, and the bounds `Send` needs.
+    (for<$($p:ident),* $(,)?> $t:ty where $($bound:tt)*) => {
+        impl<$($p),*> $crate::transport::SendTransport for $t
+        where
+            $($bound)*
+        {
+            fn execute_send(
+                &self,
+                req: ::http::Request<$crate::body::RequestBody>,
+            ) -> $crate::transport::BoxSendExchange<'_, Self::Body, Self::Error> {
+                ::std::boxed::Box::pin(<Self as $crate::transport::Transport>::execute(self, req))
+            }
+        }
+    };
+}

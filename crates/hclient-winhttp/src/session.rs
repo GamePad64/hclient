@@ -493,21 +493,14 @@ impl Transport for WinHttp {
     }
 }
 
-/// The `Send` half of the seam.
-///
-/// A `WinHTTP` handle is not bound to the thread that made it, and the
-/// completion callback is called on an arbitrary thread pool thread —
-/// which is why the shared state is a `Mutex` pair rather than a cell. So
-/// `execute`'s future is `Send` by inference and this is one line of
-/// forwarding, exactly as it is for `hclient-urlsession`.
-impl hclient_core::transport::SendTransport for WinHttp {
-    fn execute_send(
-        &self,
-        req: http::Request<RequestBody>,
-    ) -> hclient_core::transport::BoxSendExchange<'_, Self::Body, Self::Error> {
-        Box::pin(<Self as Transport>::execute(self, req))
-    }
-}
+// The `Send` half of the seam.
+//
+// A `WinHTTP` handle is not bound to the thread that made it, and the
+// completion callback is called on an arbitrary thread pool thread —
+// which is why the shared state is a `Mutex` pair rather than a cell. So
+// `execute`'s future is `Send` by inference and this is one line of
+// forwarding, exactly as it is for `hclient-urlsession`.
+hclient_core::send_transport!(WinHttp);
 
 /// A synchronous `WinHTTP` call that failed while setting the exchange up.
 pub(crate) fn setup(call: &'static str, source: Win32Error) -> Error {
