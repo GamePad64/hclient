@@ -63,7 +63,7 @@ thiserror     = { workspace = true }
 # are two this now does: the auto-config URL, and the platform's own
 # SOCKS entry.
 [target.'cfg(windows)'.dependencies]
-windows-registry = { version = "0.6", optional = true }
+windows-registry = { version = "0.100", optional = true }
 
 # Android keeps its proxy in JVM system properties and nowhere a process
 # can read without a JVM, so this is the one platform whose reader needs
