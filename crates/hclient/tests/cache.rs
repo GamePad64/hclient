@@ -210,3 +210,164 @@ fn a_cache_against_a_transport_that_owns_one_is_refused_at_build() {
         .build();
     assert!(ok.is_ok(), "a backend that owns no cache is not refused");
 }
+
+/// **A body of exactly `max_body_bytes` is stored, and the byte after it
+/// is not.**
+///
+/// The limit is a ceiling, and the check that enforces it on the streaming
+/// path — `Recorder::push`, on the running total as frames arrive — reads
+/// `>`. A mutation run found it survivable as `>=`, which turns the
+/// ceiling into a value the cache refuses: every response sized exactly to
+/// the caller's limit stops being cached, silently and with no error
+/// anywhere, because falling out of the cache is not a failure.
+///
+/// **Counted at the server, which is the only place it shows.** A caller
+/// gets the same bytes whether the entry was stored or not — that is what
+/// a cache is — so the assertion has to be the request count. The pair is
+/// the test: at the limit the second call must not reach the server, one
+/// byte over it must.
+///
+/// `cache_rfc9111.rs` cannot see this. Its limit test drives
+/// `HttpCache::store` directly, which is the other half of the bound —
+/// `storing` against a declared `Content-Length` — and never reaches
+/// `Recorder::push` at all. The first version of this test was written
+/// there and passed under the mutation.
+#[test]
+fn a_body_of_exactly_the_limit_is_cached_and_one_byte_more_is_not() {
+    use hclient::cache::Limits;
+
+    fn client_with_limit(addr: std::net::SocketAddr, max: u64) -> (Client, String) {
+        let c = Client::builder(transport())
+            .cache(HttpCache::new().with_limits(Limits {
+                max_body_bytes: max,
+            }))
+            .build()
+            .expect("build");
+        (c, format!("http://127.0.0.1:{}", addr.port()))
+    }
+
+    // Five bytes into a limit of five: stored, so the second call is served
+    // from the store and the server sees one request.
+    let (addr, seen) = recording_server(|_, _| body("Cache-Control: max-age=60\r\n", "12345"));
+    rt().block_on(async move {
+        let (c, base) = client_with_limit(addr, 5);
+        for _ in 0..2 {
+            let text = c
+                .get(format!("{base}/x"))
+                .send()
+                .await
+                .expect("send")
+                .collect()
+                .await
+                .expect("collect")
+                .text()
+                .expect("text");
+            assert_eq!(text, "12345");
+        }
+        assert_eq!(
+            seen.lock().expect("log").len(),
+            1,
+            "a body of exactly the limit must be cached"
+        );
+    });
+
+    // Six bytes into the same limit: refused, so both calls go out. Without
+    // this half the test above would pass for a cache with no limit at all.
+    let (addr, seen) = recording_server(|_, _| body("Cache-Control: max-age=60\r\n", "123456"));
+    rt().block_on(async move {
+        let (c, base) = client_with_limit(addr, 5);
+        for _ in 0..2 {
+            let text = c
+                .get(format!("{base}/x"))
+                .send()
+                .await
+                .expect("send")
+                .collect()
+                .await
+                .expect("collect")
+                .text()
+                .expect("text");
+            assert_eq!(text, "123456", "the caller gets the body either way");
+        }
+        assert_eq!(
+            seen.lock().expect("log").len(),
+            2,
+            "one byte over the limit must not be cached"
+        );
+    });
+}
+
+/// **A caller who sends one conditional header owns it, and the cache
+/// stands aside — either header alone is enough.**
+///
+/// `If-None-Match` from a caller is a question addressed to the *origin*.
+/// A cache that answered it from a stored copy would answer a different
+/// one, and a cache that added its own validator on top would send two.
+/// `Client::run` reads the two headers with `||` for exactly that reason.
+///
+/// A mutation run found the `||` survivable as `&&`, which makes the
+/// deference conditional on the caller sending *both*: the common case —
+/// one header, usually `If-None-Match` — is then overwritten by the
+/// cache's own validator, and the `304` that comes back answers the
+/// cache's question rather than the caller's. Every test in this file and
+/// in `cache_rfc9111.rs` stayed green.
+///
+/// So each header is exercised **alone**, which is the shape the mutation
+/// needs: with `&&` both rows fail, and with the header pair sent together
+/// neither would. Watched from the server's side, because what must be
+/// true is about the bytes that left — the caller's own validator arriving
+/// and no second one beside it.
+#[test]
+fn one_conditional_header_from_the_caller_is_enough_to_stand_the_cache_aside() {
+    for (name, value) in [
+        ("if-none-match", "\"caller-etag\""),
+        ("if-modified-since", "Thu, 01 Jan 2026 00:00:00 GMT"),
+    ] {
+        let (addr, seen) = recording_server(|_, _| {
+            body("Cache-Control: max-age=60\r\nETag: \"ours\"\r\n", "stored")
+        });
+        rt().block_on(async move {
+            let (c, base) = client(addr);
+
+            // Populate the store, so there is something the cache could
+            // have answered from.
+            let _ = c
+                .get(format!("{base}/x"))
+                .send()
+                .await
+                .expect("send")
+                .collect()
+                .await
+                .expect("collect");
+            assert_eq!(seen.lock().expect("log").len(), 1);
+
+            // Now the caller asks the origin itself, with one header.
+            let _ = c
+                .get(format!("{base}/x"))
+                .header(name, value)
+                .send()
+                .await
+                .expect("send")
+                .collect()
+                .await
+                .expect("collect");
+
+            let log = seen.lock().expect("log");
+            assert_eq!(
+                log.len(),
+                2,
+                "{name} alone must reach the origin rather than the store"
+            );
+            let sent = log[1].to_ascii_lowercase();
+            assert!(
+                sent.contains(&format!("{name}: {}", value.to_ascii_lowercase())),
+                "the caller's own {name} must go out: {sent}"
+            );
+            // And not ours beside it: two validators are two questions.
+            assert!(
+                !sent.contains("\"ours\""),
+                "the cache added its own validator on top: {sent}"
+            );
+        });
+    }
+}
