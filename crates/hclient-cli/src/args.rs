@@ -182,7 +182,10 @@ pub fn parse_item(arg: &str) -> Result<Item, ItemError> {
 /// states of one thing, so a bitflags or enum would be ceremony over what
 /// `parse` below already reads as a flag per character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Which parts of the exchange to print. Four independent toggles, one per httpie `--print` letter — not four states of one thing, so a bitflags or enum would be ceremony over what `parse` below already reads as a flag per character."
+)]
 pub struct Print {
     pub request_head: bool,
     pub request_body: bool,
@@ -242,7 +245,10 @@ pub enum HttpVersion {
 // `hc` has, not a design nothing else would have chosen; a bitflags or
 // enum would fight the derive macro rather than simplify it.
 #[derive(Debug, Parser)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Each `bool` field below is one independent `clap` flag — `--verbose`, `--json`, `--follow` and so on — so the count here is the count of flags `hc` has, not a design nothing else would have chosen; a bitflags or enum would fight the derive macro rather than simplify it."
+)]
 #[command(
     name = "hc",
     about = "An HTTP client that lets you choose the backend at runtime",
@@ -395,7 +401,10 @@ pub struct Cli {
 /// The `Result` is never anything but `Ok`: it is clap's `value_parser`
 /// signature, not a choice made here, so the wrap cannot be dropped
 /// without the function stopping to be one.
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "clap needs *something* for the first positional; every check that matters happens in `run.rs`, where the URL and the method are separated with the whole argument list in hand. The `Result` is never anything but `Ok`: it is clap's `value_parser` signature, not a choice made here, so the wrap canno..."
+)]
 fn method_or_url(s: &str) -> Result<String, std::convert::Infallible> {
     Ok(s.to_owned())
 }

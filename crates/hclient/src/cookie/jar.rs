@@ -73,7 +73,10 @@ impl Default for Limits {
 // RFC 6265's own attribute set: `Secure`, `HttpOnly` and the rest are
 // independent flags a `Set-Cookie` either carries or does not, so the
 // count is the header's rather than this type's.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "One stored cookie. Fields are `pub(super)` — read through accessors from anywhere else: the invariants that make `domain` and `path` safe to match against — lowercased, no leading dot, path always absolute — are established in exactly two places, [`CookieJar::store`] and [`CookieJar::restore`](su..."
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cookie {
     pub(super) name: String,

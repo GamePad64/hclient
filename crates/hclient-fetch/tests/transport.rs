@@ -505,7 +505,10 @@ fn get(url: &str) -> http::Request<hclient_core::body::RequestBody> {
 // The return type is `Transport::execute`'s future spelled out, which is
 // what makes the helper worth having — a `type` alias here would move the
 // same words one line up and hide what the test is holding.
-#[allow(clippy::type_complexity)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Issues a real request through `Fetch::execute`, polls it exactly once, and returns the still-pending future — plus the proof that the request actually went out. Panics if the single poll completed the future: that would mean the exchange was over before the caller could act on it, and everything..."
+)]
 fn issue_and_poll_once(
     t: &Fetch,
 ) -> Pin<

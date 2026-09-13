@@ -89,7 +89,10 @@ use wasm_bindgen::{JsCast, JsValue};
 // every caller hands over a temporary it has just produced — a caught
 // rejection value — so a `&JsValue` would cost each of them a local bound
 // for no reason but this lint.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Turns a rejected JS promise/thrown value into our `Error`. This is the generic, honest fallback for a JS failure this file cannot classify any further — every failure mode this file CAN name ahead of time (forbidden header, bad URL, unsupported body) is caught earlier and never reaches this funct..."
+)]
 pub(crate) fn js_err(v: JsValue) -> Error {
     Error::new(ErrorKind::Other, JsError(js_message(&v)))
 }

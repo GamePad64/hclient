@@ -126,7 +126,10 @@ impl<H> H3Body<H> {
 // Hand-written: h3's RequestStream is not Debug, and the useful thing to
 // print about a body in flight is which phase it is in, not the QPACK
 // state behind it.
-#[allow(clippy::missing_fields_in_debug)]
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "Hand-written: h3's RequestStream is not Debug, and the useful thing to print about a body in flight is which phase it is in, not the QPACK state behind it."
+)]
 impl<H> Debug for H3Body<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Body")

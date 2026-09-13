@@ -304,7 +304,10 @@ impl Entry {
 /// a store answers. So a wrong store forgets an advertisement or keeps a
 /// stale one — and a stale one costs at most a QUIC attempt that falls
 /// back, which is the direction this module already fails in.
-#[allow(clippy::len_without_is_empty)]
+#[allow(
+    clippy::len_without_is_empty,
+    reason = "Where the advertisements live. The third seam of this shape in the family, after `hclient::cache::CacheStore` and `hclient::cookie::CookieStore`, and written to their pattern deliberately: associated future types so each implementor answers for its own auto traits, `&self` so a store that waits i..."
+)]
 pub trait AltSvcStore {
     /// The answer to [`get`](Self::get).
     type Get<'a>: Future<Output = Option<Entry>> + 'a

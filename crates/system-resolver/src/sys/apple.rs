@@ -91,7 +91,7 @@
 //! `kDNSServiceFlagsMoreComing`, and an error code — and with the flag
 //! above both arrive as fast as the resolver answers.
 #![allow(
-    unsafe_code, // unsafe-code-exception: amendment-C8
+    unsafe_code, // unsafe-code-exception: amendment-C8,
     reason = "DNSServiceQueryRecord is the only Apple API that answers for an arbitrary record type through the system's own resolver; see spec amendment C8"
 )]
 

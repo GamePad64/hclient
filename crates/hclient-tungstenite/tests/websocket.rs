@@ -174,7 +174,10 @@ impl Wire {
                 // `usize::MAX` bytes — this suite's largest message is 8
                 // MiB — so a truncated length here would show up as a
                 // wrong slice length a few lines down, not silently.
-                #[allow(clippy::cast_possible_truncation)]
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "The client under test never sends a frame anywhere near `usize::MAX` bytes — this suite's largest message is 8 MiB — so a truncated length here would show up as a wrong slice length a few lines down, not silently."
+                )]
                 (u64::from_be_bytes(n) as usize, 10)
             }
             n => (n, 2),
@@ -207,7 +210,10 @@ impl Wire {
         // `n < 126` for the `u8` and `u16::try_from(n).is_ok()` for the
         // `u16` — so neither can truncate; clippy cannot see a guard as a
         // bound.
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "Each cast below is bounded by the match arm that reaches it — `n < 126` for the `u8` and `u16::try_from(n).is_ok()` for the `u16` — so neither can truncate; clippy cannot see a guard as a bound."
+        )]
         match payload.len() {
             n if n < 126 => out.push(n as u8),
             n if u16::try_from(n).is_ok() => {
@@ -785,7 +791,10 @@ async fn a_ping_is_answered_with_a_pong_which_is_what_releases_the_next_message(
 async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
     const SIZE: usize = 8 * 1024 * 1024;
     // `i % 251` is always `< 251`, so the cast to `u8` cannot truncate.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`i % 251` is always `< 251`, so the cast to `u8` cannot truncate."
+    )]
     let payload: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
 
     let (release_tx, release_rx) = mpsc::channel::<()>();

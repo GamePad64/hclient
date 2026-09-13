@@ -12,7 +12,10 @@
 //! green run ambiguous between "both work" and "both are wrong the same
 //! way".
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "A real HTTP/3 server on loopback, for the tests to talk to. Not a mock and not a recorded exchange: a `quinn` endpoint with an `rcgen` certificate, speaking QUIC and HTTP/3 to whatever connects. The research this crate is built on measured the whole client-plus-server round trip at `wall=2.9ms` o..."
+)]
 
 use bytes::Bytes;
 use std::fmt::Debug;
@@ -222,7 +225,10 @@ impl ConnTiming {
 // A curated summary, not a dump: `cert_der` is raw DER with nothing a
 // reader would want printed, and the counters and thread handles are
 // read through their own accessors where a test actually needs them.
-#[allow(clippy::missing_fields_in_debug)]
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "A curated summary, not a dump: `cert_der` is raw DER with nothing a reader would want printed, and the counters and thread handles are read through their own accessors where a test actually needs them."
+)]
 impl Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server").field("addr", &self.addr).finish()
@@ -447,7 +453,10 @@ pub fn start_on_v6(behaviour: Behaviour) -> Option<Server> {
 // accept-loop thread — for a single self-contained test server. Splitting
 // it into helpers would scatter one setup across the file for no reader's
 // benefit.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One linear assembly — TLS config, transport config, the endpoint, the accept-loop thread — for a single self-contained test server. Splitting it into helpers would scatter one setup across the file for no reader's benefit."
+)]
 fn start_inner(
     behaviour: Behaviour,
     idle: Option<Duration>,

@@ -304,7 +304,10 @@ fn print_selection(cli: &Cli, is_tty: bool) -> Result<Print, Fail> {
 /// `config`, `req`, `print` and the rest through several signatures for no
 /// reader benefit over reading it top to bottom in the order a request is
 /// actually assembled.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One command line, turned into one request, sent, and printed. It is long because it is one linear pipeline rather than several independent jobs: `req` is built up step by step (query, headers, body, auth, redirect policy) and each step reads state the one before it produced, so splitting it into..."
+)]
 pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Result<(), Fail> {
     // The mode first, because it decides how the URL is read (`ws://` is
     // a URL under `--ws` and a named refusal everywhere else) and which

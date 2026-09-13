@@ -41,7 +41,10 @@
 // those binaries and not others, and would just swap one warning for
 // another (`unfulfilled_lint_expectations`) in the binaries where the
 // function is actually used.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Shared network fixtures for this crate's integration tests. Doesn't contain any `#[test]` itself — pulled in via `mod net_fixtures;` from `connect.rs` and `dual_runtime.rs` (the same technique as `server.rs` in `hclient-tls-rustls/tests/`: an ordinary `tests/*.rs` file, which cargo will compile a..."
+)]
 
 use std::net::{IpAddr, SocketAddr};
 

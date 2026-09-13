@@ -130,7 +130,10 @@ impl<B: Unpin, Tm: Timer> Unpin for IdleTimeout<B, Tm> {}
 
 /// Hand-written for the reason `hclient::body::Deadline`'s is: `#[derive(Debug)]`
 /// would demand `Debug` of the clock, which [`Timer`] does not ask for.
-#[allow(clippy::missing_fields_in_debug)]
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "Hand-written for the reason `hclient::body::Deadline`'s is: `#[derive(Debug)]` would demand `Debug` of the clock, which [`Timer`] does not ask for."
+)]
 impl<B: Debug, Tm: Timer> Debug for IdleTimeout<B, Tm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdleTimeout")

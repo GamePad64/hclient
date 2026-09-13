@@ -148,7 +148,10 @@ impl DeflateStream {
     // the growth in `total_in` fed to `consumed` is bounded the same way by
     // `bytes[consumed..].len()`, itself a `usize`. Both stay far under
     // `usize::MAX` on every target this crate builds for.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Runs the decoder until it stops making progress, or until the stream ends. The loop deliberately makes one **more** call than there is input for, and that is the defect this shape was written to fix: zlib reports `StreamEnd` from the call that reads RFC 1950's four-byte Adler-32 trailer, and with..."
+    )]
     fn drive(
         dec: &mut flate2::Decompress,
         done: &mut bool,

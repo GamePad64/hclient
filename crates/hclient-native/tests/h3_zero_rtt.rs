@@ -147,7 +147,10 @@ async fn handshake_of(s: &server::Server, n: usize) -> Duration {
 // A single causal narrative across several phases — see the module doc on
 // why this is asserted causally rather than by a clock. Splitting the
 // phases into helpers would break the ordering a reader needs to follow.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "A single causal narrative across several phases — see the module doc on why this is asserted causally rather than by a clock. Splitting the phases into helpers would break the ordering a reader needs to follow."
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handshake() {
     let s = server::start_watching_early_data(Behaviour::Echo);

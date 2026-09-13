@@ -141,7 +141,10 @@ fn limited(
 // three interchangeable concurrent requests racing for two permits — naming
 // them `request_a`/`request_b`/`request_c` would not make any of the
 // assertions below easier to follow.
-#[allow(clippy::many_single_char_names)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "`g`/`t` are the fixture and the transport under test, and `a`/`b`/`c` are three interchangeable concurrent requests racing for two permits — naming them `request_a`/`request_b`/`request_c` would not make any of the assertions below easier to follow."
+)]
 fn a_third_request_does_not_reach_the_transport_until_a_permit_frees_up() {
     let g = Gated::new();
     let t = limited(g.clone(), 2);

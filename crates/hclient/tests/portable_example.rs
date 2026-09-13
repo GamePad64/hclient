@@ -23,7 +23,10 @@
 // the example — nothing in `examples/portable.rs` may be shaped by the
 // needs of a test.
 #[path = "../examples/portable.rs"]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "`dead_code`: the example's `main` has no caller here, and `Body::Raw`/ `Body::Text` are exercised by the component's real callers rather than by these tests. The allow lives on this side of the `#[path]`, never in the example — nothing in `examples/portable.rs` may be shaped by the needs of a test."
+)]
 mod portable;
 
 use hclient::caps::Capabilities;

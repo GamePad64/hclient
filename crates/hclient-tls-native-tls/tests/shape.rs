@@ -148,7 +148,13 @@ fn the_handshake_is_send_exactly_when_the_io_is() {
     is_send::<<NativeTls as TlsConnect>::Handshake<'static, SendIo>>();
 
     // And the negation, at a type that holds an `Rc`.
-    struct UnsendIo(#[allow(dead_code)] std::rc::Rc<()>);
+    struct UnsendIo(
+        #[allow(
+            dead_code,
+            reason = "the `Rc` is what makes this IO `!Send`, which is the whole of what the fixture asserts; no code reads it"
+        )]
+        std::rc::Rc<()>,
+    );
     impl hyper::rt::Read for UnsendIo {
         fn poll_read(
             self: std::pin::Pin<&mut Self>,

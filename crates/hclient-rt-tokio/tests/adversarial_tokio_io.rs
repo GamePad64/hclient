@@ -305,7 +305,10 @@ async fn cursor_exactly_equal_to_scratch_buffer() {
     let (mut client, mut server) = connected_pair().await;
     // `i % 256` is always in 0..256, which fits `u8` — bounded by the
     // modulus, not by `SCRATCH`.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`i % 256` is always in 0..256, which fits `u8` — bounded by the modulus, not by `SCRATCH`."
+    )]
     let data: Vec<u8> = (0..SCRATCH).map(|i| (i % 256) as u8).collect();
     let writer = {
         let data = data.clone();
@@ -321,7 +324,10 @@ async fn cursor_one_byte_larger_than_scratch_buffer() {
     let (mut client, mut server) = connected_pair().await;
     // `i % 251` is always in 0..251, which fits `u8` — bounded by the
     // modulus, not by `SCRATCH`.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`i % 251` is always in 0..251, which fits `u8` — bounded by the modulus, not by `SCRATCH`."
+    )]
     let data: Vec<u8> = (0..=SCRATCH).map(|i| (i % 251) as u8).collect();
     let writer = {
         let data = data.clone();

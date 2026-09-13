@@ -334,7 +334,10 @@ fn caller_buffer_exactly_equal_to_scratch() {
     // Boundary: want = remaining().min(scratch.len()) == SCRATCH exactly.
     // `i % 256` is always in 0..256, which fits `u8` — bounded by the
     // modulus, not by `SCRATCH`.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Boundary: want = remaining().min(scratch.len()) == SCRATCH exactly. `i % 256` is always in 0..256, which fits `u8` — bounded by the modulus, not by `SCRATCH`."
+    )]
     let data: Vec<u8> = (0..SCRATCH).map(|i| (i % 256) as u8).collect();
     let io = FuturesIo::new(Exact {
         data: data.clone(),
@@ -352,7 +355,10 @@ fn caller_buffer_larger_than_scratch_by_one_byte() {
     // worth of *capacity*, and the shim must not panic indexing `scratch`.
     // `i % 251` is always in 0..251, which fits `u8` — bounded by the
     // modulus, not by `SCRATCH`.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "The exact off-by-one the brief's tests never exercised (all use an 8-byte destination). remaining() == SCRATCH + 1 forces two internal reads through the scratch buffer to fill one hyper poll_read call's worth of *capacity*, and the shim must not panic indexing `scratch`. `i % 251` is always in 0...."
+    )]
     let data: Vec<u8> = (0..=SCRATCH).map(|i| (i % 251) as u8).collect();
     let io = FuturesIo::new(Exact {
         data: data.clone(),

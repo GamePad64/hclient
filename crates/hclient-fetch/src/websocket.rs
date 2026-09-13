@@ -268,7 +268,10 @@ fn construct(url: &str, protocols: &[String]) -> Result<web_sys::WebSocket, Erro
 /// the setting rather than trusting it.
 // By value for `js_err`'s reason: the one caller passes `e.data()`
 // straight through, and a borrow would only move the temporary up a line.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "What the browser handed us in a `message` event. Text is a JS string; binary is an `ArrayBuffer`, because [`WebSocketConnect::websocket`] sets `binaryType = 'arraybuffer'` before anything can arrive. Left at the default `'blob'`, every binary message would need an asynchronous read before its byt..."
+)]
 fn decode(data: JsValue) -> Result<Message, Error> {
     if let Some(text) = data.as_string() {
         return Ok(Message::Text(text));

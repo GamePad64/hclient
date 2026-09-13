@@ -118,7 +118,10 @@
 //! (`connect`, `Conn`, `host`, `port`, `wants_tls`) that is only alive in
 //! test builds (the same conclusion `body.rs`'s doc comment reached for
 //! `Inner`/`OutgoingBody` a year earlier in the same vertical).
-#![allow(clippy::too_many_arguments)]
+#![allow(
+    clippy::too_many_arguments,
+    reason = "Connector: Happy Eyeballs (RFC 8305) over TCP, then optional TLS with ALPN. # Where 'Resolution Delay' lives here `hclient_dns::Resolve` deliberately returns a `Stream`, not a `Future<Output = Vec<_>>` — the only reason is that RFC 8305 §3 requires starting IPv6 attempts without waiting for the I..."
+)]
 
 use crate::discovery::{self, Endpoint, NegativeCache, Origin, Prefetched};
 use crate::error::{
@@ -285,7 +288,10 @@ pub(crate) fn wants_tls(uri: &Uri) -> Result<bool, Error> {
 /// interval, stamped when *that* attempt was launched rather than when
 /// the race was. On a staggered race the two differ by the whole
 /// stagger, which is precisely the number a caller is trying to find.
-#[allow(clippy::too_many_lines)] // Happy Eyeballs' state machine, tested end-to-end; splitting it would scatter one algorithm
+#[allow(
+    clippy::too_many_lines,
+    reason = "Happy Eyeballs' state machine, tested end-to-end; splitting it would scatter one algorithm"
+)]
 async fn drive<R, V6, V4, H>(
     rt: &R,
     mut sched: Scheduler,
@@ -397,7 +403,10 @@ where
                 // `Attempt(Err)` and `TimedOut` are both no-ops here and
                 // are kept apart for the comment each carries: merging
                 // them would delete the reason either one is a no-op.
-                #[allow(clippy::match_same_arms)]
+                #[allow(
+                    clippy::match_same_arms,
+                    reason = "`Attempt(Err)` and `TimedOut` are both no-ops here and are kept apart for the comment each carries: merging them would delete the reason either one is a no-op."
+                )]
                 match ev {
                     // **The family is checked rather than guaranteed.**
                     // Asking for `AAAA` used to be a different method
@@ -1264,7 +1273,10 @@ where
         // An `Ok` from either family is an address to try. An `Err` is
         // not: a family that failed leaves the other one still worth
         // waiting for, and if both fail `done` below ends the wait.
-        #[allow(clippy::items_after_statements)] // kept beside the comment explaining it, not at the top of the closure
+        #[allow(
+            clippy::items_after_statements,
+            reason = "kept beside the comment explaining it, not at the top of the closure"
+        )]
         fn any<S>(a: &Answers<S>) -> bool {
             a.seen.iter().any(Result::is_ok)
         }
@@ -1470,7 +1482,13 @@ mod tests {
     /// `race_connect_never_requires_send_even_through_the_wait_path`
     /// below.
     #[derive(Debug)]
-    struct FakeStream(#[allow(dead_code)] Rc<()>);
+    struct FakeStream(
+        #[allow(
+            dead_code,
+            reason = "the `Rc` is what makes this stream `!Send`, which is the whole of what the fixture asserts; no code reads it"
+        )]
+        Rc<()>,
+    );
 
     impl Read for FakeStream {
         fn poll_read(

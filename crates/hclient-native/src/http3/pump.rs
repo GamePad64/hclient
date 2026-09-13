@@ -172,7 +172,10 @@ impl Drop for Writer {
 /// `hclient-native`'s `OutgoingBody`'s reason — this is the one place
 /// every frame of a request body passes through on the QUIC path, and a
 /// wrapper would be a second thing to remember to put on.
-#[allow(clippy::similar_names)] // `send` (the write half) and `sent` (the byte-counting hook) — see the doc above
+#[allow(
+    clippy::similar_names,
+    reason = "`send` (the write half) and `sent` (the byte-counting hook) — see the doc above"
+)]
 pub(crate) fn pump(
     send: SendHalf,
     body: RequestBody,

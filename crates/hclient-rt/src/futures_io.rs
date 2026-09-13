@@ -230,7 +230,10 @@ mod tests {
         let len = super::SCRATCH + 137;
         // `i % 251` is always in 0..251, which fits `u8` — bounded by the
         // modulus, not by `len`.
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "`i % 251` is always in 0..251, which fits `u8` — bounded by the modulus, not by `len`."
+        )]
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
         let mut io = FuturesIo::new(Chunked {
             data: data.clone(),

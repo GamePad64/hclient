@@ -538,7 +538,10 @@ impl Prepared {
 /// Hand-written for [`crate::Native`]'s reason: a derive would print a
 /// whole request, and what is worth seeing here is which of the three
 /// states the record is in.
-#[allow(clippy::missing_fields_in_debug)] // deliberate: prints the state, not the full request — see doc above
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "deliberate: prints the state, not the full request — see doc above"
+)]
 impl Debug for Prepared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Prepared")

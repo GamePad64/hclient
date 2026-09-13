@@ -462,7 +462,10 @@ impl Resolve for IpLiteralOnly {
             // is identical: this one is "wrong family", the next is "no
             // records of any type, `supports` already said so" — merging
             // them loses that distinction.
-            #[allow(clippy::match_same_arms)]
+            #[allow(
+                clippy::match_same_arms,
+                reason = "A literal of the other family has no record of this type, and that is not an error — the same answer the two methods this replaced gave by returning nothing. Kept as a separate arm from the one below, though the code is identical: this one is 'wrong family', the next is 'no records of any type, `..."
+            )]
             (Some(_), rtype::A | rtype::AAAA) => None,
             // Any other type: this resolver has no records at all, which
             // `supports` says in advance.

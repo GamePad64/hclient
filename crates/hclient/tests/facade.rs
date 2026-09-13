@@ -18,7 +18,10 @@ fn public_api_types_are_reachable_from_the_facade() {
     // reachable through the facade without naming `hclient-proto`.
     let _p: hclient::redirect::Limit = hclient::redirect::Limit::default();
     // Kept next to its one call site, which is the assertion.
-    #[allow(clippy::items_after_statements)]
+    #[allow(
+        clippy::items_after_statements,
+        reason = "Kept next to its one call site, which is the assertion."
+    )]
     fn takes_a_policy(_: &dyn hclient::redirect::RedirectPolicy) {}
     takes_a_policy(&hclient::redirect::Forbid);
     // `check_supported` takes this and returns that.
@@ -45,7 +48,10 @@ fn public_api_types_are_reachable_from_the_facade() {
 /// `response_collected_and_request_builder_are_reachable_from_the_facade`'s
 /// shape below and for its reason — these types have no constructor a
 /// test can reach without a transport or a network.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "The doors that are **only** re-exports, and which nothing else names. `hclient::link`, `hclient::proxy` and `hclient::erased` exist so that a caller reaches `hclient-proto`'s, `hclient-native`'s and this crate's erased types without naming those crates — and a door made of nothing but `pub use` i..."
+)]
 fn the_re_export_only_doors_are_reachable(
     _link: &hclient::link::Link,
     _links: &hclient::link::Links,
@@ -74,7 +80,10 @@ fn the_re_export_only_doors_are_reachable(
 /// `hclient::proxy`, which is the same shape one crate over and is split
 /// out because it needs the `proxy` feature that the door above does not.
 #[cfg(feature = "proxy")]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "`hclient::proxy`, which is the same shape one crate over and is split out because it needs the `proxy` feature that the door above does not."
+)]
 fn the_proxy_door_is_reachable(_p: &hclient::proxy::Proxy<hclient::proxy::Socks5>) {}
 
 /// `Response`, `Collected` and `RequestBuilder`, which
@@ -84,7 +93,10 @@ fn the_proxy_door_is_reachable(_p: &hclient::proxy::Proxy<hclient::proxy::Socks5
 /// function that's never called: if `Response`/`Collected`/`RequestBuilder`
 /// stop being re-exported from `hclient::`, or their parameter count
 /// changes, this file — as an external consumer — stops compiling.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "`Response`, `Collected` and `RequestBuilder`, which unlike the types above have no public constructor without a transport — there's nothing here to construct a value with, so reachability and shape (generic arity) are checked by compiling a function that's never called: if `Response`/`Collected`/..."
+)]
 fn response_collected_and_request_builder_are_reachable_from_the_facade<B>(
     _r: hclient::Response<B>,
     _c: hclient::Collected,
@@ -99,11 +111,17 @@ fn response_collected_and_request_builder_are_reachable_from_the_facade<B>(
 /// same trick for `SseStream` as for `Response`/`Collected`/`RequestBuilder`:
 /// no constructor without a transport exists, so reachability and shape
 /// (generic arity) are checked by compiling a function that's never called.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "`SseStream`, `SseEvent`, and `DEFAULT_MAX_EVENT_SIZE` actually live in `hclient-proto` (`SseEvent`, `DEFAULT_MAX_EVENT_SIZE`) and `hclient` (`SseStream`), but must be nameable from `hclient::` with no direct dependency on `hclient-proto` — the same contract as above. The same trick for `SseStream..."
+)]
 // The typed `let _: T = ..` bindings ARE the check — this function is
 // never called, so it is the type ascription that asserts reachability
 // and shape, not any effect of the binding.
-#[allow(clippy::no_effect_underscore_binding)]
+#[allow(
+    clippy::no_effect_underscore_binding,
+    reason = "The typed `let _: T = ..` bindings ARE the check — this function is never called, so it is the type ascription that asserts reachability and shape, not any effect of the binding."
+)]
 fn sse_types_are_reachable_from_the_facade<B>(_s: hclient::sse::SseStream<B>) {
     let _event: hclient::sse::SseEvent = hclient::sse::SseEvent::Comment(String::new());
     let _limit: usize = hclient::sse::DEFAULT_MAX_EVENT_SIZE;
@@ -415,7 +433,10 @@ fn the_one_default_constructor_is_fallible_about_both_of_its_failures() {
     // The type is the assertion: an `UnsupportedCapability` could not name
     // the trust-store cause, which is why the narrow one is gone. Kept next
     // to its one call site, which is the assertion.
-    #[allow(clippy::items_after_statements)]
+    #[allow(
+        clippy::items_after_statements,
+        reason = "The type is the assertion: an `UnsupportedCapability` could not name the trust-store cause, which is why the narrow one is gone. Kept next to its one call site, which is the assertion."
+    )]
     fn takes_the_wide_error(_: fn() -> Result<hclient::Client, hclient::Error>) {}
     takes_the_wide_error(hclient::Client::new);
 }

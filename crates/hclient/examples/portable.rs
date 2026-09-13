@@ -171,7 +171,10 @@ impl StdError for ComponentError {}
 // Taking `&Error` would save nothing here and cost both call sites their
 // `.map_err(classify)` shorthand — `map_err` hands the error over by value,
 // so a reference parameter needs a closure at each site instead.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "The original's `map_err` on `send()`, ported. `wasi-fetch` had a dedicated `Error::Url(String)` variant, and the component split on it: a URL the caller mistyped is `invalid_args`, anything else is `internal`. `hclient` has no `ErrorKind` for that — a URL that does not parse comes back as `ErrorK..."
+)]
 fn classify(e: hclient::Error) -> ComponentError {
     if e.source()
         .is_some_and(<dyn std::error::Error + 'static>::is::<hclient::error::UriError>)

@@ -171,7 +171,10 @@ impl UrlSessionWebSocket {
 // equality check: the `_` arm is *every non-string type*, which today is
 // `Data` alone and is the arm a new Foundation message type must land in
 // rather than be silently read as a string.
-#[allow(clippy::single_match_else)]
+#[allow(
+    clippy::single_match_else,
+    reason = "An `NSURLSessionWebSocketMessage` as this seam's [`Message`]. Written as a `match` on Foundation's own discriminator rather than an equality check: the `_` arm is *every non-string type*, which today is `Data` alone and is the arm a new Foundation message type must land in rather than be silently..."
+)]
 fn convert(m: &NSURLSessionWebSocketMessage) -> Result<Message, Error> {
     match m.r#type() {
         // `type` says which accessor is populated, which is
@@ -364,7 +367,10 @@ impl WebSocketConnect for UrlSession {
     /// them, and Foundation adds its own handshake fields around them.
     // `async` because `WebSocketConnect` declares it so; this backend
     // reaches Foundation synchronously and has nothing to await.
-    #[allow(clippy::unused_async_trait_impl)]
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "RFC 6455's handshake, none of which is here. `ws://` and `wss://` are what `NSURLSessionWebSocketTask` takes, and `http://`/`https://` are accepted by it as well — so the seam's rule that all four name the same two costs nothing to keep. **Headers go out**, which is the seam's rule and one this b..."
+    )]
     async fn websocket(&self, req: http::Request<()>) -> Result<Self::WebSocket, Error> {
         let url = NSString::from_str(&req.uri().to_string());
         let Some(url) = NSURL::URLWithString(&url) else {

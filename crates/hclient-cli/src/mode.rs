@@ -150,7 +150,10 @@ pub fn select(cli: &Cli) -> Result<Mode, String> {
 /// `flag`/`unit`/`mode` — splitting it into helpers would scatter one
 /// table a reader wants to scan in order across several functions passing
 /// the same four values around.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Every combination this tool will not pretend to honour, named. A pure function of the command line and the parsed items, so the whole table is testable with no socket, no server and no feature set — which is what `backend::choose` was extracted for one file over, after a mutation replacing its re..."
+)]
 pub fn refuse_unusable(mode: Mode, cli: &Cli, items: &[Item]) -> Result<(), String> {
     if !mode.is_streaming() {
         return Ok(());

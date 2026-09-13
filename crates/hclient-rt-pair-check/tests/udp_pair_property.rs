@@ -179,7 +179,10 @@ async fn a_declared_gso_batch_really_goes_out<S: UdpDatagrams>(a: &S, b: &S) {
         return;
     }
     // `i % 251` is always < 256, so the cast to `u8` cannot truncate.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`i % 251` is always < 256, so the cast to `u8` cannot truncate."
+    )]
     let payload: Vec<u8> = (0..SEG * segments).map(|i| (i % 251) as u8).collect();
     send(
         a,

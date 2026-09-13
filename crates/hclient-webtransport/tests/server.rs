@@ -21,7 +21,10 @@
 //! of the arrangement: a mutation to either the constant, the session ID or
 //! the encoding is a mismatch here rather than a matching pair of bugs.
 #![cfg(not(target_family = "wasm"))]
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "A real HTTP/3 server on loopback that speaks WebTransport, for the tests to talk to. Not a mock and not a recorded exchange: a `quinn` endpoint with an `rcgen` certificate, `h3`'s own **server** on top of it, and — for the WebTransport streams — a raw `quinn::Connection::accept_bi`, because that..."
+)]
 
 use bytes::{Buf, Bytes};
 use h3::ConnectionState as _;
@@ -33,7 +36,10 @@ use std::time::Duration;
 // Five independent server-behaviour switches, each documented on its own
 // field — a fixture config, not a public API a caller composes calls
 // against, so there is no bit-flags refactor this buys.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "What the server announces and how it answers. Five independent server-behaviour switches, each documented on its own field — a fixture config, not a public API a caller composes calls against, so there is no bit-flags refactor this buys."
+)]
 #[derive(Debug, Clone)]
 pub struct Options {
     /// `SETTINGS_ENABLE_WEBTRANSPORT`.
@@ -720,7 +726,10 @@ fn take_capsule(buf: &mut Vec<u8>) -> Option<SeenCapsule> {
     // principle truncate, but this fixture only ever decodes a capsule
     // this same test binary just encoded, at sizes far under `usize::MAX`
     // on any target it runs on.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "A QUIC varint is up to 2^62-1; on a 32-bit target this could in principle truncate, but this fixture only ever decodes a capsule this same test binary just encoded, at sizes far under `usize::MAX` on any target it runs on."
+    )]
     let length = reader.try_decode()? as usize;
     let start = reader.at;
     if buf.len() < start + length {

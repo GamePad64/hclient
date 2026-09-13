@@ -42,6 +42,24 @@
 # added to `hclient-core` exits 1 naming its file and line, and a run that
 # matches no files at all exits 1 rather than reporting an empty tree as
 # clean — this file's own recurring defect.
+#
+# **`clippy::allow_attributes_without_reason` is on as well, and this
+# script is not redundant beside it.** The lint demands rustc's own
+# `reason = ".."` and nothing else, which is the form a machine can check
+# and `cargo fmt` cannot carry away from its attribute; every allow in this
+# workspace carries one now. What the lint cannot do is fail closed on
+# having examined nothing, and it is silent for a crate CI forgot to
+# compile — this workspace has met that shape four times, most recently
+# where seven crates opted out of the workspace lint table and reported
+# zero findings on three targets nobody built. So the two overlap on
+# purpose: the lint is the per-site check, the script is the census.
+#
+# It counts every `allow`, not only clippy's — `dead_code`, `unused_mut`,
+# `unreachable_code` — and the two shapes the attribute takes when a
+# reason makes it long: an `#[allow(` whose arguments wrap onto their own
+# lines, and an `allow` nested inside a `cfg_attr`. Both were invisible to
+# the earlier pattern, which is how the figure went from 123 to 237
+# without a single allow being added.
 set -euo pipefail
 
 python3 - "$@" <<'PY'
@@ -52,36 +70,30 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent if "__file__" in dir() else pathlib.Path(".")
 ROOT = pathlib.Path(".").resolve()
 
-ALLOW = re.compile(r"#\s*\[\s*allow\s*\(\s*clippy::")
+ALLOW = re.compile(r"#!?\s*\[\s*(?:cfg_attr\s*\([^)]*\)\s*,\s*)?allow\s*\(")
 
 def justified(lines, i):
-    """Does the allow on line `i` (0-based) carry a reason?"""
-    line = lines[i]
+    """Does the allow starting on line `i` (0-based) carry rustc's own
+    `reason = ".."`?
 
-    # rustc's own `reason = ".."`, on this line or the lines the attribute
-    # wraps onto — a multi-line `#[allow(.., reason = "..")]`.
-    window = "\n".join(lines[i : i + 6])
-    head = window.split("]", 1)[0] if "]" in window else window
-    if "reason" in head and "=" in head:
-        return True
-
-    # A trailing comment on the attribute line itself.
-    after = line.split("]", 1)[1] if "]" in line else ""
-    if after.strip().startswith("//") and len(after.strip()) > 4:
-        return True
-
-    # A comment block above, walking back over any other attributes and
-    # doc lines that sit between the comment and this allow.
-    j = i - 1
-    while j >= 0:
-        s = lines[j].strip()
-        if s.startswith("//"):
-            return True
-        if s.startswith("#[") or s.startswith("#!["):
-            j -= 1
-            continue
-        return False
-    return False
+    One spelling only, now that every allow in the tree carries it. The
+    two comment forms this script used to accept were what made the rule
+    legible before the compiler could check it; `clippy::
+    allow_attributes_without_reason` checks it per site now, so accepting a
+    comment here would only re-open the gap — and the gap was real: a
+    `///` doc comment on the *item* sits directly above its attributes and
+    says nothing about the allow, so the old walk-backwards accepted a
+    bare allow under any documented type. Checked by adding one.
+    """
+    # The attribute may wrap over several lines; read to its closing `]`.
+    window, depth = [], 0
+    for l in lines[i : i + 24]:
+        window.append(l)
+        depth += l.count("[") - l.count("]")
+        if depth <= 0 and len(window) > 0:
+            break
+    text = "\n".join(window)
+    return bool(re.search(r"\breason\s*=", text))
 
 bare = []
 seen = 0
@@ -95,6 +107,12 @@ for path in sorted(ROOT.glob("crates/**/*.rs")):
     for i, line in enumerate(lines):
         if not ALLOW.search(line):
             continue
+        # A comment that *discusses* an allow is not one. Three files in
+        # this workspace explain the unsafe-code policy by quoting the
+        # attribute, and a gate that complains about prose is a gate that
+        # gets silenced.
+        if line.lstrip().startswith("//"):
+            continue
         seen += 1
         if not justified(lines, i):
             rel = path.relative_to(ROOT)
@@ -103,7 +121,7 @@ for path in sorted(ROOT.glob("crates/**/*.rs")):
 # Fails closed: a run that examined nothing is not a clean run. The figure
 # is a floor with room rather than today's count, because a number in a
 # check goes stale the way a number in prose does.
-if seen < 40:
+if seen < 150:
     print(
         f"::error::every-allow-names-its-reason examined only {seen} allows "
         "— the scan did not run over this workspace",
@@ -113,15 +131,16 @@ if seen < 40:
 
 if bare:
     print(
-        f"::error::{len(bare)} `#[allow(clippy::..)]` with no reason beside it. "
+        f"::error::{len(bare)} `#[allow(..)]` without `reason = \"..\"`. "
         "Say what bounds the cast, why the lint is wrong about this code, or "
-        "what the hand-written impl prints instead — a comment above the "
-        "attribute, a trailing one after it, or rustc's own `reason = \"..\"`.",
+        "what the hand-written impl prints instead — in rustc's own "
+        "`reason = \"..\"`, which is the one spelling a machine can check "
+        "and `cargo fmt` cannot carry away from its attribute.",
         file=sys.stderr,
     )
     for b in bare:
         print(f"  {b}", file=sys.stderr)
     sys.exit(1)
 
-print(f"every-allow-names-its-reason: {seen} clippy allows, all with a stated reason")
+print(f"every-allow-names-its-reason: {seen} allows, all carrying `reason`")
 PY

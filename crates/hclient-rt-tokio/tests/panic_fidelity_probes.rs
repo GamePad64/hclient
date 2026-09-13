@@ -56,7 +56,7 @@ fn panic_payload_survives_intact_with_original_type_and_value() {
                 marker: 0xDEAD_BEEF_CAFE_F00D,
                 label: "reviewer-canary",
             });
-            #[allow(unreachable_code)]
+            #[allow(unreachable_code, reason = "the line above panics, so this value is never produced — it is here to give the closure the return type `Tokio::run` infers from, which is what the probe is about")]
             42i32
         }))
     }));
@@ -100,7 +100,7 @@ fn panic_is_never_observed_as_cancelled_under_concurrent_load() {
                         marker: i,
                         label: "load-canary",
                     });
-                    #[allow(unreachable_code)]
+                    #[allow(unreachable_code, reason = "the line above panics, so this value is never produced — it is here to give the closure the return type `Tokio::run` infers from, which is what the probe is about")]
                     0i32
                 }));
                 let result: Result<Result<i32, Cancelled>, _> =

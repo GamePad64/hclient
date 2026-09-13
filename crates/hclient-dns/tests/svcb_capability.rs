@@ -94,7 +94,10 @@ impl Resolve for AskedFoundNothing {
             // this is the type `AskedFoundNothing` exists to test, and
             // writing it out says "asked, and found nothing" rather than
             // leaving `HTTPS` to fall through the wildcard by coincidence.
-            #[allow(clippy::match_same_arms)]
+            #[allow(
+                clippy::match_same_arms,
+                reason = "Kept as its own arm though it matches the wildcard below: this is the type `AskedFoundNothing` exists to test, and writing it out says 'asked, and found nothing' rather than leaving `HTTPS` to fall through the wildcard by coincidence."
+            )]
             rtype::HTTPS => Box::pin(futures_util::stream::empty()),
             _ => Box::pin(futures_util::stream::empty()),
         }

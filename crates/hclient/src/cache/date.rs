@@ -215,7 +215,10 @@ type Hms = (i8, i8, i8);
 // The three casts below cannot lose anything: `digits(2)` bounds each value
 // to two ASCII digits (0-99) before the range check below narrows further,
 // and all three fit in `i8`.
-#[allow(clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "The three casts below cannot lose anything: `digits(2)` bounds each value to two ASCII digits (0-99) before the range check below narrows further, and all three fit in `i8`."
+)]
 fn time_of_day(t: &mut &[u8]) -> ModalResult<Hms> {
     let h = digits(2).parse_next(t)?;
     let m = preceded(":", digits(2)).parse_next(t)?;

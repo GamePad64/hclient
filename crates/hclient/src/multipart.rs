@@ -1037,7 +1037,10 @@ mod tests {
     /// stream that does and does not know its own length.
     // `chunks` names what the queue holds rather than repeating the
     // struct: a `Chunks` with a field called `queue` would read worse.
-    #[allow(clippy::struct_field_names)]
+    #[allow(
+        clippy::struct_field_names,
+        reason = "A test body: a queue of chunks, and a `size_hint` it is *told* rather than one it works out — so a test can hand the encoder a stream that does and does not know its own length. `chunks` names what the queue holds rather than repeating the struct: a `Chunks` with a field called `queue` would read..."
+    )]
     struct Chunks {
         chunks: VecDeque<Vec<u8>>,
         declared: Option<u64>,

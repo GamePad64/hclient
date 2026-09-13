@@ -143,7 +143,10 @@ struct Named {
 // it and are done with it afterwards (one from a fresh `with_identity`
 // argument, the other from its own by-value parameter), so a reference
 // here would only make the caller's `Arc` outlive the call for no reason.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Wraps a config's client-certificate resolver so that what the server asks for is observable. **Every constructor goes through this**, [`Rustls::from_config`] and [`Rustls::with_identity`] included, because the caller who builds their own config is exactly the caller doing mTLS. It costs one `Clie..."
+)]
 fn recording(cfg: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig> {
     let mut cfg = (*cfg).clone();
     cfg.client_auth_cert_resolver = record::Recording::wrap(cfg.client_auth_cert_resolver.clone());

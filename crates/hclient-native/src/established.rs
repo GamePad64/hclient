@@ -132,7 +132,10 @@ where
     /// entry is taken — the verb this pool had before v0.4.
     // `&self` matches the half with the feature on, which is what lets
     // the call sites stay free of a `#[cfg]`.
-    #[allow(clippy::unused_self)]
+    #[allow(
+        clippy::unused_self,
+        reason = "Without the feature there is no shared variant to be, so every entry is taken — the verb this pool had before v0.4. `&self` matches the half with the feature on, which is what lets the call sites stay free of a `#[cfg]`."
+    )]
     #[cfg(not(feature = "http2"))]
     pub(crate) fn borrowed(&self) -> Option<Established<I>> {
         None

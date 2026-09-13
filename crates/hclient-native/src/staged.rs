@@ -436,8 +436,14 @@ where
     // an allocation on every refusal against a `Result` returned once per
     // connection rather than once per request — so it is a decision for
     // whoever needs it, not a lint fix.
-    #[allow(clippy::result_large_err)]
-    #[allow(clippy::too_many_lines)] // one connection attempt, including the pool checkout and TLS; tested end-to-end
+    #[allow(
+        clippy::result_large_err,
+        reason = "The body of [`StagedConnect::connect`], written where the `Refused` packing is not, so that each failure arm is a pair rather than a four-line struct literal. Measured rather than boxed: the pair is 288 bytes, of which **264 are `http::Request<RequestBody>`** — a foreign type — and 24 are `Error`..."
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one connection attempt, including the pool checkout and TLS; tested end-to-end"
+    )]
     async fn stage(
         &self,
         req: http::Request<RequestBody>,

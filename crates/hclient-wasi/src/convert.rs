@@ -884,7 +884,10 @@ mod tests {
     /// `wasi_err`'s own doc comment cites.
     // One test walking every `ErrorCode` variant by name, so it is exactly
     // as long as the variant list it checks against.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The whole classification, one row per `ErrorCode` variant. The three tests above sample it; this one pins it. A layer above once discarded exactly this classification, and the two `_ => `-style fallbacks it is built on (`wasi_err`'s own `_ => Other`, and `to_error` being the identity) mean a vari..."
+    )]
     #[test]
     fn wasi_err_gives_every_error_code_variant_the_category_it_is_documented_to_have() {
         use hclient_core::error::Phase;

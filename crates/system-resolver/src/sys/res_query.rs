@@ -65,7 +65,7 @@
 //! `sys/apple.rs`.
 
 #![allow(
-    unsafe_code, // unsafe-code-exception: amendment-C8
+    unsafe_code, // unsafe-code-exception: amendment-C8,
     reason = "res_query is the only way to ask the system resolver for a record type getaddrinfo cannot return; see spec amendment C8"
 )]
 

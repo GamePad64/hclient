@@ -28,7 +28,7 @@
 //!   258 octets of answer, so the rcode is read by the shared walker rather
 //!   than translated from a status code here.
 #![allow(
-    unsafe_code, // unsafe-code-exception: amendment-C8
+    unsafe_code, // unsafe-code-exception: amendment-C8,
     reason = "DnsQueryRaw must be resolved at run time, because a static import of it stops the process from starting on Windows 10; see spec amendment C8"
 )]
 

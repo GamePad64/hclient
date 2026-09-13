@@ -361,7 +361,7 @@ mod imp {
     /// thing to the caller — *this backend cannot answer* — and four
     /// error paths would reach a caller whose whole answer is a host.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C19
+        unsafe_code, // unsafe-code-exception: amendment-C19,
         reason = "JavaVM::from_raw over the pointer the application registered with ndk_context"
     )]
     fn with_env<T>(f: impl FnOnce(&mut Env<'_>) -> Result<T, Stop>) -> Option<T> {

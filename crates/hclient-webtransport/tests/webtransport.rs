@@ -883,7 +883,10 @@ async fn a_close_reason_over_the_limit_is_not_a_clean_close() {
     let mut raw = vec![0x68, 0x43];
     // `over` is `MAX_REASON + 1` (1025), nowhere near `u32::MAX`, so the
     // capsule length below cannot truncate.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`over` is `MAX_REASON + 1` (1025), nowhere near `u32::MAX`, so the capsule length below cannot truncate."
+    )]
     let len_field = 4 + over as u32;
     // The capsule length, as a four-byte QUIC varint: 4 + 1025 = 1029.
     raw.extend_from_slice(&(len_field | (0b10 << 30)).to_be_bytes());

@@ -627,7 +627,10 @@ mod tests {
     use std::time::Duration;
 
     // Always `Some`: every call site assigns into a `Timeouts` field.
-    #[allow(clippy::unnecessary_wraps)]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "Always `Some`: every call site assigns into a `Timeouts` field."
+    )]
     fn secs(n: u64) -> Option<Duration> {
         Some(Duration::from_secs(n))
     }

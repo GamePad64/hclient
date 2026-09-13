@@ -37,7 +37,10 @@ impl Resolve for Canned {
             // this mock `supports` address types and this says explicitly
             // that it has none, rather than leaving them to fall through
             // the wildcard by coincidence.
-            #[allow(clippy::match_same_arms)]
+            #[allow(
+                clippy::match_same_arms,
+                reason = "Kept as its own arm though it matches the wildcard below: this mock `supports` address types and this says explicitly that it has none, rather than leaving them to fall through the wildcard by coincidence."
+            )]
             rtype::A | rtype::AAAA => Box::pin(futures_util::stream::empty()),
             rtype::HTTPS => Box::pin({
                 futures_util::stream::iter(

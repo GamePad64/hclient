@@ -151,6 +151,14 @@ unexpected_cfgs   = { level = "warn", check-cfg = [] }
 # a documentation gap this workspace cares about rather than a style
 # preference.
 [workspace.lints.clippy]
+# Every `#[allow(clippy::..)]` says why, in the form the compiler
+# understands — see `scripts/every-allow-names-its-reason.sh` for the rule
+# and for the three spellings it accepts. This lint is the machine-checked
+# half: it demands rustc's own `reason = ".."`, which a comment cannot be
+# mistaken for and `cargo fmt` cannot carry away from its attribute. The
+# script stays because it also covers the two legible spellings a reader
+# writes first, and because it fails closed on examining nothing.
+allow_attributes_without_reason = "warn"
 pedantic = { level = "warn", priority = -1 }
 
 # Two of the group are switched back off, each for a reason of this

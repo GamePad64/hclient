@@ -904,7 +904,10 @@ mod tests {
         #[values(1, 5, 255, 300)] payload_len: usize,
     ) {
         // `i % 251` is always under 251, so the cast to `u8` cannot truncate.
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "`i % 251` is always under 251, so the cast to `u8` cannot truncate."
+        )]
         let payload: Vec<u8> = (0..payload_len).map(|i| (i % 251) as u8).collect();
         let mut ech = u16::try_from(payload.len())
             .expect("under 64 KiB")

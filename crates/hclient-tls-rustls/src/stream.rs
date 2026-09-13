@@ -162,7 +162,10 @@ pub(crate) fn pump_incoming<S: Read + Unpin>(
         // fixed-size buffer, so its position never exceeds `filled.len()`
         // — far below `usize::MAX` on every platform this crate builds
         // for, 32-bit included.
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "`cursor` walks `filled`, a slice this poll just read into a fixed-size buffer, so its position never exceeds `filled.len()` — far below `usize::MAX` on every platform this crate builds for, 32-bit included."
+        )]
         if (cursor.position() as usize) >= filled.len() {
             break;
         }

@@ -392,7 +392,10 @@ where
     // an allocation on every refusal against a `Result` returned once per
     // connection rather than once per request — so it is a decision for
     // whoever needs it, not a lint fix.
-    #[allow(clippy::result_large_err)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "From a request to a connection that can carry it, and no further. This is `execute`'s first half, and `execute` is now written as `stage` then [`Self::finish`] — one sequencing with two entry points, which is what stops the staged path and the ordinary one from drifting into two different transpo..."
+    )]
     pub(crate) async fn stage(
         &self,
         req: http::Request<RequestBody>,

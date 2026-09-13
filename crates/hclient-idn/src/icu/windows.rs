@@ -40,7 +40,7 @@
 //! that happens on a real Windows is a check of this file's output, and a
 //! `Backend::None` rather than a wrong host if it is wrong.
 #![allow(
-    unsafe_code, // unsafe-code-exception: amendment-C9
+    unsafe_code, // unsafe-code-exception: amendment-C9,
     reason = "calling the platform's UTS 46 is the only way to reach it; the declarations come from windows-sys, only the calls are here. See spec amendment C9"
 )]
 

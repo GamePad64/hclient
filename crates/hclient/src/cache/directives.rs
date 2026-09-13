@@ -76,7 +76,10 @@ pub struct RequestDirectives {
 // RFC 9111 §5.2.2 defines these as independent flags, so the count is the
 // specification's rather than a shape to refactor — the same argument
 // `Capabilities` carries, one crate over.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "The `Cache-Control` directives a **response** carries, RFC 9111 §5.2.2. RFC 9111 §5.2.2 defines these as independent flags, so the count is the specification's rather than a shape to refactor — the same argument `Capabilities` carries, one crate over."
+)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ResponseDirectives {

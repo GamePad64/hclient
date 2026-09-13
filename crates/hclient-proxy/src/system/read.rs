@@ -295,7 +295,10 @@ pub(super) fn platform() -> Raw {
             // and an attribute in the gap makes it invisible — a warning
             // nobody saw, because clippy for this target is not something
             // `just lint` runs.
-            #[allow(unsafe_code)] // unsafe-code-exception: amendment-C13
+            #[allow(
+                unsafe_code,
+                reason = "amendment-C13: `core-foundation` implements `ConcreteCFType` for `CFArray<*const c_void>` alone, so the exceptions list arrives as an untyped array whose elements have no safe reader; the pointer is assumed valid and the class is checked"
+            )] // unsafe-code-exception: amendment-C13
             // SAFETY: `ptr` is an element of a CFArray returned by
             // SCDynamicStoreCopyProxies, so it is a valid CF object owned
             // by that array, which outlives this borrow; the Get rule is

@@ -317,7 +317,10 @@ fn connect_err(e: embassy_net::tcp::ConnectError) -> std::io::Error {
 // Unconditionally `Ok` under `--all-features` (both `proto-ipv4` and
 // `proto-ipv6` on), but genuinely fallible for a build that leaves either
 // one out — see the `#[cfg]` arms below. The `Result` is for those builds.
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "`SocketAddr` → smoltcp's endpoint, or a typed error for an address family this build left out. smoltcp's `IpAddress` has one variant per family, each gated on its `proto-ipv4`/`proto-ipv6` feature, so 'no IPv6 in this build' is not a runtime configuration but an absent enum variant. A client aske..."
+)]
 fn endpoint(addr: SocketAddr) -> std::io::Result<embassy_net::IpEndpoint> {
     match addr {
         SocketAddr::V4(v4) => {

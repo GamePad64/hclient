@@ -43,7 +43,7 @@ use jni::{Env, JavaVM, jni_sig, jni_str};
 /// the caller — *nothing was read* — and distinguishing them would put
 /// four error paths on a reader whose whole answer is a string.
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C19
+    unsafe_code, // unsafe-code-exception: amendment-C19,
     reason = "JavaVM::from_raw over the pointer the application registered with ndk_context"
 )]
 pub(super) fn system_property(name: &str) -> Option<String> {

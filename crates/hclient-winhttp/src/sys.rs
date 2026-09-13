@@ -324,7 +324,7 @@ impl Exchange {
 /// but if a future Windows ever skipped that, this is what keeps the
 /// allocation from leaking.
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
+    unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "reclaims the one owned reference and the lent buffer; see obligation 2"
 )]
 unsafe fn release(context: usize) {
@@ -340,7 +340,7 @@ unsafe fn release(context: usize) {
 
 /// Puts a lent buffer back in Rust's hands, if it is lent.
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
+    unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "Box::from_raw over the allocation Box::into_raw produced in `read`"
 )]
 fn reclaim(ex: &Exchange) {
@@ -365,7 +365,7 @@ fn reclaim(ex: &Exchange) {
 /// from it. It runs on a `WinHTTP` thread-pool thread, so it does the least
 /// it can: reclaim a buffer, push an event, wake.
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
+    unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "the callback WinHTTP calls; every dereference is documented at its line"
 )]
 unsafe extern "system" fn callback(
@@ -636,19 +636,19 @@ pub(crate) struct Handle(*mut c_void);
 // any thread. What the pointer identifies lives in WinHTTP, not in this
 // process's Rust heap, and nothing here reads through it directly.
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
+    unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "WinHTTP handles are thread-agnostic; see obligation 3"
 )]
 unsafe impl Send for Handle {} // unsafe-code-exception: amendment-C18
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
+    unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "as above"
 )]
 unsafe impl Sync for Handle {} // unsafe-code-exception: amendment-C18
 
 impl Drop for Handle {
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "closes a handle this type owns"
     )]
     fn drop(&mut self) {
@@ -664,7 +664,7 @@ impl Drop for Handle {
 }
 
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
+    unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "reads the thread's last-error after a failed call"
 )]
 fn last_error() -> Win32Error {
@@ -688,7 +688,7 @@ fn last_error() -> Win32Error {
 /// closes wherever it finds one. Here it becomes a named error and the
 /// caller decides.
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
+    unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "WinHttpSetOption over a DWORD the call copies"
 )]
 fn set_dword(handle: *const c_void, option: u32, value: u32) -> Result<(), Win32Error> {
@@ -712,7 +712,7 @@ fn set_dword(handle: *const c_void, option: u32, value: u32) -> Result<(), Win32
 
 /// Reads a `DWORD`-valued option back off a handle.
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C18
+    unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "WinHttpQueryOption into a DWORD this frame owns"
 )]
 fn query_dword(handle: *mut c_void, option: u32) -> Result<u32, Win32Error> {
@@ -749,7 +749,7 @@ impl Session {
     /// every later call complete through [`callback`] rather than
     /// blocking the caller's thread.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpOpen and WinHttpSetStatusCallback"
     )]
     pub(crate) fn open(agent: &str) -> Result<Self, Win32Error> {
@@ -795,7 +795,7 @@ impl Session {
     /// Names the origin. No network happens here — `WinHttpConnect` only
     /// records the host and port for the requests that follow.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpConnect"
     )]
     pub(crate) fn connect(&self, host: &str, port: u16) -> Result<Connect, Win32Error> {
@@ -838,7 +838,7 @@ pub(crate) struct Connect(Handle);
 
 impl Connect {
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpOpenRequest"
     )]
     pub(crate) fn open_request(
@@ -883,7 +883,7 @@ impl Request {
     /// request abandoned before the send still releases it: every path to
     /// `Drop` goes through `HANDLE_CLOSING` with a non-zero context.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpSetOption(CONTEXT_VALUE) with a leaked Arc"
     )]
     pub(crate) fn set_context(&self, ex: &Arc<Exchange>) -> Result<(), Win32Error> {
@@ -914,7 +914,7 @@ impl Request {
     /// Turns off the two things `Client` already does — see the crate
     /// doc.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpSetOption(DISABLE_FEATURE)"
     )]
     pub(crate) fn disable_redirects_and_cookies(&self) -> Result<(), Win32Error> {
@@ -1000,7 +1000,7 @@ impl Request {
     /// Adds the caller's headers, synchronously — see the module doc on
     /// why not through `WinHttpSendRequest`.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpAddRequestHeaders"
     )]
     pub(crate) fn add_headers(&self, crlf: &str) -> Result<(), Win32Error> {
@@ -1033,7 +1033,7 @@ impl Request {
     /// heap-stable and immutable, so a live clone is the whole of what
     /// that needs.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpSendRequest with a borrowed body pointer"
     )]
     pub(crate) fn send(&self, ex: &Arc<Exchange>, body: Option<Bytes>) -> Result<(), Win32Error> {
@@ -1065,7 +1065,7 @@ impl Request {
     /// Asks for the response head. Completes with
     /// [`Event::HeadersAvailable`].
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpReceiveResponse"
     )]
     pub(crate) fn receive_response(&self) -> Result<(), Win32Error> {
@@ -1085,7 +1085,7 @@ impl Request {
     /// `CONNECT` response, rather than a second header parser written
     /// here.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpQueryHeaders, twice: once for the length, once for the bytes"
     )]
     pub(crate) fn raw_headers(&self) -> Result<Vec<u8>, Win32Error> {
@@ -1140,7 +1140,7 @@ impl Request {
     /// Lends the read buffer to `WinHTTP`. Completes with
     /// [`Event::ReadComplete`], whose `0` is end of body.
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C18
+        unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpReadData over a buffer this hands to WinHTTP; see obligation 1"
     )]
     /// Asks `WinHTTP` to make this request a WebSocket handshake.

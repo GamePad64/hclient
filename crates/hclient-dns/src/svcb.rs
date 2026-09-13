@@ -221,7 +221,10 @@ pub fn endpoint_from_binding(binding: &RawBinding) -> Result<Option<Record>, Svc
             // empty: this key is *understood* and simply has no field;
             // the next is *not modelled at all*. Merging them would lose
             // that distinction, which `RECOGNISED_KEYS`'s doc relies on.
-            #[allow(clippy::match_same_arms)]
+            #[allow(
+                clippy::match_same_arms,
+                reason = "Understood, but with nothing in `SvcbEndpoint` to hold it — see `RECOGNISED_KEYS`. Dropped rather than given an invented field. Kept separate from the arm below, though both bodies are empty: this key is *understood* and simply has no field; the next is *not modelled at all*. Merging them would l..."
+            )]
             RawParam::NoDefaultAlpn => {}
             // Not modelled; kept out of the endpoint, but still visible to
             // the `mandatory` check below through its key number.

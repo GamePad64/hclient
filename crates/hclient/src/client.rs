@@ -977,7 +977,10 @@ impl Client {
     // redirect hop, the `425` replay, the auth legs and the retry all read
     // the same locals, and splitting it would thread them through
     // signatures rather than shorten anything.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The stages themselves, unbounded — `execute` above puts the bound around this whole thing. Split out rather than inlined so that the deadline wraps ONE future covering every hop: the redirect loop is inside here, so dropping this future on expiry drops whichever hop is in flight, and under `Trans..."
+    )]
     async fn run(
         &self,
         req: http::Request<RequestBody>,
@@ -1711,7 +1714,8 @@ impl Client {
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
-        clippy::unused_self
+        clippy::unused_self,
+        reason = "the twin keeps the signature of the half it stands in for: the `async` and the `&self` are what let the call sites stay free of a `#[cfg]`, which is the whole point of the pair"
     )]
     #[cfg(not(feature = "hsts"))]
     async fn upgrade_scheme(&self, _: &mut http::Uri) {}
@@ -1743,7 +1747,8 @@ impl Client {
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
-        clippy::unused_self
+        clippy::unused_self,
+        reason = "the twin keeps the signature of the half it stands in for: the `async` and the `&self` are what let the call sites stay free of a `#[cfg]`, which is the whole point of the pair"
     )]
     #[cfg(not(feature = "hsts"))]
     async fn note_hsts(&self, _: &http::Uri, _: &http::HeaderMap) {}
@@ -1797,7 +1802,8 @@ impl Client {
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
-        clippy::unused_self
+        clippy::unused_self,
+        reason = "the twin keeps the signature of the half it stands in for: the `async` and the `&self` are what let the call sites stay free of a `#[cfg]`, which is the whole point of the pair"
     )]
     #[cfg(not(feature = "cookies"))]
     async fn attach_cookies(&self, _: &mut HopParts, _: bool) {}
@@ -1830,7 +1836,8 @@ impl Client {
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
-        clippy::unused_self
+        clippy::unused_self,
+        reason = "the twin keeps the signature of the half it stands in for: the `async` and the `&self` are what let the call sites stay free of a `#[cfg]`, which is the whole point of the pair"
     )]
     #[cfg(not(feature = "cookies"))]
     async fn store_cookies(&self, _: &http::Uri, _: &http::HeaderMap) {}
@@ -1867,7 +1874,8 @@ impl Client {
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
-        clippy::unused_self
+        clippy::unused_self,
+        reason = "the twin keeps the signature of the half it stands in for: the `async` and the `&self` are what let the call sites stay free of a `#[cfg]`, which is the whole point of the pair"
     )]
     #[cfg(not(feature = "cache"))]
     fn cache_now(&self) -> SystemTime {
@@ -1950,7 +1958,8 @@ impl Client {
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
-        clippy::unused_self
+        clippy::unused_self,
+        reason = "the twin keeps the signature of the half it stands in for: the `async` and the `&self` are what let the call sites stay free of a `#[cfg]`, which is the whole point of the pair"
     )]
     #[cfg(not(feature = "cache"))]
     async fn cache_before(
@@ -2040,7 +2049,8 @@ impl Client {
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
-        clippy::unused_self
+        clippy::unused_self,
+        reason = "the twin keeps the signature of the half it stands in for: the `async` and the `&self` are what let the call sites stay free of a `#[cfg]`, which is the whole point of the pair"
     )]
     #[cfg(not(feature = "cache"))]
     async fn cache_after(
@@ -2085,7 +2095,13 @@ fn read_retry_after(headers: &http::HeaderMap) -> (Option<Duration>, bool) {
 /// whose factory returns another one has not, and stays `Opaque` — this
 /// crate makes one snapshot per hop, a rule `hclient-mock` is where this
 /// workspace learned to pin by counting factory calls.
-#[cfg_attr(not(feature = "digest-auth"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "digest-auth"),
+    allow(
+        dead_code,
+        reason = "the only caller is the digest branch; without that feature the function has none, and a `#[cfg]` on it would fork the signature its callers read"
+    )
+)]
 fn auth_body(snapshot: Option<&RequestBody>) -> hclient_core::body::BodyView<'_> {
     // `None` is a `Streaming` body, whose `rewind()` answers nothing —
     // the same answer `view()` gives for the body itself, arrived at from

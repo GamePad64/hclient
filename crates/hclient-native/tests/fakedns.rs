@@ -7,7 +7,10 @@
 //! `RequireVersion` and `http://` are both claimed to skip discovery
 //! entirely, and a counter is the only way to see that from outside.
 #![cfg(not(target_family = "wasm"))]
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "A resolver that answers from a script and writes down what it was asked. Two things are being observed through it. The **answer** is what the tests vary — an HTTPS record offering `h3` or not — and the **log** is what makes 'no lookup happened' an assertion rather than an absence: `RequireVersion..."
+)]
 
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use std::net::IpAddr;

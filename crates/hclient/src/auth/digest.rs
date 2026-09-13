@@ -358,7 +358,10 @@ pub fn answer(
     // `nc` is fixed at 1 because a nonce is used once here — see this
     // module's doc for what that costs and what removing it would need.
     // Kept beside the comment explaining it rather than hoisted to the top.
-    #[allow(clippy::items_after_statements)]
+    #[allow(
+        clippy::items_after_statements,
+        reason = "`nc` is fixed at 1 because a nonce is used once here — see this module's doc for what that costs and what removing it would need. Kept beside the comment explaining it rather than hoisted to the top."
+    )]
     const NC: &str = "00000001";
     let response = if challenge.qop_auth {
         alg.hash(&format!(

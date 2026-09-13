@@ -266,7 +266,10 @@ where
     pub(crate) id: ConnectionId,
 }
 
-#[allow(clippy::missing_fields_in_debug)] // hand-written: `conn` and `id` aren't printed, `closed` is derived rather than a stored field
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "hand-written: `conn` and `id` aren't printed, `closed` is derived rather than a stored field"
+)]
 impl<I> Debug for Established<I>
 where
     I: Read + Write + Unpin,
@@ -327,7 +330,10 @@ where
     sender: http1::SendRequest<OutgoingBody>,
 }
 
-#[allow(clippy::missing_fields_in_debug)] // hand-written: hyper's `Incoming`/`SendRequest`/`CheckIn` aren't `Debug`, and `H` carries no bound for one
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "hand-written: hyper's `Incoming`/`SendRequest`/`CheckIn` aren't `Debug`, and `H` carries no bound for one"
+)]
 impl<I, H> Debug for H1Body<I, H>
 where
     I: Read + Write + Unpin,
@@ -1328,7 +1334,10 @@ mod tests {
     // clippy asks for is `<(dyn Error + 'static)>::is::<..>`, which
     // rustc's own `unused_parens` then rejects — two lints wanting
     // opposite spellings of one expression, and this is the readable one.
-    #[allow(clippy::redundant_closure_for_method_calls)]
+    #[allow(
+        clippy::redundant_closure_for_method_calls,
+        reason = "The `is_some_and` closure below stays a closure: the method form clippy asks for is `<(dyn Error + 'static)>::is::<..>`, which rustc's own `unused_parens` then rejects — two lints wanting opposite spellings of one expression, and this is the readable one."
+    )]
     fn a_connection_that_ends_with_the_request_still_queued_hands_it_back() {
         let (failed, closes) = race_lost_after(1);
         // **The reason is `Ended` and the point above is `Stale`, for one

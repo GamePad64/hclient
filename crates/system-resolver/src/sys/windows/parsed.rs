@@ -74,7 +74,7 @@
 //! `DNS_MESSAGE_BUFFER` with no length field, and measured on the same
 //! machine it is inert through both `DnsQuery_UTF8` and `DnsQueryEx`.
 #![allow(
-    unsafe_code, // unsafe-code-exception: amendment-C8
+    unsafe_code, // unsafe-code-exception: amendment-C8,
     reason = "reading the record list `DnsQuery_UTF8` allocated is the only way to reach a DNS record on a Windows without DnsQueryRaw; see spec amendment C8"
 )]
 

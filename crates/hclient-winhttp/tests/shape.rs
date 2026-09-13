@@ -92,7 +92,10 @@ fn the_protocol_set_is_composed_and_read_from_outside() {
 /// x86_64-pc-windows-msvc --all-targets`, which `just check-targets`
 /// runs on every push, so the example's chain is type-checked there
 /// instead. Keep the two in step.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "The crate's one doctest, compiled where something actually compiles it. `just test-doc` runs `cargo test --doc --workspace` on a Linux host, where this crate is `#![cfg(windows)]` and contributes **no doctests at all** — so the `no_run` fence on [`WinHttp::protocols`](hclient_winhttp::WinHttp::pr..."
+)]
 fn the_documented_construction_type_checks() -> Result<(), hclient_core::error::Error> {
     use hclient_winhttp::{Protocols, WinHttp};
 

@@ -2033,7 +2033,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         // "not (on or h2 available)" — the two negative conditions name
         // the empty state the doc above describes more directly than the
         // logically equivalent disjunction would.
-        #[allow(clippy::nonminimal_bool)]
+        #[allow(
+            clippy::nonminimal_bool,
+            reason = "Written as 'off, and h2 not available' rather than De Morgan's 'not (on or h2 available)' — the two negative conditions name the empty state the doc above describes more directly than the logically equivalent disjunction would."
+        )]
         if !on && !(self.versions.h2 && cfg!(feature = "http2")) {
             return Err(Error::new(ErrorKind::Unsupported, NoVersionsLeft));
         }
@@ -2487,7 +2490,10 @@ where
     /// module is not compiled — so this is a constant and the ALPN list
     /// stays what it was before v0.2 W3.
     // `&self` matches the half with the feature on — see `borrowed`.
-    #[allow(clippy::unused_self)]
+    #[allow(
+        clippy::unused_self,
+        reason = "Without the feature there is no h2 code to reach at all — the module is not compiled — so this is a constant and the ALPN list stays what it was before v0.2 W3. `&self` matches the half with the feature on — see `borrowed`."
+    )]
     #[cfg(not(feature = "http2"))]
     fn may_speak_h2(&self, _parts: &KeyParts) -> bool {
         false
@@ -2502,7 +2508,10 @@ where
     // `&self` is read only by the `http2` arm below; without the feature
     // the answer is the one constant, and dropping the receiver would
     // fork the signature on a feature.
-    #[allow(clippy::unused_self)]
+    #[allow(
+        clippy::unused_self,
+        reason = "Which pool buckets may hold a connection for this request, in preference order. `&'static [Protocol]`, not a `Vec`: the answer is one of two compile-time constants, and a request should not allocate to discover which. `&self` is read only by the `http2` arm below; without the feature the answer i..."
+    )]
     fn pooled_candidates(&self, parts: &KeyParts) -> &'static [Protocol] {
         #[cfg(feature = "http2")]
         if self.may_speak_h2(parts) {
@@ -3166,7 +3175,10 @@ where
     /// in step: [`Transport::execute`] is this with [`Prepared::new`] —
     /// nothing looked up — and [`Prefetch::execute_prepared`] is this with
     /// whatever [`Prefetch::prepare`] found.
-    #[allow(clippy::too_many_lines)] // the whole exchange for both entry points, deliberately one body rather than two kept in step
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the whole exchange for both entry points, deliberately one body rather than two kept in step"
+    )]
     async fn run(&self, prepared: Prepared) -> Result<http::Response<NativeBody<R, T, H>>, Error>
     where
         D: Resolve,
@@ -3452,7 +3464,10 @@ where
         // The unreachable `(false, false)` is kept as its own honest arm
         // rather than merged or made an `unreachable!` — see its comment
         // below for why the arm states the case instead of denying it.
-        #[allow(clippy::match_same_arms)]
+        #[allow(
+            clippy::match_same_arms,
+            reason = "The unreachable `(false, false)` is kept as its own honest arm rather than merged or made an `unreachable!` — see its comment below for why the arm states the case instead of denying it."
+        )]
         let alpn: &[&[u8]] = match (offered_h2, self.versions.h1) {
             // Order is the preference: RFC 7301 leaves the choice to the
             // server, but every implementation reads the client's list as
@@ -3594,7 +3609,13 @@ where
         // here, unpooled, which is right: nothing was spoken on it.
         check_version(req.extensions(), spoken_version(protocol))?;
 
-        #[cfg_attr(not(feature = "http2"), allow(unused_mut))]
+        #[cfg_attr(
+            not(feature = "http2"),
+            allow(
+                unused_mut,
+                reason = "only the h2 arm below reassigns this; without that feature nothing does, and the `mut` is what keeps the two arms one binding"
+            )
+        )]
         let mut checkin = match protocol {
             Some(p) => self.checkin_for(&parts_of_key.key(p), now),
             None => None,

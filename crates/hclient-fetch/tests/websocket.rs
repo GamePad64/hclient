@@ -35,7 +35,10 @@
 // exact integer — a construction count, a `close()` count — so comparing
 // it against `0.0` or `1.0` is exact rather than the approximate
 // comparison this lint is about.
-#![allow(clippy::float_cmp)]
+#![allow(
+    clippy::float_cmp,
+    reason = "Every counter these tests read back is a JS `Number` holding a small exact integer — a construction count, a `close()` count — so comparing it against `0.0` or `1.0` is exact rather than the approximate comparison this lint is about."
+)]
 
 use futures_util::{SinkExt, StreamExt};
 use hclient_core::error::ErrorKind;

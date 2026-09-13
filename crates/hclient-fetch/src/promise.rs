@@ -77,7 +77,7 @@ pub(crate) struct SingleThreaded<T>(pub(crate) T);
 /// marker, this one has exactly one legitimate location in the whole
 /// project.
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C7
+    unsafe_code, // unsafe-code-exception: amendment-C7,
     reason = "mirrors wasm_bindgen::JsValue: without wasm threads the process is single-threaded by construction"
 )]
 #[cfg(not(target_feature = "atomics"))]
@@ -177,7 +177,10 @@ impl SendJsFuture {
     // every caller hands over one it just made — `window.fetch_with_str(..)`,
     // a timer's own promise — and this future conceptually owns the thing it
     // is waiting on, which a borrow would stop saying.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "The promise is taken by value although only `then` is called on it: every caller hands over one it just made — `window.fetch_with_str(..)`, a timer's own promise — and this future conceptually owns the thing it is waiting on, which a borrow would stop saying."
+    )]
     pub(crate) fn new(promise: js_sys::Promise) -> Self {
         let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::default()));
 

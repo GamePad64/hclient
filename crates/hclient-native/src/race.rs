@@ -238,7 +238,10 @@ impl http_body::Body for NoBody {
 /// So this copies the one property of the caller's body that reaches a
 /// connect, and copies nothing else — in particular it never clones the
 /// caller's bytes and never calls a `Rewindable` factory.
-#[allow(clippy::match_same_arms)] // `Impossible` and the `_` fallback agree today by construction, not by coincidence — see the comment below
+#[allow(
+    clippy::match_same_arms,
+    reason = "`Impossible` and the `_` fallback agree today by construction, not by coincidence — see the comment below"
+)]
 fn probe_body(like: &RequestBody) -> RequestBody {
     match like.retry_kind() {
         RetryKind::Free => RequestBody::Empty,

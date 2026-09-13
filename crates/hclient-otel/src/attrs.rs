@@ -413,7 +413,10 @@ pub fn error_type(kind: &ErrorKind) -> &'static str {
         // read identically today and must not be collapsed into one, or a
         // future `ErrorKind` addition would be indistinguishable from the
         // one that already means exactly that.
-        #[allow(clippy::match_same_arms)]
+        #[allow(
+            clippy::match_same_arms,
+            reason = "Named rather than folded into the wildcard below: this arm says 'this variant *is* `Other`', where the wildcard says 'this variant did not exist when this match was written' — the two read identically today and must not be collapsed into one, or a future `ErrorKind` addition would be indistinguis..."
+        )]
         ErrorKind::Other => "Other",
         // Same shape one enum up, and the same reason it is not
         // `unreachable!`: `ErrorKind` is `#[non_exhaustive]`, so a variant

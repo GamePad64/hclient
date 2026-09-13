@@ -16,7 +16,7 @@
 //! behind the JVM, and this costs nothing at all.
 
 #![allow(
-    unsafe_code, // unsafe-code-exception: amendment-C8
+    unsafe_code, // unsafe-code-exception: amendment-C8,
     reason = "android_res_nquery is the NDK's only declared way to ask the device's resolver for an arbitrary record type; see spec amendment C8"
 )]
 

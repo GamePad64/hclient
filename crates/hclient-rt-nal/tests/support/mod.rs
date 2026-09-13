@@ -6,7 +6,10 @@
 //! trait it implements declares it `async fn` — `embedded-io-async` and
 //! `embedded-nal-async` give no other shape to conform to, so a fixture
 //! that awaits nothing still has to be `async` to be one.
-#![allow(clippy::unused_async_trait_impl)]
+#![allow(
+    clippy::unused_async_trait_impl,
+    reason = "Two synthetic stacks: one whose connection crosses a thread and one whose does not. They are the whole subject — the adapter's claim is about which of the two it can make, so a test needs both. Every `Read`/`Write`/`TcpConnect` method below is `async fn` because the trait it implements declares i..."
+)]
 
 use core::net::SocketAddr;
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};

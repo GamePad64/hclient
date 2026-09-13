@@ -876,7 +876,10 @@ where
     }
 }
 
-#[allow(clippy::missing_fields_in_debug)] // hand-written: `R` and `R::Instant` carry no `Debug` bound here, `sleep` is machinery
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "hand-written: `R` and `R::Instant` carry no `Debug` bound here, `sleep` is machinery"
+)]
 impl<R, I> Debug for Reaper<R, I>
 where
     R: Timer,
@@ -1043,7 +1046,10 @@ where
 }
 
 #[cfg(feature = "http2")]
-#[allow(clippy::missing_fields_in_debug)] // hand-written: `pool` is the shared handle, not worth printing beside `key`
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "hand-written: `pool` is the shared handle, not worth printing beside `key`"
+)]
 impl<I> Debug for Connecting<I>
 where
     I: Read + Write + Unpin,

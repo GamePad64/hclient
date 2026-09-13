@@ -72,14 +72,14 @@ pub(crate) struct StdAdapter<S> {
 }
 
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C17
+    unsafe_code, // unsafe-code-exception: amendment-C17,
     reason = "the raw Context is null except during one non-yielding call; see the type's own doc"
 )]
 // SAFETY: `context` is null at every point a value of this type can be
 // observed from anywhere but the call that set it — see the type doc.
 unsafe impl<S: Send> Send for StdAdapter<S> {} // unsafe-code-exception: amendment-C17 send-bound-exception: amendment-C17
 #[allow(
-    unsafe_code, // unsafe-code-exception: amendment-C17
+    unsafe_code, // unsafe-code-exception: amendment-C17,
     reason = "as above"
 )]
 // SAFETY: as above.
@@ -87,7 +87,7 @@ unsafe impl<S: Sync> Sync for StdAdapter<S> {} // unsafe-code-exception: amendme
 
 impl<S: Unpin> StdAdapter<S> {
     #[allow(
-        unsafe_code, // unsafe-code-exception: amendment-C17
+        unsafe_code, // unsafe-code-exception: amendment-C17,
         reason = "reconstitutes the &mut Context set by the caller one frame below; asserted non-null"
     )]
     fn with_context<F, R>(&mut self, f: F) -> R

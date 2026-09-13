@@ -19,7 +19,10 @@
 //! counters at once: "the QUIC one answered and the TCP one did not" is a
 //! claim neither counter can make alone.
 #![cfg(not(target_family = "wasm"))]
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Two real servers behind **one authority**, so that 'which stack was chosen' is a question a peer answers. An HTTP/3 server on UDP and an HTTP/1.1 server on TCP, on the **same port number** — which is possible because the two are separate port spaces, and necessary because otherwise the origin the..."
+)]
 
 use bytes::Bytes;
 use std::fmt::Debug;
@@ -130,7 +133,10 @@ pub struct Pair {
 // the thread handles carry no useful `Debug`, and the counters not
 // shown here are read through their own accessors where a test
 // actually needs them.
-#[allow(clippy::missing_fields_in_debug)]
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "A curated summary, not a dump: `cert_der` is raw DER, `alt_svc` and the thread handles carry no useful `Debug`, and the counters not shown here are read through their own accessors where a test actually needs them."
+)]
 impl Debug for Pair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pair")

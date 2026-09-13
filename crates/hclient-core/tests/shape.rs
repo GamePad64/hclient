@@ -10,7 +10,10 @@
 // plain functions returning `std::future::ready(..)` would obscure the
 // property under test (that the seam is RPITIT-shaped) rather than
 // clarify it. None of these fixture bodies happens to need an `.await`.
-#![allow(clippy::unused_async_trait_impl)]
+#![allow(
+    clippy::unused_async_trait_impl,
+    reason = "`Transport::execute` and `WebSocketConnect::websocket` return `impl Future` (an RPITIT), and `async fn` is the idiomatic way to implement one — these fixtures stand in for real transports, so writing them as plain functions returning `std::future::ready(..)` would obscure the property under test..."
+)]
 
 use bytes::Bytes;
 use hclient_core::body::RequestBody;

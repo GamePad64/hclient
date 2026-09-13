@@ -115,7 +115,10 @@ impl wasip3::exports::cli::run::Guest for Guest {
 // Kept `async` though it never awaits: every sibling arm of the `match
 // mode` dispatch above is `.await`ed, and this is called the same way —
 // dropping `async` here would make this arm's call the odd one out.
-#[allow(clippy::unused_async)]
+#[allow(
+    clippy::unused_async,
+    reason = "kept `async` though it never awaits: every sibling arm of the `match mode` dispatch above is `.await`ed, and this is called the same way — dropping `async` here would make this arm's call the odd one out"
+)]
 async fn idn_authority() -> Result<(), ()> {
     use wasip3::http::types::{ErrorCode, Fields, Request};
 

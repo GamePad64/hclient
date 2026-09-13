@@ -255,7 +255,10 @@ impl RecordedBody {
 // support for and chooses not to, where the wildcard exists only because
 // `RequestBody` is `#[non_exhaustive]` and needs a catch-all for whatever
 // arrives next. Folding them would erase that distinction for a reader.
-#[allow(clippy::match_same_arms)]
+#[allow(
+    clippy::match_same_arms,
+    reason = "Record what can be recorded **without calling anything**, which is the whole rule — see [`RecordedBody::Rewindable`]. The `Streaming` arm and the wildcard answer the same way and are kept apart on purpose: `Streaming` names the one variant this mock could add support for and chooses not to, where..."
+)]
 fn record_body(body: &RequestBody) -> RecordedBody {
     match body {
         RequestBody::Empty => RecordedBody::Empty,

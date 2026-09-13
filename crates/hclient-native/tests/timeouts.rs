@@ -200,7 +200,10 @@ async fn get_all_within(
     // `tokio::time::timeout`'s error is `Elapsed`, which carries nothing
     // beyond its own name — the panic message already says what
     // happened, and printing `{e:?}` would only echo it.
-    #[allow(clippy::match_wild_err_arm)]
+    #[allow(
+        clippy::match_wild_err_arm,
+        reason = "`tokio::time::timeout`'s error is `Elapsed`, which carries nothing beyond its own name — the panic message already says what happened, and printing `{e:?}` would only echo it."
+    )]
     match out {
         Ok(r) => r,
         Err(_) => panic!(

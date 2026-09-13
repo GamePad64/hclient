@@ -99,7 +99,10 @@ fn a_bounded_handle_shares_the_transport_with_the_unbounded_one() {
 /// erased to remove, reappearing on the value it hands back.
 #[test]
 fn a_response_from_this_client_fits_a_bare_response_field() {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "the struct exists to be declared: naming the field's type is the assertion, and nothing reads it"
+    )]
     struct Page {
         resp: hclient::Response,
     }
