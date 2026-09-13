@@ -404,3 +404,58 @@ fn a_guard_sees_the_request_and_can_only_lengthen_the_wait() {
     assert!(replayable, "an empty body can be sent again");
     assert_eq!(m.requests().len(), 2, "and the retry happened");
 }
+
+/// **A retry moves the resend counter and leaves the hop alone.**
+///
+/// `Attempt` splits a request's identity on a line `OTel` does not draw:
+/// `hclient-otel` sums `hop + resend` into `http.request.resend_count`, and
+/// keeps both halves beside it because *third send, first hop* and *first
+/// send, third hop* are different failures. The sum is what a collector
+/// aggregates on, so a counter that never moves reports every retry as a
+/// first attempt.
+///
+/// A mutation run found `attempt > 1` survivable as `attempt < 1` — the
+/// counter then never increments at all — with all 653 tests green.
+/// `request_identity.rs` has the same claim for the `425` replay and for an
+/// authentication leg, and neither reaches this line: the replay is its own
+/// branch above the retry loop. So the gap was a path rather than a rule,
+/// which is why this test lives beside the retries rather than beside its
+/// two siblings.
+#[test]
+fn a_retry_moves_the_resend_counter_and_not_the_hop() {
+    use hclient_core::hooks::Attempt;
+
+    let m = MockTransport::new();
+    m.push_response(unavailable(None));
+    m.push_response(unavailable(None));
+    m.push_response(http::Response::builder().status(200).body("ok").unwrap());
+
+    let c = client(
+        &m,
+        Some(Standard {
+            backoff: brisk(),
+            statuses: RetryStatuses::Transient,
+            ..Standard::default()
+        }),
+    );
+    let got = futures_executor::block_on(c.get("https://a/").send()).expect("the third answers");
+    assert_eq!(got.status(), 200);
+
+    let seen: Vec<Attempt> = m
+        .requests()
+        .iter()
+        .map(|r| {
+            *r.extensions
+                .get::<Attempt>()
+                .expect("every send carries the identity")
+        })
+        .collect();
+
+    assert_eq!(seen.len(), 3, "two refusals and the answer");
+    assert_eq!(seen[0].id, seen[2].id, "one operation throughout");
+    assert_eq!(
+        seen.iter().map(|a| (a.hop, a.resend)).collect::<Vec<_>>(),
+        vec![(0, 0), (0, 1), (0, 2)],
+        "the same hop, sent three times — a retry is not a redirect"
+    );
+}
