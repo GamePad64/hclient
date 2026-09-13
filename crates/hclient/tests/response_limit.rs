@@ -22,9 +22,22 @@ fn drain(c: &Client) -> Result<usize, hclient_core::error::Error> {
 /// Under the limit is untouched, over it is a typed error carrying both
 /// numbers. The pair is the assertion: a wrapper that always errored would
 /// pass the second alone, and one that never did would pass the first.
+///
+/// **The middle two rows are the boundary, and they were missing.** 50 and
+/// 500 against a limit of 100 pass whichever way `poll_frame`'s comparison
+/// falls; a mutation run found `this.seen > limit` survivable as `>=`,
+/// which turns the ceiling into a value the client refuses — a response
+/// sized exactly to the caller's bound becomes `ResponseTooLarge`. So the
+/// table now steps across the limit rather than straddling it at a
+/// distance: exactly the limit is handed over, one byte more is not.
 #[test]
 fn a_body_over_the_limit_is_refused_and_one_under_it_is_not() {
-    for (limit, len, over) in [(100u64, 50usize, false), (100, 500, true)] {
+    for (limit, len, over) in [
+        (100u64, 50usize, false),
+        (100, 100, false),
+        (100, 101, true),
+        (100, 500, true),
+    ] {
         let t = MockTransport::new();
         t.push_response(
             http::Response::builder()

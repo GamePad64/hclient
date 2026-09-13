@@ -371,7 +371,26 @@ fn a_body_that_goes_silent_for_ever_after_the_head_is_cut_at_the_total_deadline(
         "the server never saw the connection close, so the timed-out \
          exchange was left running"
     );
-    drop(resp);
+    // **And the body says so when asked.** `ClientBody::is_expired` is the
+    // one way a caller holding the response can tell a bound that fired
+    // from a peer that hung up, and until a mutation run asked, only its
+    // `false` was ever asserted — `a_client_with_no_timeout_carries_no_
+    // bound` reads it on a body that never expired. Replacing the method
+    // with a constant `false` therefore passed the whole suite: a
+    // timed-out body denying it had timed out. The `Response` is alive
+    // here precisely because the wrapper has dropped what it wrapped,
+    // which is the state the accessor exists to report.
+    let body = resp.into_parts().1;
+    assert!(
+        body.is_expired(),
+        "the bound fired and dropped the inner body, so the wrapper must \
+         report it"
+    );
+    assert_eq!(
+        body.total_timeout(),
+        Some(TOTAL),
+        "and still name the bound that was in force"
+    );
 }
 
 /// The body does **not** get a budget of its own: the sleep runs for what
