@@ -500,7 +500,7 @@ impl Transport for WinHttp {
 // which is why the shared state is a `Mutex` pair rather than a cell. So
 // `execute`'s future is `Send` by inference and this is one line of
 // forwarding, exactly as it is for `hclient-urlsession`.
-hclient_core::send_transport!(WinHttp);
+hclient_core::transport::send_transport!(WinHttp);
 
 /// A synchronous `WinHTTP` call that failed while setting the exchange up.
 pub(crate) fn setup(call: &'static str, source: Win32Error) -> Error {

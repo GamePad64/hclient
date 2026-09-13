@@ -4095,7 +4095,7 @@ pub mod testing {
 // `hclient-rt-embassy` is still a `Transport`, over a resolver that
 // cannot promise `Send` it is still a `Transport`, and what it is not is
 // a `SendTransport`.
-hclient_core::send_transport!(
+hclient_core::transport::send_transport!(
     for<R, T, D, H, P> Native<R, T, D, H, P>
     where
         R: TcpConnect + Timer + Clone + Sync + Send, // send-bound-exception: amendment-C16

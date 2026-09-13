@@ -248,12 +248,10 @@ pub type BoxSendExchange<'a, B, E> =
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is a `Transport` but not a `SendTransport`, so it cannot back an `hclient::Client`",
     label = "this transport makes no `Send` claim",
-    note = "implement it — one method, and at a concrete type its whole body is `Box::pin(self.execute(req))`:",
-    note = "    impl SendTransport for {Self} {{",
-    note = "        fn execute_send(&self, req: http::Request<RequestBody>)",
-    note = "            -> BoxSendExchange<'_, Self::Body, Self::Error>",
-    note = "        {{ Box::pin(self.execute(req)) }}",
-    note = "    }}",
+    note = "one line writes it, beside the type:",
+    note = "    hclient_core::transport::send_transport!({Self});",
+    note = "and for a generic transport the bounds `Send` needs go after it:",
+    note = "    hclient_core::transport::send_transport!(for<H> {Self} where H: Sync + Send);", // send-bound-exception: amendment-C16
     note = "`Send` is inferred there rather than proved. If this transport genuinely cannot cross a thread — a browser one, or a runtime whose IO is `!Send` — do not implement it: `Transport` alone still works, and only `hclient::Client` is out of reach."
 )]
 pub trait SendTransport: Transport {
@@ -370,12 +368,10 @@ where
     label = "this transport makes no `Send` claim",
     note = "If `{Self}` is a `Result`, this is a missing `?` rather than a missing impl: `Client::new` and `default_transport` are fallible on native and infallible in a browser, so portable code differs by exactly that one character.",
     note = "`Client` boxes its transport behind `Send` and `Sync`, so it asks for the one claim `Transport` deliberately does not make.",
-    note = "Implement `SendTransport` — one method, and at a concrete type its whole body is `Box::pin(self.execute(req))`, where `Send` is inferred rather than proved:",
-    note = "    impl hclient_core::SendTransport for {Self} {{",
-    note = "        fn execute_send(&self, req: http::Request<RequestBody>)",
-    note = "            -> hclient_core::BoxSendExchange<'_, Self::Body, Self::Error>",
-    note = "        {{ Box::pin(self.execute(req)) }}",
-    note = "    }}",
+    note = "Implement `SendTransport`. One line writes it, beside the type — `Send` is inferred there rather than proved:",
+    note = "    hclient_core::transport::send_transport!({Self});",
+    note = "and for a generic transport the bounds `Send` needs go after it:",
+    note = "    hclient_core::transport::send_transport!(for<H> {Self} where H: Sync + Send);", // send-bound-exception: amendment-C16
     note = "If this transport genuinely cannot cross a thread — a browser one, or a runtime whose IO is `!Send` — do not implement it. `Transport` alone still works and only `hclient::Client` is out of reach."
 )]
 pub trait DynTransport {
@@ -498,7 +494,7 @@ pub type SharedTransport = dyn DynTransport + Send + Sync; // send-bound-excepti
 /// #     }
 /// #     fn capabilities(&self) -> &Capabilities { &self.0 }
 /// # }
-/// hclient_core::send_transport!(MyTransport);
+/// hclient_core::transport::send_transport!(MyTransport);
 /// ```
 ///
 /// For a generic one, the bounds `Send` needs go after the type, in the
@@ -534,7 +530,7 @@ pub type SharedTransport = dyn DynTransport + Send + Sync; // send-bound-excepti
 /// #     }
 /// #     fn capabilities(&self) -> &Capabilities { &self.0 }
 /// # }
-/// hclient_core::send_transport!(for<H> Generic<H> where H: Clone + Sync + Send);
+/// hclient_core::transport::send_transport!(for<H> Generic<H> where H: Clone + Sync + Send);
 /// ```
 ///
 /// # What it deliberately does not cover
@@ -573,3 +569,13 @@ macro_rules! send_transport {
         }
     };
 }
+
+/// So that the macro is named where the trait it writes an impl for is.
+///
+/// `macro_rules!` with `#[macro_export]` lands at the crate root whatever
+/// module it is written in — that is the language's rule, not a choice —
+/// so `hclient_core::send_transport!` keeps working and this is the second
+/// name rather than a move. It exists because every other name a backend
+/// author touches here is `transport::`-qualified, and a macro that writes
+/// `impl SendTransport` should not be the one exception.
+pub use crate::send_transport;

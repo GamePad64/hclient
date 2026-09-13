@@ -625,7 +625,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
 // workspace discussed `Send` and never had the browser's problem.
 // `Sync` on the hook is what the boxed future costs: it holds `&self`
 // across the await, so `&WasiHttp<H>` crosses the thread with it.
-hclient_core::send_transport!(
+hclient_core::transport::send_transport!(
     for<H> WasiHttp<H>
     where H: Hooks + Clone + Unpin + Sync, // send-bound-exception: amendment-C16
 );

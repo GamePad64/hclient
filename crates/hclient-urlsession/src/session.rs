@@ -197,7 +197,7 @@ impl Transport for UrlSession {
 // — a session hands work to its own queue — and `execute` awaits a
 // channel this crate owns, so the future is `Send` by inference and this
 // is one line of forwarding.
-hclient_core::send_transport!(UrlSession);
+hclient_core::transport::send_transport!(UrlSession);
 
 impl UrlSession {
     /// Build the `NSURLRequest` and start a data task on it.

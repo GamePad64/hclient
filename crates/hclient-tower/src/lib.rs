@@ -324,7 +324,7 @@ where
 trait SendSyncStatic: Send + Sync + 'static {} // send-bound-exception: amendment-C16
 impl<T: Send + Sync + 'static> SendSyncStatic for T {} // send-bound-exception: amendment-C16
 
-hclient_core::send_transport!(
+hclient_core::transport::send_transport!(
     for<S, B, E> ServiceTransport<S>
     where
         S: tower_service::Service<http::Request<RequestBody>, Response = http::Response<B>, Error = E>

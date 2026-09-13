@@ -784,7 +784,7 @@ impl hclient_core::timer::Timer for TestTimer {
 // bound of its own: the mock's whole state is behind a `std::sync::Mutex`
 // (see the module doc), so `execute`'s future is `Send` by ordinary
 // inference and the impl is one line of forwarding.
-hclient_core::send_transport!(MockTransport);
+hclient_core::transport::send_transport!(MockTransport);
 
 #[cfg(test)]
 mod tests {

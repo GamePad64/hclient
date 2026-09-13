@@ -291,7 +291,7 @@ where
 // Its body at a concrete type is `Box::pin(self.execute(req))` — `Send`
 // is *inferred* here rather than proven, which is the asymmetry the
 // whole seam design rests on: proof is owed only by generic code.
-hclient_core::send_transport!(
+hclient_core::transport::send_transport!(
     for<S, B, E> AppTransport<S>
     where
         S: tower_service::Service<http::Request<OutgoingBody>, Response = http::Response<B>, Error = E>
