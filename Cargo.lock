@@ -811,7 +811,7 @@ dependencies = [
  "heapless",
  "log",
  "managed",
- "smoltcp",
+ "smoltcp 0.13.1",
 ]
 
 [[package]]
@@ -1602,7 +1602,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "log",
- "smoltcp",
+ "smoltcp 0.14.0",
  "static_assertions",
 ]
 
@@ -3438,6 +3438,19 @@ dependencies = [
  "byteorder",
  "cfg-if",
  "defmt 0.3.100",
+ "heapless",
+ "managed",
+]
+
+[[package]]
+name = "smoltcp"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f8b28ad56c6e35524a37dd492af5d1a47e31e1a4d175cd12f89c075f01980f"
+dependencies = [
+ "bitflags 1.3.2",
+ "byteorder",
+ "cfg-if",
  "heapless",
  "log",
  "managed",
