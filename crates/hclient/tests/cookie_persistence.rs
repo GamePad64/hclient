@@ -901,21 +901,14 @@ fn removing_one_cookie_from_a_store_takes_that_one_and_counts_it_once() {
         set(&source, "https://example.com/", "a=1", t(0)).await;
         set(&source, "https://example.com/", "b=2", t(0)).await;
         set(&source, "https://other.test/", "c=3", t(0)).await;
-        set(
-            &source,
-            "https://www.example.com/",
-            "d=4; Domain=example.com",
-            t(0),
-        )
-        .await;
         let cookies = source.cookies().await;
-        assert_eq!(cookies.len(), 4);
+        assert_eq!(cookies.len(), 3);
 
         let store = MemoryStore::new();
         for c in &cookies {
             store.put(c.clone(), t(0)).await;
         }
-        assert_eq!(store.len().await, 4);
+        assert_eq!(store.len().await, 3);
 
         let victim = cookies.iter().find(|c| c.name() == "b").expect("b");
         let key = CookieKey::of(victim);
@@ -929,21 +922,9 @@ fn removing_one_cookie_from_a_store_takes_that_one_and_counts_it_once() {
         assert_eq!(key.path(), "/");
         assert!(key.host_only(), "no Domain attribute was sent");
 
-        // The other value of the same field, which a single cookie cannot
-        // supply: with a `Domain` in force the key is not host-only, so a
-        // constant answer is wrong for one of the two whichever it is.
-        let scoped = cookies
-            .iter()
-            .find(|c| c.name() == "d")
-            .expect("the Domain-scoped cookie");
-        assert!(
-            !CookieKey::of(scoped).host_only(),
-            "a Domain attribute is what makes it false"
-        );
-
         store.remove(&key).await;
 
-        assert_eq!(store.len().await, 3, "one went, and the count followed it");
+        assert_eq!(store.len().await, 2, "one went, and the count followed it");
         let mut names: Vec<String> = store
             .all()
             .await
@@ -953,7 +934,7 @@ fn removing_one_cookie_from_a_store_takes_that_one_and_counts_it_once() {
         names.sort();
         assert_eq!(
             names,
-            vec!["a".to_owned(), "c".to_owned(), "d".to_owned()],
+            vec!["a".to_owned(), "c".to_owned()],
             "and it was `b` rather than everything or somebody else"
         );
 
@@ -961,7 +942,7 @@ fn removing_one_cookie_from_a_store_takes_that_one_and_counts_it_once() {
         // arm where `dropped` is zero, which a wrong subtraction would
         // still have to get right.
         store.remove(&CookieKey::of(victim)).await;
-        assert_eq!(store.len().await, 3, "a second removal is a no-op");
+        assert_eq!(store.len().await, 2, "a second removal is a no-op");
     });
 }
 
@@ -998,6 +979,41 @@ fn the_stores_capacity_is_the_capacity_it_enforces() {
             store.len().await,
             2,
             "the third eviction is what says the number is in force"
+        );
+    });
+}
+
+/// `CookieKey::host_only`'s other value, which needs a `Domain` and so
+/// needs the list to check it against — a build without one refuses
+/// every `Domain` attribute, so there is no non-host-only cookie to
+/// build a key from.
+///
+/// It is a test of its own rather than two more lines in the one above
+/// for exactly that reason: the rest of that test says the same thing in
+/// a `--no-default-features` build, and gating the whole of it on the
+/// list would have taken the store's own `remove` out of that build with
+/// it.
+#[cfg(feature = "public-suffix")]
+#[test]
+fn a_domain_scoped_cookies_key_is_not_host_only() {
+    futures_executor::block_on(async {
+        let jar = CookieJar::new();
+        set(
+            &jar,
+            "https://www.example.com/",
+            "d=4; Domain=example.com",
+            t(0),
+        )
+        .await;
+        let all = jar.cookies().await;
+        let c = all.iter().find(|c| c.name() == "d").expect("d");
+        assert!(
+            !CookieKey::of(c).host_only(),
+            "a Domain attribute is what makes it false"
+        );
+        assert!(
+            CookieKey::of(c).domain() == "example.com",
+            "and the key is scoped to the attribute rather than the host"
         );
     });
 }
