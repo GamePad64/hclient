@@ -123,3 +123,76 @@ fn the_deadline_sits_inside_the_decoder_not_outside_it() {
          it is the compressed stream that has to be measured"
     );
 }
+
+/// `Decompressed::coding` — *what coding was reversed* — had one reader
+/// and it asked an **uncompressed** response, where the answer is `None`
+/// and `Decode::token` is never called at all. So every coding's `token`
+/// survived mutation to `""` and to `"xyzzy"`: the value reaches a
+/// caller through this method and reaches an error message through
+/// `decode_error`, and nothing had ever read either.
+///
+/// One row per coding compiled into this build, because the token is
+/// per-decoder and a single row would leave the other three deletable.
+#[test]
+fn the_coding_a_body_reports_is_the_one_it_reversed() {
+    for (token, body) in codings() {
+        let c = Client::builder(MockTransport::new())
+            .build()
+            .expect("mock supports the default config");
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .push_response(
+                http::Response::builder()
+                    .status(200)
+                    .header(http::header::CONTENT_ENCODING, token)
+                    .body(body)
+                    .unwrap(),
+            );
+
+        let resp = futures_executor::block_on(c.get("https://a/x").send()).expect("responds");
+        let body = resp.into_parts().1;
+        assert_eq!(
+            body.coding(),
+            Some(token),
+            "a `{token}` response reports `{token}`"
+        );
+    }
+}
+
+/// One compressed body per coding this build can reverse, each produced
+/// by a real encoder rather than a fixture, so the token is asserted
+/// against a body that genuinely needed it.
+fn codings() -> Vec<(&'static str, Vec<u8>)> {
+    use std::io::Write as _;
+    let plain = b"the coding is the thing under test";
+    let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+
+    #[cfg(feature = "gzip")]
+    {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        e.write_all(plain).expect("gzip");
+        out.push(("gzip", e.finish().expect("gzip")));
+    }
+    #[cfg(feature = "deflate")]
+    {
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        e.write_all(plain).expect("deflate");
+        out.push(("deflate", e.finish().expect("deflate")));
+    }
+    #[cfg(feature = "brotli")]
+    {
+        let mut buf = Vec::new();
+        {
+            let mut e = brotli::CompressorWriter::new(&mut buf, 4096, 5, 22);
+            e.write_all(plain).expect("brotli");
+        }
+        out.push(("br", buf));
+    }
+    #[cfg(feature = "zstd")]
+    {
+        out.push(("zstd", zstd::encode_all(&plain[..], 3).expect("zstd")));
+    }
+
+    assert!(!out.is_empty(), "this build reverses no coding at all");
+    out
+}
