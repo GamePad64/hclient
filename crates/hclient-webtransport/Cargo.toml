@@ -9,6 +9,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# The mutation scripts beside `src/` are development instruments — they
+# rewrite this crate's own source to check that a test can fail — and a
+# reader who downloads the crate has no use for one. Nothing else here is
+# excluded: the tests ship, because a downloaded `.crate` running its own
+# suite is what distribution packagers do.
+exclude = ["*.py"]
+
 # Its own crate, for the reason the WebSocket framing is not a feature of
 # `hclient-native`: Cargo's features are additive, so a `webtransport`
 # feature on the HTTP/3 stack would put the extended-CONNECT SETTINGS — a

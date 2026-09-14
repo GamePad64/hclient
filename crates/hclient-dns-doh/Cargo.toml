@@ -9,6 +9,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# The mutation scripts beside `src/` are development instruments — they
+# rewrite this crate's own source to check that a test can fail — and a
+# reader who downloads the crate has no use for one. Nothing else here is
+# excluded: the tests ship, because a downloaded `.crate` running its own
+# suite is what distribution packagers do.
+exclude = ["*.py"]
+
 # See the root Cargo.toml: `default` is near-empty here by design.
 [package.metadata.docs.rs]
 all-features = true
