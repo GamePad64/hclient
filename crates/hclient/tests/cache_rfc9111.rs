@@ -772,3 +772,43 @@ fn the_corpus_date_constant_names_the_instant_the_tests_call_t0() {
         "apparent_age is received_at - Date, so a Date naming t(0) gives exactly the elapsed time"
     );
 }
+
+/// **A cacheable response that is not `200` keeps its own status and
+/// version when it is served back.**
+///
+/// `CACHEABLE_STATUSES` holds thirteen codes — `203`, `204`, `301`, `404`,
+/// `410` and the rest — and every test in this file stored a `200`. That
+/// is the one value `StatusCode::default()` also is, so a mutation run
+/// found `StoredResponse::status` survivable as `Default::default()`: the
+/// stored code is written straight into the response handed back
+/// (`cached.rs` sets `status_mut` and `version_mut` from it), and a cache
+/// that answered every hit with `200` would have passed the whole suite.
+///
+/// `version` is the same shape one line over and is asserted beside it,
+/// because `Version::default()` is `HTTP/1.1` — the value nearly every
+/// fixture here already carries, which is exactly why a test has to choose
+/// one that differs.
+#[test]
+fn a_cached_non_200_keeps_its_status_and_version_when_served() {
+    for code in [203u16, 301, 404, 410] {
+        let mut c = HttpCache::new();
+        let mut p = parts(code, &[("cache-control", "max-age=600")]);
+        p.version = http::Version::HTTP_2;
+        put(&mut c, &req(&[]), &p, b"body", t(0));
+
+        let Lookup::Hit(hit) = look(&mut c, &req(&[]), t(10)) else {
+            panic!("a {code} with explicit freshness must be a hit")
+        };
+        assert_eq!(
+            hit.status(),
+            StatusCode::from_u16(code).unwrap(),
+            "the stored status must survive the round trip, not become 200"
+        );
+        assert_eq!(
+            hit.version(),
+            http::Version::HTTP_2,
+            "and so must the version it was stored with"
+        );
+        assert_eq!(hit.body().as_ref(), b"body");
+    }
+}
