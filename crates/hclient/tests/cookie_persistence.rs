@@ -22,7 +22,9 @@
 //! **a build with no list is narrower, never wider.**
 #![cfg(feature = "cookies")]
 
-use hclient::cookie::{BuiltinList, Capacity, CookieJar, CookieRecord, MemoryStore, Rejected};
+use hclient::cookie::{
+    BuiltinList, Capacity, CookieJar, CookieRecord, Limits, MemoryStore, Rejected,
+};
 // Only the round-trip test reads it back, and that one needs the list.
 #[cfg(feature = "public-suffix")]
 use hclient::cookie::SameSite;
@@ -648,4 +650,129 @@ fn a_build_with_no_list_refuses_every_domain_scoped_record() {
             "host-only, so no subdomain sees it"
         );
     })
+}
+
+/// Every accessor on [`Cookie`] read once, against a `Set-Cookie` that
+/// chose each value deliberately.
+///
+/// Nothing in this workspace calls these — every rule reads the private
+/// field beside them, including `to_record` — so twelve public methods had
+/// no reader at all, and eight of them survived mutation to a constant.
+/// That is `hclient-mock`'s finding one type over: a surface comfortable
+/// for tests written beside it and unexamined by any written against it.
+///
+/// **Two cookies, because one cannot make every value non-default.**
+/// `host_only` is false exactly when a `Domain` is in force and
+/// `persistent` is false exactly without an `Expires`, so a single cookie
+/// would leave one of each pair agreeing with `bool::default()` — and a
+/// mutation to that default would survive the assertion that reads it.
+#[cfg(feature = "public-suffix")]
+#[test]
+fn every_cookie_accessor_answers_the_attribute_that_set_it() {
+    futures_executor::block_on(async {
+        let jar = CookieJar::new();
+        set(
+            &jar,
+            "https://www.example.com/dir/page",
+            // The `Expires` is 100 days past `t(0)` deliberately: a date
+            // further out than [`MAX_EXPIRY`]'s 400 days is *capped* on
+            // the way in, so a far-future one would make this assertion
+            // about the cap rather than about the accessor.
+            "a=one; Domain=example.com; Path=/dir; Expires=Thu, 22 Feb 2024 \
+             22:13:20 GMT; Secure; HttpOnly; SameSite=Strict",
+            t(0),
+        )
+        .await;
+
+        let all = jar.cookies().await;
+        let c = all.iter().find(|c| c.name() == "a").expect("cookie a");
+
+        assert_eq!(c.name(), "a");
+        assert_eq!(c.value(), "one");
+        assert_eq!(c.domain(), "example.com", "the Domain attribute, folded");
+        assert_eq!(c.path(), "/dir");
+        assert_eq!(
+            c.expires(),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_708_640_000))
+        );
+        assert!(!c.host_only(), "a Domain attribute is what makes it false");
+        assert!(c.persistent(), "an Expires is what makes it true");
+        assert!(c.secure());
+        assert!(c.http_only());
+        assert_eq!(c.same_site(), Some(SameSite::Strict));
+        assert_eq!(c.creation(), t(0));
+        assert!(!c.is_expired(t(1)));
+        assert!(c.is_expired(t(1_000_000_000)), "past its own Expires");
+
+        // The other half of the two pairs above: no `Domain` and no
+        // `Expires`, so `host_only` is true and `persistent` is false.
+        set(&jar, "https://www.example.com/", "b=two", t(5)).await;
+        let all = jar.cookies().await;
+        let c = all.iter().find(|c| c.name() == "b").expect("cookie b");
+
+        assert_eq!(c.domain(), "www.example.com", "the request host itself");
+        assert_eq!(c.path(), "/", "§5.1.4's default-path");
+        assert_eq!(c.expires(), None);
+        assert!(c.host_only(), "no Domain attribute");
+        assert!(!c.persistent(), "no Expires, so it is a session cookie");
+        assert!(!c.secure());
+        assert!(!c.http_only());
+        assert_eq!(c.same_site(), None);
+        assert_eq!(c.creation(), t(5));
+        assert!(
+            !c.is_expired(t(1_000_000_000)),
+            "a session cookie has no expiry to be past"
+        );
+    });
+}
+
+/// `is_empty` was asked seven times in this crate's tests and every one of
+/// them asserted **true** — so a mutation answering `true` unconditionally
+/// survived all seven. The pair is the assertion: a jar that has just
+/// stored a cookie is not empty.
+///
+/// `limits` is the other half, and it is checked *through the refusal it
+/// governs* rather than against itself: a getter compared only with the
+/// value just handed to the setter is green for a jar that stores the
+/// number and never reads it.
+#[test]
+fn the_two_jar_getters_answer_something_other_than_their_default() {
+    futures_executor::block_on(async {
+        let jar = CookieJar::new();
+        assert!(jar.is_empty().await, "a fresh jar");
+        set(&jar, "https://example.com/", "a=1", t(0)).await;
+        assert!(
+            !jar.is_empty().await,
+            "and not after it has been given a cookie"
+        );
+        assert_eq!(jar.len().await, 1);
+
+        let jar = CookieJar::new().with_limits(Limits {
+            max_name_value_bytes: 16,
+        });
+        assert_eq!(jar.limits().max_name_value_bytes, 16);
+        // Sixteen bytes exactly is accepted and seventeen is not, so the
+        // number the getter reports is the number in force.
+        assert_eq!(
+            jar.store(
+                &uri("https://example.com/"),
+                &HeaderValue::from_str("a=123456789012345").expect("header"),
+                t(0),
+            )
+            .await,
+            Ok(())
+        );
+        assert_eq!(
+            jar.store(
+                &uri("https://example.com/"),
+                &HeaderValue::from_str("b=1234567890123456").expect("header"),
+                t(0),
+            )
+            .await,
+            Err(Rejected::TooLarge {
+                bytes: 17,
+                limit: 16
+            })
+        );
+    });
 }
