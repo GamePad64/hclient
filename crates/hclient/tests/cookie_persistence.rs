@@ -776,3 +776,37 @@ fn the_two_jar_getters_answer_something_other_than_their_default() {
         );
     });
 }
+
+/// `CookieJar::clear` had no caller anywhere — not in this workspace, not
+/// in a test — so emptying its body passed the whole suite. It is the one
+/// operation here whose failure is *silent and total*: a caller logging
+/// a user out keeps sending their session cookie and nothing says so.
+///
+/// Both halves are asserted, because an emptied body passes the first on
+/// its own: the jar reports itself empty **and** stops sending the header
+/// it was sending a line earlier.
+#[test]
+fn clearing_a_jar_really_empties_it() {
+    futures_executor::block_on(async {
+        let jar = CookieJar::new();
+        set(&jar, "https://example.com/", "sid=abc", t(0)).await;
+        assert_eq!(
+            jar.cookie_header(&uri("https://example.com/"), t(1))
+                .await
+                .expect("a header")
+                .to_str()
+                .expect("ascii"),
+            "sid=abc"
+        );
+
+        jar.clear().await;
+
+        assert!(jar.is_empty().await, "the jar reports itself empty");
+        assert_eq!(jar.len().await, 0);
+        assert_eq!(
+            jar.cookie_header(&uri("https://example.com/"), t(2)).await,
+            None,
+            "and it has stopped sending what it was sending"
+        );
+    });
+}
