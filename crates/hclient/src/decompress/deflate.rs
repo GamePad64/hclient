@@ -278,3 +278,119 @@ impl super::decoder::Decode for DeflateStream {
         "deflate"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decompress::decoder::Decode;
+
+    /// Every condition in the sniff, each one isolated.
+    ///
+    /// The integration tests cannot reach this: they feed what a real
+    /// encoder produced, and a real encoder makes a header where all
+    /// three conditions hold (zlib) or the first byte is an RFC 1951
+    /// block header where none of them do (raw). A header where they
+    /// **disagree** has no producer, so `&&` mutated to `||` survived
+    /// both of them — twice.
+    ///
+    /// The four rows below were found by enumerating all 65,536 headers
+    /// and keeping, for each condition, one where only that condition is
+    /// false. That is what makes this a test of the rule rather than of
+    /// an example.
+    #[test]
+    fn each_of_the_three_sniff_conditions_is_necessary() {
+        // CINFO = 0, CM = 8, and 0x081d is 31 * 67: a real zlib header,
+        // and the control without which the rows below would pass for a
+        // sniff that answers `false` to everything.
+        assert!(
+            DeflateStream::looks_like_zlib([0x08, 0x1d]),
+            "all three hold, so this is zlib"
+        );
+
+        assert!(
+            !DeflateStream::looks_like_zlib([0x00, 0x00]),
+            "CM is 0 rather than 8 — the window and the check both pass"
+        );
+        assert!(
+            !DeflateStream::looks_like_zlib([0x88, 0x1c]),
+            "CINFO is 8, which RFC 1950 §2.2 forbids — CM and the check pass"
+        );
+        assert!(
+            !DeflateStream::looks_like_zlib([0x08, 0x00]),
+            "0x0800 is not a multiple of 31 — CM and the window both pass"
+        );
+    }
+
+    /// The header may arrive split across frames, which is ordinary on a
+    /// socket and unreachable from a test that hands over a whole body.
+    ///
+    /// `buf.len() < 2` is the bound, and it was never asked *at* two: one
+    /// byte must buffer and answer nothing, and the second must complete
+    /// the header and start decoding. Both `==` and `<=` survived here.
+    #[test]
+    fn a_header_split_across_two_frames_is_still_read_as_one() {
+        let body = zlib_of(b"hello, deflate");
+
+        let mut whole = DeflateStream::new();
+        let mut want = Vec::new();
+        want.extend_from_slice(&whole.push(&body).expect("push"));
+        want.extend_from_slice(&whole.finish().expect("finish"));
+        assert_eq!(&want[..], b"hello, deflate");
+
+        let mut split = DeflateStream::new();
+        let first = split.push(&body[..1]).expect("one byte");
+        assert!(
+            first.is_empty(),
+            "one byte is not a header, so there is nothing to decode yet"
+        );
+        let mut got = Vec::new();
+        got.extend_from_slice(&split.push(&body[1..2]).expect("the second byte"));
+        got.extend_from_slice(&split.push(&body[2..]).expect("the rest"));
+        got.extend_from_slice(&split.finish().expect("finish"));
+        assert_eq!(got, want, "the same plaintext, a byte at a time");
+
+        // A body of *exactly* two bytes, which is the other side of the
+        // same bound and the one `<=` gets wrong: `03 00` is RFC 1951's
+        // empty final block, a legal raw `deflate` body carrying no
+        // plaintext at all — ordinary for a response that has a
+        // `Content-Encoding` and nothing to say. Read as "still not a
+        // header", it is reported as a truncation instead.
+        let mut empty = DeflateStream::new();
+        assert!(empty.push(&[0x03, 0x00]).expect("two bytes").is_empty());
+        assert!(
+            empty.finish().expect("a complete, empty stream").is_empty(),
+            "two bytes are a whole header, not a body that ended early"
+        );
+    }
+
+    /// A `push` with nothing in it after the stream has ended is ordinary
+    /// — a server may write the last frame and then close — and it must
+    /// not be read as *bytes arrived after the end*.
+    ///
+    /// Deleting the `!` makes exactly that mistake, and it survived:
+    /// nothing fed this decoder an empty frame after the end.
+    #[test]
+    fn an_empty_frame_after_the_end_is_not_trailing_data() {
+        let body = zlib_of(b"x");
+        let mut d = DeflateStream::new();
+        d.push(&body).expect("push");
+
+        assert!(
+            d.push(&[])
+                .expect("an empty frame is not an error")
+                .is_empty(),
+            "nothing to decode and nothing to complain about"
+        );
+        assert!(
+            d.push(b"junk").is_err(),
+            "and a non-empty one after the end still is an error"
+        );
+    }
+
+    fn zlib_of(plain: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        e.write_all(plain).expect("encode");
+        e.finish().expect("encode")
+    }
+}
