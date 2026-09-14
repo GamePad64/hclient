@@ -24,8 +24,7 @@
 //! refused every name.** Every JNI step was correct: the VM was
 //! registered, `android/icu/text/IDNA` resolved, `getUTS46Instance(0x3c)`
 //! returned an instance, and `nameToASCII` answered `xn--strae-oqa.de`
-//! for `straße.de`. What was wrong was one line of ours — see
-//! [`imp::Answer`]: the shared walk had been factored out of the ASCII
+//! for `straße.de`. What was wrong was one line of ours: the shared walk had been factored out of the ASCII
 //! direction and kept its closing check, *the answer must be ASCII*, so
 //! `nameToUnicode` refused every conversion it performed correctly. The
 //! acceptance probe's reverse half then failed, and the backend reported
@@ -187,8 +186,16 @@ mod imp {
     /// JVM is absent in a unit test binary and in a command-line tool
     /// built for Android, which is `hclient-proxy`'s
     /// `ndk_context` note one crate over; the class is absent below API
-    /// 24. Either way the caller falls back the way it does for a Windows
-    /// with no `icuuc.dll` — see [`crate::backend`].
+    /// 24. Either way this is the one `find` in the crate that can really
+    /// answer `None`, and what follows is a **refusal** rather than a
+    /// fallback: [`selected`](crate::selected) hands back nothing and the
+    /// public functions answer [`crate::IdnError::NoImplementation`].
+    ///
+    /// The sentence here used to say the caller "falls back the way it
+    /// does for a Windows with no `icuuc.dll`". There is no such
+    /// fallback and no such Windows: `icuuc.dll` is a load-time import,
+    /// so a machine without it fails to start the process rather than
+    /// reaching that backend's `find` at all.
     pub(crate) fn find() -> Option<Android> {
         with_env(|env| {
             env.find_class(const { jni_str!("android/icu/text/IDNA") })?;

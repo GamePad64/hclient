@@ -521,8 +521,8 @@ pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     Ok(ascii)
 }
 
-/// One of the two entry points in [`policy`], as a value the dispatch can
-/// take. One direction, so one value — kept as a type because the
+/// The crate's one entry point, as a value the dispatch can take. One
+/// direction, so one value — kept as a type because the
 /// dispatch is written over it and a second direction would be a second
 /// value rather than a second function.
 ///
@@ -611,7 +611,8 @@ pub mod testing {
     /// around it.
     ///
     /// `tests/web_corpus.rs` makes two claims — what the engine answers,
-    /// and what a caller gets — and the gap between them is [`super::ace`].
+    /// and what a caller gets — and the gap between them is the `ace`
+    /// module, which supplies the half of UTS 46 a URL parser leaves out.
     /// Measuring it is the point rather than a diagnostic: the gap is one
     /// row in Firefox and six in Chrome, so a backend written against
     /// either number alone is wrong in the other engine. A second `URL`

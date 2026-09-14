@@ -41,8 +41,8 @@
 //! # The acceptance probe, which is shared and lives here
 //!
 //! Neither backend is trusted because its symbols exist. Both are trusted
-//! only after answering the transitional pair correctly — see
-//! [`answers_the_trap_correctly`]. That check is the same on both
+//! only after answering the transitional pair correctly — the probe in
+//! [`crate::selected`]. That check is the same on both
 //! platforms, is pure policy, and would be the first thing to rot if each
 //! backend carried its own copy.
 

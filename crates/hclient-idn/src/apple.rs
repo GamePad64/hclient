@@ -39,7 +39,7 @@
 //! Where the hook does run, it is the real thing and it agrees with this
 //! crate: `UIDNAHookICU` opens its handle with
 //! `UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ | UIDNA_NONTRANSITIONAL_TO_UNICODE
-//! | UIDNA_NONTRANSITIONAL_TO_ASCII`, bit for bit [`crate::OPTIONS`].
+//! | UIDNA_NONTRANSITIONAL_TO_ASCII`, bit for bit [`crate::icu::OPTIONS`].
 //!
 //! # Why this is not just "call `URL(string:)`"
 //!
@@ -58,7 +58,8 @@
 //!    That scan now lives in `crate::policy`, which runs it for both
 //!    backends, and the copy below is redundant *from that path*. It is
 //!    kept because it is not redundant from the other one: the acceptance
-//!    gate in `lib.rs` calls [`convert`] directly, not through the policy,
+//!    gate in `lib.rs` calls [`to_ascii`] directly rather than through
+//!    the shared dispatch,
 //!    and this is the only file in the crate that hands a string to a URL
 //!    parser. The guard against a wrong origin belongs beside the parser,
 //!    not two files away.
@@ -78,7 +79,7 @@
 //!    It costs more than a vague error message. `URLParser+ICU.swift`'s
 //!    `shouldAllow(_:encodeToASCII: true)` sets `allowedErrors = 0`, so
 //!    Foundation refuses a name on **any** error bit — including the six
-//!    that [`crate::IGNORED_ERRORS`] must mask for this crate to agree with
+//!    that [`crate::icu::IGNORED_ERRORS`] must mask for this crate to agree with
 //!    `idna` at all (_CheckHyphens=false_ and _VerifyDnsLength=false_).
 //!    Apple's own masking list exists only for the `nameToUnicode`
 //!    direction, which host encoding does not use. So a name with a

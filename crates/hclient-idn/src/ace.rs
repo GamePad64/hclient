@@ -14,7 +14,9 @@
 //! back its authority — so `xn--zzzz.test` comes back unchanged where
 //! `idna` refuses it, and `EXAMPLE.COM` comes back unfolded. Measured on
 //! CI, eight rows of the differential corpus, after the layer was
-//! deleted. See [`crate::apple`], the only caller.
+//! deleted. Its only caller is the Apple backend, which is compiled only on that
+//! platform — so a link here would resolve on one target and not the
+//! others.
 //!
 //! **Unconditional on purpose, like `icu` and `android` beside it.** Every
 //! line here is integer arithmetic over `[a-z0-9-]` and string splitting —

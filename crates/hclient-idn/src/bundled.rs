@@ -6,7 +6,8 @@
 //! resolves here answers what that crate answered before it took this
 //! one: byte for byte, measured that way rather than argued.
 //!
-//! **It goes through [`crate::policy`] like the other three, and it was
+//! **It goes through [`crate::domain_to_ascii`]'s shared path like the
+//! other three, and it was
 //! the one that did not.** It called `idna::domain_to_ascii_cow` directly,
 //! so on Linux and wasm the shared layer never ran — which is the ICU
 //! path's own argument left unapplied: *the alternative is two statements
@@ -23,7 +24,7 @@
 //! # Its handle is a marker, and the probe still runs
 //!
 //! There is nothing to find and nothing to keep alive, so [`Handle`] is a
-//! unit like Foundation's. The acceptance probe in [`crate::backend`] runs
+//! unit like Foundation's. The acceptance probe in [`crate::selected`] runs
 //! over this backend anyway, which is a change from the scheme where the
 //! bundled path was trusted by construction: `idna` is this crate's own
 //! oracle, so it will pass, and running it removes a special case rather
