@@ -337,4 +337,45 @@ mod tests {
     fn encoded() -> Vec<u8> {
         zstd::encode_all(PLAIN, 3).expect("encode")
     }
+
+    /// RFC 8878 §3.1.2's skippable frames — a magic number, a four-byte
+    /// length, and a payload a decoder must step over — which nothing had
+    /// ever handed this decoder. No encoder writes one, so the arm was
+    /// reachable only by building the frame by hand, and four mutations
+    /// lived in it: the arithmetic working out how far to skip, and the
+    /// bound deciding whether the whole frame has arrived.
+    ///
+    /// **A frame *after* the body is what discriminates the bound**, and
+    /// that took measuring: there `pending.len()` lands exactly on
+    /// `skip`, so `<` and `<=` differ, where before the body there are
+    /// always further bytes and the two agree.
+    #[test]
+    fn a_skippable_frame_is_stepped_over_wherever_it_sits() {
+        for payload in [0usize, 7] {
+            let mut frame = vec![0x50, 0x2A, 0x4D, 0x18];
+            frame.extend_from_slice(&u32::try_from(payload).expect("fits").to_le_bytes());
+            frame.extend(std::iter::repeat_n(0xAB, payload));
+
+            for (where_, body) in [
+                ("before the body", [frame.clone(), encoded()].concat()),
+                ("after the body", [encoded(), frame.clone()].concat()),
+            ] {
+                // A byte at a time as well as whole, because the frame's
+                // own header may be split across two `push` calls.
+                for chunk in [1usize, 1024] {
+                    let mut d = ZstdStream::new();
+                    let mut got = Vec::new();
+                    for part in body.chunks(chunk) {
+                        got.extend_from_slice(&d.push(part).unwrap_or_else(|e| {
+                            panic!("{where_}, payload {payload}, chunk {chunk}: {e}")
+                        }));
+                    }
+                    got.extend_from_slice(&d.finish().unwrap_or_else(|e| {
+                        panic!("{where_}, payload {payload}, chunk {chunk}: {e}")
+                    }));
+                    assert_eq!(got, PLAIN, "{where_}, payload {payload}, chunk {chunk}");
+                }
+            }
+        }
+    }
 }
