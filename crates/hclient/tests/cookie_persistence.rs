@@ -830,3 +830,45 @@ fn clearing_a_jar_really_empties_it() {
         );
     });
 }
+
+/// `Held::purge_expired` runs on every `put` and had no test: emptying
+/// its body passed the whole suite, because an expired cookie never
+/// reaches the wire either way — `matching` filters on expiry, so the
+/// `Cookie` header is identical with the sweep and without it.
+///
+/// What it costs is the jar's *capacity*. A dead cookie that is never
+/// swept holds a slot against [`Capacity`], is handed out by `cookies`,
+/// and is written down by `records` for the next process to load. On a
+/// long-lived jar that is an unbounded leak of cookies the server
+/// deleted.
+///
+/// So the observer here is deliberately **not** the wire — it is `len`,
+/// whose own doc says expired cookies are counted until a `store` sweeps
+/// them, which is the claim this pins.
+#[test]
+fn an_expired_cookie_is_swept_by_the_next_store_rather_than_held_for_ever() {
+    futures_executor::block_on(async {
+        let u = "https://example.com/";
+        let jar = CookieJar::new();
+        set(&jar, u, "a=1; Max-Age=10", t(0)).await;
+        assert_eq!(jar.len().await, 1);
+
+        // Long past `a`'s expiry, and the cookie that arrives is what
+        // triggers the sweep.
+        set(&jar, u, "b=2; Max-Age=1000", t(100)).await;
+        assert_eq!(
+            jar.len().await,
+            1,
+            "`a` expired 90 seconds ago and the sweep is what drops it"
+        );
+        assert_eq!(
+            jar.cookies()
+                .await
+                .iter()
+                .map(|c| c.name().to_owned())
+                .collect::<Vec<_>>(),
+            vec!["b".to_owned()],
+            "and it is gone from the jar's own contents, not merely filtered on the way out"
+        );
+    });
+}
