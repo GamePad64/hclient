@@ -14,7 +14,9 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hclient::cookie::{BuiltinList, Capacity, CookieJar, Limits, MemoryStore, NoList, Rejected};
+use hclient::cookie::{
+    BuiltinList, Capacity, CookieJar, Limits, MemoryStore, NoList, Rejected, SameSite,
+};
 use http::{HeaderValue, Uri};
 use std::assert_matches;
 
@@ -860,6 +862,89 @@ fn replacing_one_held_cookie_leaves_its_neighbours_creation_alone() {
                 ("c".to_owned(), now()),
             ],
             "the replacement keeps `a`'s own creation and touches nobody else's"
+        );
+    });
+}
+
+/// `SameSite=None` is the value that had no test: `Strict` is asserted
+/// next door and an unrecognised value is asserted to fall back, and
+/// those two leave the `None` arm of the parser deletable — because
+/// deleting it sends `SameSite=None` down the same fallback, which also
+/// answers `None`.
+///
+/// The two are opposite instructions wearing one Rust value.
+/// `SameSite=None` is a server **explicitly permitting** cross-site
+/// delivery; the fallback's `None` is *the attribute was not usable*.
+/// Nothing in this crate enforces `SameSite` — it is carried for whoever
+/// reads it — so what a wrong answer costs is a reader's decision, and
+/// telling them "unset" where the server said "None" is the direction
+/// that loses the permission.
+#[test]
+fn same_site_none_is_kept_as_itself_and_not_as_the_fallback() {
+    futures_executor::block_on(async {
+        let jar = CookieJar::new();
+        store(&jar, "https://example.com/", "a=1; SameSite=None; Secure")
+            .await
+            .expect("stored");
+        store(&jar, "https://example.com/", "b=2; SameSite=Nonsense")
+            .await
+            .expect("stored");
+
+        let all = jar.cookies().await;
+        let a = all.iter().find(|c| c.name() == "a").expect("a");
+        let b = all.iter().find(|c| c.name() == "b").expect("b");
+        assert_eq!(
+            a.same_site(),
+            Some(SameSite::None),
+            "the server said None and meant it"
+        );
+        assert_eq!(
+            b.same_site(),
+            None,
+            "an unrecognised value is the default, which is a different fact"
+        );
+    });
+}
+
+/// `from_unix`'s negative arm — the one an `Expires` before 1970 takes,
+/// which is the commonest deletion idiom on the web.
+///
+/// **The clock has to sit just after the epoch for this to be visible**,
+/// which is why no ordinary test reaches it: with `now` in 2023, a date
+/// mishandled as `+86400` instead of `-86400` is still in the past, so
+/// the cookie is deleted either way and the two answers agree. A hundred
+/// seconds after the epoch they do not.
+#[test]
+fn an_expiry_before_the_epoch_stays_before_it() {
+    futures_executor::block_on(async {
+        let epoch_ish = UNIX_EPOCH + Duration::from_secs(100);
+        let jar = CookieJar::new();
+        jar.store(&uri("https://example.com/"), &header("sid=abc"), epoch_ish)
+            .await
+            .expect("stored");
+        assert_eq!(
+            jar.cookie_header(&uri("https://example.com/"), epoch_ish)
+                .await
+                .expect("a header")
+                .to_str()
+                .expect("ascii"),
+            "sid=abc"
+        );
+
+        // A whole day before the epoch: in the past, and the arithmetic
+        // has to take it the correct way round to know that.
+        jar.store(
+            &uri("https://example.com/"),
+            &header("sid=abc; Expires=Wed, 31 Dec 1969 00:00:00 GMT"),
+            epoch_ish,
+        )
+        .await
+        .expect("stored");
+        assert_eq!(
+            jar.cookie_header(&uri("https://example.com/"), epoch_ish)
+                .await,
+            None,
+            "a date before the epoch deletes; read as a date after it, this cookie lives"
         );
     });
 }
