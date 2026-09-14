@@ -15,7 +15,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hclient::cookie::{
-    BuiltinList, Capacity, CookieJar, Limits, MemoryStore, NoList, Rejected, SameSite,
+    BuiltinList, Capacity, CookieJar, Limits, MemoryStore, NoList, PublicSuffixList, Rejected,
+    SameSite,
 };
 use http::{HeaderValue, Uri};
 use std::assert_matches;
@@ -947,4 +948,115 @@ fn an_expiry_before_the_epoch_stays_before_it() {
             "a date before the epoch deletes; read as a date after it, this cookie lives"
         );
     });
+}
+
+/// A list of the caller's own, handed over **by reference**.
+///
+/// `PublicSuffixList` is a seam — `CookieJar::with_public_suffix_list`
+/// exists so a caller can supply a fresher snapshot than the one this
+/// crate was built with — and no test had ever supplied one. Every test
+/// here uses `BuiltinList` or `NoList`, both of ours, so the blanket
+/// `impl PublicSuffixList for &T` that lets a caller keep ownership of
+/// their list was reached by nothing at all: four mutations in its two
+/// delegating methods survived, in both directions each.
+///
+/// The list below deliberately **disagrees** with the built-in one —
+/// `example.com` is an ordinary registrable domain to Mozilla's list and
+/// a public suffix to this one — so a jar that quietly consulted the
+/// built-in list instead, or that answered from a delegation returning a
+/// constant, gives a different answer from the one asserted.
+#[derive(Debug)]
+struct OnlyExampleCom;
+
+impl PublicSuffixList for OnlyExampleCom {
+    fn is_public_suffix(&self, domain: &str) -> bool {
+        domain == "example.com"
+    }
+
+    fn has_list(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_caller_supplied_list_is_consulted_through_a_reference() {
+    futures_executor::block_on(async {
+        let list = OnlyExampleCom;
+        let jar = CookieJar::with_public_suffix_list(&list);
+
+        // §5.7: a `Domain` that is a public suffix is refused, and this
+        // list says `example.com` is one where Mozilla's does not.
+        assert_eq!(
+            jar.store(
+                &uri("https://www.example.com/"),
+                &header("a=1; Domain=example.com"),
+                now(),
+            )
+            .await,
+            Err(Rejected::DomainIsPublicSuffix {
+                domain: "example.com".to_owned()
+            }),
+            "the caller's list is what decided this, not ours"
+        );
+
+        // And a domain this list does *not* call a suffix is accepted,
+        // which is the half that fails if the delegation answers a
+        // constant `true`.
+        assert_eq!(
+            jar.store(
+                &uri("https://a.other.test/"),
+                &header("b=2; Domain=other.test"),
+                now(),
+            )
+            .await,
+            Ok(())
+        );
+        assert_eq!(
+            jar.cookie_header(&uri("https://b.other.test/"), now())
+                .await
+                .expect("a header")
+                .to_str()
+                .expect("ascii"),
+            "b=2",
+            "scoped to the domain the caller's list permitted"
+        );
+
+        // The list is still the caller's afterwards, which is the whole
+        // point of taking it by reference.
+        assert!(list.has_list());
+
+        // `has_list` is what chooses between two refusals — "the list
+        // says this is a suffix" and "there is no list to ask" — so a
+        // second list answering `false` is what makes the delegation's
+        // *value* observable rather than only its existence. Without it a
+        // blanket impl answering a constant `true` is indistinguishable.
+        let none = NoListAtAll;
+        let jar = CookieJar::with_public_suffix_list(&none);
+        assert_eq!(
+            jar.store(
+                &uri("https://www.example.com/"),
+                &header("a=1; Domain=example.com"),
+                now(),
+            )
+            .await,
+            Err(Rejected::NoPublicSuffixList {
+                domain: "example.com".to_owned()
+            }),
+            "a different refusal, chosen by the caller's own `has_list`"
+        );
+    });
+}
+
+/// The second half of the pair above: a list that has nothing to say.
+#[derive(Debug)]
+struct NoListAtAll;
+
+impl PublicSuffixList for NoListAtAll {
+    fn is_public_suffix(&self, _domain: &str) -> bool {
+        true
+    }
+
+    fn has_list(&self) -> bool {
+        false
+    }
 }
