@@ -765,3 +765,101 @@ fn the_documented_example_holds() {
         );
     });
 }
+
+/// §5.7's replacement rule on the **batch** path, which no test reached.
+///
+/// `store_response`'s own doc explains that a cookie already placed by
+/// *this* response is looked up in the batch before the store's snapshot,
+/// "otherwise the second would draw a fresh `seq` and jump §5.4's queue
+/// against the first" — and the lookup that implements it survived
+/// mutation to `!=`. The rule was right, documented, and tested through
+/// [`CookieJar::store`] and [`CookieJar::restore`]; the third path had
+/// nothing on it.
+///
+/// **The batch is `a, a, b`, which took enumerating 81 of them to find.**
+/// The obvious shape — `a, b, a` — does not discriminate: every cookie in
+/// one response shares a creation time, so §5.4's first two keys tie and
+/// only the sequence is left, and a repeat that follows a *different*
+/// name inherits a sequence that happens to sort the same way. A repeat
+/// that follows **itself** does not.
+#[test]
+fn a_name_repeated_within_one_response_keeps_its_place_in_the_queue() {
+    futures_executor::block_on(async {
+        let jar = CookieJar::new();
+        let mut headers = http::HeaderMap::new();
+        headers.append(http::header::SET_COOKIE, header("a=1"));
+        headers.append(http::header::SET_COOKIE, header("a=2"));
+        headers.append(http::header::SET_COOKIE, header("b=3"));
+        assert_eq!(
+            jar.store_response(&uri("https://example.com/"), &headers, now())
+                .await,
+            3,
+            "three headers parsed, whatever they then do to each other"
+        );
+        assert_eq!(
+            sent(&jar, "https://example.com/").await,
+            "a=2; b=3",
+            "the repeat replaces the value in place; it does not queue behind `b`"
+        );
+    });
+}
+
+/// The same rule against the **store's snapshot** rather than the batch —
+/// the second of `store_response`'s two lookups, and the arm one response
+/// structurally cannot reach, since the snapshot is empty on the first.
+///
+/// **The observer is a creation time and not the order**, which is what
+/// separates this from its neighbour above. A wrong lookup here hands the
+/// replacement whichever held cookie it met first, so the *bystander*
+/// loses its own creation time — and §5.4 then sorts a jar in which every
+/// cookie claims to have arrived at once. The order survives that by
+/// accident, because the sequence breaks the tie the corrupted times
+/// create; `creation` is where the damage is visible.
+#[test]
+fn replacing_one_held_cookie_leaves_its_neighbours_creation_alone() {
+    futures_executor::block_on(async {
+        let u = "https://example.com/app/x";
+        let jar = CookieJar::new();
+        // Three separate responses, so the three creation times differ and
+        // a substituted one has something to disagree with.
+        store(&jar, u, "c=0; Path=/app; Max-Age=100000")
+            .await
+            .expect("stored");
+        let later = now() + Duration::from_secs(50);
+        jar.store(&uri(u), &header("a=1; Path=/app; Max-Age=100000"), later)
+            .await
+            .expect("stored");
+        let later_still = now() + Duration::from_secs(100);
+        jar.store(
+            &uri(u),
+            &header("b=2; Path=/app; Max-Age=100000"),
+            later_still,
+        )
+        .await
+        .expect("stored");
+
+        let mut replacement = http::HeaderMap::new();
+        replacement.append(
+            http::header::SET_COOKIE,
+            header("a=9; Path=/app; Max-Age=100000"),
+        );
+        jar.store_response(&uri(u), &replacement, now() + Duration::from_secs(500))
+            .await;
+
+        let mut all = jar.cookies().await;
+        all.sort_by_key(|c| c.name().to_owned());
+        let times: Vec<_> = all
+            .iter()
+            .map(|c| (c.name().to_owned(), c.creation()))
+            .collect();
+        assert_eq!(
+            times,
+            vec![
+                ("a".to_owned(), now() + Duration::from_secs(50)),
+                ("b".to_owned(), now() + Duration::from_secs(100)),
+                ("c".to_owned(), now()),
+            ],
+            "the replacement keeps `a`'s own creation and touches nobody else's"
+        );
+    });
+}
