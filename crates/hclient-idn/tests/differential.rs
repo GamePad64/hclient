@@ -195,16 +195,17 @@ fn the_divergences_from_idna_are_exactly_the_documented_ones() {
 #[test]
 fn the_platform_column_is_not_silently_empty() {
     let required = std::env::var_os("HCLIENT_IDN_REQUIRE_PLATFORM").is_some();
-    match testing::has_platform() {
-        true => println!("platform column measured against this target's own UTS 46"),
-        false => assert!(
+    if testing::has_platform() {
+        println!("platform column measured against this target's own UTS 46");
+    } else {
+        assert!(
             !required,
             "HCLIENT_IDN_REQUIRE_PLATFORM is set, so this machine is supposed to have a system \
              ICU — and no library was found. Every platform-column row above passed by not \
              running. Install one (Debian/Ubuntu: libicu-dev or libicu76; Windows 10 1703+ has \
              one), or unset the variable and accept that this run proves nothing about the \
              platform path."
-        ),
+        );
     }
 }
 
