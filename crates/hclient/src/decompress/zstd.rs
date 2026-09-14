@@ -290,3 +290,51 @@ impl super::decoder::Decode for ZstdStream {
         "zstd"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decompress::decoder::Decode;
+
+    /// A body cut *exactly* at the end of a frame header is the one
+    /// truncation where `pending` is empty and the frame is unfinished at
+    /// the same time — so `!is_finished() || !pending.is_empty()` is the
+    /// only shape that refuses it, and `&&` accepts it as a complete,
+    /// empty document.
+    ///
+    /// The suite's existing truncation test cuts mid-block, where both
+    /// halves of the condition hold and `&&` is indistinguishable from
+    /// `||`. Six bytes — zstd's four-byte magic plus a two-byte frame
+    /// header — is the length that separates them, found by cutting the
+    /// same body at every length and comparing the two versions.
+    #[test]
+    fn a_body_that_ends_at_a_frame_header_is_a_truncation() {
+        let full = encoded();
+        let mut d = ZstdStream::new();
+        assert!(
+            d.push(&full[..6]).is_ok(),
+            "six bytes are a well-formed prefix, so `push` has nothing to object to"
+        );
+        assert!(
+            d.finish().is_err(),
+            "but the frame never ended, so the body did not either"
+        );
+    }
+
+    /// The control that makes the row above a claim about *truncation*
+    /// rather than about short inputs: the whole body decodes.
+    #[test]
+    fn the_same_body_whole_decodes_to_what_went_in() {
+        let mut d = ZstdStream::new();
+        let mut got = Vec::new();
+        got.extend_from_slice(&d.push(&encoded()).expect("push"));
+        got.extend_from_slice(&d.finish().expect("finish"));
+        assert_eq!(got, PLAIN);
+    }
+
+    const PLAIN: &[u8] = b"the quick brown fox jumps over the lazy dog, repeatedly and at length";
+
+    fn encoded() -> Vec<u8> {
+        zstd::encode_all(PLAIN, 3).expect("encode")
+    }
+}
