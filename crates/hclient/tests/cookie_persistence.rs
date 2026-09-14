@@ -23,7 +23,8 @@
 #![cfg(feature = "cookies")]
 
 use hclient::cookie::{
-    BuiltinList, Capacity, CookieJar, CookieRecord, Limits, MemoryStore, Rejected,
+    BuiltinList, Capacity, CookieJar, CookieKey, CookieRecord, CookieStore, Limits, MemoryStore,
+    Rejected,
 };
 // Only the round-trip test reads it back, and that one needs the list.
 #[cfg(feature = "public-suffix")]
@@ -869,6 +870,134 @@ fn an_expired_cookie_is_swept_by_the_next_store_rather_than_held_for_ever() {
                 .collect::<Vec<_>>(),
             vec!["b".to_owned()],
             "and it is gone from the jar's own contents, not merely filtered on the way out"
+        );
+    });
+}
+
+/// `CookieStore::remove` has no caller anywhere — not in this crate, not
+/// in a test — so three separate mutations in `MemoryStore`'s
+/// implementation of it survived: the comparison that decides *which*
+/// cookie goes, the subtraction that counts how many went, and the `-=`
+/// that applies that count to the total.
+///
+/// It is a method of a **public seam**, which is what separates this from
+/// an unread getter. Whoever writes a store of their own must implement
+/// it, and `MemoryStore` is the worked example they will read; an example
+/// that removes the wrong cookie, or loses count of what it removed, is
+/// one that gets copied.
+///
+/// The store is driven **directly**, the way an author of another store
+/// would drive it, because `CookieJar` has no accessor for the store it
+/// holds and nothing in the jar calls `remove` at all. Three cookies
+/// rather than one, two of them sharing a domain, so that a `remove`
+/// emptying everything and a `remove` taking the wrong neighbour both
+/// fail.
+#[test]
+fn removing_one_cookie_from_a_store_takes_that_one_and_counts_it_once() {
+    futures_executor::block_on(async {
+        // The cookies come from a jar because `Cookie` has no public
+        // constructor; what is under test is the store they are put into.
+        let source = CookieJar::new();
+        set(&source, "https://example.com/", "a=1", t(0)).await;
+        set(&source, "https://example.com/", "b=2", t(0)).await;
+        set(&source, "https://other.test/", "c=3", t(0)).await;
+        set(
+            &source,
+            "https://www.example.com/",
+            "d=4; Domain=example.com",
+            t(0),
+        )
+        .await;
+        let cookies = source.cookies().await;
+        assert_eq!(cookies.len(), 4);
+
+        let store = MemoryStore::new();
+        for c in &cookies {
+            store.put(c.clone(), t(0)).await;
+        }
+        assert_eq!(store.len().await, 4);
+
+        let victim = cookies.iter().find(|c| c.name() == "b").expect("b");
+        let key = CookieKey::of(victim);
+
+        // The key's four accessors, read against the cookie it was built
+        // from. Nothing else reads three of them — equality is derived on
+        // the fields, so a wrong accessor corrupts nothing and is simply
+        // never asked — which is why each survived mutation to a constant.
+        assert_eq!(key.name(), "b");
+        assert_eq!(key.domain(), "example.com");
+        assert_eq!(key.path(), "/");
+        assert!(key.host_only(), "no Domain attribute was sent");
+
+        // The other value of the same field, which a single cookie cannot
+        // supply: with a `Domain` in force the key is not host-only, so a
+        // constant answer is wrong for one of the two whichever it is.
+        let scoped = cookies
+            .iter()
+            .find(|c| c.name() == "d")
+            .expect("the Domain-scoped cookie");
+        assert!(
+            !CookieKey::of(scoped).host_only(),
+            "a Domain attribute is what makes it false"
+        );
+
+        store.remove(&key).await;
+
+        assert_eq!(store.len().await, 3, "one went, and the count followed it");
+        let mut names: Vec<String> = store
+            .all()
+            .await
+            .iter()
+            .map(|c| c.name().to_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["a".to_owned(), "c".to_owned(), "d".to_owned()],
+            "and it was `b` rather than everything or somebody else"
+        );
+
+        // Removing a key the store does not hold changes nothing — the
+        // arm where `dropped` is zero, which a wrong subtraction would
+        // still have to get right.
+        store.remove(&CookieKey::of(victim)).await;
+        assert_eq!(store.len().await, 3, "a second removal is a no-op");
+    });
+}
+
+/// `MemoryStore::capacity` has no reader either, and it is checked the
+/// way `CookieJar::limits` is — through the behaviour it governs rather
+/// than against itself. A getter compared only with the value its own
+/// constructor was just handed is green for a store that keeps the number
+/// and never consults it.
+#[test]
+fn the_stores_capacity_is_the_capacity_it_enforces() {
+    futures_executor::block_on(async {
+        let store = MemoryStore::with_capacity(Capacity {
+            max_cookies: 2,
+            max_per_domain: 2,
+        });
+        assert_eq!(store.capacity().max_cookies, 2);
+        assert_eq!(store.capacity().max_per_domain, 2);
+
+        let source = CookieJar::new();
+        for (host, header) in [
+            ("https://a.test/", "x=1"),
+            ("https://b.test/", "y=2"),
+            ("https://c.test/", "z=3"),
+        ] {
+            set(&source, host, header, t(0)).await;
+        }
+        let cookies = source.cookies().await;
+        assert_eq!(cookies.len(), 3, "the source jar holds all three");
+
+        for c in &cookies {
+            store.put(c.clone(), t(0)).await;
+        }
+        assert_eq!(
+            store.len().await,
+            2,
+            "the third eviction is what says the number is in force"
         );
     });
 }
