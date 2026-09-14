@@ -561,6 +561,26 @@ fn a_hand_edited_record_meets_the_same_bounds_a_server_would() {
             jar.restore(r, t(0)).await,
             Err(Rejected::TooLarge { .. })
         ));
+
+        // 5000 is far past the 4096 bound, so it says nothing about where
+        // the bound *is*: `>` and `>=` both refuse it, and the mutation
+        // between them survived this line. RFC 6265 §6.1 asks for at
+        // least 4096 bytes of name plus value, so 4096 exactly is
+        // accepted and 4097 is not. The name is one byte, hence 4095.
+        let mut r = record("a", "/", t(0), t(0));
+        r.value = "x".repeat(4095);
+        assert_eq!(jar.restore(r, t(0)).await, Ok(()), "4096 bytes exactly");
+
+        let mut r = record("b", "/", t(0), t(0));
+        r.value = "x".repeat(4096);
+        assert_eq!(
+            jar.restore(r, t(0)).await,
+            Err(Rejected::TooLarge {
+                bytes: 4097,
+                limit: 4096
+            }),
+            "and one byte more is refused"
+        );
     });
 }
 
