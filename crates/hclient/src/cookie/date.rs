@@ -276,4 +276,47 @@ mod tests {
     fn a_seven_digit_run_is_neither_a_day_nor_a_year() {
         assert_eq!(parse_cookie_date(b"Thu, 1234567 Jan 00:00:00 GMT"), None);
     }
+
+    #[test]
+    fn every_delimiter_range_really_separates_two_tokens() {
+        // §5.1.1's `delimiter` is five ranges, and a date only ever met
+        // three of their bytes here — space, comma and the `:` that is
+        // deliberately *not* one. So `01-Jan-1970` was the only separated
+        // form under test, and four of the five ranges could have been
+        // dropped without a test noticing.
+        //
+        // Each byte below is the sole separator in its date, so a byte
+        // that stopped separating would leave `01Jan1970` as one token,
+        // which is neither a day, a month nor a year.
+        for b in [
+            0x09, // HT, the range of one
+            0x20, 0x2F, // %x20-2F, both ends
+            0x3B, 0x40, // %x3B-40
+            0x5B, 0x60, // %x5B-60
+            0x7B, 0x7E, // %x7B-7E
+        ] {
+            let mut date = Vec::new();
+            for token in [b"01".as_slice(), b"Jan", b"1970", b"00:00:00"] {
+                if !date.is_empty() {
+                    date.push(b);
+                }
+                date.extend_from_slice(token);
+            }
+            assert_eq!(
+                parse_cookie_date(&date),
+                Some(0),
+                "0x{b:02x} is a delimiter, so it must split {:?} into four tokens",
+                String::from_utf8_lossy(&date)
+            );
+        }
+    }
+
+    #[test]
+    fn a_byte_outside_those_ranges_does_not_separate() {
+        // The control that makes the test above mean something: `:` is
+        // inside none of the five ranges, which is what keeps `00:00:01`
+        // one token, so joining the date with it leaves one token that is
+        // no production at all.
+        assert_eq!(parse_cookie_date(b"01:Jan:1970:00:00:00"), None);
+    }
 }
