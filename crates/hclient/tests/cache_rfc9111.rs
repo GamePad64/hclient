@@ -470,6 +470,44 @@ fn request_max_age_and_min_fresh_each_narrow_a_fresh_entry() {
     );
 }
 
+/// Both directives above were asked far inside and far outside their
+/// bound, and never at it — so `>` and `<` could each have been `>=` and
+/// `<=` without a line failing. §5.2.1.1 and §5.2.1.3 both give the
+/// caller the boundary itself: `max-age=N` permits an age *of* N, and
+/// `min-fresh=N` is met by a remaining lifetime *of* N.
+#[test]
+fn each_narrowing_directive_is_asked_at_its_own_boundary() {
+    // Stored `max-age=600`, read at t=30: the age is 30 and 570 of the
+    // lifetime is left, so each directive's boundary is a real number
+    // rather than a round one.
+    let mut c = cache_with(
+        &[("cache-control", "max-age=600"), ("etag", "\"v1\"")],
+        b"x",
+    );
+
+    assert_matches!(
+        look(&mut c, &req(&[("cache-control", "max-age=30")]), t(30)),
+        Lookup::Hit(_),
+        "§5.2.1.1: an age equal to max-age is still acceptable"
+    );
+    assert_matches!(
+        look(&mut c, &req(&[("cache-control", "max-age=29")]), t(30)),
+        Lookup::Revalidate { .. },
+        "and one second less is not"
+    );
+
+    assert_matches!(
+        look(&mut c, &req(&[("cache-control", "min-fresh=570")]), t(30)),
+        Lookup::Hit(_),
+        "§5.2.1.3: a remaining lifetime equal to min-fresh satisfies it"
+    );
+    assert_matches!(
+        look(&mut c, &req(&[("cache-control", "min-fresh=571")]), t(30)),
+        Lookup::Revalidate { .. },
+        "and one second more is not"
+    );
+}
+
 /// `max-stale` is the only thing that ever serves a stale entry here, and
 /// it is therefore the only reader `must-revalidate` has — which is why
 /// both are implemented or neither could be.
