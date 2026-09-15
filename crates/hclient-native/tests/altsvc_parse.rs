@@ -112,6 +112,32 @@ fn a_quoted_pair_is_unescaped() {
     assert_eq!(a.host.as_deref(), Some(r#""x\y"#));
 }
 
+/// **An escaped quote does not end the quoted-string**, so a comma after
+/// it is still inside and still not a member boundary.
+///
+/// `a_quoted_pair_is_unescaped` above covers the *unescaping*, and
+/// `a_comma_inside_the_quotes_is_not_a_member_boundary` covers a plain
+/// comma — but neither reaches the arm that makes the two work together.
+/// `members` skips the octet after a backslash precisely so that `\"`
+/// cannot close the string early; deleting that arm leaves all 582 tests
+/// of this crate green, which is what this test is here to end.
+///
+/// The failure it prevents is a split in the wrong place: without the
+/// skip, the `\"` closes the string, the following comma becomes a
+/// delimiter, and one member arrives as two — the second of them
+/// assembled out of the first one's payload. That is a parser reading
+/// attacker-influenced bytes, so this is a test rather than a mutation
+/// control.
+#[test]
+fn an_escaped_quote_does_not_let_a_comma_split_the_member() {
+    // One member: the `\"` is a literal quote inside the host, and the
+    // comma after it is ordinary content.
+    let a = alternatives(r#"h3="\",x:443""#);
+    assert_eq!(a.len(), 1, "the escaped quote must not end the string");
+    assert_eq!(a[0].host.as_deref(), Some(r#"",x"#));
+    assert_eq!(a[0].port, 443);
+}
+
 /// A parameter value may be a quoted-string too — `parameter = token "="
 /// ( token / quoted-string )` — and `ma` is a number either way.
 #[test]
