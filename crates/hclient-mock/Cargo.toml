@@ -45,7 +45,7 @@ futures-executor = { version = "0.3", default-features = false, features = ["std
 # carry the same line for the same reason and `just package-build` is what
 # found it — every other dependency in this file being `workspace = true`
 # invites a tidy-up that would put the defect straight back.
-hclient    = { path = "../hclient" }
+hclient    = { path = "../hclient", features = ["json"] }
 http       = { workspace = true }
 serde_json = "1"
 
