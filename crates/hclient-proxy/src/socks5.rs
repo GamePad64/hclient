@@ -138,6 +138,16 @@ impl Handshake for Socks5 {
                     return Ok(Step::NeedMore);
                 };
                 expect_version(chosen[0])?;
+                // Which method the proxy picked out of what was offered
+                // is the branch point of the whole handshake, and the
+                // three outcomes below are indistinguishable from the
+                // socket: one sends credentials, one sends the request
+                // straight away, and two are refusals.
+                tracing::trace!(
+                    "proxy: socks5 offered {:?}, peer chose method {:#04x}",
+                    self.offered,
+                    chosen[1],
+                );
                 match chosen[1] {
                     METHOD_UNACCEPTABLE => {
                         Err(handshake(Socks5HandshakeError::NoAcceptableMethods))
@@ -215,7 +225,8 @@ impl Handshake for Socks5 {
                 // proxy's outbound socket, not anything a caller of this
                 // client can act on — but it must be *consumed*, or its
                 // bytes would be mistaken for the origin's first ones.
-                let addr_len = match from_peer[3] {
+                let atyp = from_peer[3];
+                let addr_len = match atyp {
                     0x01 => 4,
                     0x04 => 16,
                     0x03 => {
@@ -234,6 +245,15 @@ impl Handshake for Socks5 {
                 }
                 let _ = from_peer.split_to(total);
                 self.state = State::Done;
+                // The bound address is read and discarded, so its length
+                // is the only evidence that the reply was framed the way
+                // `ATYP` said — which is what decides where the origin's
+                // first byte begins.
+                tracing::trace!(
+                    "proxy: socks5 granted, atyp {:#04x}, {} reply bytes consumed",
+                    atyp,
+                    total,
+                );
                 Ok(Step::Done)
             }
         }
@@ -463,5 +483,65 @@ mod tests {
     fn a_credential_too_long_for_its_length_byte_is_refused_at_configuration() {
         assert!(Socks5::new().password_auth(&"a".repeat(256), "p").is_err());
         assert!(Socks5::new().password_auth("u", &"p".repeat(256)).is_err());
+    }
+
+    /// A collector that counts events at `TRACE`.
+    ///
+    /// `tracing` alone installs no subscriber, so without one every
+    /// `trace!` is a no-op and a green suite says nothing about whether
+    /// the lines exist at all. The assertion is a **count** rather than a
+    /// rendering, for `hclient-tls-rustls`'s reason: the text is a
+    /// diagnostic and may be reworded, where *this path emits* is the
+    /// property worth pinning.
+    struct Counting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tracing::subscriber::Subscriber for Counting {
+        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+            *m.level() == tracing::Level::TRACE
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::Id, _: &tracing::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn enter(&self, _: &tracing::Id) {}
+        fn exit(&self, _: &tracing::Id) {}
+    }
+
+    /// **The handshake itself is driven, not the macro.**
+    ///
+    /// `hclient-tls-rustls`'s own trace test writes the `trace!` out a
+    /// second time inside the subscriber, which pins that the macro
+    /// reaches a collector and says nothing about the site. Here the
+    /// protocol is sans-io, so a real exchange is a function call: this
+    /// drives one to `Step::Done` and counts, which is what makes the
+    /// count evidence about `advance` rather than about `tracing`.
+    ///
+    /// Two lines, and they are the two decision points: which method the
+    /// peer chose out of what was offered, and the `ATYP` framing of the
+    /// grant. A bound rather than an equality would pass for a machine
+    /// that emitted neither and something else twice.
+    #[test]
+    fn a_completed_handshake_emits_a_line_for_the_method_and_for_the_grant() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sub = Counting(std::sync::Arc::clone(&seen));
+        tracing::subscriber::with_default(sub, || {
+            let mut h = Socks5::new();
+            drive_for_test(
+                &mut h,
+                "example.com",
+                443,
+                scripted(vec![vec![0x05, METHOD_NONE], GRANTED.to_vec()]),
+            )
+            .expect("granted");
+        });
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a handshake that reaches `Step::Done` passes both trace sites exactly once"
+        );
     }
 }

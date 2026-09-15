@@ -472,6 +472,14 @@ where
     /// One RFC 8484 exchange: encode a query, POST it, read the answer
     /// back.
     async fn exchange(&self, name: &str, query: Query) -> Result<wire::Answer, DohError> {
+        // The chokepoint every DoH query goes through, both families and
+        // HTTPS alike, so `lookup` needs no line of its own. It is also
+        // the one place in this family where a DNS failure and a request
+        // failure look alike from outside: `DohError` is flattened to
+        // `ErrorKind::Resolve` on the way out — deliberately, since the
+        // user's connection has not been attempted — which leaves the
+        // endpoint and the query as facts with no other observer.
+        tracing::trace!("dns: doh {:?} for {} via {}", query, name, self.endpoint);
         let body = wire::encode_query(name, query)?;
 
         let mut req = http::Request::new(RequestBody::Full(body));
@@ -534,7 +542,14 @@ where
             .await
             .map_err(|e| DohError::Body(e.to_string()))?;
 
-        wire::decode_answer(collected.to_bytes(), name, query)
+        let answer = wire::decode_answer(collected.to_bytes(), name, query)?;
+        tracing::trace!(
+            "dns: doh answered {} addresses and {} endpoints for {}",
+            answer.addrs.len(),
+            answer.endpoints.len(),
+            name,
+        );
+        Ok(answer)
     }
 
     /// The whole of one family's lookup, as the `Vec` the stream is built
@@ -601,6 +616,18 @@ where
         if recovered.is_empty() {
             vec![Err(failure.into())]
         } else {
+            // Failing open, which the type declares — `Doh<C>` is
+            // `Doh<C, NoFallback>` — and which nothing reports at run
+            // time: the DoH failure disappears here, replaced by another
+            // resolver's answer, and the caller sees an ordinary success.
+            // That is the whole of the privacy cost a fallback carries,
+            // paid at exactly this line.
+            tracing::trace!(
+                "dns: doh failed for {}, fallback answered {} records: {}",
+                name,
+                recovered.len(),
+                failure,
+            );
             recovered
         }
     }

@@ -91,9 +91,32 @@ where
     let mut buf = BytesMut::new();
     loop {
         match h.advance(&mut buf)? {
-            Step::Done => return Ok(buf.freeze()),
-            Step::Write(bytes) => write_all(io, &bytes).await?,
-            Step::NeedMore => read_some(io, &mut buf).await?,
+            Step::Done => {
+                // The leftover length is the fact with no other observer:
+                // anything past the handshake's own end is the origin
+                // having spoken first, which `ProxySpokeFirst` refuses —
+                // so a non-zero count here is the whole of that failure's
+                // cause.
+                tracing::trace!(
+                    "proxy: tunnel open to {}:{}, {} bytes left over",
+                    host,
+                    port,
+                    buf.len()
+                );
+                return Ok(buf.freeze());
+            }
+            Step::Write(bytes) => {
+                tracing::trace!("proxy: writing {} handshake bytes", bytes.len());
+                write_all(io, &bytes).await?;
+            }
+            Step::NeedMore => {
+                // One line per read rather than per poll: a handshake
+                // that stalls does so with a buffer that stops growing,
+                // and the count is what says whether the peer sent a
+                // partial frame or nothing at all.
+                tracing::trace!("proxy: need more, have {} bytes", buf.len());
+                read_some(io, &mut buf).await?;
+            }
         }
     }
 }

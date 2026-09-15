@@ -61,6 +61,17 @@ hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.10" }
 # second copy of a `#[cfg]` list.
 system-resolver = { path = "../system-resolver", version = "0.2.4" }
 thiserror      = { workspace = true }
+# Unconditional, for the reason `hclient-tls-rustls` states: with no
+# subscriber installed a `trace!` is a load and a branch, and a feature
+# would guard a cost that is not there. What it buys here is the one thing
+# a platform resolver cannot otherwise be asked — which name and type went
+# to `getaddrinfo` or `DnsQueryRaw`, and what came back — since the call
+# itself is somebody else's and leaves no trace of its own.
+#
+# Measured, 29 -> 32: `tracing`, `tracing-core` and `once_cell`. No `url`
+# and no ICU, which is the property this crate's decoder choice exists to
+# keep.
+tracing        = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 const-hex      = { workspace = true }

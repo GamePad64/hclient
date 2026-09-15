@@ -48,6 +48,18 @@ hclient-core  = { workspace = true }
 # `CONNECT` needed hyper for.
 hclient-proto = { workspace = true }
 thiserror     = { workspace = true }
+# Unconditional, for the reason `hclient-tls-rustls` states: with no
+# subscriber installed a `trace!` is a load and a branch, and a feature
+# would guard a cost that is not there. It is the only dependency this
+# crate has that is not either the workspace's error vocabulary or a
+# parser — and it earns that, because a handshake here is bytes in and
+# bytes out with no other observer.
+#
+# The dearest of the four, measured: 19 -> 23, one more than its
+# neighbours because this is the one graph with no `pin-project-lite` in
+# it already. Sans-io buys a small graph and is what makes an addition to
+# it visible.
+tracing       = { version = "0.1", default-features = false, features = ["std"] }
 
 # The platform half of `system`, one crate per platform and **both safe
 # APIs** — `windows_registry::Key::get_string` and

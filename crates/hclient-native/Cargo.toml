@@ -126,6 +126,17 @@ hyper          = { version = "1.11", default-features = false, features = ["clie
 futures-core   = { workspace = true }
 futures-sink   = { workspace = true }
 thiserror      = { workspace = true }
+# Unconditional, and cheap: with no subscriber installed every `trace!` is
+# a load and a branch, and `tracing`'s own `max_level_*` features let a
+# release build compile the level out entirely — so a feature would buy
+# nothing and cost the thing diagnostics exist for, being there when the
+# defect is in front of you.
+#
+# Measured, 38 -> 41: `tracing`, `tracing-core` and `once_cell`.
+# `pin-project-lite` was already here and `once_cell` was **not**, which
+# is the half `hclient-tls-rustls`'s +2 does not predict — that crate's
+# graph carries it and this one's did not.
+tracing        = { version = "0.1", default-features = false, features = ["std"] }
 tokio          = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]

@@ -113,6 +113,12 @@ impl Handshake for Socks4 {
             ));
         }
         self.awaiting_reply = false;
+        // `CD = 90` and a version byte of **zero**, which is the pair
+        // every implementation gets wrong once — the reply's first octet
+        // is not `4`. Worth a line because a refusal and a grant differ
+        // by one byte and the tunnel looks the same either way until the
+        // origin fails to answer.
+        tracing::trace!("proxy: socks4 granted, cd {}", reply[1]);
         Ok(Step::Done)
     }
 }

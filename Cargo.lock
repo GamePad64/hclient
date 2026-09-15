@@ -1387,6 +1387,7 @@ dependencies = [
  "rstest",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1419,6 +1420,7 @@ dependencies = [
  "rstest",
  "system-resolver",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -1510,6 +1512,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-rustls",
+ "tracing",
  "web-time",
  "winnow",
 ]
@@ -1564,6 +1567,7 @@ dependencies = [
  "rstest",
  "system-configuration 0.8.0",
  "thiserror",
+ "tracing",
  "windows-registry",
 ]
 

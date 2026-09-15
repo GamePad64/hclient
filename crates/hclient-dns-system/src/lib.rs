@@ -252,6 +252,13 @@ impl<B: Blocking> Resolve for SystemDns<B> {
     }
 
     fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        // The platform call is somebody else's and leaves no trace of its
+        // own, so this is the only place the question is visible: which
+        // name, and which type. The `_` arm below answers an empty stream
+        // for a type `supports` said `false` about, which reads exactly
+        // like "asked, found none" from a caller's side — hence the
+        // second line there rather than silence.
+        tracing::trace!("dns: system lookup {} type {}", name, rtype);
         match rtype {
             rtype::A => Box::pin(self.addresses(name, false)),
             rtype::AAAA => Box::pin(self.addresses(name, true)),
@@ -265,6 +272,12 @@ impl<B: Blocking> Resolve for SystemDns<B> {
                     // distinguishable, which is the whole reason that method
                     // exists.
                     Ok(Ok(records)) => {
+                        // Zero here is a real answer and is what the
+                        // connector reads as `NoRecord` — the value that
+                        // stops it asking again. Telling it from a
+                        // platform that cannot ask needs `supports`, one
+                        // method over, which no log line can show.
+                        tracing::trace!("dns: system answered {} HTTPS records", records.len());
                         futures_util::stream::iter(records.into_iter().map(Ok).collect::<Vec<_>>())
                     }
                     Ok(Err(e)) => {

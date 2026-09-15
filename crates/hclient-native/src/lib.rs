@@ -2510,9 +2510,16 @@ where
     fn pooled_candidates(&self, parts: &KeyParts) -> &'static [Protocol] {
         #[cfg(feature = "http2")]
         if self.may_speak_h2(parts) {
+            // Why h2 is *not* a candidate is the question a reader
+            // actually has, and `may_speak_h2` is a conjunction of three
+            // facts — the feature, `https://`, and a TLS backend that
+            // reports ALPN — so the answer is invisible from outside. The
+            // negative case is the line below.
+            tracing::trace!("native: pooled candidates h2 then http/1.1");
             return &[Protocol::H2, Protocol::Http11];
         }
         let _ = parts;
+        tracing::trace!("native: pooled candidates http/1.1 only");
         &[Protocol::Http11]
     }
 
@@ -2824,8 +2831,22 @@ where
         now: Duration,
     ) -> Option<established::Established<NativeIo<R, T>>> {
         loop {
-            let mut est = self.pool.take(key, now)?;
+            let Some(mut est) = self.pool.take(key, now) else {
+                // A miss and a walk past a dead connection are the same
+                // `None` to a caller, and they mean opposite things about
+                // the pool: nothing to reuse at all, against something
+                // that was there and had been closed. The `Closed::Stale`
+                // hook below reports the second and says nothing about
+                // the first, so the pair of lines here is what separates
+                // them. The whole key rather than one field of it: it
+                // already carries the host, the port and the protocol
+                // bucket, and an accessor minted for a diagnostic would
+                // be a surface widened for one line.
+                tracing::trace!("native: pool miss for {:?}", key);
+                return None;
+            };
             if established::is_reusable(&mut est).await {
+                tracing::trace!("native: pool hit for {:?}", key);
                 return Some(est);
             }
             #[cfg(feature = "http2")]
@@ -2864,9 +2885,18 @@ where
         // be a proxy.
         match crate::proxy::Proxy::choose(&self.proxies, use_tls, host, port) {
             Some(p) if p.protocol().approach(use_tls) == crate::proxy::Approach::Absolute => {
+                // Wire-visible and decided by first-match-wins over a list
+                // the caller wrote: an origin-form request that should
+                // have been absolute-form reaches an origin server that
+                // never agreed to act as a proxy, and nothing about the
+                // failure says which of the two forms went out.
+                tracing::trace!("native: {}:{} written absolute-form to a proxy", host, port);
                 crate::proxy::Via::AbsoluteForm(p.protocol().proxy_authorization())
             }
-            _ => crate::proxy::Via::Direct,
+            _ => {
+                tracing::trace!("native: {}:{} written origin-form", host, port);
+                crate::proxy::Via::Direct
+            }
         }
     }
 }
@@ -3424,7 +3454,19 @@ where
                 // untouched at its first byte. No clone, no rewind, and
                 // nothing to decide about idempotency: this is not a
                 // second request, it is the first one, which never left.
-                Err(established::Failed::NotSent { request, .. }) => req = *request,
+                // A request handed back unsent and retried leaves no other
+                // mark: the caller sees one successful exchange, and the
+                // pooled connection that was closed under it is reported
+                // as `Closed` by a hook that says nothing about the
+                // request. The distinction this line carries is the one
+                // the comment above turns on — not a second request, the
+                // first one, which never left.
+                Err(established::Failed::NotSent { request, .. }) => {
+                    tracing::trace!(
+                        "native: pooled attempt handed the request back unsent, retrying on a fresh connection"
+                    );
+                    req = *request;
+                }
                 Err(other) => return Err(other.into_error()),
             }
         }

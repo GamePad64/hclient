@@ -133,6 +133,16 @@ impl Handshake for HttpConnect {
         // connect us and becomes `ErrorKind::Connect`, never a response —
         // handing it back as one would report the proxy's answer as the
         // origin's.
+        // The status the proxy answered, before the success test below
+        // turns everything but a `2xx` into `ErrorKind::Connect`. A `407`
+        // reaches a caller as a connect failure rather than as a
+        // response, deliberately — so the code itself has no other way
+        // out, and this is where it is legible.
+        tracing::trace!(
+            "proxy: connect answered {}, head {} bytes",
+            head.status,
+            len,
+        );
         if !head.status.is_success() {
             return Err(Error::new(ErrorKind::Connect, ProxyRefused(head.status)));
         }

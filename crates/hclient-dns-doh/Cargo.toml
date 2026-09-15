@@ -35,6 +35,17 @@ hclient-core   = { workspace = true }
 # those rules was not an option.
 hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.10", features = ["codec"] }
 thiserror      = { workspace = true }
+# Unconditional, for the reason `hclient-tls-rustls` states: with no
+# subscriber installed a `trace!` is a load and a branch, and a feature
+# would guard a cost that is not there. A resolver whose transport is an
+# HTTP client is the one place in this family where a DNS failure and a
+# request failure look alike from outside, which is what these lines
+# separate.
+#
+# Measured, 23 -> 26: `tracing`, `tracing-core` and `once_cell`. Still no
+# `tokio`, `hyper` or `h2` — this crate makes its request through a
+# `Transport` a caller supplies, and that is unchanged.
+tracing        = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 rstest           = { workspace = true }
