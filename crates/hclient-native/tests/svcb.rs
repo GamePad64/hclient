@@ -775,3 +775,47 @@ async fn the_negative_cache_expires() {
         "past the window the record is consulted again"
     );
 }
+
+/// **Among `ServiceMode` records the lowest priority number wins**, RFC
+/// 9460 §2.4.2: "records with a smaller priority SHOULD be given
+/// preference".
+///
+/// Every other record in this file is priority 1, so until this test the
+/// suite never had **two** `ServiceMode` records to choose between — and
+/// the comparison that chooses could be reversed, or made `==`, `>` or
+/// `<=`, with all 580 tests still green. Measured, not assumed: with
+/// `<` flipped to `>` the client picks the *worst* record and nothing
+/// fails.
+///
+/// The assertion is which peer received the connection, because that is
+/// the only thing a caller could ever observe about this choice. Two
+/// peers rather than one and a counter: a test that watched a single peer
+/// would pass for a client that connected to neither.
+///
+/// The priorities are 2 and 9 rather than 1 and 2 so that neither is the
+/// file's default and neither is adjacent to `0` — an off-by-one in
+/// either direction lands on a number no record here carries, rather than
+/// accidentally on the right answer.
+#[tokio::test]
+async fn the_lowest_priority_servicemode_record_is_the_one_used() {
+    let best = Peer::start();
+    let worst = Peer::start();
+    let dns = FakeDns::with_loopback()
+        // Served worst-first, so a selection that simply keeps the first
+        // record it sees picks the wrong one and fails here.
+        .serving(service_record().priority(9).port(Some(worst.port())))
+        .serving(service_record().priority(2).port(Some(best.port())));
+
+    request(&transport(dns), &origin_uri()).await;
+
+    assert_eq!(
+        best.count(),
+        1,
+        "priority 2 must be preferred over priority 9"
+    );
+    assert_eq!(
+        worst.count(),
+        0,
+        "and the worse record must not be contacted at all"
+    );
+}
