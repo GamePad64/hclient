@@ -1064,3 +1064,48 @@ async fn a_103_over_http2_reaches_the_hook_too() {
          and `0` is `RequestId::UNIDENTIFIED`: {requests:?}",
     );
 }
+
+/// **An h2 response body with frames still to come must not claim the
+/// stream ended.**
+///
+/// `http_body`'s contract is asymmetric: `true` *promises* `poll_frame`
+/// will return `None`, while `false` guarantees nothing. So a body
+/// answering `true` early tells a consumer it may stop reading, and one
+/// entitled to believe it truncates the response.
+///
+/// `tests/end_stream_hint.rs` pins this for `NativeBody` — but over
+/// **plaintext HTTP/1.1**, so it reaches `H1Body` and never this one.
+/// `H2Body::is_end_stream` forwards to `h2::RecvStream`, and replacing
+/// it with a constant `true` leaves all 585 tests of this crate green;
+/// measured, not assumed. The two bodies are different arms of one enum
+/// and each needs its own reach.
+///
+/// Only the `false` half is asserted, for the contract's reason rather
+/// than laziness: a body that answers `false` for ever is conforming, so
+/// there is no "must eventually say `true`" to pin. Collecting
+/// afterwards is what makes the assertion mean something — it proves the
+/// bytes really were outstanding when the body said so.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_h2_body_with_frames_left_does_not_claim_the_stream_ended() {
+    let server = spawn_h2_server();
+    let client = client(FakeTls::negotiating_h2());
+
+    let resp = tokio::time::timeout(BOUND, client.get(server.url("/body")).send())
+        .await
+        .expect("must not hang")
+        .expect("request must succeed");
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+
+    let (_parts, body) = resp.into_parts();
+    assert!(
+        !http_body::Body::is_end_stream(&body),
+        "the response body is still to come, and `true` here tells a \
+         consumer it may stop reading — `http_body` makes that a promise"
+    );
+
+    let bytes = http_body_util::BodyExt::collect(body)
+        .await
+        .expect("the body arrives")
+        .to_bytes();
+    assert_eq!(&bytes[..], b"ok", "and the bytes really were there");
+}
