@@ -411,6 +411,245 @@ mod tests {
         }
     }
 
+    /// **RFC 3492 §7.1's nineteen sample strings**, decoded.
+    ///
+    /// The tests above this one are generated from `idna` or measured from
+    /// it, which is the right oracle for *this crate's contract* and the
+    /// wrong one for *RFC 3492's arithmetic*: agreement with the
+    /// implementation we exist to do without cannot distinguish a correct
+    /// decoder from one that is wrong in the same direction as its oracle.
+    /// These vectors come from the standard instead, so they are evidence
+    /// about the transcription in [`adapt`] and [`decode_punycode`] rather
+    /// than about a dev-dependency.
+    ///
+    /// **Extracted from the RFC mechanically, not typed out**, because the
+    /// first hand transcription of this table was wrong: §7.1 wraps sample
+    /// (H) across two lines with a backslash, and joining it by eye dropped
+    /// the five characters `30a5j` from the middle of the payload — a
+    /// vector that decodes to nothing and would have read as a decoder
+    /// defect. Every row here was pulled out of `rfc3492.txt` by a script
+    /// that joins the RFC's own continuations, and the code points are the
+    /// `u+XXXX` lists beside each sample rather than glyphs retyped from a
+    /// rendering.
+    ///
+    /// The nine samples whose Punycode contains upper case — (D), (I),
+    /// (J), (K), (L), (M), (N), (P), (S) — are folded first, because that
+    /// is what the real path does: [`to_ascii_over`] lowercases before
+    /// [`decode_ace_labels`] ever sees a label, and [`decode_digit`] is
+    /// deliberately lower-case-only for that reason. So the expected answer
+    /// for those rows is the RFC's string lowercased, which is what the
+    /// crate would emit for them.
+    #[test]
+    fn rfc_3492_section_7_1_sample_strings_decode_as_published() {
+        // (letter, Punycode from §7.1, the u+XXXX sequence beside it)
+        for (letter, punycode, unicode) in [
+            ('A', "egbpdaj6bu4bxfgehfvwxn", "ليهمابتكلموشعربي؟"),
+            ('B', "ihqwcrb4cv8a8dqg056pqjye", "他们为什么不说中文"),
+            ('C', "ihqwctvzc91f659drss3x8bo0yb", "他們爲什麽不說中文"),
+            (
+                'D',
+                "Proprostnemluvesky-uyb24dma41a",
+                "Pročprostěnemluvíčesky",
+            ),
+            (
+                'E',
+                "4dbcagdahymbxekheh6e0a7fei0b",
+                "למההםפשוטלאמדבריםעברית",
+            ),
+            (
+                'F',
+                "i1baa7eci9glrd9b2ae1bj0hfcgg6iyaf8o0a1dig0cd",
+                "यहलोगहिन्दीक्योंनहींबोलसकतेहैं",
+            ),
+            (
+                'G',
+                "n8jok5ay5dzabd5bym9f0cm5685rrjetr6pdxa",
+                "なぜみんな日本語を話してくれないのか",
+            ),
+            (
+                'H',
+                "989aomsvi5e83db1d2a355cv1e0vak1dwrv93d5xbh15a0dt30a5jpsd879ccm6fea98c",
+                "세계의모든사람들이한국어를이해한다면얼마나좋을까",
+            ),
+            (
+                'I',
+                "b1abfaaepdrnnbgefbaDotcwatmq2g4l",
+                "почемужеонинеговорятпорусски",
+            ),
+            (
+                'J',
+                "PorqunopuedensimplementehablarenEspaol-fmd56a",
+                "PorquénopuedensimplementehablarenEspañol",
+            ),
+            (
+                'K',
+                "TisaohkhngthchnitingVit-kjcr8268qyxafd2f1b9g",
+                "TạisaohọkhôngthểchỉnóitiếngViệt",
+            ),
+            ('L', "3B-ww4c5e180e575a65lsy2b", "3年B組金八先生"),
+            (
+                'M',
+                "-with-SUPER-MONKEYS-pc58ag80a8qai00g7n9n",
+                "安室奈美恵-with-SUPER-MONKEYS",
+            ),
+            (
+                'N',
+                "Hello-Another-Way--fc4qua05auwb3674vfr0b",
+                "Hello-Another-Way-それぞれの場所",
+            ),
+            ('O', "2-u9tlzr9756bt3uc0v", "ひとつ屋根の下2"),
+            ('P', "MajiKoi5-783gue6qz075azm5e", "MajiでKoiする5秒前"),
+            ('Q', "de-jg4avhby1noc0d", "パフィーdeルンバ"),
+            ('R', "d9juau41awczczp", "そのスピードで"),
+            ('S', "-> $1.00 <--", "-> $1.00 <-"),
+        ] {
+            // The fold the real path has already applied by this point.
+            let payload = punycode.to_ascii_lowercase();
+            let want = unicode.to_lowercase();
+            assert_eq!(
+                decode_punycode(&payload).as_deref(),
+                Some(want.as_str()),
+                "RFC 3492 §7.1 sample ({letter}) did not decode as published"
+            );
+        }
+    }
+
+    /// **RFC 3492 §7.2's two decoding traces, as fifteen published
+    /// `adapt` answers.**
+    ///
+    /// §7.2 prints, for examples (B) and (L), the delta decoded at every
+    /// step and the bias that follows it — *"delta "ihq" decodes to 19853 /
+    /// bias becomes 21"*. That is the bias adaptation of §6.1 with its
+    /// answers written down by the standard, which is the only oracle for
+    /// [`adapt`] that is not this crate's own arithmetic restated.
+    ///
+    /// The third argument is reconstructed rather than printed: `numpoints`
+    /// is the output length plus one at the moment of the call, and the
+    /// traces show the extended string after every insertion, so counting
+    /// them gives `1, 2, 3, …` for (B), which starts empty, and `3, 4, 5, …`
+    /// for (L), whose literal portion `3B-` starts it at two.
+    ///
+    /// **Why this is a test of its own rather than left to the samples
+    /// above.** A wrong bias is not always a wrong answer: it changes the
+    /// digit thresholds for the *next* step, so a mutation can corrupt the
+    /// bias and still decode every sample correctly if no later step is
+    /// sensitive to the difference. Measured — with the `while` guard's
+    /// `>` weakened to `>=`, all nineteen §7.1 samples still decode
+    /// correctly. Asking `adapt` directly is what removes that slack.
+    #[test]
+    fn rfc_3492_section_7_2_bias_adaptations_are_the_published_ones() {
+        // (delta, numpoints, first, the bias §7.2 says follows)
+        for (delta, numpoints, first, want) in [
+            // Decoding trace of example (B), "ihqwcrb4cv8a8dqg056pqjye".
+            (19853, 1, true, 21),
+            (64, 2, false, 20),
+            (37, 3, false, 13),
+            (56, 4, false, 17),
+            (599, 5, false, 32),
+            (130, 6, false, 23),
+            (154, 7, false, 25),
+            (46301, 8, false, 84),
+            (88531, 9, false, 90),
+            // Decoding trace of example (L), "3B-ww4c5e180e575a65lsy2b",
+            // whose literal `3B-` makes the first call's numpoints 3.
+            (62042, 3, true, 27),
+            (139, 4, false, 24),
+            (16683, 5, false, 67),
+            (34821, 6, false, 82),
+            (14592, 7, false, 67),
+            (42088, 8, false, 84),
+        ] {
+            assert_eq!(
+                adapt(delta, numpoints, first),
+                want,
+                "RFC 3492 §7.2: adapt(delta = {delta}, numpoints = {numpoints}, \
+                 first = {first}) must be {want}"
+            );
+        }
+    }
+
+    /// The step of [`adapt`] that no published vector reaches: the `while`
+    /// guard's own threshold.
+    ///
+    /// §6.1 divides `delta` down *while* it exceeds `((base - tmin) * tmax)
+    /// / 2`, which is 455. Every delta in §7.2's two traces lands clear of
+    /// that on one side or the other, so the guard's exact value is
+    /// invisible to them: measured, `>` weakened to `>=`, and the threshold
+    /// moved to 481 or 468, all decode every one of the nineteen §7.1
+    /// samples and reproduce all fifteen §7.2 biases. Those mutations
+    /// survive the entire RFC.
+    ///
+    /// **What separates them is a delta landing in the window a mutation
+    /// moves, whose bias is then used**, and both halves are needed:
+    /// `xn--0caav49m` reaches exactly 455 on its *last* step, so the wrong
+    /// bias is computed and never read, and it decodes identically under
+    /// `>` and `>=`. Every vector below reaches the window with steps
+    /// remaining.
+    ///
+    /// Five of them rather than one, because the window differs per
+    /// mutation and no single name covers them all. The first three sit at
+    /// exactly 455, which is what `>` and `>=` disagree about; the last two
+    /// sit between 456 and 468, which is what separates 455 from the 481
+    /// and 468 a mutated `BASE - TMIN` produces. Each mutation is killed by
+    /// at least two of the five, so no row is load-bearing alone.
+    ///
+    /// They are constructed rather than found in a document — no RFC prints
+    /// one — so each is anchored on the oracle instead: `idna` converts the
+    /// Unicode form to exactly this A-label and leaves the A-label
+    /// unchanged, which is what makes it a real name rather than a string
+    /// chosen to make a test pass. `the_boundary_vectors_are_real_a_labels`
+    /// is that check.
+    #[test]
+    fn the_bias_loop_divides_while_delta_exceeds_the_threshold_and_not_at_it() {
+        for (payload, label) in [
+            // Reach an internal delta of exactly 455.
+            ("4da9jpb2j88ilwa3c", "ņыλźнćœ"),
+            ("6cat9eb355alwaxc", "ðĉæιшĉл"),
+            ("sda8b0krgs2ilwanc", "дûđпżŏα"),
+            // Land between 456 and 468, where a threshold computed from a
+            // mutated `BASE - TMIN` stops dividing and the real one does not.
+            ("cfa9i1b45l2a40fic", "θūżсıьν"),
+            ("eda2i3f2do5kmwanc", "сеíůŕβģ"),
+        ] {
+            assert_eq!(
+                decode_punycode(payload).as_deref(),
+                Some(label),
+                "{payload:?} drives adapt to a delta at the `while` guard's threshold \
+                 with steps left to spend the resulting bias"
+            );
+        }
+    }
+
+    /// The boundary vectors are names, not strings that happen to decode.
+    ///
+    /// A constructed vector is only worth its anchor: `idna` must agree
+    /// that the Unicode form converts to this exact A-label, and that the
+    /// A-label converts to itself. Without the second, the label could be
+    /// one no conforming implementation would ever emit, and the test above
+    /// would be pinning arithmetic nobody performs.
+    #[test]
+    fn the_boundary_vectors_are_real_a_labels() {
+        for (payload, label) in [
+            ("4da9jpb2j88ilwa3c", "ņыλźнćœ"),
+            ("6cat9eb355alwaxc", "ðĉæιшĉл"),
+            ("sda8b0krgs2ilwanc", "дûđпżŏα"),
+            ("cfa9i1b45l2a40fic", "θūżсıьν"),
+            ("eda2i3f2do5kmwanc", "сеíůŕβģ"),
+        ] {
+            let ace = format!("xn--{payload}.test");
+            assert_eq!(
+                idna_says(&format!("{label}.test")).as_deref(),
+                Some(ace.as_str()),
+                "the oracle must encode {label:?} to this A-label"
+            );
+            assert_eq!(
+                idna_says(&ace).as_deref(),
+                Some(ace.as_str()),
+                "{ace} must be a canonical A-label the oracle leaves alone"
+            );
+        }
+    }
+
     /// Everything the decoder must refuse, with the reason each one is
     /// here. That `idna` refuses all of them too is checked rather than
     /// asserted, by [`the_policy_is_transparent_over_a_real_uts46`] over
