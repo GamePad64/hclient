@@ -1196,3 +1196,88 @@ fn a_nul_in_the_userid_is_refused_where_it_is_written() {
     );
     assert!(Socks4::new().userid("alice").is_ok());
 }
+
+/// A SOCKS5 proxy that grants every request and reports the **HTTP head
+/// written through the tunnel**, rather than the handshake's fields.
+///
+/// [`socks5_proxy`] reads that head and discards it — right for what
+/// those tests ask, and the reason the request line went unasserted for a
+/// SOCKS proxy until a mutation pointed at it.
+fn socks5_proxy_reporting_the_head() -> (SocketAddr, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut s) = conn else { break };
+            let mut hdr = [0u8; 2];
+            if s.read_exact(&mut hdr).is_err() {
+                continue;
+            }
+            let mut methods = vec![0u8; usize::from(hdr[1])];
+            let _ = s.read_exact(&mut methods);
+            let _ = s.write_all(&[0x05, 0x00]);
+            let mut req = [0u8; 4];
+            if s.read_exact(&mut req).is_err() {
+                continue;
+            }
+            let mut len = [0u8; 1];
+            let _ = s.read_exact(&mut len);
+            let mut host = vec![0u8; usize::from(len[0])];
+            let _ = s.read_exact(&mut host);
+            let mut port = [0u8; 2];
+            let _ = s.read_exact(&mut port);
+            let _ = s.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+            let _ = tx.send(read_head(&mut s));
+            let _ = s.write_all(ok_response());
+            let _ = s.flush();
+        }
+    });
+    (addr, rx)
+}
+
+/// **A tunnelling proxy gets origin-form**, which is the other half of
+/// the rule `http_proxy_uses_absolute_form_for_plaintext` pins.
+///
+/// `Approach` has exactly two values and only `HttpConnect` on `http://`
+/// answers `Absolute`; both SOCKS versions answer `Tunnel` whatever the
+/// scheme, because a tunnel carries bytes and the request is written as
+/// it would be to the origin. So the guard in `Native::via` is what keeps
+/// `GET http://example.invalid/x HTTP/1.1` off a SOCKS connection — and
+/// it survived the whole suite when forced `true`, because every test
+/// that reads a request line reads it through an HTTP proxy.
+///
+/// What the mutation produces is a wire defect rather than an error: the
+/// SOCKS handshake still succeeds, the origin still receives a request,
+/// and that request is addressed to it in a form RFC 9112 §3.2.2 reserves
+/// for a proxy. An origin that parsed it leniently would answer, and
+/// nothing on this side would ever notice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_socks_proxy_gets_origin_form_and_not_absolute_form() {
+    let (proxy, head_of) = socks5_proxy_reporting_the_head();
+    let client = Client::builder(Native::new(Tokio, NoTls, IpLiteralOnly).proxy(Proxy::new(
+        Socks5::new(),
+        "127.0.0.1",
+        proxy.port(),
+    )))
+    .build()
+    .expect("build");
+    let status = tokio::time::timeout(BOUND, get(&client, "http://example.invalid:8080/x"))
+        .await
+        .expect("must not hang")
+        .expect("the proxy answers");
+    assert_eq!(status, 200);
+
+    let head = head_of
+        .recv_timeout(BOUND)
+        .expect("the proxy saw a request");
+    assert!(
+        head.starts_with("GET /x HTTP/1.1\r\n"),
+        "origin-form through a tunnel, got:\n{head}"
+    );
+    assert!(
+        !head.starts_with("GET http://"),
+        "absolute-form is for an HTTP proxy acting as origin server, and a \
+         SOCKS proxy never is one, got:\n{head}"
+    );
+}
