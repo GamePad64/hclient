@@ -411,3 +411,37 @@ async fn abrupt_rst_close_without_close_notify_is_reported_as_a_real_error() {
         "expected ConnectionReset from the RST, got {e:?}"
     );
 }
+
+/// **A server that pushes a large body without waiting**, read by a slow
+/// caller — which is what a blob fetch is and what the echo server is
+/// not: that one reads 1 KiB and answers it, so its bytes arrive in the
+/// reader's own rhythm and nothing accumulates.
+///
+/// `rustls::read_tls` documents its refusal as *backpressure* rather than
+/// failure: "errors of `ErrorKind::Other` are emitted to signal
+/// backpressure … you should empty it through the `reader()`". The
+/// plaintext buffer holds 64 KiB by default, and `pump_incoming` drives a
+/// whole 16 KiB transport read through `read_tls`/`process_new_packets`
+/// before it returns — so a caller taking 64 bytes at a time falls
+/// behind, `is_full()` becomes true, and the signal surfaces as
+/// `tls: received plaintext buffer full`.
+///
+/// Reported from the field against a real `act` pull: blobs over about a
+/// megabyte fail reproducibly, and size is the trigger — the same pull
+/// with `Accept-Encoding: identity` fails identically, so it is not a
+/// decoder's buffering.
+#[tokio::test]
+async fn a_pushed_body_larger_than_the_plaintext_buffer_survives_a_slow_reader() {
+    const N: usize = 1024 * 1024;
+    let (addr, ca) = server::spawn_tls_pusher(N);
+    let (mut stream, _script) = scripted_client(addr, ca).await;
+
+    let got = read_n(&mut stream, N).await;
+    assert_eq!(got.len(), N, "the whole body must come back");
+    assert!(
+        got.iter()
+            .enumerate()
+            .all(|(i, b)| *b == u8::try_from(i % 251).unwrap_or(0)),
+        "and byte for byte"
+    );
+}

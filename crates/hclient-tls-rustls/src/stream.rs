@@ -17,17 +17,51 @@ const SCRATCH: usize = 16 * 1024;
 pub struct TlsStream<S> {
     io: S,
     conn: rustls::ClientConnection,
+    /// Ciphertext read from the transport that rustls has not taken yet.
+    ///
+    /// `read_tls` refuses while the plaintext buffer is over its limit,
+    /// and that refusal is **backpressure rather than failure**. Stopping
+    /// mid-feed leaves bytes in the scratch buffer this poll read into,
+    /// and a scratch buffer is a local: dropping it loses whatever record
+    /// straddled the boundary, which the peer then cannot decrypt. So the
+    /// tail lives here, across polls, until rustls will take it.
+    pending: Pending,
+}
+
+/// The unconsumed tail of one transport read, and how much of it rustls
+/// has already taken.
+#[derive(Debug, Default)]
+pub(crate) struct Pending {
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl Pending {
+    fn remaining(&self) -> &[u8] {
+        &self.buf[self.pos..]
+    }
+    fn is_empty(&self) -> bool {
+        self.pos >= self.buf.len()
+    }
+    fn clear(&mut self) {
+        self.buf.clear();
+        self.pos = 0;
+    }
 }
 
 impl<S> TlsStream<S> {
     pub(crate) fn new(io: S, conn: rustls::ClientConnection) -> Self {
-        Self { io, conn }
+        Self {
+            io,
+            conn,
+            pending: Pending::default(),
+        }
     }
     pub(crate) fn conn(&self) -> &rustls::ClientConnection {
         &self.conn
     }
-    pub(crate) fn parts_mut(&mut self) -> (&mut S, &mut rustls::ClientConnection) {
-        (&mut self.io, &mut self.conn)
+    pub(crate) fn parts_mut(&mut self) -> (&mut S, &mut rustls::ClientConnection, &mut Pending) {
+        (&mut self.io, &mut self.conn, &mut self.pending)
     }
 }
 
@@ -116,6 +150,11 @@ pub(crate) fn flush_outgoing<S: Write + Unpin>(
 /// transport hit EOF on this read (0 bytes from `poll_read`); `Ok(true)`
 /// — something was actually read.
 ///
+/// A poll that spends the tail kept by the previous one answers `true`
+/// without touching the transport at all: bytes did come off the wire,
+/// on an earlier poll, and the two callers use this value to tell "keep
+/// going" from "the stream ended" rather than to count reads.
+///
 /// EOF is handed to rustls EXPLICITLY, through the same `read_tls` call
 /// that carries ordinary bytes — it is not intercepted beforehand, before
 /// rustls gets to see it. `read_tls` on a 0-byte read sets the internal
@@ -143,34 +182,85 @@ pub(crate) fn flush_outgoing<S: Write + Unpin>(
 pub(crate) fn pump_incoming<S: Read + Unpin>(
     io: &mut S,
     conn: &mut rustls::ClientConnection,
+    pending: &mut Pending,
     cx: &mut Context<'_>,
 ) -> Poll<std::io::Result<bool>> {
+    // **The tail from last time comes first, and no transport read
+    // happens while it is there.** Reading more would put fresh bytes
+    // behind ciphertext rustls has not taken, and TLS records are ordered
+    // — the stream would desync. `true` rather than `false`: bytes were
+    // taken from the wire, just on an earlier poll, and the handshake
+    // loop in `lib.rs` reads a `false` as end-of-stream.
+    if !pending.is_empty() {
+        let taken = feed(conn, pending.remaining())?;
+        pending.pos += taken;
+        if pending.is_empty() {
+            pending.clear();
+        }
+        return Poll::Ready(Ok(true));
+    }
     let mut scratch = [0u8; SCRATCH];
     let mut rb = hyper::rt::ReadBuf::new(&mut scratch);
     ready!(Pin::new(io).poll_read(cx, rb.unfilled()))?;
     let filled = rb.filled();
     let had_bytes = !filled.is_empty();
-    let mut cursor = std::io::Cursor::new(filled);
+    let taken = feed(conn, filled)?;
+    if taken < filled.len() {
+        // Backpressure stopped the feed part-way. Keep the rest: rustls
+        // checks `received_plaintext.is_full()` *before* touching the
+        // reader (`rustls-0.23.45/src/conn.rs:761`), so these bytes were
+        // never consumed and the next poll owes them to it.
+        pending.buf.clear();
+        pending.buf.extend_from_slice(&filled[taken..]);
+        pending.pos = 0;
+    }
+    Poll::Ready(Ok(had_bytes))
+}
+
+/// Feeds `bytes` to rustls, returning how many it took.
+///
+/// Stops short on backpressure — `read_tls` answers `ErrorKind::Other`
+/// while the plaintext buffer is over its limit, which rustls documents
+/// as a **signal** rather than a failure: "errors of `ErrorKind::Other`
+/// are emitted to signal backpressure … you should empty it through the
+/// `reader()`". Turning that into an error is what surfaced as `act`'s
+/// reported `tls: received plaintext buffer full` on blobs over a
+/// megabyte: one 16 KiB transport read carries many TLS records, and on
+/// h2 the connection driver feeds them all while nothing drains the
+/// plaintext in between, so the buffer crosses its limit mid-feed.
+fn feed(conn: &mut rustls::ClientConnection, bytes: &[u8]) -> std::io::Result<usize> {
+    let mut cursor = std::io::Cursor::new(bytes);
     // do-while: even an empty (EOF) slice must reach `read_tls` at least
     // once — a plain `while (pos as usize) < filled.len()` would skip the
     // loop body entirely when `filled.len() == 0`, reintroducing the old
     // bug.
     loop {
-        conn.read_tls(&mut cursor).map_err(tls_err)?;
+        match conn.read_tls(&mut cursor) {
+            Ok(_) => {}
+            // Backpressure, and the one `ErrorKind::Other` reachable
+            // here: `cursor` is a `Cursor<&[u8]>`, whose `Read` is
+            // infallible, so no transport error can arrive through it.
+            Err(e) if e.kind() == std::io::ErrorKind::Other => break,
+            Err(e) => return Err(tls_err(e)),
+        }
         conn.process_new_packets().map_err(tls_err)?;
-        // `cursor` walks `filled`, a slice this poll just read into a
-        // fixed-size buffer, so its position never exceeds `filled.len()`
+        // `cursor` walks `bytes`, a slice this poll just read into a
+        // fixed-size buffer, so its position never exceeds `bytes.len()`
         // — far below `usize::MAX` on every platform this crate builds
         // for, 32-bit included.
         #[allow(
             clippy::cast_possible_truncation,
-            reason = "`cursor` walks `filled`, a slice this poll just read into a fixed-size buffer, so its position never exceeds `filled.len()` — far below `usize::MAX` on every platform this crate builds for, 32-bit included."
+            reason = "`cursor` walks `bytes`, a slice this poll just read into a fixed-size buffer, so its position never exceeds `bytes.len()` — far below `usize::MAX` on every platform this crate builds for, 32-bit included."
         )]
-        if (cursor.position() as usize) >= filled.len() {
+        if (cursor.position() as usize) >= bytes.len() {
             break;
         }
     }
-    Poll::Ready(Ok(had_bytes))
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`cursor` walks `bytes`, a slice this poll just read into a fixed-size buffer, so its position never exceeds `bytes.len()` — far below `usize::MAX` on every platform this crate builds for, 32-bit included."
+    )]
+    Ok(cursor.position() as usize)
 }
 
 impl<S: Read + Write + Unpin> Read for TlsStream<S> {
@@ -215,7 +305,12 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
             // (`Ok(0)`) apart from a raw cut without one
             // (`Err(UnexpectedEof)`) — that distinction is neither needed
             // nor allowed to be made here.
-            ready!(pump_incoming(&mut this.io, &mut this.conn, cx))?;
+            ready!(pump_incoming(
+                &mut this.io,
+                &mut this.conn,
+                &mut this.pending,
+                cx
+            ))?;
         }
     }
 }

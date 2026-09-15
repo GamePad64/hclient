@@ -882,13 +882,13 @@ where
 
         // Drive the handshake to completion before handing the stream up.
         loop {
-            let (io, conn) = stream.parts_mut();
+            let (io, conn, pending) = stream.parts_mut();
             std::task::ready!(stream::flush_outgoing(io, conn, cx))
                 .map_err(|e| Error::new(ErrorKind::Tls, e))?;
             if !conn.is_handshaking() {
                 break;
             }
-            let more = std::task::ready!(stream::pump_incoming(io, conn, cx))
+            let more = std::task::ready!(stream::pump_incoming(io, conn, pending, cx))
                 .map_err(|e| Error::new(ErrorKind::Tls, e))?;
             if !more {
                 return Poll::Ready(Err(Error::new(
