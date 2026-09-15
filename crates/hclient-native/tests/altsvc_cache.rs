@@ -525,3 +525,44 @@ async fn a_store_installed_on_the_transport_is_the_one_consulted() {
         "the transport asked the store the caller installed, not one of its own"
     );
 }
+
+/// **`Entry`'s accessors are the only way a store outside this crate can
+/// read what it was handed**, and they are what a `retain_persistent` of
+/// somebody else's has to be written against.
+///
+/// `Entry`'s fields are private, so an implementor of [`AltSvcStore`] —
+/// a public seam, on disk or in Redis — reaches `persist` and
+/// `expires_at` through these methods or not at all. [`MemoryStore`]
+/// reads the field directly, being inside the crate, which is why
+/// `a_network_change_forgets_what_did_not_ask_to_persist` passes without
+/// ever calling `Entry::persist`: both of that method's mutations —
+/// always `true` and always `false` — survived the whole suite.
+///
+/// So this drives the seam the way its own documentation says it is
+/// meant to be driven, and asserts the two answers a wrong accessor
+/// would collapse into one. That is `hclient::cache`'s finding one crate
+/// over: a seam whose types cannot be read back is a seam naming a use
+/// it cannot serve, and the way to find it is to write the consumer.
+#[test]
+fn an_entry_reports_the_persist_flag_it_was_built_with() {
+    let persistent = Entry::new(UNIX_EPOCH + Duration::from_hours(24), true);
+    let ephemeral = Entry::new(UNIX_EPOCH + Duration::from_hours(24), false);
+
+    assert!(
+        persistent.persist(),
+        "an entry built from `persist=1` must say so — a store of its own \
+         has no other way to know"
+    );
+    assert!(
+        !ephemeral.persist(),
+        "and one built without it must not: these are the two halves of \
+         RFC 7838 §2.2's rule about what a network change forgets"
+    );
+    // The control that says the two entries differ *only* in the flag, so
+    // an accessor returning a constant cannot be right for another reason.
+    assert_eq!(
+        persistent.expires_at(),
+        ephemeral.expires_at(),
+        "the pair differs in `persist` and nothing else"
+    );
+}
