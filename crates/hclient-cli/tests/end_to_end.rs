@@ -276,6 +276,89 @@ fn print_shows_what_was_actually_sent_including_the_headers_this_tool_adds() {
     assert!(r.stdout.contains("user-agent: hc/"), "{}", r.stdout);
 }
 
+/// **A file item alone is a body**, so the method becomes POST with no
+/// data item anywhere. `has_body` ors four conditions and `files` is the
+/// only one no test reached: with `|| !files.is_empty()` weakened, an
+/// upload goes out as a **GET carrying a multipart body**, which is a
+/// request most servers answer with 400 and no client should build.
+///
+/// Measured before this test existed: that mutation left all 117 tests
+/// green, because every existing body test also has a `name=value`.
+#[test]
+fn a_file_item_on_its_own_makes_the_request_a_post() {
+    let (addr, log) = serve(200, "text/plain", "ok");
+    let dir = std::env::temp_dir().join(format!("hc-upload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a temp dir");
+    let path = dir.join("note.txt");
+    std::fs::write(&path, b"file contents").expect("write");
+
+    let r = hc(&[
+        &url(addr, "/u"),
+        &format!("doc@{}", path.to_str().expect("utf-8 path")),
+    ]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+
+    let seen = log.lock().unwrap();
+    assert_eq!(
+        seen[0].line, "POST /u HTTP/1.1",
+        "a file is a body, and a body makes it a POST"
+    );
+    assert!(
+        seen[0]
+            .header("content-type")
+            .is_some_and(|ct| ct.starts_with("multipart/form-data")),
+        "{:?}",
+        seen[0].header("content-type")
+    );
+    // The file's bytes and its name both reached the part, which is what
+    // says the upload was assembled rather than merely announced.
+    assert!(seen[0].body.contains("file contents"), "{}", seen[0].body);
+    assert!(seen[0].body.contains("note.txt"), "{}", seen[0].body);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **`--raw-body` is not JSON**, and the `--print H` head must not claim
+/// it is. The content type this tool *implies* is guarded by
+/// `request_body_preview.is_some() && cli.raw_body.is_none()`; relaxing
+/// the `&&` to `||` labels a raw body `application/json` — a header the
+/// caller never wrote, describing bytes it may not describe.
+///
+/// Measured: that mutation left all 117 tests green, because no test
+/// printed the head of a `--raw-body` request.
+#[test]
+fn a_raw_body_is_not_labelled_json_in_the_printed_head() {
+    let (addr, _log) = serve(200, "text/plain", "ok");
+    let dir = std::env::temp_dir().join(format!("hc-rawbody-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a temp dir");
+    let path = dir.join("raw.txt");
+    std::fs::write(&path, b"not json at all").expect("write");
+
+    let r = hc(&[
+        "--print",
+        "H",
+        &url(addr, "/r"),
+        "--raw-body",
+        path.to_str().expect("utf-8 path"),
+    ]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        !r.stdout.contains("content-type: application/json"),
+        "a raw body was labelled JSON: {}",
+        r.stdout
+    );
+    // The control: the same flag with data items *does* imply JSON, so
+    // the assertion above is about `--raw-body` rather than about this
+    // tool never implying a content type at all.
+    let (addr2, _log2) = serve(200, "text/plain", "ok");
+    let j = hc(&["--print", "H", &url(addr2, "/j"), "a=1"]);
+    assert!(
+        j.stdout.contains("content-type: application/json"),
+        "{}",
+        j.stdout
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_usage_mistake_exits_two_and_names_the_argument() {
     let r = hc(&["http://127.0.0.1:1/", "nonsense"]);
@@ -392,6 +475,106 @@ fn without_tls_appconnect_is_zero_while_a_connection_was_still_made() {
     ]);
     assert_eq!(ran.code, 0, "stderr: {}", ran.stderr);
     assert_eq!(ran.stdout, "0.000000/1");
+}
+
+/// **`time_starttransfer` is the *first* head's**, and on a followed
+/// redirect that is the only thing separating it from the last hop's.
+///
+/// `Recorder::on` keeps `ttfb` behind `if t.heads == 0`, so the `heads`
+/// counter is what makes it stick. With the increment mutated to `*= 1`
+/// the counter never leaves zero and every head overwrites `ttfb` — so
+/// the milestone reported is about the hop the caller never asked for.
+/// Measured before this test existed: that mutation left all 121 tests
+/// green, because nothing rendered `heads` and no test drove two heads
+/// through the recorder.
+///
+/// `Head` is `#[non_exhaustive]` with no public constructor, so this
+/// cannot be a unit test: two real heads need a real redirect.
+///
+/// Asserted as an **ordering**, never as a threshold — the second hop is
+/// made slow by the server holding it, so `starttransfer < total` is
+/// causal rather than a race. Three timing assertions in this workspace
+/// have turned out to be flakes, and this one is written to not be a
+/// fourth: it compares two numbers from the same run.
+#[test]
+fn the_transfer_milestone_belongs_to_the_first_hop_of_a_redirect_chain() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    // Which connection this is, counted the way `serve_raw` above counts
+    // its own: the two hops need different answers and the accept loop
+    // hands each to its own thread.
+    let nth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let n = nth.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() || line.is_empty() {
+                        return;
+                    }
+                    if line.trim_end().is_empty() {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    // The first hop answers at once, which is what makes
+                    // its head the early one.
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 302 Found\r\nlocation: /second\r\ncontent-length: 0\r\n\
+                          connection: close\r\n\r\n",
+                    );
+                } else {
+                    // The second is held, so the two heads are far apart
+                    // on the timeline and a `ttfb` taken from the wrong
+                    // one is unmistakable rather than a near-tie.
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\n\
+                          connection: close\r\n\r\nhi",
+                    );
+                }
+                let _ = stream.flush();
+            });
+        }
+    });
+
+    let ran = hc(&[
+        "-L",
+        &url(addr, "/first"),
+        "-w",
+        r"%{time_starttransfer}|%{time_total}|%{num_redirects}",
+    ]);
+    assert_eq!(ran.code, 0, "stderr: {}", ran.stderr);
+
+    // The body is printed first and `-w` appended after it, curl's
+    // placement — and `output::body` adds the newline, because the body
+    // does not end in one.
+    let report = ran
+        .stdout
+        .strip_prefix("hi\n")
+        .unwrap_or_else(|| panic!("the body came first: {:?}", ran.stdout));
+    let parts: Vec<f64> = report
+        .split('|')
+        .take(2)
+        .map(|s| s.parse().expect("six decimal places"))
+        .collect();
+    let (starttransfer, total) = (parts[0], parts[1]);
+    assert!(
+        report.ends_with("|1"),
+        "one redirect was followed: {report:?}"
+    );
+    // The first head arrived before the second hop's 300 ms wait, and the
+    // total contains that wait — so the milestone is the first hop's.
+    // With the counter stuck at zero the last head wins and the two
+    // numbers converge.
+    assert!(
+        starttransfer < total / 2.0,
+        "`time_starttransfer` looks like the last hop's rather than the first's: \
+         starttransfer={starttransfer} total={total}"
+    );
 }
 
 /// An unknown variable is refused by name, with exit 2 — a usage mistake,

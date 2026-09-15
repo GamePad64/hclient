@@ -504,6 +504,69 @@ mod tests {
         }
     }
 
+    /// **`%{http_version}` is what a script reads to learn which protocol
+    /// answered**, and `version_name` had no test: emptying it, or
+    /// answering `"xyzzy"` for everything, left the whole suite green,
+    /// because `Facts::version` is a `String` every existing test fills in
+    /// by hand and no test ever calls this function.
+    ///
+    /// Each arm is named, because deleting one falls through to
+    /// `"unknown"` — and `%{http_version}` reading `unknown` for an
+    /// ordinary HTTP/1.1 response is a report that is simply wrong rather
+    /// than absent.
+    ///
+    /// The spelling is curl's and deliberately not `http::Version`'s own
+    /// `Debug`, which gives `HTTP/2.0`: the protocol is `HTTP/2`, with no
+    /// minor number since RFC 7540, and `%{http_version}` carries the bare
+    /// number.
+    #[test]
+    fn every_http_version_has_its_own_curl_spelling() {
+        assert_eq!(version_name(http::Version::HTTP_09), "0.9");
+        assert_eq!(version_name(http::Version::HTTP_10), "1.0");
+        assert_eq!(version_name(http::Version::HTTP_11), "1.1");
+        assert_eq!(version_name(http::Version::HTTP_2), "2");
+        assert_eq!(version_name(http::Version::HTTP_3), "3");
+        // Not `2.0`, which is what `Debug` would have printed and what a
+        // script comparing against curl's output would not match.
+        assert_ne!(version_name(http::Version::HTTP_2), "2.0");
+    }
+
+    /// `num_connects` **counts**, and `+= 1` mutated to `*= 1` leaves it
+    /// at zero for ever — so every connection reads as pooled.
+    ///
+    /// The existing tests cannot see it: `a_pooled_exchange_reports_zero_connects`
+    /// asserts `0` and is satisfied by a counter that never moves, and the
+    /// two-connection test below asserts `2` only after this one has
+    /// established that one connection reads as `1`. The pair is what
+    /// discriminates, which is why the single-connection case is its own
+    /// test rather than a line in that one.
+    #[test]
+    fn one_connection_is_counted_as_one_and_not_as_none() {
+        use hclient_core::hooks::{ConnectTiming, Connected, Event};
+        let rec = Recorder::new();
+        let uri: http::Uri = "https://example.com/".parse().unwrap();
+        rec.on(&Event::Connected(
+            Connected::new(
+                hclient_core::hooks::ConnectionId::UNWATCHED,
+                &uri,
+                http::Version::HTTP_11,
+            )
+            .timing(ConnectTiming::new().dns(Duration::from_millis(1))),
+        ));
+        assert_eq!(
+            rec.snapshot().connects,
+            1,
+            "a connection that happened must not read as a pooled exchange"
+        );
+        // And it reaches the report, which is the reader that matters:
+        // `num_connects` is the field separating *no handshake happened*
+        // from *the handshake took no time*.
+        assert_eq!(
+            render("%{num_connects}", &rec.snapshot(), &facts()).unwrap(),
+            "1"
+        );
+    }
+
     /// The recorder keeps the **first** connection's numbers, because
     /// `time_connect` is about reaching the origin the caller named — a
     /// redirect's second connection would overwrite it with an unrelated

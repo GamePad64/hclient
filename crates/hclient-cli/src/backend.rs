@@ -354,4 +354,60 @@ mod tests {
     fn this_build_carries_at_least_one_backend() {
         assert!(!COMPILED_IN.is_empty(), "built with no backend feature");
     }
+
+    /// **The list names the backends, and every reader of it is a promise.**
+    ///
+    /// `available_list` is the text after `It carries:` in a refusal and
+    /// after `backends:` in `--version`, and it was asserted nowhere: the
+    /// refusal test above checks the *label* and the `--version` test
+    /// checks `contains("rustls")` only under `#[cfg(feature = "rustls")]`,
+    /// so emptying this function left the whole suite green. Measured
+    /// before this test was written, with `if true { return String::new();
+    /// }` at the top of it: 99 passed, 0 failed.
+    ///
+    /// A refusal that names what was asked for and then lists *nothing* is
+    /// exactly the half-useful refusal
+    /// `the_message_names_what_was_asked_for_and_what_is_available` exists
+    /// to forbid. The content is asserted against `COMPILED_IN` rather
+    /// than against a literal, so it stays true for a build carrying
+    /// either backend or both.
+    #[test]
+    fn the_available_list_names_every_backend_the_build_carries() {
+        let list = available_list();
+        for b in COMPILED_IN {
+            assert!(
+                list.contains(&b.to_string()),
+                "`{b}` is compiled in and the list does not name it: {list:?}"
+            );
+        }
+        // Not merely non-empty: a list naming one of two would pass that
+        // and still be a refusal a caller cannot act on.
+        assert_eq!(
+            list.split(", ").count(),
+            COMPILED_IN.len(),
+            "one entry per backend: {list:?}"
+        );
+    }
+
+    /// The default is the **first compiled in**, which is what
+    /// `--version`'s `default:` line reports and what a run with no
+    /// `--backend` actually uses.
+    ///
+    /// Answering `None` prints `default:  none` beside a `backends:` line
+    /// that names one — a binary contradicting itself about what it will
+    /// do — and it survived the whole suite: measured with
+    /// `if true { return None; }`, 99 passed, 0 failed.
+    ///
+    /// Asserted against `choose(None, COMPILED_IN)` rather than against a
+    /// name, because the two are one claim reached by different routes:
+    /// the *reported* default and the *used* default must not be able to
+    /// drift apart.
+    #[test]
+    fn the_reported_default_is_the_one_a_run_with_no_backend_flag_uses() {
+        assert_eq!(
+            default_backend(),
+            Some(choose(None, COMPILED_IN).expect("this build carries a backend")),
+            "`--version` reports one default and `choose` picks another"
+        );
+    }
 }

@@ -391,4 +391,190 @@ mod tests {
             render(&t).contains("using TLSv1.3\n") || render(&t).contains("using TLSv1.3\u{1b}")
         );
     }
+
+    /// Everything below is `json_value` and `version_str`, which had **no
+    /// unit test at all** — the whole pretty-printer was reached only by
+    /// `end_to_end.rs`'s `json_output_is_reindented_only_when_it_parses`,
+    /// which asserts one substring of one object and so says nothing about
+    /// arrays, nesting, separators or the version line.
+    ///
+    /// Written through the same colour-off `AutoStream` the binary uses,
+    /// because a `Style` written to a bare `Vec` emits its escapes
+    /// unconditionally and these assertions are about the text.
+    fn json(v: &serde_json::Value) -> String {
+        let mut out = anstream::AutoStream::new(Vec::new(), anstream::ColorChoice::Never);
+        json_value(&mut out, v, 0).expect("a Vec never fails to write");
+        String::from_utf8(out.into_inner()).expect("json renders as UTF-8")
+    }
+
+    /// **The output has to be JSON, and the separator is what decides
+    /// that.** A comma after the last element, or none between two, is a
+    /// document no parser will read — and `hc … | jq` is the pipeline this
+    /// printer exists for.
+    ///
+    /// Asserted by re-parsing rather than only by eye: `i + 1 < len`
+    /// mutated to `<=`, `==`, `>`, `-` or `*` each produce a different
+    /// wrong punctuation, and one `from_str` catches the class instead of
+    /// five string comparisons pinning today's spacing.
+    #[test]
+    fn a_rendered_document_parses_back_as_the_value_it_came_from() {
+        for v in [
+            serde_json::json!({"b": 1, "a": [2, 3], "n": null}),
+            serde_json::json!([1, [2, [3]], {}]),
+            serde_json::json!({"one": {"two": {"three": [true, false]}}}),
+            serde_json::json!([{"k": "v"}, {"k": "w"}]),
+        ] {
+            let text = json(&v);
+            let back: serde_json::Value = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("printed JSON does not re-parse: {e}\n{text}"));
+            assert_eq!(back, v, "the value changed on the way through:\n{text}");
+        }
+    }
+
+    /// The separators, pinned as text as well — because a document that
+    /// re-parses can still be the wrong *shape*, and the comma rule is
+    /// what a reader diffing two runs sees.
+    #[test]
+    fn every_element_but_the_last_is_followed_by_a_comma() {
+        assert_eq!(json(&serde_json::json!([1, 2])), "[\n    1,\n    2\n]");
+        assert_eq!(
+            json(&serde_json::json!({"a": 1, "b": 2})),
+            "{\n    \"a\": 1,\n    \"b\": 2\n}"
+        );
+        // One element takes no comma at all, which is the boundary the
+        // `i + 1 < len` comparison sits on.
+        assert_eq!(json(&serde_json::json!([1])), "[\n    1\n]");
+    }
+
+    /// **Indentation is `depth + 1`, and it is the one thing a reader uses
+    /// the reindent for.** `+` mutated to `-` or `*` leaves a document
+    /// that still parses — `0 * 1 == 0` and `0 - 1` saturates — so this is
+    /// asserted as the exact text a nested value produces.
+    #[test]
+    fn nesting_indents_by_one_level_per_depth() {
+        assert_eq!(
+            json(&serde_json::json!({"a": [1]})),
+            "{\n    \"a\": [\n        1\n    ]\n}",
+            "the inner array's element sits two levels in, and its bracket one"
+        );
+        // **An array directly inside an array**, which is a different
+        // recursion site from the one above: the object arm and the array
+        // arm each pass `depth + 1` of their own, and a test nesting only
+        // through an object leaves the array's site unreached.
+        //
+        // `depth * 1` there is `depth`, so a child is rendered at its
+        // parent's level. It reads as a defect rather than a wobble —
+        // measured through the built binary, `[[1,2],[3]]` came out with
+        // the inner elements and closing brackets flush against the outer
+        // ones, which is not the reindent this feature exists to be.
+        assert_eq!(
+            json(&serde_json::json!([[1]])),
+            "[\n    [\n        1\n    ]\n]",
+            "an array inside an array indents once per level"
+        );
+    }
+
+    /// An empty container is written inline, which is what the two match
+    /// guards are for: `[]` rather than `[\n]`. Both directions, because a
+    /// guard forced to `true` would print `[]` for a full array and lose
+    /// the contents outright.
+    #[test]
+    fn an_empty_container_is_inline_and_a_full_one_is_not() {
+        assert_eq!(json(&serde_json::json!([])), "[]");
+        assert_eq!(json(&serde_json::json!({})), "{}");
+        // The control: with the guard always taken, these would be `[]`
+        // and `{}` too — a body printed as empty is the worst outcome this
+        // printer has, because it reads as a successful empty response.
+        assert!(json(&serde_json::json!([1])).contains('1'));
+        assert!(json(&serde_json::json!({"a": 1})).contains("\"a\""));
+    }
+
+    /// Scalars, including the two that are easy to get wrong: a string is
+    /// quoted **through `serde_json`** so an embedded quote or newline
+    /// cannot produce invalid output, and `null` is a word rather than an
+    /// empty rendering.
+    #[test]
+    fn scalars_render_as_json_writes_them() {
+        assert_eq!(json(&serde_json::json!(null)), "null");
+        assert_eq!(json(&serde_json::json!(true)), "true");
+        assert_eq!(json(&serde_json::json!(1.5)), "1.5");
+        assert_eq!(json(&serde_json::json!("hi")), "\"hi\"");
+        // The escaping is the format's, which is the whole reason the
+        // quoting goes through `to_string` rather than a `format!`.
+        assert_eq!(json(&serde_json::json!("a\"b\nc")), "\"a\\\"b\\nc\"");
+    }
+
+    /// **`version_str` names the protocol on every response head `hc -v`
+    /// prints**, and nothing asserted it: emptying the function, or
+    /// answering `"xyzzy"` for every version, left the whole suite green.
+    ///
+    /// Each arm is named separately because deleting any one of them falls
+    /// through to the `_` arm's bare `"HTTP"` — a head reading `HTTP 200
+    /// OK`, which is not a protocol version and not a lie a reader would
+    /// catch.
+    #[test]
+    fn every_http_version_prints_its_own_name() {
+        assert_eq!(version_str(http::Version::HTTP_09), "HTTP/0.9");
+        assert_eq!(version_str(http::Version::HTTP_10), "HTTP/1.0");
+        assert_eq!(version_str(http::Version::HTTP_11), "HTTP/1.1");
+        assert_eq!(version_str(http::Version::HTTP_2), "HTTP/2");
+        assert_eq!(version_str(http::Version::HTTP_3), "HTTP/3");
+    }
+
+    /// The status line's colour is chosen from the status class, and the
+    /// **`||` between the two error classes** is what puts a `4xx` and a
+    /// `5xx` on the same branch. Replacing it with `&&` sends both to
+    /// `WARN`, which is a redirect's colour — so the one thing the line
+    /// says at a glance stops being true.
+    ///
+    /// Asserted through a colour-**on** stream, because with colour off
+    /// the escapes are stripped and every status renders identically:
+    /// a test written the usual way here would pass for any mutation.
+    #[test]
+    fn a_failing_status_is_coloured_differently_from_a_redirect() {
+        let paint = |status: http::StatusCode| {
+            let mut out = anstream::AutoStream::new(Vec::new(), anstream::ColorChoice::Always);
+            response_head(
+                &mut out,
+                http::Version::HTTP_11,
+                status,
+                &http::HeaderMap::new(),
+            )
+            .expect("a Vec never fails to write");
+            String::from_utf8(out.into_inner()).expect("the head is UTF-8")
+        };
+        let ok = paint(http::StatusCode::OK);
+        let redirect = paint(http::StatusCode::FOUND);
+        let client = paint(http::StatusCode::NOT_FOUND);
+        let server = paint(http::StatusCode::INTERNAL_SERVER_ERROR);
+
+        // The two error classes agree with each other and differ from the
+        // redirect — which is exactly what `is_client_error() ||
+        // is_server_error()` claims and `&&` would break.
+        //
+        // Every escape in the line, not the first: the line opens with the
+        // `DIM` on the version, which is the same for every status, so a
+        // comparison of the first one alone passes for any mutation here.
+        let colour_of = |s: &str| {
+            s.split('\u{1b}')
+                .skip(1)
+                .filter_map(|e| e.split_once('m').map(|(code, _)| code.to_owned()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            colour_of(&client),
+            colour_of(&server),
+            "a 4xx and a 5xx are both failures:\n{client:?}\n{server:?}"
+        );
+        assert_ne!(
+            colour_of(&client),
+            colour_of(&redirect),
+            "a failure must not be painted as a redirect:\n{client:?}\n{redirect:?}"
+        );
+        assert_ne!(
+            colour_of(&ok),
+            colour_of(&client),
+            "success and failure must differ:\n{ok:?}\n{client:?}"
+        );
+    }
 }

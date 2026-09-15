@@ -401,6 +401,29 @@ mod tests {
         }
     }
 
+    /// **A refusal says what the mode is a stream of**, and `Mode::unit`
+    /// is the only thing that makes the one `--print` message read
+    /// correctly for both modes. Measured before this was written:
+    /// replacing it with `"xyzzy"` — so the message reads *a stream of
+    /// xyzzy rather than one exchange* — left the whole suite green,
+    /// because `every_streaming_refusal_names_both_halves_of_the_collision`
+    /// asserts the flag and the mode and never the noun between them.
+    ///
+    /// Asserted per mode rather than as one string, since the whole point
+    /// of the function is that the two differ: a single noun serving both
+    /// would read as written for neither, which is what the method's own
+    /// doc says it exists to avoid.
+    #[test]
+    fn a_refusal_names_what_the_mode_is_a_stream_of() {
+        let sse = cli(&["--sse", "http://x/", "--print", "hb"]);
+        let e = refuse_unusable(select(&sse).unwrap(), &sse, &[]).unwrap_err();
+        assert!(e.contains("stream of events"), "{e}");
+
+        let ws = cli(&["--ws", "http://x/", "--print", "hb"]);
+        let e = refuse_unusable(select(&ws).unwrap(), &ws, &[]).unwrap_err();
+        assert!(e.contains("stream of frames"), "{e}");
+    }
+
     /// The control for the table above: the flags that genuinely mean the
     /// same thing in a stream are **not** refused, or the rule would read
     /// as "streaming modes take no flags".

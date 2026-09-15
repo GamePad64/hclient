@@ -340,6 +340,18 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     // its headers, and a WebSocket after the `101` carries frames. `-w`,
     // the recorder's other reader, is refused in both. So there is
     // nothing left to read a clock for.
+    //
+    // **This line is a cost decision and nothing else, which is why no
+    // test pins it.** Measured rather than assumed: relaxing the `&&` to
+    // `||` — so every run installs a `Recorder` — leaves the binary's
+    // output byte-identical for a plain request, for `-v`, and for both
+    // streaming modes, because what changes is which `Hooks` type the
+    // transport is built with and nothing reads the extra one. The only
+    // observable is clock reads inside the backend, and a test asserting
+    // *that* would be a timing threshold, which this workspace treats as
+    // a flake waiting to happen. So the mutation survives on purpose and
+    // the claim above is kept honest by `Hooks::WATCHING` being a
+    // compile-time const rather than by an assertion here.
     let watching = !mode.is_streaming() && (cli.write_out.is_some() || cli.verbose);
     let recorder = watching.then(crate::timings::Recorder::new);
     let config = backend::Config {
@@ -954,6 +966,284 @@ mod tests {
             .collect();
         assert_eq!(xs.len(), 1);
         assert_eq!(xs[0].1, "2");
+    }
+
+    /// **`print_selection` had no unit test**, and every field of the
+    /// `Print` it returns is a flag doing what it says. Measured before
+    /// this was written: deleting `response_head` from the `--headers` arm
+    /// left the whole suite green — `--headers` would print nothing at
+    /// all, which is the *silently ignored setting* defect with the
+    /// setting being the only output the caller asked for.
+    ///
+    /// Each arm is asserted as the **whole** `Print` rather than one
+    /// field, because a deleted field falls back to `Print::default()`'s
+    /// `false` and a test naming only the field it expects to be `true`
+    /// cannot see the ones that vanished.
+    #[test]
+    fn each_print_flag_selects_exactly_the_parts_it_names() {
+        let parse = |args: &[&str]| {
+            use clap::Parser as _;
+            let mut all = vec!["hc", "http://x/"];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all).expect("the fixture's own command lines parse")
+        };
+
+        // `--headers` is the response head and nothing else.
+        assert_eq!(
+            print_selection(&parse(&["--headers"]), false).unwrap(),
+            Print {
+                response_head: true,
+                ..Print::default()
+            }
+        );
+        // `-b` is the payload and nothing else, even on a terminal.
+        assert_eq!(
+            print_selection(&parse(&["-b"]), true).unwrap(),
+            Print {
+                response_body: true,
+                ..Print::default()
+            }
+        );
+        // `-v` is all four, which is what makes it the flag that shows
+        // what was sent as well as what came back.
+        assert_eq!(
+            print_selection(&parse(&["-v"]), false).unwrap(),
+            Print {
+                request_head: true,
+                request_body: true,
+                response_head: true,
+                response_body: true,
+            }
+        );
+        // `--print` wins over the rest and names its own letters.
+        assert_eq!(
+            print_selection(&parse(&["--print", "Hb"]), true).unwrap(),
+            Print {
+                request_head: true,
+                response_body: true,
+                ..Print::default()
+            }
+        );
+        let e = print_selection(&parse(&["--print", "x"]), false).unwrap_err();
+        let Fail::Usage(m) = e else {
+            panic!("a bad --print letter is a usage mistake")
+        };
+        assert!(m.contains('x'), "the message names the letter: {m}");
+    }
+
+    /// **The default depends on where the output goes**, which is httpie's
+    /// rule and the reason `hc … | jq` needs no flag. Both halves are
+    /// asserted because they are one decision: a terminal gets the head
+    /// too, a pipe gets the body alone, and a mutation deleting either
+    /// field from either arm leaves the other arm's test passing.
+    #[test]
+    fn a_terminal_gets_the_head_as_well_and_a_pipe_gets_the_body_alone() {
+        use clap::Parser as _;
+        let bare = Cli::try_parse_from(["hc", "http://x/"]).expect("parses");
+        assert_eq!(
+            print_selection(&bare, true).unwrap(),
+            Print {
+                response_head: true,
+                response_body: true,
+                ..Print::default()
+            },
+            "a terminal gets the head as well as the body"
+        );
+        assert_eq!(
+            print_selection(&bare, false).unwrap(),
+            Print {
+                response_body: true,
+                ..Print::default()
+            },
+            "a pipe gets the body alone, or `hc … | jq` needs a flag"
+        );
+    }
+
+    /// curl's `HOST:PORT:ADDRESS` drops the port **only when it is one**.
+    /// The guard is `!p.is_empty() && p.bytes().all(is_ascii_digit)`, and
+    /// with `&&` relaxed to `||` an empty middle field — or any non-numeric
+    /// one — also strips, so `example.com:8080:127.0.0.1` still works and
+    /// a host whose own name contains a colon silently loses a label.
+    ///
+    /// Measured: the `||` mutation left all 108 tests green, because every
+    /// existing case has a numeric port or none at all. What discriminates
+    /// it is a middle field that is *not* a port.
+    #[test]
+    fn only_a_numeric_port_is_dropped_from_a_resolve_entry() {
+        let v4 = "127.0.0.1".parse::<std::net::IpAddr>().unwrap();
+        // The control: a real port is dropped, which is curl compatibility.
+        assert_eq!(
+            parse_resolve("example.com:8080:127.0.0.1").unwrap(),
+            ("example.com".into(), v4)
+        );
+        // A non-numeric middle field is part of the host and must survive.
+        // Under `||` this comes back as `"a"` and the rest of the name is
+        // gone — an override silently pointed at a different host.
+        assert_eq!(
+            parse_resolve("a:b:127.0.0.1").unwrap(),
+            ("a:b".into(), v4),
+            "only a port is dropped; anything else belongs to the host"
+        );
+    }
+
+    /// **The header items are what a streaming mode carries**, and this
+    /// function is the only thing that selects them: `--sse` and `--ws`
+    /// build their request from its result and from nothing else.
+    ///
+    /// It had no test. Measured before this was written, with
+    /// `if true { return vec![]; }` at the top: all 108 tests green, and
+    /// the built binary sent `hc --sse … X-Tenant:acme` with **no
+    /// `X-Tenant` header on the wire** — a caller's header silently
+    /// dropped, which is the defect class this crate's own `-L` story is
+    /// about.
+    ///
+    /// Both halves are asserted: the headers survive with their names and
+    /// values, and every other kind is dropped — the second because
+    /// `refuse_unusable` has already refused those kinds by name, so a
+    /// `header_items` that let one through would put a body item's text
+    /// into a header.
+    #[test]
+    fn only_header_items_are_carried_and_they_keep_their_names_and_values() {
+        let items = vec![
+            Item::Header {
+                name: "X-Tenant".into(),
+                value: "acme".into(),
+            },
+            Item::Query {
+                name: "q".into(),
+                value: "1".into(),
+            },
+            Item::Data {
+                name: "d".into(),
+                value: "2".into(),
+            },
+            Item::JsonRaw {
+                name: "j".into(),
+                value: "3".into(),
+            },
+            Item::File {
+                name: "f".into(),
+                path: "/x".into(),
+            },
+            Item::Header {
+                name: "X-Other".into(),
+                value: String::new(),
+            },
+        ];
+        assert_eq!(
+            header_items(&items),
+            vec![
+                ("X-Tenant".to_string(), "acme".to_string()),
+                // The empty value survives to `effective_headers`, which
+                // is where it means *drop this header* — losing it here
+                // would make `User-Agent:` unable to suppress the default.
+                ("X-Other".to_string(), String::new()),
+            ]
+        );
+    }
+
+    /// `has_data` decides whether there is a body, which decides **GET
+    /// against POST** and whether `--raw-body` collides with data items.
+    ///
+    /// Answering `true` unconditionally survived the suite, and it turns
+    /// `hc example.com` into a POST with an empty JSON object. Both
+    /// directions are asserted, because either alone passes for a
+    /// constant.
+    #[test]
+    fn a_body_is_reported_only_when_there_is_one() {
+        let one = [("a".to_string(), "1".to_string())];
+        assert!(!has_data(&[], &[]), "nothing is not a body");
+        assert!(has_data(&one, &[]), "a `=` item is");
+        assert!(has_data(&[], &one), "and so is a `:=` item");
+        assert!(has_data(&one, &one));
+    }
+
+    /// `--raw-body` reads the **file the caller named**, and `-` is stdin.
+    ///
+    /// Every return-value mutation of this function survived — including
+    /// `Ok(vec![])`, which sends an empty body for a file full of bytes
+    /// and reports success. The `==` guard is asserted too: with it
+    /// inverted, `-` is read as a filename and a real path is read from
+    /// stdin, so both spellings break at once.
+    #[test]
+    fn a_raw_body_is_the_bytes_of_the_file_that_was_named() {
+        let dir = std::env::temp_dir().join(format!("hc-raw-body-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let path = dir.join("body.bin");
+        // Bytes rather than text, because the body is written as bytes:
+        // `0x89` is not valid UTF-8 on its own, so a read that went
+        // through a `String` could not return it.
+        let payload: &[u8] = &[0x89, b'h', b'i', 0x00, 0xff];
+        std::fs::write(&path, payload).expect("write");
+
+        let got = read_body(path.to_str().expect("utf-8 path")).expect("the file is readable");
+        assert_eq!(got, payload, "the body is the file's bytes, unchanged");
+
+        // A path that does not exist is an error rather than an empty
+        // body — which is what `Ok(vec![])` would have made it.
+        let missing = dir.join("nothing-here.bin");
+        assert!(
+            read_body(missing.to_str().expect("utf-8 path")).is_err(),
+            "a missing file must not read as an empty body"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **A cause is printed only where it adds something.**
+    /// `hclient::Error`'s own `Display` is `"{kind:?}: {source}"`, so the
+    /// top line already carries its immediate source — printing the chain
+    /// unconditionally reads as two failures rather than one, and the `!`
+    /// on `top.contains(&text)` is the whole of that rule.
+    ///
+    /// Measured before this test existed: deleting the `!` inverted it
+    /// into *print a cause only when it is already visible*, and all 108
+    /// tests stayed green. Both directions are asserted here, because
+    /// either alone passes for a `Fail` that prints every cause or none:
+    /// the immediate source must **not** be repeated, and a deeper one
+    /// the top line does not carry must appear.
+    #[test]
+    fn a_cause_is_printed_only_when_the_top_line_does_not_already_carry_it() {
+        #[derive(Debug)]
+        struct Deep;
+        impl std::fmt::Display for Deep {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("the deeper reason")
+            }
+        }
+        impl std::error::Error for Deep {}
+
+        #[derive(Debug)]
+        struct Middle(Deep);
+        impl std::fmt::Display for Middle {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("the immediate reason")
+            }
+        }
+        impl std::error::Error for Middle {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let fail = Fail::Request(hclient::Error::new(
+            hclient::ErrorKind::Connect,
+            Middle(Deep),
+        ));
+        let shown = fail.to_string();
+
+        // The immediate source is in the top line already — `Error`'s
+        // `Display` is `"{kind:?}: {source}"` — so it must appear exactly
+        // once rather than again under `caused by`.
+        assert_eq!(
+            shown.matches("the immediate reason").count(),
+            1,
+            "the immediate cause was printed twice:\n{shown}"
+        );
+        // The deeper one is not in the top line, so it is printed.
+        assert!(
+            shown.contains("caused by: the deeper reason"),
+            "a cause the top line omits must be shown:\n{shown}"
+        );
     }
 
     #[test]

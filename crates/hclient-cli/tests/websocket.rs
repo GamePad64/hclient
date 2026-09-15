@@ -445,6 +445,51 @@ fn verbose_prints_both_directions_and_the_handshake_it_asked_for() {
     assert!(ran.stdout.contains("close 1000"), "{}", ran.stdout);
 }
 
+/// **`-v` redacts the credential and prints every other header**, and
+/// the two halves are one assertion: the redaction is a `name ==
+/// AUTHORIZATION` test, and inverting it redacts everything *except* the
+/// token — so `hc --ws -v --bearer …` would print the secret to a
+/// terminal and hide the `user-agent`.
+///
+/// Measured before this test existed: that inversion left all 117 tests
+/// green, because the only `-v` websocket test sends no credential. The
+/// token is asserted **absent** rather than the placeholder present,
+/// because a redaction that prints `<redacted>` on one line and the
+/// token on another has still leaked it.
+#[test]
+fn verbose_redacts_the_bearer_token_and_still_prints_the_other_headers() {
+    let (addr, _) = serve_ws(|w| {
+        let _ = w.send(8, &1000u16.to_be_bytes());
+        let _ = w.frame();
+    });
+    let ran = hc(&[
+        "--ws",
+        "-v",
+        "--bearer",
+        "s3cret-token-value",
+        &url(addr, "/c"),
+    ]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(
+        !ran.stdout.contains("s3cret-token-value"),
+        "the token reached the transcript: {:?}",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout.contains("<redacted>"),
+        "and it was replaced rather than dropped: {:?}",
+        ran.stdout
+    );
+    // The control: an ordinary header is printed as itself, so the
+    // redaction is as narrow as the credential rather than applied to
+    // everything.
+    assert!(
+        ran.stdout.contains("user-agent: hc/"),
+        "a non-credential header must print its value: {:?}",
+        ran.stdout
+    );
+}
+
 /// A binary message reaches a pipe **byte for byte**, which is the same
 /// claim `end_to_end.rs` makes about a response body and for the same
 /// reason: `anstream`'s strip filter is an ANSI parser, and it deletes
