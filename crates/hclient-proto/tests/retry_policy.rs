@@ -7,7 +7,8 @@ use core::time::Duration;
 
 use hclient_proto::backoff::Backoff;
 use hclient_proto::retry::{
-    Decision, Outcome, RetryStatuses, RetryVerdict, Standard, StopReason, retry_after_seconds,
+    BoxRetryPolicy, Decision, Never, Outcome, ProposedRetry, RetryAll, RetryPolicy, RetryStatuses,
+    RetryVerdict, SafeMethodsOnly, Standard, StopReason, retry_after_seconds,
 };
 
 fn status(code: u16) -> Outcome {
@@ -277,5 +278,90 @@ fn a_retry_after_outside_the_digit_grammar_is_refused_including_the_empty_one() 
         retry_after_seconds("Wed, 21 Oct 2015 07:28:00 GMT"),
         None,
         "the HTTP-date form is deliberately unparsed — it needs a calendar"
+    );
+}
+
+fn attempt<'a>(method: &'a http::Method, uri: &'a http::Uri) -> ProposedRetry<'a> {
+    ProposedRetry::new(method, uri, 1, Outcome::Unsent, true, 0.0)
+}
+
+/// **An empty `RetryAll` stops, and that identity had no test.**
+///
+/// It is the lattice property `redirect::All` states in the *opposite*
+/// direction, and the pair is what must not drift: a meet over nothing is
+/// the operation's identity, and retrying happens only because a policy
+/// permitted it, so the identity here is `Stop`. Seeding it with a permit
+/// instead would turn a configuration that read an empty list out of a
+/// file into a client that retries every request against every server on
+/// the strength of a configuration that said nothing — which is the
+/// direction that costs a server duplicated work rather than costing this
+/// client a retry.
+///
+/// All three ways of arriving at empty are asserted, because `new`,
+/// `default` and `FromIterator` are three code paths to one value.
+#[test]
+fn an_empty_chain_stops_which_is_the_opposite_identity_to_redirects() {
+    let (m, u) = (http::Method::GET, "https://a/".parse().unwrap());
+
+    for (how, chain) in [
+        ("new", RetryAll::new()),
+        ("default", RetryAll::default()),
+        ("collected", core::iter::empty().collect::<RetryAll>()),
+    ] {
+        assert!(chain.is_empty(), "{how}");
+        assert_eq!(chain.len(), 0, "{how}");
+        assert_eq!(
+            chain.retry(&attempt(&m, &u)),
+            RetryVerdict::Stop,
+            "{how}: nothing permitted, so nothing is retried"
+        );
+    }
+
+    // The control that makes the row above mean something: the same
+    // `Outcome::Unsent` on a chain that *does* permit is not a `Stop`, so
+    // the empty answer is the emptiness rather than the attempt.
+    let mut permitting = RetryAll::new();
+    permitting.push(SafeMethodsOnly);
+    assert_ne!(permitting.retry(&attempt(&m, &u)), RetryVerdict::Stop);
+}
+
+/// Composing permitters gives their **intersection**, so pushing a second
+/// policy can only ever retry less — the asymmetry `RetryPolicyExt::and`
+/// argues and the reason `and` narrows from one configured permission
+/// rather than from *yes*.
+///
+/// `GET` is the control: `SafeMethodsOnly` permits it, so the chain's
+/// `Stop` on `POST` is that policy deciding rather than the chain
+/// refusing everything.
+#[test]
+fn a_chain_intersects_so_one_refusal_decides_it() {
+    let uri: http::Uri = "https://a/".parse().unwrap();
+
+    let mut chain = RetryAll::new();
+    chain.push(SafeMethodsOnly);
+    assert_eq!(chain.len(), 1);
+
+    assert_ne!(
+        chain.retry(&attempt(&http::Method::GET, &uri)),
+        RetryVerdict::Stop,
+        "a safe method is what this policy is for"
+    );
+    assert_eq!(
+        chain.retry(&attempt(&http::Method::POST, &uri)),
+        RetryVerdict::Stop,
+        "and an unsafe one is what it refuses"
+    );
+
+    // Collected rather than pushed — the expression a config-file caller
+    // writes — and `Never` in the list must take the whole chain down
+    // however permissive its neighbour is.
+    let collected: RetryAll = [Box::new(SafeMethodsOnly) as BoxRetryPolicy, Box::new(Never)]
+        .into_iter()
+        .collect();
+    assert_eq!(collected.len(), 2);
+    assert_eq!(
+        collected.retry(&attempt(&http::Method::GET, &uri)),
+        RetryVerdict::Stop,
+        "intersection: the one refusal decides it"
     );
 }

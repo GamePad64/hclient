@@ -392,8 +392,88 @@ impl RedirectPolicy for HttpsOnly {
 ///
 /// An empty list permits everything, which is what a meet over nothing
 /// means and is worth knowing before reading one out of a file.
+///
+/// # The field is private, and that is a decision about the freeze
+///
+/// It was `pub Vec<Box<dyn ..>>`, which made **both** the `Vec` and the
+/// `Box` part of the promise: a later representation — a `SmallVec`, an
+/// `Arc` so the list is cheap to clone, an inline pair for the common
+/// two-policy case — would each have been a major version. Nothing
+/// outside this crate constructed one, measured before the change, so
+/// closing the field cost no consumer and buys back every one of those.
+///
+/// What replaces it is [`All::new`], [`All::push`] and
+/// [`FromIterator`], which is `Vec`'s own vocabulary and keeps the
+/// run-time case this type exists for — a list read out of a config file
+/// — expressible in one expression.
 #[derive(Debug, Default)]
-pub struct All(pub Vec<Box<dyn RedirectPolicy + Send + Sync>>); // send-bound-exception: amendment-C12
+pub struct All(Vec<BoxRedirectPolicy>);
+
+impl All {
+    /// An empty list, which **permits every hop**.
+    ///
+    /// That is not an oversight and it is the opposite of
+    /// [`retry::RetryAll::new`](crate::retry::RetryAll::new): a meet over
+    /// nothing is the operation's identity, and following a redirect is
+    /// what happens *unless* a policy objects — so the identity here is
+    /// *yes*, where for a permitter it is *no*. A caller reading a list
+    /// out of a file that turns out to be empty has configured *no
+    /// restrictions*, not *no redirects*.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Adds a policy to the chain. Every one must permit.
+    ///
+    /// Order is unobservable — the chain is a meet, so it can only narrow
+    /// — which is the property that separates a policy list from
+    /// middleware and is argued on [`RedirectPolicy`].
+    pub fn push<P>(&mut self, policy: P)
+    where
+        P: RedirectPolicy + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
+        self.0.push(Box::new(policy));
+    }
+
+    /// How many policies are in the chain.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the chain is empty — in which case it permits everything,
+    /// per [`All::new`].
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// One policy in an [`All`] chain, as the chain stores it.
+///
+/// Named rather than spelled out at each of the three sites that need it,
+/// which is [`crate::retry::BoxRetryPolicy`]'s shape and
+/// `hclient_core::auth::BoxFlow`'s: the `Send + Sync` marker is stated
+/// **once**, on a line short enough that `cargo fmt` will not reflow it
+/// and take the marker with it — a hazard this workspace has been bitten
+/// by twice and which `auth.rs` records.
+pub type BoxRedirectPolicy = Box<dyn RedirectPolicy + Send + Sync>; // send-bound-exception: amendment-C12
+
+/// Collects a chain, so the run-time case reads as one expression:
+/// `policies.into_iter().collect::<All>()`.
+///
+/// Takes the already-boxed form because that is what a heterogeneous list
+/// is: two different policy types cannot be iterated as one concrete
+/// item, so whoever built the list boxed them. A second impl over
+/// unboxed values would only serve a list of one type, which
+/// [`and`](RedirectPolicyExt::and) already composes at the type level for
+/// nothing.
+impl FromIterator<BoxRedirectPolicy> for All {
+    fn from_iter<T: IntoIterator<Item = BoxRedirectPolicy>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
 
 impl RedirectPolicy for All {
     fn follow(&self, hop: &ProposedRedirect<'_>) -> RedirectVerdict {
@@ -1269,5 +1349,83 @@ mod tests {
             Some(b"https://b/\r\nX-Injected: 1"),
         );
         assert!(matches!(r, RedirectAction::InvalidLocation));
+    }
+
+    /// **An empty `All` permits, and that identity had no test.**
+    ///
+    /// It is the lattice property this module and `retry` state in prose
+    /// and in opposite directions: a meet over nothing is the operation's
+    /// identity, and following is what happens *unless* a policy objects,
+    /// so the identity here is `Follow`. `RetryAll`'s is `Stop`, and the
+    /// pair is the thing that must not drift — an `All::new` seeded with
+    /// `Stop` would break a configuration that read an empty list out of a
+    /// file, silently, by stopping every redirect instead of allowing it.
+    ///
+    /// Both ways of arriving at empty are asserted, because
+    /// `FromIterator` and `new` are two code paths to one value and a
+    /// change to either could diverge.
+    #[test]
+    fn an_empty_chain_permits_which_is_the_identity_of_a_meet() {
+        let m = Method::GET;
+        let (f, t) = (u("https://a/"), u("https://b/"));
+
+        for (how, chain) in [
+            ("new", All::new()),
+            ("default", All::default()),
+            ("collected", core::iter::empty().collect::<All>()),
+        ] {
+            assert!(chain.is_empty(), "{how}");
+            assert_eq!(chain.len(), 0, "{how}");
+            assert_eq!(
+                chain.follow(&hop(&f, &t, &m)),
+                RedirectVerdict::follow(),
+                "{how}: an empty chain has nothing to object with"
+            );
+        }
+    }
+
+    /// The chain narrows and never widens: one refusing policy decides it
+    /// whatever else is in the list, and `push` is what a caller reading a
+    /// config file uses.
+    ///
+    /// The permitting-only row is the control — without it, a chain that
+    /// refused unconditionally would pass the refusal row.
+    #[test]
+    fn pushing_a_refusing_policy_decides_the_chain_and_permitting_ones_do_not() {
+        let m = Method::GET;
+        let (f, t) = (u("https://a/"), u("http://b/"));
+
+        let mut permissive = All::new();
+        permissive.push(Forbid);
+        permissive.push(SameOriginOnly);
+        // The control: neither of those refuses a *same-origin* hop, so
+        // the chain must not either.
+        let same = u("https://a/x");
+        assert!(!matches!(
+            permissive.follow(&hop(&f, &same, &m)),
+            RedirectVerdict::Refuse(_)
+        ));
+
+        let mut chain = All::new();
+        chain.push(HttpsOnly);
+        assert_eq!(chain.len(), 1);
+        assert!(
+            matches!(chain.follow(&hop(&f, &t, &m)), RedirectVerdict::Refuse(_)),
+            "the downgrade is refused by the one policy in the chain"
+        );
+
+        // Collected rather than pushed, which is the expression a
+        // config-file caller writes, and it must answer the same.
+        let collected: All = [
+            Box::new(HttpsOnly) as BoxRedirectPolicy,
+            Box::new(SameOriginOnly),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(collected.len(), 2);
+        assert!(matches!(
+            collected.follow(&hop(&f, &t, &m)),
+            RedirectVerdict::Refuse(_)
+        ));
     }
 }

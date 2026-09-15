@@ -546,3 +546,61 @@ fn a_hook_can_be_written_against_the_facade_alone() {
     // And the hook a caller who wants nothing gets.
     let _: hclient::hooks::NoHooks = hclient::hooks::NoHooks;
 }
+
+/// **The two types the freeze audit found unbuildable, built through the
+/// facade alone** — no `hclient_proto` path anywhere in this function.
+///
+/// This is the consumer-shaped check rather than a unit test beside the
+/// code, which is the distinction this workspace records three times
+/// over: `hclient-proto`'s own tests can name its private fields' module
+/// and a caller cannot, so a constructor that is reachable in-crate and
+/// walled off at the facade would pass there and fail here.
+///
+/// Each of the three was a wall before this change. `Link` had no
+/// constructor at all, so a caller testing code that consumes one
+/// hand-assembled a header string — making a test of *their* code depend
+/// on *our* parser. `All` and `RetryAll` had a `pub Vec<Box<dyn ..>>`
+/// field, which was buildable but froze the container choice into the
+/// published API.
+#[test]
+fn a_link_and_both_policy_chains_are_buildable_from_the_facade_alone() {
+    // One specific link, read back through the accessors.
+    let link = hclient::link::Link::new("/items?page=2", ["next"], [("title", Some("page two"))]);
+    assert!(link.has_rel("next"));
+    assert_eq!(link.param("title"), Some("page two"));
+
+    // And a set made of it, which is what a function taking `&Links`
+    // needs — `parse_value` cannot express every `Link`, so this is not a
+    // convenience over it.
+    let links: hclient::link::Links = [link].into_iter().collect();
+    assert_eq!(links["next"].target(), "/items?page=2");
+
+    // The redirect chain, built the way a config-file caller builds one.
+    // The `as` cast is why `BoxRedirectPolicy` is re-exported beside
+    // `All`: without it the caller spells the boxed type by hand.
+    let mut redirects = hclient::redirect::All::new();
+    redirects.push(hclient::redirect::HttpsOnly);
+    assert_eq!(redirects.len(), 1);
+    let collected: hclient::redirect::All = [
+        Box::new(hclient::redirect::HttpsOnly) as hclient::redirect::BoxRedirectPolicy,
+        Box::new(hclient::redirect::SameOriginOnly),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(collected.len(), 2);
+
+    // The retry chain, whose empty case means the opposite — asserted
+    // here too, because the pair is the property and a facade that
+    // re-exported only one of the two constructors would hide half of it.
+    let mut retries = hclient::retry::RetryAll::new();
+    retries.push(hclient::retry::SafeMethodsOnly);
+    assert_eq!(retries.len(), 1);
+    let collected: hclient::retry::RetryAll =
+        [Box::new(hclient::retry::Never) as hclient::retry::BoxRetryPolicy]
+            .into_iter()
+            .collect();
+    assert_eq!(collected.len(), 1);
+
+    assert!(hclient::redirect::All::new().is_empty());
+    assert!(hclient::retry::RetryAll::new().is_empty());
+}

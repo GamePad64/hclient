@@ -271,9 +271,16 @@ pub mod link {
 /// Following redirects: how many, and whether this one.
 pub mod redirect {
     pub use crate::config::SharedRedirectPolicy;
+    // `BoxRedirectPolicy` is here because `All` is: it is the item type of
+    // `All`'s `FromIterator`, so a caller building a chain out of a config
+    // file names it in the `as` cast that makes a heterogeneous array one
+    // type. Re-exporting `All` without it would leave that caller spelling
+    // `Box<dyn RedirectPolicy + Send + Sync>` by hand — reachable, since
+    // `RedirectPolicy` is here too, but a second spelling of one type, and
+    // the one the crate does not maintain.
     pub use hclient_proto::redirect::{
-        All, Allow, And, Forbid, FromFn, HttpsOnly, Limit, ProposedRedirect, RedirectPolicy,
-        RedirectPolicyExt, RedirectVerdict, SameOriginOnly,
+        All, Allow, And, BoxRedirectPolicy, Forbid, FromFn, HttpsOnly, Limit, ProposedRedirect,
+        RedirectPolicy, RedirectPolicyExt, RedirectVerdict, SameOriginOnly,
     };
 }
 
@@ -474,9 +481,12 @@ pub mod retry {
     // audit renamed them, so the hazard is gone at its source and this
     // list is now a judgement about audience rather than a guard against
     // a collision.
+    // `BoxRetryPolicy` for the reason `redirect::BoxRedirectPolicy` is
+    // re-exported: it is `RetryAll`'s `FromIterator` item type, so a
+    // caller assembling a chain at run time names it.
     pub use hclient_proto::retry::{
-        Never, ProposedRetry, RetryAll, RetryAnd, RetryFromFn, RetryPolicy, RetryPolicyExt,
-        RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard,
+        BoxRetryPolicy, Never, ProposedRetry, RetryAll, RetryAnd, RetryFromFn, RetryPolicy,
+        RetryPolicyExt, RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard,
     };
 }
 // The observability seam, re-exported for the same reason

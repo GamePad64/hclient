@@ -613,14 +613,84 @@ where
     }
 }
 
+/// One policy in a [`RetryAll`] chain, as the chain stores it.
+///
+/// Named rather than spelled out at each of the three sites that need it,
+/// which is [`crate::redirect::BoxRedirectPolicy`]'s shape and
+/// `hclient_core::auth::BoxFlow`'s: the `Send + Sync` marker is stated
+/// **once**, on a line short enough that `cargo fmt` will not reflow it
+/// and take the marker with it.
+pub type BoxRetryPolicy = Box<dyn RetryPolicy + Send + Sync>; // send-bound-exception: amendment-C12
+
 /// Every policy in a list must permit, for a chain built at run time.
 ///
 /// An empty list **stops**, which is the opposite of
 /// `redirect::All`'s empty case and is the same asymmetry stated once
 /// more: a meet over nothing is the identity, and the identity for a
 /// default-no operation is *no*.
+///
+/// # The field is private, and that is a decision about the freeze
+///
+/// It was `pub Vec<Box<dyn ..>>`, which made **both** the `Vec` and the
+/// `Box` part of the promise — see
+/// [`redirect::All`](crate::redirect::All) for the argument, which is
+/// this type's verbatim. Nothing outside this crate constructed one,
+/// measured before the change, so closing the field cost no consumer.
 #[derive(Debug, Default)]
-pub struct RetryAll(pub Vec<Box<dyn RetryPolicy + Send + Sync>>); // send-bound-exception: amendment-C12
+pub struct RetryAll(Vec<BoxRetryPolicy>);
+
+impl RetryAll {
+    /// An empty list, which **retries nothing**.
+    ///
+    /// The opposite of [`redirect::All::new`](crate::redirect::All::new),
+    /// and deliberately: retrying happens *only because* a policy
+    /// permitted it, so a meet over nothing is *no*. A caller who reads a
+    /// list out of a file and gets an empty one has configured a client
+    /// that does not retry — which is the safe reading, since the
+    /// alternative would retry every request against every server on the
+    /// strength of a configuration that said nothing.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Adds a policy to the chain. Every one must permit.
+    ///
+    /// **Composing two permitters gives their intersection, not their
+    /// union** — see [`RetryPolicyExt::and`], whose doc argues it at
+    /// length. Pushing a second policy can only ever retry *less*.
+    pub fn push<P>(&mut self, policy: P)
+    where
+        P: RetryPolicy + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
+        self.0.push(Box::new(policy));
+    }
+
+    /// How many policies are in the chain.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the chain is empty — in which case it stops, per
+    /// [`RetryAll::new`].
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Collects a chain, so the run-time case reads as one expression.
+///
+/// Takes the already-boxed form for
+/// [`redirect::All`](crate::redirect::All)'s reason: a heterogeneous list
+/// is boxed by whoever built it, and a list of one type is what
+/// [`and`](RetryPolicyExt::and) already composes for nothing.
+impl FromIterator<BoxRetryPolicy> for RetryAll {
+    fn from_iter<T: IntoIterator<Item = BoxRetryPolicy>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
 
 impl RetryPolicy for RetryAll {
     fn retry(&self, attempt: &ProposedRetry<'_>) -> RetryVerdict {

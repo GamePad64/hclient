@@ -90,6 +90,98 @@ pub struct Link {
 }
 
 impl Link {
+    /// Builds one, applying the same normalisations the parser does.
+    ///
+    /// **Public because a caller cannot otherwise build a specific link.**
+    /// [`Links`] has two constructors and both take a *header*, so testing
+    /// code that consumes one link meant hand-assembling a header string
+    /// and hoping it parsed — which is `ProposedRedirect::new`'s argument
+    /// one module over, where a type with no constructor *"reads as a wall
+    /// and sends people to a network they did not need"*. Here the wall
+    /// was one step worse: the string a caller assembles is input to this
+    /// crate's own parser, so a test of *their* code fails on a quoting
+    /// mistake in *ours*.
+    ///
+    /// # This applies the invariants rather than trusting them
+    ///
+    /// A `Link` parsed from a header and a `Link` built here must be the
+    /// same thing, or the accessors mean two different things depending on
+    /// where the value came from — and nothing at the call site would say
+    /// which. So all three of the parser's normalisations happen here too,
+    /// and none of them is the caller's to skip:
+    ///
+    /// - **`rels` is lowercased and split on whitespace**, so
+    ///   `["Next Last"]` and `["next", "last"]` are the same two
+    ///   relations. [`Link::has_rel`] compares case-insensitively anyway,
+    ///   but [`Link::rels`] hands the stored form back, and a caller
+    ///   comparing those strings would see `Next` where every parsed link
+    ///   says `next`.
+    /// - **Parameter names are lowercased**, for the same reason one step
+    ///   over: [`Link::params`] is the accessor that hands them back.
+    /// - **Values are taken as written** — unescaped, because that is what
+    ///   the parser hands over ([`Link::param`] promises the text, not the
+    ///   header's quoting). A caller writing `say "hello"` gets exactly
+    ///   that back; there is no header to escape it into.
+    ///
+    /// The one invariant that **cannot** be applied here is §3.3's *the
+    /// first `rel` wins*, because there is no first: `rels` and `params`
+    /// arrive as separate arguments, which is the shape that makes the
+    /// rule unstateable rather than violable. A caller who puts a `rel`
+    /// into `params` gets an ordinary parameter — which is exactly what a
+    /// parsed link does with a *second* `rel`, so the two agree on the one
+    /// case they can both reach.
+    ///
+    /// ```
+    /// use hclient_proto::link::Link;
+    ///
+    /// let link = Link::new(
+    ///     "/items?page=2",
+    ///     ["Next"],
+    ///     [("Title", Some("page two")), ("nofollow", None)],
+    /// );
+    /// assert_eq!(link.target(), "/items?page=2");
+    /// assert!(link.has_rel("next"));
+    /// assert_eq!(link.rels().collect::<Vec<_>>(), ["next"]);
+    /// assert_eq!(link.param("title"), Some("page two"));
+    /// assert!(link.has_param("nofollow"));
+    /// ```
+    pub fn new<R, P, N, V>(target: impl Into<String>, rels: R, params: P) -> Self
+    where
+        R: IntoIterator,
+        R::Item: AsRef<str>,
+        P: IntoIterator<Item = (N, Option<V>)>,
+        N: AsRef<str>,
+        V: Into<String>,
+    {
+        Self {
+            target: target.into(),
+            // Split as well as lowercase: §3.3's `rel` value is a
+            // space-separated list, so one argument may carry several
+            // relations exactly as one header parameter does. Without the
+            // split, `["next last"]` would be a single relation named
+            // `next last`, which no header can produce and `has_rel`
+            // would never match.
+            rels: rels
+                .into_iter()
+                .flat_map(|r| {
+                    r.as_ref()
+                        .split_ascii_whitespace()
+                        .map(|r| r.to_ascii_lowercase().into_boxed_str())
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+            params: params
+                .into_iter()
+                .map(|(n, v)| {
+                    (
+                        n.as_ref().to_ascii_lowercase().into_boxed_str(),
+                        v.map(Into::into),
+                    )
+                })
+                .collect(),
+        }
+    }
+
     /// The target, **as the header wrote it** — which may be a relative
     /// reference.
     ///
@@ -263,6 +355,52 @@ impl Links {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.links.is_empty()
+    }
+}
+
+/// Collects links into a set, for the caller who built one with
+/// [`Link::new`] and needs to hand it to something taking a [`Links`].
+///
+/// **`FromIterator` rather than a named constructor, and the reason is
+/// that this is not a second way to parse.** [`Links::parse_value`] is the
+/// constructor a caller reaches for, and it stays the one that answers
+/// *what did this header say*; a `Links::new(Vec<Link>)` beside it would
+/// read as an alternative to it rather than as the plumbing it is.
+///
+/// It is needed at all because `parse_value` **cannot express every
+/// [`Link`]**, which is a fact about the grammar rather than about
+/// convenience: a target containing `>` has no header form (the parser
+/// ends the target there, RFC 3986 §2 excluding it from a URI-Reference),
+/// and neither does a parameter name outside RFC 9110 §5.6.2's `token`.
+///
+/// Measured rather than assumed, and the answer is worse than
+/// *truncated*: `</a?q=<x>>; rel=next` parses to a link whose target is
+/// `/a?q=<x` and which carries **no relation at all**, because everything
+/// after the first `>` is a malformed tail and this module discards one
+/// by design. So round-tripping such a link through a header string does
+/// not cost a character, it costs the link's identity — silently, which
+/// is the shape this workspace refuses.
+///
+/// Order is kept exactly as iterated, because order is the whole of what
+/// [`Links::get`] and [`Links::iter`] promise.
+///
+/// ```
+/// use hclient_proto::link::{Link, Links};
+///
+/// let links: Links = [
+///     Link::new("/p2", ["next"], [] as [(&str, Option<&str>); 0]),
+///     Link::new("/p9", ["last"], [] as [(&str, Option<&str>); 0]),
+/// ]
+/// .into_iter()
+/// .collect();
+/// assert_eq!(links["next"].target(), "/p2");
+/// assert_eq!(links.len(), 2);
+/// ```
+impl FromIterator<Link> for Links {
+    fn from_iter<T: IntoIterator<Item = Link>>(iter: T) -> Self {
+        Self {
+            links: iter.into_iter().collect(),
+        }
     }
 }
 
@@ -579,5 +717,138 @@ mod tests {
     #[should_panic(expected = "no link with rel=`next`")]
     fn indexing_a_relation_that_is_not_there_panics_like_a_header_map() {
         let _ = &Links::default()["next"];
+    }
+
+    /// **The thing a consumer wants to do and could not**: build one
+    /// specific link and read every accessor back off it, with no header
+    /// string and no response.
+    #[test]
+    fn a_built_link_answers_every_accessor() {
+        let link = Link::new(
+            "/items?page=2",
+            ["next"],
+            [("title", Some("page two")), ("nofollow", None)],
+        );
+
+        assert_eq!(link.target(), "/items?page=2");
+        assert_eq!(link.rels().collect::<Vec<_>>(), vec!["next"]);
+        assert!(link.has_rel("next"));
+        assert!(!link.has_rel("prev"));
+        assert_eq!(link.param("title"), Some("page two"));
+        // The valueless-parameter pair, which is the one place two
+        // accessors are needed to say one thing — see `Link::param`.
+        assert_eq!(link.param("nofollow"), None);
+        assert!(link.has_param("nofollow"));
+        assert!(!link.has_param("type"));
+        assert_eq!(link.params().count(), 2);
+        assert_eq!(
+            link.resolve(&base()).unwrap().to_string(),
+            "https://api.example.com/items?page=2"
+        );
+    }
+
+    /// **A built link and a parsed one are the same value**, which is what
+    /// makes the constructor safe to have: if they were not, every
+    /// accessor would mean two things depending on where the link came
+    /// from, and nothing at the call site would say which.
+    ///
+    /// `assert_eq!` on the whole `Link` rather than field by field,
+    /// because the fields are private and the derived `PartialEq` is what
+    /// a caller comparing two links would get. The corners are chosen to
+    /// be the three normalisations: a shouted relation, a shouted
+    /// parameter name, and an escaped value that the header quotes and the
+    /// constructor does not.
+    #[test]
+    fn a_built_link_equals_the_same_link_parsed_from_a_header() {
+        let parsed = Links::parse_value(r#"</a>; REL="Next Last"; Title="say \"hi\""; nofollow"#);
+        let built = Link::new(
+            "/a",
+            ["Next Last"],
+            [
+                ("REL", Some("Next Last")),
+                ("Title", Some(r#"say "hi""#)),
+                ("nofollow", None),
+            ],
+        );
+        assert_eq!(parsed.iter().next().unwrap(), &built);
+    }
+
+    /// §3.3's `rel` is a space-separated list, so one argument may carry
+    /// several relations exactly as one header parameter does.
+    ///
+    /// Without the split, `["next last"]` would be a single relation of
+    /// that name — which no header can produce, and which `has_rel` would
+    /// never match for either half.
+    #[test]
+    fn a_relation_argument_is_split_on_whitespace_like_the_header_form() {
+        let built = Link::new("/p9", ["next last"], [] as [(&str, Option<&str>); 0]);
+        assert_eq!(built.rels().collect::<Vec<_>>(), vec!["next", "last"]);
+        assert!(built.has_rel("next") && built.has_rel("last"));
+        // And the same two written as two arguments, which is the form a
+        // caller is likelier to reach for, agree exactly.
+        assert_eq!(
+            Link::new("/p9", ["next", "last"], [] as [(&str, Option<&str>); 0]),
+            built
+        );
+    }
+
+    /// The constructor **lowercases** a relation and a parameter name, and
+    /// leaves a value alone. The value row is the control: a constructor
+    /// that lowercased everything would pass the first two assertions.
+    #[test]
+    fn the_constructor_lowercases_names_and_leaves_values_alone() {
+        let built = Link::new("/a", ["NEXT"], [("Title", Some("Keep Me"))]);
+        assert_eq!(built.rels().collect::<Vec<_>>(), vec!["next"]);
+        assert_eq!(
+            built.params().collect::<Vec<_>>(),
+            vec![("title", Some("Keep Me"))]
+        );
+    }
+
+    /// **A `Links` can be assembled from links a caller built**, which is
+    /// what a test of code taking a `&Links` needs.
+    ///
+    /// The targets here are the reason this is not *"just parse a header"*:
+    /// a `>` inside a target has no header form at all, so the round trip
+    /// through a string would silently truncate it.
+    #[test]
+    fn links_collects_from_built_links_including_ones_no_header_can_write() {
+        let links: Links = [
+            Link::new("/a?q=<x>", ["next"], [] as [(&str, Option<&str>); 0]),
+            Link::new("/b", ["prev"], [] as [(&str, Option<&str>); 0]),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(links.len(), 2);
+        assert_eq!(links["next"].target(), "/a?q=<x>");
+        assert_eq!(
+            links.iter().map(Link::target).collect::<Vec<_>>(),
+            vec!["/a?q=<x>", "/b"],
+            "order is the iterator's, which is what `get` and `iter` promise"
+        );
+
+        // The control for the claim in the doc, and it is worse than
+        // "truncated": the target ends at the first `>`, so the rest of
+        // the value — `>; rel=next` — is a malformed tail, which
+        // `parse_value` discards by its own rule. The link survives with
+        // a shortened target and **no relation at all**, so a caller
+        // round-tripping through a header does not merely lose a
+        // character, they lose the link's identity with nothing said.
+        let via_header = Links::parse_value("</a?q=<x>>; rel=next");
+        assert_eq!(via_header.len(), 1);
+        let only = via_header.iter().next().unwrap();
+        assert_eq!(only.target(), "/a?q=<x");
+        assert_eq!(only.rels().count(), 0, "`rel=next` went with the tail");
+    }
+
+    /// An empty `Links` collected from nothing is the empty one, so the
+    /// two ways of having no links agree.
+    #[test]
+    fn collecting_no_links_is_the_default() {
+        assert_eq!(
+            std::iter::empty::<Link>().collect::<Links>(),
+            Links::default()
+        );
     }
 }
