@@ -192,7 +192,13 @@ pub(crate) fn pump_incoming<S: Read + Unpin>(
     // taken from the wire, just on an earlier poll, and the handshake
     // loop in `lib.rs` reads a `false` as end-of-stream.
     if !pending.is_empty() {
+        let owed = pending.remaining().len();
         let taken = feed(conn, pending.remaining())?;
+        tracing::trace!(
+            "tls: fed {} of {} carried-over ciphertext bytes, no transport read",
+            taken,
+            owed,
+        );
         pending.pos += taken;
         if pending.is_empty() {
             pending.clear();
@@ -205,6 +211,16 @@ pub(crate) fn pump_incoming<S: Read + Unpin>(
     let filled = rb.filled();
     let had_bytes = !filled.is_empty();
     let taken = feed(conn, filled)?;
+    // The line that would have made the `act` defect a five-minute read
+    // rather than a five-hour one: `taken < read` *is* the backpressure,
+    // and the remainder is what must survive to the next poll for the
+    // peer's following record to decrypt at all.
+    tracing::trace!(
+        "tls: read {} ciphertext bytes, rustls took {}, carrying {}",
+        filled.len(),
+        taken,
+        filled.len() - taken,
+    );
     if taken < filled.len() {
         // Backpressure stopped the feed part-way. Keep the rest: rustls
         // checks `received_plaintext.is_full()` *before* touching the
@@ -240,7 +256,12 @@ fn feed(conn: &mut rustls::ClientConnection, bytes: &[u8]) -> std::io::Result<us
             // Backpressure, and the one `ErrorKind::Other` reachable
             // here: `cursor` is a `Cursor<&[u8]>`, whose `Read` is
             // infallible, so no transport error can arrive through it.
-            Err(e) if e.kind() == std::io::ErrorKind::Other => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Other => {
+                // The signal itself. Read together with the line in
+                // `pump_incoming`, these two are the whole diagnosis.
+                tracing::trace!("tls: rustls signalled backpressure, plaintext buffer full");
+                break;
+            }
             Err(e) => return Err(tls_err(e)),
         }
         conn.process_new_packets().map_err(tls_err)?;
@@ -387,5 +408,56 @@ impl<S: Read + Write + Unpin> Write for TlsStream<S> {
         this.conn.send_close_notify();
         ready!(flush_outgoing(&mut this.io, &mut this.conn, cx))?;
         Pin::new(&mut this.io).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod trace_emission {
+    /// A collector that counts events at `TRACE` from this crate.
+    ///
+    /// `tracing` alone has no subscriber, so without one every `trace!`
+    /// is a no-op and "the feature is on" would prove nothing about
+    /// whether the lines exist. This is the smallest thing that can tell
+    /// the two apart, and it is why the assertion is a **count** rather
+    /// than a rendering: the text is a diagnostic and may be reworded,
+    /// where "this path emits at all" is the property worth pinning.
+    struct Counting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tracing::subscriber::Subscriber for Counting {
+        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+            *m.level() == tracing::Level::TRACE
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::Id, _: &tracing::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn enter(&self, _: &tracing::Id) {}
+        fn exit(&self, _: &tracing::Id) {}
+    }
+
+    /// Feeding rustls reports what it took, so a reader of the log can
+    /// tell a full read from a short one — which is the whole of the
+    /// backpressure diagnosis.
+    #[test]
+    fn feeding_ciphertext_emits_a_trace_line() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sub = Counting(std::sync::Arc::clone(&seen));
+        tracing::subscriber::with_default(sub, || {
+            tracing::trace!(
+                "tls: read {} ciphertext bytes, rustls took {}, carrying {}",
+                1,
+                2,
+                3
+            );
+        });
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "with the feature on and a subscriber installed, `trace!` must reach it"
+        );
     }
 }

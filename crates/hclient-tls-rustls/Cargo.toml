@@ -47,6 +47,12 @@ rustls-pki-types = "1.15"
 quinn-proto      = { version = "0.11", default-features = false, features = ["rustls-ring"], optional = true }
 rustls-platform-verifier = { version = "0.7", optional = true }
 webpki-roots     = { version = "1.0", optional = true }
+# Unconditional, and cheap: with no subscriber installed every `trace!`
+# is a load and a branch, and `tracing`'s own `max_level_*` features let
+# a release build compile the level out entirely. Gating it behind a
+# feature would buy nothing and cost the thing diagnostics exist for —
+# being there when the defect is in front of you.
+tracing          = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 hclient-rt       = { path = "../hclient-rt" }
