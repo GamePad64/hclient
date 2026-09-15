@@ -7,17 +7,58 @@ use std::collections::VecDeque;
 /// An SSE event. `Comment` and `Retry` are first-class on purpose: without
 /// the former you can't build a keep-alive detector, without the latter
 /// blocks containing only `retry:` are lost.
+///
+/// **Deliberately not `#[non_exhaustive]`, which is answer 2**:
+/// exhaustiveness is the mechanism. Both consumers here branch on every
+/// arm with no `_` — `hclient-cli` renders each one differently and
+/// `hclient`'s reconnecting stream acts on `Retry` alone — so a fourth
+/// kind of event must be a compile error at each of them rather than
+/// silently taking whichever arm a wildcard held. That is the same
+/// bargain `hclient_core::hooks::Event` makes, and the reason to name it
+/// here is that the type looks like the *handed back and only read*
+/// shape until you notice every reader is a `match`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SseEvent {
+    /// A dispatched message: a `data` buffer plus whatever `event:` and
+    /// `id:` were in force when the blank line arrived.
     Message {
+        /// The `event:` field, `None` where the block named none — which
+        /// WHATWG makes the event type `message`. Not defaulted here,
+        /// because *the server named it* and *the server did not* are
+        /// different facts and only the caller knows whether it cares.
         event: Option<String>,
+        /// The `data:` buffer with its single trailing newline removed,
+        /// so several `data:` lines arrive as one string joined by `\n`.
         data: String,
+        /// The last event ID **in force**, which is not the same as one
+        /// this block carried: WHATWG's buffer persists across blocks
+        /// and across reconnects, so a message with no `id:` of its own
+        /// still reports whatever the last one established.
         id: Option<String>,
     },
+    /// A `: comment` line, with exactly one leading space stripped after
+    /// the colon. Kept rather than swallowed because a comment is how
+    /// every real SSE deployment sends a keep-alive, so a caller
+    /// detecting a dead stream has nothing else to look at.
     Comment(String),
+    /// A `retry:` line — the server's instruction for how long to wait
+    /// before reconnecting. Reported rather than acted on: this crate is
+    /// sans-io and does not reconnect.
     Retry(Duration),
 }
 
+/// WHATWG's `EventSource` decoder, sans-io: bytes in through
+/// [`push`](Self::push), events out through [`next`](Self::next).
+///
+/// The two must be **interleaved** — `push` parses and queues, `next`
+/// drains one at a time — which is why this is not an `Iterator`:
+/// `Iterator::next` has nowhere to report [`SseError`] and no way to be
+/// handed more bytes between calls.
+///
+/// It holds a partial event across chunk boundaries, so a caller feeds it
+/// whatever a frame delivered without aligning anything. What it does
+/// **not** do is reconnect, sleep, or act on a `retry:` — those need a
+/// clock and a socket, and live in `hclient`'s SSE stream.
 #[derive(Debug)]
 pub struct SseDecoder {
     lines: LineSplitter,
@@ -32,6 +73,13 @@ pub struct SseDecoder {
 }
 
 impl SseDecoder {
+    /// A decoder bounded at `max_event_size` raw bytes per event —
+    /// [`crate::sse::DEFAULT_MAX_EVENT_SIZE`] is the usual argument.
+    ///
+    /// The bound counts bytes **off the wire**, including terminators and
+    /// including a trailing line that has not terminated yet, so it
+    /// cannot be walked around with a line that never ends.
+    #[must_use]
     pub fn new(max_event_size: usize) -> Self {
         Self {
             lines: LineSplitter::new(),
@@ -65,6 +113,12 @@ impl SseDecoder {
         }
     }
 
+    /// The last event ID buffer as it stands now.
+    ///
+    /// What a reconnecting caller sends as `Last-Event-ID`, and what to
+    /// carry into [`Self::new_with_last_event_id`] for the next
+    /// connection's decoder.
+    #[must_use]
     pub fn last_event_id(&self) -> Option<&str> {
         self.last_event_id.as_deref()
     }
@@ -101,6 +155,12 @@ impl SseDecoder {
         Ok(())
     }
 
+    /// The next event [`push`](Self::push) has already parsed, or `None`
+    /// when the queue is empty.
+    ///
+    /// `None` means *nothing ready*, never *the stream ended*: this type
+    /// has no notion of an end, and more bytes may produce more events.
+    /// Drain it in a loop after every `push`.
     // Named `next`, not `Iterator::next`, deliberately: the decoder
     // requires interleaving with `push` and can't be an iterator in the
     // ordinary sense — `Iterator` has no way to report `SseError`, and

@@ -7,7 +7,7 @@ use core::time::Duration;
 
 use hclient_proto::backoff::Backoff;
 use hclient_proto::retry::{
-    Outcome, RetryStatuses, RetryVerdict, Standard, Stop, Verdict, retry_after_seconds,
+    Decision, Outcome, RetryStatuses, RetryVerdict, Standard, StopReason, retry_after_seconds,
 };
 
 fn status(code: u16) -> Outcome {
@@ -30,12 +30,12 @@ fn the_default_retries_what_never_arrived_and_no_status_at_all() {
     let p = Standard::default();
     assert!(matches!(
         p.decide(Outcome::Unsent, 1, 0.0, true),
-        Verdict::After(_)
+        Decision::After(_)
     ));
     for code in [408, 429, 500, 502, 503, 504] {
         assert_eq!(
             p.decide(status(code), 1, 0.0, true),
-            Verdict::Stop(Stop::NotRetryable),
+            Decision::Stop(StopReason::NotRetryable),
             "{code} is not repeated unless the caller asked"
         );
     }
@@ -50,7 +50,7 @@ fn a_body_that_cannot_be_replayed_stops_every_kind_of_retry() {
     for outcome in [Outcome::Unsent, status(503), after(503, 1)] {
         assert_eq!(
             p.decide(outcome, 1, 0.0, false),
-            Verdict::Stop(Stop::BodyCannotBeReplayed)
+            Decision::Stop(StopReason::BodyCannotBeReplayed)
         );
     }
 }
@@ -93,12 +93,12 @@ fn a_short_retry_after_does_not_shorten_the_backoff() {
     };
     assert_eq!(
         p.decide(after(503, 1), 1, 0.0, true),
-        Verdict::After(Duration::from_secs(10)),
+        Decision::After(Duration::from_secs(10)),
         "the backoff at attempt 1 is 10s and the server asked for 1"
     );
     assert_eq!(
         p.decide(after(503, 20), 1, 0.0, true),
-        Verdict::After(Duration::from_secs(20)),
+        Decision::After(Duration::from_secs(20)),
         "and a longer ask wins"
     );
 }
@@ -115,11 +115,11 @@ fn a_retry_after_beyond_the_ceiling_stops_rather_than_being_clamped() {
     };
     assert_eq!(
         p.decide(after(503, 61), 1, 0.0, true),
-        Verdict::Stop(Stop::RetryAfterTooLong)
+        Decision::Stop(StopReason::RetryAfterTooLong)
     );
     assert!(matches!(
         p.decide(after(503, 60), 1, 0.0, true),
-        Verdict::After(_)
+        Decision::After(_)
     ));
 }
 
@@ -132,10 +132,10 @@ fn an_unreadable_retry_after_stops_where_an_absent_one_does_not() {
     let unreadable = Outcome::status(http::StatusCode::SERVICE_UNAVAILABLE, None, true);
     assert_eq!(
         p.decide(unreadable, 1, 0.0, true),
-        Verdict::Stop(Stop::RetryAfterTooLong)
+        Decision::Stop(StopReason::RetryAfterTooLong)
     );
     assert!(
-        matches!(p.decide(status(503), 1, 0.0, true), Verdict::After(_)),
+        matches!(p.decide(status(503), 1, 0.0, true), Decision::After(_)),
         "silence is not an instruction"
     );
 }
@@ -147,11 +147,11 @@ fn running_out_of_attempts_says_so() {
     let p = Standard::default();
     assert!(matches!(
         p.decide(Outcome::Unsent, 2, 0.0, true),
-        Verdict::After(_)
+        Decision::After(_)
     ));
     assert_eq!(
         p.decide(Outcome::Unsent, 3, 0.0, true),
-        Verdict::Stop(Stop::OutOfAttempts),
+        Decision::Stop(StopReason::OutOfAttempts),
         "three attempts made, and the default allows three"
     );
 }
@@ -162,10 +162,10 @@ fn running_out_of_attempts_says_so() {
 #[test]
 fn jitter_only_shortens() {
     let p = Standard::default();
-    let Verdict::After(none) = p.decide(Outcome::Unsent, 1, 0.0, true) else {
+    let Decision::After(none) = p.decide(Outcome::Unsent, 1, 0.0, true) else {
         panic!("retried")
     };
-    let Verdict::After(full) = p.decide(Outcome::Unsent, 1, 1.0, true) else {
+    let Decision::After(full) = p.decide(Outcome::Unsent, 1, 1.0, true) else {
         panic!("retried")
     };
     assert!(full <= none, "{full:?} <= {none:?}");

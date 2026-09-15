@@ -40,16 +40,65 @@ pub use crate::error::HeadError;
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Version};
 use winnow::combinator::{alt, opt, preceded, repeat, terminated};
-use winnow::error::{ErrMode, Needed};
-use winnow::stream::Partial;
+use winnow::error::{ErrMode, Needed, ParserError};
+use winnow::stream::{Partial, Stream};
 use winnow::token::{literal, take_while};
 use winnow::{ModalResult, Parser};
 
+/// [`HeadError`] wearing winnow's [`ParserError`], **privately**.
+///
+/// The impl was on `HeadError` itself until the freeze audit, which made
+/// `winnow` part of this crate's public API: a trait impl on a public
+/// type for a public foreign trait is surface whether or not anything
+/// names it, so winnow's next major version would have been a major
+/// version here. It is a newtype instead, and the whole cost is the `.0`
+/// in [`parse_response`] and the `Self(..)` wrappers below — no public
+/// signature changed and no behaviour did, which the module's existing
+/// tests are the check on.
+#[derive(Debug)]
+struct ParseFailure(HeadError);
+
+/// The default failure, for a combinator that ran out of alternatives
+/// without one of the specific refusals below having fired.
+impl<I: Stream> ParserError<I> for ParseFailure {
+    type Inner = Self;
+
+    fn from_input(_: &I) -> Self {
+        Self(HeadError::MalformedStatusLine)
+    }
+
+    fn into_inner(self) -> Result<Self::Inner, Self> {
+        Ok(self)
+    }
+}
+
 /// A response head that a caller can act on.
+///
+/// **`#[non_exhaustive]` because this is handed back and only read**,
+/// which is this workspace's rule for the attribute: a caller matches on
+/// the fields it wants and never builds one — [`parse_response`] is the
+/// only constructor, here and anywhere. A fourth field is then an ordinary
+/// addition rather than a major version, and RFC 9112's response head
+/// has room for one: a reason-phrase this parser currently discards
+/// would be the obvious candidate.
+///
+/// The contrast is [`crate::redirect::Allow`] two modules over, which
+/// deliberately does *not* carry it — a caller writes
+/// `Allow { preserve_method: .., ..Default::default() }` there, and the
+/// attribute forbids exactly that expression from outside the crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ResponseHead {
+    /// `HTTP/1.1` or `HTTP/1.0` — the only two this parser accepts, since
+    /// a `2.0` on a status line is not something an HTTP/1 connection can
+    /// have produced.
     pub version: Version,
+    /// The three-digit status. The reason phrase beside it is consumed
+    /// and discarded: RFC 9112 §4 makes it meaningless, and keeping it
+    /// would be a field nothing could act on.
     pub status: StatusCode,
+    /// Every field line, in order, with repeats kept — `append` rather
+    /// than `insert`, so two `Via:` headers arrive as two values.
     pub headers: HeaderMap,
 }
 
@@ -77,7 +126,9 @@ pub fn parse_response(buf: &[u8]) -> Result<Option<(ResponseHead, usize)>, HeadE
     match head.parse_next(&mut input) {
         Ok(h) => Ok(Some((h, buf.len() - input.len()))),
         Err(ErrMode::Incomplete(_)) => Ok(None),
-        Err(e) => Err(e.into_inner().unwrap_or(HeadError::MalformedStatusLine)),
+        Err(e) => Err(e
+            .into_inner()
+            .map_or(HeadError::MalformedStatusLine, |f| f.0)),
     }
 }
 
@@ -104,7 +155,7 @@ pub fn parse_response_bytes(buf: &mut Bytes) -> Result<Option<ResponseHead>, Hea
 type In<'a> = Partial<&'a [u8]>;
 
 /// `status-line *( field-line CRLF ) CRLF`, RFC 9112 §2.1.
-fn head(t: &mut In<'_>) -> ModalResult<ResponseHead, HeadError> {
+fn head(t: &mut In<'_>) -> ModalResult<ResponseHead, ParseFailure> {
     let (version, status) = terminated(status_line, crlf).parse_next(t)?;
     let fields: Vec<(HeaderName, HeaderValue)> =
         repeat(0.., terminated(field_line, crlf)).parse_next(t)?;
@@ -126,7 +177,7 @@ fn head(t: &mut In<'_>) -> ModalResult<ResponseHead, HeadError> {
 /// The reason phrase is optional and is never read — RFC 9112 §4 makes it
 /// meaningless — but it has to be *consumed*, or the CRLF after it would
 /// not be where the next parser looks.
-fn status_line(t: &mut In<'_>) -> ModalResult<(Version, StatusCode), HeadError> {
+fn status_line(t: &mut In<'_>) -> ModalResult<(Version, StatusCode), ParseFailure> {
     let version = alt((
         literal("HTTP/1.1").value(Version::HTTP_11),
         literal("HTTP/1.0").value(Version::HTTP_10),
@@ -141,19 +192,22 @@ fn status_line(t: &mut In<'_>) -> ModalResult<(Version, StatusCode), HeadError> 
 }
 
 /// Exactly three digits, and `http` decides whether they name a status.
-fn status_code(t: &mut In<'_>) -> ModalResult<StatusCode, HeadError> {
+fn status_code(t: &mut In<'_>) -> ModalResult<StatusCode, ParseFailure> {
     let digits = take_while(3, |b: u8| b.is_ascii_digit()).parse_next(t)?;
-    StatusCode::from_bytes(digits)
-        .map_err(|_| ErrMode::Cut(HeadError::BadStatus(String::from_utf8_lossy(digits).into())))
+    StatusCode::from_bytes(digits).map_err(|_| {
+        ErrMode::Cut(ParseFailure(HeadError::BadStatus(
+            String::from_utf8_lossy(digits).into(),
+        )))
+    })
 }
 
 /// `field-name ":" OWS field-value OWS`.
-fn field_line(t: &mut In<'_>) -> ModalResult<(HeaderName, HeaderValue), HeadError> {
+fn field_line(t: &mut In<'_>) -> ModalResult<(HeaderName, HeaderValue), ParseFailure> {
     // A leading space or tab is obs-fold — a continuation of the previous
     // line. `Cut` rather than `Backtrack`, so `repeat` does not read it as
     // "no more fields" and hand a half-parsed head back.
     if let Some(b' ' | b'\t') = t.first() {
-        return Err(ErrMode::Cut(HeadError::ObsFold));
+        return Err(ErrMode::Cut(ParseFailure(HeadError::ObsFold)));
     }
     let name = take_while(1.., is_tchar).parse_next(t)?;
     // No whitespace is allowed between the name and the colon, and
@@ -161,16 +215,21 @@ fn field_line(t: &mut In<'_>) -> ModalResult<(HeaderName, HeaderValue), HeadErro
     // colon, which is the refusal RFC 9112 §5 requires.
     literal(':')
         .parse_next(t)
-        .map_err(|_: ErrMode<HeadError>| ErrMode::Cut(HeadError::MalformedHeader))?;
+        .map_err(|_: ErrMode<ParseFailure>| {
+            ErrMode::Cut(ParseFailure(HeadError::MalformedHeader))
+        })?;
     let value = take_while(0.., |b| b != b'\r' && b != b'\n').parse_next(t)?;
 
     let name = HeaderName::from_bytes(name).map_err(|_| {
-        ErrMode::Cut(HeadError::BadHeaderName(
+        ErrMode::Cut(ParseFailure(HeadError::BadHeaderName(
             String::from_utf8_lossy(name).into(),
-        ))
+        )))
     })?;
-    let value = HeaderValue::from_bytes(trim_ows(value))
-        .map_err(|_| ErrMode::Cut(HeadError::BadHeaderValue(name.as_str().into())))?;
+    let value = HeaderValue::from_bytes(trim_ows(value)).map_err(|_| {
+        ErrMode::Cut(ParseFailure(HeadError::BadHeaderValue(
+            name.as_str().into(),
+        )))
+    })?;
     Ok((name, value))
 }
 
@@ -178,15 +237,17 @@ fn field_line(t: &mut In<'_>) -> ModalResult<(HeaderName, HeaderValue), HeadErro
 /// rule rather than as a missing alternative: a bare `LF` is *accepted*
 /// by RFC 9112 §2.2's leniency and refused here, so it must produce its
 /// own error rather than fall through as "not a CRLF".
-fn crlf(t: &mut In<'_>) -> ModalResult<(), HeadError> {
+fn crlf(t: &mut In<'_>) -> ModalResult<(), ParseFailure> {
     match t.first() {
         None => Err(ErrMode::Incomplete(Needed::new(1))),
-        Some(b'\n') => Err(ErrMode::Cut(HeadError::BareLf)),
+        Some(b'\n') => Err(ErrMode::Cut(ParseFailure(HeadError::BareLf))),
         Some(b'\r') => {
             literal("\r\n").parse_next(t)?;
             Ok(())
         }
-        Some(_) => Err(ErrMode::Backtrack(HeadError::MalformedStatusLine)),
+        Some(_) => Err(ErrMode::Backtrack(ParseFailure(
+            HeadError::MalformedStatusLine,
+        ))),
     }
 }
 

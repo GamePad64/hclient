@@ -1,5 +1,28 @@
 //! RFC 9110 §5.6's field-value primitives, as winnow parsers.
 //!
+//! **`#[doc(hidden)]`, and the only place `winnow` reaches this crate's
+//! surface.**
+//!
+//! Every signature here is `fn(&mut &str) -> winnow::ModalResult<..>`,
+//! because that is what a winnow parser is: the two consumers —
+//! `hclient`'s `hsts::parse` and its `charset_param` — compose these
+//! straight into combinators of their own, so de-winnowing them would
+//! leave the module with nothing to be. Measured before deciding: those
+//! two are the whole of it, `hclient` re-exports none of this from its
+//! facade, and `hclient` itself exposes no winnow type publicly — so
+//! this module is the one item in the workspace for which winnow's next
+//! major version would be a published breaking change, and it is
+//! reachable by no consumer who would benefit from it.
+//!
+//! So it is hidden rather than removed or rewritten: `hclient` keeps
+//! compiling against one copy of the three productions instead of
+//! growing a fifth, and the freeze promises nothing about a signature
+//! whose shape another crate owns. The alternative worth naming for
+//! whoever revisits this — an `hclient-field` crate both could depend on
+//! — buys the same sharing and costs a crate, which this workspace's own
+//! test for a boundary (*does it hold a dependency a feature would
+//! otherwise spread*) answers `no` to: winnow is already in both graphs.
+//!
 //! `token`, `OWS` and `quoted-string` are the three productions every
 //! comma-and-semicolon header in HTTP is built out of, and this workspace
 //! had **four** hand-written copies of them by the time `Link:` arrived —

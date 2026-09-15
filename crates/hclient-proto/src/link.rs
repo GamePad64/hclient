@@ -244,14 +244,23 @@ impl Links {
         self.links.iter().filter(move |l| l.has_rel(rel))
     }
 
+    /// Every link, in header order, whatever its relation.
     pub fn iter(&self) -> std::slice::Iter<'_, Link> {
         self.links.iter()
     }
 
+    /// How many links were parsed — **not** how many distinct relations
+    /// there are, since one link may carry several and one relation may
+    /// appear on several.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.links.len()
     }
 
+    /// Whether the header carried no parseable link at all. True both for
+    /// a message with no `Link:` and for one whose value did not parse,
+    /// which [`Self::parse_value`] deliberately does not distinguish.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.links.is_empty()
     }

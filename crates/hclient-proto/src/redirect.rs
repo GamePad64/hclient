@@ -9,6 +9,40 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
     http::header::PROXY_AUTHORIZATION,
 ];
 
+/// What a [`RedirectVerdict::Follow`] relaxes, and nothing else.
+///
+/// `Default` is every protection *on*, so a policy states only what it
+/// has an opinion about and the safe answer costs no field.
+///
+/// **The rule for anyone adding a field: it may only ever switch a
+/// protection off.** That is what makes [`Self::and`] — field-wise `&&` —
+/// the right meet, and it is why composing two grants intersects rather
+/// than unions: a chain of policies must never hand back more than any
+/// one of them gave. A field meaning *turn a protection on* would invert
+/// that for itself alone, and `and` would silently be wrong for it while
+/// staying right for its neighbours. The rule was written in a test's doc
+/// comment until the freeze audit and is stated here because this is
+/// where whoever adds the field will be standing — the test
+/// (`two_grants_compose_by_intersection_so_neither_field_can_be_widened`)
+/// is what checks it, having been written after a mutation run replaced
+/// both `&&` with `||` and left the whole suite green.
+///
+/// **Deliberately not `#[non_exhaustive]`**, which is answer 1 of the
+/// three this workspace records: its whole use is
+/// `Allow { keep_credentials: true, ..Default::default() }`, written by a
+/// caller in their own policy, and the attribute forbids exactly that
+/// expression — functional update included — from outside this crate.
+/// The cost is that the field above is a major version, and that is the
+/// trade taken wherever the caller is the one building the value.
+/// [`crate::head::ResponseHead`] is the contrast: handed back, never
+/// built, so it carries the attribute.
+///
+/// **A verdict carries these booleans and never a request**, which is the
+/// invariant the type lives under. Handing over the rewritten request was
+/// proposed and refused twice over: two policies answering with different
+/// requests have no defined meet, where two `Allow`s meet field-wise; and
+/// the request carries the `uri`, which is the open-redirect surface
+/// [`decide`] exists to keep closed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Allow {
     /// Keep the method a 301, 302 or 303 would otherwise rewrite to `GET`.
@@ -292,6 +326,8 @@ impl RedirectPolicy for Forbid {
 pub struct Limit(pub u8);
 
 impl Limit {
+    /// Follow at most `n` hops. `Limit::new(0)` refuses the first
+    /// redirect — see the type's doc for why that is not [`Forbid`].
     #[must_use]
     pub const fn new(n: u8) -> Self {
         Self(n)
@@ -395,6 +431,19 @@ where
     }
 }
 
+/// The hop [`decide`] worked out, for a caller to carry out.
+///
+/// **`#[non_exhaustive]`, answer 3**: it is handed back and only read —
+/// [`decide`] is the only thing that builds one — so a further
+/// instruction about a hop is an added field rather than a major
+/// version. That is not hypothetical: every field here is something the
+/// client must *do*, and the list has grown once already.
+///
+/// Its two booleans are instructions and not observations, which is what
+/// makes ignoring one a defect rather than a missed optimisation:
+/// `strip_sensitive` left unread sends `Authorization` to another origin,
+/// and `drop_body` left unread sends a body with a method that was
+/// rewritten to `GET`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Follow {
@@ -404,6 +453,11 @@ pub struct Follow {
     /// input: don't silently promote it into trusted credentials further
     /// down the stack.
     pub uri: Uri,
+    /// The method to send, **after** RFC 9110 §15.4's table has been
+    /// applied — so this is `GET` wherever [`Self::drop_body`] is set,
+    /// and the original method everywhere else. A policy can suppress
+    /// the rewrite ([`Allow::preserve_method`]) and never choose what it
+    /// rewrites to.
     pub method: Method,
     /// Strip `SENSITIVE_HEADERS`: the host or scheme changed.
     pub strip_sensitive: bool,
@@ -411,10 +465,26 @@ pub struct Follow {
     pub drop_body: bool,
 }
 
+/// What [`decide`] concluded about one response.
+///
+/// **Deliberately not `#[non_exhaustive]`, which is answer 2 with the
+/// translator rule on top.** Its one consumer — `hclient::Client::run` —
+/// matches every arm and turns each into something different: a returned
+/// response, a `Redirect` error naming the policy's reason, a
+/// `BadLocation` error, or the next hop. A `_` arm there would be a
+/// *mapping*, so a fifth conclusion would silently acquire whichever
+/// existing behaviour that arm happened to hold — and the candidates are
+/// not interchangeable, since two of the four are errors and two are
+/// not. Exhaustiveness is the mechanism: a new arm must stop that match
+/// compiling.
+///
+/// [`Follow`] one type up carries the opposite attribute for the
+/// opposite reason — it is read field by field, never branched on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedirectAction {
     /// Not a redirect, or a redirect with no `Location` — return the response as-is.
     Stop,
+    /// Follow it, doing what the [`Follow`] says.
     Follow(Follow),
     /// A policy refused, naming why — a limit, an origin, a caller's own
     /// rule. One variant where there used to be `TooManyRedirects` alone,
@@ -423,9 +493,17 @@ pub enum RedirectAction {
     /// because the refusal is about a resolved target, and an error that
     /// named only a reason would leave a caller unable to say which hop.
     Refused {
+        /// The policy's own words, as [`RedirectVerdict::Refuse`] gave
+        /// them — not this function's reconstruction of which policy was
+        /// in force.
         why: &'static str,
+        /// The resolved target that was refused, so a caller can say
+        /// *which* hop rather than only that one was refused.
         to: Uri,
     },
+    /// A `Location` that is not a header value, not UTF-8, or does not
+    /// resolve against the current URI — a refusal of the server's, not
+    /// of any policy's.
     InvalidLocation,
 }
 
@@ -446,6 +524,42 @@ fn port_of(uri: &Uri) -> Option<u16> {
     })
 }
 
+/// Whether one response redirects, and to where — the whole of this
+/// module's mechanism, as a pure function.
+///
+/// Everything RFC rather than policy happens here and cannot be
+/// overridden: which statuses redirect, whether the `Location` parses,
+/// RFC 3986 §5.2 resolution against `current`, what an origin is, and
+/// RFC 9110 §15.4's method table. The [`RedirectPolicy`] is asked exactly
+/// once, after all of it, and can only narrow what it is shown — because
+/// two correct clients may disagree about *how many hops*, and none of
+/// them may disagree about how a `Location` resolves. Doing that
+/// differently is an open redirect rather than a preference.
+///
+/// The parameters, since there are seven of them and two are easy to get
+/// backwards:
+///
+/// - `hops` is redirects **already taken**, so the first call passes `0`
+///   and [`Limit`] compares against it directly. It is the caller's
+///   counter and not the policy's: a policy lives inside a client's
+///   `Arc`, shared by every request in flight, so a counter held there
+///   would be per-client rather than per-operation.
+/// - `current` is the URI that produced this response — the base a
+///   relative `Location` resolves against, which is why it must be the
+///   hop that answered rather than the one originally requested.
+/// - `method` is what was sent, before any rewrite.
+/// - `location` is the header's **raw bytes**, `None` where there was no
+///   such header. Bytes rather than `&str` because a `Location` that is
+///   not UTF-8 is [`RedirectAction::InvalidLocation`] rather than
+///   something to convert lossily — a URL made of replacement characters
+///   points somewhere else.
+/// - `previous` is every URI already visited, oldest first, for a policy
+///   detecting loops.
+///
+/// It never fails: a malformed `Location` and a refusal are both
+/// [`RedirectAction`] arms, because both are answers a caller acts on
+/// rather than errors of this function's.
+#[must_use]
 pub fn decide(
     policy: &dyn RedirectPolicy,
     hops: u8,

@@ -19,9 +19,6 @@
 //! [`crate::head`], [`crate::uri`], [`crate::sse`] — where it has always
 //! been, so no consumer's `use` line moves.
 
-use winnow::error::ParserError;
-use winnow::stream::Stream;
-
 /// What the bytes were not.
 ///
 /// Every variant is reachable from a real peer, which is why the parser
@@ -29,6 +26,16 @@ use winnow::stream::Stream;
 /// `hclient-proxy` meets these as the source of a connect failure, and
 /// *the proxy sent something that is not an HTTP response* is not an
 /// answer anybody can act on.
+///
+/// **No winnow trait is implemented for this type**, and that is what
+/// keeps `winnow` out of this crate's public API. A `ParserError` impl
+/// sat here until the freeze audit: it is invisible in rustdoc's item
+/// list and it is public surface all the same, so winnow's next major
+/// version would have been this crate's. The impl moved onto
+/// `head::ParseFailure`, a private newtype around this enum, at the cost
+/// of one `.0` where `parse_response` unwraps it — see there. Every other
+/// winnow user in this workspace already parsed with `ContextError` and
+/// exposed none of it; `head` was the one that did not.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum HeadError {
@@ -48,20 +55,6 @@ pub enum HeadError {
     /// A bare `LF` where the grammar writes `CRLF`.
     #[error("a bare LF line terminator, where the grammar writes CRLF")]
     BareLf,
-}
-
-/// The default failure, for a combinator that ran out of alternatives
-/// without one of the specific refusals above having fired.
-impl<I: Stream> ParserError<I> for HeadError {
-    type Inner = Self;
-
-    fn from_input(_: &I) -> Self {
-        Self::MalformedStatusLine
-    }
-
-    fn into_inner(self) -> Result<Self::Inner, Self> {
-        Ok(self)
-    }
 }
 
 /// Why a string could not be turned into an [`http::Uri`].
@@ -125,9 +118,26 @@ pub enum UriError {
     },
 }
 
+/// Why an SSE stream cannot be decoded any further.
+///
+/// One variant today, and `#[non_exhaustive]` all the same — answer 3 of
+/// the three this workspace records: it is handed *back* and only read,
+/// never built by a caller and never translated variant-by-variant into
+/// somebody else's enum. Checked rather than assumed: the only match on
+/// it outside this crate is a fuzz target's, and `hclient`'s SSE stream
+/// carries it as a source rather than mapping it. So a second refusal is
+/// an addition, where without the attribute it would be a major version
+/// — which is the reason its two siblings above carry it and the reason
+/// the odd one out was the oversight rather than the decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum SseError {
     /// The raw event size limit was exceeded. Fatal and **not retried**.
     #[error("SSE event exceeds {limit} bytes")]
-    EventTooLarge { limit: usize },
+    EventTooLarge {
+        /// The limit that was exceeded, as the caller set it — not the
+        /// size reached. The event is refused the moment it crosses, so
+        /// there is no final size to report.
+        limit: usize,
+    },
 }

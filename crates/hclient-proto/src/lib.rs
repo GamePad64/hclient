@@ -8,6 +8,12 @@ mod error;
 
 pub mod backoff;
 pub mod encode;
+// `#[doc(hidden)]` and not a promise — the reason is the module's own
+// first paragraph. A `///` here rather than a `//` would resolve that
+// module's `//!` links in *this* scope instead of its own, which is the
+// defect this workspace already paid for once when the jar and the cache
+// became modules.
+#[doc(hidden)]
 pub mod field;
 pub mod happy_eyeballs;
 pub mod head;

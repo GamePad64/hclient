@@ -5,6 +5,16 @@ use core::time::Duration;
 use std::collections::VecDeque;
 use std::net::IpAddr;
 
+/// RFC 8305's three tunables.
+///
+/// **Deliberately not `#[non_exhaustive]`, answer 1**: its whole use is
+/// `HeConfig { attempt_delay: .., ..Default::default() }` — which is how
+/// `hclient-native` builds one — and the attribute forbids exactly that
+/// from outside this crate. [`Default`] is the RFC's own recommended
+/// values, so a caller states only what it disagrees with.
+///
+/// [`Scheduler::new`] **clamps** `attempt_delay` rather than refusing it;
+/// [`Scheduler::config`] is how a caller reads back what it actually got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeConfig {
     /// RFC 8305 §3: "This delay will be referred to as the 'Resolution
@@ -52,10 +62,28 @@ const ATTEMPT_MIN: Duration = Duration::from_millis(100);
 /// recommended value is 2 seconds."
 const ATTEMPT_MAX: Duration = Duration::from_secs(2);
 
+/// What [`Scheduler::poll`] wants the caller to do next.
+///
+/// **Deliberately not `#[non_exhaustive]`, answer 2**: exhaustiveness is
+/// the mechanism. `hclient-native`'s connect loop branches on all three
+/// with no `_` and does something structurally different in each — open
+/// a socket, sleep, or give up — so a fourth instruction has to stop that
+/// loop compiling rather than be swallowed by a wildcard that happens to
+/// sleep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeAction {
+    /// Start a connection attempt to this address **now**, then keep
+    /// polling: the scheduler expects attempts to run concurrently and
+    /// hands out the next one on its own schedule rather than waiting for
+    /// this one to finish.
     Start(IpAddr),
+    /// Nothing to start yet. Poll again no sooner than this — either the
+    /// Connection Attempt Delay since the last start, or the Resolution
+    /// Delay while waiting on AAAA.
     Wait(Duration),
+    /// Every address has been handed out and both resolvers said they
+    /// were done. Nothing further will ever be offered, so a caller waits
+    /// on the attempts already running and then fails.
     Exhausted,
 }
 
@@ -117,15 +145,27 @@ impl Scheduler {
         &self.cfg
     }
 
+    /// Adds AAAA results, in the order they should be tried — see the
+    /// type's doc on sorting being the caller's job. May be called
+    /// repeatedly as a resolver streams answers.
     pub fn offer_v6(&mut self, addrs: &[IpAddr]) {
         self.v6.extend(addrs.iter().copied());
     }
+    /// Adds A results. Same contract as [`Self::offer_v6`].
     pub fn offer_v4(&mut self, addrs: &[IpAddr]) {
         self.v4.extend(addrs.iter().copied());
     }
+    /// The AAAA lookup will produce nothing further — whether it answered
+    /// addresses, answered none, or failed.
+    ///
+    /// **Both `mark_*` calls are what make [`HeAction::Exhausted`]
+    /// reachable**, so a caller that forgets one leaves the scheduler
+    /// answering [`HeAction::Wait`] for ever. A failed lookup is still a
+    /// lookup that is done.
     pub fn mark_v6_done(&mut self) {
         self.v6_done = true;
     }
+    /// The A lookup will produce nothing further. See [`Self::mark_v6_done`].
     pub fn mark_v4_done(&mut self) {
         self.v4_done = true;
     }

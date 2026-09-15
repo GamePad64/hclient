@@ -456,15 +456,24 @@ pub use hclient_core::req::{AllowEarlyData, RequireVersion};
 pub mod retry {
     pub use crate::config::SharedRetryPolicy;
     pub use hclient_proto::backoff::Backoff;
-    // **One verdict vocabulary, not two.** `Verdict`, `Stop` and `Outcome`
-    // belong to `RetryPolicy::decide`, the pure function in
+    // **One vocabulary at this door, not two.** `Decision`, `StopReason`
+    // and `Outcome` belong to `Standard::decide`, the pure function in
     // `hclient-proto`; `RetryVerdict` and `ProposedRetry` belong to the
     // trait this facade's `ClientBuilder::retry` takes. A caller who
     // *configures* writes `Standard`; one who *implements* writes the
-    // trait. Neither needs the inner three, and two types called a verdict
-    // in one module is the kind of thing a published crate cannot take
-    // back. `retry_after_seconds` goes with them: it is the header parser
-    // the policy uses, not something a caller calls.
+    // trait. Neither needs the inner three, so they stay behind
+    // `hclient_proto::retry` for whoever wants the pure function
+    // directly. `retry_after_seconds` goes with them: it is the header
+    // parser the policy uses, not something a caller calls.
+    //
+    // The first two were `Verdict` and `Stop` when this comment was
+    // written, and the reason given here was that *two types called a
+    // verdict in one module is the kind of thing a published crate cannot
+    // take back* — true, and it was this door working around a name in a
+    // crate that had not been frozen yet. `hclient-proto`'s own freeze
+    // audit renamed them, so the hazard is gone at its source and this
+    // list is now a judgement about audience rather than a guard against
+    // a collision.
     pub use hclient_proto::retry::{
         Never, ProposedRetry, RetryAll, RetryAnd, RetryFromFn, RetryPolicy, RetryPolicyExt,
         RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard,

@@ -54,6 +54,8 @@ impl Default for LineSplitter {
 }
 
 impl LineSplitter {
+    /// An empty splitter, ready for the first chunk.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buf: Vec::new(),
@@ -65,6 +67,12 @@ impl LineSplitter {
         }
     }
 
+    /// Feeds bytes in. Any alignment: a chunk may end mid-line, mid-CRLF
+    /// or mid-BOM, and the splitter holds the remainder until the rest
+    /// arrives.
+    ///
+    /// Call [`next_line`](Self::next_line) in a loop afterwards; nothing
+    /// is handed out until asked for.
     pub fn push(&mut self, chunk: &[u8]) {
         // Compaction once per push, not once per line: linear overall.
         if self.start > 0 {
@@ -129,6 +137,14 @@ impl LineSplitter {
         Some((line, consumed))
     }
 
+    /// Bytes held that no line has been credited with yet — what a
+    /// caller adds to its own running total so that a size limit counts
+    /// an unterminated line too.
+    ///
+    /// Without it the bound is bypassable by a peer that simply never
+    /// sends a terminator, which is the whole reason this is public
+    /// rather than an internal detail of the splitter.
+    #[must_use]
     pub fn buffered_len(&self) -> usize {
         // BOM bytes not yet resolved are physically held. Not counting
         // them would let the event size limit in the decoder be bypassed.

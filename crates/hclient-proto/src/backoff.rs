@@ -4,10 +4,23 @@
 
 use core::time::Duration;
 
+/// Exponential backoff with full jitter: the schedule, without the clock.
+///
+/// **Deliberately not `#[non_exhaustive]`, answer 1**: its whole use is
+/// `Backoff { max_attempts: Some(5), ..Default::default() }`, which is
+/// what `hclient`'s SSE reconnect and its retry policy both write, and
+/// the attribute forbids exactly that expression from outside this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Backoff {
+    /// The first delay, doubled once per attempt from there.
     pub base: Duration,
+    /// The ceiling each delay is capped at **before** jitter is applied,
+    /// so a jittered delay is at most this and usually less.
     pub max: Duration,
+    /// How many attempts are allowed before [`Backoff::delay`] answers
+    /// `None`. `None` here means *no limit* — the two `None`s are
+    /// different questions, and this one is the setting rather than the
+    /// answer.
     pub max_attempts: Option<u32>,
 }
 

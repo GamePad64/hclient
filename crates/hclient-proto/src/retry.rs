@@ -113,7 +113,12 @@ pub enum Outcome {
     /// server sent one. Its `HTTP-date` form is deliberately not parsed
     /// here — see the module doc.
     Status {
+        /// The status the server answered with.
         status: http::StatusCode,
+        /// `Retry-After`'s `delta-seconds`, where the server sent one
+        /// this module could read. `None` covers both *no header* and
+        /// *a header that did not parse* — `retry_after_unreadable` is
+        /// what separates them, and only one of the two stops a retry.
         retry_after: Option<Duration>,
         /// The server sent a `Retry-After` this module could not read.
         ///
@@ -146,10 +151,22 @@ impl Outcome {
     }
 }
 
-/// Why a retry is not happening.
+/// Why [`Standard::decide`] is not retrying.
+///
+/// **`#[non_exhaustive]`, answer 3**: it is handed back and only read,
+/// and [`Standard`] gaining a rule means gaining a reason to refuse. The
+/// one consumer that would translate it — `hclient`'s [`RetryPolicy`]
+/// impl — collapses every arm onto [`RetryVerdict::Stop`] rather than
+/// mapping them one by one, so a new reason cannot silently acquire the
+/// wrong meaning there.
+///
+/// It is **diagnostic**: nothing in this crate branches on which reason
+/// it was, because all four mean *do not send it again*. It is here so a
+/// caller can say which, and `hclient` deliberately does not re-export it
+/// — see [`Decision`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Stop {
+pub enum StopReason {
     /// This outcome is not one the policy retries.
     NotRetryable,
     /// The body cannot be sent a second time.
@@ -165,13 +182,35 @@ pub enum Stop {
     RetryAfterTooLong,
 }
 
-/// The answer.
+/// What [`Standard::decide`] concluded, and why if it refused.
+///
+/// **This was called `Verdict` until the freeze audit, and the rename is
+/// the whole point of it.** [`RetryVerdict`] below is the *other* answer
+/// type in this same module — the trait's lattice value, the one
+/// `hclient` actually takes — and a published module with `Verdict` and
+/// `RetryVerdict` side by side is a name a reader has to keep straight
+/// for ever. `hclient`'s facade had already noticed, and works around it
+/// by withholding this type, `StopReason` and nothing else from its
+/// `retry` door with a comment saying *two types called a verdict in one
+/// module is the kind of thing a published crate cannot take back*. The
+/// workaround protects that crate's callers and not this one's, which is
+/// why the name is fixed here instead. Nothing outside this crate named
+/// it, so the rename cost 23 sites and no consumer.
+///
+/// `Decision` rather than `RetryDecision`: it is `retry::Decision` at
+/// every call site, and a module already named after the operation does
+/// not need its types to repeat it.
+///
+/// Deliberately **not** `#[non_exhaustive]` — two arms are the whole
+/// question, *wait this long* or *do not*, and a third would not be a
+/// new conclusion but a new kind of one. [`StopReason`] is where a new
+/// fact about a refusal goes, and it carries the attribute for that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
+pub enum Decision {
     /// Wait this long, then send the request again.
     After(Duration),
-    /// Keep what you have.
-    Stop(Stop),
+    /// Keep what you have, for this reason.
+    Stop(StopReason),
 }
 
 /// The configuring policy: when to send a request again, and how long
@@ -250,17 +289,17 @@ impl Standard {
         attempt: u32,
         jitter: f64,
         body_replayable: bool,
-    ) -> Verdict {
+    ) -> Decision {
         // Asked before anything else, because it is the one condition no
         // policy may override and no server may ask us past.
         if !body_replayable {
-            return Verdict::Stop(Stop::BodyCannotBeReplayed);
+            return Decision::Stop(StopReason::BodyCannotBeReplayed);
         }
 
         let asked = match outcome {
             Outcome::Unsent => {
                 if !self.retry_unsent {
-                    return Verdict::Stop(Stop::NotRetryable);
+                    return Decision::Stop(StopReason::NotRetryable);
                 }
                 None
             }
@@ -270,20 +309,20 @@ impl Standard {
                 retry_after_unreadable,
             } => {
                 if !self.statuses.contains(status) {
-                    return Verdict::Stop(Stop::NotRetryable);
+                    return Decision::Stop(StopReason::NotRetryable);
                 }
                 // An unreadable instruction is refused rather than
                 // ignored: ignoring it retries sooner than the server
                 // asked, which is the one thing the header forbids.
                 if retry_after_unreadable {
-                    return Verdict::Stop(Stop::RetryAfterTooLong);
+                    return Decision::Stop(StopReason::RetryAfterTooLong);
                 }
                 retry_after
             }
         };
 
         let Some(backoff) = self.backoff.delay(attempt, jitter) else {
-            return Verdict::Stop(Stop::OutOfAttempts);
+            return Decision::Stop(StopReason::OutOfAttempts);
         };
 
         match asked {
@@ -291,9 +330,11 @@ impl Standard {
             // taking `max(backoff, asked)` rather than `asked` alone, so
             // a server asking for less than our own backoff does not
             // shorten it.
-            Some(asked) if asked > self.max_retry_after => Verdict::Stop(Stop::RetryAfterTooLong),
-            Some(asked) => Verdict::After(asked.max(backoff)),
-            None => Verdict::After(backoff),
+            Some(asked) if asked > self.max_retry_after => {
+                Decision::Stop(StopReason::RetryAfterTooLong)
+            }
+            Some(asked) => Decision::After(asked.max(backoff)),
+            None => Decision::After(backoff),
         }
     }
 }
@@ -507,8 +548,8 @@ impl RetryPolicy for Standard {
             attempt.jitter(),
             attempt.body_replayable(),
         ) {
-            Verdict::After(d) => RetryVerdict::After(d),
-            Verdict::Stop(_) => RetryVerdict::Stop,
+            Decision::After(d) => RetryVerdict::After(d),
+            Decision::Stop(_) => RetryVerdict::Stop,
         }
     }
 }

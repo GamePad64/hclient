@@ -8,6 +8,21 @@ pub(crate) mod lines;
 pub use decode::{SseDecoder, SseError, SseEvent};
 pub(crate) use lines::LineSplitter;
 
-/// Default limit — matches `rmcp::DEFAULT_MAX_SSE_EVENT_SIZE` so the adapter
-/// doesn't change behavior.
+/// The ceiling [`SseDecoder::new`] is usually handed: 16 MiB for one
+/// event, counting the raw bytes rather than the decoded `data`.
+///
+/// **The number came from `rmcp::DEFAULT_MAX_SSE_EVENT_SIZE`**, so that
+/// an adapter over that crate kept its behaviour. That adapter is in no
+/// manifest here and the reason has outlived it, which is worth writing
+/// down rather than deleting: the figure is now a plain guess at *no
+/// event anybody means to send is this large*, and nothing makes it
+/// track `rmcp` if `rmcp` moves.
+///
+/// What is load-bearing is that there **is** a bound — an SSE stream is
+/// unframed, so a peer that never sends a blank line would otherwise
+/// grow the decoder's buffer without limit — and that is
+/// [`SseError::EventTooLarge`]'s subject rather than this value's.
+/// `hclient`'s `DEFAULT_MAX_LINE` writes out the same 16 MiB for its own
+/// reason and deliberately does not reference this one: the two are
+/// equal by coincidence and one moving is no reason for the other to.
 pub const DEFAULT_MAX_EVENT_SIZE: usize = 16 * 1024 * 1024;
