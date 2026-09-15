@@ -3,6 +3,13 @@ Cargo.lock.bak
 .idea/
 .claude/
 
+# `cargo mutants` writes here when nothing passes `--output`, and a run
+# leaves tens of thousands of files across its `log/` and `diff/` trees.
+# Untracked is not enough on its own: `release-plz` refuses to compute a
+# version while the working directory is dirty, so a forgotten `--output`
+# blocks a release until somebody notices what the directory is.
+mutants.out/
+
 # Playwright/MCP scratch, from browser measurements
 .playwright-mcp/
 /.spike-target
