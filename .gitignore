@@ -8,7 +8,15 @@ Cargo.lock.bak
 # Untracked is not enough on its own: `release-plz` refuses to compute a
 # version while the working directory is dirty, so a forgotten `--output`
 # blocks a release until somebody notices what the directory is.
+#
+# **`.old` is the tool's own doing and the rule was one run short of it.**
+# `cargo mutants` renames the previous `mutants.out/` to `mutants.out.old/`
+# before it starts, so the second sweep in a row leaves a directory this
+# rule did not name — 3.2 MB of it, untracked, producing exactly the
+# release failure the paragraph above describes. Found by running two
+# sweeps rather than by reading the rule.
 mutants.out/
+mutants.out.old/
 
 # Playwright/MCP scratch, from browser measurements
 .playwright-mcp/
