@@ -636,6 +636,32 @@ mod tests {
             .map(super::UnsupportedBypass::reason)
             .collect();
         assert_eq!(reasons, [BypassReason::Wildcard]);
+
+        // **The pattern itself, which nothing was reading.** This type
+        // exists so that a pattern the matcher cannot state is *visible
+        // rather than dropped*, and the visible part is the text: with
+        // `pattern()` replaced by `""` or by a constant, the suite
+        // stayed at 134 passing, and the report a caller reads would
+        // then name a pattern the machine never wrote. It is reported
+        // as the machine wrote it — lower-cased, since that is how the
+        // dialect compares — rather than as this crate would have
+        // preferred to receive it.
+        let u = &sys.unsupported_bypass()[0];
+        assert_eq!(u.pattern(), "192.168.1.*");
+        // And the rendering, where **only one of the two halves was
+        // unpinned and it is worth saying which**.
+        // `a_bypass_pattern_that_cannot_be_stated_exactly_is_refused_by_name`
+        // already reaches `UnsupportedBypass`'s own `Display` through
+        // the refusal, so emptying that one was killed before this test
+        // existed. What nothing reached is `BypassReason`'s: emptied
+        // out, the suite stayed at 134 passing, so a report could have
+        // named the pattern and said nothing at all about why it was
+        // refused. Both are asserted here because the two are one
+        // sentence to a reader, and the half that is covered elsewhere
+        // is covered by a test about a different type.
+        let rendered = u.to_string();
+        assert!(rendered.contains("192.168.1.*"), "{rendered}");
+        assert!(rendered.contains("not a leading `*.`"), "{rendered}");
     }
 
     #[test]
@@ -673,6 +699,24 @@ mod tests {
         let sys = cfg(&[], &[], false);
         assert!(sys.is_empty());
         assert!(sys.entries().is_empty());
+    }
+
+    #[test]
+    fn a_configured_machine_is_not_empty() {
+        // The control the three `assert!(sys.is_empty())` assertions
+        // above were missing: every one of them is positive, so
+        // `is_empty` replaced by `true` outright left the suite at 134
+        // passing — and a caller branching on it would then install no
+        // proxy on a machine that named one.
+        //
+        // Both clauses of the rule are read here rather than only the
+        // entry count, because `bypass_everything` is the half that
+        // makes this not simply `entries().is_empty()`.
+        assert!(!cfg(&[("http", "p:8080")], &[], false).is_empty());
+        assert!(!cfg(&[("*", "p:8080")], &["example.com"], false).is_empty());
+        // And an entry beside a `*` bypass is empty again, which is the
+        // second clause doing the work.
+        assert!(cfg(&[("http", "p:8080")], &["*"], false).is_empty());
     }
 
     fn cfg_pac(proxies: &[(&str, &str)], bypass: &[&str], pac: &str) -> SystemProxies {

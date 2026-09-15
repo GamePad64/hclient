@@ -219,6 +219,37 @@ mod tests {
     }
 
     #[test]
+    fn every_cd_the_protocol_defines_is_rendered_by_its_own_name() {
+        // Four values, of which the test above drove two through the
+        // handshake — so deleting the `90` or `93` arm left the whole
+        // suite green, and the cost is a diagnostic reporting
+        // *unassigned* for a code the protocol does define.
+        //
+        // `Socks4Refused` is built directly rather than driven, because
+        // `cd` is a public field and `90` cannot be reached through
+        // `advance` at all: it is the **grant**, so the handshake
+        // answers `Step::Done` rather than an error. Its name is still
+        // in the table, and a reader who constructs one — which the
+        // type's public field invites — must not be told the one
+        // successful code is unassigned.
+        for (cd, text) in [
+            (90u8, "request granted"),
+            (91, "request rejected or failed"),
+            (92, "rejected: identd unreachable from the proxy"),
+            (93, "rejected: identd reported a different user"),
+        ] {
+            let rendered = crate::Socks4Refused { cd }.to_string();
+            assert!(rendered.contains(text), "CD={cd}: {rendered}");
+        }
+        // The control: a code the protocol does not define says so.
+        assert!(
+            crate::Socks4Refused { cd: 94 }
+                .to_string()
+                .contains("unassigned")
+        );
+    }
+
+    #[test]
     fn the_origins_first_bytes_survive_the_handshake() {
         let mut h = Socks4::new();
         let mut granted = GRANTED.to_vec();
@@ -245,5 +276,32 @@ mod tests {
         assert!(Socks4::new().userid("a\0b").is_err());
         let mut h = Socks4::new();
         assert!(h.begin("exa\0mple.com", 443).is_err());
+    }
+
+    #[test]
+    fn the_host_bound_refuses_at_256_and_accepts_at_255() {
+        // **Both sides, because one side is not a bound.** The refusal
+        // alone passes just as well for a client that refuses at 255,
+        // and weakening `len() > 255` to `>= 255` kept the whole suite
+        // green — so the accepting half is what makes this a boundary
+        // rather than a direction.
+        //
+        // 255 is not the field's own limit here: SOCKS4a's host field
+        // is NUL-terminated with no length prefix, so the number is
+        // this crate's, chosen to match `Socks5`'s single length byte.
+        // That is exactly why it needs pinning — nothing on the wire
+        // would report a client that moved it.
+        let mut h = Socks4::new();
+        let err = h.begin(&"a".repeat(256), 443).expect_err("past the bound");
+        assert!(err.to_string().contains("256 bytes"), "{err}");
+
+        let mut h = Socks4::new();
+        let host = "a".repeat(255);
+        let req = h.begin(&host, 443).expect("255 is the longest accepted");
+        // The host sits between the userid's NUL and the trailing one,
+        // so its presence is what says it was written rather than
+        // truncated.
+        assert_eq!(&req[9..9 + 255], host.as_bytes());
+        assert_eq!(req[req.len() - 1], 0);
     }
 }

@@ -289,9 +289,33 @@ mod tests {
     #[case("http://alice@proxy:8080", "alice", "")]
     #[case("http://alice:p%40ss@proxy:8080", "alice", "p@ss")]
     #[case("http://alice:a%3Ab@proxy:8080", "alice", "a:b")]
+    // **An escape written in lower case**, which is the half nobody was
+    // reading: `%40` is two digits and `%3A` is a digit and an
+    // upper-case letter, so `hex`'s `b'a'..=b'f'` arm had no test at
+    // all and all four arithmetic mutations in it survived the whole
+    // suite. `%3a` is the same byte as `%3A` and must decode to it;
+    // otherwise the same password written by two tools authenticates
+    // as two different passwords, and the one that fails collects a
+    // `407` nobody can explain from the configuration.
+    #[case("http://alice:a%3ab@proxy:8080", "alice", "a:b")]
+    // `%ff` is the case where **both** digits are in that arm, and the
+    // decoder maps a byte to a `char`, so this is `U+00FF` rather than
+    // a UTF-8 sequence — pinned as what it is rather than as what a
+    // reader might assume.
+    #[case("http://alice:%2f%7e%ff@proxy:8080", "alice", "/~\u{ff}")]
     // A `%` that begins no escape is a `%`, which is what a password
     // containing one looks like when nobody encoded it.
     #[case("http://alice:100%pure@proxy:8080", "alice", "100%pure")]
+    // **The end of the string, which is `i + 2 < b.len()`'s boundary.**
+    // A `%` with two hex digits as the *last* three bytes is a complete
+    // escape and must decode; a `%` with only one digit after it is
+    // not, and must come through as written. Both were unpinned —
+    // `i + 2 < b.len()` weakened to `<=` and to `i * 2` left the suite
+    // green, and either turns the final escape of a password into a
+    // different value.
+    #[case("http://alice:pass%40@proxy:8080", "alice", "pass@")]
+    #[case("http://alice:pass%4@proxy:8080", "alice", "pass%4")]
+    #[case("http://alice:pass%@proxy:8080", "alice", "pass%")]
     fn credentials_come_out_decoded(
         #[case] value: &str,
         #[case] user: &str,
@@ -333,5 +357,26 @@ mod tests {
             Bypass::Unsupported(r) => assert_eq!(r, reason),
             _ => panic!("{pattern} translated, and it should not have"),
         }
+    }
+
+    #[rstest]
+    // An empty or blank entry is what a trailing separator leaves
+    // behind — `NO_PROXY=a.com,` and Windows's `ProxyOverride` both
+    // produce one routinely. Nothing asserted it, and deleting the `""`
+    // arm left the suite at 134 passing: the pattern then falls through
+    // to `Bypass::Pattern("")`, which `host_matches` compares against
+    // the request's host, so **an empty pattern would go into the
+    // bypass list** rather than being recognised as the absence of one.
+    #[case("")]
+    #[case("   ")]
+    // `<-loopback>` asks to switch off an implicit loopback bypass this
+    // crate never applies, so the request is already met exactly.
+    #[case("<-loopback>")]
+    #[case("<-LOOPBACK>")]
+    fn patterns_that_ask_for_something_already_true(#[case] pattern: &str) {
+        assert!(
+            matches!(bypass(pattern), Bypass::AlreadyTrue),
+            "{pattern:?} did not read as already satisfied"
+        );
     }
 }

@@ -426,6 +426,18 @@ mod tests {
         let socks = Socks5::new();
         assert_eq!(socks.approach(true), Approach::Tunnel);
         assert_eq!(socks.approach(false), Approach::Tunnel);
+
+        // **`Socks4` too, and it was the one nobody asked.** Both SOCKS
+        // protocols are byte tunnels with no idea that HTTP exists, so
+        // neither has an absolute-form question to answer — and only
+        // `Socks5` was pinned: making `Socks4::approach` answer
+        // `Absolute` left the whole suite at 152 passing. A transport
+        // that believed it could write an absolute-form request line
+        // into a SOCKS4 tunnel would send it to the origin, which never
+        // agreed to act as a proxy for itself.
+        let socks4 = crate::Socks4::new();
+        assert_eq!(socks4.approach(true), Approach::Tunnel);
+        assert_eq!(socks4.approach(false), Approach::Tunnel);
     }
 
     /// The accepted forms match what they say and nothing beside it — a
@@ -495,6 +507,69 @@ mod tests {
         // `/0` is everything of that family, and nothing of the other.
         assert!(!p("0.0.0.0/0").serves(true, "8.8.8.8", 80));
         assert!(p("0.0.0.0/0").serves(true, "::1", 80));
+    }
+
+    #[test]
+    fn a_prefix_longer_than_its_family_matches_nothing_rather_than_panicking() {
+        // **The `len <= 32` and `len <= 128` guards, which stand between
+        // a pattern and a panic**, and which nothing asked: both forced
+        // to `true` left the suite at 134 passing.
+        //
+        // The existing `10.0.0.0/33` row cannot see them, because its
+        // host `10.0.0.1` differs from the network in the fourth octet,
+        // so `same_prefix`'s whole-bytes comparison answers `false`
+        // before the partial byte is reached. The host here **agrees on
+        // every octet**, which is the only input that gets as far as the
+        // out-of-range read.
+        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+
+        // **One bit past the family and a whole byte past it, because
+        // they are two different panics** — measured on `same_prefix`
+        // directly: `/33` reads `net[4]` and panics *index out of
+        // bounds*, where `/40` takes `net[..5]` and panics *range end
+        // index 5 out of range*. Either row alone kills the mutation,
+        // so neither is kept for the kill; they are kept because a
+        // guard that came back for only one of the two shapes would
+        // leave the other reachable.
+        assert!(p("10.0.0.0/33").serves(true, "10.0.0.0", 80));
+        assert!(p("10.0.0.0/40").serves(true, "10.0.0.0", 80));
+        // v6, the same pair, whose guard is a separate match arm.
+        assert!(p("fd00::/129").serves(true, "fd00::", 80));
+        assert!(p("fd00::/136").serves(true, "fd00::", 80));
+        // The control, at the widest length each family really has: an
+        // exact address still matches, so the guards refuse what is out
+        // of range and nothing else.
+        assert!(!p("10.0.0.0/32").serves(true, "10.0.0.0", 80));
+        assert!(!p("fd00::/128").serves(true, "fd00::", 80));
+    }
+
+    #[test]
+    fn a_prefix_with_more_octets_than_an_address_matches_nothing() {
+        // `parse_prefix` fills the missing octets of an abbreviated form
+        // like `169.254`, and it has to refuse the other direction — a
+        // pattern with **more** than four labels, which `zip` would
+        // otherwise truncate to the first four and honour as if the rest
+        // had not been written.
+        //
+        // Measured: `parts.len() > 4` weakened to `== 4` left the suite
+        // at 134 passing, and turns `1.2.3.4.5/8` into the subnet
+        // `1.2.3.4/8` — a pattern that matches a network nobody wrote
+        // down. (`>= 4` is **equivalent** rather than unkilled: every
+        // four-label string that survives the octet parse already
+        // parsed as an `IpAddr` and returned before this line, so no
+        // input distinguishes it.)
+        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+        // The host the truncation would produce, and a host inside the
+        // `/8` it would produce. Either alone kills the mutation; both
+        // are here because the refusal is *total* — a pattern in no
+        // accepted shape matches nothing, rather than matching the
+        // prefix that happens to be left after the labels it dropped.
+        assert!(p("1.2.3.4.5/8").serves(true, "1.2.3.4", 80));
+        assert!(p("1.2.3.4.5/8").serves(true, "1.0.0.1", 80));
+        // The control, one label shorter, which is a subnet and does
+        // match — so the refusal above is about the count and not about
+        // the pattern being odd.
+        assert!(!p("1.2.3.4/8").serves(true, "1.0.0.1", 80));
     }
 
     #[test]
@@ -569,6 +644,25 @@ mod tests {
                 .host(),
             "second"
         );
+    }
+
+    #[test]
+    fn the_scheme_accessor_reports_the_restriction_that_was_set() {
+        // `scheme()` is the only way a caller — or a translator
+        // comparing two installations — can read back what `only_for`
+        // set, and nothing asserted it: replacing the whole body with
+        // `None` left the suite at 134 passing. The one existing reader
+        // is `an_ordinary_machine_installs_the_same_list_either_way`,
+        // which compares the strict and lenient paths against **each
+        // other**, so a `scheme()` that always answered `None` agreed
+        // with itself on both sides.
+        let unrestricted = Proxy::new(Socks5::new(), "px", 1080);
+        assert_eq!(unrestricted.scheme(), None);
+
+        for want in [ProxyScheme::Http, ProxyScheme::Https] {
+            let p = Proxy::new(Socks5::new(), "px", 1080).only_for(want);
+            assert_eq!(p.scheme(), Some(want));
+        }
     }
 
     #[test]

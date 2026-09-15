@@ -280,6 +280,17 @@ mod tests {
 
     #[test]
     fn a_head_that_never_ends_is_refused_rather_than_buffered_for_ever() {
+        // **The bound is stated as a number here and derived from
+        // `MAX_HEAD` below, which is the pair.** Everything after this
+        // line is written in terms of the constant, so it follows the
+        // constant wherever it goes — measured, `64 * 1024` changed to
+        // `64 + 1024` left the whole suite green, because the buffer
+        // this test fills is sized from the value it is checking. A
+        // bound nothing pins is a bound that can move by accident, and
+        // 64 KiB is `H1Opts`'s own default one crate over rather than a
+        // number chosen here.
+        assert_eq!(MAX_HEAD, 65_536);
+
         let mut h = HttpConnect::new();
         let mut buf = BytesMut::new();
         let _ = h.begin("example.com", 443).unwrap();

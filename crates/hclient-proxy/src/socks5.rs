@@ -372,6 +372,95 @@ mod tests {
     }
 
     #[test]
+    fn a_domain_bound_reply_arriving_one_byte_at_a_time_asks_for_more_at_every_prefix() {
+        // The test above feeds an `ATYP=1` reply, whose length is known
+        // the moment the fixed four bytes are in hand. `ATYP=3` is the
+        // shape that needs a **fifth** byte before its length can be
+        // computed at all, and it is the only path through the
+        // `from_peer.len() < 5` check — so without this, nothing asked
+        // that check anything at a length where it decides.
+        //
+        // Measured: `< 5` weakened to `== 5` left the whole suite at
+        // 134 passing, and it is the shape that would consume a partial
+        // frame — at four bytes it stops asking for more and reads
+        // `from_peer[4]`, which has not arrived.
+        //
+        // **`<= 5` is equivalent rather than unkilled**, which is why
+        // nothing here chases it: at exactly five bytes the original
+        // reads the length byte, computes `total = 4 + (len + 1) + 2`,
+        // which is at least seven, and answers `NeedMore` anyway.
+        // Checked exhaustively over every (buffer length, length byte)
+        // pair from 4 to 40 and 0 to 255 — 0 differing pairs.
+        let reply = [
+            &[0x05, 0x00, 0x00, 0x03, 5][..],
+            b"proxy",
+            &[0x1f, 0x90][..],
+        ]
+        .concat();
+
+        let mut h = Socks5::new();
+        let mut buf = BytesMut::new();
+        let _ = h.begin("example.com", 443).unwrap();
+        buf.extend_from_slice(&[0x05, METHOD_NONE]);
+        assert!(matches!(h.advance(&mut buf).unwrap(), Step::Write(_)));
+
+        for fed in 1..reply.len() {
+            buf.clear();
+            buf.extend_from_slice(&reply[..fed]);
+            assert_eq!(
+                h.advance(&mut buf).unwrap(),
+                Step::NeedMore,
+                "answered something other than NeedMore at {fed} of {} bytes",
+                reply.len()
+            );
+            assert_eq!(buf.len(), fed, "a partial reply was consumed at {fed}");
+        }
+        buf.clear();
+        buf.extend_from_slice(&reply);
+        assert_eq!(h.advance(&mut buf).unwrap(), Step::Done);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn four_bytes_are_enough_to_read_a_refusal_and_never_enough_to_read_a_grant() {
+        // **The `from_peer.len() < 4` boundary, from the only side that
+        // can see it.** An `ATYP=3` grant answers `NeedMore` at four
+        // bytes whatever that comparison says, because the length byte
+        // it needs is the fifth — so the byte-at-a-time test above
+        // cannot tell `< 4` from `<= 4`, and measured, it does not:
+        // with `<= 4` the suite stayed green.
+        //
+        // A **refusal** is the case decided at exactly four, because
+        // `REP` is the second octet and nothing after it is read. So
+        // this is the pair: four bytes of a refusal are an error, and
+        // four bytes of a grant are still a question.
+        let head = |h: &mut Socks5| {
+            let mut buf = BytesMut::from(&[0x05u8, METHOD_NONE][..]);
+            assert!(matches!(h.advance(&mut buf).unwrap(), Step::Write(_)));
+        };
+
+        let mut h = Socks5::new();
+        let _ = h.begin("example.com", 443).unwrap();
+        head(&mut h);
+        // `REP = 0x02`, and the reply is cut off after `ATYP` — a
+        // conforming proxy sends more, and this client must not need it
+        // to learn that it was refused.
+        let mut buf = BytesMut::from(&[0x05u8, 0x02, 0x00, 0x01][..]);
+        let err = h
+            .advance(&mut buf)
+            .expect_err("a refusal is readable at four bytes");
+        assert!(err.to_string().contains("not allowed by ruleset"), "{err}");
+
+        // The control, at the same length: a grant is not.
+        let mut h = Socks5::new();
+        let _ = h.begin("example.com", 443).unwrap();
+        head(&mut h);
+        let mut buf = BytesMut::from(&[0x05u8, 0x00, 0x00, 0x01][..]);
+        assert_eq!(h.advance(&mut buf).unwrap(), Step::NeedMore);
+        assert_eq!(buf.len(), 4, "a partial grant was consumed");
+    }
+
+    #[test]
     fn a_domain_bound_address_is_consumed_by_its_own_length() {
         // `ATYP=3` puts a length byte where the fixed forms put address
         // bytes, so getting this wrong leaves the tail of the proxy's
@@ -465,6 +554,38 @@ mod tests {
     }
 
     #[test]
+    fn every_rep_the_rfc_defines_is_rendered_by_its_own_name() {
+        // RFC 1928 §6 names eight values, and a caller reading the error
+        // is the only consumer of any of them. Two were probed — `0x02`
+        // and `0x05` — so deleting any of the other six arms left the
+        // whole suite green, and the failure that would cause is a
+        // diagnostic that reports *unassigned* for a code the protocol
+        // does define: a deployment debugging a proxy is then told the
+        // one thing that is not true.
+        //
+        // The wrong answer is a real string rather than a panic, which
+        // is why a table is the shape here: each row is checked against
+        // its own name, so a deleted arm fails exactly its own row.
+        for (rep, text) in [
+            (0x01u8, "general failure"),
+            (0x02, "connection not allowed by ruleset"),
+            (0x03, "network unreachable"),
+            (0x04, "host unreachable"),
+            (0x05, "connection refused"),
+            (0x06, "TTL expired"),
+            (0x07, "command not supported"),
+            (0x08, "address type not supported"),
+        ] {
+            let rendered = Socks5Refused { rep }.to_string();
+            assert!(rendered.contains(text), "REP={rep:#04x}: {rendered}");
+        }
+        // The control: a code the RFC does not define says so, rather
+        // than borrowing the name of one that is next to it.
+        let rendered = Socks5Refused { rep: 0x09 }.to_string();
+        assert!(rendered.contains("unassigned"), "{rendered}");
+    }
+
+    #[test]
     fn a_reply_with_the_wrong_version_is_refused() {
         let mut h = Socks5::new();
         let err = drive_for_test(&mut h, "example.com", 443, scripted(vec![vec![0x04, 0x00]]))
@@ -477,12 +598,56 @@ mod tests {
         let mut h = Socks5::new();
         let err = h.begin(&"a".repeat(256), 443).expect_err("too long");
         assert!(err.to_string().contains("at most 255 bytes"), "{err}");
+
+        // **255 is the longest a host may be, not the first refused**,
+        // and the bound is only a bound if both sides of it are pinned:
+        // the test above passes for a refusal at 255 as well, and
+        // weakening `len() > 255` to `>= 255` kept the whole suite at
+        // 134 passing. A single length byte carries exactly 255, so
+        // refusing one would refuse a host the wire can state.
+        let mut h = Socks5::new();
+        let host = "a".repeat(255);
+        let greeting = h
+            .begin(&host, 443)
+            .expect("255 bytes is what the length byte holds");
+        assert_eq!(&greeting[..], &[0x05, 0x01, 0x00]);
+        // And the length byte really says 255 rather than having wrapped.
+        let mut buf = BytesMut::from(&[0x05u8, METHOD_NONE][..]);
+        let Step::Write(request) = h.advance(&mut buf).unwrap() else {
+            panic!("the method reply is answered with the CONNECT request")
+        };
+        assert_eq!(request[3..5], [0x03, 255]);
+        assert_eq!(&request[5..5 + 255], host.as_bytes());
     }
 
     #[test]
     fn a_credential_too_long_for_its_length_byte_is_refused_at_configuration() {
         assert!(Socks5::new().password_auth(&"a".repeat(256), "p").is_err());
         assert!(Socks5::new().password_auth("u", &"p".repeat(256)).is_err());
+
+        // **255 is what RFC 1929's one-octet length carries**, so it is
+        // the longest accepted rather than the first refused — and each
+        // side needs its own row, because the two are separate
+        // comparisons: weakening either `> 255` to `>= 255` left the
+        // suite at 134 passing, and each would refuse a credential the
+        // wire can state while the other went on accepting one.
+        let long = "a".repeat(255);
+        assert!(Socks5::new().password_auth(&long, "p").is_ok());
+        assert!(Socks5::new().password_auth("u", &long).is_ok());
+
+        // And the length bytes on the wire really say 255 rather than
+        // having wrapped — the refusal is at the setter precisely so
+        // this cast cannot truncate.
+        let mut h = Socks5::new().password_auth(&long, &long).unwrap();
+        let _ = h.begin("example.com", 443).unwrap();
+        let mut buf = BytesMut::from(&[0x05u8, METHOD_PASSWORD][..]);
+        let Step::Write(msg) = h.advance(&mut buf).unwrap() else {
+            panic!("a password method is answered with the sub-negotiation")
+        };
+        assert_eq!(msg[0], 0x01, "RFC 1929's own version byte");
+        assert_eq!(msg[1], 255);
+        assert_eq!(msg[2 + 255], 255);
+        assert_eq!(msg.len(), 3 + 255 + 255);
     }
 
     /// A collector that counts events at `TRACE`.
