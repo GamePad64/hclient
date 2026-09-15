@@ -134,6 +134,26 @@ impl<S: AsyncWrite + Unpin> Write for StdAdapter<S> {
 /// Clears the borrowed stream's pointer when it goes out of scope,
 /// **including on unwind** — which is the half a plain assignment after
 /// the call would miss.
+///
+/// # No test kills this `Drop`, and that was measured rather than assumed
+///
+/// Emptying this body leaves the whole suite green, and a test asserting
+/// otherwise was written, run against the mutation, and **deleted for
+/// failing to discriminate**. The reason is structural rather than a gap:
+/// every path that dereferences the pointer sets it first — `TlsStream::
+/// with_context` immediately above, and `Handshaking::poll`'s two arms —
+/// so a pointer this guard failed to clear is overwritten before anything
+/// reads it, and `with_context`'s non-null assertion has nothing to fire
+/// on. The probe that was tried is worth naming so it is not re-derived: a
+/// transport panicking inside a poll does unwind out through `native-tls`,
+/// and the stream is usable afterwards **either way**, because the next
+/// poll re-sets the pointer on its way in.
+///
+/// So this is defence in depth, not dead code. What it rules out is a
+/// caller reaching `StdAdapter` by some route that does not set the
+/// pointer — which the safe API has none of today, and which is exactly
+/// the kind of thing a later edit adds. Deleting it because a mutation
+/// survives would be trading a soundness guard for a green sweep.
 struct Guard<'a, S>(&'a mut TlsStream<S>);
 
 impl<S> Drop for Guard<'_, S> {
@@ -219,6 +239,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TlsStream<S> {
         self.with_context(cx, |s| cvt(s.flush()))
     }
 
+    /// The three arms are `cvt`'s, written out rather than reused because
+    /// `shutdown` answers `io::Result<()>` where the other three answer a
+    /// count.
+    ///
+    /// **One mutation of this guard survives and is not a gap.** Forcing it
+    /// to `false` turns a `WouldBlock` during the close into a hard error,
+    /// and `tests/transport_errors.rs` kills the other three variants but
+    /// not this one: reaching it needs the socket's send buffer to fill
+    /// while `close_notify` — a handful of bytes — is being written, which
+    /// nothing on loopback can arrange deterministically. What it would
+    /// cost if wrong is one spurious error on a close whose bytes are
+    /// already queued, which is the understating direction; what the
+    /// killed variants rule out is the opposite one, where a real error
+    /// becomes `Pending` and the caller waits for ever.
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.with_context(cx, native_tls::TlsStream::shutdown) {
             Ok(()) => Poll::Ready(Ok(())),
