@@ -156,16 +156,27 @@ impl SseDecoder {
                 }
             }
             b"retry" if !value.is_empty() && value.iter().all(u8::is_ascii_digit) => {
-                if let Ok(ms) = core::str::from_utf8(value).unwrap_or("").parse::<u64>() {
-                    self.ready
-                        .push_back(SseEvent::Retry(Duration::from_millis(ms)));
-                }
+                // The guard already proved every byte is an ASCII digit, so the
+                // only way `parse` can fail is overflow — and a value too large
+                // for `u64` is still a value the spec says to honour. Saturate
+                // rather than drop it: swallowing the `Err` would leave a
+                // digits-only field silently doing nothing, and how long a wait
+                // may really be is `Backoff::max`'s call, not this parser's.
+                let ms = core::str::from_utf8(value)
+                    .expect("ASCII digits are valid UTF-8")
+                    .parse::<u64>()
+                    .unwrap_or(u64::MAX);
+                self.ready
+                    .push_back(SseEvent::Retry(Duration::from_millis(ms)));
             }
             _ => {} // an unknown field is ignored
         }
     }
 
     fn dispatch(&mut self) {
+        // Taken BEFORE the early return below: a block with no data dispatches
+        // nothing, but it must still clear the event type, or the type leaks
+        // forward onto whatever event comes next.
         let event = self.event_type.take();
         if self.data.is_empty() {
             // Empty data buffer: reset without dispatch.
@@ -314,10 +325,71 @@ mod tests {
         );
     }
 
+    /// A NUL in `id:` makes the field ignored — which is not the same as
+    /// making it empty. The existing last-event-ID must survive untouched,
+    /// so the next message still carries it. Guarding only the `None` case
+    /// would pass a test that starts from no id at all.
+    #[test]
+    fn an_id_containing_nul_leaves_an_established_id_standing() {
+        let mut d = SseDecoder::new(1024);
+        d.push(b"id: 7\ndata: a\n\n").unwrap();
+        d.push(b"id: b\0d\ndata: c\n\n").unwrap();
+        let mut out = Vec::new();
+        while let Some(e) = d.next() {
+            out.push(e);
+        }
+        assert_eq!(
+            out,
+            vec![
+                SseEvent::Message {
+                    event: None,
+                    data: "a".into(),
+                    id: Some("7".into())
+                },
+                SseEvent::Message {
+                    event: None,
+                    data: "c".into(),
+                    id: Some("7".into())
+                }
+            ]
+        );
+    }
+
+    /// An `event:` with no data dispatches nothing, but it must not leave the
+    /// event type behind for whoever comes next. That rests entirely on
+    /// `dispatch` taking the type *before* it returns early on an empty data
+    /// buffer; move the `take` below that return and every other test here
+    /// still passes while types silently leak forward across events.
+    #[test]
+    fn an_event_type_does_not_leak_out_of_a_block_that_dispatched_nothing() {
+        assert_eq!(
+            events(b"event: orphan\n\ndata: x\n\n"),
+            vec![SseEvent::Message {
+                event: None,
+                data: "x".into(),
+                id: None
+            }]
+        );
+    }
+
     #[test]
     fn retry_rejects_non_ascii_digits() {
         assert_eq!(events(b"retry: +5000\n\n"), vec![]);
         assert_eq!(events(b"retry: 1e3\n\n"), vec![]);
+    }
+
+    /// A digits-only `retry:` too large for `u64` still sets a reconnection
+    /// time. WHATWG says to read the value as a base-10 integer and use it;
+    /// it gives no leave to ignore one for being large, and the field passed
+    /// the digits check, so dropping it here would be the silent no-op this
+    /// crate refuses to ship. Saturating is the honest reading: the caller's
+    /// own `Backoff::max` is what decides how long a wait may actually be.
+    #[test]
+    fn an_overflowing_retry_saturates_rather_than_vanishing() {
+        assert_eq!(
+            events(b"retry: 99999999999999999999999\n\n"),
+            vec![SseEvent::Retry(Duration::from_millis(u64::MAX))]
+        );
     }
 
     #[test]
