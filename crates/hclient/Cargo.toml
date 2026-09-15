@@ -686,7 +686,7 @@ brotli             = { version = "9.0", default-features = false, features = ["s
 # the line — dev-dependencies are outside `-e normal`, no consumer links
 # them, `deny.toml`'s `exclude-dev` keeps them out of the shipped graph,
 # and this test file only ever builds for the host.
-zstd               = { version = "0.13", default-features = false }
+zstd               = { version = "0.14", default-features = false }
 # `tests/multipart.rs`'s oracle, and it is an oracle rather than a
 # convenience: an encoder checked against its own idea of itself is green
 # for any self-consistent mistake, so the parts are read back by a parser
