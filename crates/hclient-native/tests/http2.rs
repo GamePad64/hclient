@@ -39,7 +39,7 @@ use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -68,6 +68,15 @@ struct Fixture {
     /// TCP connections accepted. The pool's claims are this number, and
     /// nothing the client says about itself.
     accepted: Arc<AtomicUsize>,
+    /// Connections the server has finished with and dropped. Read by
+    /// `a_closed_http2_connection_is_not_handed_out`, which needs the
+    /// server to *say* it has closed rather than to infer it from a
+    /// clock — see that test's own note on why waiting is not knowing.
+    closes: Arc<AtomicUsize>,
+    /// Opened by that same test once it has the first response in hand,
+    /// which is what lets the `/close` connection go. Only that path
+    /// reads it.
+    gate: Arc<AtomicBool>,
     seen: Arc<Mutex<Vec<Seen>>>,
 }
 
@@ -89,9 +98,13 @@ fn spawn_h2_server() -> Fixture {
     let addr = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
     let accepted = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(AtomicBool::new(false));
     let seen: Arc<Mutex<Vec<Seen>>> = Arc::new(Mutex::new(Vec::new()));
 
     let accepted_for_thread = Arc::clone(&accepted);
+    let closes_for_thread = Arc::clone(&closes);
+    let gate_for_thread = Arc::clone(&gate);
     let seen_for_thread = Arc::clone(&seen);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -106,8 +119,18 @@ fn spawn_h2_server() -> Fixture {
                 };
                 accepted_for_thread.fetch_add(1, Ordering::SeqCst);
                 let seen = Arc::clone(&seen_for_thread);
+                let closes = Arc::clone(&closes_for_thread);
+                let gate = Arc::clone(&gate_for_thread);
                 tokio::spawn(async move {
-                    let _ = serve(tcp, seen).await;
+                    let _ = serve(tcp, seen, gate).await;
+                    // Incremented after `serve` has returned, so the
+                    // `h2::server::Connection` and the `TcpStream` under
+                    // it have been dropped — the count is where the socket
+                    // is actually gone, not where the response was
+                    // written. That distinction is the whole barrier
+                    // `a_closed_http2_connection_is_not_handed_out` waits
+                    // on.
+                    closes.fetch_add(1, Ordering::SeqCst);
                 });
             }
         });
@@ -116,6 +139,8 @@ fn spawn_h2_server() -> Fixture {
     Fixture {
         addr,
         accepted,
+        closes,
+        gate,
         seen,
     }
 }
@@ -127,12 +152,26 @@ fn spawn_h2_server() -> Fixture {
 /// drives the connection's IO, so a handler awaited inside the accept loop
 /// would stall the very connection it is reading a body from. The same
 /// shape as h2's own server example.
-async fn serve(tcp: tokio::net::TcpStream, seen: Arc<Mutex<Vec<Seen>>>) -> Result<(), h2::Error> {
+///
+/// `/close` ends its connection without a `GOAWAY`, which is the premise
+/// of `a_closed_http2_connection_is_not_handed_out`. The decision is taken
+/// **here**, in the accept loop, and not inside the handler: `accept` is
+/// what drives this connection's IO, so it is the only place that can let
+/// the response flush before the socket goes. The same shape, for the same
+/// reason, as `grpc_shape.rs`'s `graceful_shutdown` — except that nothing
+/// is announced, because a client that was told would not need to find out
+/// at checkout.
+async fn serve(
+    tcp: tokio::net::TcpStream,
+    seen: Arc<Mutex<Vec<Seen>>>,
+    gate: Arc<AtomicBool>,
+) -> Result<(), h2::Error> {
     let mut conn = h2::server::handshake(tcp).await?;
     while let Some(accepted) = conn.accept().await {
         let (req, mut respond) = accepted?;
+        let closing = req.uri().path() == "/close";
         let seen = Arc::clone(&seen);
-        tokio::spawn(async move {
+        let handler = tokio::spawn(async move {
             let (parts, mut body) = req.into_parts();
             let mut body_len = 0usize;
             while let Some(chunk) = body.data().await {
@@ -185,6 +224,34 @@ async fn serve(tcp: tokio::net::TcpStream, seen: Arc<Mutex<Vec<Seen>>>) -> Resul
             }
             let _ = send.send_data(Bytes::from_static(b"ok"), true);
         });
+        if closing {
+            // Held open until the test says it has the response in hand,
+            // and only then dropped. Two earlier shapes were measured and
+            // are wrong: returning as soon as the handler queues its
+            // frames resets the stream the client is still reading
+            // (`ErrorKind::Body / ConnectionReset` on the *first*
+            // request), and waiting on `SendStream::poll_reset` hangs,
+            // because a stream the peer ended cleanly is never reset. The
+            // client is the only party that knows when it is done, so it
+            // is the one that says.
+            //
+            // `accept` runs in the same breath because it is what writes
+            // the queued frames — a bare sleep here would hold a
+            // connection that never delivered its response. It answers
+            // `None` only once the client hangs up, which is why the gate
+            // and not the loop is what ends this.
+            let _ = handler.await;
+            let gate = Arc::clone(&gate);
+            tokio::select! {
+                () = async { while conn.accept().await.is_some() {} } => {}
+                () = async {
+                    while !gate.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                } => {}
+            }
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -268,6 +335,39 @@ fn client(tls: FakeTls) -> Client {
     Client::builder(Native::new(Tokio, tls, SystemDns::new(Tokio)))
         .build()
         .unwrap()
+}
+
+/// Counts `Closed(Stale)` and nothing else.
+///
+/// `CloseReason::Stale` is emitted from exactly one place — the walk past
+/// a dead candidate in `Native::checkout` — and that line is reached only
+/// when `is_reusable` answers `false`. It is therefore the one observable
+/// that separates *the pool rejected a dead connection* from *the pool
+/// handed one out and the retry cleaned up after it*, which is why
+/// `a_closed_http2_connection_is_not_handed_out` asserts on it rather than
+/// on the accept count alone. The same discriminator, for the same reason,
+/// as `tests/hooks.rs`'s
+/// `a_pooled_connection_the_server_closed_while_idle_is_reported_stale`,
+/// which is the HTTP/1 half of this pair.
+#[derive(Clone, Default)]
+struct StaleCounter(Arc<AtomicUsize>);
+
+impl StaleCounter {
+    fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+impl hclient_core::hooks::Hooks for StaleCounter {
+    const WATCHING: bool = true;
+
+    fn on(&self, event: &hclient_core::hooks::Event<'_>) {
+        if let hclient_core::hooks::Event::Closed(c) = event
+            && matches!(c.reason, hclient_core::hooks::CloseReason::Stale)
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }
 
 /// The acceptance: a live exchange with a server that speaks nothing but
@@ -484,6 +584,118 @@ async fn without_a_pool_each_http2_request_gets_its_own_connection() {
     }
 
     assert_eq!(server.accepted.load(Ordering::SeqCst), 2);
+}
+
+/// A pooled HTTP/2 connection the server closed while it sat idle is
+/// rejected at checkout — the h2 counterpart of `tests/hooks.rs`'s
+/// `a_pooled_connection_the_server_closed_while_idle_is_reported_stale`.
+///
+/// # The accept count cannot carry this test, and finding that out is the
+/// point
+///
+/// The obvious assertion — *the second request succeeds and the server
+/// sees two connections* — was written first and **passes with
+/// `http2::is_reusable`'s body replaced by `true`**. Measured, not
+/// reasoned: 16 of 16 green with the mutation applied. The reason is
+/// `Native::run`'s one retry. When `is_reusable` wrongly answers `true`
+/// the dead connection *is* handed out, h2's `poll_ready` reports the
+/// failure with not a byte of the request written, that comes back as
+/// `Failed::NotSent`, and the retry opens a fresh connection and succeeds.
+/// Two accepts, one success, one `200` — an outcome indistinguishable from
+/// the pool having rejected the connection in the first place.
+///
+/// So on this path `is_reusable` is a **cost** guard rather than a
+/// correctness one: the retry is the correctness backstop, and a test
+/// asserting only on correctness has nothing to fail. What separates the
+/// two is `CloseReason::Stale`, emitted from exactly one line —
+/// `Native::checkout`'s walk past a dead candidate — which is reached only
+/// when `is_reusable` answers `false`. Hence the hook, and hence the
+/// `stale.count()` assertion being the one that discriminates while the
+/// two counts below it are premises.
+///
+/// **The pool entry here is an exclusive `Established::H2`, and that is
+/// why there is no `multiplexed()` on this client.** `share_if_multiplexing`
+/// turns an h2 connection into an `Established::H2Shared` *before* it
+/// reaches the pool, and that variant is checked by `shared_is_reusable`
+/// — a different function with a different contract (one `poll_ready`, no
+/// `Connection` to poll, because on that path a spawned driver is polling
+/// it). So a `multiplexed()` client would exercise the other half of the
+/// pair and leave this one exactly as untested as it was.
+///
+/// # The close has to have happened, and a clock cannot say that
+///
+/// The same barrier as the HTTP/1 tests, for the reason recorded there at
+/// length: "the server answered" does not imply "the server has dropped
+/// the socket", because writing the response and dropping the connection
+/// are two operations the OS may deschedule between. A checkout landing
+/// in that gap finds a connection that is not *yet* closed, which no poll
+/// can tell from a live one. So the wait is on the server's own count
+/// first, and only then on the clock for the `FIN` to reach this client's
+/// runtime — which is a second fact, and the one the premise actually
+/// needs.
+#[tokio::test]
+async fn a_closed_http2_connection_is_not_handed_out() {
+    let server = spawn_h2_server();
+    let stale = StaleCounter::default();
+    let client = Client::builder(
+        Native::new(Tokio, FakeTls::negotiating_h2(), SystemDns::new(Tokio)).hooks(stale.clone()),
+    )
+    .build()
+    .unwrap();
+
+    let resp = tokio::time::timeout(BOUND, client.get(server.url("/close")).send())
+        .await
+        .expect("must not hang")
+        .expect("the first request must succeed");
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+    assert_eq!(resp.collect().await.unwrap().text().unwrap(), "ok");
+    // The response is in hand and the connection is back in the pool, so
+    // the server may now drop it. This is the only signal that is exact:
+    // the server cannot tell when the client has finished reading, and a
+    // close before that resets a stream the client is still on.
+    server.gate.store(true, Ordering::SeqCst);
+
+    // The server saying it has dropped the socket. Polled rather than
+    // slept on, so the test costs what the close costs.
+    let deadline = std::time::Instant::now() + BOUND;
+    while server.closes.load(Ordering::SeqCst) < 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server must have closed the connection for this test to \
+             be about anything"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // The `FIN` is on its way; nothing polls an idle h2 connection, so
+    // nobody has read it yet. Long enough that it has certainly reached
+    // the kernel, which is what makes the checkout poll's job the
+    // deterministic one.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let resp = tokio::time::timeout(BOUND, client.get(server.url("/two")).send())
+        .await
+        .expect("must not hang")
+        .expect("the second request must succeed on a fresh connection");
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+    assert_eq!(resp.collect().await.unwrap().text().unwrap(), "ok");
+
+    assert_eq!(
+        stale.count(),
+        1,
+        "the dead pooled connection must be rejected at checkout and \
+         reported stale — this is the assertion the mutation fails"
+    );
+    assert_eq!(
+        server.accepted.load(Ordering::SeqCst),
+        2,
+        "premise: the second request had to open a connection of its own"
+    );
+    assert_eq!(
+        server.seen().len(),
+        2,
+        "premise: both requests reached a server, so the second was \
+         answered rather than lost"
+    );
 }
 
 /// **W1 on HTTP/2: dropping one exchange must not take a neighbour with
