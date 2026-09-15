@@ -2067,12 +2067,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// out over HTTP/1.1. [`NoVersionsLeft`] for `http2(false)` when
     /// HTTP/1.1 is already off.
     pub fn http2(mut self, on: bool) -> Result<Self, Error> {
-        if on && !cfg!(feature = "http2") {
-            return Err(Error::new(ErrorKind::Unsupported, Http2NotCompiledIn));
-        }
-        if !on && !self.versions.h1 {
-            return Err(Error::new(ErrorKind::Unsupported, NoVersionsLeft));
-        }
+        http2_refusal(on, cfg!(feature = "http2"), self.versions.h1)?;
         self.versions.h2 = on;
         self.caps = Self::capabilities_for(&self.caps, self.versions);
         Ok(self)
@@ -4112,3 +4107,81 @@ hclient_core::transport::send_transport!(
         H: Hooks + Clone + Unpin + Sync + Send,      // send-bound-exception: amendment-C16
         P: crate::proxy::Handshake + Clone + Sync + Send, // send-bound-exception: amendment-C16
 );
+
+/// Whether [`Native::http2`] must refuse, as a pure function of the three
+/// facts it turns on.
+///
+/// **`compiled_in` is a parameter rather than a `cfg!` read inside**, and
+/// that is the whole reason this is a function rather than two `if`s in
+/// the setter. Inline, `on && !cfg!(feature = "http2")` is a dead
+/// conjunction under `--all-features` — the configuration the workspace
+/// suite and every mutation run use — so the refusal cannot fire there
+/// and nothing can discriminate it. Two mutants proved it rather than
+/// suggesting it: `&&` to `||`, and the deleted `!`, both survived the
+/// whole suite.
+///
+/// This is the shape `hclient-cli`'s `--backend` refusal already took,
+/// after the same finding: *a check that cannot fail in the configuration
+/// CI runs is not a check*, and the repair is to take the availability as
+/// an argument so the decision is testable at every feature setting from
+/// one build.
+fn http2_refusal(on: bool, compiled_in: bool, h1: bool) -> Result<(), Error> {
+    if on && !compiled_in {
+        return Err(Error::new(ErrorKind::Unsupported, Http2NotCompiledIn));
+    }
+    if !on && !h1 {
+        return Err(Error::new(ErrorKind::Unsupported, NoVersionsLeft));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod version_refusals {
+    use super::{Error, ErrorKind, http2_refusal};
+
+    /// `true` if the call refused with `Unsupported`, which is the only
+    /// kind either arm produces — the payload type is what tells the two
+    /// refusals apart and is asserted by the call sites' own names.
+    fn refused(r: Result<(), Error>) -> bool {
+        r.err()
+            .is_some_and(|e| matches!(e.kind(), ErrorKind::Unsupported))
+    }
+
+    /// The table in full, which is what the inline `cfg!` made
+    /// unreachable: with the feature absent only `http2(true)` refuses,
+    /// and the reason is the feature rather than the version set.
+    #[test]
+    fn asking_for_h2_without_the_feature_is_the_only_refusal_it_causes() {
+        assert!(
+            refused(http2_refusal(true, false, true)),
+            "http2(true) in a build without the feature is a named refusal"
+        );
+        // The control that says the refusal is about the feature and not
+        // about `on`: the same request against a build that has it.
+        assert!(
+            !refused(http2_refusal(true, true, true)),
+            "and the same call succeeds where the feature is compiled in"
+        );
+        // ... and not about h1 either — the second arm cannot fire for
+        // `on == true` whatever the version set says.
+        assert!(!refused(http2_refusal(true, true, false)));
+    }
+
+    /// The other arm, which is reachable in every build and so was
+    /// already pinned from outside — kept here because the pair is the
+    /// decision, and a table with one row reads as an accident.
+    #[test]
+    fn turning_h2_off_when_h1_is_already_off_leaves_no_version() {
+        assert!(
+            refused(http2_refusal(false, true, false)),
+            "refusing both versions leaves nothing to speak"
+        );
+        assert!(
+            !refused(http2_refusal(false, true, true)),
+            "where HTTP/1.1 survives, turning h2 off is ordinary"
+        );
+        // The feature is irrelevant to this arm, in both directions.
+        assert!(refused(http2_refusal(false, false, false)));
+        assert!(!refused(http2_refusal(false, false, true)));
+    }
+}
