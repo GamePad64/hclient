@@ -115,7 +115,27 @@ pub enum Behaviour {
     /// body that waited on the request body would hang instead of merely
     /// being slow.
     AnswerWithoutReading(Duration),
+    /// Answer `200` and push `n` bytes as fast as the peer's windows
+    /// allow, without waiting to be asked — a blob download rather than
+    /// the 13-byte [`Behaviour::Echo`].
+    ///
+    /// It exists for the HTTP/3 half of the rustls backpressure defect
+    /// fixed in `hclient-tls-rustls`. That one needed a body far larger
+    /// than rustls' 64 KiB plaintext buffer *and* a reader driven
+    /// independently of the body, which on TCP is h2's connection driver.
+    /// **HTTP/3 cannot reproduce it** — quinn drives that handshake
+    /// through `QuicTlsConnect`, so no `TlsStream` and no `pump_incoming`
+    /// is anywhere in the path — and that is the reason to have the test
+    /// rather than the reason to skip it: the claim "this defect is
+    /// structurally impossible on h3" is worth a fixture that would fail
+    /// if a future refactor routed h3 through the TCP stream.
+    PushBlob(usize),
 }
+
+/// How much [`Behaviour::PushBlob`] writes per `send_data` call. 64 KiB
+/// is rustls' whole plaintext buffer, so a blob of many chunks would
+/// cross that limit repeatedly on any path that had one.
+const BLOB_CHUNK: usize = 64 * 1024;
 
 /// What one request's body looked like **from the server**, with the
 /// server's own clock, measured from the moment the request head resolved.
@@ -599,6 +619,29 @@ fn start_inner(
                                 }
                                 tokio::time::sleep(Duration::from_millis(150)).await;
                                 quic.close(1u32.into(), b"dying after the head");
+                                return;
+                            }
+                            if let Behaviour::PushBlob(n) = behaviour {
+                                let resp = http::Response::builder()
+                                    .status(http::StatusCode::OK)
+                                    .body(())
+                                    .unwrap();
+                                if stream.send_response(resp).await.is_err() {
+                                    return;
+                                }
+                                let mut sent = 0usize;
+                                while sent < n {
+                                    let take = BLOB_CHUNK.min(n - sent);
+                                    if stream
+                                        .send_data(Bytes::from(vec![b'y'; take]))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                    sent += take;
+                                }
+                                let _ = stream.finish().await;
                                 return;
                             }
                             if let Behaviour::AnswerWithoutReading(d) = behaviour {
