@@ -45,8 +45,32 @@
 //! it nor the pool needs a second type parameter for the runtime. A body
 //! that holds a sleep needs the clock, so it needs that parameter; keeping
 //! it in a wrapper leaves `NativeBody` alone and makes this one testable
-//! on any inner body at all, which is what `tests/idle.rs` does with a body
-//! that has no socket under it.
+//! on any inner body at all.
+//!
+//! **This paragraph cited a `tests/idle.rs` that has never existed**, which
+//! is a claim as perishable as its subject and was not checked once. What
+//! exercises this wrapper is `tests/timeouts.rs`, against real servers
+//! built to fall silent — and the two accessors below are asked there
+//! through `Transport::execute` rather than through `hclient::Client`, for
+//! the reason the next section gives.
+//!
+//! # Both accessors are reachable only from the transport, not the facade
+//!
+//! `hclient::Client` erases every transport's body into
+//! `hclient_core::transport::BoxBody` — a `dyn http_body::Body` — before
+//! wrapping it in its own chain, so by the time a `Client` caller holds a
+//! body this type is gone and neither accessor below can be called at any
+//! nesting. `hclient::ClientBody::is_expired` is a **different** method on
+//! `hclient::body::Deadline`, the `total` bound's wrapper; measured, it is
+//! what `hclient/tests/deadline.rs` reads, and mutating either of ours
+//! leaves that whole suite green.
+//!
+//! So the audience for both is a consumer driving this transport directly
+//! — `examples/minimal.rs`' shape — which gets the concrete
+//! [`crate::NativeBody`]. That is the same reason
+//! `tests/end_stream_hint.rs` exists one method over: a public
+//! `http_body::Body` impl has to be right about what only an outside
+//! caller can see.
 
 use crate::error::BetweenBytesElapsed;
 use bytes::Bytes;
@@ -100,12 +124,33 @@ impl<B, Tm: Timer> IdleTimeout<B, Tm> {
     }
 
     /// The bound in force for this response, if any.
+    ///
+    /// **Kept although nothing in this workspace reads it**, on
+    /// `Entry::persist`'s precedent rather than by default: the question
+    /// is not whether we call it but whether anything *could*, and here
+    /// the caller has no other way to learn the answer. `Timeouts`
+    /// reaches a `Transport` in the request's extensions, and the request
+    /// is consumed by the exchange — so a consumer holding only the
+    /// response cannot read the bound back from anywhere else. That is
+    /// what `hclient::ClientBody::total_timeout` exists for one bound
+    /// over, on the path where this type has been erased.
+    ///
+    /// `None` is a distinction with a reachable side, which is what keeps
+    /// this from being the `UpgradeSupport` deletion: it separates *this
+    /// response is bounded* from *nothing is watching this peer*, and the
+    /// wrapper really is inert in the second case — it never builds a
+    /// sleep at all. Both halves are asserted in `tests/timeouts.rs`,
+    /// because either alone is passed by a constant.
     pub fn between_bytes_timeout(&self) -> Option<Duration> {
         self.every
     }
 
     /// `true` once the bound has fired and the inner body has been
     /// dropped.
+    ///
+    /// The one way a consumer still holding the response can tell a bound
+    /// that fired from a peer that hung up — both leave a body that
+    /// yields no more frames, and only this separates them.
     pub fn is_expired(&self) -> bool {
         self.inner.is_none()
     }

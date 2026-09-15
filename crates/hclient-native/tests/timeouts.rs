@@ -37,14 +37,36 @@
 //! - a server that dribbles a byte at a time, well inside the bound, must
 //!   **succeed** — which no implementation that starts one sleep and never
 //!   restarts it can do.
+//!
+//! # And the wrapper's own two accessors, which need the other path
+//!
+//! Everything above goes through `hclient::Client`, and that is why the
+//! last three tests do not. `Client` erases the transport's body into
+//! `hclient_core::transport::BoxBody` before its own wrappers go round
+//! it, so `IdleTimeout::{is_expired, between_bytes_timeout}` are
+//! unreachable from a `Client` caller at any nesting — measured: mutating
+//! either leaves all 12 tests of `hclient/tests/deadline.rs` green, whose
+//! `is_expired` assertions read `hclient::body::Deadline`'s method of the
+//! same name, on the `total` bound. Mutating *that* one kills 1 of those
+//! 12, which is what tells the two methods apart.
+//!
+//! So those three drive `Transport::execute` directly and hold the
+//! concrete `NativeBody`. That is not a contrivance to reach a private
+//! corner: it is the audience — `examples/minimal.rs`' consumer — for
+//! whom both accessors are the only way to learn either answer.
 #![cfg(not(target_family = "wasm"))]
 
 use hclient::{Client, Timeouts};
+use hclient_core::body::RequestBody;
 use hclient_core::error::{ErrorKind, Phase};
+use hclient_core::transport::Transport;
+use hclient_dns::IpLiteralOnly;
 use hclient_dns_system::SystemDns;
 use hclient_native::{BetweenBytesElapsed, FirstByteTimedOut, Native};
 use hclient_rt_tokio::Tokio;
+use hclient_tls::NoTls;
 use hclient_tls_rustls::Rustls;
+use http_body_util::BodyExt;
 use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -422,4 +444,159 @@ async fn a_between_bytes_timeout_closes_the_connection_the_server_sees() {
     // Held to exactly here: dropping it earlier would close the socket for
     // a reason that has nothing to do with the bound.
     drop(resp);
+}
+
+// ── the wrapper's own two accessors ─────────────────────────────────────
+
+/// A transport with no TLS stack and no resolver, for the tests that ask
+/// [`IdleTimeout`](hclient_native::IdleTimeout) about itself.
+///
+/// **Not the [`client`] above, and the reason is an erasure rather than a
+/// preference.** `hclient::Client` boxes every transport's body into
+/// `hclient_core::transport::BoxBody`, a `dyn http_body::Body`, before its
+/// own wrappers go round it — so on the `Client` path this wrapper's type
+/// is gone by the time a caller can hold anything, and neither of its
+/// accessors is reachable at any nesting. `Transport::execute` hands back
+/// the concrete `NativeBody<R, T, H>`, which *is* an `IdleTimeout`, so
+/// this is the only path from which the two can be asked at all.
+///
+/// That is also who they are **for**: the audience of
+/// `examples/minimal.rs` — a consumer driving this transport directly
+/// rather than through the facade.
+fn transport() -> Native<Tokio, NoTls, IpLiteralOnly> {
+    Native::new(Tokio, NoTls, IpLiteralOnly).without_pool()
+}
+
+/// One request through [`transport`], with `timeouts` in the request's
+/// extensions rather than on a builder — which is the only channel a
+/// `Transport` has, and the reading `Native::run` performs
+/// (`presence is not intent`, field by field).
+///
+/// `IpLiteralOnly` is why the address is spelled out numerically: this
+/// transport has no resolver to ask.
+async fn execute_direct(
+    timeouts: Timeouts,
+    addr: SocketAddr,
+) -> http::Response<hclient_native::NativeBody<Tokio, NoTls, hclient_core::hooks::NoHooks>> {
+    let mut req = http::Request::get(format!("http://127.0.0.1:{}/", addr.port()))
+        .body(RequestBody::Empty)
+        .expect("a well-formed request");
+    req.extensions_mut().insert(timeouts);
+    tokio::time::timeout(PATIENCE, transport().execute(req))
+        .await
+        .expect("the head arrives at once")
+        .expect("and is a response")
+}
+
+/// **`IdleTimeout::is_expired` answers `true` once the bound has fired**,
+/// which is the one way a consumer still holding the response can tell a
+/// bound that fired from a peer that hung up.
+///
+/// The state this needs is a body that has expired **and is still in the
+/// caller's hands**, and reaching it took the direct transport path for
+/// the erasure reason on [`transport`]. Every other test in this file
+/// calls `collect`, which consumes the response, so the body is gone
+/// before anything can ask it; here the error is taken off `poll_frame`
+/// and the body is kept.
+///
+/// Paired with
+/// [`a_body_that_was_never_cut_does_not_report_itself_expired`] on
+/// purpose: `true` alone is passed by a wrapper that answers `true`
+/// always, which is precisely the mutation that survived the whole
+/// workspace before this test existed.
+#[tokio::test]
+async fn an_expired_body_reports_itself_expired() {
+    let addr = server(Behaviour::HeadThenSilence);
+    let mut body = execute_direct(Timeouts::new().with_between_bytes(BOUND), addr)
+        .await
+        .into_body();
+
+    let err = tokio::time::timeout(PATIENCE, body.frame())
+        .await
+        .expect("the bound must fire")
+        .expect("a body that never arrives must not end cleanly")
+        .expect_err("and must not yield a frame");
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Timeout(Phase::BetweenBytes),
+        "{err}"
+    );
+
+    // The body is deliberately alive here: firing dropped what it
+    // wrapped, and this accessor is how that becomes visible rather than
+    // being inferred from the error a caller may no longer hold.
+    assert!(
+        body.is_expired(),
+        "the bound fired and dropped the inner body, so the wrapper must \
+         report it"
+    );
+}
+
+/// The control, and what makes the assertion above a measurement: a body
+/// that arrived in full has **not** expired.
+///
+/// Without this a wrapper hard-coding `true` passes — a healthy body
+/// claiming it had been cut, which is the same defect as a timed-out body
+/// denying it, in the other direction.
+#[tokio::test]
+async fn a_body_that_was_never_cut_does_not_report_itself_expired() {
+    let addr = server(Behaviour::Dribbles(BOUND / 5));
+    let body = execute_direct(Timeouts::new().with_between_bytes(BOUND), addr)
+        .await
+        .into_body();
+
+    assert!(
+        !body.is_expired(),
+        "nothing has been polled yet, so no bound can have fired"
+    );
+
+    let collected = tokio::time::timeout(PATIENCE * 4, body.collect())
+        .await
+        .expect("no gap ever reached the bound")
+        .expect("so the body arrives")
+        .to_bytes();
+    assert_eq!(
+        &collected[..],
+        b"0123456789",
+        "and the whole body really was there"
+    );
+}
+
+/// **`IdleTimeout::between_bytes_timeout` names the bound in force**, and
+/// it is read here for the audience described on [`transport`] — a
+/// consumer holding this transport's own body, for whom the accessor is
+/// the only way to learn the bound at all.
+///
+/// The `Timeouts` went into the request's extensions and the request was
+/// consumed by the exchange, so a consumer holding only the response has
+/// nowhere else to read it back from; the facade's counterpart,
+/// `hclient::ClientBody::total_timeout`, exists for exactly this reason
+/// one bound over.
+///
+/// Both halves are asserted, because one alone is passed by a constant:
+/// the value where a bound was set, and `None` where none was. The second
+/// is what `hclient-native`'s own docs promise — with no bound the
+/// wrapper *"is a pass-through and never builds a sleep at all"* — and it
+/// is a claim a caller can act on, since it separates "this response is
+/// bounded" from "nothing is watching this peer".
+#[tokio::test]
+async fn the_wrapper_names_the_between_bytes_bound_it_is_enforcing() {
+    let addr = server(Behaviour::Dribbles(Duration::from_millis(10)));
+    let bounded = execute_direct(Timeouts::new().with_between_bytes(BOUND), addr)
+        .await
+        .into_body();
+    assert_eq!(
+        bounded.between_bytes_timeout(),
+        Some(BOUND),
+        "the bound travelled in the request's extensions and the request is \
+         gone, so this accessor is the only thing that still knows it"
+    );
+
+    let unbounded = execute_direct(Timeouts::default(), addr).await.into_body();
+    assert_eq!(
+        unbounded.between_bytes_timeout(),
+        None,
+        "a request that asked for no bound must not be reported as bounded: \
+         `None` is what says nothing is watching this peer"
+    );
 }
