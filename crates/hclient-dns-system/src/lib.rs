@@ -446,6 +446,38 @@ mod tests {
         );
     }
 
+    /// **`A` and `AAAA` are supported on every target**, which is the
+    /// half of `supports` no test asserted until a mutation asked.
+    ///
+    /// Deleting the `rtype::A | rtype::AAAA => true` arm drops both
+    /// through to `_ => false`, so `SystemDns` claims it cannot resolve
+    /// an address at all — and that survived **54 tests here, 591 in
+    /// `hclient-native` and 638 in `hclient`**. Every assertion on
+    /// `supports` was about `HTTPS` or `CAA`: the types that are
+    /// *conditional* were checked and the two that are unconditional
+    /// were not.
+    ///
+    /// What the mutation produces is the capability lying in the
+    /// understating direction, which is the safe one and therefore the
+    /// silent one: `hclient-native`'s connector reads `supports` to
+    /// decide whether to *ask*, so a `false` here means discovery
+    /// quietly stops happening rather than anything failing. That is why
+    /// no downstream test noticed, and why this assertion belongs beside
+    /// the two that already keep `supports` honest.
+    #[test]
+    fn address_types_are_supported_on_every_target() {
+        let dns = SystemDns::new(Inline);
+        assert!(
+            dns.supports(rtype::A),
+            "`getaddrinfo` answers A on every target this crate builds for"
+        );
+        assert!(
+            dns.supports(rtype::AAAA),
+            "and AAAA — Happy Eyeballs races the two families, so a \
+             resolver that disowned either would leave one arm empty"
+        );
+    }
+
     /// A type this crate models nothing for is refused, whatever the
     /// platform can do.
     ///
