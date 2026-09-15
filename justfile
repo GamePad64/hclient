@@ -2117,6 +2117,91 @@ features:
 # every dependency-graph claim, together
 graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-default-has-no-hsts graph-proto-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
 
+# ── mutation testing, which cannot be run naively here ──────────────────
+
+# `cargo mutants` over one crate, isolated so the answer means something
+#
+# **Two sweeps in this workspace contaminate each other, and
+# `CARGO_TARGET_DIR` alone does not stop it.** The machine-wide
+# `~/.cargo/config.toml` sets `[build] build-dir`, which `CARGO_TARGET_DIR`
+# does **not** override: measured on a throwaway crate, the final `.rlib`
+# landed in the private target dir, its `debug/deps` was EMPTY, and
+# `deps/` plus `incremental/` went to the shared build directory. So
+# cargo-mutants copies the source to a scratch tree with its own `target/`
+# — which looks isolated and is not — and one sweep's deliberately broken
+# object code is linked into another's test runs.
+#
+# What that costs is not noise, it is fiction in both directions. Three
+# scoped sweeps over ONE unchanged `hclient-proxy` tree reported **65, 37
+# and 26** survivors; of the 65-survivor union, **26 were false MISSEDs**
+# that died by hand on a cold build dir. One mutant's own log carries the
+# proof — `Compiling` beside `Fresh` and `Blocking waiting for file lock
+# on build directory`, 134/134 passing, and 7 failures from a cold one.
+# A false MISSED wastes a day; a false CAUGHT is a gap you believe is
+# closed.
+#
+# Hence both variables, and **not under `/tmp`**: one workspace-wide run
+# wrote a **26 GB** build directory, and three concurrent ones filled that
+# 23 GB tmpfs and produced `collect2: ld terminated with signal 7 [Bus
+# error]` — a linker crash that reads as a compiler bug and is a full
+# disk. `-o` is passed because a sweep with no output flag writes
+# `./mutants.out` in the repository, where two sweeps fight over one
+# directory and a leftover blocks `release-plz`.
+#
+# Deliberately NOT in `ci`: a sweep is minutes per crate and is an
+# instrument for finding gaps, not a gate. And read
+# `.notes/mutation-survivors-classified.md` before believing a survivor
+# list — a mutant inside a `#[cfg]` this host excludes was never
+# type-checked, and cargo-mutants generates no statement deletions at all,
+# so a 100%-caught sweep is not evidence that any setting is read.
+
+# one crate's mutants, in a private build dir so the answer means something
+mutants crate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scratch="$(mktemp -d /mnt/devenv/tmp/mutants-{{ crate }}-XXXXXX)"
+    trap 'rm -rf "$scratch"' EXIT
+    CARGO_TARGET_DIR="$scratch/target" \
+    CARGO_BUILD_BUILD_DIR="$scratch/build" \
+        cargo mutants -p {{ crate }} --all-features -o "$scratch/out" \
+        || status=$?
+    # cargo-mutants exits 2 for surviving mutants, which is a finding
+    # rather than a failure of the run; anything else is the run breaking.
+    status="${status:-0}"
+    if [ "$status" != 0 ] && [ "$status" != 2 ]; then
+        echo "cargo mutants itself failed (exit $status)" >&2
+        exit "$status"
+    fi
+    # `-o DIR` writes `DIR/mutants.out/`, it does not fill `DIR` — found
+    # by looking rather than by assuming, after a first version produced
+    # `mutants.out/mutants.out/` and `mutants.out/out/`.
+    produced="$scratch/out/mutants.out"
+    # **Fail closed on a sweep that tested nothing**, which this recipe
+    # did on its first run: a misspelled crate name gives
+    # `WARN Package "..." not found in source tree`, `Found 0 mutants`,
+    # and **exit 0** — a green run over an empty set, which is this
+    # workspace's own recurring defect met one tool further out. Checked
+    # in the failing direction by passing a name that does not exist.
+    # The first outcome is the `Baseline` — the unmutated tree — so
+    # counting entries reports one mutant more than cargo-mutants does.
+    # Measured on a 40-mutant sweep that this line first called 41.
+    tested="$(python3 -c "
+    import json, sys
+    try:
+        d = json.load(open(sys.argv[1]))
+    except Exception:
+        print(0); sys.exit()
+    print(sum(1 for o in d.get('outcomes', [])
+              if o.get('scenario') != 'Baseline'))
+    " "$produced/outcomes.json" 2>/dev/null || echo 0)"
+    if [ "$tested" -lt 1 ]; then
+        echo "no mutants were tested — is '{{ crate }}' a member of this workspace?" >&2
+        exit 1
+    fi
+    rm -rf mutants.out
+    cp -r "$produced" mutants.out
+    echo "$tested mutants tested; survivors and logs in ./mutants.out (git-ignored)"
+
 # ── the whole pipeline ──────────────────────────────────────────────────
 
 # everything CI runs except what is bound to one OS (`macos-loopback`)
