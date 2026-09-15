@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/GamePad64/hclient/compare/hclient-idn-v0.2.3...hclient-idn-v0.2.4) - 2026-09-15
+
+### Fixed
+
+- the Windows lint job, and a reason that named the wrong platform
+
+### Other
+
+- nine dead links in `hclient-idn`, one per configuration
+- every `allow` carries `reason`, and the lint checks it per site
+
 ## [0.2.3](https://github.com/GamePad64/hclient/compare/hclient-idn-v0.2.2...hclient-idn-v0.2.3) - 2026-09-10
 
 ### Other

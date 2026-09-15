@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-tls-rustls-v0.1.0-alpha.9...hclient-tls-rustls-v0.1.0-alpha.10) - 2026-09-15
+
+### Fixed
+
+- rustls backpressure was a signal, and this crate read it as a failure
+
+### Other
+
+- every `allow` carries `reason`, and the lint checks it per site
+
 ## [0.1.0-alpha.9](https://github.com/GamePad64/hclient/compare/hclient-tls-rustls-v0.1.0-alpha.8...hclient-tls-rustls-v0.1.0-alpha.9) - 2026-09-10
 
 ### Other

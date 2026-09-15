@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-tower-v0.1.0-alpha.9...hclient-tower-v0.1.0-alpha.10) - 2026-09-15
+
+### Added
+
+- `send_transport!` writes the impl a backend cannot forget
+
+### Other
+
+- `send_transport!` is named where the trait it writes is
+- every `allow` carries `reason`, and the lint checks it per site
+
 ## [0.1.0-alpha.9](https://github.com/GamePad64/hclient/compare/hclient-tower-v0.1.0-alpha.8...hclient-tower-v0.1.0-alpha.9) - 2026-09-10
 
 ### Other

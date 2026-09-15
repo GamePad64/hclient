@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.9...hclient-native-v0.1.0-alpha.10) - 2026-09-15
+
+### Added
+
+- `send_transport!` writes the impl a backend cannot forget
+
+### Fixed
+
+- `http2(true)`'s refusal could not fire where the suite runs
+- rustls backpressure was a signal, and this crate read it as a failure
+
+### Other
+
+- `Timeouts::resolve` releases on either family, and nothing said so
+- the h3 half of the backpressure question, which is a negative
+- `send_transport!` is named where the trait it writes is
+- every `allow` carries `reason`, and the lint checks it per site
+
 ## [0.1.0-alpha.9](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.8...hclient-native-v0.1.0-alpha.9) - 2026-09-10
 
 ### Other

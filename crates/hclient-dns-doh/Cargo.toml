@@ -1,6 +1,6 @@
 [package]
 name = "hclient-dns-doh"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 description = "DNS-over-HTTPS (RFC 8484) resolver for hclient, over any Transport"
 keywords     = ["hclient", "dns", "doh", "resolver"]
 categories   = ["network-programming"]
@@ -33,7 +33,7 @@ hclient-core   = { workspace = true }
 # `RawBinding` conversion, shared with `hclient-dns-system` rather than
 # copied — see `hclient_dns::svcb`'s module doc for why a second copy of
 # those rules was not an option.
-hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.9", features = ["codec"] }
+hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.10", features = ["codec"] }
 thiserror      = { workspace = true }
 
 [dev-dependencies]
@@ -51,8 +51,8 @@ rstest           = { workspace = true }
 #
 # Not a dependency cycle: `hclient-native` depends on `hclient-dns`, never
 # on this crate.
-hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.9" }
-hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.9" }
+hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.10" }
+hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.10" }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.9" }
 # `tests/live.rs` alone, and `platform-verifier` is the whole point of it
 # rather than a convenience. The unverified row that suite exists to settle
@@ -61,7 +61,7 @@ hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.9" }
 # handshake every pinned deployment makes. `webpki-roots` would answer a
 # different question (rustls's bundled roots, its own webpki path) and leave
 # the one asked exactly where it was.
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.9", features = ["platform-verifier"] }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.10", features = ["platform-verifier"] }
 tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

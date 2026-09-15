@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.9...hclient-v0.1.0-alpha.10) - 2026-09-15
+
+### Fixed
+
+- split the key test, which needed a list the feature-off build has not
+
+### Other
+
+- RFC 8878's skippable frames, which no encoder produces
+- a zstd body that ends at a frame header, which `&&` would accept
+- `coding()` was only ever asked of a body that decoded nothing
+- the public-suffix seam had never been given a caller's own list
+- the store seam's own methods, driven the way another store would
+- the deflate sniff and its bounds, none of which a socket can reach
+- the expiry sweep had no test because the wire cannot see it
+- the size bound on the restore path was never asked at its edge
+- `SameSite=None` and a pre-epoch `Expires`, neither of them reached
+- `CookieJar::clear` had no caller anywhere
+- §5.7's replacement rule was dead on the batch path
+- twelve public accessors on `Cookie` had no reader at all
+- the two narrowing directives were never asked at their boundary
+- four of the five delimiter ranges were never separated
+- a cached response that is not 200 keeps its own status
+- a third boundary, and a timed-out body that denied it
+- a retry moves the resend counter, and the retry loop was the gap
+- a cache boundary, and a caller's own validator
+- every `allow` carries `reason`, and the lint checks it per site
+- two rules that were right, documented and dead
+
 ## [0.1.0-alpha.9](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.8...hclient-v0.1.0-alpha.9) - 2026-09-10
 
 ### Other

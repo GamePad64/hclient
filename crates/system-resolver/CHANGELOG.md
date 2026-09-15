@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/GamePad64/hclient/compare/system-resolver-v0.2.3...system-resolver-v0.2.4) - 2026-09-15
+
+### Other
+
+- every `allow` carries `reason`, and the lint checks it per site
+
 ## [0.2.3](https://github.com/GamePad64/hclient/compare/system-resolver-v0.2.2...system-resolver-v0.2.3) - 2026-09-10
 
 ### Other
