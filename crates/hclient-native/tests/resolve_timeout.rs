@@ -325,3 +325,80 @@ fn counting_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
     });
     (port, n)
 }
+
+/// A resolver whose **v4 answers at once and whose v6 never answers at
+/// all** — a `Pending` stream rather than an empty one.
+///
+/// The distinction is the whole of this fixture. [`Answering`]'s v6 is
+/// `stream::empty()`, which is *done immediately*: both families settle,
+/// so the gate's `(v6.done && v4.done)` clause can end the wait and the
+/// per-family `any(..)` test is never what releases it. A family that is
+/// simply slow — one AAAA lookup against an unresponsive server, which is
+/// the ordinary shape of this on a real network — is neither done nor
+/// answered, and only `any(v6) || any(v4)` gets the request moving on the
+/// address it already has.
+#[derive(Clone, Copy)]
+struct OneFamilyHangs;
+
+impl Resolve for OneFamilyHangs {
+    type Records<'a>
+        = std::pin::Pin<
+        Box<
+            dyn futures_core::Stream<Item = Result<Record, hclient_core::error::Error>> + Send + 'a,
+        >,
+    >
+    where
+        Self: 'a;
+
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(rtype, rtype::A | rtype::AAAA)
+    }
+
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        let _ = name;
+        match rtype {
+            rtype::A => Box::pin(futures_util::stream::once(async move {
+                Ok(Record::new(RData::from(IpAddr::V4(Ipv4Addr::LOCALHOST))))
+            })),
+            // Never answers and never ends: not `empty()`, which would
+            // settle the family and let the other clause of the gate do
+            // the work this test is about.
+            _ => Box::pin(futures_util::stream::once(async move {
+                std::future::pending::<()>().await;
+                unreachable!("this family never answers")
+            })),
+        }
+    }
+}
+
+/// **One family answering is enough**, which is what `Timeouts::resolve`
+/// bounds: the wait is for the first address from *either* family, not
+/// for both.
+///
+/// The bound is generous and the assertion is that it is not spent. With
+/// the gate requiring both families the request would sit out the whole
+/// 2 s and then fail `Timeout(Resolve)` — having held a perfectly good
+/// v4 address the entire time.
+///
+/// This is the case the other four tests here cannot reach: two of them
+/// have every family answer, one has none answer, and one skips the
+/// resolver altogether. A resolver that is *half* alive is the ordinary
+/// shape of this on a real network and was the one shape untested.
+#[test]
+fn one_family_answering_does_not_wait_for_the_other() {
+    let port = server();
+    let began = Instant::now();
+    let status = go(
+        OneFamilyHangs,
+        port,
+        Timeouts::new().with_resolve(Duration::from_millis(2000)),
+    )
+    .expect("a v4 address arrived at once, so there was nothing to wait for");
+    assert_eq!(status, 200);
+    assert!(
+        began.elapsed() < Duration::from_millis(1000),
+        "the request must go out on the address it has rather than wait for \
+         the family that never answers: {:?}",
+        began.elapsed()
+    );
+}
