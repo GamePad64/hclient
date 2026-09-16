@@ -1351,7 +1351,6 @@ name = "hclient-dns"
 version = "0.1.0-alpha.10"
 dependencies = [
  "bytes",
- "domain",
  "futures-core",
  "futures-executor",
  "futures-util",

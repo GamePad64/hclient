@@ -71,13 +71,20 @@ http           = { workspace = true }
 http-body      = { workspace = true }
 http-body-util = { workspace = true }
 hclient-core   = { workspace = true }
-# `codec`: the RFC 9460 client semantics and the `Https` -> `RawBinding`
-# conversion, shared with `hclient-dns-system` rather than copied — see
-# `hclient_dns::svcb`'s module doc for why a second copy of those rules was
-# not an option. This crate is the only caller of the feature now, the
-# system resolver having moved to building its `RawBinding` from RDATA; the
-# rules themselves are behind no feature, because they name no decoder.
-hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.10", features = ["codec"] }
+# The RFC 9460 client semantics and the vocabulary they read — `RawBinding`,
+# `RawParam`, `endpoint_from_binding` — shared with `hclient-dns-system`
+# rather than copied, for the reason `hclient_dns::svcb`'s module doc gives:
+# §2.4/§2.5/§8 are the part most likely to be got subtly wrong and are
+# identical on every platform.
+#
+# **No `features = ["codec"]` any more, because there is no such feature.**
+# It gated one function, `binding_from_decoded`, whose signature named
+# `domain` in four places while `hclient-dns` re-exported none of it — so
+# the seam crate's promise carried this decoder's major version for a
+# function only this crate ever called. It is `wire.rs`'s now, beside the
+# `Message::from_slice` that produces its input, and `domain` is named in
+# this manifest, which is where the decision was actually being made.
+hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.10" }
 thiserror      = { workspace = true }
 # Unconditional, for the reason `hclient-tls-rustls` states: with no
 # subscriber installed a `trace!` is a load and a branch, and a feature

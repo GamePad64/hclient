@@ -14,22 +14,36 @@
 //! can reach them, or the `DoH` backend gets a second copy of them and the
 //! copies drift. They moved.
 //!
-//! **What did not move: any wire parsing.** Nothing here reads bytes.
-//! [`RawBinding`] holds no borrowed memory and no platform detail, and
-//! each backend fills it in from whatever its decoder produced — a
-//! `domain` `Https` record on the `res_query` and `DoH` paths, an
-//! OS-parsed `DNS_SVCB_DATA` on Windows. That is what keeps this crate
-//! free of a DNS codec: a consumer who only ever uses `IpLiteralOnly` does
-//! not link one.
+//! **What did not move: any wire parsing, and no decoder is named here at
+//! all.** Nothing in this module reads bytes. [`RawBinding`] holds no
+//! borrowed memory and no platform detail, and each backend fills it in
+//! from whatever its decoder produced — a `domain`-decoded `Https` record
+//! on the `res_query` and `DoH` paths, an OS-parsed `DNS_SVCB_DATA` on
+//! Windows. That is what keeps this crate free of a DNS codec: a consumer
+//! who only ever uses `IpLiteralOnly` does not link one.
 //!
-//! **The two decoders became one**, and the sentence above named the
-//! wrong one for as long as it took to notice: `hclient-dns-system` moved
-//! to `domain` when it needed RDATA-level decoding, and this line went on
-//! saying `dns-message-parser` — this workspace's own recurring defect,
-//! a claim that is exactly as perishable as its subject. The remaining
-//! caller of this function is `hclient-dns-doh`, which decodes whole
-//! messages; `domain` does that too (`base::message`), which is what
-//! ended the second decoder rather than any saving in crates.
+//! **That was true of the dependency and false of the signature, for two
+//! decoders in a row.** A `binding_from_decoded` lived here, behind a
+//! `codec` feature, taking a decoded record and naming its decoder in
+//! four places — the parameter, the error type and two bounds — while
+//! this crate re-exported no such crate, so an outside caller could not
+//! name the types it demanded without adding that crate to their own
+//! manifest at a matching version. It read
+//! `&dns_message_parser::rr::ServiceBinding` before it read
+//! `&domain::rdata::svcb::Https<..>`, which is the point: the leak
+//! outlived the decoder it leaked. It is `hclient-dns-doh`'s now — its
+//! only caller throughout — and this crate's public surface names no
+//! foreign crate but `bytes`, `futures-core` and `hclient-core`, all of
+//! which it re-exports or shares through its own seam. `ca5ab5e4` did the
+//! same for `winnow` in `hclient-proto`, and for the same reason: a
+//! pre-release is where a leaked foreign type is cheap to withdraw.
+//!
+//! So what a backend shares with every other backend is [`RawBinding`],
+//! [`RawParam`] and [`endpoint_from_binding`] — the RFC's rules and the
+//! vocabulary they read, which is the part identical on every platform and
+//! the whole of the argument at the top of this file. Reaching a decoded
+//! record into that vocabulary is each backend's own, because the decoder
+//! is each backend's own.
 
 pub use crate::error::SvcbRecordError;
 
@@ -68,10 +82,20 @@ const RECOGNISED_KEYS: &[u16] = &[0, 1, 2, 3, 4, 5, 6];
 /// they are identical on every platform. Writing them once, over a type
 /// that holds no borrowed memory and no platform detail, means no backend
 /// can drift from another: `hclient-dns-system`'s `windows.rs` fills this
-/// in from an OS-parsed `DNS_SVCB_DATA`, its `svcb.rs` fills it in from a
-/// `domain` `Https` parsed over one record's RDATA, `hclient-dns-doh`
-/// fills it in from the same decoder reading a whole message off an HTTP
+/// in from an OS-parsed `DNS_SVCB_DATA`, its `svcb.rs` fills it in from an
+/// `Https` record parsed over one record's RDATA, `hclient-dns-doh` fills
+/// it in from the same decoder reading a whole message off an HTTP
 /// response body, and all three then go through [`endpoint_from_binding`].
+///
+/// **The fields are `pub` for exactly that reason, and it is why the
+/// decoder-shaped half of each of those conversions belongs to the backend
+/// rather than here.** A type filled in from outside has to be nameable
+/// and writable from outside, and this one names nothing foreign. A
+/// *function* taking an already-decoded record cannot manage that: it has
+/// to name the decoder, which would put that crate's major version into
+/// this crate's promise. One such function lived here behind a feature and
+/// is `hclient-dns-doh`'s now — see this module's own doc for the two
+/// decoders it leaked in turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawBinding {
     pub priority: u16,
@@ -257,146 +281,4 @@ pub fn endpoint_from_binding(binding: &RawBinding) -> Result<Option<Record>, Svc
     }
 
     Ok(Some(Record::new(RData::Https(endpoint)).ttl(binding.ttl)))
-}
-
-/// A `domain`-decoded HTTPS record, reduced to the backend-neutral form.
-///
-/// Behind the `codec` feature, because it is the one function here that
-/// names a decoder. **It now has one caller rather than two**, and that is
-/// the change worth knowing about before touching it:
-/// `hclient-dns-system`'s `res_query` path used to come through here and
-/// builds its own [`RawBinding`] since it moved to RDATA-level decoding —
-/// so this is `hclient-dns-doh`'s, and the two are once again reading one
-/// decoder rather than agreeing by hand. `hclient-dns-system`'s Windows
-/// path has never come through here: `DnsQuery_UTF8` hands back records
-/// the OS has already parsed.
-///
-/// **The owner name and the TTL are parameters rather than fields of
-/// `https`, because in DNS they are the record's and not the RDATA's.**
-/// That is where the wire puts them and where `domain` keeps them — on
-/// the enclosing [`Record`](domain::base::Record) — and it is the same
-/// split `hclient-dns-system`'s `binding_from_rdata` makes one crate
-/// over. The previous decoder's `ServiceBinding` carried all four
-/// together, which is what let the old signature be one argument.
-///
-/// # Errors
-///
-/// A `SvcParam` whose octets are not a well-formed value of its own key.
-/// `domain` reports that per parameter, from the iterator, rather than at
-/// the record — so a record can parse and one of its parameters still
-/// refuse. RFC 9460 §2.2 makes that a reason to reject the whole record,
-/// which is what returning `Err` here achieves.
-// **`iter` with the value type written out, not `iter_all`**, and the
-// difference is a lifetime rather than a convenience. `iter_all` is
-// `iter::<AllValues<Octs>>`, whose `Iterator` impl then needs
-// `Octs::Range<'a> == Octs` — an equality that can only be stated for all
-// `'a`, which makes the octets `'static` and so refuses a message borrowed
-// from a response body. Naming `AllValues<Octs::Range<'a>>` instead ties
-// the values to the borrow they are parsed out of, which is what they
-// actually are; `raw_param` copies everything it keeps, so nothing of the
-// borrow survives the call.
-//
-// `Display` on the name is `ToName`'s missing half: a `ParsedName` prints
-// only where it is `Display`, and the target has to become a string for
-// `RawBinding`, which holds no borrowed memory by design.
-#[cfg(feature = "codec")]
-pub fn binding_from_decoded<'a, Octs, Name>(
-    https: &'a domain::rdata::svcb::Https<Octs, Name>,
-    owner: &str,
-    ttl: Duration,
-) -> Result<RawBinding, domain::base::wire::ParseError>
-where
-    Octs: domain::dep::octseq::Octets,
-    Name: domain::base::name::ToName + core::fmt::Display,
-{
-    let mut params = Vec::new();
-    for value in https
-        .params()
-        .iter::<domain::rdata::svcb::value::AllValues<Octs::Range<'a>>>()
-    {
-        params.push(raw_param(value?));
-    }
-
-    Ok(RawBinding {
-        priority: https.priority(),
-        owner: owner.trim_end_matches('.').to_owned(),
-        // `Display` for a name writes the root as `.`, so trimming leaves
-        // the empty string — which is exactly what `RawBinding::target`
-        // documents the root to be, and the `trim_end_matches` is for
-        // every other name. An explicit root branch was tried on the
-        // sibling path and mutation testing found it equivalent to this,
-        // i.e. a line that reads as load-bearing while proving nothing.
-        target: https.target().to_string().trim_end_matches('.').to_owned(),
-        params,
-        // The wire always carries a TTL, so this is always `Some` on this
-        // path — the `Option` is for the backends that genuinely may not
-        // know.
-        ttl: Some(ttl),
-    })
-}
-
-/// One decoded `SvcParam`, in [`RawParam`]'s vocabulary.
-///
-/// **The three keys `domain` models and this workspace does not become
-/// `Other`, and that is load-bearing rather than tidy.** `dohpath` (7),
-/// `ohttp` (8) and `tls-supported-groups` (9) are real, registered, and
-/// acted on nowhere here; [`RawParam::Other`] is what RFC 9460 §8's
-/// `mandatory` check reads to refuse a record that makes one of them
-/// mandatory. Dropping them instead would let such a record through as
-/// usable — and that is not hypothetical here, because
-/// `a_record_making_dohpath_mandatory_is_ignored_and_the_usable_one_is_kept`
-/// is exactly the test that would go green over a usable record.
-///
-/// **`Unknown` is not only "a key nobody models".** `AllValues` answers it
-/// for a known key whose value did not parse as that key — measured,
-/// `domain` yields an `Err` from the iterator for the shapes this crate
-/// can produce, but the fallback exists — so a key inside
-/// `RECOGNISED_KEYS` arriving as `Unknown` is a malformed record wearing a
-/// recognised number.
-///
-/// This is `hclient-dns-system`'s `raw_param` verbatim, and it is
-/// duplicated no longer than it takes to read: that copy is over the same
-/// `domain` type and could move here, which is the next thing to do and is
-/// not this change — see the report beside this commit.
-#[cfg(feature = "codec")]
-fn raw_param<Octs: domain::dep::octseq::Octets>(
-    value: domain::rdata::svcb::value::AllValues<Octs>,
-) -> RawParam {
-    use domain::base::iana::SvcParamKey;
-    use domain::rdata::svcb::value::AllValues;
-
-    match value {
-        AllValues::Mandatory(keys) => {
-            RawParam::Mandatory(keys.iter().map(SvcParamKey::to_int).collect())
-        }
-        AllValues::Alpn(alpn) => RawParam::Alpn(alpn.iter().map(|p| p.as_ref().to_vec()).collect()),
-        AllValues::NoDefaultAlpn(_) => RawParam::NoDefaultAlpn,
-        AllValues::Port(port) => RawParam::Port(port.port()),
-        // RFC 9460 §7.3's ECHConfigList, **including the redundant
-        // two-octet length prefix**, which is the form [`RawParam::Ech`] is
-        // documented to carry and the form rustls parses: the
-        // SvcParamValue for key 5 *is* the ECHConfigList, and `domain`
-        // wraps the value's octets without stripping anything.
-        //
-        // **This is where the decoder swap changed code rather than
-        // prose.** `dns-message-parser` validated the prefix and handed
-        // back the payload without it, so this arm used to put two bytes
-        // back on; putting them back on `domain`'s output would give
-        // rustls a doubly-prefixed list. Measured by the round-trip test
-        // that caught the original stripping, which asserts the bytes
-        // `00 03 ab cd ef` reach `SvcbEndpoint::ech_config_list`.
-        AllValues::Ech(ech) => RawParam::Ech(ech.as_slice().to_vec()),
-        AllValues::Ipv4Hint(hint) => RawParam::Ipv4Hint(hint.iter().collect()),
-        AllValues::Ipv6Hint(hint) => RawParam::Ipv6Hint(hint.iter().collect()),
-        // The key numbers are named rather than written: `domain` keeps
-        // the `SvcParamValue` trait that carries `key()` private, so a
-        // value of one of these types cannot be asked for its own key from
-        // outside that crate.
-        AllValues::DohPath(_) => RawParam::Other(SvcParamKey::DOHPATH.to_int()),
-        AllValues::Ohttp(_) => RawParam::Other(SvcParamKey::OHTTP.to_int()),
-        AllValues::TlsSupportedGroups(_) => {
-            RawParam::Other(SvcParamKey::TLS_SUPPORTED_GROUPS.to_int())
-        }
-        AllValues::Unknown(unknown) => RawParam::Other(unknown.key().to_int()),
-    }
 }

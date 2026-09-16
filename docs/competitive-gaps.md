@@ -1258,10 +1258,16 @@ would cost.** niquests names four transports on one seam
 (`ProtocolResolver`: `doh`, `dot`, `doq`, `dou`), reached as a URL and
 selectable per host pattern. Here `Resolve` is the same seam and carries
 three implementations, none of which is DoT or DoQ. Two things are worth
-knowing before anyone rules on it. The **codec is already shared** — SVCB
-and wire-format parsing moved up into `hclient-dns` behind a `codec`
-feature precisely so an `IpLiteralOnly` build carries no decoder — so a
-fourth backend reuses the half that took the work. And the **bootstrap
+knowing before anyone rules on it. What **is** already shared is the half
+worth sharing: RFC 9460's client rules and the `RawBinding`/`RawParam`
+vocabulary they read live in `hclient-dns` and name no decoder, so a
+fourth backend reuses the part that took the work. The *codec* is not
+shared and deliberately so — it was, behind a `codec` feature, until the
+one function that carried it turned out to name `domain` in a `pub`
+signature the crate re-exported nothing for; it is `hclient-dns-doh`'s
+now, and a DoT or DoQ backend would name its own decoder in its own
+manifest exactly as the two existing message-level and RDATA-level
+backends do. And the **bootstrap
 question they raise is the one `hclient-dns-doh` already answered**:
 `Doh::pinned` takes an IP literal and refuses a name, `Doh::bootstrapped`
 takes a name and refuses a literal, and failing closed is visible in the

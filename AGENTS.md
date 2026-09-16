@@ -1129,6 +1129,16 @@ behind a `codec` feature, so an `IpLiteralOnly` build carries no DNS
 decoder: 13 crates without it, 16 with, and the DoH crate itself is 22
 with no `tokio`, `hyper` or `h2`.
 
+**The feature is gone and the property it bought is now unconditional**,
+which is the section on taking `domain` off that crate's public surface.
+What moved up was two things wearing one name: RFC 9460's *client rules*,
+which name no decoder and stayed, and one *conversion from a decoded
+record*, which could not be written without naming one and has gone to
+its only caller. So `hclient-dns` is **14 crates with every feature there
+is** rather than 14-or-22 depending on a flag, and no `--features` line
+can put a DNS codec in its graph. The numbers here are the older
+measurement and are kept for the shape rather than the figure.
+
 **HTTPS/SVCB records are consulted before every new connection** on a
 resolver that says it can ask (v0.3 W2), for `https://` at the default
 port only — RFC 9460 §9.5, since the record fetched for a bare name is
@@ -4265,6 +4275,43 @@ that decoder is for. **Two decoders in one workspace is the cost of
 having two granularities**, and it is the right cost — the alternative
 measured above is one decoder and ICU on every platform.
 
+**It keeps neither, and the sentence above had the split right and drew
+the wrong line with it.** `binding_from_decoded` was `pub`, and its
+signature named `domain` four times — the parameter, the error type and
+both bounds — while `hclient-dns` re-exported no `domain` at all. So an
+outside caller could not name the types the function demanded without
+adding the crate to their own manifest at a matching version, which made
+`domain`'s major version part of the `Resolve` seam's promise. The
+function is `hclient-dns-doh`'s now, private, beside the
+`Message::from_slice` that produces its input; the feature went with it
+for want of a subject, and `hclient-dns` has no optional dependency left.
+
+**Not a regression from the decoder swap, which is worth stating because
+the timing invites the charge.** The parent commit's signature was
+`pub fn binding_from_decoded(binding: &dns_message_parser::rr::ServiceBinding)`
+— the same leak through a different foreign crate. Moving to `domain`
+replaced one leaked type with another; what the swap did was make the
+leak worth looking at, not create it. **The leak outlived the decoder it
+leaked**, which is the durable form of this workspace's rule about a
+claim being as perishable as its subject: here the *defect* was the thing
+that failed to perish.
+
+`ca5ab5e4` is the precedent and the argument is its: this is cheap now
+and a major version later. Measured from outside rather than read — one
+source file naming the old signature, with `domain` in the probe crate's
+own manifest, compiles against the parent commit and is `E0425` against
+this one, and rustdoc's rendered surface for `hclient-dns` has **zero**
+item declarations naming `domain` where it had four.
+
+What it costs is that `raw_param` — one decoded `SvcParam` to one
+`RawParam`, twelve arms — is now duplicated between `hclient-dns-doh` and
+`hclient-dns-system` rather than between `hclient-dns` and the latter.
+Unifying it is the owner's call and deliberately not done: the only home
+that serves both is `hclient-dns`, which would put the system resolver
+back on a feature it stopped asking for and re-leak `domain` through the
+seam this move cleared. Recorded at both sites, so a change to either is
+a reason to read the other.
+
 **That cost has since been refunded, and the sentence above is kept
 because the reasoning is what expired rather than what was wrong.** It
 was right that the two granularities are real and that `hickory-proto`
@@ -4292,6 +4339,11 @@ about, and `syn 2.0` arrived under `domain-macros` beside `thiserror`'s
 **The feature keeps its name with one caller rather than two**, because
 what it gates is unchanged — whether this crate links a DNS codec at
 all — and `codec` names that where `doh` would name the consumer.
+
+**And then it kept neither name nor subject**: the one item it gated
+leaked `domain` through a `pub fn` and went to that single caller, so
+there is no flag and no optional dependency. See the section above; the
+naming argument was sound and had about a day left to be right in.
 
 Three things the swap changed rather than preserved, each pinned.
 `RawParam::Ech` stopped putting RFC 9460 §7.3's length prefix back on,

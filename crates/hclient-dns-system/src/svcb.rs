@@ -224,6 +224,27 @@ mod wire {
     /// wearing a recognised number. It is refused by the caller for that
     /// reason rather than reported as an unmodelled key.
     ///
+    /// **The other copy is `hclient-dns-doh`'s `wire.rs`, and it moved
+    /// there rather than into `hclient-dns` where both could have shared
+    /// one.** It used to be `hclient_dns::svcb`'s private helper, called by
+    /// the `binding_from_decoded` that crate exposed behind a `codec`
+    /// feature — and that function named `domain` in its parameter, its
+    /// error type and both its bounds, while `hclient-dns` re-exported no
+    /// `domain` at all. So the seam every resolver in this family depends
+    /// on carried a decoder's major version in its public promise. Moving
+    /// the function to its only caller cleared that, and took this
+    /// helper's twin with it.
+    ///
+    /// Sharing them again is the owner's decision and not a tidy-up: the
+    /// obvious home is `hclient-dns`, which would put this crate back on a
+    /// feature it deliberately stopped asking for when it moved to
+    /// RDATA-level decoding, and would put `domain` back into the seam's
+    /// signature — the defect just removed. The two copies agree on all
+    /// eleven `AllValues` arms today, compared arm by arm rather than
+    /// assumed, and differ only in `rustfmt` bracing one arm's body where
+    /// the other copy is nested a level deeper. A change to either is a
+    /// reason to read the other.
+    ///
     /// [`RECOGNISED_KEYS`]: hclient_dns::svcb
     fn raw_param<Octs: Octets>(value: AllValues<Octs>) -> RawParam {
         match value {

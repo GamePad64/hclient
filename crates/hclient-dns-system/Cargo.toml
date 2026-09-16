@@ -42,14 +42,22 @@ domain = { version = "0.12", default-features = false }
 futures-core = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core = { workspace = true }
-# **Without `codec`**, which is what the decoder change bought back: that
-# feature exists to carry `binding_from_decoded`, the
-# `dns-message-parser`-shaped half of the conversion, and this crate now
-# builds its `RawBinding` from a `domain` record instead. What stayed
-# shared is the half that is shared — `RawBinding`, `RawParam` and RFC
-# 9460's client rules over them are behind no feature, because they name
-# no decoder. `hclient-dns-doh` still asks for `codec`; it decodes whole
-# messages, which is what that decoder is for.
+# **With no features, and there are none left to ask for.** This crate
+# stopped asking for `codec` when it moved to RDATA-level decoding and
+# began building its own `RawBinding`; `hclient-dns-doh` then took the one
+# function that feature gated — `binding_from_decoded`, whose signature
+# named `domain` in four places that `hclient-dns` re-exported nowhere —
+# and the feature went with it. What stays shared is the half that names
+# no decoder: `RawBinding`, `RawParam` and RFC 9460's §2.4/§2.5/§8 client
+# rules over them, which is the whole of what this dependency is for.
+#
+# The consequence for this crate is that its own `raw_param` and the copy
+# in `hclient-dns-doh`'s `wire.rs` are the two places one decoded
+# `SvcParam` becomes a `RawParam`. Both are over the same `domain` type
+# and neither can move into `hclient-dns` without putting this crate back
+# on a feature it deliberately stopped asking for and re-leaking `domain`
+# through the seam; that is the owner's call and it is recorded at both
+# sites rather than acted on here.
 hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.10" }
 hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.10" }
 # Every platform call this crate used to make. It owns `res_query`,
