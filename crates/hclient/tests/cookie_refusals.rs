@@ -50,7 +50,7 @@ async fn sent(jar: &CookieJar, to: &str) -> String {
 
 /// Needs the compiled-in list, so it does not run in a
 /// `--no-default-features` build — where the same header is refused for a
-/// different and equally correct reason. `tests/without_the_list.rs` is
+/// different and equally correct reason. `tests/cookie_without_the_list.rs` is
 /// that build's half of the story.
 #[cfg(feature = "public-suffix")]
 #[test]
@@ -91,7 +91,7 @@ fn a_cookie_for_a_sibling_domain_is_refused() {
 
 /// Needs the compiled-in list, so it does not run in a
 /// `--no-default-features` build — where the same header is refused for a
-/// different and equally correct reason. `tests/without_the_list.rs` is
+/// different and equally correct reason. `tests/cookie_without_the_list.rs` is
 /// that build's half of the story.
 #[cfg(feature = "public-suffix")]
 #[test]
@@ -178,7 +178,7 @@ fn without_a_list_every_domain_attribute_is_refused_rather_than_guessed() {
 
 /// Needs the compiled-in list, so it does not run in a
 /// `--no-default-features` build — where the same header is refused for a
-/// different and equally correct reason. `tests/without_the_list.rs` is
+/// different and equally correct reason. `tests/cookie_without_the_list.rs` is
 /// that build's half of the story.
 #[cfg(feature = "public-suffix")]
 #[test]
@@ -572,7 +572,7 @@ fn same_name_domain_and_path_replaces_and_keeps_the_original_creation_time() {
 
 /// Needs the compiled-in list, so it does not run in a
 /// `--no-default-features` build — where the same header is refused for a
-/// different and equally correct reason. `tests/without_the_list.rs` is
+/// different and equally correct reason. `tests/cookie_without_the_list.rs` is
 /// that build's half of the story.
 #[cfg(feature = "public-suffix")]
 #[test]
@@ -743,7 +743,7 @@ fn store_response_keeps_going_past_a_bad_header() {
 
 /// Needs the compiled-in list, so it does not run in a
 /// `--no-default-features` build — where the same header is refused for a
-/// different and equally correct reason. `tests/without_the_list.rs` is
+/// different and equally correct reason. `tests/cookie_without_the_list.rs` is
 /// that build's half of the story.
 #[cfg(feature = "public-suffix")]
 #[test]

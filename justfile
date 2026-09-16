@@ -750,7 +750,7 @@ test-autobahn: autobahn-parser-selftest
 #
 # **This recipe is the one place where CI now does MORE than it did**, and
 # deliberately: `hclient-cookie --no-default-features` was in this recipe and
-# NOT in the job it claimed to mirror, so `tests/without_the_list.rs` — the
+# NOT in the job it claimed to mirror, so `tests/cookie_without_the_list.rs` — the
 # only thing checking that a no-list build is NARROWER than a list build,
 # rather than quietly wider — ran on laptops and nowhere else. 78 tests.
 # Resolving the drift by deleting the line would have been the other

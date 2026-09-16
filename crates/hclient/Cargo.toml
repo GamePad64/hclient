@@ -282,7 +282,7 @@ cookies = ["dep:jiff", "dep:winnow", "dep:public-suffix"]
 #
 # **A flag, not a `dep:` — and that shape is the whole reason the merge
 # of `hclient-cookie` did not cost a check.** That crate carried
-# `default = ["public-suffix"]`, and `tests/without_the_list.rs` — the
+# `default = ["public-suffix"]`, and `tests/cookie_without_the_list.rs` — the
 # only thing asserting a no-list build is *narrower* than a list build
 # rather than quietly wider — ran only under
 # `-p hclient-cookie --no-default-features`. Folding the crate in, the
