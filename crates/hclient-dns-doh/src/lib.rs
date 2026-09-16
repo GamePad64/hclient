@@ -150,14 +150,18 @@
 //! makes it cacheable by intermediaries, and an intermediary cache is not
 //! obviously something a DNS-over-HTTPS deployment wants.
 //!
-//! **It does not need a base64 encoder this workspace lacks.** Measured:
-//! `cargo tree -p hclient-dns-doh -e normal -i base64` returns `base64
-//! v0.22.1 <- dns-message-parser`, so an encoder is compiled into every
-//! build of this crate already. What GET would cost is a direct dependency
-//! line and a call site, not a crate in anyone's graph — a smaller price
-//! than was written here, against an unchanged benefit. Both public
-//! operators answer the GET form (`tests/live.rs`), so nothing about the
-//! choice is forced.
+//! **The base64 arithmetic that used to sit here has expired, and the
+//! answer is unchanged.** It read that an encoder is compiled into every
+//! build of this crate already, measured as `base64 v0.22.1 <-
+//! dns-message-parser` — true of that decoder and not of `domain`, which
+//! pulls no base64 at all. So GET would now cost a crate in this graph
+//! rather than only a call site. The decision never turned on that number:
+//! GET makes a query cacheable by intermediaries, and an intermediary
+//! cache is not obviously something a DNS-over-HTTPS deployment wants.
+//! What the note is worth keeping for is the shape — a cost written down
+//! beside a decision outlives the thing it measured, and this one was
+//! re-measured rather than re-quoted. Both public operators answer the GET
+//! form (`tests/live.rs`), so nothing about the choice is forced.
 #![forbid(unsafe_code)]
 
 mod error;
@@ -542,7 +546,7 @@ where
             .await
             .map_err(|e| DohError::Body(e.to_string()))?;
 
-        let answer = wire::decode_answer(collected.to_bytes(), name, query)?;
+        let answer = wire::decode_answer(&collected.to_bytes(), name, query)?;
         tracing::trace!(
             "dns: doh answered {} addresses and {} endpoints for {}",
             answer.addrs.len(),

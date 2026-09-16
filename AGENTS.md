@@ -4265,6 +4265,57 @@ that decoder is for. **Two decoders in one workspace is the cost of
 having two granularities**, and it is the right cost — the alternative
 measured above is one decoder and ICU on every platform.
 
+**That cost has since been refunded, and the sentence above is kept
+because the reasoning is what expired rather than what was wrong.** It
+was right that the two granularities are real and that `hickory-proto`
+is the wrong way to unify them — re-measured, still about 60 crates with
+`idna` and five ICU crates. What it did not check is whether the decoder
+already chosen does **both**: `domain` exposes `base::message` beside
+`Https::parse`, so `hclient-dns-doh` moved onto it and
+`dns-message-parser` is gone from the workspace — no manifest, no code,
+no lockfile entry. The acceptance of a second decoder was conditional on
+one crate not covering both, and nothing forced a re-check of the
+condition when the first half of the move landed.
+
+**It is not a saving and the commit says so**: `hclient-dns-doh` goes
+26 → 31 crates, three out (`base64`, `dns-message-parser`, `hex`) and
+eight in (`domain`, `domain-macros`, `octseq`, `jiff`, `jiff-core`,
+`hashbrown`, `foldhash`, `syn 2.0`). `jiff` is already in `hclient`'s
+graph for the cookie and cache date parsers, and `hashbrown`/`foldhash`
+are the price of `domain`'s `alloc` feature, which building a query at
+all requires — measured by dropping it and watching three `E0599`s. One
+duplicate was traded for another: `base64` 0.22 left with the old
+decoder, which is the duplicate this file records `cargo deny` warning
+about, and `syn 2.0` arrived under `domain-macros` beside `thiserror`'s
+`syn 3.0`.
+
+**The feature keeps its name with one caller rather than two**, because
+what it gates is unchanged — whether this crate links a DNS codec at
+all — and `codec` names that where `doh` would name the consumer.
+
+Three things the swap changed rather than preserved, each pinned.
+`RawParam::Ech` stopped putting RFC 9460 §7.3's length prefix back on,
+because `domain` never strips it — the round-trip test that caught the
+original stripping is what says the bytes `00 03 ab cd ef` still reach
+`SvcbEndpoint::ech_config_list`. The question check compares **names**
+rather than strings, so DNS 0x20 case-insensitivity is
+`ToName::name_eq`'s `eq_ignore_ascii_case` rather than a fold of ours,
+and the trailing-dot case is structural rather than trimmed. And
+`decode_answer` borrows the body where it used to consume it, since
+`Bytes` implements `domain`'s `Octets` only under a feature and a slice
+needs none.
+
+**And a comment claiming a check was load-bearing proved nothing until a
+fixture grew a field.** `limit_to_in` filters answer records by class
+where `limit_to` does not, and swapping them passed all 73 tests: the
+DoH fixture wrote `CLASS IN` into every answer record it had ever built,
+so no test could tell whether the field was read. `Rr::in_class` made the
+distinction expressible and two tests now pin it — the wrong class is an
+empty stream, the right one is an address. That is this file's own rule
+about a line that reads as load-bearing and proves nothing, met from the
+direction where the line was a comment the change itself had just
+written.
+
 ### A crate was green in the workspace and did not build on its own
 
 `cargo check -p hclient-native --all-features --all-targets` failed with

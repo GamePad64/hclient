@@ -93,9 +93,18 @@ jiff           = { version = "0.2", default-features = false, features = ["alloc
 # hex interleaved with literal bytes rather than a hex string, and
 # `hclient-proto`'s `encode` keeps its own table for that.
 const-hex      = { version = "1", default-features = false, features = ["alloc"] }
-# RFC 4648 §4, encode only. Already in the graph of any build that does DNS
-# with a codec (`dns-message-parser` pulls it), so it is free there and one
-# crate for a bare `hclient-proto`. `alloc` alone, no build script.
+# RFC 4648 §4, encode only. `alloc` alone, no build script.
+#
+# **It costs one crate everywhere now, and it is no longer a duplicate.**
+# The note here read that it was free in any build that does DNS with a
+# codec, because `dns-message-parser` pulled its own `base64` — and the
+# duplicate that followed from taking 0.23 beside that 0.22 is what
+# `cargo deny`'s `multiple-versions = "warn"` was reporting. `domain`
+# pulls no base64 at all, so moving the DNS decoder took the second copy
+# out of the workspace with it: measured, `cargo tree --workspace -e
+# normal -i base64@0.22.1` no longer matches any package. The saving was
+# not the reason for that change and is recorded because a cost written
+# down beside a decision outlives the thing it measured.
 base64         = { version = "0.23", default-features = false, features = ["alloc"] }
 # The other two encodings, and **not** `url`: `form_urlencoded` is its own
 # crate depending on `percent-encoding` alone, so the WHATWG serialiser

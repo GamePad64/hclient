@@ -240,19 +240,38 @@ pub fn name_wire(name: &str) -> Vec<u8> {
     out
 }
 
-/// One answer record: owner name, type, TTL, RDATA.
+/// One answer record: owner name, type, CLASS, TTL, RDATA.
+///
+/// **The class is a field rather than the constant it was**, because a
+/// record's class and the question's are separate things a server chooses
+/// separately: `message_in_class` has always been able to send a question
+/// in `CH`, and until this field existed every *answer record* went out as
+/// `IN` whatever the question said. A decoder that stopped filtering
+/// answer records by class was therefore unkillable — the shape this
+/// workspace calls a line that reads as load-bearing and proves nothing.
+/// Every constructor below still defaults to `IN`, so no existing caller
+/// moved; [`Rr::in_class`] is the opt-in.
 pub struct Rr {
     pub owner: String,
     pub rtype: u16,
+    pub class: u16,
     pub ttl: u32,
     pub rdata: Vec<u8>,
 }
 
 impl Rr {
+    /// The same record in another CLASS. RFC 1035 §3.2.4.
+    #[must_use]
+    pub fn in_class(mut self, class: u16) -> Self {
+        self.class = class;
+        self
+    }
+
     pub fn a(owner: &str, ttl: u32, addr: [u8; 4]) -> Self {
         Self {
             owner: owner.to_owned(),
             rtype: TYPE_A,
+            class: CLASS_IN,
             ttl,
             rdata: addr.to_vec(),
         }
@@ -261,6 +280,7 @@ impl Rr {
         Self {
             owner: owner.to_owned(),
             rtype: TYPE_AAAA,
+            class: CLASS_IN,
             ttl,
             rdata: addr.octets().to_vec(),
         }
@@ -269,6 +289,7 @@ impl Rr {
         Self {
             owner: owner.to_owned(),
             rtype: TYPE_CNAME,
+            class: CLASS_IN,
             ttl,
             rdata: name_wire(target),
         }
@@ -294,6 +315,7 @@ impl Rr {
         Self {
             owner: owner.to_owned(),
             rtype: TYPE_HTTPS,
+            class: CLASS_IN,
             ttl,
             rdata,
         }
@@ -338,7 +360,7 @@ pub fn message_in_class(
     for rr in answers {
         m.extend(name_wire(&rr.owner));
         m.extend_from_slice(&rr.rtype.to_be_bytes());
-        m.extend_from_slice(&1u16.to_be_bytes()); // CLASS IN
+        m.extend_from_slice(&rr.class.to_be_bytes());
         m.extend_from_slice(&rr.ttl.to_be_bytes());
         m.extend_from_slice(
             &u16::try_from(rr.rdata.len())

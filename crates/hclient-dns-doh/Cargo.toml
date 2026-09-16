@@ -22,17 +22,61 @@ all-features = true
 
 [dependencies]
 bytes          = { workspace = true }
-dns-message-parser = "0.9"
+# The DNS codec, and the reason it is this one is that it does **both**
+# granularities. This module decodes whole messages —
+# `Message::from_octets`, a header and sections — where `hclient-dns-system`
+# decodes one record's RDATA, and `dns-message-parser` offers only the
+# first. That is what had this workspace carrying two decoders; `domain`
+# covers both, so the second one lost its subject.
+#
+# **Not a saving: measured here, 26 -> 31 crates**, three out and eight
+# in. Out: `base64`, `dns-message-parser`, `hex`. In: `domain`,
+# `domain-macros`, `octseq`, `jiff`, `jiff-core`, `hashbrown`, `foldhash`,
+# `syn 2.0`. `jiff` and `jiff-core` are already in `hclient`'s graph for
+# the cookie and cache date parsers, so a build with `hclient` and
+# `cookies` or `cache` pays six rather than eight.
+#
+# **`syn 2.0` is a second copy rather than a replacement**, and counting it
+# as a swap was the easy mistake: `syn 3.0` stays, because `thiserror-impl`
+# pulls it and `thiserror` is in every crate here. `domain-macros` wants
+# 2.0, so a `domain` build has both — which `cargo deny`'s
+# `multiple-versions = "warn"` reports, and which is the cheap kind by this
+# workspace's own rule, since the two never exchange a type. It is the
+# straight trade for the `base64` duplicate this change removed: that one
+# was ours to fix and this one is upstream's to fix.
+#
+# `default-features = false` deliberately, as in `hclient-dns-system`:
+# `std` there would also bring `rand`, for a query id this crate never
+# mints — RFC 8484 §4.1 fixes the DoH query's ID at zero.
+#
+# **`alloc` is not free, and it is not optional either.** It is what
+# `Name::vec_from_str` and `MessageBuilder::new_vec` need (both want
+# `FromBuilder`, which `alloc` supplies), and in `domain` 0.12.2 that
+# feature maps to `dep:hashbrown` — so `hashbrown` and `foldhash` are the
+# price of building a query at all, not of a map this path never uses.
+# Dropping the feature was tried and does not compile: three `E0599`s on
+# the two constructors above. Written down because the sibling crate's
+# comment says `std` costs those two, which reads as though
+# `default-features = false` avoided them and here it does not.
+#
+# `hickory-proto` is refused and stays refused, re-measured: even with
+# `default-features = false` it pulls `idna`, `icu_normalizer(_data)`,
+# `icu_properties(_data)`, `icu_collections`, `icu_provider`,
+# `icu_locale_core` and `form_urlencoded` — about 60 crates, and exactly
+# the Unicode tables `hclient-idn` exists to keep off Windows and Android.
+domain         = { version = "0.12", default-features = false, features = ["alloc"] }
 futures-core   = { workspace = true }
 futures-util   = { version = "0.3", default-features = false, features = ["std"] }
 http           = { workspace = true }
 http-body      = { workspace = true }
 http-body-util = { workspace = true }
 hclient-core   = { workspace = true }
-# `codec`: the RFC 9460 client semantics and the `ServiceBinding` ->
-# `RawBinding` conversion, shared with `hclient-dns-system` rather than
-# copied — see `hclient_dns::svcb`'s module doc for why a second copy of
-# those rules was not an option.
+# `codec`: the RFC 9460 client semantics and the `Https` -> `RawBinding`
+# conversion, shared with `hclient-dns-system` rather than copied — see
+# `hclient_dns::svcb`'s module doc for why a second copy of those rules was
+# not an option. This crate is the only caller of the feature now, the
+# system resolver having moved to building its `RawBinding` from RDATA; the
+# rules themselves are behind no feature, because they name no decoder.
 hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.10", features = ["codec"] }
 thiserror      = { workspace = true }
 # Unconditional, for the reason `hclient-tls-rustls` states: with no

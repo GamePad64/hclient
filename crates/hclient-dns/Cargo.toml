@@ -15,27 +15,63 @@ all-features = true
 
 [features]
 default = []
-# The `ServiceBinding` -> `RawBinding` conversion in `svcb.rs`, and with it
-# the `dns-message-parser` dependency.
+# The `Https` -> `RawBinding` conversion in `svcb.rs`, and with it the
+# `domain` dependency.
 #
 # OFF by default, and that is the whole point of the flag: this crate's
 # reason to exist is the `Resolve` trait, and a build that resolves through
 # `IpLiteralOnly`, `getaddrinfo` or `wasi:http` never sees a DNS message and
-# must not link a DNS codec to get at `Resolve`. The two backends that DO
-# decode wire-format DNS with this crate's decoder — `hclient-dns-system`'s
-# `res_query` path and `hclient-dns-doh` — turn it on, and Cargo unifies it
-# for them, so the conversion has exactly one home rather than one copy per
-# backend. See `svcb.rs`'s module doc for why sharing it is not a
-# convenience.
-codec = ["dep:dns-message-parser"]
+# must not link a DNS codec to get at `Resolve`.
+#
+# **The name still earns its keep with one caller rather than two.** It was
+# written for `hclient-dns-system`'s `res_query` path and `hclient-dns-doh`
+# together; the first now builds its own `RawBinding` from RDATA and asks
+# for no feature here. What the flag gates is unchanged and is the reason
+# it exists — whether this crate links a DNS codec at all — and the one
+# caller left is the one that needs it. Renaming it to `doh` would name the
+# consumer instead of the thing gated, and would be wrong the moment a
+# second message-level backend arrives.
+codec = ["dep:domain"]
 
 [dependencies]
 bytes        = { workspace = true }
-# Only under `codec` above. Same version as `hclient-dns-system`'s, which is
-# not a coincidence to be tidied away later: the two must agree, or a build
-# that enables `codec` for one of them gets two copies of the decoder and
-# two `ServiceBinding` types that do not convert into each other.
-dns-message-parser = { version = "0.9", optional = true }
+# Only under `codec` above, and the same crate `hclient-dns-system` decodes
+# with — which is now the whole of the reason for the change rather than a
+# coincidence to be kept in step. This workspace had two DNS decoders,
+# because `dns-message-parser` exposes decoding at the **message** level
+# alone and `system-resolver` can only hand over **RDATA**; `domain` does
+# both (`base::message` and `Https::parse`), so the granularity that forced
+# the second decoder has one crate covering it.
+#
+# **Not a saving in crates, and the commit says so.** Measured in the real
+# `hclient-dns-doh` graph, **26 -> 31**, three out and eight in. Out:
+# `base64`, `dns-message-parser`, `hex`. In: `domain`, `domain-macros`,
+# `octseq`, `jiff`, `jiff-core`, `hashbrown`, `foldhash`, `syn 2.0`.
+# `jiff` and `jiff-core` are already in `hclient`'s graph for the cookie
+# and cache date parsers, so a build with `hclient` and `cookies` or
+# `cache` pays six rather than eight. This crate alone goes 17 -> 22 with
+# `codec` on, and **14 without it**, which is the number the feature
+# exists to protect.
+#
+# Two things are easy to count wrong here and both were checked rather
+# than assumed. `bytes` and `thiserror` stay either way — `hclient-core`
+# and `http` hold them, not the parser. And `syn 2.0` is a **second copy**
+# rather than a replacement: `syn 3.0` stays, under `thiserror-impl`. See
+# `hclient-dns-doh`'s manifest for what that duplicate costs.
+#
+# `default-features = false` deliberately, as next door: `std` would also
+# bring `rand`, for a query id nothing here mints — the DoH query's ID is a
+# constant zero by RFC 8484 §4.1. **`alloc` is required rather than
+# chosen**, and it is what brings `hashbrown` and `foldhash`: see the
+# fuller note on the same dependency in `hclient-dns-doh`'s manifest, which
+# records what dropping it costs (it does not compile).
+#
+# `hickory-proto` is refused and stays refused, re-measured today: even
+# with `default-features = false` it pulls `idna`, `icu_normalizer(_data)`,
+# `icu_properties(_data)`, `icu_collections`, `icu_provider`,
+# `icu_locale_core` and `form_urlencoded` — about 60 crates, and exactly
+# the Unicode tables `hclient-idn` exists to keep off Windows and Android.
+domain = { version = "0.12", default-features = false, features = ["alloc"], optional = true }
 futures-core = { workspace = true }
 hclient-core = { workspace = true }
 # Not a new crate in anyone's graph: `hclient-core` already depends on it,

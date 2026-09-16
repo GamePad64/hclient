@@ -250,12 +250,6 @@ dependencies = [
 
 [[package]]
 name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
@@ -717,18 +711,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dns-message-parser"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b7668abb61ae38907f7f6b9fa6396818448b2bc566e1a869c1631d70724e3f9"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "hex",
- "thiserror",
-]
-
-[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -744,8 +726,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c13d25dfb29edf328c7eb4ebb24838ade355272d685ba0402b8751567c3dde2"
 dependencies = [
  "domain-macros",
+ "hashbrown",
  "jiff",
  "octseq",
+ "serde",
 ]
 
 [[package]]
@@ -1016,6 +1000,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
 name = "foreign-types"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1261,6 +1251,9 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash",
+]
 
 [[package]]
 name = "hclient"
@@ -1315,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-cli"
-version = "0.1.0-alpha.11"
+version = "0.1.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1358,7 +1351,7 @@ name = "hclient-dns"
 version = "0.1.0-alpha.10"
 dependencies = [
  "bytes",
- "dns-message-parser",
+ "domain",
  "futures-core",
  "futures-executor",
  "futures-util",
@@ -1372,7 +1365,7 @@ name = "hclient-dns-doh"
 version = "0.1.0-alpha.11"
 dependencies = [
  "bytes",
- "dns-message-parser",
+ "domain",
  "futures-core",
  "futures-util",
  "hclient-core",
@@ -1539,7 +1532,7 @@ dependencies = [
 name = "hclient-proto"
 version = "0.1.0-alpha.8"
 dependencies = [
- "base64 0.23.1",
+ "base64",
  "bytes",
  "form_urlencoded",
  "hclient-idn",
@@ -1859,12 +1852,6 @@ name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
-
-[[package]]
-name = "hex"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hickory-net"
@@ -2576,6 +2563,9 @@ name = "octseq"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "182eab3e1cd9cdc0ecf1ce3342d9844f3dc7d098f0694569bfdf327b612d69fd"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "oid-registry"
@@ -2716,7 +2706,7 @@ version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
 dependencies = [
- "base64 0.23.1",
+ "base64",
  "serde_core",
 ]
 

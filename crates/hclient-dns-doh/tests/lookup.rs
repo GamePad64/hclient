@@ -254,6 +254,55 @@ async fn an_answer_in_a_different_class_is_refused() {
     assert!(e.to_string().contains("different question"), "{e}");
 }
 
+/// The same rule about the **answer records** rather than the question,
+/// which is a different check in a different place: `check_question` reads
+/// the question section, and nothing it does can see what class a record
+/// in the answer section carries.
+///
+/// A server may send both — an `IN` question echoed faithfully, and an
+/// answer record in `CH` — and an address out of a record that is not in
+/// the class that was asked about is not an answer to the question. The
+/// stream is empty rather than an error, for the reason a `CNAME` beside
+/// the addresses is: a record of the wrong class is stepped over, and
+/// stepping over every record in the section leaves nothing, which is
+/// what "no records of this type" already means here.
+///
+/// **This test exists because a mutation survived without it.** Replacing
+/// `limit_to_in` with `limit_to` — the same iterator without the class
+/// filter — passed all 73 tests, because the fixture wrote `CLASS IN` into
+/// every answer record it had ever built and no test could tell whether
+/// the field was read. `Rr::in_class` is what made the distinction
+/// expressible; the comment in `wire.rs` calling the `_in` load-bearing
+/// was, until this, a line that read as load-bearing and proved nothing.
+#[tokio::test]
+async fn an_answer_record_in_a_different_class_is_not_an_answer() {
+    let server = Server::answering(noerror(
+        "example.com",
+        TYPE_A,
+        &[Rr::a("example.com", 60, [192, 0, 2, 1]).in_class(support::CLASS_CH)],
+    ));
+    assert!(
+        v4(&server, "example.com").await.is_empty(),
+        "a CH record answered an IN question"
+    );
+}
+
+/// The control for the test above: the same record in `IN` **is** an
+/// answer. Without this the pair would also be green for a decoder that
+/// had stopped returning addresses altogether.
+#[tokio::test]
+async fn the_same_answer_record_in_class_in_is_an_answer() {
+    let server = Server::answering(noerror(
+        "example.com",
+        TYPE_A,
+        &[Rr::a("example.com", 60, [192, 0, 2, 1]).in_class(support::CLASS_IN)],
+    ));
+    assert_eq!(
+        addrs(&v4(&server, "example.com").await),
+        vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]
+    );
+}
+
 /// A fully-qualified name — `https://example.com./` is a legal URL, and
 /// `Uri::host()` hands the trailing dot straight through to this trait.
 /// The root label is not part of the name for the purpose of comparing
