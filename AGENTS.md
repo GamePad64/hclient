@@ -3980,18 +3980,45 @@ finds every manifest that declares a literal `rust-version` — the same
 gesture that takes a crate out of the shared version — and checks each on
 its own toolchain, and `just msrv-toolchains` installs the floors it
 finds, so the workflow carries no copy of them either. `just semver`
-finds every crate whose `[package.metadata.release] shared-version` names
-itself, asks crates.io for its newest version, and sorts it into one of
-**four**: no release at all, a **pre-release baseline** where no lint can
-run and that is not a defect, a **deliberate major step** — a working
-tree whose version has moved out of the published one's compatible range,
-where breaking is exactly what was intended and no lint runs either — or
-a stable baseline, where checks are required. A third such crate is
-covered by all of them the day it writes those two lines, because they
-read the registry and the manifests rather than a list.
+asks crates.io for each publishable crate's newest version and sorts it
+into one of **five**: **no library target**, so there is no API surface
+a compatibility tool could speak about; no release at all; a
+**pre-release baseline** where no lint can run and that is not a defect;
+a **deliberate major step** — a working tree whose version has moved out
+of the published one's compatible range, where breaking is exactly what
+was intended and no lint runs either — or a stable baseline, where
+checks are required. A further crate is covered by all of them the day
+it is written, because they read the registry and the targets rather
+than a list.
 
-**The fourth bucket is `hclient-idn`'s, and it was needed the day the
-crate broke on purpose.** Removing `domain_to_unicode` from a published
+**The no-library-target bucket is `hclient-cli`'s, and it was added the
+day that crate went stable — before the release rather than after, which
+is the only reason it reads as a decision instead of a breakage.** A binary has
+no `lib`, and `cargo semver-checks` does not merely skip such a crate: it
+**never names it**. Asked about several crates at once it exits `0` and
+prints one fewer `N checks:` line than it was asked for, with no error
+and no skip note — so the zero-check guard has nothing to see and the
+count guard fires instead, reporting that the gate and the tool disagree
+about what was checked. That would have surfaced only once the stable
+version reached the index, presenting as *the release broke the gate*,
+with the cause nowhere in the message.
+
+The classification is derived from the **target** and happens **before**
+the registry lookup, so it rests on a durable fact rather than on
+today's index, and it reads the same before and after a publish.
+
+**And the fix contained the defect it was written to prevent, which is
+worth more than the fix.** Its first form asked
+`cargo metadata --manifest-path <that crate>` and searched the output for
+a `lib` kind — but `--manifest-path` on a *workspace member* returns
+every package in the workspace (`--no-deps` bounds dependencies, not
+members). Measured: thirty packages come back, so a neighbour's library
+matched and the skip silently did nothing. Found only by running the
+failing direction; it filters by package name now, and with the filter
+the answer is `False` where without it the answer is `True`.
+
+**The deliberate-major-step bucket is `hclient-idn`'s, and it was needed
+the day the crate broke on purpose.** Removing `domain_to_unicode` from a published
 `0.1.0` is what `cargo semver-checks` is for and it caught it; the answer
 is a major bump rather than a smaller change, and after one the tool
 permits everything and reports nothing. Without a bucket for that, a
