@@ -137,6 +137,12 @@ async fn a_configured_redirect_policy_is_rejected_by_the_real_browser_transport(
         .redirect(hclient::redirect::Limit::new(5))
         .build()
         .unwrap_err();
+    // `build()` answers `BuildError` since the decompression seam opened,
+    // so the capability refusal is one variant of two — `unsupported()`
+    // keeps this assertion about the capability rather than the enum.
+    let err = err
+        .unsupported()
+        .expect("a capability refusal, not a coding one");
     assert_eq!(err.what, "redirect_policy");
     assert!(err.backend.contains("Fetch"), "{}", err.backend);
 }
