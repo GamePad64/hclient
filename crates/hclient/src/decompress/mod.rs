@@ -332,7 +332,23 @@ impl Decoders {
 /// function itself would add. Filtering a header the CALLER set is a
 /// different job, still unimplemented (see `RequestBuilder::headers`),
 /// and doing half of it here would be worse than doing none.
+///
+/// # Declining to ask is also declining to decode
+///
+/// Every refusal below returns [`Decoders::none()`], and that one value
+/// is what `Client::execute_with` later hands to [`decoder_for`] — so
+/// there is no configuration in which this client asks for nothing and
+/// decodes anyway. That is a property of the plumbing rather than a rule
+/// anybody has to remember: the two halves read the same answer.
+///
+/// It matters most for the `Range` case below, where a server may
+/// compress a `206` regardless of what was asked. Decoding it would feed
+/// a decoder the middle of a stream and produce an `ErrorKind::Decode`
+/// where the caller asked for bytes; standing aside hands over exactly
+/// what the server sent, which is the only thing a client can be right
+/// about here. See that branch for why.
 pub(crate) fn negotiate(
+    method: &http::Method,
     headers: &mut http::HeaderMap,
     caps: &Capabilities,
     available: Decoders,
@@ -344,6 +360,59 @@ pub(crate) fn negotiate(
         return Decoders::none();
     }
     if available.is_empty() {
+        return Decoders::none();
+    }
+    // **A ranged request asks for a slice, and a slice of a coded stream
+    // has no beginning.** gzip, brotli and zstd all carry a header and a
+    // window at the front, so bytes taken from the middle are not a
+    // stream this client — or any client — can start decoding: the
+    // decoder would answer `ErrorKind::Decode` where the caller asked for
+    // bytes. Asking for a coding on a `Range` request therefore buys
+    // nothing and costs the server the compression, which is why
+    // `net/http` declines too (`transport.go:2840-2858` in Go 1.26.4,
+    // citing golang.org/issue/8923 — *auto-decoding a portion of a
+    // gzipped document will just fail anyway*).
+    //
+    // **And the refusal to decode is the load-bearing half**, because a
+    // server may compress a `206` whether or not it was asked. Returning
+    // `none()` here is what makes those bytes reach the caller intact
+    // rather than through a decoder that cannot read them; see this
+    // function's doc comment for why one value settles both halves.
+    //
+    // Read off the request headers, which is the same gesture
+    // `cache::policy::bypasses` already makes one module over for the
+    // same header and a neighbouring reason — a range is a request about
+    // part of a representation, and a layer that works on whole ones
+    // stands aside.
+    //
+    // Decided once, before the first hop, and that stays right for the
+    // whole chain: `Range` is not in `hclient_proto::redirect::
+    // SENSITIVE_HEADERS`, so `next_hop`'s clone carries it to every
+    // subsequent hop — a request that is ranged at hop 0 is ranged at
+    // hop 3.
+    if headers.contains_key(http::header::RANGE) {
+        return Decoders::none();
+    }
+    // **A HEAD response has no body, so the coding has nothing to apply
+    // to** — and nginx has answered a compressed HEAD wrongly for long
+    // enough that Go names the ticket: `transport.go:2840-2858` again,
+    // citing trac.nginx.org/nginx/ticket/358 and golang.org/issue/5522.
+    // So this is two reasons agreeing rather than deference to one
+    // implementation's bug: even against a server that gets it right,
+    // what is being negotiated is the encoding of bytes that will not be
+    // sent.
+    //
+    // Also decided once and also stable across the chain, by a different
+    // mechanism from `Range`'s: RFC 9110 §15.4's method table never
+    // rewrites HEAD, and nothing rewrites another method *to* HEAD, so
+    // the method a hop carries is HEAD for all of them or none.
+    //
+    // `Decoders::none()` rather than "ask anyway and decode nothing": a
+    // header nothing will act on is a header that has to be explained,
+    // and `Decompressed::poll_frame`'s empty-body arm already covers the
+    // case of a `Content-Encoding` on a bodiless response for the
+    // transports that produce one.
+    if method == http::Method::HEAD {
         return Decoders::none();
     }
     // The caller did their own negotiating. Their header stands untouched
@@ -371,10 +440,24 @@ pub(crate) fn negotiate(
     // what makes "ask for a subset" impossible to express, which is the
     // gap a per-coding runtime selector would close.
     //
-    // The claim about the third party is now checked rather than
-    // recalled, and it is exactly as perishable as that reading: a
-    // `tower-http` that starts consulting the request header fails this
-    // paragraph rather than silently making it true again.
+    // **Go agrees with us, and that is worth naming beside the crate that
+    // does not**, because this rule was wrong here for months and one
+    // contrasting data point reads as an outlier where two opposed ones
+    // read as a decision. `net/http` sets `requestedGzip` only in an
+    // expression that requires `Accept-Encoding` to be empty
+    // (`transport.go:2840-2858`, Go 1.26.4), carries it onto the response
+    // as `addedGzip` (`:2888`), and decodes only under it —
+    // `if rc.addedGzip && ...Content-Encoding == "gzip"` at `:2433`. Its
+    // own comment at `:2836-2838` is the rule in one sentence: *"We only
+    // attempt to uncompress the gzip stream if we were the layer that
+    // requested it."* Same rule, same direction, arrived at
+    // independently: whoever asked owns the answer.
+    //
+    // Both claims about third parties are checked rather than recalled,
+    // and each is exactly as perishable as its reading: a `tower-http`
+    // that starts consulting the request header, or a `net/http` that
+    // stops, fails this paragraph rather than silently making it true
+    // again.
     if headers.contains_key(http::header::ACCEPT_ENCODING) {
         return Decoders::none();
     }
@@ -629,6 +712,15 @@ mod tests {
     /// Everything this build registered.
     const ALL: Decoders = Decoders::compiled_in();
 
+    /// The ordinary request every test below varies ONE thing away from:
+    /// a plain `GET` with no headers of its own, which is the only shape
+    /// that gets an `Accept-Encoding`. Spelled out as a helper so that a
+    /// test naming `Method::HEAD` or a `Range` is visibly the control's
+    /// single mutation rather than an unrelated setup.
+    fn plain_get() -> (http::Method, http::HeaderMap) {
+        (http::Method::GET, http::HeaderMap::new())
+    }
+
     /// **The property the registry makes structural, pinned anyway.**
     ///
     /// This was `every_advertised_coding_has_a_decoder_in_this_build`, and
@@ -796,10 +888,105 @@ mod tests {
 
     #[test]
     fn an_internal_transport_gets_no_header_and_no_decoding() {
-        let mut h = http::HeaderMap::new();
-        let d = negotiate(&mut h, &caps(true), ALL);
+        let (m, mut h) = plain_get();
+        let d = negotiate(&m, &mut h, &caps(true), ALL);
         assert!(d.is_empty(), "decoding twice would corrupt every response");
         assert!(!h.contains_key(http::header::ACCEPT_ENCODING));
+    }
+
+    /// **The control for both refusals below.** Without it each of them
+    /// passes for a `negotiate` that never asks for anything at all, which
+    /// is the shape this file's own `an_unregistered_coding_is_not_matched`
+    /// already guards against one assertion over.
+    ///
+    /// Skipped where the registry is empty, because there is then nothing
+    /// to ask for and the header's absence is not evidence of anything —
+    /// the same reason `accept_encoding_names_exactly_what_can_be_decoded`
+    /// returns early. `just features` is what reaches that build.
+    #[test]
+    fn a_plain_get_asks_for_every_coding_this_build_can_reverse() {
+        if ALL.is_empty() {
+            return;
+        }
+        let (m, mut h) = plain_get();
+        let d = negotiate(&m, &mut h, &caps(false), ALL);
+        assert_eq!(
+            h.get(http::header::ACCEPT_ENCODING),
+            ALL.accept_encoding().as_ref(),
+            "the ordinary request is the one that asks, and it asks for the registry"
+        );
+        assert!(
+            !d.is_empty(),
+            "and it may reverse what it asked for — the other half of one value"
+        );
+    }
+
+    /// **A slice of a coded stream has no beginning**, so asking for a
+    /// coding on a ranged request buys a body that cannot be decoded. Go's
+    /// `net/http` declines for this reason too — `transport.go:2840-2858`,
+    /// golang.org/issue/8923 — and `cache::policy::bypasses` reads the
+    /// same header one module over.
+    ///
+    /// The value is `none()` rather than merely "no header", which is the
+    /// half that matters: a server may compress a `206` unasked, and this
+    /// is what hands those bytes over intact instead of through a decoder
+    /// that would answer `ErrorKind::Decode`.
+    #[test]
+    fn a_ranged_request_neither_asks_for_a_coding_nor_decodes_one() {
+        let (m, mut h) = plain_get();
+        h.insert(
+            http::header::RANGE,
+            http::HeaderValue::from_static("bytes=0-1023"),
+        );
+        let d = negotiate(&m, &mut h, &caps(false), ALL);
+        assert!(
+            !h.contains_key(http::header::ACCEPT_ENCODING),
+            "a partial representation cannot be decoded, so asking wastes the server's CPU"
+        );
+        assert!(
+            d.is_empty(),
+            "and a `206` the server compressed anyway must reach the caller as it arrived"
+        );
+    }
+
+    /// **A HEAD response has no body**, so there is nothing for a coding
+    /// to apply to — and nginx has answered a compressed HEAD wrongly long
+    /// enough for Go to name the ticket beside its own refusal
+    /// (`transport.go:2840-2858`, trac.nginx.org/nginx/ticket/358).
+    ///
+    /// The method is the only thing that differs from the control above.
+    #[test]
+    fn a_head_request_neither_asks_for_a_coding_nor_decodes_one() {
+        let (_, mut h) = plain_get();
+        let d = negotiate(&http::Method::HEAD, &mut h, &caps(false), ALL);
+        assert!(
+            !h.contains_key(http::header::ACCEPT_ENCODING),
+            "negotiating the encoding of bytes that will not be sent"
+        );
+        assert!(d.is_empty());
+    }
+
+    /// The two new refusals are about THIS request's method and headers,
+    /// not about the verb being unusual: `POST` and `PUT` have bodies and
+    /// are negotiated exactly as `GET` is.
+    ///
+    /// Without this, both tests above pass for a `negotiate` that asked
+    /// only on `GET` — a narrowing nobody chose and one that would silently
+    /// stop compressing every API call this client makes.
+    #[test]
+    fn a_method_with_a_response_body_is_negotiated_like_any_other() {
+        if ALL.is_empty() {
+            return;
+        }
+        for m in [http::Method::POST, http::Method::PUT, http::Method::DELETE] {
+            let (_, mut h) = plain_get();
+            let d = negotiate(&m, &mut h, &caps(false), ALL);
+            assert!(
+                h.contains_key(http::header::ACCEPT_ENCODING),
+                "`{m}` returns a body like any other, and nothing about it is partial"
+            );
+            assert!(!d.is_empty(), "`{m}`'s response is ours to decode");
+        }
     }
 
     /// The half the `FORBIDDEN_HEADERS` shortcut would get wrong: the two
@@ -808,8 +995,8 @@ mod tests {
     fn a_transport_that_forbids_the_header_but_decodes_nothing_still_gets_decoding() {
         let mut c = caps(false);
         c.forbidden_request_headers = &[http::header::ACCEPT_ENCODING];
-        let mut h = http::HeaderMap::new();
-        let d = negotiate(&mut h, &c, ALL);
+        let (m, mut h) = plain_get();
+        let d = negotiate(&m, &mut h, &c, ALL);
         assert!(
             !h.contains_key(http::header::ACCEPT_ENCODING),
             "the transport forbids this header; we must not add it"
@@ -832,12 +1019,12 @@ mod tests {
 
     #[test]
     fn a_caller_who_set_accept_encoding_keeps_it_and_gets_the_raw_body() {
-        let mut h = http::HeaderMap::new();
+        let (m, mut h) = plain_get();
         h.insert(
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("zstd"),
         );
-        let d = negotiate(&mut h, &caps(false), ALL);
+        let d = negotiate(&m, &mut h, &caps(false), ALL);
         assert_eq!(
             h[http::header::ACCEPT_ENCODING],
             "zstd",

@@ -900,10 +900,34 @@ impl Client {
         // for a coding halfway through a redirect chain would decode the
         // first response and not the last.
         //
-        // The gate is `Capabilities::response_decompression` and nothing
-        // else — see `decompress::negotiate`, which is where the
-        // `forbidden_request_headers` trap is spelled out.
+        // **The method and the headers are both read, and the method is
+        // why this takes two arguments rather than one.** `negotiate`
+        // declines on a `Range` request and on a HEAD — a slice of a coded
+        // stream has no start to decode from, and a HEAD response has no
+        // body for a coding to apply to — so it needs the method, which
+        // the request has right here and nothing downstream of
+        // `req.headers_mut()` would. `decompress::negotiate` carries both
+        // arguments, the `Capabilities::response_decompression` gate, and
+        // the `forbidden_request_headers` trap.
+        //
+        // Both new refusals survive the loop below for the same reason the
+        // `Accept-Encoding` does, by two different mechanisms: `Range` is
+        // not in `SENSITIVE_HEADERS`, so `next_hop` clones it onward, and
+        // RFC 9110 §15.4's table neither rewrites HEAD nor rewrites
+        // anything to it. So deciding once is deciding for the chain.
+        //
+        // Bound before the `&mut` rather than passed inline, because
+        // `req.method()` and `req.headers_mut()` cannot both borrow `req`
+        // in one call. A clone rather than a reborrow dance, and it is
+        // cheaper than the word suggests: `http::Method`'s `Inner` is a
+        // unit variant for each of the nine standard methods plus an
+        // `ExtensionInline` that stores a short token in place (read in
+        // `http` 1.x's `method.rs`), so only a long extension method
+        // allocates — and this runs once per operation rather than once
+        // per hop.
+        let method = req.method().clone();
         let decoders = decompress::negotiate(
+            &method,
             req.headers_mut(),
             self.inner.transport.capabilities(),
             decompress::Decoders::compiled_in(),

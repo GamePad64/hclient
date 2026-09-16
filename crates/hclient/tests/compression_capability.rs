@@ -488,3 +488,145 @@ fn an_empty_body_under_a_content_encoding_is_not_a_truncated_stream() {
     assert!(got.bytes().is_empty());
     assert_eq!(got.status(), 204);
 }
+
+// ── the two requests this client does not negotiate on ───────────────
+//
+// `decompress`'s own unit tests pin what `negotiate` DECIDES, and they
+// can see `Decoders`, which nothing out here can. What they cannot see is
+// the WIRING: `negotiate` reads the method and the headers off the
+// request, and a `Client` that passed the wrong method — or a constant
+// `GET` — leaves every one of those unit tests green while asking a
+// ranged request for a coding on the wire. These two are that half, and
+// they assert on `requests()`, which is the request as the transport
+// received it.
+
+/// **A slice of a coded stream has no beginning**, so this client does not
+/// ask for one on a ranged request — Go's `net/http` declines for the same
+/// reason (`transport.go:2840-2858`, golang.org/issue/8923), and
+/// `hclient::cache` already stands aside for the same header.
+///
+/// The control is `the_baseline_transport_does_get_its_body_decoded` at
+/// the top of this file: same client, same mock, same capabilities, and it
+/// asserts the header IS asked for. Without that pairing this test passes
+/// for a client that never negotiates at all.
+#[test]
+fn a_ranged_request_does_not_ask_for_a_coding_on_the_wire() {
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .status(206)
+                .body(vec![Bytes::from_static(b"partial")])
+                .unwrap(),
+        );
+
+    futures_executor::block_on(async {
+        c.get("https://a/x")
+            .header("range", "bytes=0-1023")
+            .send()
+            .await?
+            .collect()
+            .await
+    })
+    .expect("a ranged request is an ordinary request");
+
+    let sent = &c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests()[0];
+    assert_eq!(
+        sent.headers.get(http::header::RANGE).unwrap(),
+        "bytes=0-1023",
+        "the caller's own Range must reach the server untouched"
+    );
+    assert!(
+        !sent.headers.contains_key(http::header::ACCEPT_ENCODING),
+        "asking for a coding on a range buys a body that cannot be decoded"
+    );
+}
+
+/// The decode-side half, and the one that is load-bearing rather than
+/// merely tidy: a server may compress a `206` **whether or not it was
+/// asked**. Declining to ask has to mean declining to decode, or this
+/// client meets the middle of a gzip stream and turns a perfectly good
+/// partial response into `ErrorKind::Decode`.
+///
+/// The body here is deliberately NOT a gzip stream — it is the tail of
+/// one, which is what a range over a compressed resource actually
+/// delivers. A client that decoded would fail; one that stands aside hands
+/// the bytes over exactly as they arrived, which is the only thing it can
+/// be right about.
+#[test]
+fn a_206_the_server_compressed_anyway_reaches_the_caller_undecoded() {
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
+    // Bytes from the middle of `GZIP_BLOB`: past the two-byte magic and
+    // the header, so this is a slice of a real coded stream and not a
+    // stream in its own right.
+    let slice = &GZIP_BLOB[20..40];
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .status(206)
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                .header(http::header::CONTENT_RANGE, "bytes 20-39/76")
+                .body(vec![Bytes::from_static(slice)])
+                .unwrap(),
+        );
+
+    let got = futures_executor::block_on(async {
+        c.get("https://a/x")
+            .header("range", "bytes=20-39")
+            .send()
+            .await?
+            .collect()
+            .await
+    })
+    .expect("standing aside must hand the slice over rather than fail to decode it");
+    assert_eq!(
+        got.bytes().as_ref(),
+        slice,
+        "the caller asked for a range and gets exactly the bytes the server sent"
+    );
+    assert_eq!(
+        got.headers().get(http::header::CONTENT_ENCODING).unwrap(),
+        "gzip",
+        "we decoded nothing, so we rewrite nothing — the caller needs to know it is coded"
+    );
+}
+
+/// **A HEAD response has no body**, so there is nothing for a coding to
+/// apply to — and nginx has answered a compressed HEAD wrongly long enough
+/// for Go to name the ticket beside its own refusal
+/// (`transport.go:2840-2858`, trac.nginx.org/nginx/ticket/358).
+///
+/// This is the wiring half of `decompress`'s unit test: the method reaches
+/// `negotiate` from the real request rather than from a literal, so a
+/// `Client` passing a constant `GET` fails here and nowhere else.
+#[test]
+fn a_head_request_does_not_ask_for_a_coding_on_the_wire() {
+    let c = Client::builder(MockTransport::new().with_capabilities(caps(false)))
+        .build()
+        .expect("supported");
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(http::Response::builder().body(Vec::new()).unwrap());
+
+    futures_executor::block_on(async { c.head("https://a/x").send().await?.collect().await })
+        .expect("a HEAD is an ordinary request");
+
+    let sent = &c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests()[0];
+    assert_eq!(sent.method, http::Method::HEAD, "the premise");
+    assert!(
+        !sent.headers.contains_key(http::header::ACCEPT_ENCODING),
+        "negotiating the encoding of bytes that will not be sent"
+    );
+}
