@@ -1292,6 +1292,7 @@ semver rev="":
     pending=""
     vacuum=""
     stepped=""
+    nolib=""
     # Whether two versions share a semver-compatible range, which is what
     # decides whether a lint can run at all: `^0.1.0` covers 0.1.x and not
     # 0.2.0, so below 1.0 the *minor* is the major component. Written out
@@ -1312,6 +1313,46 @@ semver rev="":
       name="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
       [ -n "$name" ] || { echo "::error::$manifest declares no package name"; exit 1; }
       grep -q '^publish = false' "$manifest" && continue
+      # **A crate with no library target has no API to check, and the way
+      # that fails is why this is a skip rather than nothing.**
+      # cargo-semver-checks refuses one on its own — *no crates with
+      # library targets selected, nothing to semver-check* — but asked
+      # about a **mix**, it does not refuse and does not complain: measured
+      # on this tree, `check-release -p hclient-core -p hclient-idn -p
+      # system-resolver -p hclient-cli` exits **0**, prints **3** `N
+      # checks:` lines, and does not name the binary crate anywhere in its
+      # output. So the crate vanishes silently and the `n -ne want`
+      # comparison below fires instead, reporting that the gate and the
+      # tool disagree — a red run whose cause is nowhere in the message.
+      #
+      # It would fire only *after* publication, because an unpublished or
+      # pre-release crate lands in a bucket above and never reaches
+      # `$published` — so the gate would go red on the release rather than
+      # on the change, and read as a release having broken it. That is
+      # `hclient-cli`, which went stable at `0.1.0` because a binary has no
+      # surface to promise; the condition is derived from the target rather
+      # than from that name, so a second binary crate is covered the day it
+      # is written.
+      #
+      # It is **reported** rather than passed over in silence, because a
+      # crate this gate cannot speak for is exactly what its zero-check
+      # guard exists to surface — the difference is that here there is
+      # nothing to check rather than something that went unchecked.
+      #
+      # **The answer is filtered to the package by name, and the first
+      # version of this line was the defect it guards against.**
+      # `--manifest-path` on a workspace *member* returns every package in
+      # the workspace — `--no-deps` bounds dependencies, not members — so a
+      # grep for `"kind":["lib"]` over the whole document matched a library
+      # belonging to one of the other 29 crates and concluded this one had
+      # one. That is the *check that cannot fail* shape, in the very skip
+      # written to prevent one, and it was found by running the failing
+      # direction rather than by reading it back.
+      if ! cargo metadata --no-deps --format-version 1 --manifest-path "$manifest" \
+           | python3 -c 'import json,sys; p=[x for x in json.load(sys.stdin)["packages"] if x["name"]==sys.argv[1]]; sys.exit(0 if p and any(k in ("lib","rlib","proc-macro") for t in p[0]["targets"] for k in t["kind"]) else 1)' "$name"; then
+        nolib="$nolib $name"
+        continue
+      fi
       latest="$(curl -sS -H "User-Agent: hclient semver gate (gamepad64@gmail.com)" \
                   "https://crates.io/api/v1/crates/$name" \
                 | sed -n 's/.*"max_version":"\([^"]*\)".*/\1/p')"
@@ -1353,6 +1394,9 @@ semver rev="":
     fi
     if [ -n "$stepped" ]; then
       echo "semver: a deliberate major step, where breaking is permitted and no lint runs:$stepped"
+    fi
+    if [ -n "$nolib" ]; then
+      echo "semver: no library target, so there is no API surface to check:$nolib"
     fi
     if [ -z "$published" ]; then
       echo "::error::no independently-versioned crate has a stable release, so this gate checked nothing — which reads the same as a clean run"

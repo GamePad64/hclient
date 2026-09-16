@@ -1,6 +1,36 @@
 [package]
 name = "hclient-cli"
-version = "0.1.0-alpha.11"
+# **Its own version, and the argument is the opposite of the two crates
+# that left the shared one before it.** `system-resolver` and
+# `hclient-idn` left because a shared pre-release cannot leave
+# pre-release, and inside one `cargo semver-checks` executes none of its
+# lints — so versioning separately is what let each of them *buy the gate
+# a subject*. This crate buys it nothing, and leaves for a different
+# reason: it has no API to promise.
+#
+# **A binary has no public surface.** Measured rather than assumed, and
+# in the shape the gate actually invokes: `cargo semver-checks
+# check-release -p hclient-cli` answers *no crates with library targets
+# selected, nothing to semver-check*, and `cargo metadata` lists exactly
+# one non-test target here, `hc ['bin']` — there is no `src/lib.rs` and no
+# `[lib]` section. So going stable neither gains the gate a subject nor
+# costs it one, which is what makes this number free where the family's is
+# not.
+#
+# **What `0.x` still means is the command-line interface**, and that is
+# the promise this crate is actually making. While the major is `0`, the
+# flags, the item grammar, the exit codes and the output shape may change
+# in a minor release — `-L`'s default already moved once, when it turned
+# out to be a flag that did nothing. `0.1.0` rather than `0.1.0-alpha.N`
+# says that `hc` is a thing to use, not that its arguments are frozen; the
+# freeze is what `1.0` would say and this is deliberately not that.
+#
+# It is the crate that can afford to go first for the reason the other two
+# could: nothing depends on it. `grep` over every manifest in the
+# workspace finds no requirement on `hclient-cli` at all — it is a leaf
+# binary, so a version of its own propagates to nobody, and the family's
+# `-alpha` rhythm was carrying it along rather than describing it.
+version = "0.1.0"
 description = "hc: an HTTP command-line client that lets you choose the backend at runtime, and refuses one it does not have"
 keywords     = ["hclient", "http", "cli", "curl", "httpie"]
 categories   = ["command-line-utilities", "web-programming::http-client"]
