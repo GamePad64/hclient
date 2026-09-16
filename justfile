@@ -1758,6 +1758,58 @@ graph-proto-sans-io:
         -- -p hclient-proto $t
     done
 
+# **The pattern below is narrower than `graph-proto-sans-io`'s above, and the
+# difference is the whole reason this is a second recipe rather than a
+# second `-p`.** That one forbids `futures-` wholesale; this crate
+# legitimately carries two of them, measured: `futures-core`, for the
+# `Stream` its `Resolve` seam returns — the seam's own doc calls that the
+# sole reason it is a `Stream` — and `futures-sink`, which arrives from
+# `hclient-core`. Both are *types*. What must never arrive is something
+# that *runs* them or opens a socket, so those are what the pattern
+# names.
+#
+# **It became worth gating when the property became unconditional.**
+# `hclient-dns` had an optional `domain` behind a `codec` feature, so
+# "carries no decoder" was a thing a `--features` line could undo; taking
+# `domain` off its public surface (`fda77383`) left the crate with **no
+# optional dependency at all** and its graph at 14 crates under
+# `--all-features`, the same as with none. A property no flag can undo is
+# one a gate can hold.
+#
+# The trigger to write it is this workspace's own near-miss one crate
+# over: `hclient-proto` grew `futures-util` on `wasm32` and no other
+# target, because `web-sys` switched on a `js-sys` feature and Cargo
+# unifies them — caught by the gate above and by nothing else. This crate
+# already holds `futures-core`, so it starts half a step nearer that
+# trap, which is why both targets are checked rather than the host.
+
+# hclient-dns describes a resolver and performs no IO, on any target
+graph-dns-sans-io:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for t in "" "--target wasm32-unknown-unknown" "--target wasm32-wasip2"; do
+      ./scripts/tree-guard.sh absent '^(tokio|async-|smol|compio|mio|futures-executor|futures-util|socket2|hyper|reqwest)' \
+        "hclient-dns picked up a runtime or an IO crate ${t:-on the host} — it describes a resolver and performs none itself, and whoever implements \`Resolve\` owns the IO" \
+        -- -p hclient-dns --all-features $t
+      # The seam must still be there: an `absent` check is satisfied by a
+      # crate that lost its dependencies altogether, which is this
+      # repository's recurring "green because nothing ran" shape.
+      #
+      # **It names `hclient-core` rather than `futures-core`, and the
+      # first draft named the wrong one.** `futures-core` is what
+      # `Resolve` returns a `Stream` from, so it reads like the thing to
+      # assert — but it arrives *transitively* through `hclient-core`, so
+      # commenting this crate's own `futures-core` line out leaves the
+      # guard green. Measured, not reasoned: that edit kept the recipe at
+      # exit 0, which makes the assertion one that cannot fail — the exact
+      # defect it exists to catch, inside itself. `hclient-core` is a
+      # direct dependency and the crate the seam's types come from, so
+      # removing it is a thing this guard can see.
+      ./scripts/tree-guard.sh present '^hclient-core' \
+        "hclient-dns no longer carries hclient-core ${t:-on the host}, so the check above is vacuous — the \`Resolve\` seam's types come from there" \
+        -- -p hclient-dns --all-features $t
+    done
+
 # The `cookies` feature is off by default because the compiled-in public
 # suffix list is +77 KiB — a claim nothing checked until here. Exact
 # analogue of the idna/ICU guard below.
@@ -2159,7 +2211,7 @@ features:
         --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-default-has-no-hsts graph-proto-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-default-has-no-hsts graph-proto-sans-io graph-dns-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
 
 # ── mutation testing, which cannot be run naively here ──────────────────
 
