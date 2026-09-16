@@ -329,45 +329,58 @@ surfaces at the moment they were last seen moving.
 A pre-release claims the names and promises nothing, so the next week of
 changes costs `-alpha.2` rather than a major version across the family.
 
-**The family is at `0.1.0-alpha.7` today**, with `hclient-idn` and
-`system-resolver` on `0.2.2` — they version separately, for the reason two
-sections down. The figure here is the one thing in this paragraph that
-goes stale on every release, which is why it says *today* and the
-authority is the index rather than this line — and it had drifted three
-alphas and a patch behind before anybody read it against crates.io, which
-is the prediction coming true rather than an exception to it.
+**The family is at `0.1.0-alpha.11` today**, with `hclient-idn` on
+`0.2.5` and `system-resolver` on `0.2.4` — they version separately, for
+the reason two sections down, and `hclient-core` is stable at `0.1.0`,
+for the reason one section down. The figures here are the one thing in
+this paragraph that goes stale on every release, which is why it says
+*today* and the authority is the index rather than this line.
 
-**`hclient-core` was set to `0.1.0` on 2026-09-10 and is back at
-`0.1.0-alpha.8`, and the whole episode is worth keeping because nothing
-was ever published.** The argument for going stable was the gate rather
-than confidence: inside a pre-release `cargo semver-checks` executes
-**0 of its 254 lints**, because every step out of one is a major step, so
-the crate whose types cross every boundary in this family was the one
-crate no tool had ever examined. `0.1.0` would give the gate a subject,
-since `just semver` selects on *published and not a pre-release*.
+**It has now drifted twice, which is the prediction coming true rather
+than an exception to it.** It read `alpha.7` and `0.2.2` while the index
+said `alpha.11`, `0.2.5` and `0.2.4` — four alphas and two patches
+behind, worse than the three-and-one it had already recorded about
+itself. Reading it against crates.io is what corrects it, and nothing
+forces that reading; the line survives because it names its own
+authority rather than because it is right.
 
-**What made the reversal free is that the number lived in the tree and
-never reached the registry.** crates.io's newest is `0.1.0-alpha.7`, so
-there was no promise to withdraw, no yank, and no consumer resolving
-against a version that was about to change meaning. A stable number in a
-manifest is an intention; a stable number in the index is the promise.
-Those are different things and only the second is expensive — which is
-the whole reason the gap between them is where a decision like this
-belongs.
+**`hclient-core` is `0.1.0` in the index, published on 2026-09-16.** The
+argument for going stable was the gate rather than confidence: inside a
+pre-release `cargo semver-checks` executes **0 of its 254 lints**,
+because every step out of one is a major step, so the crate whose types
+cross every boundary in this family was the one crate no tool had ever
+examined. `0.1.0` gives the gate a subject, since `just semver` selects
+on *published and not a pre-release*.
 
-`alpha.8` rather than back to `alpha.7`, because that number is taken and
-the tree has moved a long way past what it holds.
+**Measured on the day it published: `588 checks across 3 crate(s) with a
+stable baseline`**, against the 392 across 2 it had been reporting. No
+edit to the recipe — the selection reads the registry and the manifests,
+so the third crate enrolled itself the moment the index moved.
 
-**And the gate un-enrolled itself, which is the property worth having.**
-`just semver` went straight back to `392 checks across 2 crate(s)` with
-no edit to the recipe, exactly as it went to that figure when
-`hclient-idn` published `0.2.0` — the selection reads the registry and
-the manifests rather than a list, so it is right on the way down as well
-as on the way up. What that costs is stated plainly: `hclient-core` is
-again a crate `cargo semver-checks` cannot examine, and it will stay one
-until a stable pair exists on both sides. The gate is honest about it
-rather than green over it, which is the distinction this file draws
-everywhere else.
+**The episode this replaces is kept, because the distinction it drew is
+the durable part.** The number was set to `0.1.0` on 2026-09-10 and
+taken back to `0.1.0-alpha.8` days later, and what made that reversal
+free is that it had never reached the registry: crates.io's newest was
+`0.1.0-alpha.7`, so there was no promise to withdraw, no yank, and no
+consumer resolving against a version about to change meaning. **A stable
+number in a manifest is an intention; a stable number in the index is
+the promise.** Only the second is expensive, which is why the gap
+between them is where such a decision belongs — and why getting it wrong
+the first time cost nothing.
+
+`alpha.8` rather than back to `alpha.7` at the time, because that number
+was taken and the tree had moved a long way past what it held.
+
+**And the gate proved the property in both directions.** When the number
+was reverted `just semver` went straight back to `392 checks across 2
+crate(s)`, exactly as it had gone to that figure when `hclient-idn`
+published `0.2.0`; when the number published it went to 588 across 3.
+Neither move edited the recipe. What it costs while a crate is in a
+pre-release is stated rather than papered over: that crate is one
+`cargo semver-checks` cannot examine until a stable pair exists on both
+sides — and `hclient-core` was that crate for six days, during which
+**this paragraph went on describing the reversal as the current
+state**. A claim about a version is as perishable as the version.
 
 Two things landed before the number moved, and both stand. `bon` left the crate — its generated builders put
 `SetConnect<S>` and `IsUnset` into every setter's signature from a
