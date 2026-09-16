@@ -633,9 +633,27 @@ fn is_retryable(kind: &ErrorKind) -> bool {
 /// it was never a correctness bug — but a caller reading this specific
 /// doc comment deserves the true range, not the tidier-looking wrong one.
 ///
+/// **Its other caller is `client.rs`'s retry loop, which is not SSE**, and
+/// that is worth saying here because the dependency looks like this
+/// module's from outside: `getrandom` is unconditional, and a reader
+/// pricing the crate would otherwise read it as a feature's cost. It is
+/// the plain request path's — a retried request draws one of these
+/// whether or not anything ever opens an event stream. Measured: a probe
+/// binary that makes one GET carries **zero** `hclient::sse` symbols
+/// (against `hclient::client`'s twelve in the same binary, so the check
+/// discriminates) and still needs `getrandom`.
+///
+/// The function stays here, beside the reconnect logic that is its
+/// principal reader and its whole rationale, rather than moving to a
+/// module of its own: it is eight lines over `getrandom::fill`, and a
+/// module holding one of those costs a reader more than the misplacement
+/// it would fix. `multipart.rs` and `auth/digest.rs` each draw their own
+/// for the same reason — what differs between the three is the failure
+/// policy, which is the interesting half and belongs with each caller.
+///
 /// Randomness isn't a seam anyone has defined in this project (unlike
 /// `Timer`, which reconnect takes as an explicit input — see
-/// `SseBuilder::with_timer`'s doc comment for why the two are treated
+/// [`SseBuilder::with_timer`]'s doc comment for why the two are treated
 /// differently), so `hclient` sources this itself rather than asking the
 /// reconnect caller for an RNG, the same way `hclient-proto`'s
 /// `Backoff::delay` already expects SOME caller to supply `jitter`.

@@ -39,9 +39,9 @@
 //! # The boundary
 //!
 //! [`Boundary::random`] draws **128 bits** from the operating system
-//! through `getrandom`, which is already in this crate's graph for SSE
-//! reconnect jitter — no dependency is added by this module, and none is
-//! needed by it.
+//! through `getrandom`, which is already in this crate's graph for the
+//! retry loop's jitter (`src/entropy.rs`) — no dependency is added by
+//! this module, and none is needed by it.
 //!
 //! RFC 2046 §5.1 (cited by RFC 7578 §4.1) requires that the delimiter not
 //! appear inside any encapsulated part, and this module **does not check
@@ -60,8 +60,8 @@
 //! [`crate::RequestBuilder::multipart`] rather than once per `Client`.
 //!
 //! **An entropy failure is an error and never a fixed fallback**, which
-//! is the opposite resolution from `sse.rs`'s `jitter()`, three files
-//! over, where a failed draw becomes `0.0`. The two are not inconsistent:
+//! is the opposite resolution from `entropy.rs`'s `jitter()`, where a
+//! failed draw becomes `0.0`. The two are not inconsistent:
 //! jitter's degenerate value is *un-jittered backoff*, slower and safe,
 //! where a fixed boundary is the single value most likely to appear in
 //! someone's content — every copy of this library would emit it, so it is

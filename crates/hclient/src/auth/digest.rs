@@ -423,8 +423,8 @@ fn escape(s: &str) -> String {
 /// from the same source and for the related reason.
 ///
 /// **A failed draw is an error there and a panic-free zero is not an
-/// option here** — but neither is what `sse.rs`'s `jitter` does, which is
-/// to degrade to `0.0`. A degraded value is only acceptable when the
+/// option here** — but neither is what `entropy.rs`'s `jitter` does,
+/// which is to degrade to `0.0`. A degraded value is only acceptable when the
 /// degradation has a direction, and a fixed cnonce has none: it is the one
 /// value an attacker would choose. `getrandom` failing is a broken OS, so
 /// this falls back to the address of a heap allocation and the challenge's

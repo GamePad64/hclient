@@ -448,8 +448,21 @@ sha2          = { version = "0.11", optional = true, default-features = false }
 # than a hex string — `hclient-proto`'s `encode` keeps its own table.
 const-hex     = { workspace = true }
 
-# SSE reconnect's jitter source (`src/sse.rs`'s `jitter` fn). Randomness
-# isn't a seam anyone has defined in this project (unlike `Timer`, which
+# This crate's entropy, for two callers on paths that are not features:
+# `client.rs`'s retry loop draws a jitter per retried request, and
+# `multipart.rs` draws a 128-bit boundary per form. `src/entropy.rs` is
+# where the first lives and says why the two have opposite failure
+# policies.
+#
+# **This line read "SSE reconnect's jitter source (`src/sse.rs`'s
+# `jitter` fn)" while the retry path was already its other caller**, so
+# a reader pricing the crate met a dependency that looked like one
+# feature's and is the plain request path's. Measured before moving
+# anything: a probe binary that never touches SSE carries zero
+# `hclient::sse` symbols, and still needs `getrandom` — which is what
+# identified the description as the defect rather than the dependency.
+#
+# Randomness isn't a seam anyone has defined in this project (unlike `Timer`, which
 # reconnect takes as an explicit `SseBuilder::with_timer` input precisely
 # because it IS one — see that method's doc comment), so `hclient` sources
 # it itself, the same way `hclient-proto`'s `Backoff::delay` already takes
