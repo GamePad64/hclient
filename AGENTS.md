@@ -329,33 +329,35 @@ surfaces at the moment they were last seen moving.
 A pre-release claims the names and promises nothing, so the next week of
 changes costs `-alpha.2` rather than a major version across the family.
 
-**The family is at `0.1.0-alpha.11` today**, with `hclient-idn` on
-`0.2.5` and `system-resolver` on `0.2.4` — they version separately, for
-the reason two sections down, and `hclient-core` is stable at `0.1.0`,
-for the reason one section down. The figures here are the one thing in
-this paragraph that goes stale on every release, which is why it says
-*today* and the authority is the index rather than this line.
+**The family shares one pre-release series**, with `hclient-idn` and
+`system-resolver` versioned separately for the reason two sections down,
+and `hclient-core` stable for the reason one section down. **What those
+numbers are is not written here, deliberately.** The index is the
+authority; `cargo search`, crates.io, or `just versions-agree` answers
+it, and each of them is right by construction where a sentence is right
+only until the next release.
 
-**It has now drifted twice, which is the prediction coming true rather
-than an exception to it.** It read `alpha.7` and `0.2.2` while the index
-said `alpha.11`, `0.2.5` and `0.2.4` — four alphas and two patches
-behind, worse than the three-and-one it had already recorded about
-itself. Reading it against crates.io is what corrects it, and nothing
-forces that reading; the line survives because it names its own
-authority rather than because it is right.
+**That is a rule this paragraph earned by breaking it twice.** It
+carried the figures, went stale, was corrected with a note admitting it
+had drifted three alphas and a patch — and then drifted four and two,
+including once in the same session that corrected it. A figure in prose
+has no gate behind it and nothing forces the reading that would fix it,
+so the repair is not a fresher number: it is naming where the number
+lives and stopping.
 
-**`hclient-core` is `0.1.0` in the index, published on 2026-09-16.** The
-argument for going stable was the gate rather than confidence: inside a
-pre-release `cargo semver-checks` executes **0 of its 254 lints**,
-because every step out of one is a major step, so the crate whose types
-cross every boundary in this family was the one crate no tool had ever
-examined. `0.1.0` gives the gate a subject, since `just semver` selects
-on *published and not a pre-release*.
+**`hclient-core` has left the pre-release series and is stable in the
+index.** The argument for going stable was the gate rather than
+confidence: inside a pre-release `cargo semver-checks` executes **0 of
+its 254 lints**, because every step out of one is a major step, so the
+crate whose types cross every boundary in this family was the one crate
+no tool had ever examined. A stable version gives the gate a subject,
+since `just semver` selects on *published and not a pre-release*.
 
-**Measured on the day it published: `588 checks across 3 crate(s) with a
-stable baseline`**, against the 392 across 2 it had been reporting. No
-edit to the recipe — the selection reads the registry and the manifests,
-so the third crate enrolled itself the moment the index moved.
+**It enrolled itself the moment the index moved**, with no edit to the
+recipe: the count `just semver` prints went up by one crate and by that
+crate's worth of lints. The count is not written here for the reason the
+paragraph above gives — run the recipe, which is the authority and
+cannot go stale.
 
 **The episode this replaces is kept, because the distinction it drew is
 the durable part.** The number was set to `0.1.0` on 2026-09-10 and
