@@ -79,6 +79,13 @@ async fn build_rejects_timeouts_fetch_cannot_express() {
         .timeouts(hclient::Timeouts::new().with_connect(Duration::from_secs(1)))
         .build()
         .unwrap_err();
+    // `build()` answers `BuildError` since the decompression seam opened,
+    // so the capability refusal is one variant of two rather than the
+    // whole error — `unsupported()` is the accessor that keeps this
+    // assertion about the capability rather than about the enum.
+    let err = err
+        .unsupported()
+        .expect("a capability refusal, not a coding one");
     assert_eq!(err.what, "connect_timeout");
     assert!(err.backend.contains("Fetch"), "{}", err.backend);
 }
