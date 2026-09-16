@@ -350,7 +350,31 @@ pub(crate) fn negotiate(
     // and their body is handed over as it arrives: a caller asking for
     // `zstd`, or for `identity`, means it, and silently decoding on top of
     // an answer to a question we did not ask is the same class of surprise
-    // as overriding the header itself. reqwest makes the same call.
+    // as overriding the header itself.
+    //
+    // **This line read "reqwest makes the same call" and that was wrong**,
+    // measured in reqwest 0.13.5 rather than recalled: it delegates to
+    // `tower_http::decompression`, whose `Service::call` inserts its
+    // `Accept-Encoding` only into a `header::Entry::Vacant` — so a
+    // caller's header does stand — and then hands `self.accept` to the
+    // `ResponseFuture` **unconditionally**
+    // (`decompression/service.rs:114-124`). The response path matches on
+    // `Content-Encoding` against that config alone
+    // (`decompression/future.rs:43-58`), so reqwest sends the caller's
+    // `Accept-Encoding: gzip` and still decodes the gzip that comes back.
+    //
+    // So the two clients differ here, and this one is the stricter: we
+    // treat a caller-set header as taking the whole negotiation, where
+    // reqwest treats it as taking only the request half. Ours is the
+    // conservative direction — a caller who asked for something we do not
+    // decode gets their bytes rather than a surprise — and it is also
+    // what makes "ask for a subset" impossible to express, which is the
+    // gap a per-coding runtime selector would close.
+    //
+    // The claim about the third party is now checked rather than
+    // recalled, and it is exactly as perishable as that reading: a
+    // `tower-http` that starts consulting the request header fails this
+    // paragraph rather than silently making it true again.
     if headers.contains_key(http::header::ACCEPT_ENCODING) {
         return Decoders::none();
     }
