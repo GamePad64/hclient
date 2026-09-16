@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.10...hclient-v0.1.0-alpha.11) - 2026-09-16
+
+### Added
+
+- [**breaking**] decompression is a seam a caller can extend, and can be turned off
+- [**breaking**] give `Link` a constructor and close `All`/`RetryAll`'s frozen field
+
+### Fixed
+
+- the second wasm test that `build()`'s new error type had broken
+- we asked for compression on requests where it cannot work
+- [**breaking**] take `winnow` off `hclient-proto`'s public surface before the freeze
+
+### Other
+
+- reqwest does not make the same call about a caller's `Accept-Encoding`
+- the no-list cookie test is cited seven times under a name it lost
+- `getrandom` is the request path's, and the manifest called it SSE's
+
 ## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.9...hclient-v0.1.0-alpha.10) - 2026-09-15
 
 ### Fixed

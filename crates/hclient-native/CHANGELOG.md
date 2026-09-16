@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.10...hclient-native-v0.1.0-alpha.11) - 2026-09-16
+
+### Added
+
+- `trace!` the decisions that a failure cannot be read backwards from
+
+### Other
+
+- ask `IdleTimeout` its own two answers, from the only path that can
+- the QUIC timer seam is a waker, and CPU time is what sees it
+- the h2 body must not claim a stream ended while frames remain
+- a closed pooled h2 connection is rejected at checkout, not retried past
+- `NativeBody` must not claim a stream ended while frames remain
+- an escaped quote must not let a comma split an Alt-Svc member
+- an entry reports the persist flag it was built with
+- the lowest-priority SVCB record wins, and nothing said so
+- a finished TLS exchange sends `close_notify`, and nothing said so
+- a SOCKS proxy gets origin-form, and nothing said so
+
 ## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.9...hclient-native-v0.1.0-alpha.10) - 2026-09-15
 
 ### Added

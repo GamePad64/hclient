@@ -1,6 +1,6 @@
 [package]
 name = "hclient-dns-doh"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 description = "DNS-over-HTTPS (RFC 8484) resolver for hclient, over any Transport"
 keywords     = ["hclient", "dns", "doh", "resolver"]
 categories   = ["network-programming"]
@@ -62,7 +62,7 @@ rstest           = { workspace = true }
 #
 # Not a dependency cycle: `hclient-native` depends on `hclient-dns`, never
 # on this crate.
-hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.10" }
+hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.11" }
 hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.10" }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.9" }
 # `tests/live.rs` alone, and `platform-verifier` is the whole point of it
@@ -72,7 +72,7 @@ hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.9" }
 # handshake every pinned deployment makes. `webpki-roots` would answer a
 # different question (rustls's bundled roots, its own webpki path) and leave
 # the one asked exactly where it was.
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.10", features = ["platform-verifier"] }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.11", features = ["platform-verifier"] }
 tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

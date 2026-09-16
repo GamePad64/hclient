@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0-alpha.7...hclient-proto-v0.1.0-alpha.8) - 2026-09-16
+
+### Added
+
+- [**breaking**] give `Link` a constructor and close `All`/`RetryAll`'s frozen field
+
+### Fixed
+
+- [**breaking**] take `winnow` off `hclient-proto`'s public surface before the freeze
+
 ## [0.1.0-alpha.7](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0-alpha.6...hclient-proto-v0.1.0-alpha.7) - 2026-09-15
 
 ### Fixed

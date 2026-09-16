@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/GamePad64/hclient/compare/hclient-idn-v0.2.4...hclient-idn-v0.2.5) - 2026-09-16
+
+### Other
+
+- pin punycode's arithmetic on RFC 3492's own published vectors
+
 ## [0.2.4](https://github.com/GamePad64/hclient/compare/hclient-idn-v0.2.3...hclient-idn-v0.2.4) - 2026-09-15
 
 ### Fixed

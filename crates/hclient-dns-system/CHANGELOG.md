@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-dns-system-v0.1.0-alpha.10...hclient-dns-system-v0.1.0-alpha.11) - 2026-09-16
+
+### Added
+
+- `trace!` the decisions that a failure cannot be read backwards from
+
+### Other
+
+- `SystemDns` must not disown the address types it always supports
+
 ## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-dns-system-v0.1.0-alpha.9...hclient-dns-system-v0.1.0-alpha.10) - 2026-09-15
 
 ### Other

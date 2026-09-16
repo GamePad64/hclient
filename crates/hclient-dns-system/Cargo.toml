@@ -1,6 +1,6 @@
 [package]
 name = "hclient-dns-system"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 description = "System resolver (getaddrinfo + res_query) for hclient via the Blocking capability"
 keywords     = ["hclient", "dns", "resolver", "getaddrinfo"]
 categories   = ["network-programming"]

@@ -1,6 +1,6 @@
 [package]
 name = "hclient"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 description = "Cross-platform async HTTP client: one codebase for native, browser, and WASI"
 keywords     = ["hclient", "http", "http-client", "async", "wasm"]
 categories   = ["web-programming::http-client", "asynchronous", "wasm"]
@@ -556,10 +556,10 @@ web-time      = "1.1.0"
 thiserror      = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-hclient-native     = { path = "../hclient-native", version = "0.1.0-alpha.10", optional = true }
+hclient-native     = { path = "../hclient-native", version = "0.1.0-alpha.11", optional = true }
 hclient-rt-tokio   = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.10", optional = true }
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.10", optional = true, features = ["platform-verifier"] }
-hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.10", optional = true }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.11", optional = true, features = ["platform-verifier"] }
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.11", optional = true }
 
 # The browser-only extra feature `jitter`'s `getrandom` call needs: on
 # `wasm32-unknown-unknown` `getrandom` has no default backend and must be
@@ -599,7 +599,7 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 # pull in a transport at all, on any target — the same contract the four
 # native entries keep.
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
-hclient-fetch = { path = "../hclient-fetch", version = "0.1.0-alpha.10", optional = true }
+hclient-fetch = { path = "../hclient-fetch", version = "0.1.0-alpha.11", optional = true }
 
 [dev-dependencies]
 static_assertions = { workspace = true }
