@@ -217,7 +217,13 @@ fn an_unsupported_resolve_timeout_is_refused_under_its_own_name() {
         .timeouts(Timeouts::new().maybe_resolve(secs(1)))
         .build()
         .expect_err("the backend says it cannot bound resolution");
-    assert_eq!(err.what, "resolve_timeout", "{err}");
+    assert_eq!(
+        err.unsupported()
+            .expect("a setting the transport cannot honour, not a coding token")
+            .what,
+        "resolve_timeout",
+        "{err}"
+    );
 
     // The control: the same setting against a backend that can.
     caps.timeouts.resolve = true;

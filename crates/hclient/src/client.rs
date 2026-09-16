@@ -5,13 +5,14 @@ use crate::config::{
 };
 use crate::deadline::{Deadline, within};
 use crate::decompress::{self, Decompressed};
+use crate::error::BuildError;
 use crate::error::{BadLocation, BodyVanishedBeforeRetry, RedirectRefused};
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
 use hclient_core::body::{RequestBody, RetryKind};
 use hclient_core::caps::Capabilities;
-use hclient_core::error::{Error, ErrorKind, UnsupportedCapability};
+use hclient_core::error::{Error, ErrorKind};
 use hclient_core::req::Timeouts;
 use hclient_core::timer::Timer;
 use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
@@ -163,6 +164,101 @@ impl ClientBuilder {
     #[must_use]
     pub fn response_limit(mut self, bytes: u64) -> Self {
         self.config.response_limit = Some(bytes);
+        self
+    }
+
+    /// The content codings this client asks for and reverses, **in the
+    /// order they go into `Accept-Encoding`**, replacing the default.
+    ///
+    /// ```no_run
+    /// # #[cfg(all(feature = "gzip", feature = "default-transport", not(target_family = "wasm")))]
+    /// # fn f() -> Result<(), Box<dyn std::error::Error>> {
+    /// use hclient::compression::Gzip;
+    /// use std::sync::Arc;
+    ///
+    /// // gzip alone — the lowest-amplification coding of the four, and
+    /// // what Go's `net/http` asks for on its own.
+    /// let client = hclient::Client::builder(hclient::default_transport()?)
+    ///     .decompression([Arc::new(Gzip) as hclient::SharedContentCoding])
+    ///     .build()?;
+    ///
+    /// // Or none at all: no `Accept-Encoding` goes out and nothing is
+    /// // decoded.
+    /// let raw = hclient::Client::builder(hclient::default_transport()?)
+    ///     .decompression([])
+    ///     .build()?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// # The three things this is for
+    ///
+    /// **Turning decompression off**, with an empty list: no
+    /// `Accept-Encoding` goes out and nothing is decoded. That is the one
+    /// lever the compiled-in set could not give, and the argument for it
+    /// is CPU rather than size or safety — measured at 1900 MiB/s gzip
+    /// decode, a service doing 5000 RPS of 1.7 MiB responses spends
+    /// **4.5 cores** reversing codings. Size is settled by the cargo
+    /// features (a compiled-but-unused coding costs nothing at run time)
+    /// and safety by [`response_limit`](Self::response_limit), so this is
+    /// the axis neither of those answers.
+    ///
+    /// **Narrowing what is asked for**, which a build could not do:
+    /// Cargo unifies features across a graph, so a library deep in a tree
+    /// that enables `brotli` decides what every client in the process
+    /// asks for — and brotli's amplification is 1:638,751 against gzip's
+    /// 1:1,028. Setting `Accept-Encoding` by hand is not the same thing
+    /// and never was: a caller-set header takes the *whole* negotiation,
+    /// so it disables decoding too.
+    ///
+    /// **Adding a coding this crate does not ship**, by implementing
+    /// [`ContentCoding`](crate::ContentCoding) — which is what makes this
+    /// a seam rather than a subset switch, and brings content codings into
+    /// line with every other extension point here.
+    ///
+    /// # What it does not change
+    ///
+    /// The four refusals in `decompress::negotiate` stand whatever is in
+    /// this list: a transport that decodes internally, a caller who set
+    /// `Accept-Encoding` themselves, a `Range` request and a `HEAD` each
+    /// get no header and no decoding. A list is what this client *may*
+    /// ask for, not an instruction to ask.
+    ///
+    /// Nor does it widen what a build can do: a coding is a value, so
+    /// [`compression::Brotli`](crate::compression::Brotli) does not exist
+    /// without the `brotli` feature and naming it in a build without one
+    /// is a compile error rather than a coding that silently never
+    /// matches.
+    ///
+    /// # Ordering is the whole of the preference
+    ///
+    /// There is no `q`-value: the list goes out in the order written, and
+    /// a server picking the first token it knows picks whatever was put
+    /// first. The default is densest-first with `deflate` last, which was
+    /// a `preference: u8` field on a registry entry before a slice could
+    /// carry it.
+    ///
+    /// # Errors
+    ///
+    /// None here — a coding whose token is not an RFC 9110 §5.6.2 token is
+    /// refused by [`build`](Self::build), so that a caller who configures
+    /// several is told which, rather than this method returning a
+    /// `Result` that every correct call site has to `?`.
+    #[must_use]
+    pub fn decompression(
+        mut self,
+        codings: impl Into<Vec<crate::decompress::SharedContentCoding>>,
+    ) -> Self {
+        // `impl Into<Vec<..>>` rather than `IntoIterator<Item = Arc<..>>`,
+        // which was the other candidate: an array of `Arc<Gzip>` and an
+        // array of `Arc<dyn ContentCoding>` are different types, and an
+        // iterator bound makes the first infer while the second needs the
+        // `as _` the doc example shows. That reads as a wart and is the
+        // honest one: every element must already be the erased type for
+        // the list to be heterogeneous at all, so a bound that hid it
+        // would only hide it for the homogeneous case. `Into<Vec<_>>`
+        // takes a `Vec` and an array of the erased type both, which are
+        // the two ways a list gets written.
+        self.config.decompression = codings.into();
         self
     }
 
@@ -498,17 +594,30 @@ impl ClientBuilder {
         self
     }
 
-    /// Checks the configuration against the transport's capabilities. Not
-    /// a single silent no-op: an unsupported setting is an error, here and
-    /// now.
+    /// Checks the configuration against the transport's capabilities, and
+    /// the configured content codings against RFC 9110. Not a single
+    /// silent no-op: an unsupported setting is an error, here and now.
     ///
     /// # Errors
     ///
-    /// [`UnsupportedCapability`], naming the setting, when the transport's
-    /// [`Capabilities`](crate::caps::Capabilities) cannot honour something
-    /// this builder was configured with.
-    pub fn build(self) -> Result<Client, UnsupportedCapability> {
+    /// [`BuildError::Unsupported`], naming the setting, when the
+    /// transport's [`Capabilities`](crate::caps::Capabilities) cannot
+    /// honour something this builder was configured with — which is every
+    /// refusal this function used to make, and is why that variant carries
+    /// the [`UnsupportedCapability`](crate::error::UnsupportedCapability) it
+    /// used to return.
+    ///
+    /// [`BuildError::InvalidCodingToken`] when a coding handed to
+    /// [`decompression`](Self::decompression) names itself something that
+    /// is not an RFC 9110 §5.6.2 token. **Checked here rather than where
+    /// the header is assembled**, because that is the one place a caller
+    /// is still holding the builder: `Accept-Encoding` is written once per
+    /// request, and the alternative to this refusal was an `expect` that
+    /// became reachable the moment a token could come from outside this
+    /// crate. See [`InvalidCodingToken`](crate::error::InvalidCodingToken).
+    pub fn build(self) -> Result<Client, BuildError> {
         check_supported(&self.config, self.transport.capabilities(), self.backend)?;
+        crate::decompress::validate(&self.config.decompression)?;
         Ok(Client {
             inner: Arc::new(Inner {
                 backend: self.backend,
@@ -926,11 +1035,20 @@ impl Client {
         // allocates — and this runs once per operation rather than once
         // per hop.
         let method = req.method().clone();
+        // **The list is the client's, not this build's**, which is the one
+        // thing that changed here when content codings became a seam: this
+        // read `Decoders::compiled_in()`, a value derived from the cargo
+        // features at every call. It is `self.config.decompression` now —
+        // whatever `ClientBuilder::decompression` was given, or the
+        // compiled-in default where it was never called — and `negotiate`
+        // hands the same slice back, so the borrow that reaches
+        // `decoder_for` below is the client's own and outlives the
+        // request.
         let decoders = decompress::negotiate(
             &method,
             req.headers_mut(),
             self.inner.transport.capabilities(),
-            decompress::Decoders::compiled_in(),
+            &self.config.decompression,
         );
         // The deadline starts HERE, once, and not inside the loop below:
         // a bound that restarted on every redirect hop would not be a

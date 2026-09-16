@@ -385,7 +385,10 @@ fn a_policy_against_an_internally_redirecting_backend_is_refused() {
     // predicate was not told the *policy* was the problem. With one
     // setter there is one thing to name, and the concern has no subject.
     assert_eq!(
-        err.what, "redirect_policy",
+        err.unsupported()
+            .expect("a setting the transport cannot honour, not a coding token")
+            .what,
+        "redirect_policy",
         "the refusal names the setting the caller actually wrote: {err}"
     );
 

@@ -22,7 +22,7 @@ pub type SharedRetryPolicy = std::sync::Arc<dyn hclient_proto::retry::RetryPolic
 
 pub type SharedRedirectPolicy = std::sync::Arc<dyn RedirectPolicy + Send + Sync>; // send-bound-exception: amendment-C12
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Config {
     pub timeouts: Timeouts,
@@ -144,6 +144,65 @@ pub struct Config {
     /// field cannot be forgotten, and a field that appears and disappears
     /// takes that check into half the builds with it.
     pub cache: bool,
+    /// The content codings this client asks for, **in the order they go
+    /// into `Accept-Encoding`**, and the only ones it will reverse.
+    ///
+    /// Defaults to whichever of
+    /// [`compression::Gzip`](crate::compression::Gzip),
+    /// [`Brotli`](crate::compression::Brotli),
+    /// [`Zstd`](crate::compression::Zstd) and
+    /// [`Deflate`](crate::compression::Deflate) the cargo features
+    /// compiled in, densest first and `deflate` last —
+    /// [`ClientBuilder::decompression`](crate::ClientBuilder::decompression)
+    /// replaces it wholesale and an empty list turns decompression off.
+    ///
+    /// **A default rather than an empty list, deliberately**, and the
+    /// measurement is what decided it: 40 test files in this crate call
+    /// `Client::builder` and none mentions a coding, because the
+    /// compiled-in set applied silently. Requiring a list would have made
+    /// every one of those call sites — and every consumer's — name the
+    /// codings they had been getting, and would have changed behaviour on
+    /// upgrade for everyone. What the open seam replaced is the
+    /// *machinery*, not the behaviour.
+    ///
+    /// **One list, three readers**, which is the property the registry it
+    /// replaced existed to keep: what goes into `Accept-Encoding`, what a
+    /// `Content-Encoding` is matched against, and which decoder is built
+    /// all read this field, so a client cannot advertise a coding it will
+    /// not reverse or reverse one it did not ask for.
+    ///
+    /// Every token here is checked against RFC 9110 §5.6.2 at `build()`
+    /// — see [`InvalidCodingToken`](crate::error::InvalidCodingToken) for
+    /// why that check is a refusal rather than a panic where the header is
+    /// written.
+    pub decompression: Vec<crate::decompress::SharedContentCoding>,
+}
+
+/// Hand-written for one field: [`decompression`](Config::decompression)
+/// defaults to the codings the cargo features compiled in, which is not
+/// `Vec::default()`.
+///
+/// **The other nine are `Default::default()` verbatim**, written out
+/// rather than reached through a `..Default::default()` — which would be
+/// this impl calling itself — so a tenth field is a compile error here
+/// exactly as it is in `check_supported`. That is the same recipe for the
+/// same reason, met from the construction side rather than the
+/// destructuring one.
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            timeouts: Timeouts::default(),
+            response_limit: None,
+            default_headers: http::HeaderMap::default(),
+            retry: None,
+            redirect: None,
+            base_url: None,
+            total: None,
+            cookies: false,
+            cache: false,
+            decompression: crate::decompress::builtin(),
+        }
+    }
 }
 
 /// The URI the request will actually go out on: `url`, resolved against
@@ -354,6 +413,22 @@ pub fn check_supported(
         // the problem.
         cookies,
         cache,
+        // **Not checked for support, and the reason is the one field of
+        // `Capabilities` that already answers about it.** A client-side
+        // coding list against a transport reporting
+        // `response_decompression` is not refused, it is *obeyed* by
+        // standing aside: `decompress::negotiate` returns the empty slice
+        // there, sends no `Accept-Encoding` and decodes nothing. So the
+        // setting is honoured rather than ignored, which is what
+        // `UnsupportedCapability` exists to refuse — and refusing it
+        // instead would break every caller who configures one client for
+        // several backends, since the same list is right for all of them.
+        //
+        // It has a check of its own two lines down, and that check is
+        // about the codings themselves rather than about the transport:
+        // a token that will not go in a header, which no backend has an
+        // opinion about.
+        decompression: _,
     } = cfg;
     check_default_headers_supported(default_headers, caps, backend)?;
     check_timeouts_supported(timeouts, caps, backend)?;

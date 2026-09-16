@@ -396,6 +396,20 @@ pub fn default_transport() -> DefaultTransport {
 pub use config::{Config, Timeouts};
 pub use deadline::NoClock;
 
+pub use decompress::compression;
+/// The content-coding seam: implement [`ContentCoding`] and [`Decode`],
+/// or hand [`ClientBuilder::decompression`] the ones in
+/// [`compression`].
+///
+/// At the root rather than behind a door of their own, unlike the four
+/// values in [`compression`], and the split is the front page's rule
+/// about who reaches for what: a caller *configuring* writes
+/// `compression::Gzip` and never names these two, where a caller
+/// *implementing* a coding names both in one `impl` block each. Same
+/// division [`retry`] draws between `Standard` and the trait it
+/// implements.
+pub use decompress::{ContentCoding, Decode, Decoder, SharedContentCoding};
+
 // This list must cover not just `Capabilities`/
 // `RequestBody`/`UnsupportedCapability`, but EVERY `hclient-core` type
 // reachable from the signature, a field, or a variant of something already

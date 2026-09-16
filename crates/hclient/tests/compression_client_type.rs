@@ -151,8 +151,13 @@ fn the_coding_a_body_reports_is_the_one_it_reversed() {
 
         let resp = futures_executor::block_on(c.get("https://a/x").send()).expect("responds");
         let body = resp.into_parts().1;
+        // `as_deref`, because `coding()` is a `Cow` since the coding
+        // set became an open seam: a body holds its decoder and not the
+        // `ContentCoding` that built it, so there is no `'static` string
+        // for a third-party coding to be named by. The four built in are
+        // `Cow::Borrowed`, so this comparison allocates nothing.
         assert_eq!(
-            body.coding(),
+            body.coding().as_deref(),
             Some(token),
             "a `{token}` response reports `{token}`"
         );

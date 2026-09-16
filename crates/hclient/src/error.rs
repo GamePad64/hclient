@@ -171,9 +171,140 @@ pub struct LineTooLong {
 #[non_exhaustive]
 pub struct DecodeFailed {
     /// The coding that was attempted, as it appeared on the wire.
-    pub coding: &'static str,
+    ///
+    /// **A [`Cow`](std::borrow::Cow) since the coding list became a
+    /// caller's**, for the reason
+    /// [`ClientBody::coding`](crate::body::ClientBody::coding) is one: a
+    /// body holds its decoder rather than the
+    /// [`ContentCoding`](crate::ContentCoding) that built it, so a coding
+    /// somebody else wrote has no `'static` string here to be named by.
+    /// The four this crate ships are still `Cow::Borrowed`, and a
+    /// `d.coding == "gzip"` comparison reads exactly as it did.
+    pub coding: std::borrow::Cow<'static, str>,
     #[source]
     pub(crate) source: std::io::Error,
+}
+
+/// What [`ClientBuilder::build`](crate::ClientBuilder::build) refuses.
+///
+/// # Why `build()` stopped returning [`UnsupportedCapability`] directly
+///
+/// It returned that type alone while every refusal at `build()` was one
+/// answer to one question — *can the transport honour this setting* — and
+/// [`InvalidCodingToken`] is not that question: nothing about a backend
+/// decides whether a [`ContentCoding`](crate::ContentCoding)'s own token
+/// is a token, and `UnsupportedCapability`'s two fields are
+/// `&'static str`, so it could not carry a caller's spelling even if the
+/// message *`backend X does not support Y`* had been the right sentence.
+///
+/// **The shape is `Client::new`'s, one layer down.** That constructor
+/// faced the same fork — a narrow typed refusal beside a second cause of a
+/// different kind — and this file records what it settled on: keep the
+/// wider type, because the discriminant already draws the line the two
+/// types were drawing, and a `try_` twin that also returned `Result` was
+/// marking the one fallible about *more things* rather than the one
+/// fallible at all. An enum is that answer where there is no `ErrorKind`
+/// to lean on, and the variant is the discriminant.
+///
+/// Both variants keep their payload public and reachable, so the
+/// downcast-free question — *which refusal was it* — is a `match`, and
+/// nothing that used to be typed became a string.
+///
+/// `Client::new()` folds this into an `ErrorKind::Unsupported`
+/// [`Error`](hclient_core::error::Error) exactly as it folded the narrow
+/// type, so a caller of the convenience constructor sees no change at all.
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum BuildError {
+    /// A setting the chosen transport cannot honour.
+    ///
+    /// Every refusal `build()` made before the coding list became a
+    /// caller's, and the whole of what `check_supported` answers.
+    #[error(transparent)]
+    Unsupported(#[from] UnsupportedCapability),
+    /// A configured content coding whose token will not go in a header.
+    #[error(transparent)]
+    InvalidCodingToken(#[from] InvalidCodingToken),
+}
+
+impl BuildError {
+    /// The capability refusal, where that is what this is.
+    ///
+    /// **An accessor rather than a `match` at nine call sites**, and the
+    /// nine are what argued for it: every one of them asserts *which
+    /// setting was refused* — `err.what == "cookie_jar"`,
+    /// `err.backend.contains("MockTransport")` — which is the question
+    /// this error exists to answer and which a `match` with an
+    /// `unreachable!()` arm buries. It is [`Option`] rather than a panic
+    /// for the ordinary reason: the other variant is reachable, and a
+    /// caller who asks the wrong question should get `None` rather than an
+    /// abort.
+    ///
+    /// The variant is still there for a caller who wants to branch on
+    /// both, and both payloads are public. This is the shortcut for the
+    /// common case, not a second way of saying the same thing.
+    #[must_use]
+    pub fn unsupported(&self) -> Option<&UnsupportedCapability> {
+        match self {
+            Self::Unsupported(u) => Some(u),
+            Self::InvalidCodingToken(_) => None,
+        }
+    }
+
+    /// The coding refusal, where that is what this is — [`unsupported`]'s
+    /// twin, so that neither variant is the one a caller has to write a
+    /// `match` for.
+    ///
+    /// [`unsupported`]: Self::unsupported
+    #[must_use]
+    pub fn invalid_coding_token(&self) -> Option<&InvalidCodingToken> {
+        match self {
+            Self::InvalidCodingToken(t) => Some(t),
+            Self::Unsupported(_) => None,
+        }
+    }
+}
+
+/// A [`ContentCoding`](crate::ContentCoding) whose own name will not go in
+/// a header.
+///
+/// Raised by [`ClientBuilder::build`](crate::ClientBuilder::build), never
+/// per request, because that is where a configuration this client cannot
+/// honour is refused — `check_supported`'s own shape one field over, where
+/// what cannot be honoured is a setting the transport will not keep and
+/// here it is a token `Accept-Encoding` will not carry.
+///
+/// **The alternative was a panic and the other alternative was silence**,
+/// which is why this type exists rather than either. `accept_encoding`
+/// assembled its value with an `expect` justified by *"every token is a
+/// compile-time ASCII constant… nothing here comes from the network or the
+/// caller"* — true of a closed set of codings and false the moment the
+/// seam opened, so a coding answering `"my coding"` would have panicked
+/// once per request. Skipping it instead would have been a client that
+/// never asks for a coding the caller configured and never says so, which
+/// is the *silently ignored setting* defect this workspace has closed four
+/// times.
+///
+/// A `token` is RFC 9110 §5.6.2's production: one or more of the ASCII
+/// alphanumerics and ``!#$%&'*+-.^_`|~``. The two characters worth naming
+/// are the space and the comma, which are what would let one coding's
+/// token be read as two.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "the content coding `{coding}` offers `{token}`, which is not an RFC 9110 §5.6.2 token and cannot go in a header"
+)]
+#[non_exhaustive]
+pub struct InvalidCodingToken {
+    /// The offending spelling — the coding's own token, or one of its
+    /// aliases.
+    pub token: String,
+    /// The coding it came from, by its
+    /// [`token`](crate::ContentCoding::token), so that a caller with
+    /// several configured knows which to look at. Equal to
+    /// [`token`](Self::token) when it is the token itself that is
+    /// malformed, which is the commoner case and reads as a repetition
+    /// rather than as a puzzle.
+    pub coding: String,
 }
 
 /// A `4xx` or `5xx` the caller asked to be told about.

@@ -200,7 +200,10 @@ fn a_cache_against_a_transport_that_owns_one_is_refused_at_build() {
     // setting would read plausibly and be wrong, which is the failure the
     // cookie jar's twin of this test exists to catch one field over.
     assert_eq!(
-        err.what, "cache",
+        err.unsupported()
+            .expect("a setting the transport cannot honour, not a coding token")
+            .what,
+        "cache",
         "the refusal must name the setting: {err}"
     );
 

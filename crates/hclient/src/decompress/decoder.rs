@@ -2,10 +2,14 @@
 //!
 //! One file per coding sits beside this one: [`gzip`](super::gzip),
 //! [`brotli`](super::brotli), [`deflate`](super::deflate) and
-//! [`zstd`](super::zstd). Which of them exist is the `mod` declarations in
-//! `mod.rs`, and which are reachable is the registry there; **none of
-//! those four files contains a `#[cfg]` at all**, which is what putting
-//! the gate on the declaration buys.
+//! [`zstd`](super::zstd). Which of them exist is the `mod` declarations
+//! in `mod.rs`, and which are *reachable* is the
+//! [`ContentCoding`](super::ContentCoding) list a client carries —
+//! **which was a registry in `mod.rs` until the set of codings became
+//! open**, and is now `Config::decompression`, so the answer is
+//! per-client rather than per-build. **None of those four files contains
+//! a `#[cfg]` at all**, which is what putting the gate on the
+//! declaration buys and which the change did not disturb.
 //!
 //! # Why a trait where this was an enum, and what the measurement said
 //!
@@ -47,13 +51,15 @@
 //! this client does about a coding has one place to look rather than two
 //! and no rule for which.
 //!
-//! What it does **not** buy, and here the old sentence was right: nothing
-//! a caller can see, and no coding becomes possible that was not possible
-//! before. This is a shape, and what recommends it is the `#[cfg]` count
-//! and where a coding's rules live.
+//! What it did **not** buy at the time, and here the old sentence was
+//! right: nothing a caller could see, and no coding became possible that
+//! was not possible before. That has since stopped being true, and the
+//! trait object is why — publishing [`Decode`] was a visibility change
+//! and not a rewrite, because the three methods were already IO-free,
+//! object-safe and stateful per body. A shape chosen for the `#[cfg]`
+//! count turned out to be the shape an open seam needs, which is worth
+//! recording as luck rather than foresight.
 //!
-//! [`Decompressed`]: super::Decompressed
-//! [`Coding::decoder`]: super::Coding::decoder
 
 use bytes::Bytes;
 use std::fmt::Debug;
@@ -66,9 +72,12 @@ use std::fmt::Debug;
 /// Where a library's decoder is pull-shaped instead, the buffering is
 /// this crate's: see `zstd`'s module doc.
 ///
-/// **This trait declares no auto trait, and [`Decoder`] does** — see
-/// there for the defect that made the bound necessary and for why it is
-/// stated at the alias rather than here.
+/// **This trait declares no auto trait, and the alias this crate boxes it
+/// into does** — `Box<dyn Decode + Send>`, which is what
+/// [`ContentCoding::decoder`](super::ContentCoding::decoder) hands back.
+/// The defect that made the bound necessary, and why it is stated at the
+/// alias rather than here, is recorded on that alias in this file's
+/// source.
 ///
 /// **`&mut self` on `finish`, although two of the four codings would
 /// rather consume their writer.** `Decompressed` holds its decoder in a
@@ -77,11 +86,32 @@ use std::fmt::Debug;
 /// local problem onto the three codings that do not have it. Brotli keeps
 /// the `Option` inside its own type instead, where its own doc explains
 /// it.
-pub(crate) trait Decode: Debug {
+///
+/// # Public, because the set of codings is open
+///
+/// This was `pub(crate)`, and its doc could say *"not a seam a caller
+/// implements"* while the codings were a compiled-in table. They are a
+/// [`ContentCoding`](super::ContentCoding) list a caller writes now, and
+/// [`ContentCoding::decoder`](super::ContentCoding::decoder) hands one of
+/// these back — so implementing this trait is how a coding of somebody
+/// else's does its work. Nothing about the three methods changed to make
+/// that possible; they were already IO-free, object-safe and stateful per
+/// body, which is what the decision to publish rested on rather than a
+/// rewrite.
+pub trait Decode: Debug {
     // send-bound-exception: amendment-C14
     /// Feeds `input` in and takes whatever plaintext came out — possibly
     /// nothing, when the coding needs more input before it can produce a
     /// byte.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the coding makes of bytes that are not a valid stream in
+    /// it. The error reaches the caller as an
+    /// [`ErrorKind::Decode`](hclient_core::error::ErrorKind::Decode)
+    /// carrying a [`DecodeFailed`](crate::error::DecodeFailed) that names
+    /// this coding, and the body ends there: a decoder that has answered
+    /// `Err` is never pushed to again.
     fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error>;
 
     /// The end of the compressed stream: whatever is still buffered, plus
@@ -97,13 +127,34 @@ pub(crate) trait Decode: Debug {
     /// Raw DEFLATE is the one coding here with no trailer of its own, and
     /// it is not an exception: RFC 1951 §3.2.3's `BFINAL` bit is the end
     /// marker, and `flate2` reports a stream that ended without one.
+    ///
+    /// # Errors
+    ///
+    /// An incomplete stream, and that is what this method is **for**: a
+    /// body cut off mid-transfer decodes perfectly well up to the cut, so
+    /// the only thing that can report it is the check at the end. A coding
+    /// with no integrity check of its own has nothing to raise here and
+    /// should answer `Ok` — which is a decision about that coding rather
+    /// than about this trait, and it is the difference between a truncated
+    /// response and a shorter document.
     fn finish(&mut self) -> Result<Bytes, std::io::Error>;
 
     /// The token as it appeared on the wire.
     ///
     /// `"deflate"` whichever wrapper that coding's sniff chose: the wire
     /// has one spelling for both — see `deflate`'s module doc.
-    fn token(&self) -> &'static str;
+    ///
+    /// **`&str` rather than `&'static str`, which is what
+    /// [`ClientBody::coding`](crate::body::ClientBody::coding) pays for in
+    /// a [`Cow`](std::borrow::Cow).** A decoder may name itself out of its
+    /// own state — a coding configured with a token at run time builds
+    /// decoders that answer it — and a body holds the decoder rather than
+    /// the coding, so the string a caller is handed has to be copied out
+    /// of a borrow that ends with the call. The coding's own
+    /// [`token`](super::ContentCoding::token) is the same signature for
+    /// the opposite reason: it lends, because an `Arc<dyn ContentCoding>`
+    /// outlives every call made on it.
+    fn token(&self) -> &str;
 }
 
 /// The decoder for one response body.
@@ -118,8 +169,9 @@ pub(crate) trait Decode: Debug {
 ///
 /// The enum this replaced *inferred* `Send` from its concrete payloads. A
 /// `dyn` declares its own auto traits, so the first version of this alias
-/// was `!Send` — and [`Decompressed`](super::Decompressed) wraps every
-/// response body, so `tokio::spawn` of one stopped compiling. That is
+/// was `!Send` — and the wrapper this crate puts round every
+/// response body carries one, so `tokio::spawn` of a response body
+/// stopped compiling. That is
 /// this workspace's own rule met from the direction that costs
 /// something: *a `dyn` that declares no auto traits does not hide `Send`,
 /// it removes it.* `tests/spawnable_body.rs` said so on the first
@@ -134,11 +186,26 @@ pub(crate) trait Decode: Debug {
 /// demand the auto trait where the value is *stored*, never on the seam.
 /// A one-line `type` is a line `cargo fmt` does not reflow.
 ///
-/// It excludes nobody. All four codings are `Send` at their concrete
-/// types, and this is `pub(crate)` — not a seam a caller implements — so
-/// the bound is a fact about four types in this crate rather than a
-/// demand on anybody outside it.
-pub(crate) type Decoder = Box<dyn Decode + Send>; // send-bound-exception: amendment-C14
+/// **Public, and it is the seam's return type rather than a spelling
+/// repeated at every implementor.** Seven `impl`s wrote
+/// `Box<dyn Decode + Send>` out by hand for a day, and
+/// `no-send-or-sync-in-the-core-surface.sh` refused all seven — correctly,
+/// because each was a bare `Send` in the core surface with no marker, and
+/// a marker on seven `fn` lines is seven chances for one to be deleted by
+/// a reflow. Naming the type once is what the rule above already says to
+/// do, and this alias was already the place.
+///
+/// It excludes nobody **and it is now a demand rather than an
+/// observation**, which is the one thing publishing the seam changed
+/// about it. While the codings were a compiled-in table this sentence
+/// read *"a fact about four types in this crate rather than a demand on
+/// anybody outside it"*; [`ContentCoding::decoder`](super::ContentCoding::decoder)
+/// hands back this type, so a third-party decoder holding an [`Rc`](std::rc::Rc)
+/// is `E0277` where it is boxed. That is the right direction and the
+/// alternative is worse: a `Client` whose response body stopped being
+/// `Send` because of a coding somebody installed would break
+/// `tokio::spawn` for every body it never touched.
+pub type Decoder = Box<dyn Decode + Send>; // send-bound-exception: amendment-C14
 
 /// The output buffer a push-shaped decoder writes into.
 ///

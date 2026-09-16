@@ -154,7 +154,10 @@ fn a_forbidden_default_is_refused_at_build() {
         .build()
         .expect_err("a header the transport owns cannot be a client default");
     assert_eq!(
-        err.what, "default_headers",
+        err.unsupported()
+            .expect("a setting the transport cannot honour, not a coding token")
+            .what,
+        "default_headers",
         "the refusal names the setting: {err}"
     );
 

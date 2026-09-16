@@ -206,7 +206,12 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
         .timeouts(Timeouts::new().with_connect(Duration::from_secs(1)))
         .build()
         .unwrap_err();
-    assert_eq!(err.what, "connect_timeout");
+    assert_eq!(
+        err.unsupported()
+            .expect("a setting the transport cannot honour, not a coding token")
+            .what,
+        "connect_timeout"
+    );
 }
 
 /// Only `Location` is read from the response when building the next hop.
@@ -562,8 +567,15 @@ fn a_client_level_policy_against_an_internal_backend_fails_at_build() {
         .redirect(hclient::redirect::Limit::new(0))
         .build()
         .unwrap_err();
-    assert_eq!(err.what, "redirect_policy");
-    assert!(err.backend.contains("MockTransport"), "{}", err.backend);
+    let refused = err
+        .unsupported()
+        .expect("a setting the transport cannot honour, not a coding token");
+    assert_eq!(refused.what, "redirect_policy");
+    assert!(
+        refused.backend.contains("MockTransport"),
+        "{}",
+        refused.backend
+    );
 }
 
 #[test]

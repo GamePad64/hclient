@@ -8,10 +8,16 @@
 //!
 //! There is genuinely little here, and that is worth being able to see:
 //! `flate2`'s decoder is already push-shaped, so this is the wrapper that
-//! names it plus the [`Registration`](super::Registration) that gives it
-//! a token. Set beside `deflate`'s file, which is mostly the argument for
-//! sniffing two wire formats apart, the difference in size is the
-//! difference in how much of a coding this crate has to own.
+//! names it and nothing else. Set beside `deflate`'s file, which is
+//! mostly the argument for sniffing two wire formats apart, the
+//! difference in size is the difference in how much of a coding this
+//! crate has to own.
+//!
+//! **What gives it a token lives elsewhere now**: `compression::Gzip` in
+//! `mod.rs` is the `ContentCoding` a caller names, and this file is the
+//! `Decode` it builds. That split is what publishing the seam did — the
+//! `Registration` this paragraph used to name was one value carrying
+//! both, which worked while the set of codings was closed.
 
 use super::decoder::{Decode, Out, out, take};
 use bytes::Bytes;

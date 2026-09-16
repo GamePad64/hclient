@@ -26,7 +26,6 @@
 
 use hclient::Client;
 use hclient::cookie::CookieJar;
-use hclient::error::UnsupportedCapability;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -396,7 +395,10 @@ fn a_jar_against_a_transport_that_keeps_its_own_is_refused_at_build() {
             .build()
             .expect_err("a client-side jar cannot be honoured here");
         assert_eq!(
-            err.what, "cookie_jar",
+            err.unsupported()
+                .expect("a setting the transport cannot honour, not a coding token")
+                .what,
+            "cookie_jar",
             "the refusal must name the setting: {err}"
         );
     });
@@ -440,7 +442,12 @@ fn no_jar_against_a_jar_owning_transport_is_fine() {
         caps.owns_cookie_jar = true;
         let m = MockTransport::new().with_capabilities(caps);
 
-        let built: Result<_, UnsupportedCapability> = Client::builder(m).build();
+        // The type is half the assertion, and it is `BuildError` since
+        // `build()` grew a second refusal that no backend has an opinion
+        // about — a content coding whose token will not go in a header.
+        // What this test is about is unchanged: a client that never
+        // mentioned cookies is not refused.
+        let built: Result<_, hclient::error::BuildError> = Client::builder(m).build();
         assert!(
             built.is_ok(),
             "a client that never mentioned cookies must not be refused by a \
