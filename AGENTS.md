@@ -101,6 +101,34 @@ by hand where nextest prints one `Summary`. Nextest also runs each test in
 its own process, which matters here because mutation testing is this
 project's primary review technique.
 
+**A survivor count is not a gap count, and it points the wrong way.**
+`just mutants <crate>` is the entry point — never a bare `cargo
+mutants`, which inherits this machine's shared `[build] build-dir` that
+`CARGO_TARGET_DIR` does **not** override, so concurrent sweeps link each
+other's mutated object code: three runs over one unchanged tree reported
+**65, 37 and 26**. What separates a gap from an artefact is written up in
+`.notes/mutation-survivors-classified.md`, including the four gating
+shapes and the measurement that a mutant inside a `#[cfg] mod` this host
+excludes is never even type-checked.
+
+The ranking lesson is the one worth carrying: **rank by survivors per
+test, not by survivors**, and treat even that as a pointer rather than a
+verdict. `hclient-tls` sat second from the bottom on count — 12 — and had
+the worst ratio in the workspace at **6 tests over 1131 lines**; **10 of
+its 12 were genuine gaps**, because the only implementation it ships is
+`NoTls`, which overrides or moots every defaulted member of the seam, so
+nothing ever *took* a default. A small crate with a large seam produces
+few mutants and hides the most. `hclient-rt-nal` has a worse ratio still
+and is fine, because both its macros expand one shared body that its
+tests reach four ways.
+
+And **the output directory is part of the isolation**, which the recipe
+learned the expensive way: it passed `-o` into a private scratch dir and
+then copied the result back to a fixed `./mutants.out`, so two concurrent
+sweeps overwrote each other and one crate's directory held 40 of another
+crate's logs. That failure is silent — what you get is a well-formed
+survivor list for a crate you did not ask about.
+
 Two things nextest does not cover. Doctests: it cannot run them, so
 `just test-doc` does — `cargo test --doc --workspace --all-features`, four
 of them today, and **a CI job calls that recipe**.
