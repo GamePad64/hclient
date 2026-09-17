@@ -151,3 +151,110 @@ impl Display for UnsupportedUdpOffload {
 }
 
 impl StdError for UnsupportedUdpOffload {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::caps::TcpOptsSupport;
+
+    /// Both list-shaped errors write their own separators — `" "` before
+    /// the first name and `", "` before every one after it — and until
+    /// this module nothing read a rendered message at all. `caps.rs`'s
+    /// tests assert `contains(name)`, which is true of every separator a
+    /// mutation can produce, so all four `i > 0` mutants survived the
+    /// suite and the whole `UnsupportedUdpOffload::fmt` body did too.
+    ///
+    /// Pinned as a whole string rather than by `contains`, because the
+    /// defect these errors exist to prevent is a caller reading the
+    /// message: `"…: gso, ecn"` and `"…:, gso, ecn"` name the same two
+    /// offloads and only one of them is a sentence.
+    #[test]
+    fn the_tcp_message_separates_names_with_a_comma_and_the_first_with_a_space() {
+        let one = UnsupportedTcpOpts {
+            missing: TcpOptsSupport::NONE.nodelay(true),
+        };
+        assert_eq!(
+            one.to_string(),
+            "this runtime cannot apply these TCP socket options, and does not ignore them: \
+             nodelay (a runtime that does apply one declares it in TcpConnect::APPLIES)"
+        );
+
+        // Two names, which is the case that discriminates: with one name
+        // the separator is whatever the `else` arm writes whatever the
+        // condition does.
+        let two = UnsupportedTcpOpts {
+            missing: TcpOptsSupport::NONE.nodelay(true).reuse_address(true),
+        };
+        assert_eq!(
+            two.to_string(),
+            "this runtime cannot apply these TCP socket options, and does not ignore them: \
+             nodelay, reuse_address \
+             (a runtime that does apply one declares it in TcpConnect::APPLIES)"
+        );
+
+        // And the empty case, which no caller can reach — `reject_unsupported`
+        // returns `Ok` when nothing is missing — but which the `Display` is
+        // free to render, so it is pinned rather than left to a reader to
+        // work out. It is the only rendering with no separator at all.
+        let none = UnsupportedTcpOpts {
+            missing: TcpOptsSupport::NONE,
+        };
+        assert_eq!(
+            none.to_string(),
+            "this runtime cannot apply these TCP socket options, and does not ignore them: \
+             (a runtime that does apply one declares it in TcpConnect::APPLIES)"
+        );
+    }
+
+    #[test]
+    fn the_udp_message_names_every_offload_in_the_same_shape() {
+        assert_eq!(
+            UnsupportedUdpOffload {
+                gso: true,
+                ecn: false
+            }
+            .to_string(),
+            "this socket does not have these UDP offloads, and does not silently drop them: gso"
+        );
+        // `ecn: true` is unreachable from `Datagrams::reject_unsupported`
+        // today — see that method's own comment, where the `ecn` local is a
+        // deliberate constant `false`. The field is `pub(crate)`, so this
+        // module can still build the value, and it is worth building: the
+        // two-name rendering is the only one where the separator between
+        // names is observable, and `names()`' `ecn` arm has no other reader.
+        assert_eq!(
+            UnsupportedUdpOffload {
+                gso: true,
+                ecn: true
+            }
+            .to_string(),
+            "this socket does not have these UDP offloads, and does not silently drop them: \
+             gso, ecn"
+        );
+        assert_eq!(
+            UnsupportedUdpOffload {
+                gso: false,
+                ecn: true
+            }
+            .to_string(),
+            "this socket does not have these UDP offloads, and does not silently drop them: ecn"
+        );
+    }
+
+    /// `names()` is the half a caller reads as data rather than as prose,
+    /// and the `ecn` arm of the UDP one is reachable from nowhere else in
+    /// the workspace.
+    #[test]
+    fn names_are_yielded_in_field_order_and_only_for_offending_entries() {
+        let both = UnsupportedUdpOffload {
+            gso: true,
+            ecn: true,
+        };
+        assert_eq!(both.names().collect::<Vec<_>>(), ["gso", "ecn"]);
+        let neither = UnsupportedUdpOffload {
+            gso: false,
+            ecn: false,
+        };
+        assert_eq!(neither.names().count(), 0);
+    }
+}

@@ -598,3 +598,130 @@ fn poll_shutdown_propagates_error_from_poll_close() {
         other => panic!("expected Ready(Err(_)), got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------
+// `poll_write_vectored` forwards, and it was reached by nothing at all.
+//
+// `is_write_vectored` answers `false`, so hyper coalesces and never calls
+// the vectored path itself — which is why the whole method survived the
+// suite twice over, as `Ok(0)` and as `Ok(1)`. The method is still on a
+// public `hyper::rt::Write` impl and a caller that is not hyper may call
+// it, and both mutants are the shape that loses data silently: `Ok(0)`
+// means "wrote nothing" to a caller that will then retry for ever, and
+// `Ok(1)` under-reports a write that really happened, so the caller
+// resends bytes the sink already has.
+
+/// Records the vectored call separately from the ordinary one, so a
+/// forwarding that quietly degraded into `poll_write` of the first buffer
+/// — which is exactly what `futures-io`'s own default does — is visible
+/// rather than merely arithmetically right.
+struct VectoredRecorder(Arc<Mutex<(Vec<&'static str>, Vec<u8>)>>);
+
+impl AsyncWrite for VectoredRecorder {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let mut r = self.0.lock().unwrap();
+        r.0.push("write");
+        r.1.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let mut r = self.0.lock().unwrap();
+        r.0.push("write_vectored");
+        let mut n = 0;
+        for b in bufs {
+            r.1.extend_from_slice(b);
+            n += b.len();
+        }
+        Poll::Ready(Ok(n))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[test]
+fn poll_write_vectored_reaches_the_inner_vectored_write_with_every_buffer() {
+    let rec = Arc::new(Mutex::new((Vec::new(), Vec::new())));
+    let mut io = FuturesIo::new(VectoredRecorder(rec.clone()));
+    let (waker, _r) = test_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    let bufs = [
+        io::IoSlice::new(b"GET / HTTP/1.1\r\n"),
+        io::IoSlice::new(b"host: example.com\r\n"),
+        io::IoSlice::new(b"\r\n"),
+    ];
+    let total: usize = bufs.iter().map(|b| b.len()).sum();
+    let r = HyperWrite::poll_write_vectored(Pin::new(&mut io), &mut cx, &bufs);
+
+    // The exact count, not `> 0`: the two survivors answered `Ok(0)` and
+    // `Ok(1)`, and a caller that believes either resends bytes the sink
+    // already holds.
+    assert!(
+        matches!(r, Poll::Ready(Ok(n)) if n == total),
+        "expected Ready(Ok({total})), got {r:?}"
+    );
+
+    let r = rec.lock().unwrap();
+    assert_eq!(
+        r.0,
+        vec!["write_vectored"],
+        "the shim must forward to the inner vectored write rather than \
+         degrade into one ordinary write of the first buffer"
+    );
+    assert_eq!(
+        r.1, b"GET / HTTP/1.1\r\nhost: example.com\r\n\r\n",
+        "every buffer reaches the sink, in order"
+    );
+}
+
+#[test]
+fn poll_write_vectored_reports_a_short_vectored_write_as_the_inner_one_did() {
+    // A sink is allowed to take fewer bytes than it was offered, and the
+    // shim must report the inner answer rather than the total it was
+    // handed: over-reporting drops the tail of a request head silently.
+    struct ShortVectored;
+    impl AsyncWrite for ShortVectored {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            unreachable!("the vectored path is the one under test")
+        }
+        fn poll_write_vectored(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bufs: &[io::IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            // Takes the first buffer and no more, the commonest short write.
+            Poll::Ready(Ok(bufs[0].len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+    let mut io = FuturesIo::new(ShortVectored);
+    let (waker, _r) = test_waker();
+    let mut cx = Context::from_waker(&waker);
+    let bufs = [io::IoSlice::new(b"abcde"), io::IoSlice::new(b"fghij")];
+    let r = HyperWrite::poll_write_vectored(Pin::new(&mut io), &mut cx, &bufs);
+    assert!(
+        matches!(r, Poll::Ready(Ok(5))),
+        "the inner answer travels unchanged, got {r:?}"
+    );
+}

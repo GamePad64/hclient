@@ -607,6 +607,40 @@ mod tests {
     }
 
     #[test]
+    fn each_recv_meta_setter_sets_its_own_field_and_keeps_the_one_before_it() {
+        // `RecvMeta` is `#[non_exhaustive]`, so `new` plus these two setters
+        // is the *only* way a runtime outside this crate fills a slot — and
+        // both shipped ones do exactly that, `.ecn(..).dst_ip(..)` chained
+        // in `hclient-rt-tokio`'s and `hclient-rt-smol`'s `poll_recv`. What
+        // pinned them was `hclient-rt-pair-check`'s `ecn_claim_matches_reality`,
+        // over a real socket in another crate; a property this crate's own
+        // suite cannot lose is one it should assert.
+        //
+        // Chained, which is the half that discriminates: a setter that
+        // dropped its receiver and answered `Default::default()` would still
+        // carry its own field and would silently reset `addr`, `len` and
+        // `stride` — and a `RecvMeta` whose `len` is 0 reports a datagram
+        // that never arrived. Two mutants of that shape survived the suite.
+        let m = RecvMeta::new(to(4433), 1200, 1200)
+            .ecn(Some(EcnCodepoint::Ce))
+            .dst_ip(Some(IpAddr::from([10, 0, 0, 1])));
+        assert_eq!(m.addr, to(4433), "the address survives both setters");
+        assert_eq!(m.len, 1200, "the length survives both setters");
+        assert_eq!(m.stride, 1200, "the stride survives both setters");
+        assert_eq!(m.ecn, Some(EcnCodepoint::Ce));
+        assert_eq!(m.dst_ip, Some(IpAddr::from([10, 0, 0, 1])));
+
+        // And the clearing direction, since a socket that cannot read the
+        // codepoint must be able to say so on a slot it otherwise filled:
+        // `.ecn(None)` is what `hclient-rt-tokio`'s `poll_recv` writes for a
+        // datagram whose `ecn` the kernel did not report.
+        let cleared = m.ecn(None).dst_ip(None);
+        assert_eq!(cleared.ecn, None);
+        assert_eq!(cleared.dst_ip, None);
+        assert_eq!(cleared.len, 1200, "clearing an offload is not a reset");
+    }
+
+    #[test]
     fn ecn_bits_round_trip_and_zero_is_not_a_codepoint() {
         for c in [EcnCodepoint::Ect1, EcnCodepoint::Ect0, EcnCodepoint::Ce] {
             assert_eq!(EcnCodepoint::from_bits(c as u8), Some(c));

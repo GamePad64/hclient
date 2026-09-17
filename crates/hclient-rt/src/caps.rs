@@ -631,6 +631,78 @@ mod tests {
         assert!(!o.reuse_address);
     }
 
+    #[test]
+    fn each_setter_sets_its_own_field_and_keeps_the_ones_before_it() {
+        // The setters exist so `TcpOpts` can be `#[non_exhaustive]` — they
+        // are the *only* way a caller outside this crate builds one — and
+        // until this test nothing here read them at all. What pinned them
+        // was `hclient-native/tests/tcp_opts.rs`, one crate away and over a
+        // real socket; a property this crate's own suite cannot lose is one
+        // it should assert.
+        //
+        // Chained rather than one call per assertion, and that is the half
+        // that discriminates: a setter that threw its receiver away and
+        // answered `Default::default()` would drop every field set before
+        // it, while still looking right to a one-call-per-field test. Ten
+        // mutants of exactly that shape survived the suite. So the chain
+        // builds up, and the assertions read the whole struct at the end —
+        // where a lost field is visible.
+        //
+        // Compared field by field rather than against `every_field_set()`,
+        // because `TcpOpts` derives no `PartialEq` and giving it one to
+        // please a test would widen the public surface of a frozen type.
+        // The fixture is a struct literal besides, which can only be written
+        // inside this crate and so exercises none of this.
+        let o = TcpOpts::default()
+            .nodelay(true)
+            .keepalive(Some(Duration::from_secs(30)))
+            .keepalive_interval(Some(Duration::from_secs(5)))
+            .keepalive_retries(Some(3))
+            .bind_device(Some("lo".to_owned()))
+            .user_timeout(Some(Duration::from_secs(20)))
+            .local_address(Some(IpAddr::from([127, 0, 0, 1])))
+            .send_buffer_size(Some(4096))
+            .recv_buffer_size(Some(4096))
+            .reuse_address(true);
+        assert!(o.nodelay);
+        assert_eq!(o.keepalive, Some(Duration::from_secs(30)));
+        assert_eq!(o.keepalive_interval, Some(Duration::from_secs(5)));
+        assert_eq!(o.keepalive_retries, Some(3));
+        assert_eq!(o.bind_device.as_deref(), Some("lo"));
+        assert_eq!(o.user_timeout, Some(Duration::from_secs(20)));
+        assert_eq!(o.local_address, Some(IpAddr::from([127, 0, 0, 1])));
+        assert_eq!(o.send_buffer_size, Some(4096));
+        assert_eq!(o.recv_buffer_size, Some(4096));
+        assert!(o.reuse_address);
+
+        // The clearing direction too, since every setter takes the value
+        // rather than only turning something on: a setter that ignored a
+        // `false`/`None` would leave a caller unable to undo a field, and
+        // `Default::default()` passes a clearing assertion by construction —
+        // which is why this half cannot stand alone.
+        let cleared = o
+            .nodelay(false)
+            .keepalive(None)
+            .keepalive_interval(None)
+            .keepalive_retries(None)
+            .bind_device(None)
+            .user_timeout(None)
+            .local_address(None)
+            .send_buffer_size(None)
+            .recv_buffer_size(None)
+            .reuse_address(false);
+        assert!(!cleared.nodelay);
+        assert_eq!(cleared.keepalive, None);
+        assert_eq!(cleared.keepalive_interval, None);
+        assert_eq!(cleared.keepalive_retries, None);
+        assert_eq!(cleared.bind_device, None);
+        assert_eq!(cleared.user_timeout, None);
+        assert_eq!(cleared.local_address, None);
+        assert_eq!(cleared.send_buffer_size, None);
+        assert_eq!(cleared.recv_buffer_size, None);
+        assert!(!cleared.reuse_address);
+    }
+
     /// Every field of `TcpOpts` set to something a runtime would have to
     /// act on, paired with the `TcpOptsSupport` field that covers it.
     ///

@@ -285,4 +285,40 @@ mod tests {
         let io = FuturesIo::new(NullWrite);
         assert!(!hyper::rt::Write::is_write_vectored(&io));
     }
+
+    #[test]
+    fn the_scratch_buffer_is_eight_kibibytes() {
+        // The value, not merely "some value", and the reason is that
+        // `read_request_larger_than_scratch_buffer_does_not_panic` above
+        // derives its input length *from* this constant — so that test goes
+        // on exercising the over-scratch path whatever the number is, and
+        // cannot see the number change. The `8 * 1024` -> `8 + 1024` mutant
+        // survived the whole workspace, 2567 of 2567, which is the
+        // measurement that says it is a **performance** claim rather than a
+        // behavioural one: 1032 answers every byte correctly and takes eight
+        // times the iterations. So this is where the claim in the constant's
+        // own doc comment — 8 KiB is hyper's typical read size, so no extra
+        // iterations result — is pinned, and it is the only place it can be.
+        assert_eq!(super::SCRATCH, 8 * 1024);
+        // And the buffer really is that long, since the constant is only a
+        // claim about the allocation until something reads the allocation.
+        let io = FuturesIo::new(NullWrite);
+        assert_eq!(io.scratch.len(), 8 * 1024);
+    }
+
+    #[test]
+    fn debug_reports_the_scratch_length_rather_than_eight_kibibytes_of_zeros() {
+        // The whole reason this `Debug` is hand-written — see the impl's own
+        // comment — and nothing read it, so replacing the body with `Ok(())`
+        // left the suite green over a `FuturesIo` that formats as nothing at
+        // all. An empty `Debug` is worse than a noisy one in the place this
+        // type appears: a connection's log line.
+        #[derive(Debug)]
+        struct Named;
+        let io = FuturesIo::new(Named);
+        assert_eq!(
+            format!("{io:?}"),
+            "FuturesIo { inner: Named, scratch_len: 8192 }"
+        );
+    }
 }
