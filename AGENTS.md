@@ -118,9 +118,40 @@ the worst ratio in the workspace at **6 tests over 1131 lines**; **10 of
 its 12 were genuine gaps**, because the only implementation it ships is
 `NoTls`, which overrides or moots every defaulted member of the seam, so
 nothing ever *took* a default. A small crate with a large seam produces
-few mutants and hides the most. `hclient-rt-nal` has a worse ratio still
-and is fine, because both its macros expand one shared body that its
-tests reach four ways.
+few mutants and hides the most.
+
+**And the ratio never predicted the *share*, only the crate**, which is
+the half worth carrying because it is the half that keeps being read as
+a verdict. Measured across every cluster closed: `hclient-rt` 22 gaps of
+23, `hclient-tls` 10 of 12, `hclient-tower` 8 of 10 — all at ratios the
+rule calls safe. `hclient-rt-nal` was written up here as the
+counter-example, *"a worse ratio still and is fine, because both its
+macros expand one shared body that its tests reach four ways"*. The
+macro reasoning was correct and covered two thirds of the crate;
+`io.rs` is 160 lines outside it, and both of its interesting functions
+were unpinned — all sixteen arms of `io_err` flattened to
+`ErrorKind::Other` and `poll_shutdown`'s body deleted outright, each
+leaving the suite green. **A verdict about a crate's dominant shape is
+not a verdict about the crate**, and this sentence was the workspace
+demonstrating that on itself.
+
+**A subagent's report is evidence, not a result, and the difference
+cost three corrections in one session.** Each of the seven clusters was
+closed by an agent and re-measured by hand afterwards, and three reports
+carried a claim that did not survive it: a test said to kill
+`ecn_is_really_on -> true` cannot, because it asserts `ecn` *is* true
+and the mutant satisfies it (what it really pins is the `!dual`
+short-circuit one expression in); nine sweep timeouts attributed to
+`cargo test`'s process model, where the same mutation under plain
+`cargo test` also fails in 10.11 s, so the verdict came from
+cargo-mutants' own per-binary bound; and a test doc claiming its
+subject was *"the only reader"* while the body polls a second one three
+lines down. None was a fabrication — all three are a measurement
+generalised past its sample, which is this file's own recurring defect
+arriving through a new door. So the rule is not *distrust the agent*,
+it is **re-apply the mutation yourself before believing the kill**: it
+costs one command per claim and it is the only step that distinguishes
+a test that discriminates from a test that agrees.
 
 And **the output directory is part of the isolation**, which the recipe
 learned the expensive way: it passed `-o` into a private scratch dir and
