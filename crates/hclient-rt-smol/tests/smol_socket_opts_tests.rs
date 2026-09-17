@@ -199,3 +199,147 @@ fn default_reuse_address_is_off() {
         );
     });
 }
+
+/// **Keepalive is one setting in three parts, and setting *any* of them
+/// switches `SO_KEEPALIVE` on.** `build_socket` reaches
+/// `set_tcp_keepalive` — the call that enables the option — through
+/// `keepalive.is_some() || keepalive_interval.is_some() ||
+/// keepalive_retries.is_some()`, and `TcpOpts::keepalive` states the rule
+/// in prose because the field names do not say it: a caller who sets only
+/// the interval has switched keepalive on with the OS's idle time.
+///
+/// Nothing asserted it. `cargo mutants` replaces the **second** `||` with
+/// `&&`, and `a || (b && c)` — `&&` binds tighter — still fires for a
+/// plain `keepalive`, so `connects_with_keepalive_enabled` cannot see it.
+/// Exactly two of the eight settings distinguish the two expressions, and
+/// both are the parts-without-the-whole case this rule is about:
+/// `keepalive_interval` alone, and `keepalive_retries` alone. Both are
+/// asserted here; measured with the mutation applied by hand, each one
+/// alone turns red.
+///
+/// A parameterised loop rather than two functions, so a fourth part cannot
+/// be added to `TcpOpts` and quietly keep the old coverage.
+#[test]
+fn any_one_keepalive_part_on_its_own_switches_keepalive_on() {
+    for (part, opts) in [
+        (
+            "keepalive_interval",
+            TcpOpts::default().keepalive_interval(Some(std::time::Duration::from_secs(9))),
+        ),
+        (
+            "keepalive_retries",
+            TcpOpts::default().keepalive_retries(Some(4)),
+        ),
+    ] {
+        let addr = spawn_accepting_listener();
+        futures_executor::block_on(async {
+            let s = Smol.connect(addr, &opts).await.expect("connect");
+            let enabled = socket2::SockRef::from(s.get_ref().tcp())
+                .keepalive()
+                .expect("keepalive query");
+            assert!(
+                enabled,
+                "TcpOpts::{part} on its own must switch SO_KEEPALIVE on: \
+                 set_tcp_keepalive is what enables it, and each part left None \
+                 keeps the OS's value"
+            );
+        });
+    }
+}
+
+/// The control for the test above, and the half that makes it a claim
+/// about the parts rather than about connecting at all: with **no** part
+/// set, `SO_KEEPALIVE` stays off.
+///
+/// Without this, a kernel (or a mutation) that enabled keepalive on every
+/// socket would pass every assertion above.
+#[test]
+fn no_keepalive_part_leaves_keepalive_off() {
+    let addr = spawn_accepting_listener();
+    futures_executor::block_on(async {
+        let s = Smol
+            .connect(addr, &TcpOpts::default())
+            .await
+            .expect("connect");
+        let enabled = socket2::SockRef::from(s.get_ref().tcp())
+            .keepalive()
+            .expect("keepalive query");
+        assert!(
+            !enabled,
+            "TcpOpts::default() sets no keepalive part, so SO_KEEPALIVE must stay off"
+        );
+    });
+}
+
+/// `APPLIES` claims `keepalive_retries` exactly where
+/// `socket2::TcpKeepalive::with_retries` exists, and the direction is the
+/// one the seam requires.
+///
+/// The constant is written `!cfg!(any(openbsd, redox, solaris))`, and
+/// deleting that `!` inverts it — which no test could see, because
+/// `APPLIES` was only ever compared against a socket for `nodelay` and
+/// `keepalive`. The inversion is the **overstating** direction on the
+/// three platforms it names and the **understating** one everywhere else,
+/// and this workspace's rule is that an understated `APPLIES` costs a
+/// caller a named `Unsupported` error while an overstated one costs them
+/// an option silently not applied.
+///
+/// So the assertion is tied to the same `cfg` the applying code in
+/// `build_socket` is gated on, rather than to a literal: a target where
+/// `with_retries` is absent is a target where the claim must be `false`,
+/// and one where it compiles is one where the claim must be `true`. Stated
+/// as a biconditional for the reason `Head::version` and
+/// `version_reported` are — two copies of one fact drift, and the way to
+/// stop that is to assert they agree.
+#[test]
+fn applies_claims_keepalive_retries_exactly_where_socket2_can_set_them() {
+    let with_retries_exists = !cfg!(any(
+        target_os = "openbsd",
+        target_os = "redox",
+        target_os = "solaris"
+    ));
+    assert_eq!(
+        <Smol as TcpConnect>::APPLIES.keepalive_retries,
+        with_retries_exists,
+        "APPLIES.keepalive_retries must be true exactly where \
+         socket2::TcpKeepalive::with_retries exists — an overstated claim is \
+         an option silently not applied"
+    );
+}
+
+/// The two `cfg`-computed `APPLIES` fields say Linux, which is what this
+/// host is, and the whole point of them being `cfg!` rather than constants
+/// is that they are **not** `TcpOptsSupport::ALL` everywhere.
+///
+/// Asserted against the same predicates `build_socket` gates the applying
+/// code on, for `keepalive_retries`' reason: the claim and the code that
+/// honours it are two statements of one fact, and a test that repeats a
+/// literal instead would pin the literal rather than the agreement.
+#[test]
+fn the_platform_gated_applies_fields_agree_with_the_code_that_applies_them() {
+    let bind_device_compiles = cfg!(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux"
+    ));
+    let user_timeout_compiles = cfg!(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_os = "cygwin"
+    ));
+    let a = <Smol as TcpConnect>::APPLIES;
+    assert_eq!(
+        a.bind_device, bind_device_compiles,
+        "APPLIES.bind_device must match where SO_BINDTODEVICE is actually set"
+    );
+    assert_eq!(
+        a.user_timeout, user_timeout_compiles,
+        "APPLIES.user_timeout must match where TCP_USER_TIMEOUT is actually set"
+    );
+    // And the fields that are unconditional stay claimed, so an edit that
+    // narrows the constant wholesale is caught here rather than by a
+    // caller meeting an `Unsupported` for an option this runtime applies.
+    assert!(a.nodelay && a.keepalive && a.keepalive_interval);
+    assert!(a.local_address && a.send_buffer_size && a.recv_buffer_size && a.reuse_address);
+}

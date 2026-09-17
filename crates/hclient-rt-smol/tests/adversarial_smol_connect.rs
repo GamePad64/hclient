@@ -124,3 +124,79 @@ fn connect_to_an_accepting_listener_still_succeeds() {
 // not kept) showed the closed-port refusal itself resolves via the
 // EINPROGRESS branch here, not the synchronous-Err branch, so the
 // async path is already covered without relying on an external address.
+
+/// A connect error that arrives **synchronously** from `connect(2)` is
+/// still an error, and is not classified as "in progress".
+///
+/// `begin_connect` has three ways to answer `Ok`: an immediate success, a
+/// `WouldBlock`, and an `EINPROGRESS`. Everything else must fall through
+/// to `Err(e) => Err(e)`. Nothing reached that last arm, and the reason is
+/// in this file's own header: measured here, **both** a closed port and an
+/// accepting listener answer `EINPROGRESS` (`raw_os_error = Some(115)`) on
+/// loopback, so the refusal this suite already tests is detected later by
+/// `take_error()` rather than by `begin_connect` at all. Every guard in it
+/// could therefore be widened to `true` with the suite staying green —
+/// four surviving mutants, measured.
+///
+/// `255.255.255.255` is what separates them: connecting a plain v4 socket
+/// to the broadcast address without `SO_BROADCAST` fails **before** the
+/// call returns, with `ENETUNREACH` (kind `NetworkUnreachable`, raw 101) —
+/// measured on this host rather than assumed. That is a real error
+/// arriving on the synchronous path, which is precisely the input the
+/// `EINPROGRESS`/`WouldBlock` classification has to *not* swallow.
+///
+/// Measured with each mutation applied by hand: widening either guard to
+/// `true`, or inverting the `WouldBlock` comparison to `!=`, turns this
+/// red, because a swallowed synchronous error becomes an `Ok` from
+/// `begin_connect` and then a *different* failure — or none — downstream.
+///
+/// The assertion is deliberately "an error, and not a stream", not a
+/// specific `ErrorKind`: which error a kernel gives for this address is a
+/// fact about the kernel, where "a synchronous failure is not silently
+/// reclassified as success" is a fact about this code.
+#[test]
+fn a_synchronous_connect_failure_is_not_classified_as_in_progress() {
+    futures_executor::block_on(async {
+        // Port 9 (discard) on the limited broadcast address. Nothing here
+        // depends on the port: the address is unroutable for a socket with
+        // no `SO_BROADCAST`, which is every socket `build_socket` makes.
+        let addr: SocketAddr = "255.255.255.255:9".parse().expect("a literal address");
+        match bounded(Smol.connect(addr, &TcpOpts::default())).await {
+            Ok(_stream) => panic!(
+                "connect to {addr} returned Ok — a synchronous connect(2) failure must \
+                 surface as an Err rather than as a stream that fails on first use"
+            ),
+            Err(e) => {
+                assert_ne!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut,
+                    "connect to {addr} stalled instead of failing: a synchronous error was \
+                     classified as 'in progress' and then waited on"
+                );
+                println!("synchronous connect failure surfaced as {:?}", e.kind());
+            }
+        }
+    });
+}
+
+// **One `begin_connect` mutant is deliberately left alive, and the verdict
+// is measured rather than argued.** Narrowing the `WouldBlock` guard to
+// `false` — so that arm can never fire — leaves the whole suite green, and
+// that is because the arm is **never taken on this platform**: an
+// `eprintln!` in its body counts **0** hits across every connect in this
+// crate's tests, including the deliberate failure above.
+//
+// The reason is POSIX rather than an untested path. A non-blocking
+// `connect(2)` reports `EINPROGRESS`, not `EAGAIN`, and Linux never
+// answers the latter for a TCP connect — measured here, both a closed port
+// and an accepting listener give `raw_os_error = Some(115)`. So on this
+// host the two expressions compute the same function and no input
+// separates them.
+//
+// The arm is still right to exist: `hclient-rt-tokio`'s twin carries it
+// for the same reason, `socket2`'s own `connect_timeout` checks both, and
+// the seam is written for platforms this workspace does not run CI on.
+// What cannot be done is pin it from here — which is the same verdict as
+// the `poll_flush` note in `smol_unix_and_write.rs` and the two
+// `ecn_is_really_on` controls in `udp.rs`: an observable this host cannot
+// reach is not a gap.
