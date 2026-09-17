@@ -69,6 +69,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
+use std::task::Poll;
 use std::time::Duration;
 use tungstenite::handshake::derive_accept_key;
 
@@ -1768,5 +1769,345 @@ async fn the_keep_alive_stops_at_our_own_close() {
         after.is_empty(),
         "nothing may go out after our own close — the keep-alive is over there — and the \
          server received {after:?} in the {HELD_FOR:?} it held the handshake open"
+    );
+}
+
+// ── the kinds `ws_error` assigns ───────────────────────────────────────
+
+/// `ws_error`'s two named arms, from the wire: a peer that breaks RFC 6455
+/// is [`ErrorKind::Decode`] and a peer that goes away mid-message is
+/// [`ErrorKind::Body`], and they must be told apart by `kind()` alone.
+///
+/// That is the function's own stated contract — "a caller must be able to
+/// tell 'the peer went away' from 'the peer sent something that is not
+/// WebSocket' by `kind()` alone, without a downcast" — and nothing
+/// asserted it. The only `ErrorKind::Body` this file ever read came from
+/// `PongNotReceived`, which `Liveness::no_pong` builds *directly* and
+/// never through `ws_error`, so both of that match's named arms could be
+/// deleted with all twenty tests still green: every error simply fell
+/// through to `ErrorKind::Other` and nothing looked.
+///
+/// Two arms in one test because they are one decision, and each arm is
+/// the other's control: a mutation that collapses either onto `Other`
+/// leaves the other arm passing, so a single-arm test would read as
+/// covering a match it only half touches.
+///
+/// **Both halves are caused rather than timed.** The `/protocol` server
+/// sends a frame with the mask bit set, which RFC 6455 §5.1 permits only
+/// client-to-server — `tungstenite` answers `Protocol(MaskedFrameFromServer)`
+/// — and the `/reset` server sends a frame header promising 64 KiB and
+/// then closes the socket, so the read ends inside a message rather than
+/// on a frame boundary, which is an `Io` error and not a clean end of
+/// stream. A clean `FIN` on a boundary is `Poll::Ready(None)` and is
+/// already pinned by `a_close_from_the_peer_is_echoed_and_ends_the_stream`.
+#[tokio::test]
+async fn a_protocol_violation_and_a_vanishing_peer_differ_by_kind_alone() {
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        if head.starts_with("GET /protocol ") {
+            // A masked server-to-client frame: `0x80 | OP_TEXT`, then the
+            // mask bit set in the length byte, a mask, and the payload
+            // under it. `Wire::frame_bytes` cannot express this — it is
+            // the correct encoder — so the bytes are written by hand.
+            let mask = [0x11u8, 0x22, 0x33, 0x44];
+            let payload = b"masked";
+            // `payload` is a six-byte literal, so the length is a
+            // constant far below the 125 a one-byte length field holds.
+            let len = u8::try_from(payload.len()).expect("a six-byte literal fits in a u8");
+            let mut frame = vec![0x80 | OP_TEXT, 0x80 | len];
+            frame.extend_from_slice(&mask);
+            frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+            w.send_raw(&frame);
+            while w.fill() {}
+            return;
+        }
+        // A header promising 65 536 bytes and not one byte of them, and
+        // then an **abortive** close: `SO_LINGER` of zero makes the
+        // kernel answer the next read with `ECONNRESET` rather than a
+        // `FIN`. A `FIN` here would not do — `tungstenite` turns a clean
+        // end inside a message into `Protocol(ResetWithoutClosingHandshake)`,
+        // which is a `Decode` and would make this arm a second copy of
+        // the one above rather than its contrast. Measured, not assumed:
+        // written with a `shutdown` first, it read `Decode` and said so.
+        let mut header_bytes = vec![0x80 | OP_BINARY, 127];
+        header_bytes.extend_from_slice(&65_536u64.to_be_bytes());
+        w.send_raw(&header_bytes);
+        let _ = socket2::SockRef::from(&w.sock).set_linger(Some(Duration::ZERO));
+        drop(w);
+    });
+
+    let mut protocol = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/protocol"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    let err = tokio::time::timeout(BOUND, protocol.next())
+        .await
+        .expect("a masked frame from the server must end the stream rather than hang")
+        .expect("the stream must yield the failure rather than simply end")
+        .expect_err("RFC 6455 §5.1 forbids a server to mask, so this is not a message");
+    assert_eq!(
+        err.kind(),
+        &ErrorKind::Decode,
+        "a peer that sent something that is not WebSocket is a decode failure, and this \
+         said {err}"
+    );
+
+    let mut reset = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/reset"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    let err = tokio::time::timeout(BOUND, reset.next())
+        .await
+        .expect("a peer that vanished mid-message must end the stream rather than hang")
+        .expect("a socket that died inside a frame is a failure, not a clean end of stream")
+        .expect_err("the message was promised and never arrived");
+    assert_eq!(
+        err.kind(),
+        &ErrorKind::Body,
+        "a peer that went away is a body failure — the same kind `hclient-fetch` gives an \
+         unclean close — and this said {err}"
+    );
+}
+
+/// `poll_ready` means *the write buffer is empty*, which is what turns a
+/// socket the peer has stopped reading into backpressure rather than into
+/// an unbounded queue in this process.
+///
+/// `tungstenite`'s own write buffer is unbounded
+/// (`max_write_buffer_size: usize::MAX`), so a `poll_ready` that always
+/// answered ready would let a caller queue a gigabyte against a peer that
+/// reads nothing — and nothing here noticed: replacing the whole body with
+/// `Poll::Ready(Ok(()))` passed all twenty-one tests. The partial-write
+/// test one screen up calls `poll_ready` exactly once, before anything has
+/// been sent, where an empty buffer makes both the correct answer and the
+/// mutant's answer `Ready`.
+///
+/// So the assertion is `poll_ready` **after** a send the socket could not
+/// finish, and it is causal rather than timed: the server reads nothing
+/// until this test has already seen `Pending`, so a `Ready` here cannot be
+/// a scheduling accident. Both bounds are named for the reason
+/// `native_with_send_buffer` gives — the message has to exceed the sum of
+/// the two buffers — and the same honest skip applies, because a platform
+/// that swallows the whole message has no backpressure to report and the
+/// property is not exercised.
+#[tokio::test]
+async fn poll_ready_is_not_ready_while_the_write_buffer_is_full() {
+    const SIZE: usize = 8 * 1024 * 1024;
+
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let (addr, _) = serve_with_bounded_recv_buffer(
+        move |mut w| {
+            let Some(head) = w.head() else { return };
+            let Some(key) = header(&head, "sec-websocket-key") else {
+                return;
+            };
+            if !w.send_raw(accept_101(key).as_bytes()) {
+                return;
+            }
+            // Nothing is read until this test has seen `poll_ready`
+            // answer `Pending`, which is what makes that answer caused.
+            if release_rx
+                .lock()
+                .expect("release channel")
+                .recv_timeout(BOUND)
+                .is_err()
+            {
+                return;
+            }
+            while w.frame().is_some() {}
+        },
+        64 * 1024,
+    );
+
+    let t = native_with_send_buffer(64 * 1024);
+    let mut ws = tokio::time::timeout(BOUND, ws(&t).websocket(open(&format!("ws://{addr}/"))))
+        .await
+        .expect("the handshake must not hang")
+        .expect("the handshake must succeed");
+
+    // **A watchdog on a thread, because `tokio::time::timeout` cannot be
+    // the one here.** `start_send` and `poll_flush` reach `tungstenite`'s
+    // `write_out_buffer`, which loops `stream.write(..)` *synchronously*
+    // until the buffer empties. A mutant that makes a write report one
+    // byte of progress therefore spins inside a single poll, never
+    // yielding, so the timer this test is wrapped in never gets a turn —
+    // measured: 300 s and killed by nextest's own `terminate-after`
+    // rather than by anything here. `BOUND`'s promise is that a failure
+    // of this file says which test hung, and a wall-clock thread is the
+    // only thing that can keep it against a spin.
+    let finished = Arc::new(AtomicUsize::new(0));
+    let watchdog = Arc::clone(&finished);
+    std::thread::spawn(move || {
+        std::thread::sleep(BOUND);
+        if watchdog.load(Ordering::SeqCst) != 1 {
+            // `abort`, and deliberately not `panic!`: a panic on this
+            // thread is not this test's failure — the test's own thread
+            // is spinning and would never observe it — so the process is
+            // what has to stop, loudly and with the reason on stderr.
+            eprintln!(
+                "poll_ready_is_not_ready_while_the_write_buffer_is_full spun for {BOUND:?} \
+                 inside a synchronous write loop: a write that reports progress without \
+                 making any is a busy loop no async timeout can interrupt"
+            );
+            std::process::abort();
+        }
+    });
+
+    let outcome = tokio::time::timeout(BOUND, async move {
+        let mut ws = Pin::new(&mut ws);
+        poll_fn(|cx| ws.as_mut().poll_ready(cx))
+            .await
+            .expect("an untouched socket is ready");
+        ws.as_mut()
+            .start_send(Message::Binary(Bytes::from(vec![0u8; SIZE])))
+            .expect("start_send buffers, it does not write");
+
+        // One flush to push what the socket will take; what is left is
+        // what `poll_ready` has to report.
+        let flushed = poll_fn(|cx| Poll::Ready(ws.as_mut().poll_flush(cx)))
+            .await
+            .is_ready();
+        let ready = poll_fn(|cx| Poll::Ready(ws.as_mut().poll_ready(cx)))
+            .await
+            .is_ready();
+        let _ = release_tx.send(());
+        (flushed, ready)
+    })
+    .await
+    .expect("the send must not hang");
+    finished.store(1, Ordering::SeqCst);
+
+    let (flushed, ready) = outcome;
+    if flushed {
+        println!(
+            "SKIPPED: the socket accepted all {SIZE} bytes with nobody reading, so there was \
+             no full write buffer and the property was NOT exercised on this platform"
+        );
+        return;
+    }
+    assert!(
+        !ready,
+        "`poll_ready` answered ready while the write buffer still held part of a {SIZE}-byte \
+         message the peer had not read: a caller is then free to queue another, and the \
+         backpressure this socket reports comes from memory rather than from the socket"
+    );
+}
+
+/// The two hand-written `Debug`s say the things their own doc comments
+/// promise a reader, and an outstanding probe is the sharpest of them.
+///
+/// This is not decoration. `lib.rs` §7's first open question settles that
+/// an unanswered ping is deliberately *not* surfaced on the `Stream` —
+/// `Message` has no `Ping` variant and an `Err` there is terminal — and
+/// the `Debug` impl's own doc draws the consequence: the keep-alive state
+/// is printed "because an outstanding probe is exactly what a reader
+/// debugging a stalled socket wants to see — and, per §7's first question,
+/// **the only place it is visible**." A `fmt` that printed nothing would
+/// take away the one diagnostic the design left, and both impls could be
+/// emptied to `Ok(())` with every other test still green.
+///
+/// `ping_awaiting_a_pong` is read in **both** states against one socket,
+/// which is what makes it a fact about the field rather than about the
+/// word appearing in a format string: the probe is absent before the
+/// server has seen a ping and present after, and the server releases the
+/// second read only once it has one — causal, not timed. The connector's
+/// own `Debug` is here too because it is the same promise one level out:
+/// what is its own is the keep-alive, and that is what a reader debugging
+/// a socket that never pings is looking for.
+#[tokio::test]
+async fn debug_shows_the_keep_alive_and_an_outstanding_probe() {
+    const EVERY: Duration = Duration::from_millis(50);
+    const WITHIN: Duration = Duration::from_secs(10);
+
+    let (tx, rx) = mpsc::channel::<()>();
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        loop {
+            let Some((opcode, _masked, _payload)) = w.frame() else {
+                return;
+            };
+            if opcode == OP_PING {
+                // Never answered: the probe must still be outstanding
+                // when this test reads it back below.
+                let _ = tx.send(());
+                while w.fill() {}
+                return;
+            }
+        }
+    });
+
+    let transport = native();
+    let connector = keeping_alive(&transport, EVERY, WITHIN);
+    let printed = format!("{connector:?}");
+    assert!(
+        printed.contains("keep_alive") && printed.contains(&format!("{EVERY:?}")),
+        "the connector's `Debug` is what a reader debugging a socket that never pings \
+         looks at, and it said {printed}"
+    );
+
+    let mut ws = tokio::time::timeout(BOUND, connector.websocket(open(&format!("ws://{addr}/"))))
+        .await
+        .expect("the handshake must not hang")
+        .expect("the handshake must succeed");
+
+    let before = format!("{ws:?}");
+    assert!(
+        before.contains("ping_awaiting_a_pong: None"),
+        "no probe has been sent yet, and the socket said {before}"
+    );
+    assert!(
+        before.contains("ended: false") && before.contains(&format!("{WITHIN:?}")),
+        "the socket's `Debug` carries the bound in force and whether the stream has \
+         ended, and said {before}"
+    );
+
+    // Polling is the only thing that writes a ping, so the probe exists
+    // only once this future has been driven — and the server reports it
+    // rather than a clock deciding it has.
+    {
+        let polling = tokio::time::timeout(BOUND, ws.next());
+        tokio::pin!(polling);
+        loop {
+            tokio::select! {
+                _ = &mut polling => {
+                    panic!("the unanswered probe must not resolve within {WITHIN:?}")
+                }
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+            // The server saw the ping, so the probe is outstanding *now*
+            // — which is the fact the `Debug` below has to show. The
+            // borrow of `ws` ends with this block.
+            if rx.try_recv().is_ok() {
+                break;
+            }
+        }
+    }
+
+    let after = format!("{ws:?}");
+    assert!(
+        after.contains("ping_awaiting_a_pong: Some("),
+        "a ping the server has received and not answered is outstanding, and §7 makes this \
+         `Debug` the only place it is visible; the socket said {after}"
     );
 }
