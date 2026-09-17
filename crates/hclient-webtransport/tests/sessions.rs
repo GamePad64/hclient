@@ -261,13 +261,26 @@ async fn a_dropped_session_gives_its_slot_back() {
 ///
 /// # The ordering is causal, and it is the whole test
 ///
-/// `a` is the **only** reader when `b`'s datagram arrives: `b` has not
-/// called `recv_datagram` at all yet, so nothing but `a`'s loop can take it
-/// off the connection. `b` then asks and gets it. A client that dropped
-/// what was not its own leaves `b` waiting for ever, and the second
-/// assertion is that `a` — which never stopped waiting — goes on to receive
-/// its **own** datagram afterwards, so the hand-over did not cost `a` its
-/// place.
+/// **This paragraph claimed more than the test does, and the correction
+/// is the interesting part.** It read that `a` is the *only* reader when
+/// `b`'s datagram arrives. It is not: `b` calls `recv_datagram` a few
+/// lines below its own `send_datagram`, so both futures are registered on
+/// the one queue quinn gives the connection and they race for it.
+/// Measured rather than reasoned — with the hand-over suppressed, `b`
+/// reads its own echo directly (`mine=1 got=1`) and this test passes in
+/// the same second.
+///
+/// So what it pins is the **second** assertion: `a`, which never stopped
+/// waiting, goes on to receive its own datagram afterwards, so whatever
+/// `a` did with `b`'s did not cost `a` its place. That is a real property
+/// and it is why the test is kept.
+///
+/// What it does *not* pin is the hand-over itself, and
+/// `a_datagram_is_handed_to_a_sibling_that_is_not_reading` below is the
+/// test written for that: there `b` does not poll at all until the
+/// hand-over has demonstrably happened, ordered causally rather than by a
+/// sleep. Read the two together — this one is the survivor of a claim
+/// that was true for the wrong reason, kept for the half that holds.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sibling_reads_a_datagram_and_hands_it_over() {
     let srv = server_for(2);
