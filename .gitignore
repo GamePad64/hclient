@@ -15,8 +15,16 @@ Cargo.lock.bak
 # rule did not name — 3.2 MB of it, untracked, producing exactly the
 # release failure the paragraph above describes. Found by running two
 # sweeps rather than by reading the rule.
+#
+# **And once more for the per-crate destination**, which is the same
+# defect a third time: `just mutants <crate>` now copies to
+# `mutants.out.<crate>/` so two concurrent sweeps cannot overwrite each
+# other's results, and a rule naming only the two literal directories
+# above would not have covered a single one of them. The glob is what
+# stops this paragraph needing a fourth edition.
 mutants.out/
 mutants.out.old/
+mutants.out.*/
 
 # Playwright/MCP scratch, from browser measurements
 .playwright-mcp/

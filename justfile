@@ -2294,9 +2294,18 @@ mutants crate:
         echo "no mutants were tested — is '{{ crate }}' a member of this workspace?" >&2
         exit 1
     fi
-    rm -rf mutants.out
-    cp -r "$produced" mutants.out
-    echo "$tested mutants tested; survivors and logs in ./mutants.out (git-ignored)"
+    # Per-crate, because the fixed `./mutants.out` this used to copy to is
+    # the very collision the `-o` comment above warns about, reintroduced
+    # one screen below it. Measured rather than reasoned: two agents swept
+    # `hclient-tls` and `hclient-rt-smol` concurrently in this checkout and
+    # the second `cp` overwrote the first, so one sweep's directory held 40
+    # of the other crate's logs and none of its own. A survivor list read
+    # out of that directory is a list for a crate nobody asked about, and
+    # nothing about it looks wrong.
+    dest="mutants.out.{{ crate }}"
+    rm -rf "$dest"
+    cp -r "$produced" "$dest"
+    echo "$tested mutants tested; survivors and logs in ./$dest (git-ignored)"
 
 # ── the whole pipeline ──────────────────────────────────────────────────
 
