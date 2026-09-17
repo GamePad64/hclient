@@ -18,6 +18,22 @@ repository.workspace = true
 # it honest and not enough to be worth a crates.io page promising reach it
 # does not have. `hclient-rt-pair-check` is unpublished for a different
 # reason and is the precedent for the mechanism.
+#
+# **What the crate is for**, and "enough to keep it honest" above is the
+# whole of it rather than a consolation: this is a gate on the seam's
+# *universality*, the way `hclient-rt-embassy` is the gate on its `!Send`
+# case. `embedded-nal-async` shares none of this workspace's assumptions —
+# no `std::net`, no reactor, `async fn` in trait rather than associated
+# future types, its own error vocabulary, no half-close — so a
+# `TcpConnect` still implementable over it is one that has not grown a
+# dependency on how tokio happens to work. Delete it and the seam can
+# drift towards one runtime with nothing failing.
+#
+# So it deliberately fails the usual test for a crate boundary — *does it
+# hold a dependency a feature would otherwise spread* — and is kept
+# anyway, the same exception `hclient-rt-embassy` and
+# `hclient-rt-pair-check` are. `src/lib.rs` names the three properties
+# gated and the test that dies when each stops holding.
 publish = false
 
 [dependencies]

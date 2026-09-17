@@ -1,6 +1,42 @@
 //! `hclient_rt::TcpConnect` over `embedded-nal-async`, and the `Send` a
 //! generic adapter could not have.
 //!
+//! # What this crate is for, since nothing depends on it
+//!
+//! Nobody uses it, and that is not the same as it being unused. It is a
+//! **gate on the seam's universality**: `embedded-nal-async` is the one
+//! network abstraction in reach that shares none of this workspace's
+//! assumptions — no `std::net`, no reactor, `async fn` in trait rather
+//! than associated future types, its own error vocabulary, and no
+//! half-close at all — so an `hclient_rt::TcpConnect` that can still be
+//! implemented over it is one that has not quietly grown a dependency on
+//! how tokio happens to work.
+//!
+//! That makes the manifest's *"enough to keep it honest"* the point
+//! rather than a consolation for not publishing, and it is why this crate
+//! fails the workspace's usual test for a boundary — *does it hold a
+//! dependency a feature would otherwise spread* — without that meaning it
+//! should go. `hclient-rt-embassy` is the same argument for `!Send` and
+//! says so in its own manifest; this is its neighbour for *foreign shape*.
+//!
+//! Three properties are gated, and each has a test that dies when it
+//! stops holding. **`Send` is answered per stack, not per adapter** —
+//! `adapt!` for the stacks that have it, `adapt_local!` for those that do
+//! not, asserted in both directions, the negative being the half that
+//! matters. **A foreign error vocabulary survives the crossing**:
+//! `io_err` maps sixteen `embedded_io_async::ErrorKind`s rather than
+//! flattening them into `Other`, so a transport above can still tell a
+//! refused connection from a reset one. And **a half-close this seam
+//! cannot perform is reported rather than faked**: `embedded_io_async::
+//! Write` is `write` and `flush` and nothing else, so `NalIo::
+//! poll_shutdown` forwards to `flush()` and must answer for what it did.
+//!
+//! The last two were unpinned until they were measured: all sixteen error
+//! arms could be rewritten to `Other`, and `poll_shutdown`'s body deleted
+//! outright, with the suite green both times. A gate nothing can fail is
+//! not a gate — which is this workspace's own recurring finding, met here
+//! in the crate whose entire job is to be one.
+//!
 //! # Why this is a macro and not a blanket impl
 //!
 //! `embedded_nal_async::TcpConnect::connect` is an `async fn` in trait, so
