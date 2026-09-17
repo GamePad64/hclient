@@ -293,6 +293,18 @@ fn a_socket_that_claims_ecn_reports_the_codepoint_it_received() {
 /// nothing left to disclaim. A kernel that refuses the option is the one
 /// case this cannot hold on, and it is the same case the two remaining
 /// `ecn_is_really_on` mutants are unkillable in.
+///
+/// **What this does not kill, stated because the assertion's direction
+/// invites the opposite reading**: `ecn_is_really_on -> true` for the
+/// whole function. This test asserts `ecn` *is* `true`, so a mutant
+/// forcing that answer satisfies it rather than failing it — measured,
+/// 39/39 green with an early `return true` in place. What is pinned is
+/// the `!dual` short-circuit **inside** the v6 arm, verified by
+/// `v6 && (dual && tos4)`, which fails exactly this test and nothing
+/// else. The distinction matters because AGENTS.md records a *different*
+/// ECN mutant — the hardcoded `ecn: true` in `UdpCaps` — as unkillable on
+/// every platform, and a reader who merges the two concludes no ECN
+/// mutation is worth a test.
 /// The socket is built here and **adopted** rather than bound, because
 /// `only_v6` has to be established before this crate sees the descriptor
 /// and `SmolUdpSocket` exposes no accessor to read it back — deliberately,
