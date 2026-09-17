@@ -311,6 +311,238 @@ async fn a_sibling_reads_a_datagram_and_hands_it_over() {
     assert_eq!(&mine[..], b"for-a");
 }
 
+/// **A slot taken for a CONNECT that never became a session goes back**,
+/// so a refusal at the peer does not spend a place in the peer's budget for
+/// the life of the connection.
+///
+/// `a_dropped_session_gives_its_slot_back` pins the *other* half — the
+/// slot a live handle holds, returned by `Session`'s own `Drop`. This one
+/// is `Slot`'s, and it is the arm `open_session` takes when the CONNECT
+/// goes out and comes back a refusal: the reservation was made before the
+/// request left, precisely so two callers racing the last slot cannot both
+/// find it free, so something has to give it back when the request fails.
+/// Nothing did that either half of the count could not already do, which
+/// is why `Slot::drop` could be emptied with every test still green.
+///
+/// # What makes the two errors tell the mutation apart
+///
+/// The peer's refusal is `ErrorKind::Connect` and arrives from the wire;
+/// a spent budget is `TooManySessions` and never reaches it. With the slot
+/// leaked, the count stays at two of two and the **third** attempt is
+/// refused here rather than there — a different error, from a different
+/// layer, for a session the peer was never asked about.
+///
+/// The rejection itself is the peer's, for the reason
+/// `tests/goaway.rs` gives at length: this client does not observe a
+/// `GOAWAY`, so a CONNECT after one is answered with
+/// `H3_REQUEST_REJECTED` rather than refused locally. That is what makes a
+/// failed `establish` reachable at all while the connection and its first
+/// session stay up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slot_taken_for_a_refused_connect_is_given_back() {
+    let srv = server::start(Options {
+        // Two CONNECTs are answered and the third would be, but the
+        // `GOAWAY` after the first means none of them is.
+        sessions: 3,
+        // Tight on purpose: with the reservation leaked, two failed
+        // attempts spend the whole budget.
+        max_sessions: 2,
+        goaway: Some(server::GoAway {
+            after: 1,
+            max_requests: 0,
+        }),
+        ..Options::default()
+    });
+    let conn = server::dial(&srv).await;
+    let a = Session::connect(conn.clone(), &uri(srv.addr, "/a"))
+        .await
+        .expect("the first session, before the GOAWAY");
+
+    for attempt in ["/b", "/c"] {
+        let refused = tokio::time::timeout(ACTED, a.open_session(&uri(srv.addr, attempt)))
+            .await
+            .expect("the peer answers")
+            .expect_err("every CONNECT after the GOAWAY is rejected");
+        assert_eq!(
+            *refused.kind(),
+            ErrorKind::Connect,
+            "the refusal is the peer's, from the wire — not this crate's \
+             budget arithmetic: {refused}"
+        );
+        assert!(
+            StdError::source(&refused)
+                .and_then(|s| s.downcast_ref::<TooManySessions>())
+                .is_none(),
+            "and in particular not a spent budget: {refused}"
+        );
+    }
+
+    // **The second iteration is the assertion**, and the first is its
+    // control. One leaked reservation is enough to fill a budget of two
+    // beside the live session, so a slot that did not come back turns `/c`
+    // into `TooManySessions` — a refusal from this crate, raised before a
+    // byte leaves — where `/b` got one from the peer. Both iterations
+    // assert the same two things and only the second can fail for the
+    // mutation, which is what makes the first a control rather than a
+    // repetition.
+    //
+    // There is deliberately no assertion on `requests()` here. The server
+    // logs a CONNECT once its h3 layer has **resolved it into a request**,
+    // and a stream rejected under `shutdown` never gets that far — the
+    // same fact `tests/goaway.rs` states as "the CONNECT reached the wire
+    // and was never resolved into a request". So the count stays at one
+    // however many go out, and an assertion on it would measure the
+    // fixture's bookkeeping rather than this client's budget.
+    assert!(
+        conn.close_reason().is_none(),
+        "a rejected request is a stream error, not a connection one: {:?}",
+        conn.close_reason()
+    );
+}
+
+/// **The hand-over is forced rather than raced**: `b` is not reading the
+/// connection at all, so the only path from the wire to `b` is through
+/// `a`.
+///
+/// `a_sibling_reads_a_datagram_and_hands_it_over` above has `b` call
+/// `recv_datagram` after its send, which makes `b` a second reader of the
+/// one connection queue — and quinn hands the datagram to whichever reader
+/// gets there first. Measured, with the hand-over suppressed: `b` reads its
+/// own echo directly and the test passes, so it discriminates nothing about
+/// the hand-over. It is kept, because what it *does* pin is that `a` keeps
+/// its place afterwards, which this one does not.
+///
+/// Here `b` does not poll until the hand-over has demonstrably happened,
+/// and the ordering is causal rather than timed: `a` sends its own datagram
+/// only after `b`'s has been recorded at the server, so `a`'s loop must
+/// have taken `b`'s echo off the queue and passed it on before it could
+/// reach its own. `b` then finds it parked. With the hand-over removed
+/// there is nobody left to read for `b` and the payload is gone for good.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_datagram_is_handed_to_a_sibling_that_is_not_reading() {
+    let srv = server_for(2);
+    let conn = server::dial(&srv).await;
+    let a = Arc::new(
+        Session::connect(conn.clone(), &uri(srv.addr, "/a"))
+            .await
+            .expect("the first session"),
+    );
+    let b = a
+        .open_session(&uri(srv.addr, "/b"))
+        .await
+        .expect("the second session");
+
+    // `a` is the only reader for the whole of this test's interesting
+    // part: `b` never calls `recv_datagram` until the last two lines.
+    let reader = a.clone();
+    let a_is_waiting = tokio::spawn(async move { reader.recv_datagram().await });
+
+    b.send_datagram(Bytes::from_static(b"for-b"))
+        .expect("the fixture's endpoint carries datagrams");
+    assert!(
+        srv.wait_for_datagrams(1, ACTED).await,
+        "b's datagram reached the server, so its echo is on the way back"
+    );
+
+    // Causal, and this is the whole ordering the test rests on: `a`'s task
+    // is the connection's only reader, so it meets `b`'s echo before its
+    // own. `a` getting its own back therefore proves `a` disposed of `b`'s
+    // first — by handing it over, which is the only thing this loop does
+    // with a datagram that is not its own.
+    a.send_datagram(Bytes::from_static(b"for-a"))
+        .expect("the same endpoint");
+    let mine = tokio::time::timeout(ACTED, a_is_waiting)
+        .await
+        .expect("a's own datagram comes back")
+        .expect("the task did not panic")
+        .expect("and is not an error");
+    assert_eq!(&mine[..], b"for-a");
+
+    // And `b`'s is waiting for it, read by a session that never touched
+    // the wire.
+    let collected = tokio::time::timeout(ACTED, b.recv_datagram())
+        .await
+        .expect("b's datagram was parked for it, not discarded")
+        .expect("and is not an error");
+    assert_eq!(&collected[..], b"for-b");
+}
+
+/// **Each session addresses its datagrams to its own Quarter Stream ID**,
+/// and the ID is read as an absolute number rather than as whatever this
+/// client happens to be consistent about.
+///
+/// `webtransport.rs`'s `a_datagram_carries_bytes_both_ways` already asserts
+/// `quarter * 4 == id`, and it is the one place that does — on a session
+/// the fixture puts on stream **4**, whose quarter is therefore `1`. So a
+/// `quarter_stream_id` that answered a hard-coded `1` satisfied it exactly,
+/// and every other test was blind to the shift for a second reason: the
+/// fixture echoes each datagram back to the Quarter Stream ID it arrived
+/// on, so a client that is *consistently* wrong reads back its own bytes
+/// and cannot tell.
+///
+/// That is precisely the defect this crate refused to import.
+/// `h3-datagram` 0.0.2 writes a Quarter Stream ID of zero into every
+/// datagram — right for a session on stream 0 and wrong for every other —
+/// and the crate doc calls the interop test's stream 4 the reason the shift
+/// "is exercised rather than accidentally right". One stream is one point,
+/// and a constant goes through any single point.
+///
+/// Three sessions here, on streams 0, 4 and 8, so the quarters are 0, 1 and
+/// 2: no constant is right for all three, and neither is the unshifted
+/// stream ID. The server's own varint reader supplies the numbers, so what
+/// is compared is what crossed the wire.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_session_addresses_its_datagrams_to_its_own_quarter_stream_id() {
+    let srv = server_for(3);
+    let conn = server::dial(&srv).await;
+    let a = Session::connect(conn.clone(), &uri(srv.addr, "/a"))
+        .await
+        .expect("the first session");
+    let b = a
+        .open_session(&uri(srv.addr, "/b"))
+        .await
+        .expect("the second session");
+    let c = a
+        .open_session(&uri(srv.addr, "/c"))
+        .await
+        .expect("the third session");
+
+    // The premise the constants would otherwise hide: three distinct
+    // quarters, so no single number can stand for all of them.
+    let ids: Vec<u64> = [&a, &b, &c].iter().map(|s| s.id().value()).collect();
+    assert_eq!(ids, vec![0, 4, 8], "the fixture's CONNECTs take 0, 4, 8");
+
+    for (session, payload) in [
+        (&a, &b"from-a"[..]),
+        (&b, &b"from-b"[..]),
+        (&c, &b"from-c"[..]),
+    ] {
+        session
+            .send_datagram(Bytes::copy_from_slice(payload))
+            .expect("the fixture's endpoint carries datagrams");
+    }
+    assert!(
+        srv.wait_for_datagrams(3, ACTED).await,
+        "all three reach the server"
+    );
+
+    let mut seen: Vec<(u64, Vec<u8>)> = srv
+        .datagrams()
+        .into_iter()
+        .map(|d| (d.quarter_stream_id, d.payload))
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec![
+            (0, b"from-a".to_vec()),
+            (1, b"from-b".to_vec()),
+            (2, b"from-c".to_vec()),
+        ],
+        "RFC 9297 \u{a7}2.1: each datagram carries its own session's stream ID divided by four"
+    );
+}
+
 /// The two sessions end separately: closing one is not closing the other.
 ///
 /// Asserted causally rather than by a clock. The fixture records `b`'s

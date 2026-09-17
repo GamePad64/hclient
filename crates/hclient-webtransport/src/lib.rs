@@ -1745,4 +1745,58 @@ mod tests {
             }
         }
     }
+
+    /// A buffer holding **exactly** one integer and nothing after it is a
+    /// whole integer.
+    ///
+    /// The test above always appends `b"payload"`, so every buffer it
+    /// offers is longer than the integer in it and the exact fit is never
+    /// asked about — which leaves `buf.len() < len` and `buf.len() <= len`
+    /// answering the same way on everything the suite has. The difference
+    /// is the last capsule in a DATA frame and the last datagram of a
+    /// burst: a `<=` refuses a Quarter Stream ID that arrived whole with
+    /// no payload behind it, so `recv_datagram` discards the frame as
+    /// unreadable — RFC 9297 §2.1 puts no lower bound on a payload, and an
+    /// empty one is a datagram.
+    #[test]
+    fn a_buffer_that_is_exactly_one_varint_is_a_whole_varint() {
+        for (value, encoded) in CASES {
+            assert_eq!(
+                get_varint(encoded),
+                Some((*value, encoded.len())),
+                "{value} with nothing behind it"
+            );
+        }
+    }
+
+    /// A value with no encoding saturates to the largest one that has an
+    /// encoding, and never wraps to a small one.
+    ///
+    /// [`put_varint`]'s own doc calls this "a `debug_assert`'s worth of
+    /// impossibility" and says what it does instead: *"it saturates to the
+    /// largest encodable value, which cannot be mistaken for a valid ID"*.
+    /// That is the half worth pinning, because the failure it rules out is
+    /// silent — `(1 << 62) + 1` and `(1 << 62) / 1` as the clamp both let
+    /// the top bits fall into the two-bit length prefix, and what comes
+    /// back off the wire is **1** and **0**: not a refusal, not a large
+    /// number, but a perfectly ordinary session ID belonging to somebody
+    /// else. `0` is the ID `h3-datagram` 0.0.2 puts on every datagram it
+    /// writes, which is the defect this crate declined to import.
+    ///
+    /// Asserted through the decoder as well as on the bytes, because the
+    /// claim is about what a reader makes of them.
+    #[test]
+    fn a_value_with_no_encoding_saturates_rather_than_wrapping() {
+        const LARGEST: u64 = (1 << 62) - 1;
+        for v in [LARGEST, 1 << 62, (1 << 63) + 7, u64::MAX] {
+            let mut buf = Vec::new();
+            put_varint(&mut buf, v);
+            assert_eq!(buf, vec![0xff; 8], "encoding {v}");
+            assert_eq!(
+                get_varint(&buf),
+                Some((LARGEST, 8)),
+                "{v} reads back as the largest encodable value"
+            );
+        }
+    }
 }

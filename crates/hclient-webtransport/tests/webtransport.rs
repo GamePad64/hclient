@@ -908,6 +908,42 @@ async fn a_close_reason_over_the_limit_is_not_a_clean_close() {
     );
 }
 
+/// A reason of **exactly** the limit is a clean close, on the receiving
+/// side as well as the sending one.
+///
+/// `a_reason_over_the_limit_is_refused_before_anything_is_sent` already
+/// pins the boundary in the direction a `>=` would get wrong — but it pins
+/// it in [`Session::close`], and the reader has a second copy of the same
+/// comparison in `read_close`. The test above it here asserts only 1025,
+/// which a `>=` answers the same way, so nothing separated *over the
+/// limit* from *at it* on the way in: a peer closing with a 1024-byte
+/// reason would have had its close reported as `ReasonTooLong` and its
+/// session reported as ending badly.
+///
+/// The two halves are one sentence of the draft, so a reader that refused
+/// what this crate is willing to send would be two implementations of
+/// `Application Error Message (..8192)` disagreeing across one connection.
+#[tokio::test]
+async fn a_close_reason_of_exactly_the_limit_is_a_clean_close() {
+    let reason = "z".repeat(BadCloseCapsule::MAX_REASON);
+    let server = server::start(Options {
+        after_response: AfterResponse::Close {
+            code: 9,
+            reason: reason.clone(),
+        },
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let close = ended(&session)
+        .await
+        .expect("1024 bytes is the limit, not one past it");
+    assert_eq!(close, SessionClose { code: 9, reason });
+}
+
 /// A stream that ends part way through a capsule is not a clean close.
 ///
 /// The difference from `a_bare_fin_is_a_clean_close_with_zeroes` is the
