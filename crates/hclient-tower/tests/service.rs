@@ -2,8 +2,8 @@
 //! classification through, and it is honest about `Send`.
 
 use hclient_core::body::RequestBody;
+use hclient_core::caps::{Capabilities, RedirectSupport};
 use hclient_core::error::ErrorKind;
-use hclient_core::transport::Transport;
 use hclient_mock::MockTransport;
 use hclient_tower::TransportService;
 use http_body_util::BodyExt;
@@ -94,14 +94,40 @@ fn clones_share_one_transport() {
 /// guard around a middleware layer has to consult: `tower-http`'s
 /// decompression, for one, corrupts a response from a backend that already
 /// decompressed, and only the capability says which that is.
+///
+/// **The backend's capabilities are set away from `Capabilities::default()`
+/// first, and that is the whole of what this test learned.** It used to
+/// read them off a plain `MockTransport::new()` and assert the adapter
+/// answered the same — and `MockTransport::new()` stores exactly
+/// `Capabilities::default()`, so the assertion compared the default with
+/// the default and an adapter that fabricated one passed. Measured: the
+/// mutation replacing the forwarding with
+/// `Box::leak(Box::new(Default::default()))` survived the whole suite.
+/// This is the *silently ignored setting* defect one layer down, where the
+/// setting is the transport's own report.
 #[test]
 fn capabilities_are_reachable_through_the_adapter() {
-    let m = MockTransport::new();
-    let expected_redirects = m.capabilities().redirects;
+    let mut caps = Capabilities::default();
+    // Three fields, each moved off its default in a different direction —
+    // an enum, a gate and a report — so no single fabricated value can
+    // match all three by accident.
+    caps.redirects = RedirectSupport::Internal;
+    caps.owns_cache = true;
+    caps.timeouts.connect = true;
+    assert_ne!(
+        format!("{caps:?}"),
+        format!("{:?}", Capabilities::default()),
+        "the fixture must differ from the default, or this test proves nothing"
+    );
+
+    let m = MockTransport::new().with_capabilities(caps);
     let svc = TransportService::new(m);
+
     assert_eq!(
         svc.capabilities().redirects,
-        expected_redirects,
+        RedirectSupport::Internal,
         "the adapter must forward the backend's own capabilities, not a default"
     );
+    assert!(svc.capabilities().owns_cache);
+    assert!(svc.capabilities().timeouts.connect);
 }

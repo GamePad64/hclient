@@ -136,6 +136,56 @@ fn a_request_body_reaches_the_service() {
     assert_eq!(echoed, "payload");
 }
 
+/// **Every capability this transport claims is the conservative one**, and
+/// the doc comment on `AppTransport::new` says so field by field: no TLS
+/// handshake happens, no proxy is consulted, no connection is reused
+/// because none exists, and a `tower::Service` takes the whole request
+/// before it answers, so there is no full duplex.
+///
+/// **This test cannot be killed by mutating `capabilities()`, and that is
+/// recorded rather than hidden.** `AppTransport::new` stores
+/// `Capabilities::default()` and there is no setter, so the sweep's
+/// `Box::leak(Box::new(Default::default()))` computes the same value for
+/// every reachable instance — measured, by formatting both and comparing.
+/// It is an equivalent mutant, and no assertion can discriminate it. What
+/// this pins instead is the *claim*: the day somebody gives this transport
+/// a capability it cannot keep — `full_duplex` above all, which a caller
+/// streaming a body would deadlock on — the line fails here rather than in
+/// whoever believed it.
+#[test]
+fn the_app_transport_claims_nothing_it_cannot_keep() {
+    let t = AppTransport::new("testserver", app(Seen::default()));
+    let caps = hclient_core::transport::Transport::capabilities(&t);
+
+    assert!(
+        !caps.full_duplex,
+        "a `tower::Service` takes the whole request and then answers"
+    );
+    assert!(!caps.streaming_request_body);
+    assert!(!caps.connection_reuse, "there is no connection to reuse");
+    assert!(!caps.proxy, "no proxy is consulted in process");
+    assert!(!caps.owns_cookie_jar, "the client's jar is the only one");
+    assert!(!caps.owns_cache);
+    assert_eq!(
+        caps.redirects,
+        hclient_core::caps::RedirectSupport::None,
+        "the service answers one request; the client follows the chain"
+    );
+    assert_eq!(
+        caps.tls_config,
+        hclient_core::caps::TlsSupport::None,
+        "no handshake happens at all"
+    );
+
+    // The control: this is the conservative default rather than a set of
+    // claims that happens to read as one, which is what makes the absence
+    // of a setter on `AppTransport` the property being relied on.
+    assert_eq!(
+        format!("{caps:?}"),
+        format!("{:?}", hclient_core::caps::Capabilities::default())
+    );
+}
+
 /// **A test that names a real host is refused, not served.** Without
 /// this, a URL typo would be answered by the local router and the test
 /// would pass while reaching nothing.
