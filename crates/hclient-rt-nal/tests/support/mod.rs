@@ -111,3 +111,52 @@ impl TcpConnect for LocalStack {
         Ok(LocalConn(self.0.clone()))
     }
 }
+
+/// A connection whose `flush` fails with a kind the test chooses.
+///
+/// Two separate claims need this and neither could be made with the two
+/// stacks above, because both of theirs always succeed. `io_err`'s own
+/// comment says the kind is *carried* rather than flattened into `Other`
+/// so that "a transport above this can then tell a refused connection
+/// from a reset one" — a claim about a value that has to be produced by
+/// a failure before anything can read it. And `poll_shutdown` forwards
+/// to `flush()`, which is the documented shape of this seam's inability
+/// to half-close; a shutdown that reports success for a flush that
+/// failed is the direction that matters, since it is the one a caller
+/// acts on.
+#[derive(Debug)]
+pub struct FailingFlushConn(pub ErrorKind);
+
+impl ErrorType for FailingFlushConn {
+    type Error = ErrorKind;
+}
+impl Read for FailingFlushConn {
+    async fn read(&mut self, _b: &mut [u8]) -> Result<usize, Self::Error> {
+        Ok(0)
+    }
+}
+impl Write for FailingFlushConn {
+    async fn write(&mut self, b: &[u8]) -> Result<usize, Self::Error> {
+        Ok(b.len())
+    }
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Err(self.0)
+    }
+}
+
+/// A stack handing out [`FailingFlushConn`]s, so the failure arrives
+/// through `connect` exactly as a real one would rather than by building
+/// the wrapper directly.
+#[derive(Debug)]
+pub struct FailingFlushStack(pub ErrorKind);
+
+impl TcpConnect for FailingFlushStack {
+    type Error = ErrorKind;
+    type Connection<'a>
+        = FailingFlushConn
+    where
+        Self: 'a;
+    async fn connect(&self, _remote: SocketAddr) -> Result<Self::Connection<'_>, Self::Error> {
+        Ok(FailingFlushConn(self.0))
+    }
+}

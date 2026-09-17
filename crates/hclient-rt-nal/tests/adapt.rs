@@ -124,6 +124,105 @@ fn a_zero_chunk_is_raised_rather_than_becoming_a_silent_eof() {
     assert_eq!(rb.filled(), b"a", "one byte, not zero");
 }
 
+/// **`io_err` carries the kind, and nothing read it.** The function's own
+/// comment says the kind is mapped rather than flattened into `Other`
+/// "so a transport above this can then tell a refused connection from a
+/// reset one" — a claim about a value, and a claim no test made. Measured
+/// before this was written: rewriting **all sixteen** explicit arms to
+/// `io::ErrorKind::Other` left the suite at 8/8 green, so the whole
+/// mapping was unpinned in one stroke.
+///
+/// Three kinds rather than one, because a single arm passes for a
+/// function that has hardcoded that one answer. `Other` is asserted too
+/// and is the opposite claim: `embedded-io`'s own `Other`, and any
+/// variant a later release adds, must arrive as *unknown* rather than as
+/// a wrong guess — so this row dies to a mutation that maps it onto
+/// something specific.
+#[test]
+fn the_error_kind_crosses_the_bridge_rather_than_flattening_to_other() {
+    use embedded_io_async::ErrorKind as Nal;
+    use hyper::rt::Write as _;
+    use std::future::poll_fn;
+    use std::io::ErrorKind as Io;
+    use std::pin::Pin;
+
+    for (from, want) in [
+        (Nal::ConnectionRefused, Io::ConnectionRefused),
+        (Nal::ConnectionReset, Io::ConnectionReset),
+        (Nal::Other, Io::Other),
+    ] {
+        let stack: &'static support::FailingFlushStack =
+            Box::leak(Box::new(support::FailingFlushStack(from)));
+        let conn =
+            futures_executor::block_on(embedded_nal_async::TcpConnect::connect(stack, addr()))
+                .expect("connect");
+        let mut io = hclient_rt_nal::NalIo::new(conn);
+
+        let err = futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_flush(cx)))
+            .expect_err("this fixture's flush always fails");
+        assert_eq!(err.kind(), want, "{from:?} must arrive as {want:?}");
+    }
+}
+
+/// **A half-close this seam cannot perform must not report success.**
+/// `embedded_io_async::Write` is `write` and `flush` and nothing else, so
+/// `NalIo::poll_shutdown` forwards to `flush()` — which is blocker two of
+/// the three `CLAUDE.md` records against this whole adapter, and the
+/// reason `hclient-rt-embassy` owns its socket instead of going through
+/// a `Connection`. The forwarding is the honest shape available; what was
+/// missing is that anything checked it happens.
+///
+/// Measured before this was written: replacing the whole body with
+/// `Poll::Ready(Ok(()))` left the suite at 8/8 green, so a shutdown that
+/// silently did nothing was indistinguishable from one that flushed.
+///
+/// The assertion is on the **error**, not on a flush count, because the
+/// direction that matters is the one a caller acts on: `poll_shutdown`
+/// answering `Ok` for a flush that failed tells hyper the FIN went out.
+#[test]
+fn a_shutdown_that_cannot_flush_reports_the_failure_rather_than_success() {
+    use hyper::rt::Write as _;
+    use std::future::poll_fn;
+    use std::pin::Pin;
+
+    let stack: &'static support::FailingFlushStack = Box::leak(Box::new(
+        support::FailingFlushStack(embedded_io_async::ErrorKind::BrokenPipe),
+    ));
+    let conn = futures_executor::block_on(embedded_nal_async::TcpConnect::connect(stack, addr()))
+        .expect("connect");
+    let mut io = hclient_rt_nal::NalIo::new(conn);
+
+    let err = futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_shutdown(cx)))
+        .expect_err("the flush beneath this shutdown fails");
+    assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+}
+
+/// The control for the pair above: on a stack whose `flush` succeeds, a
+/// shutdown succeeds **and reaches the connection**. Without this row the
+/// two tests above pass for an adapter whose `poll_shutdown` always
+/// errors, which is the opposite defect and just as silent.
+#[test]
+fn a_shutdown_on_a_healthy_connection_flushes_it_and_succeeds() {
+    use hyper::rt::Write as _;
+    use std::future::poll_fn;
+    use std::pin::Pin;
+
+    let (stack, log) = send_stack(b"");
+    let conn = futures_executor::block_on(embedded_nal_async::TcpConnect::connect(stack, addr()))
+        .expect("connect");
+    let mut io = hclient_rt_nal::NalIo::new(conn);
+
+    futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_shutdown(cx)))
+        .expect("a healthy flush");
+    // `Log::flushes` has been recorded by the fixture since it was written
+    // and read by nothing until now.
+    assert_eq!(
+        log.lock().unwrap().flushes,
+        1,
+        "the flush must reach the connection"
+    );
+}
+
 /// `embedded-nal-async` exposes no socket options, so the runtime must say
 /// it applies none — the understating direction, which turns a caller's
 /// `TcpOpts` into a named refusal one layer up instead of an option
