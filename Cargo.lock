@@ -1640,7 +1640,7 @@ dependencies = [
  "hclient-rt",
  "hyper",
  "libc",
- "quinn-udp 0.6.1",
+ "quinn-udp 0.6.2",
  "socket2",
 ]
 
@@ -1652,7 +1652,7 @@ dependencies = [
  "futures-executor",
  "hclient-rt",
  "hyper",
- "quinn-udp 0.6.1",
+ "quinn-udp 0.6.2",
  "socket2",
  "tokio",
 ]
@@ -2901,9 +2901,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-udp"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76150b617afc75e6e21ac5f39bc196e80b65415ae48d62dbef8e2519d040ce42"
+checksum = "3ca72c3f2792761ab5fa848490694cbc728c7f659669ed4320c4c79c12150966"
 dependencies = [
  "cfg_aliases",
  "libc",
@@ -3572,7 +3572,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
