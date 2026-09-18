@@ -886,9 +886,24 @@ async fn the_call_definition_reaches_the_wire_te_trailers_included() {
     );
     assert_eq!(s.header("grpc-accept-encoding"), Some("identity,gzip"));
     assert_eq!(s.header("user-agent"), Some("grpc-rust-hclient/0.1.0"));
-    assert!(
-        !s.has("content-length"),
-        "nothing here adds one, which is what a client-streaming call needs"
+    // **This asserted the opposite until `63c37b06`, and it was asserting
+    // it about the wrong body.** The comment read *nothing here adds one,
+    // which is what a client-streaming call needs* — but this call is
+    // unary and its body is `RequestBody::Full`, a length that is known
+    // before a byte is sent. The requirement it meant to pin is
+    // `.notes/grpc-yardstick.md` row 4, *no `content-length` invented for
+    // a **streaming** call*, and that is now pinned where it has a
+    // subject: `a_request_past_the_window_is_backpressured_rather_than_buffered`.
+    //
+    // What belongs here is the other half. `hyper` writes this header on
+    // the HTTP/1 path and `h2` does not, so an exact-size body reached an
+    // h2 server without one — which an OCI registry reads as a blob upload
+    // of nothing.
+    assert_eq!(
+        s.header("content-length"),
+        Some(framed(b"ping").len().to_string().as_str()),
+        "an exact-size body declares its length on h2 as it does on h1, \
+         and the value is the framed body's own"
     );
     assert!(s.complete, "EOS: the request stream ended with END_STREAM");
 }
@@ -1418,6 +1433,24 @@ async fn a_request_past_the_window_is_backpressured_rather_than_buffered() {
         pulled.load(Ordering::SeqCst),
         FRAMES,
         "the whole body was pulled in the end"
+    );
+
+    // **`.notes/grpc-yardstick.md` row 4, pinned where it has a subject.**
+    // *No `content-length` invented for a streaming call* lived in
+    // `the_call_definition_reaches_the_wire_te_trailers_included` until
+    // `63c37b06`, asserted there against a `RequestBody::Full` — a length
+    // known before a byte is sent, which is not what the row is about. This
+    // body is `RequestBody::Streaming`, so `size_hint().exact()` is `None`
+    // and there is no number to state.
+    //
+    // Stating a wrong one is worse than stating none: a peer told a length
+    // the body will not reach waits for bytes that never come, or cuts the
+    // body short. That is why the header's arrival is conditioned on an
+    // exact size rather than on the protocol.
+    assert!(
+        !seen[0].has("content-length"),
+        "a streaming body has no length to declare, and inventing one is \
+         how a client-streaming call gets truncated"
     );
 }
 
