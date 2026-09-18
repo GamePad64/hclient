@@ -494,6 +494,37 @@ where
 /// will pick h2 and make it redundant. `:authority` is built from the URI
 /// here, so removing the header loses nothing: the authority still reaches
 /// the wire.
+/// Declare the body's length when it is known and the caller did not.
+///
+/// **hyper writes this header on the HTTP/1 path and h2 does not**, because
+/// HTTP/2 frames the body and does not need it to find the end. Servers still
+/// read it: an OCI registry sizes a blob upload from `content-length`, and
+/// without it treats the request as carrying nothing — the upload is then
+/// rejected as the digest of empty content, with a `400` that names neither
+/// the header nor the protocol. Measured against zot: the same `PUT` succeeds
+/// with the header and fails without it, on h2, for `curl` as well as for this
+/// client. So the difference was never TLS or the framing; it was one header
+/// that the HTTP/1 path got for free.
+///
+/// Only for an exact size. A streaming body of unknown length has no number to
+/// state, and stating a wrong one is worse than stating none: the peer would
+/// wait for bytes that never come, or cut the body short.
+///
+/// A caller who set it keeps their value, including a deliberately wrong one —
+/// this fills a gap rather than overriding an intent.
+fn set_content_length(headers: &mut http::HeaderMap, body: &OutgoingBody) {
+    use http_body::Body as _;
+    if headers.contains_key(http::header::CONTENT_LENGTH) {
+        return;
+    }
+    if let Some(len) = body.size_hint().exact()
+        && len > 0
+        && let Ok(v) = http::HeaderValue::from_str(&len.to_string())
+    {
+        headers.insert(http::header::CONTENT_LENGTH, v);
+    }
+}
+
 fn strip_connection_headers(headers: &mut http::HeaderMap) {
     for name in [
         http::header::CONNECTION,
@@ -619,6 +650,7 @@ where
     // `:scheme`/`:authority`/`:path` out of exactly this URI and an
     // origin-form one would leave it with neither scheme nor authority.
     parts.version = http::Version::HTTP_2;
+    set_content_length(&mut parts.headers, &outgoing);
     let eos = outgoing.is_end_stream();
     let head = http::Request::from_parts(parts, ());
 
