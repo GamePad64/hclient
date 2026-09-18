@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-rt-smol-v0.1.0-alpha.10...hclient-rt-smol-v0.1.0-alpha.11) - 2026-09-18
+
+### Other
+
+- say which ECN mutant this test does not kill
+- close 20 of `hclient-rt-smol`'s 30 mutation survivors, and name the other 10
+
 ## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-rt-smol-v0.1.0-alpha.9...hclient-rt-smol-v0.1.0-alpha.10) - 2026-09-15
 
 ### Other

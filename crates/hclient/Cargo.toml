@@ -1,6 +1,6 @@
 [package]
 name = "hclient"
-version = "0.1.0-alpha.11"
+version = "0.1.0-alpha.12"
 description = "Cross-platform async HTTP client: one codebase for native, browser, and WASI"
 keywords     = ["hclient", "http", "http-client", "async", "wasm"]
 categories   = ["web-programming::http-client", "asynchronous", "wasm"]
@@ -556,10 +556,10 @@ web-time      = "1.1.0"
 thiserror      = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-hclient-native     = { path = "../hclient-native", version = "0.1.0-alpha.11", optional = true }
-hclient-rt-tokio   = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.10", optional = true }
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.11", optional = true, features = ["platform-verifier"] }
-hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.11", optional = true }
+hclient-native     = { path = "../hclient-native", version = "0.1.0-alpha.12", optional = true }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.11", optional = true }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.12", optional = true, features = ["platform-verifier"] }
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.12", optional = true }
 
 # The browser-only extra feature `jitter`'s `getrandom` call needs: on
 # `wasm32-unknown-unknown` `getrandom` has no default backend and must be
@@ -636,8 +636,8 @@ url               = "2"
 # outside `-e normal`, so the example's imports do not appear in a
 # consumer's graph — which matters here, since the example's whole point is
 # how small that graph can be.
-hclient-dns        = { path = "../hclient-dns", version = "0.1.0-alpha.10" }
-hclient-tls        = { path = "../hclient-tls", version = "0.1.0-alpha.9" }
+hclient-dns        = { path = "../hclient-dns", version = "0.1.0-alpha.11" }
+hclient-tls        = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
 
 # `tests/two_runtimes.rs`'s dependencies — an end-to-end run of one generic
 # body on both tokio and smol without a single `#[cfg]` (Task 14).

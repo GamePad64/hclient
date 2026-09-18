@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-dns-v0.1.0-alpha.10...hclient-dns-v0.1.0-alpha.11) - 2026-09-18
+
+### Fixed
+
+- [**breaking**] take `domain` off `hclient-dns`'s public surface
+
+### Other
+
+- [**breaking**] one DNS decoder, because `domain` does both granularities
+
 ## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-dns-v0.1.0-alpha.9...hclient-dns-v0.1.0-alpha.10) - 2026-09-15
 
 ### Other

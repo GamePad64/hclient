@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-tls-v0.1.0-alpha.9...hclient-tls-v0.1.0-alpha.10) - 2026-09-18
+
+### Other
+
+- pin `hclient-tls`'s defaulted seam members and its `TlsInfo` setters
+
 ## [0.1.0-alpha.9](https://github.com/GamePad64/hclient/compare/hclient-tls-v0.1.0-alpha.8...hclient-tls-v0.1.0-alpha.9) - 2026-09-10
 
 ### Other

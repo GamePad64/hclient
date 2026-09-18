@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.12](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.11...hclient-native-v0.1.0-alpha.12) - 2026-09-18
+
+### Fixed
+
+- *(native)* strip `Host` from an HTTP/2 request, beside the rest
+
 ## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.10...hclient-native-v0.1.0-alpha.11) - 2026-09-16
 
 ### Added

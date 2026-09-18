@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.12](https://github.com/GamePad64/hclient/compare/hclient-tungstenite-v0.1.0-alpha.11...hclient-tungstenite-v0.1.0-alpha.12) - 2026-09-18
+
+### Other
+
+- pin the two kinds `ws_error` assigns, `poll_ready`'s backpressure and both `Debug` impls
+
 ## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-tungstenite-v0.1.0-alpha.10...hclient-tungstenite-v0.1.0-alpha.11) - 2026-09-16
 
 ### Other

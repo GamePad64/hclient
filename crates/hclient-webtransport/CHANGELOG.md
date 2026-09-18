@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-webtransport-v0.1.0-alpha.10...hclient-webtransport-v0.1.0-alpha.11) - 2026-09-18
+
+### Other
+
+- correct a test's claim that it is the only reader
+- close 8 of `hclient-webtransport`'s 16 mutation survivors, and measure the other 8
+
 ## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-webtransport-v0.1.0-alpha.9...hclient-webtransport-v0.1.0-alpha.10) - 2026-09-15
 
 ### Other
