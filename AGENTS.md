@@ -445,6 +445,35 @@ crate's worth of lints. The count is not written here for the reason the
 paragraph above gives — run the recipe, which is the authority and
 cannot go stale.
 
+**`hclient-mock` is the third to leave, and choosing it over its
+neighbour is the part worth recording.** Both it and `hclient-dns` pass
+the structural test — each depends on `hclient-core` alone, which is
+already stable, so neither drags a pre-release into a stable graph
+(`cargo tree -e normal` finds no `alpha` under either), both have small
+surfaces, and both carry `#[non_exhaustive]` where additive growth would
+otherwise break. What separated them is the calendar: **`hclient-dns`
+was broken twice two days earlier** — `99672f92` and `fda77383`, the
+second closing a `domain` leak this file records as having *outlived the
+decoder that leaked it*. Freezing a seam two days after it was last
+repaired promises exactly what had just stopped being true, which is the
+rule about a stable number in the index being a promise rather than an
+intention, met from the side where the subject is a seam still moving.
+
+The positive case is narrower than *it looks finished*. `hclient-mock`'s
+surface is what other people write **in their own tests**, and its shape
+was settled by an outside consumer rather than by an internal seam — so
+it is both the surface that hurts most to break and the one a working
+`cargo semver-checks` is worth most on.
+
+**And the commit does not move the gate, which is the same lesson a
+third time.** After the bump `just semver` still prints its old figure
+and still lists `hclient-mock(0.1.0-alpha.11)` among the pre-release
+baselines, because the recipe reads the **index** and the index has not
+moved. Measured rather than assumed — `cargo search` answers
+`0.1.0-alpha.11` on the same tree whose manifest says `0.1.0`. The
+enrolment happens on publish, exactly as `hclient-idn`'s did, and
+nothing here needs editing for it.
+
 **The episode this replaces is kept, because the distinction it drew is
 the durable part.** The number was set to `0.1.0` on 2026-09-10 and
 taken back to `0.1.0-alpha.8` days later, and what made that reversal

@@ -141,7 +141,7 @@ hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.12" }
 # The control in `tests/seam.rs`: a transport that *can* promise `Send`,
 # so the negative assertion beside it cannot pass vacuously. Chosen for
 # being tiny — no runtime, no TLS — since this crate is the embedded one.
-hclient-mock     = { path = "../hclient-mock", version = "0.1.0-alpha.11" }
+hclient-mock     = { path = "../hclient-mock", version = "0.1.0" }
 hclient-dns      = { path = "../hclient-dns", version = "0.1.0-alpha.11" }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
 # The scenarios collect response bodies themselves, because the embedded
