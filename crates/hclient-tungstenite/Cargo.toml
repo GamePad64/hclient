@@ -1,6 +1,6 @@
 [package]
 name = "hclient-tungstenite"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 description = "WebSocket framing for hclient: RFC 6455 over an upgraded byte stream, on tungstenite"
 keywords     = ["hclient", "websocket", "tungstenite", "rfc6455"]
 categories   = ["web-programming::websocket"]
@@ -69,7 +69,7 @@ futures-executor   = { version = "0.3", default-features = false, features = ["s
 futures-util       = { version = "0.3", default-features = false, features = ["std", "sink"] }
 http-body-util     = { workspace = true }
 hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.12" }
-hclient-rt-tokio   = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.11" }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.12" }
 hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.12", features = ["webpki-roots"] }
 tokio              = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # One test needs a socket whose receive buffer is small enough that a

@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "hclient"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "brotli",
  "brotli-decompressor",
@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-dns-doh"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "bytes",
  "domain",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-fetch"
-version = "0.1.0-alpha.11"
+version = "0.1.0-alpha.12"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-otel"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "bytes",
  "hclient",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-proxy"
-version = "0.1.0-alpha.11"
+version = "0.1.0-alpha.12"
 dependencies = [
  "bytes",
  "core-foundation 0.10.1",
@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-rt-smol"
-version = "0.1.0-alpha.11"
+version = "0.1.0-alpha.12"
 dependencies = [
  "async-executor",
  "async-io",
@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-rt-tokio"
-version = "0.1.0-alpha.11"
+version = "0.1.0-alpha.12"
 dependencies = [
  "futures-core",
  "futures-executor",
@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tls-native-tls"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "futures-executor",
  "futures-io",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tower"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "axum",
  "bytes",
@@ -1744,7 +1744,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tungstenite"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1772,7 +1772,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-urlsession"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "block2",
  "bytes",

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.0-alpha.12...hclient-wasi-v0.1.0) - 2026-09-18
+
+### Other
+
+- *(wasi)* [**breaking**] `hclient-wasi` leaves the pre-release series
+- *(deps)* take `wasip3` 0.9, and the WIT version behind it did not move
+
 ## [0.1.0-alpha.12](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.0-alpha.11...hclient-wasi-v0.1.0-alpha.12) - 2026-09-18
 
 ### Other

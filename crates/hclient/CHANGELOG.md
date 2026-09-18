@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.12...hclient-v0.1.0-alpha.13) - 2026-09-18
+
+### Fixed
+
+- *(native)* declare `content-length` on HTTP/2, which hyper does for HTTP/1
+
+### Other
+
+- *(deps)* bump `hclient-native` to `0.1.0-alpha.13`
+- *(deps)* [**breaking**] update the ecosystem, and `quinn-udp` 0.6.2 named a real asymmetry
+
 ## [0.1.0-alpha.12](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.11...hclient-v0.1.0-alpha.12) - 2026-09-18
 
 ### Other

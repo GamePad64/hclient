@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.12](https://github.com/GamePad64/hclient/compare/hclient-proxy-v0.1.0-alpha.11...hclient-proxy-v0.1.0-alpha.12) - 2026-09-18
+
+### Other
+
+- *(deps)* [**breaking**] update the ecosystem, and `quinn-udp` 0.6.2 named a real asymmetry
+
 ## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-proxy-v0.1.0-alpha.10...hclient-proxy-v0.1.0-alpha.11) - 2026-09-16
 
 ### Added

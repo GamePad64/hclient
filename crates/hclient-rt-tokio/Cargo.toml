@@ -1,6 +1,6 @@
 [package]
 name = "hclient-rt-tokio"
-version = "0.1.0-alpha.11"
+version = "0.1.0-alpha.12"
 description = "hclient runtime capabilities implemented on top of tokio"
 keywords     = ["hclient", "runtime", "tokio", "async"]
 categories   = ["asynchronous"]

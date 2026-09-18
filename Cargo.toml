@@ -139,7 +139,7 @@ hclient-mock  = { path = "crates/hclient-mock", version = "0.1.0" }
 hclient-idn   = { path = "crates/hclient-idn", version = "0.2.5" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
-hclient       = { path = "crates/hclient", version = "0.1.0-alpha.12" }
+hclient       = { path = "crates/hclient", version = "0.1.0-alpha.13" }
 
 [workspace.lints.rust]
 unsafe_code       = "forbid"
