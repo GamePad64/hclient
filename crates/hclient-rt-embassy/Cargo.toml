@@ -137,7 +137,7 @@ log                = { version = "0.4", features = ["std"] }
 smoltcp            = { version = "0.13", default-features = false, features = ["log"] }
 hclient          = { workspace = true }
 hclient-core     = { workspace = true }
-hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.12" }
+hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.13" }
 # The control in `tests/seam.rs`: a transport that *can* promise `Send`,
 # so the negative assertion beside it cannot pass vacuously. Chosen for
 # being tiny — no runtime, no TLS — since this crate is the embedded one.

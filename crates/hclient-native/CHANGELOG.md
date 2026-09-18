@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.12...hclient-native-v0.1.0-alpha.13) - 2026-09-18
+
+### Fixed
+
+- HTTP/2 requests now declare `content-length` when the body's size is known.
+  hyper writes that header on the HTTP/1 path and h2 does not — it frames the
+  body and has no need of it — so a server that sizes the body from the header
+  rather than reading to end-of-stream saw an empty request. An OCI registry
+  rejected every blob upload this way, reporting the digest of empty content
+  against the one the uploader declared. Only an exact size is declared, and a
+  caller's own value is never overwritten.
+
 ## [0.1.0-alpha.12](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.11...hclient-native-v0.1.0-alpha.12) - 2026-09-18
 
 ### Fixed

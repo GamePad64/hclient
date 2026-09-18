@@ -113,7 +113,7 @@ rstest           = { workspace = true }
 #
 # Not a dependency cycle: `hclient-native` depends on `hclient-dns`, never
 # on this crate.
-hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.12" }
+hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.13" }
 hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.11" }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
 # `tests/live.rs` alone, and `platform-verifier` is the whole point of it
