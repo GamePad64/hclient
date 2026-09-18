@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.13...hclient-native-v0.1.0-alpha.14) - 2026-09-18
+
+### Other
+
+- *(dns)* [**breaking**] `hclient-dns` leaves the pre-release series
+- *(native)* pin the gRPC `content-length` rule where it has a subject
+
 ## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.12...hclient-native-v0.1.0-alpha.13) - 2026-09-18
 
 ### Fixed

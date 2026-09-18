@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.1.1...hclient-cli-v0.2.0) - 2026-09-18
+
+### Other
+
+- *(dns)* [**breaking**] `hclient-dns` leaves the pre-release series
+
 ## [0.1.1](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.1.0...hclient-cli-v0.1.1) - 2026-09-18
 
 ### Other
