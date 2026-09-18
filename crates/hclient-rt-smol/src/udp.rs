@@ -186,11 +186,16 @@ impl UdpDatagrams for SmolUdpSocket {
             segment_size: t.segment_size,
             src_ip: t.src_ip,
         };
-        // `try_send`, not `send`: the two differ in exactly one thing —
-        // `send` loops on `EINTR` and on a `WouldBlock` that follows one —
-        // and this seam's contract is that `WouldBlock` comes back to the
-        // caller as an obligation to `poll_writable`. `try_send` is the
-        // spelling that says so.
+        // `try_send`, not `send`, and the reason is larger than this
+        // comment used to say. It read that the two differ in exactly one
+        // thing — `send` looping on `EINTR` and on a `WouldBlock` that
+        // follows one — which was the 0.6.1 difference. `quinn-udp` 0.6.2
+        // deprecated `send` outright, naming the bigger one: it *silences
+        // I/O errors*, answering `Ok(())` for `EMSGSIZE` and, after
+        // logging, for every error that is not `WouldBlock`. So this call
+        // was right for a smaller reason than the one that makes it right,
+        // and `hclient-rt-tokio` was calling the deprecated spelling until
+        // the attribute made the asymmetry visible.
         self.state.try_send(self.io.get_ref().into(), &transmit)
     }
 

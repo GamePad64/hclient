@@ -7036,6 +7036,30 @@ unkillable everywhere. What exists is `test (macos-latest)`, which runs
 the ordinary UDP suite on macOS, and that is what would catch a 0.6
 regression there.
 
+**0.6.2 then deprecated `UdpSocketState::send`, and the attribute found
+an asymmetry between the two runtimes that nothing here had noticed.**
+The note reads *silences I/O errors; use `try_send` instead*, and
+reading `unix.rs:225` rather than taking its word says how much: `send`
+answers `Ok(())` for `EMSGSIZE` and, after logging, for **every** error
+that is not `WouldBlock`. `hclient-rt-smol` had called `try_send` since
+it was written; `hclient-rt-tokio` had not. So one runtime surfaced a
+send failure and the other swallowed it, and `UdpDatagrams::try_send`'s
+own `# Errors` promises the caller *"whatever else the OS's send call
+answers"* — which the tokio half was quietly not keeping.
+
+Both call `try_send` now. **What that hands back is the decision rather
+than the error**: the `EMSGSIZE` quinn's comment calls *expected for MTU
+probes* goes to quinn, through `http3/runtime.rs`'s
+`AsyncUdpSocket::try_send`, which is quinn's own interface and quinn's
+own MTU logic. The deprecated spelling had our runtime absorbing a probe
+result on quinn's behalf.
+
+And the smol comment beside it was right for a smaller reason than the
+one that makes it right: it described the 0.6.1 difference — `send`
+looping on `EINTR` — where the deprecation names error swallowing.
+Corrected there rather than left, because a comment that survives the
+fact it explains is this file's recurring defect.
+
 **Two more bumps came with it, and the refusal is the interesting one.**
 `embassy-executor` 0.10 renamed `arch-std` to `platform-std` and moved the
 fallible half of spawning: the `#[task]` macro's function now returns

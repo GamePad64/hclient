@@ -127,7 +127,7 @@ futures-sink = { workspace = true }
 # for the identical need (`StreamExt::map`), not a preset copied blind.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # See the note above `[dependencies]` for why this moved off the 0.5 line.
-wasm-streams = "0.6"
+wasm-streams = "0.7"
 
 # The response body's pump: `spawn_local` for the task that owns the JS
 # handles, and a channel for the `Bytes` it hands out. `futures-channel` is

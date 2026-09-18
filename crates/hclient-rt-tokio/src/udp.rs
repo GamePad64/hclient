@@ -163,8 +163,17 @@ impl UdpDatagrams for TokioUdpSocket {
             segment_size: t.segment_size,
             src_ip: t.src_ip,
         };
+        // `try_send`, not `send`, which `quinn-udp` 0.6.2 deprecated with
+        // the reason in the attribute: *silences I/O errors*. Read rather
+        // than taken on the note's word — `send` returns `Ok(())` for
+        // `EMSGSIZE` and, after logging, for **every** error that is not
+        // `WouldBlock` (`unix.rs:225`). This seam's own `# Errors` promises
+        // the caller "whatever else the OS's send call answers", so the
+        // deprecated spelling was quietly breaking that contract, and
+        // `hclient-rt-smol` has called `try_send` since it was written.
+        // The asymmetry was invisible until the deprecation named it.
         self.io.try_io(Interest::WRITABLE, || {
-            self.state.send((&self.io).into(), &transmit)
+            self.state.try_send((&self.io).into(), &transmit)
         })
     }
 
