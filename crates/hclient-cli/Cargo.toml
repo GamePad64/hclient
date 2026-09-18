@@ -90,7 +90,7 @@ thiserror = { workspace = true }
 hclient      = { workspace = true, features = ["json", "gzip", "brotli", "deflate", "zstd", "cookies", "charset", "digest-auth"] }
 hclient-core = { workspace = true }
 hclient-native     = { path = "../hclient-native", version = "0.1.0-alpha.13" }
-hclient-dns        = { path = "../hclient-dns", version = "0.1.0-alpha.11" }
+hclient-dns        = { path = "../hclient-dns", version = "0.1.0" }
 hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.12" }
 hclient-rt-tokio   = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.12" }
 hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.12", optional = true, features = ["platform-verifier"] }

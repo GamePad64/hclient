@@ -98,7 +98,7 @@ winnow = { workspace = true }
 http-body      = { workspace = true }
 http-body-util = { workspace = true }
 hclient-core   = { workspace = true }
-hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.11" }
+hclient-dns    = { path = "../hclient-dns", version = "0.1.0" }
 # No default features, from `[workspace.dependencies]`: this crate uses
 # `happy_eyeballs` only, and a default-on `idn` here would union back into
 # every build that also contains `hclient`, turning the facade's `idn`

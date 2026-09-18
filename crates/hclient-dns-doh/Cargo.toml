@@ -84,7 +84,7 @@ hclient-core   = { workspace = true }
 # function only this crate ever called. It is `wire.rs`'s now, beside the
 # `Message::from_slice` that produces its input, and `domain` is named in
 # this manifest, which is where the decision was actually being made.
-hclient-dns    = { path = "../hclient-dns", version = "0.1.0-alpha.11" }
+hclient-dns    = { path = "../hclient-dns", version = "0.1.0" }
 thiserror      = { workspace = true }
 # Unconditional, for the reason `hclient-tls-rustls` states: with no
 # subscriber installed a `trace!` is a load and a branch, and a feature

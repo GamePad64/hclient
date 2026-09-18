@@ -503,6 +503,46 @@ waiting on confidence, they are waiting on the seams to stop growing,
 and that is a decision to take deliberately rather than as a companion
 to somebody else's bump.
 
+**`hclient-dns` is the fifth, and the owner's correction is worth more
+than the crate.** It had been held back twice on the ground that its
+surface was *broken two days ago* — a calendar rule, and the answer to
+it was one sentence: **API stability is judged by whether the API is
+right, not by how long nobody has touched it.** The calendar is a proxy
+that fails in the direction that matters: by it, an abandoned crate with
+a bad surface is the ideal candidate, and one repaired yesterday is the
+worst.
+
+Asked the right question instead, the crate answers on every count, and
+each was read rather than assumed:
+
+- **`Resolve` is the shape that makes the next record type additive** —
+  one associated type, `lookup(name, rtype)`, `supports(rtype)`, where
+  three of each used to be. TLSA, CAA and SRV are `RData` variants and
+  change the trait not at all; under the old shape each was a fourth
+  method every outside implementor had to grow.
+- **An associated `Records<'a>` rather than an RPITIT**, so each
+  implementor answers for its own `Send` — amendment C15, the thing
+  that lets `hclient-rt-embassy` exist at all.
+- **`#[non_exhaustive]` is decided per type by the three-answer rule**,
+  checked on all seven. `Record`, `RData` and `SvcbEndpoint` carry it —
+  handed back and only read. `RawParam` and `SvcbRecordError`
+  deliberately do **not**, and their reasoning is written where they
+  are: `Other(u16)` already absorbs every unmodelled key, so a new
+  variant means *this crate now parses that parameter* and must be a
+  compile error at every reader; and `SvcbRecordError` crosses a seam
+  into two translators, where a `_` arm is a mapping rather than a
+  catch-all.
+- **No foreign type in the public surface** — verified against the
+  *rendered* rustdoc rather than by grep: `bytes::Bytes` for an ECH
+  config list and `futures_core::Stream` for the seam itself, and
+  nothing else. `domain`, the leak `fda77383` closed, appears nowhere.
+
+So what 2026-09-16 actually records is not a seam still settling but a
+surface **cleared for exactly this**: `fda77383` took `domain` off the
+public API and nothing has touched the crate since. Reading the diff is
+what separates those two, which is the qualifier the calendar rule never
+had.
+
 **The episode this replaces is kept, because the distinction it drew is
 the durable part.** The number was set to `0.1.0` on 2026-09-10 and
 taken back to `0.1.0-alpha.8` days later, and what made that reversal

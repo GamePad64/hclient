@@ -28,7 +28,7 @@ futures-core = { workspace = true }
 futures-sink = { workspace = true }
 http         = { workspace = true }
 hclient-core = { workspace = true }
-hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.11" }
+hclient-dns  = { path = "../hclient-dns", version = "0.1.0" }
 hclient-native = { path = "../hclient-native", version = "0.1.0-alpha.13" }
 hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
 hclient-tls  = { path = "../hclient-tls", version = "0.1.0-alpha.10" }

@@ -58,7 +58,7 @@ hclient-core = { workspace = true }
 # on a feature it deliberately stopped asking for and re-leaking `domain`
 # through the seam; that is the owner's call and it is recorded at both
 # sites rather than acted on here.
-hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.11" }
+hclient-dns  = { path = "../hclient-dns", version = "0.1.0" }
 hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
 # Every platform call this crate used to make. It owns `res_query`,
 # `android_res_nquery`, `DnsQueryRaw` and `DnsQuery_UTF8`, and hands back

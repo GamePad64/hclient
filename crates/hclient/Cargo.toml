@@ -636,7 +636,7 @@ url               = "2"
 # outside `-e normal`, so the example's imports do not appear in a
 # consumer's graph — which matters here, since the example's whole point is
 # how small that graph can be.
-hclient-dns        = { path = "../hclient-dns", version = "0.1.0-alpha.11" }
+hclient-dns        = { path = "../hclient-dns", version = "0.1.0" }
 hclient-tls        = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
 
 # `tests/two_runtimes.rs`'s dependencies — an end-to-end run of one generic
