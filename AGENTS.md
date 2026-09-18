@@ -153,6 +153,33 @@ it is **re-apply the mutation yourself before believing the kill**: it
 costs one command per claim and it is the only step that distinguishes
 a test that discriminates from a test that agrees.
 
+**And re-apply it before believing a gap, which is the same command
+pointed the other way.** `.notes/hclient-native-mutation-run.md` carried
+two items marked as owed — `http2::shared_is_reusable`, *"the other half
+of the pair, has no test either"*, and the `SeamTimer` seam, *"the
+largest genuinely-unpinned surface the run has found"*. Measured: **both
+are closed**, each by exactly one test, each dying to its own mutation
+with the sibling's still green. The fixtures were built by later work
+and the headings never followed.
+
+That is the file's recurring defect with the subject changed, and in the
+**worse** direction: a stale claim wastes a reader's trust, where a
+stale *open item* sends somebody to rebuild a fixture that already
+exists. So the rule is not only *verify a kill* — it is **verify a gap
+before spending a day on it**, and the check is the identical one
+command.
+
+The `SeamTimer` entry is worth reading past its correction, because the
+deferral was right and its success condition was too narrow. It asked
+for *a test where a deadline decides the answer* and warned that a
+timing assertion is what this workspace has four times found to be a
+flake. What was built asserts the connection is **asleep** rather than
+that anything arrived on time — a broken timer spins, a working one
+parks — which is causal rather than temporal and sidesteps the flake
+risk instead of managing it. Naming the wrong design did not stop
+somebody finding the right one, and that is the argument for recording
+the *obstacle* rather than the intended fix.
+
 And **the output directory is part of the isolation**, which the recipe
 learned the expensive way: it passed `-o` into a private scratch dir and
 then copied the result back to a fixed `./mutants.out`, so two concurrent
