@@ -474,6 +474,35 @@ moved. Measured rather than assumed — `cargo search` answers
 enrolment happens on publish, exactly as `hclient-idn`'s did, and
 nothing here needs editing for it.
 
+**`hclient-wasi` is the fourth, and it is the cheapest kind there is.**
+Two things separate it from every other candidate. It is **terminal** —
+nothing in this workspace depends on it, so there is no requirement
+naming its version anywhere and the change is one line in one manifest,
+against `hclient-mock`'s three. And its surface is **three public
+items** over 2,542 lines, last broken on 2026-09-10 by a rename that
+swept the whole family rather than by anything of its own.
+
+What makes freezing it worth more than the arithmetic suggests is that
+the surface is **executed rather than compiled**: `just test-wasi` runs
+18 live tests under a real `wasmtime`, `wasi_transport_round_trips_a_real_response_through_wasmtime`
+among them. A stable number on a surface no gate executes would be a
+promise about something nobody has run — which is the objection that
+keeps `hclient-fetch` in the alpha series, where all 13 test binaries
+are `#![cfg(target_arch = "wasm32")]` and the workspace run finds
+nothing to execute.
+
+**The rule the four together produce is about blast radius rather than
+readiness.** `hclient-core` had to go first because it is the gate's
+whole subject; the three since are the ones where being wrong is
+survivable — a test double, and a terminal backend a caller chooses.
+What stays in the series is everything a *seam*: `hclient-rt` carries
+`TcpConnect`, `Timer`, `Blocking`, `Spawn` and `UdpBind` with eleven
+in-workspace consumers, and this file records `APPLIES`, `type Sleep`
+and `UdpBind` itself arriving inside the last few weeks. Those are not
+waiting on confidence, they are waiting on the seams to stop growing,
+and that is a decision to take deliberately rather than as a companion
+to somebody else's bump.
+
 **The episode this replaces is kept, because the distinction it drew is
 the durable part.** The number was set to `0.1.0` on 2026-09-10 and
 taken back to `0.1.0-alpha.8` days later, and what made that reversal
