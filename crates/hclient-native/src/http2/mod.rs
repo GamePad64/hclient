@@ -480,6 +480,20 @@ where
 /// decision the caller did not make and cannot see in advance. `TE` is
 /// left alone: RFC 9113 permits it with the single value `trailers`, and a
 /// caller who set it to something else gets the refusal they asked for.
+///
+/// `Host` goes for the same reason, one step removed. RFC 9113 §8.3.1
+/// tolerates it when it agrees with `:authority`, so this is not a protocol
+/// error and h2 will happily encode it — but the pair then reaches the origin
+/// as two statements of the same fact, and front-end proxies disagree about
+/// what to do with that. Measured against a live nginx-fronted origin: the
+/// identical request succeeded 10/10 with the header removed and 3/8 with it
+/// present, the failures arriving as a generic 400 from the proxy that never
+/// reached the application. The caller cannot see this coming either — `Host`
+/// is the header HTTP/1.1 *requires*, and a runtime that synthesises it from
+/// the caller's authority (as `wasi:http` hosts do) has no way to know ALPN
+/// will pick h2 and make it redundant. `:authority` is built from the URI
+/// here, so removing the header loses nothing: the authority still reaches
+/// the wire.
 fn strip_connection_headers(headers: &mut http::HeaderMap) {
     for name in [
         http::header::CONNECTION,
@@ -487,6 +501,7 @@ fn strip_connection_headers(headers: &mut http::HeaderMap) {
         http::header::UPGRADE,
         http::header::PROXY_AUTHENTICATE,
         http::header::PROXY_AUTHORIZATION,
+        http::header::HOST,
         http::HeaderName::from_static("keep-alive"),
         http::HeaderName::from_static("proxy-connection"),
     ] {

@@ -893,6 +893,67 @@ async fn the_call_definition_reaches_the_wire_te_trailers_included() {
     assert!(s.complete, "EOS: the request stream ended with END_STREAM");
 }
 
+/// **A caller's `Host` does not reach the wire, and `:authority` still
+/// does.**
+///
+/// `Host` is the header HTTP/1.1 requires, so a caller setting it has done
+/// nothing wrong — and a runtime that synthesises it from the caller's
+/// authority (every `wasi:http` host does) cannot know ALPN will pick h2 and
+/// make it redundant. Left in, it reaches the origin beside `:authority` as
+/// the same fact stated twice, and front-end proxies disagree about that: a
+/// live nginx-fronted origin answered the pair with a generic 400 five times
+/// in eight, and the identical request without the header ten times in ten.
+///
+/// Both halves are asserted, because removing the header would be no fix at
+/// all if the authority went with it: the request would then be addressed to
+/// nowhere, and a server that never saw `host` would say nothing about that.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_callers_host_header_is_removed_and_the_authority_survives() {
+    let server = spawn_server();
+    let client = client();
+
+    let mut req = call(
+        &server,
+        "/g.S/Unary",
+        RequestBody::Full(Bytes::from(framed(b"ping"))),
+    );
+    // Exactly what a `wasi:http` host forwards: the authority, spelled as
+    // the header HTTP/1.1 asks for. It agrees with the URI, so RFC 9113
+    // §8.3.1 permits it and h2 would encode it as an ordinary field.
+    let authority = server.addr.to_string();
+    req.headers_mut().insert(
+        http::header::HOST,
+        http::HeaderValue::from_str(&authority).expect("an authority is a valid header value"),
+    );
+
+    let resp = tokio::time::timeout(BOUND, client.execute(req))
+        .await
+        .expect("must not hang")
+        .expect("the call must succeed");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+
+    assert!(
+        server.wait_for_seen(1, BOUND).await,
+        "the server must record the call"
+    );
+    let seen = server.seen();
+    let s = &seen[0];
+
+    assert!(
+        !s.has("host"),
+        "the caller's `host` must not reach the wire beside `:authority`; \
+         saw {:?}",
+        s.headers
+    );
+    assert_eq!(
+        s.authority.as_deref(),
+        Some(authority.as_str()),
+        "and the authority itself must survive as `:authority` — removing \
+         the header must not cost the request its destination"
+    );
+}
+
 /// **Custom-Metadata survives in all four positions, repeated names
 /// included.**
 ///
