@@ -138,6 +138,7 @@ pub mod url;
 // Dissolved now rather than after `0.1.0`, because moving a public path
 // is free before a stable release and a major version after it.
 pub mod hooks;
+pub mod kv;
 pub mod timer;
 pub mod transport;
 pub mod websocket;
