@@ -301,7 +301,7 @@ was written under in vertical 1.
 |---|---|
 | ambient (`hclient` + `-wasi` / `-fetch`) — measured | **none at all** |
 | `hclient` with the `default-transport` feature (native, HTTP/1.1 only) — measured, Task 14 | real: `[default, libc, mio, net, rt, socket2, sync, time]` — the `hclient-rt-tokio` reactor is needed for real `TcpConnect`/`Timer`, this is not "just a type dragged along", see below |
-| `hclient-rt-smol` in isolation (without `hclient`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
+| `hclient-rt-smol` in isolation (without `hclient`, `async-io` gives the same capability) — **re-measured after the seam left `hyper::rt`** | **none at all.** It read `[default, sync]` — a leaf with no reactor — for as long as `hclient-rt` depended on `hyper`, which is where that leaf came from. The seam names `futures-io` now, `hclient-rt` names no `hyper`, and `cargo tree -p hclient-rt-smol -e normal -i tokio` answers *did not match any packages*. See below |
 | `hclient-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
 | native + HTTP/2 — the row above as it stood before W3: a hypothetical estimate from vertical 1, kept for the record | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
 | `hclient-native` **without** `http3` — measured | **32 crates**, and no `quinn` or `h3` among them: the QUIC stack is an optional dependency, so a build that does not ask for it does not resolve it |
@@ -332,42 +332,57 @@ answer**: it would fail for an upstream release that broke nothing here,
 and a check that cries wolf is silenced — the mirror of this file's rule
 about a check that cannot fail.
 
-**Both middle rows are the same `hyper` fact, measured in two different places
-in the graph, not two independent observations.** `hyper` depends on `tokio`
-**unconditionally, not behind a feature** — `hclient-rt`'s own `hyper = {
-version = "1.11", default-features = false }` (zero feature set) still pulls
-in `tokio` with the `sync` feature, verified with `cargo tree -p hclient-rt -e
-normal -i tokio` in this tree. This is the same conclusion vertical 1 drew
-about the HTTP/1 path from hyper's source (`tokio::sync::oneshot::Receiver` in
-`src/upgrade.rs`, the only place it's used) — now confirmed by measurement,
-not just by reading the code. The `hclient-rt-smol` crate depends on
-`hclient-rt`, and therefore on `hyper`, and therefore transitively on this
-same `tokio` leaf — **regardless of the fact that `hclient-rt-smol` itself
-pulls in neither `tokio` nor `async-compat` directly** (`cargo tree -p
-hclient-rt-smol -e normal` contains neither crate among its DIRECT
-dependencies — checked by the `two-runtimes` CI job). The difference between
-the table rows isn't "the smol path has no tokio, native does" — it's which
-REACTOR actually stands behind that leaf: for `hclient-rt-smol` in isolation,
-none (the `sync` leaf is inert, `tokio::sync::oneshot` is never driven), for
-`hclient` with `default-transport`, a real one (`hclient-rt-tokio`, Task 3,
-pulls in `mio` + `net` + `rt` + `time` for real sockets and timers) — and both
-facts hold at once: the smol runtime still doesn't execute a single line of
-tokio, the `tokio` crate simply sits on disk as the same leaf it would for any
-other build that uses `hyper`.
+**That leaf is gone, and the paragraph it replaces is kept because the
+reasoning was right and the conclusion drawn from it was not.** It read:
+both middle rows are the same `hyper` fact measured twice; `hyper` depends
+on `tokio` **unconditionally, not behind a feature**, so `hclient-rt`'s own
+`hyper = { version = "1.11", default-features = false }` still pulls in
+`tokio` with the `sync` feature; `hclient-rt-smol` depends on `hclient-rt`
+and therefore on `hyper` and therefore on that leaf, **regardless of
+pulling in neither `tokio` nor `async-compat` directly**; and what separates
+the rows is not *tokio or no tokio* but which REACTOR stands behind the
+leaf.
 
-Tokio can't be removed from hyper builds: [hyper#3428](https://github.com/hyperium/hyper/pull/3428)
-(exactly this swap for `futures-channel`, hidden behind a feature flag) was
-rejected by the maintainer not for technical reasons, but because of the
-irreversibility of the decision: *"As of 1.0, we are going to be very careful
-about adding new dependencies to the public API… it "exposes" a crate feature
-that we could never remove"*. [hyper#3767](https://github.com/hyperium/hyper/issues/3767)
-— a separate ticket with the same conclusion about the only call site — was
-closed as *not planned*.
+Every clause of that is still true of `hyper`. What it never examined is
+the premise underneath — **why `hclient-rt` depended on `hyper` at all** —
+and the answer was: because the byte-stream seam was typed on
+`hyper::rt::{Read, Write}`. The seam is `futures_io::{AsyncRead,
+AsyncWrite}` plus this workspace's own [`Shutdown`] now, so `hclient-rt`
+names no `hyper`, and `cargo tree -p hclient-rt -e normal -i tokio` and the
+same for `hclient-rt-smol` both answer **`did not match any packages`**.
+
+The upstream facts that made it look permanent are unchanged and are worth
+keeping, because they are why nobody looked again:
+[hyper#3428](https://github.com/hyperium/hyper/pull/3428) (exactly this swap
+for `futures-channel`, behind a feature flag) was rejected not for technical
+reasons but for the irreversibility of the decision — *"As of 1.0, we are
+going to be very careful about adding new dependencies to the public API… it
+"exposes" a crate feature that we could never remove"* — and
+[hyper#3767](https://github.com/hyperium/hyper/issues/3767), a separate
+ticket with the same conclusion about the only call site, was closed as *not
+planned*. Both still stand. **Tokio still cannot be removed from a hyper
+build; what changed is that these crates are no longer hyper builds.**
+
+So the sentence *"the `tokio` crate simply sits on disk as the same leaf it
+would for any other build that uses `hyper`"* was a correct description of
+a consequence, written as though it were a constraint. That is this file's
+own recurring defect — a measurement generalised past its sample — met from
+the direction where the sample was somebody else's dependency graph.
+
+**Measured after the change**, `cargo tree -e normal`, unique crates:
+`hclient-rt` **15** with no `hyper`, no `tokio` and no `http-body-util`;
+`hclient-tls` 16, `hclient-tls-rustls` 31, `hclient-tls-native-tls` 29,
+`hclient-rt-tokio` 21, `hclient-rt-smol` 40 — **zero `hyper` in every one
+of them**. `hyper` is a `[dependencies]` entry of exactly **one** crate in
+this workspace, `hclient-native`, which is the crate that drives hyper's
+client; `hclient-tls-rustls` keeps it as a dev-dependency for the
+third-party acceptance test its own manifest argues for, and
+`hclient-tungstenite` meets it only through the `Native` it borrows.
 
 **A second fact, also measured, not assumed: the test-only busy-spin never
 reaches production code.** `hclient_native::testing::blocking_io` (Task 12) —
-a `hyper::rt::Read`/`Write` wrapper over `std::net::TcpStream` for testing on
-a bare `futures` executor with no reactor at all; on `WouldBlock` it calls
+a wrapper over `std::net::TcpStream` on this workspace's byte-stream seam,
+for testing on a bare `futures` executor with no reactor at all; on `WouldBlock` it calls
 `cx.waker().wake_by_ref()` immediately instead of actually waiting for
 readiness through the OS. Measured by CPU time (`/proc/self/stat`) around a
 request to a server that responds after 600ms: under `blocking_io` — wall
@@ -2307,6 +2322,95 @@ all three backends: **`supports` is true only for a type `lookup` really
 asks about**, with a test that a type this crate has no `RData` variant
 for is refused however capable the platform is.
 
+### The byte-stream seam stopped naming `hyper`, and one crate now does
+
+`TcpConnect::Stream` and `TlsConnect::Stream<S>` are bounded on
+`futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown +
+Unpin`. They were `hyper::rt::Read + Write` for four verticals.
+
+**The argument for hyper's traits was real: `hyper::rt` is where every `S`
+in this vertical ends up anyway**, since
+`hyper::client::conn::http1::handshake` accepts nothing else. What it did
+not cover is *whose major version the seam promises*. A public bound naming
+`hyper::rt::Read` puts hyper's major in the manifest of every implementor —
+nine crates here, plus anybody outside who writes a runtime or a TLS
+backend. This workspace has paid that once and repaired it: `hclient-dns`
+leaked `domain` through one `pub fn`, recorded as *the leak outlived the
+decoder it leaked*. hyper is a dependency this workspace may one day
+replace; `http`, `bytes` and `futures-io` are not.
+
+**Somebody else's traits for what they already say, and one of ours for
+what they do not.** `futures_io::AsyncWrite` ends a stream with
+`poll_close`, which is *close the writer*. An HTTP client needs the
+narrower promise — **send FIN and go on reading the response** — which is
+what `hyper::rt::Write::poll_shutdown` meant and what `TcpStream::shutdown`
+does. Folding the two would lose a distinction this file treats as
+load-bearing two sections down, where a half-close is *blocker two* against
+an `embedded-nal-async` adapter. So `hclient_rt::Shutdown` carries
+`poll_shutdown` and `is_write_vectored` — the latter because
+`futures_io::AsyncWrite` has no such method and `hyper::rt::Write` does, and
+losing it would leave a writer unable to tell a sink that coalesces from one
+that issues a syscall per slice.
+
+**The uninitialised-buffer machinery went with it and was not being used.**
+`hyper::rt::ReadBufCursor` exists to let an implementation fill memory that
+was never zeroed, and its only safe entrance is `put_slice`. Measured before
+the change rather than assumed: **39 `put_slice` call sites, zero uses of
+the cursor's `unsafe` `as_mut`/`advance`.** Every implementation here
+already read into a scratch buffer and copied out — so `&mut [u8]` costs
+nothing that was being collected, and the scratch buffers it made redundant
+are the change's largest practical result:
+
+- **`hclient-rt-embassy`: 2 KiB of application RAM per connection**, on a
+  part that may have 256 KiB in total.
+- **`hclient-rt-tokio`: a copy per read** on the hot path.
+- **`hclient-tls-rustls`: a copy per read**, since rustls now decrypts
+  straight into the caller's buffer. Its *ciphertext* scratch stays — that
+  one is a real buffer between the transport and rustls rather than an
+  artefact of the seam, which is the distinction worth keeping.
+- **`hclient-rt::FuturesIo` entirely**, 324 lines plus 727 of tests. It
+  existed only to bridge futures-io into hyper's traits; with the seam on
+  futures-io it was a pure overhead layer, and its documented per-read copy
+  went with it.
+- **`hclient-tls-native-tls`'s two wrappers**, 243 lines. That crate
+  converted *in* to hyper and *back out* to futures-io around a stack that
+  speaks futures-io, to land at the trait the seam now names.
+
+**The conversion lives at the one call that needs it.**
+`hclient_native::hyperio::HyperIo` is the seam → `hyper::rt` adapter, used
+at `http1::handshake` and nowhere else, and it is the only place in the
+workspace where hyper's IO traits are named in anger. `hclient-native`'s h2
+adapter — seam → `tokio::io`, for `h2`'s benefit — got *simpler* rather than
+harder: `futures-io` hands over an initialised slice, which is exactly what
+`tokio::io::ReadBuf::initialize_unfilled` produces, so the
+`hyper::rt::ReadBuf` that used to sit between them is gone.
+
+**`hclient-tls-rustls`'s test suite needs its own copy of that adapter, and
+the reason is the dependency graph rather than an oversight.**
+`hclient-native` dev-depends on `hclient-tls-rustls`, so depending on it
+from there would be a cycle cargo tolerates in a workspace and refuses at
+package time — the shape `just package-build` caught once between `hclient`
+and its two backends, which would have blocked the whole publication. It is
+twenty lines in that crate's shared test module, and what it must stay
+faithful to is the one thing a wrong copy would hide: `poll_shutdown` is the
+half-close, never `poll_close`.
+
+**One real defect fell out, and the old seam structurally could not show
+it.** `hclient_native::testing::blocking_io` called
+`std::net::TcpStream::shutdown(Shutdown::Both)` — closing the reading half
+too — from inside `hyper::rt::Write::poll_shutdown`. Under one method
+meaning both things, the over-broad call was indistinguishable from the
+right one. `hclient_rt::Shutdown` names the narrower promise, so it is
+`Shutdown::Write` now: send FIN, keep reading the response, which is what
+every shipped runtime already did.
+
+**What it is checked by is the suite rather than the change.** 2566 tests
+pass, including `hclient-tls-rustls`'s truncation-detection suite over a
+**real** `hyper::client::conn::http1` through the new adapter, both of its
+adversarial backpressure tests, and `hclient-rt-embassy`'s 19 live TAP
+scenarios over a real network stack — which are the ones that would notice
+a half-close that stopped being one.
+
 ### `embedded-nal-async` is the right seam for later and blocked twice now
 
 Asked whether this workspace should implement `TcpConnect` over the
@@ -2335,9 +2439,10 @@ worth writing down.** `embedded_io_async::Write` is `write` and `flush`
 and nothing else — read in 0.7.0 — and
 `embedded_nal_async::TcpConnect::Connection<'a>` is bounded on
 `embedded_io_async::Read + Write` and nothing more. So a NAL connection
-**cannot half-close**, by the trait's own definition, and
-`hyper::rt::Write::poll_shutdown` is how an HTTP client sends FIN while
-still reading the response.
+**cannot half-close**, by the trait's own definition, and a half-close is
+how an HTTP client sends FIN while still reading the response — which is
+`hclient_rt::Shutdown`'s whole subject, and was
+`hyper::rt::Write::poll_shutdown` while the seam was hyper's.
 
 This crate has already met that and refused it. The W7 spike went through
 embassy's own `TcpClient` — its NAL implementation — forwarded
@@ -2637,7 +2742,7 @@ streams, where a `dyn` was throwing away a property the concrete type had.
 **What would have to cross is a stream, not a value, and that is the whole
 difference.** `hclient-fetch`'s actor hands over one
 `http::Response<Body>` per request and is done. What an embassy caller
-holds is `EmbassyIo`, which implements `hyper::rt::Read`/`Write` and is
+holds is `EmbassyIo`, which implements the byte-stream seam and is
 polled for the length of the exchange. So it would not be an actor, it
 would be an **IO proxy**: every `poll_read` a round trip, and — since a
 `&mut [u8]` cannot be lent across a channel — **an extra owned buffer and

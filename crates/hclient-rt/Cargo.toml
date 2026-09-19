@@ -17,7 +17,6 @@ all-features = true
 futures-core = { workspace = true }
 futures-io   = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core = { workspace = true }
-hyper        = { version = "1.11", default-features = false }
 thiserror = { workspace = true }
 
 [dev-dependencies]

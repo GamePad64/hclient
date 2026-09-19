@@ -57,7 +57,7 @@ fn a_local_stack_yields_a_future_that_is_not_send() {
 /// bounds: bytes go in and come back out through hyper's IO traits.
 #[test]
 fn bytes_travel_through_the_bridge() {
-    use hyper::rt::{Read as _, Write as _};
+    use futures_io::{AsyncRead as _, AsyncWrite as _};
     use std::future::poll_fn;
     use std::pin::Pin;
 
@@ -75,10 +75,9 @@ fn bytes_travel_through_the_bridge() {
     assert_eq!(log.lock().unwrap().written, b"GET / HTTP/1.1\r\n\r\n");
 
     let mut store = [0u8; 64];
-    let mut rb = hyper::rt::ReadBuf::new(&mut store);
-    futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_read(cx, rb.unfilled())))
+    let n = futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_read(cx, &mut store)))
         .expect("read");
-    assert_eq!(rb.filled(), b"hello from the stack");
+    assert_eq!(&store[..n], b"hello from the stack");
 }
 
 /// A read is bounded by the caller's chunk, not by the caller's buffer —
@@ -86,7 +85,7 @@ fn bytes_travel_through_the_bridge() {
 /// constant.
 #[test]
 fn the_read_chunk_is_the_callers_and_is_taken_at_run_time() {
-    use hyper::rt::Read as _;
+    use futures_io::AsyncRead as _;
     use std::future::poll_fn;
     use std::pin::Pin;
 
@@ -96,19 +95,18 @@ fn the_read_chunk_is_the_callers_and_is_taken_at_run_time() {
     let mut io = hclient_rt_nal::NalIo::with_capacity(conn, 4);
 
     let mut store = [0u8; 64];
-    let mut rb = hyper::rt::ReadBuf::new(&mut store);
-    futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_read(cx, rb.unfilled())))
+    let n = futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_read(cx, &mut store)))
         .expect("read");
     // Four bytes, because the chunk said four — the 64-byte destination
     // did not decide it.
-    assert_eq!(rb.filled(), b"0123");
+    assert_eq!(&store[..n], b"0123");
 }
 
 /// A zero chunk would make every read report end of stream, which is the
 /// worst way for a mis-sized buffer to fail.
 #[test]
 fn a_zero_chunk_is_raised_rather_than_becoming_a_silent_eof() {
-    use hyper::rt::Read as _;
+    use futures_io::AsyncRead as _;
     use std::future::poll_fn;
     use std::pin::Pin;
 
@@ -118,10 +116,9 @@ fn a_zero_chunk_is_raised_rather_than_becoming_a_silent_eof() {
     let mut io = hclient_rt_nal::NalIo::with_capacity(conn, 0);
 
     let mut store = [0u8; 8];
-    let mut rb = hyper::rt::ReadBuf::new(&mut store);
-    futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_read(cx, rb.unfilled())))
+    let n = futures_executor::block_on(poll_fn(|cx| Pin::new(&mut io).poll_read(cx, &mut store)))
         .expect("read");
-    assert_eq!(rb.filled(), b"a", "one byte, not zero");
+    assert_eq!(&store[..n], b"a", "one byte, not zero");
 }
 
 /// **`io_err` carries the kind, and nothing read it.** The function's own
@@ -141,7 +138,7 @@ fn a_zero_chunk_is_raised_rather_than_becoming_a_silent_eof() {
 #[test]
 fn the_error_kind_crosses_the_bridge_rather_than_flattening_to_other() {
     use embedded_io_async::ErrorKind as Nal;
-    use hyper::rt::Write as _;
+    use futures_io::AsyncWrite as _;
     use std::future::poll_fn;
     use std::io::ErrorKind as Io;
     use std::pin::Pin;
@@ -181,7 +178,7 @@ fn the_error_kind_crosses_the_bridge_rather_than_flattening_to_other() {
 /// answering `Ok` for a flush that failed tells hyper the FIN went out.
 #[test]
 fn a_shutdown_that_cannot_flush_reports_the_failure_rather_than_success() {
-    use hyper::rt::Write as _;
+    use hclient_rt::Shutdown as _;
     use std::future::poll_fn;
     use std::pin::Pin;
 
@@ -203,7 +200,7 @@ fn a_shutdown_that_cannot_flush_reports_the_failure_rather_than_success() {
 /// errors, which is the opposite defect and just as silent.
 #[test]
 fn a_shutdown_on_a_healthy_connection_flushes_it_and_succeeds() {
-    use hyper::rt::Write as _;
+    use hclient_rt::Shutdown as _;
     use std::future::poll_fn;
     use std::pin::Pin;
 

@@ -1,10 +1,10 @@
-//! `embedded_io_async::{Read, Write}` -> `hyper::rt::{Read, Write}`.
+//! `embedded_io_async::{Read, Write}` -> `futures_io::{AsyncRead, AsyncWrite}`
+//! plus [`hclient_rt::Shutdown`].
 //!
 //! The same bridge `hclient-rt-embassy` writes for one concrete socket,
 //! written once for every stack instead — which is the whole point of
 //! adapting the abstraction rather than an implementation.
 
-use hyper::rt::ReadBufCursor;
 use std::io;
 use std::pin::{Pin, pin};
 use std::task::{Context, Poll, ready};
@@ -42,7 +42,13 @@ pub const DEFAULT_CHUNK: usize = 2048;
 #[derive(Debug)]
 pub struct NalIo<C> {
     conn: C,
-    scratch: Box<[u8]>,
+    /// How many bytes one `poll_read` will ask the stack for.
+    ///
+    /// A number rather than a buffer since the seam became `futures-io`:
+    /// the caller supplies the memory, and what this bounds is how much of
+    /// it one read may use — which is a property of the stack, not of the
+    /// buffer.
+    chunk: usize,
 }
 
 impl<C> NalIo<C> {
@@ -53,14 +59,13 @@ impl<C> NalIo<C> {
 
     /// A connection with a read buffer of the caller's size.
     ///
-    /// A zero is raised to one: `poll_read` would otherwise report a
-    /// filled-nothing, which `hyper::rt::Read` reads as end of stream, and
-    /// a mis-sized buffer becoming a silent EOF is the worst available
-    /// answer.
+    /// A zero is raised to one: `poll_read` would otherwise report a count
+    /// of nothing, which `futures-io` reads as end of stream, and a
+    /// mis-sized bound becoming a silent EOF is the worst available answer.
     pub fn with_capacity(conn: C, chunk: usize) -> Self {
         Self {
             conn,
-            scratch: vec![0u8; chunk.max(1)].into_boxed_slice(),
+            chunk: chunk.max(1),
         }
     }
 
@@ -100,30 +105,33 @@ fn io_err<E: embedded_io_async::Error>(e: &E) -> io::Error {
     io::Error::new(kind, "embedded-io")
 }
 
-impl<C: embedded_io_async::Read + Unpin> hyper::rt::Read for NalIo<C> {
+impl<C: embedded_io_async::Read + Unpin> futures_io::AsyncRead for NalIo<C> {
+    /// **The read scratch is gone with the cursor.** It existed because
+    /// `hyper::rt::ReadBufCursor` hands out possibly-uninitialised memory
+    /// whose only safe entrance is `put_slice`; `futures_io::AsyncRead`
+    /// hands over an initialised slice, which is what
+    /// `embedded_io_async::Read::read` wants, so the connection reads
+    /// straight into the caller's buffer. `chunk` still bounds one read,
+    /// because that is a property of the stack rather than of the seam.
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        mut buf: ReadBufCursor<'_>,
-    ) -> Poll<io::Result<()>> {
-        let want = buf.remaining().min(self.scratch.len());
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        let want = buf.len().min(self.chunk);
         if want == 0 {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Ok(0));
         }
-        // Disjoint fields, borrowed at the same time and independently.
-        let Self { conn, scratch } = &mut *self;
-        let n = {
-            let mut fut = pin!(conn.read(&mut scratch[..want]));
-            ready!(fut.as_mut().poll(cx)).map_err(|e| io_err(&e))?
-        };
-        // `n == 0` is end of stream, and filling nothing is how a
-        // `hyper::rt::Read` reports one.
-        buf.put_slice(&scratch[..n]);
-        Poll::Ready(Ok(()))
+        let Self { conn, .. } = &mut *self;
+        let mut fut = pin!(conn.read(&mut buf[..want]));
+        // `n == 0` is end of stream, and `futures-io` reports one the same
+        // way — a count of zero.
+        let n = ready!(fut.as_mut().poll(cx)).map_err(|e| io_err(&e))?;
+        Poll::Ready(Ok(n))
     }
 }
 
-impl<C: embedded_io_async::Write + Unpin> hyper::rt::Write for NalIo<C> {
+impl<C: embedded_io_async::Write + Unpin> futures_io::AsyncWrite for NalIo<C> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -138,6 +146,14 @@ impl<C: embedded_io_async::Write + Unpin> hyper::rt::Write for NalIo<C> {
         Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(|e| io_err(&e)))
     }
 
+    /// The same flush the shutdown below is, for the same reason: this
+    /// seam has no close to call.
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        hclient_rt::Shutdown::poll_shutdown(self, cx)
+    }
+}
+
+impl<C: embedded_io_async::Write + Unpin> hclient_rt::Shutdown for NalIo<C> {
     /// **A flush, and hyper will believe it was a half-close.**
     ///
     /// `embedded_io_async::Write` is `write` and `flush`, and

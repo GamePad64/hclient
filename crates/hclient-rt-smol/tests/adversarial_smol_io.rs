@@ -1,4 +1,4 @@
-//! Reviewer-written adversarial test suite for `FuturesIo<hclient_rt_smol::SmolSocket>`
+//! Reviewer-written adversarial test suite for `hclient_rt_smol::SmolSocket`
 //! driven through the real `Smol` runtime. The sibling suite for `TokioIo`
 //! is `crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`, and the
 //! mock-source one for `FuturesIo` is
@@ -31,9 +31,9 @@
 //! drop this file into `crates/hclient-rt-smol/tests/` in a scratch clone,
 //! add that dev-dependency, and `cargo test -p hclient-rt-smol --test
 //! adversarial_smol_io --all-features`.
-use hclient_rt::{FuturesIo, TcpAdoptStd, TcpConnect, TcpOpts};
+use futures_lite::io::AsyncRead as _;
+use hclient_rt::{TcpAdoptStd, TcpConnect, TcpOpts};
 use hclient_rt_smol::Smol;
-use hyper::rt::Read as HyperRead;
 use std::future::poll_fn;
 use std::io::Write as _;
 use std::pin::Pin;
@@ -46,14 +46,16 @@ const SCRATCH: usize = 8 * 1024; // must match the private const in hclient-rt's
 
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-enum ReadOutcome {
-    Done(std::io::Result<()>),
+enum ReadOutcome<T> {
+    Done(std::io::Result<T>),
     TimedOut,
 }
 
-async fn read_ready<F: std::future::Future<Output = std::io::Result<()>>>(
+// Generic in the result, because `futures-io` answers a count where the
+// cursor answered `()` — the helper is about the timeout, not the shape.
+async fn read_ready<T, F: std::future::Future<Output = std::io::Result<T>>>(
     fut: F,
-) -> std::io::Result<()> {
+) -> std::io::Result<T> {
     let outcome = futures_lite::future::or(async { ReadOutcome::Done(fut.await) }, async {
         async_io::Timer::after(READ_TIMEOUT).await;
         ReadOutcome::TimedOut
@@ -81,7 +83,7 @@ fn test_waker() -> Waker {
     Waker::from(Arc::new(RecordingWaker(Mutex::new(false))))
 }
 
-async fn connected_pair() -> (FuturesIo<hclient_rt_smol::SmolSocket>, std::net::TcpStream) {
+async fn connected_pair() -> (hclient_rt_smol::SmolSocket, std::net::TcpStream) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || listener.accept().unwrap().0);
@@ -104,28 +106,29 @@ fn pending_before_data_is_not_confused_with_eof_or_data() {
         let waker = test_waker();
         let mut cx = Context::from_waker(&waker);
         let mut store = [0u8; 64];
-        let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        match Pin::new(&mut client).poll_read(&mut cx, rb.unfilled()) {
+        match Pin::new(&mut client).poll_read(&mut cx, &mut store) {
             Poll::Pending => {}
             other @ Poll::Ready(_) => {
                 panic!("expected Pending before any data was written, got {other:?}")
             }
         }
-        assert_eq!(rb.filled().len(), 0, "must not fill anything while Pending");
+        // No count to assert on: `Pending` carries none, where the cursor
+        // version could look at the buffer it had handed over. The claim
+        // that matters — that this is `Pending` rather than an EOF-shaped
+        // `Ready` — is the match above.
 
         server.write_all(b"after pending").unwrap();
         let mut store2 = [0u8; 64];
-        let mut rb2 = hyper::rt::ReadBuf::new(&mut store2);
-        read_ready(poll_fn(|cx| {
-            Pin::new(&mut client).poll_read(cx, rb2.unfilled())
+        let n2 = read_ready(poll_fn(|cx| {
+            Pin::new(&mut client).poll_read(cx, &mut store2)
         }))
         .await
         .unwrap();
         assert!(
-            !rb2.filled().is_empty(),
+            n2 != 0,
             "got EOF-shaped Ready before any data was ever read"
         );
-        assert_eq!(rb2.filled(), b"after pending");
+        assert_eq!(&store2[..n2], b"after pending");
     });
 }
 
@@ -150,17 +153,13 @@ fn one_byte_at_a_time_preserves_order_no_drop_no_duplicate() {
         let mut out = Vec::new();
         let mut store = [0u8; 32];
         while out.len() < 256 {
-            let mut rb = hyper::rt::ReadBuf::new(&mut store);
-            read_ready(poll_fn(|cx| {
-                Pin::new(&mut client).poll_read(cx, rb.unfilled())
+            let n = read_ready(poll_fn(|cx| {
+                Pin::new(&mut client).poll_read(cx, &mut store)
             }))
             .await
             .unwrap();
-            assert!(
-                !rb.filled().is_empty(),
-                "unexpected EOF before all 256 bytes arrived"
-            );
-            out.extend_from_slice(rb.filled());
+            assert!(n != 0, "unexpected EOF before all 256 bytes arrived");
+            out.extend_from_slice(&store[..n]);
         }
         let original = writer.join().unwrap();
         assert_eq!(
@@ -191,14 +190,13 @@ fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_eof() {
         let mut out = Vec::new();
         let mut store = [0u8; 4];
         loop {
-            let mut rb = hyper::rt::ReadBuf::new(&mut store);
             let res = read_ready(poll_fn(|cx| {
-                Pin::new(&mut client).poll_read(cx, rb.unfilled())
+                Pin::new(&mut client).poll_read(cx, &mut store)
             }))
             .await;
             match res {
-                Ok(()) if !rb.filled().is_empty() => out.extend_from_slice(rb.filled()),
-                Ok(()) => panic!(
+                Ok(n) if n != 0 => out.extend_from_slice(&store[..n]),
+                Ok(_) => panic!(
                     "reported EOF (Ready(Ok(())) with nothing filled) instead of the RST error; \
                      got {out:?} of expected b\"partial\" so far"
                 ),
@@ -250,23 +248,25 @@ fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_eof() {
 // ---------------------------------------------------------------------
 
 async fn read_exactly(
-    client: &mut FuturesIo<hclient_rt_smol::SmolSocket>,
+    client: &mut hclient_rt_smol::SmolSocket,
     dest_len: usize,
     expected_len: usize,
 ) -> Vec<u8> {
     let mut out = Vec::new();
     let mut store = vec![0u8; dest_len];
     while out.len() < expected_len {
-        let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        read_ready(poll_fn(|cx| {
-            Pin::new(&mut *client).poll_read(cx, rb.unfilled())
+        // `futures-io` hands back the count rather than filling a cursor,
+        // so the `ReadBuf`/`unfilled()`/`filled()` trio this used to need
+        // is one `usize`.
+        let n = read_ready(poll_fn(|cx| {
+            Pin::new(&mut *client).poll_read(cx, &mut store)
         }))
         .await
         .unwrap();
-        if rb.filled().is_empty() {
+        if n == 0 {
             break;
         }
-        out.extend_from_slice(rb.filled());
+        out.extend_from_slice(&store[..n]);
     }
     out
 }

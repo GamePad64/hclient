@@ -631,12 +631,12 @@ mod tests {
     #[derive(Default)]
     struct SinkIo;
 
-    impl hyper::rt::Read for SinkIo {
+    impl futures_io::AsyncRead for SinkIo {
         fn poll_read(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            _buf: hyper::rt::ReadBufCursor<'_>,
-        ) -> Poll<io::Result<()>> {
+            _buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
             // `Pending`, not an immediate EOF — and here's why that
             // doesn't contradict "`SinkIo` never blocks" from the comment
             // above the module.
@@ -673,7 +673,7 @@ mod tests {
         }
     }
 
-    impl hyper::rt::Write for SinkIo {
+    impl futures_io::AsyncWrite for SinkIo {
         fn poll_write(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
@@ -684,6 +684,12 @@ mod tests {
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hclient_rt::Shutdown for SinkIo {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
@@ -706,7 +712,14 @@ mod tests {
             .body(body)
             .unwrap();
 
-        let handshake = hyper::client::conn::http1::handshake::<_, OutgoingBody>(SinkIo);
+        // Through [`crate::hyperio::HyperIo`], the same conversion
+        // `crate::http1::handshake` makes: this test drives hyper
+        // directly, so it enters hyper's IO traits the same way the
+        // shipped path does. The adapter forwards writes untouched, so
+        // the "never blocks" property below is `SinkIo`'s as before.
+        let handshake = hyper::client::conn::http1::handshake::<_, OutgoingBody>(
+            crate::hyperio::HyperIo::new(SinkIo),
+        );
         let mut handshake = std::pin::pin!(handshake);
         let (mut sender, conn) =
             poll_once(handshake.as_mut()).expect("handshake never blocks on SinkIo");

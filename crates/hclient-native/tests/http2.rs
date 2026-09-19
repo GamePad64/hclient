@@ -302,7 +302,7 @@ impl TlsConnect for FakeTls {
     type Stream<S>
         = S
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
     fn reports_alpn(&self) -> bool {
         self.reports_alpn
@@ -312,11 +312,11 @@ impl TlsConnect for FakeTls {
         = std::future::Ready<Result<(S, TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
     {
         std::future::ready({
             self.offered

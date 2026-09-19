@@ -70,7 +70,7 @@ hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
 # Directly, not through `hclient-rt`: this crate implements
 # `hyper::rt::{Read, Write}` itself, and a re-export would not be nameable
 # in an `impl`.
-hyper        = { version = "1.11", default-features = false }
+futures-io   = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 static_assertions = { workspace = true }

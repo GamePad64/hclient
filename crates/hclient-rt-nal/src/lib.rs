@@ -108,7 +108,6 @@ pub use io::{DEFAULT_CHUNK, NalIo};
 pub mod reexport {
     pub use embedded_nal_async;
     pub use hclient_rt;
-    pub use hyper;
 }
 
 /// Adapt a concrete `embedded-nal-async` stack, claiming `Send`.

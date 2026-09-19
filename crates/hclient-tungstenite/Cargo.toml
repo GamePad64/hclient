@@ -32,22 +32,22 @@ hclient-dns  = { path = "../hclient-dns", version = "0.1.0" }
 hclient-native = { path = "../hclient-native", version = "0.1.0-alpha.14" }
 hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
 hclient-tls  = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
-# For `hyper::rt::{Read, Write, ReadBuf}` and nothing else — no client, no
-# http1, no server: `default-features = false` with no features added, the
-# same dependency and the same reason `hclient-rt` has one. This
-# workspace's `TcpConnect::Stream` is bounded by those two traits, so a
-# framing layer over "whatever the runtime connected with" has to name
-# them. The h1 upgrade itself — `poll_without_shutdown`, `into_parts` —
-# stays in `hclient-native`, which is the half that genuinely needs
-# hyper's client.
-hyper        = { version = "1.11", default-features = false }
+# For the seam's read and write halves and nothing else. It was `hyper`
+# with every feature off for exactly the same reason — this workspace's
+# `TcpConnect::Stream` is bounded by those two traits, so a framing layer
+# over "whatever the runtime connected with" has to name them — and the
+# seam stopped naming hyper, so this crate does too. The h1 upgrade itself
+# — `poll_without_shutdown`, `into_parts` — stays in `hclient-native`,
+# which is the half that genuinely needs hyper's client.
+futures-io   = { version = "0.3", default-features = false, features = ["std"] }
 thiserror    = { workspace = true }
 # `handshake` on top of `default-features = false`, and it is the only
 # default feature taken back: it carries `generate_key` and
 # `derive_accept_key`, which are RFC 6455 §4.1 and not optional for a
 # client. It is also where `sha1` and `data-encoding` come from
 # (tungstenite's own `handshake = ["data-encoding", "http", "httparse",
-# "sha1"]`); `http` and `httparse` are already here through `hyper`.
+# "sha1"]`); `http` is already here directly and `httparse` arrives
+# with that feature.
 # Everything else tungstenite's default would bring — its own TLS
 # connectors, its blocking `connect()` — is glue this workspace has better
 # versions of, which is the whole argument for driving it ourselves.

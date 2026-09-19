@@ -88,16 +88,16 @@ impl TlsIdentity for SaysNothing {
 /// carrying it at run time.
 enum NoStream {}
 
-impl hyper::rt::Read for NoStream {
+impl futures_io::AsyncRead for NoStream {
     fn poll_read(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
-        _: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        _: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         match *self {}
     }
 }
-impl hyper::rt::Write for NoStream {
+impl futures_io::AsyncWrite for NoStream {
     fn poll_write(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
@@ -108,6 +108,11 @@ impl hyper::rt::Write for NoStream {
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match *self {}
     }
+    fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match *self {}
+    }
+}
+impl hclient_rt::Shutdown for NoStream {
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match *self {}
     }
@@ -117,17 +122,17 @@ impl TlsConnect for SaysNothing {
     type Stream<S>
         = NoStream
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
     type Handshake<'a, S>
         = std::future::Ready<Result<(NoStream, TlsInfo), Error>>
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     fn connect<'a, S>(&'a self, _io: S, _req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
     {
         unreachable!("this fixture is read for its capabilities, never connected through")
     }

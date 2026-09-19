@@ -24,9 +24,9 @@
 //! than accumulates. Its reasoning is real and worth keeping, so it
 //! survives below as a plain comment (section E) instead of a test item
 //! that always reports "ok".
+use futures_io::AsyncRead as SeamRead;
 use hclient_rt::{TcpAdoptStd, TcpConnect, TcpOpts};
 use hclient_rt_tokio::{Tokio, TokioIo};
-use hyper::rt::Read as HyperRead;
 use std::future::poll_fn;
 use std::io::Write as _;
 use std::pin::Pin;
@@ -55,9 +55,11 @@ const SCRATCH: usize = 8 * 1024; // must match the private const in io.rs
 /// CI job's entire time budget.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-async fn read_ready<F: std::future::Future<Output = std::io::Result<()>>>(
+// Generic in the result, because `futures-io` answers a count where
+// the cursor answered `()` — the helper is about the timeout.
+async fn read_ready<T, F: std::future::Future<Output = std::io::Result<T>>>(
     fut: F,
-) -> std::io::Result<()> {
+) -> std::io::Result<T> {
     tokio::time::timeout(READ_TIMEOUT, fut)
         .await
         .unwrap_or_else(|_| {
@@ -107,14 +109,15 @@ async fn pending_before_data_is_not_confused_with_eof_or_data() {
     let waker = test_waker();
     let mut cx = Context::from_waker(&waker);
     let mut store = [0u8; 64];
-    let mut rb = hyper::rt::ReadBuf::new(&mut store);
-    match Pin::new(&mut client).poll_read(&mut cx, rb.unfilled()) {
+    match Pin::new(&mut client).poll_read(&mut cx, &mut store) {
         Poll::Pending => {}
         other @ Poll::Ready(_) => {
             panic!("expected Pending before any data was written, got {other:?}")
         }
     }
-    assert_eq!(rb.filled().len(), 0, "must not fill anything while Pending");
+    // No count to assert on: `Pending` carries none. The claim that
+    // matters — `Pending` rather than an EOF-shaped `Ready` — is the match
+    // above.
 
     // Now real data arrives; poll again (via .await this time, so the
     // waker registered above is superseded by a real one tied to the
@@ -130,19 +133,18 @@ async fn pending_before_data_is_not_confused_with_eof_or_data() {
     // wrapper that couldn't compile against the current tree.
     server.write_all(b"after pending").unwrap();
     let mut store2 = [0u8; 64];
-    let mut rb2 = hyper::rt::ReadBuf::new(&mut store2);
-    read_ready(poll_fn(|cx| {
-        Pin::new(&mut client).poll_read(cx, rb2.unfilled())
+    let n2 = read_ready(poll_fn(|cx| {
+        Pin::new(&mut client).poll_read(cx, &mut store2)
     }))
     .await
     .unwrap();
     // Ready(Ok(())) with nothing filled before data has arrived would
     // be a false EOF - fail loudly rather than looping forever.
     assert!(
-        !rb2.filled().is_empty(),
+        n2 != 0,
         "got EOF-shaped Ready before any data was ever read"
     );
-    assert_eq!(rb2.filled(), b"after pending");
+    assert_eq!(&store2[..n2], b"after pending");
 }
 
 // ---------------------------------------------------------------------
@@ -166,17 +168,13 @@ async fn one_byte_at_a_time_preserves_order_no_drop_no_duplicate() {
     // deliberately not a divisor of 256: exercises the boundary too
     let mut store = [0u8; 32];
     while out.len() < 256 {
-        let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        read_ready(poll_fn(|cx| {
-            Pin::new(&mut client).poll_read(cx, rb.unfilled())
+        let n = read_ready(poll_fn(|cx| {
+            Pin::new(&mut client).poll_read(cx, &mut store)
         }))
         .await
         .unwrap();
-        assert!(
-            !rb.filled().is_empty(),
-            "unexpected EOF before all 256 bytes arrived"
-        );
-        out.extend_from_slice(rb.filled());
+        assert!(n != 0, "unexpected EOF before all 256 bytes arrived");
+        out.extend_from_slice(&store[..n]);
     }
     let original = writer.join().unwrap();
     assert_eq!(
@@ -209,14 +207,13 @@ async fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_e
     let mut out = Vec::new();
     let mut store = [0u8; 4];
     loop {
-        let mut rb = hyper::rt::ReadBuf::new(&mut store);
         let res = read_ready(poll_fn(|cx| {
-            Pin::new(&mut client).poll_read(cx, rb.unfilled())
+            Pin::new(&mut client).poll_read(cx, &mut store)
         }))
         .await;
         match res {
-            Ok(()) if !rb.filled().is_empty() => out.extend_from_slice(rb.filled()),
-            Ok(()) => panic!(
+            Ok(n) if n != 0 => out.extend_from_slice(&store[..n]),
+            Ok(_) => panic!(
                 "reported EOF (Ready(Ok(())) with nothing filled) instead of the RST error; \
                  got {out:?} of expected b\"partial\" so far"
             ),
@@ -273,16 +270,15 @@ async fn read_exactly(client: &mut TokioIo, dest_len: usize, expected_len: usize
     let mut out = Vec::new();
     let mut store = vec![0u8; dest_len];
     while out.len() < expected_len {
-        let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        read_ready(poll_fn(|cx| {
-            Pin::new(&mut *client).poll_read(cx, rb.unfilled())
+        let n = read_ready(poll_fn(|cx| {
+            Pin::new(&mut *client).poll_read(cx, &mut store)
         }))
         .await
         .unwrap();
-        if rb.filled().is_empty() {
+        if n == 0 {
             break;
         }
-        out.extend_from_slice(rb.filled());
+        out.extend_from_slice(&store[..n]);
     }
     out
 }

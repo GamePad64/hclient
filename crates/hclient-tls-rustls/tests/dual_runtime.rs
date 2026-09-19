@@ -1,14 +1,15 @@
 //! The central claim, on a real TLS handshake rather than at the
-//! trait-contract level: `TlsConnect` is typed on `hyper::rt::{Read,
-//! Write}`, not on futures-io/tokio-io, so ONE adapter (`Rustls::connect`)
-//! serves both tokio and smol with no runtime-specific branch anywhere in
-//! the shared body. The model is the pair-property test in
+//! trait-contract level: `TlsConnect` is typed on
+//! `futures_io::{AsyncRead, AsyncWrite}` plus `hclient_rt::Shutdown`, not
+//! on tokio-io and not on an HTTP client's own IO traits, so ONE adapter
+//! (`Rustls::connect`) serves both tokio and smol with no
+//! runtime-specific branch anywhere in the shared body. The model is the pair-property test in
 //! `crates/hclient-rt-pair-check`, which proves the same thing for the
 //! bare runtime capabilities; this is the TLS adapter on top of them.
 //!
 //! `handshake_and_echo` below is the one shared body: TCP connect through
 //! the passed-in runtime, TLS handshake through that SAME `Rustls`, byte
-//! exchange through `hyper::rt::{Read, Write}`. There is no `#[cfg]`, no
+//! exchange through `futures_io::{AsyncRead, AsyncWrite}`. There is no `#[cfg]`, no
 //! runtime-specific bound inside it — the two instantiations below differ
 //! only in the concrete runtime type and in how each test drives its own
 //! executor (`#[tokio::test]` vs. `futures_executor::block_on`), which is
@@ -47,17 +48,16 @@ async fn handshake_and_echo<R: TcpConnect>(rt: R, addr: SocketAddr, ca_der: Vec<
         .expect("handshake");
     assert_eq!(info.protocol_version.as_deref(), Some("TLSv1.3"));
 
-    let n = poll_fn(|cx| hyper::rt::Write::poll_write(Pin::new(&mut stream), cx, b"ping"))
+    let n = poll_fn(|cx| futures_io::AsyncWrite::poll_write(Pin::new(&mut stream), cx, b"ping"))
         .await
         .unwrap();
     assert_eq!(n, 4);
 
     let mut store = [0u8; 16];
-    let mut rb = hyper::rt::ReadBuf::new(&mut store);
-    poll_fn(|cx| hyper::rt::Read::poll_read(Pin::new(&mut stream), cx, rb.unfilled()))
+    let n = poll_fn(|cx| futures_io::AsyncRead::poll_read(Pin::new(&mut stream), cx, &mut store))
         .await
         .unwrap();
-    assert_eq!(rb.filled(), b"ping");
+    assert_eq!(&store[..n], b"ping");
 }
 
 #[tokio::test]

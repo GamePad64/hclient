@@ -144,11 +144,12 @@
 use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use hclient_core::timer::Timer;
+use hclient_rt::Shutdown;
 use http_body::{Body, Frame, SizeHint};
-use hyper::rt::{Read, Write};
 use std::fmt::Debug;
 use std::future::Future;
 use std::future::poll_fn;
@@ -167,21 +168,23 @@ use keepalive::{KeepAlive, Lapsed};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
-/// `hyper::rt::{Read, Write}` → `tokio::io::{AsyncRead, AsyncWrite}`.
+/// This workspace's seam → `tokio::io::{AsyncRead, AsyncWrite}`.
 ///
-/// [`h2`] is written against tokio's IO traits, and every stream in this
-/// vertical is normalized to hyper's (`hclient_rt::FuturesIo` bridges
-/// futures-io into them, `hclient_rt_tokio` hands tokio's over directly).
-/// This is the fourth side of that square, and the only one h2 needs.
+/// [`h2`] is written against tokio's IO traits, where every stream in this
+/// vertical arrives on `futures_io::{AsyncRead, AsyncWrite}` plus
+/// [`hclient_rt::Shutdown`]. This is one of the two conversions this crate
+/// owns — see [`crate::hyperio`] for the other, and for why the seam names
+/// neither hyper nor tokio.
 ///
-/// **`unsafe`-free, and without the copy `FuturesIo` pays.** The
-/// interesting direction is the read: `tokio::io::ReadBuf` hands out its
-/// unfilled tail as an initialized `&mut [u8]`
+/// **`unsafe`-free and copy-free, which got easier rather than harder.**
+/// The interesting direction is the read: `tokio::io::ReadBuf` hands out
+/// its unfilled tail as an initialized `&mut [u8]`
 /// (`ReadBuf::initialize_unfilled`, which remembers how far it has
-/// initialized and does not re-zero), a `hyper::rt::ReadBuf` is built over
-/// that same slice, and whatever the inner IO filled is handed back to the
-/// tokio buffer with `advance`. One borrow, no scratch buffer, no
-/// `unsafe`.
+/// initialized and does not re-zero), and that is exactly the shape
+/// `futures_io::AsyncRead::poll_read` takes — so the inner stream reads
+/// straight into it and the count comes back as `advance`. The
+/// `hyper::rt::ReadBuf` that used to sit in between is gone with the
+/// cursor it existed to build.
 #[derive(Debug)]
 pub(crate) struct TokioIo<I> {
     inner: I,
@@ -205,9 +208,8 @@ where
         let this = self.get_mut();
         let filled = {
             let dst = buf.initialize_unfilled();
-            let mut hyper_buf = hyper::rt::ReadBuf::new(dst);
-            match Pin::new(&mut this.inner).poll_read(cx, hyper_buf.unfilled()) {
-                Poll::Ready(Ok(())) => hyper_buf.filled().len(),
+            match Pin::new(&mut this.inner).poll_read(cx, dst) {
+                Poll::Ready(Ok(n)) => n,
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }
@@ -219,7 +221,7 @@ where
 
 impl<I> tokio::io::AsyncWrite for TokioIo<I>
 where
-    I: Write + Unpin,
+    I: Write + Shutdown + Unpin,
 {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -233,8 +235,11 @@ where
         Pin::new(&mut self.get_mut().inner).poll_flush(cx)
     }
 
+    /// tokio spells the half-close `poll_shutdown` too, so this is a
+    /// forward to [`hclient_rt::Shutdown`] and never to
+    /// `futures_io::AsyncWrite::poll_close`.
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+        hclient_rt::Shutdown::poll_shutdown(Pin::new(&mut self.get_mut().inner), cx)
     }
 
     /// Forwarded rather than left at the default `false`: h2 writes a
@@ -258,7 +263,7 @@ where
 /// [`crate::http1::Established`] keeps hyper's two — neither is usable alone.
 pub(crate) struct Established<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     sender: h2::client::SendRequest<Bytes>,
     conn: h2::client::Connection<TokioIo<I>, Bytes>,
@@ -272,7 +277,7 @@ where
 
 impl<I> Debug for Established<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("h2::Established").finish_non_exhaustive()
@@ -388,7 +393,7 @@ pub(crate) async fn handshake<I>(
     opts: H2Opts,
 ) -> Result<Established<I>, Error>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     let mut builder = h2::client::Builder::new();
     // **One stream until the peer has said how many it allows.**
@@ -460,7 +465,7 @@ where
 /// both of those are updated from inside `Connection::poll`.
 pub(crate) async fn is_reusable<I>(est: &mut Established<I>) -> bool
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     poll_fn(|cx| {
         if Pin::new(&mut est.conn).poll(cx).is_ready() {
@@ -587,7 +592,7 @@ pub(crate) async fn exchange<I, F>(
     on_1xx: Option<&F>,
 ) -> Result<http::Response<H2Body<I>>, crate::established::Failed>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     F: On1xx + ?Sized,
 {
     use crate::established::Failed;
@@ -1135,7 +1140,7 @@ impl Pump {
 /// sent — see [`crate::http1`]'s `Reuse`, which this mirrors.
 struct Reuse<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     checkin: CheckIn<I>,
     sender: h2::client::SendRequest<Bytes>,
@@ -1148,7 +1153,7 @@ where
 /// on what boxing would have cost.
 pub struct H2Body<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     recv: h2::RecvStream,
     /// `None` — the connection has already finished, and `recv` can be
@@ -1187,7 +1192,7 @@ where
 )]
 impl<I> Debug for H2Body<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H2Body")
@@ -1200,7 +1205,7 @@ where
 
 impl<I> H2Body<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     /// Drives the rest of the request body, and reports only a failure.
     ///
@@ -1268,7 +1273,7 @@ where
 
 impl<I> Body for H2Body<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     type Data = Bytes;
     type Error = Error;
@@ -1462,7 +1467,7 @@ pub(crate) fn share<I, H, Tm>(
     keep_alive: Option<(H2KeepAlive, Tm)>,
 ) -> (Shared, H2Driver<I, H, Tm>)
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     Tm: Timer,
 {
     let Established {
@@ -1529,7 +1534,7 @@ where
 /// [`crate::Native::multiplexed`], which is where a caller meets it.
 pub struct H2Driver<I, H, Tm>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     Tm: Timer,
 {
     conn: h2::client::Connection<TokioIo<I>, Bytes>,
@@ -1549,7 +1554,7 @@ where
 
 impl<I, H, Tm> Debug for H2Driver<I, H, Tm>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     Tm: Timer,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1561,7 +1566,7 @@ where
 
 impl<I, H, Tm> Future for H2Driver<I, H, Tm>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     H: Hooks + Unpin,
     Tm: Timer + Unpin,
 {
@@ -1666,7 +1671,7 @@ pub(crate) async fn exchange_shared<I, F>(
     on_1xx: Option<&F>,
 ) -> Result<http::Response<H2Body<I>>, crate::established::Failed>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     F: On1xx + ?Sized,
 {
     use crate::established::Failed;

@@ -298,9 +298,10 @@
 //! sitting in the workspace — including the price it pays, which is a
 //! `R: Spawn` bound on the transport.
 use crate::established::Established;
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 use hclient_core::timer::Timer;
+use hclient_rt::Shutdown;
 use hclient_tls::TlsConfigId;
-use hyper::rt::{Read, Write};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
@@ -462,7 +463,7 @@ impl PoolKey {
 /// `http2.rs`, so neither can invent a key or a deadline of its own.
 pub(crate) struct CheckIn<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     pool: Pool<I>,
     key: PoolKey,
@@ -471,7 +472,7 @@ where
 
 impl<I> CheckIn<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     pub(crate) fn new(pool: Pool<I>, key: PoolKey, expires_at: Duration) -> Self {
         Self {
@@ -491,7 +492,7 @@ where
 /// A connection waiting to be used again.
 struct Idle<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     est: Established<I>,
     /// Elapsed time, measured on the owning transport's `Timer` from the
@@ -510,14 +511,14 @@ where
 /// that made it.
 pub(crate) struct Pool<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     inner: Arc<Inner<I>>,
 }
 
 struct Inner<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     /// `None` — reuse is off. Not a separate `enabled: bool` next to a
     /// config that would then be present but meaningless: there is nothing
@@ -543,7 +544,7 @@ where
 /// type satisfies, for a field that is an `Arc`.
 impl<I> Clone for Pool<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn clone(&self) -> Self {
         Self {
@@ -554,7 +555,7 @@ where
 
 impl<I> Debug for Pool<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pool")
@@ -566,7 +567,7 @@ where
 
 impl<I> Pool<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     pub(crate) fn new(config: Option<PoolConfig>) -> Self {
         Self {
@@ -750,14 +751,14 @@ where
 /// end.
 pub(crate) struct WeakPool<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     inner: std::sync::Weak<Inner<I>>,
 }
 
 impl<I> WeakPool<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn upgrade(&self) -> Option<Pool<I>> {
         self.inner.upgrade().map(|inner| Pool { inner })
@@ -828,6 +829,7 @@ where
     R: Timer,
     I: Read,
     I: Write,
+    I: Shutdown,
     I: Unpin,
 {
     rt: R,
@@ -863,7 +865,7 @@ const MIN_REAP_INTERVAL: Duration = Duration::from_millis(1);
 impl<R, I> Reaper<R, I>
 where
     R: Timer,
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     pub(crate) fn new(rt: R, pool: WeakPool<I>, epoch: R::Instant, idle_timeout: Duration) -> Self {
         Self {
@@ -883,7 +885,7 @@ where
 impl<R, I> Debug for Reaper<R, I>
 where
     R: Timer,
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Reaper")
@@ -896,7 +898,7 @@ where
 impl<R, I> Future for Reaper<R, I>
 where
     R: Timer,
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     /// `()`, and it is reached exactly once: when the pool this watches is
     /// dropped. A reaper does not fail — there is nothing here that can go
@@ -971,7 +973,7 @@ where
 #[cfg(feature = "http2")]
 impl<I> Pool<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     /// Claim the right to open the connection for `key`, or `None` if
     /// somebody else already has it.
@@ -1029,7 +1031,7 @@ where
 #[cfg(feature = "http2")]
 pub(crate) struct Connecting<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     pool: Pool<I>,
     key: PoolKey,
@@ -1038,7 +1040,7 @@ where
 #[cfg(feature = "http2")]
 impl<I> Drop for Connecting<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn drop(&mut self) {
         self.pool.finish_connect(&self.key);
@@ -1052,7 +1054,7 @@ where
 )]
 impl<I> Debug for Connecting<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Connecting")
@@ -1065,7 +1067,7 @@ where
 #[cfg(feature = "http2")]
 pub(crate) struct WaitForConnect<'a, I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     pool: &'a Pool<I>,
     key: &'a PoolKey,
@@ -1074,7 +1076,7 @@ where
 #[cfg(feature = "http2")]
 impl<I> Future for WaitForConnect<'_, I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     type Output = ();
 
@@ -1180,8 +1182,8 @@ mod tests {
         fn poll_read(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            _buf: hyper::rt::ReadBufCursor<'_>,
-        ) -> Poll<io::Result<()>> {
+            _buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
             Poll::Pending
         }
     }
@@ -1197,6 +1199,12 @@ mod tests {
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Pending
         }
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl Shutdown for NeverIo {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Pending
         }

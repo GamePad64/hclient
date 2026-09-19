@@ -20,11 +20,12 @@
 //! has completed, so what is under test is the session's error handling
 //! rather than the handshake's.
 
+use futures_io::{AsyncRead as _, AsyncWrite as _};
+use hclient_rt::Shutdown as _;
 use hclient_rt::TcpConnect;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_native_tls::NativeTls;
-use hyper::rt::{Read as _, Write as _};
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -57,12 +58,12 @@ impl<S> Faulty<S> {
     }
 }
 
-impl<S: hyper::rt::Read + Unpin> hyper::rt::Read for Faulty<S> {
+impl<S: futures_io::AsyncRead + Unpin> futures_io::AsyncRead for Faulty<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         if self.failing.load(Ordering::SeqCst) {
             return Poll::Ready(Err(Self::reset()));
         }
@@ -70,7 +71,7 @@ impl<S: hyper::rt::Read + Unpin> hyper::rt::Read for Faulty<S> {
     }
 }
 
-impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for Faulty<S> {
+impl<S: futures_io::AsyncWrite + Unpin> futures_io::AsyncWrite for Faulty<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -84,8 +85,20 @@ impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for Faulty<S> {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_close(cx)
+    }
+}
+
+/// Forwarded: the fault this fixture injects is on read and write, and it
+/// has no opinion about the half-close.
+impl<S: hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown for Faulty<S> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
     }
 }
 
@@ -210,9 +223,8 @@ async fn a_transport_error_on_read_is_an_error_and_not_pending() {
     failing.store(true, Ordering::SeqCst);
 
     let mut raw = [0u8; 64];
-    let mut buf = hyper::rt::ReadBuf::new(&mut raw);
     let mut cx = Context::from_waker(std::task::Waker::noop());
-    let polled = Pin::new(&mut stream).poll_read(&mut cx, buf.unfilled());
+    let polled = Pin::new(&mut stream).poll_read(&mut cx, &mut raw);
 
     assert!(
         matches!(polled, Poll::Ready(Err(_))),

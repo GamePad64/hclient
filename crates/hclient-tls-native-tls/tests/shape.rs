@@ -13,17 +13,17 @@ use std::task::{Context, Poll};
 #[derive(Debug)]
 struct NeverTouched;
 
-impl hyper::rt::Read for NeverTouched {
+impl futures_io::AsyncRead for NeverTouched {
     fn poll_read(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
-        _: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        _: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         panic!("the transport was read — the refusal came after the handshake started");
     }
 }
 
-impl hyper::rt::Write for NeverTouched {
+impl futures_io::AsyncWrite for NeverTouched {
     fn poll_write(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
@@ -34,6 +34,12 @@ impl hyper::rt::Write for NeverTouched {
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         panic!("the transport was flushed — the refusal came after the handshake started");
     }
+    fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        panic!("the transport was shut down — the refusal came after the handshake started");
+    }
+}
+
+impl hclient_rt::Shutdown for NeverTouched {
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         panic!("the transport was shut down — the refusal came after the handshake started");
     }
@@ -109,21 +115,25 @@ fn without_ech_the_handshake_actually_starts() {
     clippy::items_after_statements,
     reason = "SendIo/UnsendIo/Probe/Fallback are the Send-probe fixtures this test is entirely about — they belong beside the assertions that use them, not at module scope where nothing else needs them"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "106 lines, and the excess is the two fixtures' `Shutdown` impls: the seam split `poll_shutdown` off `Write`, so each double owes one more impl. Moving them to module scope is what the allow above deliberately refuses."
+)]
 fn the_handshake_is_send_exactly_when_the_io_is() {
     fn is_send<T: Send>() {}
 
     // A `Send` transport, which is what a real one is.
     struct SendIo;
-    impl hyper::rt::Read for SendIo {
+    impl futures_io::AsyncRead for SendIo {
         fn poll_read(
             self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
-            _: hyper::rt::ReadBufCursor<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
+            _: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
             unreachable!("never polled")
         }
     }
-    impl hyper::rt::Write for SendIo {
+    impl futures_io::AsyncWrite for SendIo {
         fn poll_write(
             self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
@@ -137,6 +147,15 @@ fn the_handshake_is_send_exactly_when_the_io_is() {
         ) -> std::task::Poll<std::io::Result<()>> {
             unreachable!("never polled")
         }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            unreachable!("never polled")
+        }
+    }
+
+    impl hclient_rt::Shutdown for SendIo {
         fn poll_shutdown(
             self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
@@ -155,16 +174,16 @@ fn the_handshake_is_send_exactly_when_the_io_is() {
         )]
         std::rc::Rc<()>,
     );
-    impl hyper::rt::Read for UnsendIo {
+    impl futures_io::AsyncRead for UnsendIo {
         fn poll_read(
             self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
-            _: hyper::rt::ReadBufCursor<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
+            _: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
             unreachable!("never polled")
         }
     }
-    impl hyper::rt::Write for UnsendIo {
+    impl futures_io::AsyncWrite for UnsendIo {
         fn poll_write(
             self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
@@ -178,6 +197,15 @@ fn the_handshake_is_send_exactly_when_the_io_is() {
         ) -> std::task::Poll<std::io::Result<()>> {
             unreachable!("never polled")
         }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            unreachable!("never polled")
+        }
+    }
+
+    impl hclient_rt::Shutdown for UnsendIo {
         fn poll_shutdown(
             self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,

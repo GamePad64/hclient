@@ -262,6 +262,36 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TlsStream<S> {
     }
 }
 
+/// **A TLS half-close is `close_notify` and then the transport's own.**
+///
+/// `native_tls::TlsStream::shutdown` writes the alert and nothing more,
+/// which is RFC 8446 §6.1's half-close and exactly the promise
+/// [`hclient_rt::Shutdown`] carries — so this sends it and then asks the
+/// stream beneath for its FIN. A transport that cannot half-close says so
+/// there rather than here. The rustls backend's impl is the same shape for
+/// the same reason.
+impl<S: AsyncRead + AsyncWrite + hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown
+    for TlsStream<S>
+{
+    // No `is_write_vectored`, so it keeps the seam's understating `false`.
+    // This stream implements no `poll_write_vectored`, so a vectored write
+    // reaches `futures_io::AsyncWrite`'s default, which writes the first
+    // non-empty buffer and no more — forwarding the transport's answer
+    // would claim a syscall per slice that never happens.
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self
+            .as_mut()
+            .with_context(cx, native_tls::TlsStream::shutdown)
+        {
+            Ok(()) => {}
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
+            Err(e) => return Poll::Ready(Err(e)),
+        }
+        hclient_rt::Shutdown::poll_shutdown(Pin::new(&mut self.get_mut().0.get_mut().inner), cx)
+    }
+}
+
 /// [`crate::NativeTls`]'s handshake, as a type.
 ///
 /// `Send` exactly when `S` is, derived rather than declared — which is the

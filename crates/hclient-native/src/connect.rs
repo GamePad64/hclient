@@ -128,23 +128,25 @@ use crate::error::{
     AllAttemptsFailed, InvalidHeConfig, ResolveErrors, ResolveTimedOut, UnsupportedScheme, UriError,
 };
 use crate::{mark, since};
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::hooks::{Hooks, NoHooks};
 use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
+use hclient_rt::Shutdown;
 use hclient_rt::{TcpConnect, TcpOpts, Timer};
 use hclient_tls::{TlsConnect, TlsInfo, TlsRequest};
 use http::Uri;
-use hyper::rt::{Read, ReadBufCursor, Write};
 use std::future::poll_fn;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-/// A connection: with or without TLS. Both variants are `hyper::rt` IO.
+/// A connection: with or without TLS. Both variants are on this
+/// workspace's byte-stream seam.
 ///
 /// `pub`, not `pub(crate)`, since v0.2 W2: it appears in the public
 /// signature of [`crate::Native`]'s `Transport::Body`
@@ -164,8 +166,8 @@ impl<P: Read + Unpin, T: Read + Unpin> Read for Conn<P, T> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         match self.get_mut() {
             Conn::Plain(p) => Pin::new(p).poll_read(cx, buf),
             Conn::Tls(t) => Pin::new(t).poll_read(cx, buf),
@@ -190,10 +192,40 @@ impl<P: Write + Unpin, T: Write + Unpin> Write for Conn<P, T> {
             Conn::Tls(t) => Pin::new(t).poll_flush(cx),
         }
     }
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Conn::Plain(p) => Pin::new(p).poll_close(cx),
+            Conn::Tls(t) => Pin::new(t).poll_close(cx),
+        }
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Conn::Plain(p) => Pin::new(p).poll_write_vectored(cx, bufs),
+            Conn::Tls(t) => Pin::new(t).poll_write_vectored(cx, bufs),
+        }
+    }
+}
+
+/// Forwarded, both halves: a `Conn` is a choice between two streams and
+/// adds nothing of its own, so it half-closes and answers about vectored
+/// writes exactly as whichever stream it holds does.
+impl<P: Shutdown + Unpin, T: Shutdown + Unpin> Shutdown for Conn<P, T> {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Conn::Plain(p) => Pin::new(p).poll_shutdown(cx),
             Conn::Tls(t) => Pin::new(t).poll_shutdown(cx),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            Conn::Plain(p) => p.is_write_vectored(),
+            Conn::Tls(t) => t.is_write_vectored(),
         }
     }
 }
@@ -1494,9 +1526,11 @@ mod tests {
         fn poll_read(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            _buf: ReadBufCursor<'_>,
-        ) -> Poll<std::io::Result<()>> {
-            Poll::Ready(Ok(()))
+            _buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            // End of stream, which the cursor form spelled as a buffer
+            // left untouched.
+            Poll::Ready(Ok(0))
         }
     }
     impl Write for FakeStream {
@@ -1510,6 +1544,12 @@ mod tests {
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
         }
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Shutdown for FakeStream {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
         }
@@ -2864,17 +2904,17 @@ mod tests {
         type Stream<S>
             = S
         where
-            S: Read + Write + Unpin;
+            S: Read + Write + Shutdown + Unpin;
 
         type Handshake<'a, S>
             = std::future::Ready<Result<(S, TlsInfo), Error>>
         where
             Self: 'a,
-            S: Read + Write + Unpin + 'a;
+            S: Read + Write + Shutdown + Unpin + 'a;
 
         fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
         where
-            S: Read + Write + Unpin + 'a,
+            S: Read + Write + Shutdown + Unpin + 'a,
         {
             std::future::ready({
                 Ok((

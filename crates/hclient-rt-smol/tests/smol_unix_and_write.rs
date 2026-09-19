@@ -15,9 +15,10 @@
 //! only ever saw a TCP stream would pass for a macro that routed both
 //! variants to `SmolSocket::Tcp`, and `tcp()` panics on a Unix stream, so
 //! the arms cannot be confused silently.
-use hclient_rt::{FuturesIo, TcpConnect, TcpOpts};
+use futures_lite::io::AsyncWrite as _;
+use hclient_rt::Shutdown as _;
+use hclient_rt::{TcpConnect, TcpOpts};
 use hclient_rt_smol::{Smol, SmolSocket};
-use hyper::rt::Write as HyperWrite;
 use std::future::poll_fn;
 use std::io::Read as _;
 use std::pin::Pin;
@@ -48,7 +49,7 @@ async fn bounded<T>(
 /// kernel's socket buffer rather than the wrapper. Looping is what makes
 /// the assertion *the bytes arrive* — which is the thing a `Poll::Ready(Ok(0))`
 /// or `Ok(1)` mutant breaks.
-async fn write_all(s: &mut FuturesIo<SmolSocket>, mut buf: &[u8]) -> std::io::Result<()> {
+async fn write_all(s: &mut SmolSocket, mut buf: &[u8]) -> std::io::Result<()> {
     let mut guard = 0;
     while !buf.is_empty() {
         let n = poll_fn(|cx| Pin::new(&mut *s).poll_write(cx, buf)).await?;
@@ -62,7 +63,7 @@ async fn write_all(s: &mut FuturesIo<SmolSocket>, mut buf: &[u8]) -> std::io::Re
     Ok(())
 }
 
-/// The bytes a caller writes through `FuturesIo<SmolSocket>` are the bytes
+/// The bytes a caller writes through `SmolSocket` are the bytes
 /// the peer reads.
 ///
 /// This is the floor under `poll_write` and `poll_flush`. Measured with

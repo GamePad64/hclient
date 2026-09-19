@@ -1,35 +1,21 @@
-use hyper::rt::ReadBufCursor;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// Bridges `tokio::net::TcpStream` → `hyper::rt`. `unsafe`-free: reads into
-/// a scratch buffer and copies out with the safe `put_slice` — the same
-/// technique as `hclient_rt::FuturesIo`, but here directly on top
-/// of `tokio::io::{AsyncRead, AsyncWrite}` rather than `futures_io`: tokio
-/// has its own IO traits, and an extra layer through `FuturesIo` would only
-/// add a copy.
+/// Bridges `tokio::net::TcpStream` → [`futures_io::AsyncRead`]/
+/// [`AsyncWrite`](futures_io::AsyncWrite) plus [`hclient_rt::Shutdown`].
+///
+/// **`unsafe`-free and, since the seam stopped being `hyper::rt`, also
+/// copy-free.** The cursor version kept a per-connection scratch buffer
+/// because `ReadBufCursor` hands over possibly-uninitialised memory;
+/// `futures-io` hands over an initialised slice, so the read goes straight
+/// into the caller's buffer and the field is gone. What remains is the
+/// enum, because one associated `Stream` type has to cover both TCP and
+/// Unix sockets.
 pub struct TokioIo {
     inner: Socket,
-    /// The buffer is allocated and zeroed ONCE, in [`TokioIo::new`] — not
-    /// on every `poll_read`.
-    ///
-    /// A `[0u8; SCRATCH]` on the stack inside `poll_read` is the obvious
-    /// alternative, and its cost is measured (`rustc -O --emit=asm`, see
-    /// the comment on `FuturesIo::scratch`): the stack variant calls
-    /// `memset` on EVERY
-    /// invocation, whereas a struct field allocated once in the
-    /// constructor does not — `poll_read` is called directly on an
-    /// already-ready buffer. `poll_read` is the hot path of every request;
-    /// a stray `memset` there is not a hypothetical cost, but a measured
-    /// one.
-    scratch: Box<[u8]>,
 }
-
-/// Buffer size. 8 KiB is hyper's typical read size, so no extra iterations
-/// result. Matches `hclient_rt::FuturesIo::SCRATCH`.
-const SCRATCH: usize = 8 * 1024;
 
 impl TokioIo {
     pub(crate) fn new(inner: tokio::net::TcpStream) -> Self {
@@ -43,10 +29,7 @@ impl TokioIo {
     }
 
     fn over(inner: Socket) -> Self {
-        Self {
-            inner,
-            scratch: vec![0u8; SCRATCH].into_boxed_slice(),
-        }
+        Self { inner }
     }
 
     /// A reference to the underlying `tokio::net::TcpStream` — for example,
@@ -127,35 +110,36 @@ impl Debug for TokioIo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokioIo")
             .field("inner", &self.inner)
-            .field("scratch_len", &self.scratch.len())
             .finish()
     }
 }
 
-impl hyper::rt::Read for TokioIo {
+impl futures_io::AsyncRead for TokioIo {
+    /// **No scratch buffer, and that is what the seam change bought.**
+    ///
+    /// The cursor version read into a per-connection scratch and copied
+    /// out with `put_slice`, because `hyper::rt::ReadBufCursor` hands over
+    /// possibly-uninitialised memory and filling it directly is `unsafe`.
+    /// `futures_io::AsyncRead` hands over an initialised `&mut [u8]`, so
+    /// `tokio::io::ReadBuf::new` wraps the caller's own buffer and the
+    /// copy — one per read, per connection, on the hot path — is gone
+    /// with the field that held it.
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        mut buf: ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let want = buf.remaining().min(self.scratch.len());
-        if want == 0 {
-            return Poll::Ready(Ok(()));
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
         }
-        // Destructure into disjoint fields explicitly: `inner` and
-        // `scratch` are borrowed at the same time, but independently of
-        // each other.
-        let Self { inner, scratch } = &mut *self;
-        let mut rb = tokio::io::ReadBuf::new(&mut scratch[..want]);
-        let n = match inner {
+        let mut rb = tokio::io::ReadBuf::new(buf);
+        let n = match &mut self.inner {
             Socket::Tcp(s) => Pin::new(s).poll_read(cx, &mut rb),
             #[cfg(unix)]
             Socket::Unix(s) => Pin::new(s).poll_read(cx, &mut rb),
         };
         std::task::ready!(n)?;
-        let filled = rb.filled().len();
-        buf.put_slice(&scratch[..filled]);
-        Poll::Ready(Ok(()))
+        Poll::Ready(Ok(rb.filled().len()))
     }
 }
 
@@ -185,7 +169,27 @@ fn shutdown_is_done(r: std::io::Result<()>) -> std::io::Result<()> {
     }
 }
 
-impl hyper::rt::Write for TokioIo {
+impl hclient_rt::Shutdown for TokioIo {
+    /// An honest delegation to the underlying socket rather than a
+    /// decision made on its behalf: `tokio::io::AsyncWrite` carries
+    /// `is_write_vectored` as a trait method, so the answer is the
+    /// stream's own. `futures_io::AsyncWrite` has no such method, which
+    /// is why this one lives on [`hclient_rt::Shutdown`].
+    fn is_write_vectored(&self) -> bool {
+        match &self.inner {
+            Socket::Tcp(s) => s.is_write_vectored(),
+            #[cfg(unix)]
+            Socket::Unix(s) => s.is_write_vectored(),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let p = either!(self, s => Pin::new(s).poll_shutdown(cx));
+        Poll::Ready(shutdown_is_done(std::task::ready!(p)))
+    }
+}
+
+impl futures_io::AsyncWrite for TokioIo {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -198,9 +202,12 @@ impl hyper::rt::Write for TokioIo {
         either!(self, s => Pin::new(s).poll_flush(cx))
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let p = either!(self, s => Pin::new(s).poll_shutdown(cx));
-        Poll::Ready(shutdown_is_done(std::task::ready!(p)))
+    /// `futures-io` spells the end of the stream `poll_close`, and for a
+    /// socket that is the same half-close [`hclient_rt::Shutdown`] asks
+    /// for — `tokio::io::AsyncWrite::poll_shutdown` sends FIN and leaves
+    /// the read half open. So this forwards rather than stating it twice.
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        hclient_rt::Shutdown::poll_shutdown(self, cx)
     }
 
     fn poll_write_vectored(
@@ -209,19 +216,6 @@ impl hyper::rt::Write for TokioIo {
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<std::io::Result<usize>> {
         either!(self, s => Pin::new(s).poll_write_vectored(cx, bufs))
-    }
-
-    /// Unlike `FuturesIo` (where `futures_io::AsyncWrite` gives no way to
-    /// ask `S` at all), `tokio::io::AsyncWrite` carries
-    /// `is_write_vectored` as a trait method — here it's an honest
-    /// delegation to the underlying `TcpStream`, not a decision made on
-    /// its behalf.
-    fn is_write_vectored(&self) -> bool {
-        match &self.inner {
-            Socket::Tcp(s) => s.is_write_vectored(),
-            #[cfg(unix)]
-            Socket::Unix(s) => s.is_write_vectored(),
-        }
     }
 }
 
@@ -251,7 +245,7 @@ mod tests {
     }
 
     use super::*;
-    use hyper::rt::Read as _;
+    use futures_io::AsyncRead as _;
     use std::io::Write as _;
 
     fn connected_pair() -> (TokioIo, std::net::TcpStream) {
@@ -264,15 +258,22 @@ mod tests {
         (client, server.join().unwrap())
     }
 
+    /// **A read far larger than one segment, across several polls.**
+    ///
+    /// It was `reads_bytes_larger_than_the_scratch_buffer`, and it pinned
+    /// a defect that no longer has a subject: this bridge held an 8 KiB
+    /// scratch buffer because `hyper::rt::ReadBufCursor` hands out
+    /// possibly-uninitialised memory, and a caller's buffer larger than
+    /// that indexed out of bounds without a `.min(..)`. The seam is
+    /// `futures_io::AsyncRead` now, the socket reads straight into the
+    /// caller's buffer, and there is no second buffer to overrun. What
+    /// survives is the property rather than the defect: a body bigger
+    /// than a segment arrives whole and in order, which is a claim about
+    /// the loop below rather than about any constant.
     #[tokio::test]
-    async fn reads_bytes_larger_than_the_scratch_buffer() {
-        // Same as `read_request_larger_than_scratch_buffer_does_not_panic`
-        // in `hclient_rt::FuturesIo`: `buf.remaining()` is controlled by
-        // the caller and can be larger than `scratch.len()` — without
-        // `.min(..)`, `&mut scratch[..want]` indexes out of bounds and
-        // panics.
+    async fn reads_a_body_larger_than_one_segment_in_order() {
         let (mut client, mut server) = connected_pair();
-        let len = SCRATCH + 137;
+        let len = 8 * 1024 + 137;
         // `i % 251` is always in 0..251, which fits `u8` — bounded by the
         // modulus, not by `len`.
         #[allow(
@@ -288,15 +289,13 @@ mod tests {
         let mut out = Vec::new();
         let mut store = vec![0u8; len];
         loop {
-            let mut rb = hyper::rt::ReadBuf::new(&mut store);
-            poll_fn(|cx| Pin::new(&mut client).poll_read(cx, rb.unfilled()))
+            let n = poll_fn(|cx| Pin::new(&mut client).poll_read(cx, &mut store))
                 .await
                 .unwrap();
-            let filled = rb.filled().to_vec();
-            if filled.is_empty() {
+            if n == 0 {
                 break;
             }
-            out.extend_from_slice(&filled);
+            out.extend_from_slice(&store[..n]);
             if out.len() >= len {
                 break;
             }
@@ -313,7 +312,7 @@ mod tests {
         // hardcoded value, so the test doesn't drift from the platform
         // independently of `TokioIo`.
         assert_eq!(
-            hyper::rt::Write::is_write_vectored(&client),
+            hclient_rt::Shutdown::is_write_vectored(&client),
             client.get_ref().is_write_vectored()
         );
     }

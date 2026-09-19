@@ -13,8 +13,7 @@ pub use udp::SmolUdpSocket;
 
 use futures_core::future::BoxFuture;
 use hclient_rt::{
-    Blocking, Cancelled, Discard, FuturesIo, Spawn, TcpAdoptStd, TcpConnect, TcpOpts,
-    TcpOptsSupport, Timer,
+    Blocking, Cancelled, Discard, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
 };
 use std::future::Future;
 use std::net::SocketAddr;
@@ -205,6 +204,25 @@ fn shutdown_is_done(r: std::io::Result<()>) -> std::io::Result<()> {
     }
 }
 
+/// **A half-close, and `poll_close` below already is one.**
+///
+/// `futures_io::AsyncWrite::poll_close` means *close the writer*, and for
+/// most implementors that is a full close. This one is not: it calls
+/// `shutdown_is_done` over `Shutdown::Write`, so it sends FIN and leaves
+/// the read half open — which is what an HTTP/1 exchange needs and what
+/// [`hclient_rt::Shutdown`] asks for. So the two coincide here, and this
+/// impl forwards rather than inventing a second spelling.
+///
+/// That coincidence is why `FuturesIo` could go: it existed to bridge
+/// `futures-io` to `hyper::rt` and, on the way, to map `poll_shutdown`
+/// onto `poll_close`. With the seam typed on `futures-io` the socket is
+/// the stream, and the mapping is this impl.
+impl hclient_rt::Shutdown for SmolSocket {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        futures_lite::io::AsyncWrite::poll_close(self, cx)
+    }
+}
+
 impl futures_lite::io::AsyncWrite for SmolSocket {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -230,7 +248,7 @@ impl futures_lite::io::AsyncWrite for SmolSocket {
 }
 
 impl TcpConnect for Smol {
-    type Stream = FuturesIo<SmolSocket>;
+    type Stream = SmolSocket;
 
     /// `cfg!(unix)`, which is what `async_net::unix` compiles on.
     const SUPPORTS_UNIX: bool = cfg!(unix);
@@ -315,9 +333,7 @@ impl TcpConnect for Smol {
                 return Err(err);
             }
 
-            Ok(FuturesIo::new(SmolSocket::Tcp(async_net::TcpStream::from(
-                async_stream,
-            ))))
+            Ok(SmolSocket::Tcp(async_net::TcpStream::from(async_stream)))
         })
     }
 
@@ -353,9 +369,9 @@ impl TcpConnect for Smol {
             // No `TcpOpts` and no `socket2` dance, for the reason the trait's
             // own doc gives: `AF_UNIX` has none of those options, so there is
             // nothing to set before the connect.
-            Ok(FuturesIo::new(SmolSocket::Unix(
+            Ok(SmolSocket::Unix(
                 async_net::unix::UnixStream::connect(&path).await?,
-            )))
+            ))
         })
     }
 }
@@ -363,9 +379,7 @@ impl TcpConnect for Smol {
 impl TcpAdoptStd for Smol {
     fn adopt(&self, std: std::net::TcpStream) -> std::io::Result<Self::Stream> {
         std.set_nonblocking(true)?;
-        Ok(FuturesIo::new(SmolSocket::Tcp(
-            async_net::TcpStream::try_from(std)?,
-        )))
+        Ok(SmolSocket::Tcp(async_net::TcpStream::try_from(std)?))
     }
 }
 
@@ -520,7 +534,7 @@ mod tests {
             // `build_socket` silently ignored `opts`), but that
             // `nodelay: true` actually reached the socket: read the option
             // back, rather than relying on the call having happened.
-            let applied = s.get_ref().tcp().nodelay().expect("nodelay query");
+            let applied = s.tcp().nodelay().expect("nodelay query");
             assert!(
                 applied,
                 "TcpOpts::nodelay was not applied to the connected socket"
@@ -553,7 +567,7 @@ mod tests {
                 )
                 .await
                 .expect("connect");
-            let enabled = socket2::SockRef::from(s.get_ref().tcp())
+            let enabled = socket2::SockRef::from(s.tcp())
                 .keepalive()
                 .expect("keepalive query");
             assert!(

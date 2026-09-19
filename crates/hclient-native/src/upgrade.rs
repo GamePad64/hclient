@@ -69,7 +69,7 @@
 //!    would put a `Send` bound on this crate's IO and shut out
 //!    single-threaded runtimes — the same objection that disqualified
 //!    `hyper/http2` in v0.2 W3. `poll_without_shutdown` and `into_parts`
-//!    are bounded by `T: Read + Write + Unpin` alone.
+//!    are bounded by `T: Read + Write + Shutdown + Unpin` alone.
 //!
 //!    Worth knowing, because it is not what the shape suggests: at
 //!    hyper 1.11 `poll_without_shutdown` and `Connection`'s `Future` impl
@@ -102,16 +102,18 @@
 //! costs nothing to arrange — this module never builds a `CheckIn`.
 use crate::connect;
 use crate::error::{EndedBeforeTheResponse, NotSwitchingProtocols};
+use crate::hyperio::HyperIo;
 use crate::{Native, NativeIo};
 use bytes::Bytes;
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::hooks::NoHooks;
 use hclient_core::req::Timeouts;
 use hclient_dns::Resolve;
+use hclient_rt::Shutdown;
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
 use hyper::client::conn::http1;
-use hyper::rt::{Read, Write};
 use std::fmt::Debug;
 use std::future::poll_fn;
 use std::task::Poll;
@@ -130,8 +132,8 @@ use std::task::Poll;
 /// body is dropped inside [`Native::upgrade`] because dropping it is what
 /// lets the dispatcher finish. `http::response::Parts` is what is left,
 /// and it is what the three WebSocket checks read.
-pub struct Upgrading<I: Read + Write> {
-    conn: http1::Connection<I, http_body_util::Empty<Bytes>>,
+pub struct Upgrading<I: Read + Write + Shutdown + Unpin> {
+    conn: http1::Connection<HyperIo<I>, http_body_util::Empty<Bytes>>,
     /// `poll_without_shutdown` has already answered `Ready(Ok(()))`, and
     /// `Future`'s own rule says it must not be polled again.
     conn_done: bool,
@@ -140,7 +142,7 @@ pub struct Upgrading<I: Read + Write> {
 
 /// Hand-written because hyper's `Connection` is not `Debug`, and because
 /// the useful thing to print is the answer rather than the machinery.
-impl<I: Read + Write> Debug for Upgrading<I> {
+impl<I: Read + Write + Shutdown + Unpin> Debug for Upgrading<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Upgrading")
             .field("status", &self.head.status)
@@ -151,7 +153,7 @@ impl<I: Read + Write> Debug for Upgrading<I> {
 
 impl<I> Upgrading<I>
 where
-    I: Read + Write + Unpin + 'static,
+    I: Read + Write + Shutdown + Unpin + 'static,
 {
     /// The `101`'s head, for whoever knows what the upgrade was *to*.
     pub fn head(&self) -> &http::response::Parts {
@@ -177,7 +179,10 @@ where
                 .map_err(|e| Error::new(ErrorKind::Connect, e))?;
         }
         let http1::Parts { io, read_buf, .. } = self.conn.into_parts();
-        Ok((io, read_buf))
+        // `into_inner` rather than the wrapper: what a caller upgraded
+        // into is a stream on this workspace's seam, and `HyperIo` is
+        // only how hyper was driven over it.
+        Ok((io.into_inner(), read_buf))
     }
 }
 
@@ -354,11 +359,12 @@ pub(crate) async fn exchange<I>(
     req: http::Request<http_body_util::Empty<Bytes>>,
 ) -> Result<Upgrading<I>, Error>
 where
-    I: Read + Write + Unpin + 'static,
+    I: Read + Write + Shutdown + Unpin + 'static,
 {
-    let (mut sender, mut conn) = http1::handshake::<I, http_body_util::Empty<Bytes>>(io)
-        .await
-        .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+    let (mut sender, mut conn) =
+        http1::handshake::<HyperIo<I>, http_body_util::Empty<Bytes>>(HyperIo::new(io))
+            .await
+            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
 
     let mut conn_done = false;
     let resp = {

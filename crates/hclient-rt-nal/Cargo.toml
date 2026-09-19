@@ -40,7 +40,7 @@ publish = false
 hclient-rt         = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
 embedded-nal-async = "0.9"
 embedded-io-async  = "0.7"
-hyper              = { version = "1.11", default-features = false }
+futures-io         = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 static_assertions = { workspace = true }

@@ -418,7 +418,7 @@ impl<S> Future for UnixUnsupported<S> {
 }
 
 pub trait TcpConnect {
-    type Stream: hyper::rt::Read + hyper::rt::Write + Unpin;
+    type Stream: ::futures_io::AsyncRead + ::futures_io::AsyncWrite + crate::io::Shutdown + Unpin;
 
     /// Which [`TcpOpts`] fields this runtime actually applies.
     ///
@@ -907,16 +907,24 @@ mod tests {
         // Never constructed: it exists only so `Forgetful` can satisfy
         // the associated type without a runtime behind it.
         struct NeverIo;
-        impl hyper::rt::Read for NeverIo {
+        impl futures_io::AsyncRead for NeverIo {
             fn poll_read(
                 self: Pin<&mut Self>,
                 _: &mut Context<'_>,
-                _: hyper::rt::ReadBufCursor<'_>,
+                _: &mut [u8],
+            ) -> Poll<std::io::Result<usize>> {
+                unreachable!("this runtime never connects")
+            }
+        }
+        impl crate::io::Shutdown for NeverIo {
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
             ) -> Poll<std::io::Result<()>> {
                 unreachable!("this runtime never connects")
             }
         }
-        impl hyper::rt::Write for NeverIo {
+        impl futures_io::AsyncWrite for NeverIo {
             fn poll_write(
                 self: Pin<&mut Self>,
                 _: &mut Context<'_>,
@@ -927,10 +935,7 @@ mod tests {
             fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
                 unreachable!("this runtime never connects")
             }
-            fn poll_shutdown(
-                self: Pin<&mut Self>,
-                _: &mut Context<'_>,
-            ) -> Poll<std::io::Result<()>> {
+            fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
                 unreachable!("this runtime never connects")
             }
         }

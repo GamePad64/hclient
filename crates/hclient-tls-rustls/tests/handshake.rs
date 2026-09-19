@@ -64,23 +64,22 @@ async fn completes_handshake_and_echoes() {
         "the negotiated ALPN must be visible"
     );
 
-    // Push bytes through the hyper::rt interface.
+    // Push bytes through the seam this crate is written against.
     let sent = b"ping";
     let n = bounded(poll_fn(|cx| {
-        hyper::rt::Write::poll_write(Pin::new(&mut stream), cx, sent)
+        futures_io::AsyncWrite::poll_write(Pin::new(&mut stream), cx, sent)
     }))
     .await
     .unwrap();
     assert_eq!(n, 4);
 
     let mut store = [0u8; 16];
-    let mut rb = hyper::rt::ReadBuf::new(&mut store);
-    bounded(poll_fn(|cx| {
-        hyper::rt::Read::poll_read(Pin::new(&mut stream), cx, rb.unfilled())
+    let n = bounded(poll_fn(|cx| {
+        futures_io::AsyncRead::poll_read(Pin::new(&mut stream), cx, &mut store)
     }))
     .await
     .unwrap();
-    assert_eq!(rb.filled(), b"ping");
+    assert_eq!(&store[..n], b"ping");
 }
 
 #[tokio::test]

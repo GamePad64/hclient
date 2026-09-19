@@ -46,13 +46,10 @@
 //! bought besides — this backend reports ALPN now.
 #![deny(unsafe_code)]
 
-mod hyper_io;
 mod stream;
 
 use hclient_core::error::{Error, ErrorKind};
-use hclient_rt::FuturesIo;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
-use hyper_io::HyperIo;
 use std::fmt::Debug;
 
 /// The platform TLS backend.
@@ -205,10 +202,15 @@ impl TlsIdentity for NativeTls {
 }
 
 impl TlsConnect for NativeTls {
+    /// **Two wrappers used to stand here and both are gone.** The seam
+    /// was typed on `hyper::rt` while `native-tls` speaks futures-io, so
+    /// every stream was converted in (`HyperIo`) and back out
+    /// (`hclient_rt::FuturesIo`) — a copy per read in each direction, and
+    /// 243 lines of adapter, to end up at the trait the seam now names.
     type Stream<S>
-        = FuturesIo<crate::stream::TlsStream<HyperIo<S>>>
+        = crate::stream::TlsStream<S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
     /// A named type, so `Send` follows from `S` rather than being chosen —
     /// see `stream.rs`'s module doc for why that took owning the stream,
@@ -217,7 +219,7 @@ impl TlsConnect for NativeTls {
         = Handshaking<S>
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     /// Everything that can fail without touching the socket happens
     /// **here** — the ECH refusal, the ALPN strings, building the
@@ -225,7 +227,7 @@ impl TlsConnect for NativeTls {
     /// `connect` is arranged the same way and for the same reason.
     fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
     {
         if req.ech.is_some() {
             // Refused, not ignored. ECH (RFC 9849) requires the TLS stack to
@@ -278,7 +280,7 @@ impl TlsConnect for NativeTls {
         Handshaking::new(crate::stream::Handshaking::start(
             connector,
             req.server_name.to_owned(),
-            HyperIo::new(io),
+            io,
         ))
     }
 
@@ -303,19 +305,19 @@ impl TlsConnect for NativeTls {
 /// because the seam's output is `(Self::Stream<S>, TlsInfo)` and the
 /// `TlsInfo` is this file's business, not the stream module's.
 #[derive(Debug)]
-pub struct Handshaking<S>(crate::stream::Handshaking<HyperIo<S>>);
+pub struct Handshaking<S>(crate::stream::Handshaking<S>);
 
 impl<S> Handshaking<S> {
-    fn new(inner: crate::stream::Handshaking<HyperIo<S>>) -> Self {
+    fn new(inner: crate::stream::Handshaking<S>) -> Self {
         Self(inner)
     }
 }
 
 impl<S> std::future::Future for Handshaking<S>
 where
-    S: hyper::rt::Read + hyper::rt::Write + Unpin,
+    S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin,
 {
-    type Output = Result<(FuturesIo<crate::stream::TlsStream<HyperIo<S>>>, TlsInfo), Error>;
+    type Output = Result<(crate::stream::TlsStream<S>, TlsInfo), Error>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -338,6 +340,6 @@ where
             // missing. Telling those apart is why this field is a `Vec`
             // inside an `Option`.
             .peer_certificates(stream.peer_certificate_der().map(|der| vec![der]));
-        std::task::Poll::Ready(Ok((FuturesIo::new(stream), info)))
+        std::task::Poll::Ready(Ok((stream, info)))
     }
 }

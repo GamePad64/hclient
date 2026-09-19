@@ -1,4 +1,5 @@
-use hyper::rt::{Read, ReadBufCursor, Write};
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
+use hclient_rt::Shutdown;
 use std::error::Error as StdError;
 use std::io::{Read as _, Write as _};
 use std::pin::Pin;
@@ -6,7 +7,7 @@ use std::task::{Context, Poll, ready};
 
 const SCRATCH: usize = 16 * 1024;
 
-/// TLS over any `hyper::rt` transport.
+/// TLS over any transport on this workspace's byte-stream seam.
 ///
 /// Built on the rustls surface that's been stable since 0.20: `read_tls` /
 /// `process_new_packets` / `wants_write` / `write_tls`. **Not**
@@ -69,7 +70,7 @@ fn tls_err<E: StdError + 'static>(e: E) -> std::io::Error {
     std::io::Error::other(format!("tls: {e}"))
 }
 
-/// Bridges `hyper::rt::Write` (async, poll-based) → `std::io::Write`
+/// Bridges [`futures_io::AsyncWrite`] (async, poll-based) → `std::io::Write`
 /// (synchronous, blocking) — the interface `ClientConnection::write_tls`
 /// is written against. `Poll::Pending` becomes `Err(WouldBlock)`; a
 /// caller that gets `WouldBlock` must tell it apart from a real error and
@@ -101,9 +102,10 @@ struct PollWriter<'a, 'cx, S> {
 impl<S: Write + Unpin> std::io::Write for PollWriter<'_, '_, S> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match Pin::new(&mut *self.io).poll_write(self.cx, buf) {
-            // `hyper::rt::Write::poll_write`'s own contract: "A return
-            // value of `0` means that the underlying object is no longer
-            // able to accept bytes" — a terminal failure, not a "try
+            // `futures_io::AsyncWrite::poll_write`'s own contract: a
+            // return value of `0` "typically means that the underlying
+            // object is no longer able to accept bytes and will likely
+            // not be able to in the future" — a terminal failure, not a "try
             // again later" signal (that's what `Pending` is for). The
             // same interpretation `flush_outgoing` used to apply
             // (`WriteZero`), just needed here now instead of outside.
@@ -175,7 +177,7 @@ pub(crate) fn flush_outgoing<S: Write + Unpin>(
 /// "the connection was cut without warning" are the same thing.
 /// Tolerating servers that close without `close_notify` (there are plenty
 /// of those in practice), if that's ever needed, is a decision for the
-/// HTTP layer on top of `hyper::rt::Read`, which knows about framing
+/// HTTP layer on top of this seam, which knows about framing
 /// (`Content-Length`/chunked) and can tell "the body was already read in
 /// full, TLS was cut AFTER" apart from "the body was cut mid-stream" —
 /// this stream cannot and must not guess that on its own.
@@ -206,9 +208,8 @@ pub(crate) fn pump_incoming<S: Read + Unpin>(
         return Poll::Ready(Ok(true));
     }
     let mut scratch = [0u8; SCRATCH];
-    let mut rb = hyper::rt::ReadBuf::new(&mut scratch);
-    ready!(Pin::new(io).poll_read(cx, rb.unfilled()))?;
-    let filled = rb.filled();
+    let n = ready!(Pin::new(io).poll_read(cx, &mut scratch))?;
+    let filled = &scratch[..n];
     let had_bytes = !filled.is_empty();
     let taken = feed(conn, filled)?;
     // The line that would have made the `act` defect a five-minute read
@@ -285,20 +286,27 @@ fn feed(conn: &mut rustls::ClientConnection, bytes: &[u8]) -> std::io::Result<us
 }
 
 impl<S: Read + Write + Unpin> Read for TlsStream<S> {
+    /// **The plaintext scratch is gone, and rustls decrypts straight
+    /// into the caller's buffer.** It existed because
+    /// `hyper::rt::ReadBufCursor` hands out possibly-uninitialised memory
+    /// whose only safe entrance is `put_slice`, so every decrypted byte
+    /// was written twice; `futures_io::AsyncRead` hands over an
+    /// initialised `&mut [u8]`, which is exactly what
+    /// `rustls::Reader::read` wants. The *ciphertext* scratch in
+    /// `pump_incoming` stays — that one is a real buffer between the
+    /// transport and rustls, not an artefact of the seam.
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        mut buf: ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         let this = &mut *self;
         loop {
             // 1. Hand back whatever's already decrypted.
-            let mut scratch = [0u8; SCRATCH];
-            let want = buf.remaining().min(SCRATCH);
-            if want == 0 {
-                return Poll::Ready(Ok(()));
+            if buf.is_empty() {
+                return Poll::Ready(Ok(0));
             }
-            match this.conn.reader().read(&mut scratch[..want]) {
+            match this.conn.reader().read(buf) {
                 // rustls guarantees `Ok(0)` STRICTLY on a clean
                 // `close_notify` (`has_received_close_notify`) — a
                 // terminal "there will be no more data" signal, not "no
@@ -308,11 +316,10 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
                 // but didn't close the TCP socket itself (TLS doesn't
                 // require that), `poll_read` waited on a transport read
                 // that would never come: a permanent hang.
-                Ok(0) => return Poll::Ready(Ok(())),
-                Ok(n) => {
-                    buf.put_slice(&scratch[..n]);
-                    return Poll::Ready(Ok(()));
-                }
+                // `futures-io` spells end of stream the same way rustls
+                // does here — a count of zero.
+                Ok(0) => return Poll::Ready(Ok(0)),
+                Ok(n) => return Poll::Ready(Ok(n)),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => return Poll::Ready(Err(e)),
             }
@@ -336,7 +343,7 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
     }
 }
 
-impl<S: Read + Write + Unpin> Write for TlsStream<S> {
+impl<S: Read + Write + Shutdown + Unpin> Write for TlsStream<S> {
     /// The order here is critical: flush
     /// the leftover from the previous call before touching this call's
     /// `data` — otherwise `conn.writer().write(data)` below would queue
@@ -402,6 +409,31 @@ impl<S: Read + Write + Unpin> Write for TlsStream<S> {
         this.conn.writer().flush()?;
         flush_outgoing(&mut this.io, &mut this.conn, cx)
     }
+
+    /// `futures-io`'s end of the stream, and here it is the same
+    /// `close_notify` the half-close below sends, so this forwards rather
+    /// than saying it twice.
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Shutdown::poll_shutdown(self, cx)
+    }
+}
+
+/// **A TLS half-close is `close_notify` and then the transport's own.**
+///
+/// RFC 8446 §6.1 lets a peer send `close_notify` and go on reading, which
+/// is exactly the promise [`hclient_rt::Shutdown`] carries and exactly
+/// what an HTTP/1 client needs — so this sends the alert, drains it, and
+/// asks the transport beneath for its FIN. A transport that cannot
+/// half-close says so there rather than here.
+impl<S: Read + Write + Shutdown + Unpin> Shutdown for TlsStream<S> {
+    // No `is_write_vectored`, so it keeps the seam's understating
+    // `false` — and that is about **this** stream rather than about the
+    // transport beneath it. `TlsStream` implements no
+    // `poll_write_vectored`, so a vectored write reaches
+    // `futures_io::AsyncWrite`'s default, which writes the first
+    // non-empty buffer and no more. Forwarding the transport's answer
+    // would claim a syscall per slice that this stream never issues,
+    // which is the over-claiming direction the constant exists to avoid.
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = &mut *self;

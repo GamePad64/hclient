@@ -35,6 +35,9 @@ use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::Rustls;
 use hyper::body::Bytes;
+
+mod server;
+use server::HyperIo;
 use std::future::poll_fn;
 use std::io::{Read as _, Write as _};
 use std::net::SocketAddr;
@@ -153,7 +156,7 @@ async fn fetch_body(addr: SocketAddr, ca_der: Vec<u8>) -> Result<Vec<u8>, String
     .await
     .expect("handshake");
 
-    let (mut sender, conn) = bounded(hyper::client::conn::http1::handshake(stream))
+    let (mut sender, conn) = bounded(hyper::client::conn::http1::handshake(HyperIo::new(stream)))
         .await
         .expect("http1 handshake");
     // The connection driver errors out once the abrupt close reaches it
@@ -237,7 +240,6 @@ async fn close_notify_and_a_bare_fin_are_observably_different_at_the_stream_leve
     // `TlsStream::poll_read`, no HTTP layer involved - isolates exactly
     // what `pump_incoming`'s fix changed, independent of hyper.
     use hclient_tls_rustls::TlsStream;
-    use hyper::rt::ReadBuf;
     use std::pin::Pin;
 
     async fn read_after_close(send_close_notify: bool) -> std::io::Result<usize> {
@@ -302,12 +304,10 @@ async fn close_notify_and_a_bare_fin_are_observably_different_at_the_stream_leve
         .expect("handshake");
 
         let mut store = [0u8; 16];
-        let mut rb = ReadBuf::new(&mut store);
         bounded(poll_fn(|cx| {
-            hyper::rt::Read::poll_read(Pin::new(&mut stream), cx, rb.unfilled())
+            futures_io::AsyncRead::poll_read(Pin::new(&mut stream), cx, &mut store)
         }))
         .await
-        .map(|()| rb.filled().len())
     }
 
     let clean = read_after_close(true).await;

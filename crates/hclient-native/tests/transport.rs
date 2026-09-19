@@ -591,16 +591,16 @@ fn poll_bounded<F: Future>(fut: F, bound: Duration) -> Option<F::Output> {
 #[derive(Clone)]
 struct NeverConnects;
 struct NeverStream;
-impl hyper::rt::Read for NeverStream {
+impl futures_io::AsyncRead for NeverStream {
     fn poll_read(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-        _b: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        _b: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         Poll::Pending
     }
 }
-impl hyper::rt::Write for NeverStream {
+impl futures_io::AsyncWrite for NeverStream {
     fn poll_write(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -611,6 +611,12 @@ impl hyper::rt::Write for NeverStream {
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl hclient_rt::Shutdown for NeverStream {
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
@@ -749,7 +755,7 @@ impl hclient_tls::TlsConnect for CertTls {
     type Stream<S>
         = S
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
     type Handshake<'a, S>
         = std::pin::Pin<
@@ -765,11 +771,11 @@ impl hclient_tls::TlsConnect for CertTls {
     >
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     fn connect<'a, S>(&'a self, _: S, _: hclient_tls::TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
     {
         Box::pin(async move { unreachable!("this stub never connects") })
     }
@@ -796,18 +802,18 @@ impl hclient_tls::TlsConnect for NoOpTls {
     type Stream<S>
         = S
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
     /// One stub, one configuration, one identity — drawn once rather than
     /// per call, which is what `TlsConnect::config_id` requires.
     type Handshake<'a, S>
         = std::future::Ready<Result<(S, hclient_tls::TlsInfo), hclient_core::error::Error>>
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     fn connect<'a, S>(&'a self, io: S, _req: hclient_tls::TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
     {
         std::future::ready(Ok((io, hclient_tls::TlsInfo::default())))
     }

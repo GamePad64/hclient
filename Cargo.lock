@@ -1487,6 +1487,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-executor",
+ "futures-io",
  "futures-sink",
  "futures-util",
  "h2",
@@ -1583,7 +1584,6 @@ dependencies = [
  "futures-executor",
  "futures-io",
  "hclient-core",
- "hyper",
  "thiserror",
 ]
 
@@ -1597,6 +1597,7 @@ dependencies = [
  "embassy-net",
  "embassy-net-tuntap",
  "embassy-time",
+ "futures-io",
  "hclient",
  "hclient-core",
  "hclient-dns",
@@ -1608,7 +1609,6 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
- "hyper",
  "log",
  "smoltcp",
  "static_assertions",
@@ -1621,8 +1621,8 @@ dependencies = [
  "embedded-io-async",
  "embedded-nal-async",
  "futures-executor",
+ "futures-io",
  "hclient-rt",
- "hyper",
  "static_assertions",
 ]
 
@@ -1631,10 +1631,10 @@ name = "hclient-rt-pair-check"
 version = "0.1.0-alpha.3"
 dependencies = [
  "futures-executor",
+ "futures-io",
  "hclient-rt",
  "hclient-rt-smol",
  "hclient-rt-tokio",
- "hyper",
  "tokio",
 ]
 
@@ -1650,7 +1650,6 @@ dependencies = [
  "futures-executor",
  "futures-lite",
  "hclient-rt",
- "hyper",
  "libc",
  "quinn-udp 0.6.2",
  "socket2",
@@ -1662,8 +1661,8 @@ version = "0.1.0-alpha.12"
 dependencies = [
  "futures-core",
  "futures-executor",
+ "futures-io",
  "hclient-rt",
- "hyper",
  "quinn-udp 0.6.2",
  "socket2",
  "tokio",
@@ -1674,8 +1673,9 @@ name = "hclient-tls"
 version = "0.1.0-alpha.10"
 dependencies = [
  "futures-executor",
+ "futures-io",
  "hclient-core",
- "hyper",
+ "hclient-rt",
  "quinn-proto",
 ]
 
@@ -1689,7 +1689,6 @@ dependencies = [
  "hclient-rt",
  "hclient-rt-tokio",
  "hclient-tls",
- "hyper",
  "native-tls",
  "rcgen",
  "rustls",
@@ -1703,6 +1702,7 @@ name = "hclient-tls-rustls"
 version = "0.1.0-alpha.12"
 dependencies = [
  "futures-executor",
+ "futures-io",
  "hclient-core",
  "hclient-rt",
  "hclient-rt-smol",
@@ -1749,6 +1749,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-executor",
+ "futures-io",
  "futures-sink",
  "futures-util",
  "hclient",
@@ -1762,7 +1763,6 @@ dependencies = [
  "hclient-tls-rustls",
  "http",
  "http-body-util",
- "hyper",
  "socket2",
  "static_assertions",
  "thiserror",

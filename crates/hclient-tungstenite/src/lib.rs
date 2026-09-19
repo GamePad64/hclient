@@ -45,7 +45,8 @@
 //!
 //! # Framing: `tungstenite`, driven by us
 //!
-//! `TcpConnect::Stream` is bounded by `hyper::rt::{Read, Write}`, so an
+//! `TcpConnect::Stream` is bounded by `futures_io::{AsyncRead,
+//! AsyncWrite}` plus `hclient_rt::Shutdown`, so an
 //! adapter is needed whichever crate is picked, and the adapter that faces
 //! `std::io` removes an `unsafe`. `tungstenite::protocol::WebSocketContext`
 //! takes the stream as a *parameter* rather than owning it, so the
@@ -219,6 +220,7 @@
 
 use bytes::Bytes;
 use futures_core::Stream;
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 use futures_sink::Sink;
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
@@ -227,7 +229,6 @@ use hclient_native::{Native, NativeIo};
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
 use http::HeaderValue;
-use hyper::rt::{Read, Write};
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -423,7 +424,8 @@ fn has_upgrade_token(v: Option<&HeaderValue>) -> bool {
     })
 }
 
-/// `std::io` over `hyper::rt`, for exactly one call.
+/// `std::io` over this workspace's byte-stream seam, for exactly one
+/// call.
 ///
 /// The `Context` is borrowed rather than stored, which is what makes this
 /// safe code — see the module doc. `Poll::Pending` becomes `WouldBlock`,
@@ -438,13 +440,13 @@ where
     I: Read + Unpin,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut rb = hyper::rt::ReadBuf::new(buf);
-        match Pin::new(&mut *self.io).poll_read(self.cx, rb.unfilled()) {
-            // Nothing filled is EOF, which is what `std::io::Read` means
-            // by `Ok(0)` and what `tungstenite` reads as the peer having
-            // gone away.
-            Poll::Ready(Ok(())) => Ok(rb.filled().len()),
-            Poll::Ready(Err(e)) => Err(e),
+        // A straight forward since the seam became `futures-io`: a count
+        // of zero is EOF there, which is what `std::io::Read` means by
+        // `Ok(0)` and what `tungstenite` reads as the peer having gone
+        // away. The `hyper::rt::ReadBuf` that used to sit here existed
+        // only to turn a cursor back into that count.
+        match Pin::new(&mut *self.io).poll_read(self.cx, buf) {
+            Poll::Ready(r) => r,
             Poll::Pending => Err(std::io::ErrorKind::WouldBlock.into()),
         }
     }

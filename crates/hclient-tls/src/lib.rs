@@ -1,12 +1,26 @@
 //! Pluggable TLS.
 //!
-//! The trait is typed on `hyper::rt::Read`/`Write`, and **not** on
-//! futures-io or tokio-io. Consequence: there is no such thing as a
-//! per-runtime TLS glue crate — one adapter serves every
-//! runtime (`hclient-rt-tokio`, `hclient-rt-smol`, and any future one),
-//! because `hyper::rt::{Read, Write}` is the one point every `S` in this
-//! vertical is already normalized to (`hclient_rt::FuturesIo`, `TokioIo`),
-//! not one more layer stacked on top.
+//! The trait is typed on `futures_io::{AsyncRead, AsyncWrite}` plus
+//! [`hclient_rt::Shutdown`], and **not** on tokio-io or on an HTTP
+//! implementation's own IO traits. Consequence: there is no such thing as
+//! a per-runtime TLS glue crate — one adapter serves every runtime
+//! (`hclient-rt-tokio`, `hclient-rt-smol`, and any future one), because
+//! that trio is the one point every `S` in this vertical is already
+//! normalized to, not one more layer stacked on top.
+//!
+//! **It was `hyper::rt::Read`/`Write` until the seam was frozen**, and the
+//! sentence above was the whole of the argument — true, and silent about
+//! *whose major version the seam promises*. A public bound naming
+//! `hyper::rt::Read` puts hyper's major in the manifest of every
+//! implementor, which for a TLS backend written outside this workspace is
+//! a dependency it never chose. `hclient-dns` paid the same cost through
+//! one `pub fn` and it is recorded as *the leak outlived the decoder it
+//! leaked*.
+//!
+//! hyper is a dependency this workspace may one day replace; `futures-io`
+//! is not. So the conversion to `hyper::rt` lives in `hclient-native`, the
+//! one crate that hands a stream to
+//! `hyper::client::conn::http1::handshake`.
 #![forbid(unsafe_code)]
 
 /// Pluggable TLS **for QUIC** — a second seam beside [`TlsConnect`], not a
@@ -493,13 +507,13 @@ pub trait TlsIdentity {
 /// reverse.
 pub trait TlsConnect: TlsIdentity {
     /// The wrapped stream after the handshake.
-    /// `S: hyper::rt::Read + Write + Unpin` appears in both places (on the
+    /// The `S` bound appears in both places (on the
     /// type itself and in its where clause) — an implementation can't
     /// promise a wrapper for only some possible `S`; every `S` capable of
     /// `connect` must get back a working `Stream<S>` too.
-    type Stream<S>: hyper::rt::Read + hyper::rt::Write + Unpin
+    type Stream<S>: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
     /// Performs a TLS handshake over an already established `io` (a TCP
     /// socket from `hclient_rt::TcpConnect`, wrapped in
@@ -530,11 +544,11 @@ pub trait TlsConnect: TlsIdentity {
     type Handshake<'a, S>: Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>>
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     /// What a transport built on this implementation should advertise in
     /// [`Capabilities::tls_config`](hclient_core::caps::Capabilities::tls_config).
@@ -647,17 +661,17 @@ pub struct NoTls;
 #[derive(Debug)]
 pub enum NoStream {}
 
-impl hyper::rt::Read for NoStream {
+impl futures_io::AsyncRead for NoStream {
     fn poll_read(
         self: core::pin::Pin<&mut Self>,
         _: &mut core::task::Context<'_>,
-        _: hyper::rt::ReadBufCursor<'_>,
-    ) -> core::task::Poll<std::io::Result<()>> {
+        _: &mut [u8],
+    ) -> core::task::Poll<std::io::Result<usize>> {
         match *self {}
     }
 }
 
-impl hyper::rt::Write for NoStream {
+impl futures_io::AsyncWrite for NoStream {
     fn poll_write(
         self: core::pin::Pin<&mut Self>,
         _: &mut core::task::Context<'_>,
@@ -671,6 +685,15 @@ impl hyper::rt::Write for NoStream {
     ) -> core::task::Poll<std::io::Result<()>> {
         match *self {}
     }
+    fn poll_close(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<std::io::Result<()>> {
+        match *self {}
+    }
+}
+
+impl hclient_rt::Shutdown for NoStream {
     fn poll_shutdown(
         self: core::pin::Pin<&mut Self>,
         _: &mut core::task::Context<'_>,
@@ -691,7 +714,7 @@ impl TlsConnect for NoTls {
     type Stream<S>
         = NoStream
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
     /// [`std::future::Ready`], because this refuses without awaiting
     /// anything — the one backend for which no `poll` had to be written.
@@ -701,11 +724,11 @@ impl TlsConnect for NoTls {
         = std::future::Ready<Result<(NoStream, TlsInfo), Error>>
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     fn connect<'a, S>(&'a self, _io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
     {
         std::future::ready(Err(Error::new(
             ErrorKind::Tls,
@@ -751,7 +774,8 @@ mod tests {
         );
     }
     use super::*;
-    use hyper::rt::{Read, ReadBufCursor, Write};
+    use futures_io::{AsyncRead as Read, AsyncWrite as Write};
+    use hclient_rt::Shutdown;
     use std::collections::VecDeque;
     use std::future::poll_fn;
     use std::io;
@@ -785,11 +809,18 @@ mod tests {
         fn poll_read(
             mut self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            mut buf: ReadBufCursor<'_>,
-        ) -> Poll<io::Result<()>> {
-            let n = buf.remaining().min(self.buf.len());
-            let chunk: Vec<u8> = self.buf.drain(..n).collect();
-            buf.put_slice(&chunk);
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            let n = buf.len().min(self.buf.len());
+            for (slot, byte) in buf.iter_mut().zip(self.buf.drain(..n)) {
+                *slot = byte;
+            }
+            Poll::Ready(Ok(n))
+        }
+    }
+
+    impl Shutdown for Loopback {
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -806,7 +837,7 @@ mod tests {
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
-        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -822,9 +853,15 @@ mod tests {
         fn poll_read(
             mut self: Pin<&mut Self>,
             cx: &mut Context<'_>,
-            buf: ReadBufCursor<'_>,
-        ) -> Poll<io::Result<()>> {
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
             Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl<S: Shutdown + Unpin> Shutdown for PassThrough<S> {
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_shutdown(cx)
         }
     }
 
@@ -839,8 +876,12 @@ mod tests {
         fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Pin::new(&mut self.0).poll_flush(cx)
         }
-        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.0).poll_shutdown(cx)
+        /// Forwards `poll_close` to `poll_close`, and the half-close to
+        /// `poll_shutdown` in the [`Shutdown`] impl above — which is the
+        /// distinction the seam exists to keep, so a double that folded
+        /// the two would be the one place it could not be exercised.
+        fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_close(cx)
         }
     }
 
@@ -867,7 +908,7 @@ mod tests {
         type Stream<S>
             = PassThrough<S>
         where
-            S: Read + Write + Unpin;
+            S: Read + Write + Shutdown + Unpin;
 
         // `Ready`, so the fixture's `Send` follows from `S`'s exactly as
         // a real backend's does — a fixture that fixed the answer would
@@ -876,11 +917,11 @@ mod tests {
             = std::future::Ready<Result<(Self::Stream<S>, TlsInfo), Error>>
         where
             Self: 'a,
-            S: Read + Write + Unpin + 'a;
+            S: Read + Write + Shutdown + Unpin + 'a;
 
         fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
         where
-            S: Read + Write + Unpin + 'a,
+            S: Read + Write + Shutdown + Unpin + 'a,
         {
             let alpn = req.alpn.first().map(|proto| proto.to_vec());
             std::future::ready({
@@ -940,12 +981,11 @@ mod tests {
         // through the returned `Stream<S>` — meaning it's a wrapper over
         // the passed-in `io`, not a new, disconnected stream.
         let mut preexisting = [0u8; 11];
-        let mut rb = hyper::rt::ReadBuf::new(&mut preexisting);
-        let read = poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, rb.unfilled()));
-        poll_once(pin!(read).as_mut()).unwrap();
-        assert_eq!(&preexisting, b"preexisting");
+        let read = poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, &mut preexisting));
+        let n = poll_once(pin!(read).as_mut()).unwrap();
+        assert_eq!(&preexisting[..n], b"preexisting");
 
-        // `Stream<S>` actually implements `hyper::rt::Write`, not just
+        // `Stream<S>` actually implements `futures_io::AsyncWrite`, not just
         // types as one: write and read it back through the same shared
         // `Loopback` buffer.
         let write = poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, b"ping"));
@@ -953,9 +993,8 @@ mod tests {
         assert_eq!(n, 4);
 
         let mut echoed = [0u8; 4];
-        let mut rb = hyper::rt::ReadBuf::new(&mut echoed);
-        let read = poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, rb.unfilled()));
-        poll_once(pin!(read).as_mut()).unwrap();
-        assert_eq!(&echoed, b"ping");
+        let read = poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, &mut echoed));
+        let n = poll_once(pin!(read).as_mut()).unwrap();
+        assert_eq!(&echoed[..n], b"ping");
     }
 }

@@ -20,8 +20,9 @@
 //! pass with the shared `exercise` body exactly as checked in here — it
 //! needs no `#[cfg]`, no
 //! boxing, and no bound beyond what `TcpConnect`'s own associated-type
-//! bound (`Stream: hyper::rt::Read + hyper::rt::Write + Unpin`) already
-//! supplies. This is the strongest evidence available that the runtime
+//! bound on `Stream` — [`futures_io::AsyncRead`],
+//! [`futures_io::AsyncWrite`], [`hclient_rt::Shutdown`] and `Unpin` —
+//! already supplies. This is the strongest evidence available that the runtime
 //! seam this vertical exists to prove is real, not decorative.
 //!
 //! **The two `Stream` implementations are not merely each satisfiable, they
@@ -29,8 +30,8 @@
 //! The divergence check below was tried first as an auto-trait probe on
 //! `TcpConnect::Stream` itself: `Sync`,
 //! `Send`, `std::panic::UnwindSafe`, and `std::panic::RefUnwindSafe` were
-//! each added in turn to `type Stream: hyper::rt::Read + hyper::rt::Write +
-//! Unpin` in `hclient-rt/src/caps.rs` (one at a time, `cargo check
+//! each added in turn to that same `type Stream` bound
+//! in `hclient-rt/src/caps.rs` (one at a time, `cargo check
 //! --workspace --all-features`, restored via `cp` between attempts) - all
 //! four held for BOTH `TokioIo` and `FuturesIo<async_net::TcpStream>`, with
 //! no divergence. `Clone` was tried too and broke both uniformly (neither
@@ -60,8 +61,8 @@
 //!
 //! `cargo test -p hclient-rt-pair-check --all-features` from the workspace
 //! root runs it directly.
+use futures_io::{AsyncRead as SeamRead, AsyncWrite as SeamWrite};
 use hclient_rt::{Blocking, Spawn, TcpConnect, TcpOpts, Timer};
-use hyper::rt::{Read as HyperRead, ReadBuf, Write as HyperWrite};
 use std::future::Future;
 use std::future::poll_fn;
 use std::io;
@@ -86,7 +87,7 @@ fn spawn_echo_listener() -> SocketAddr {
     addr
 }
 
-async fn write_all<S: HyperWrite + Unpin>(s: &mut S, mut buf: &[u8]) -> io::Result<()> {
+async fn write_all<S: SeamWrite + Unpin>(s: &mut S, mut buf: &[u8]) -> io::Result<()> {
     while !buf.is_empty() {
         let n = poll_fn(|cx| Pin::new(&mut *s).poll_write(cx, buf)).await?;
         assert!(n > 0, "poll_write returned 0 for a non-empty buffer");
@@ -95,15 +96,14 @@ async fn write_all<S: HyperWrite + Unpin>(s: &mut S, mut buf: &[u8]) -> io::Resu
     Ok(())
 }
 
-async fn read_some<S: HyperRead + Unpin>(s: &mut S, out: &mut [u8]) -> io::Result<usize> {
-    let mut rb = ReadBuf::new(out);
-    poll_fn(|cx| Pin::new(&mut *s).poll_read(cx, rb.unfilled())).await?;
-    Ok(rb.filled().len())
+async fn read_some<S: SeamRead + Unpin>(s: &mut S, out: &mut [u8]) -> io::Result<usize> {
+    poll_fn(|cx| Pin::new(&mut *s).poll_read(cx, out)).await
 }
 
-/// The one shared body. `R::Stream` already carries `hyper::rt::Read +
-/// hyper::rt::Write + Unpin` from `TcpConnect`'s own associated-type bound,
-/// so nothing extra needs to be spelled out here for it.
+/// The one shared body. `R::Stream` already carries the seam's read and
+/// write halves, [`hclient_rt::Shutdown`] and `Unpin` from `TcpConnect`'s
+/// own associated-type bound, so nothing extra needs to be spelled out
+/// here for it.
 async fn exercise<R, F>(rt: R, addr: SocketAddr, background: F)
 where
     R: Timer + TcpConnect + Blocking + Spawn<F>,

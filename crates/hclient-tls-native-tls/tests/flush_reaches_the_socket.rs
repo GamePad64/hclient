@@ -25,11 +25,11 @@
 //! by adding its root — because `StdAdapter` only ever runs underneath
 //! `native-tls`, and only a completed handshake puts it there.
 
+use futures_io::AsyncWrite as _;
 use hclient_rt::TcpConnect;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_native_tls::NativeTls;
-use hyper::rt::Write as _;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -59,17 +59,17 @@ struct Counting<S> {
     counts: Arc<Counts>,
 }
 
-impl<S: hyper::rt::Read + Unpin> hyper::rt::Read for Counting<S> {
+impl<S: futures_io::AsyncRead + Unpin> futures_io::AsyncRead for Counting<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
 
-impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for Counting<S> {
+impl<S: futures_io::AsyncWrite + Unpin> futures_io::AsyncWrite for Counting<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -82,8 +82,20 @@ impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for Counting<S> {
         self.counts.flushes.fetch_add(1, Ordering::SeqCst);
         Pin::new(&mut self.inner).poll_flush(cx)
     }
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_close(cx)
+    }
+}
+
+/// Forwarded: this fixture counts writes and flushes and has no opinion
+/// about the half-close.
+impl<S: hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown for Counting<S> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
     }
 }
 

@@ -123,6 +123,9 @@ pin-project-lite = "0.2"
 h3-quinn         = { version = "0.0.10", optional = true }
 quinn            = { version = "0.11", default-features = false, features = ["ring", "futures-io"], optional = true }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
+# The seam this crate receives its streams on, and the crate that
+# converts them to hyper's — see `src/hyperio.rs`.
+futures-io     = { version = "0.3", default-features = false, features = ["std"] }
 futures-core   = { workspace = true }
 futures-sink   = { workspace = true }
 thiserror      = { workspace = true }

@@ -223,13 +223,15 @@
 use crate::body::OutgoingBody;
 use crate::error::{ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBeforeTheRequest};
 use crate::established::Failed;
+use crate::hyperio::HyperIo;
 use crate::pool::CheckIn;
 use bytes::Bytes;
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::hooks::{CloseReason, Closed, ConnectionId, Event, Hooks};
+use hclient_rt::Shutdown;
 use http_body::{Body, Frame, SizeHint};
 use hyper::client::conn::http1;
-use hyper::rt::{Read, Write};
 use std::error::Error as StdError;
 use std::fmt::Debug;
 use std::future::poll_fn;
@@ -255,10 +257,10 @@ fn from_hyper_error(e: hyper::Error, fallback: ErrorKind) -> Error {
 /// this type rather than either half.
 pub(crate) struct Established<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     sender: http1::SendRequest<OutgoingBody>,
-    conn: http1::Connection<I, OutgoingBody>,
+    conn: http1::Connection<HyperIo<I>, OutgoingBody>,
     /// Which connection this is, for the observability seam. Assigned at
     /// the handshake and carried through every check-in, so a `Closed`
     /// event names the same connection its `Connected` did — see
@@ -272,7 +274,7 @@ where
 )]
 impl<I> Debug for Established<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Established")
@@ -293,14 +295,14 @@ where
 /// comment's section on why nothing here is boxed.
 pub struct H1Body<I, H = hclient_core::hooks::NoHooks>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     incoming: hyper::body::Incoming,
     /// `None` — `Connection` has already finished (successfully or with
     /// an error, reported at the time); from then on `incoming` can just
     /// be drained without it, see the module doc comment for why that
     /// isn't a silent hang.
-    conn: Option<http1::Connection<I, OutgoingBody>>,
+    conn: Option<http1::Connection<HyperIo<I>, OutgoingBody>>,
     /// `None` — this connection will not be reused, whether because reuse
     /// is off, because the connection has already finished, or because
     /// something went wrong. See the module doc comment: this field going
@@ -324,7 +326,7 @@ where
 /// connection.
 struct Reuse<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     checkin: CheckIn<I>,
     sender: http1::SendRequest<OutgoingBody>,
@@ -336,7 +338,7 @@ where
 )]
 impl<I, H> Debug for H1Body<I, H>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H1Body")
@@ -348,7 +350,7 @@ where
 
 impl<I, H> H1Body<I, H>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     H: Hooks,
 {
     /// Tells the hook this connection is over, at most once.
@@ -409,7 +411,7 @@ where
 
 impl<I, H> Body for H1Body<I, H>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     H: Hooks + Unpin,
 {
     type Data = Bytes;
@@ -539,7 +541,7 @@ pub(crate) async fn handshake<I>(
     opts: H1Opts,
 ) -> Result<Established<I>, Error>
 where
-    I: Read + Write + Unpin + 'static,
+    I: Read + Write + Shutdown + Unpin + 'static,
 {
     let mut builder = http1::Builder::new();
     if let Some(n) = opts.max_headers {
@@ -552,8 +554,15 @@ where
         debug_assert!(n >= MINIMUM_MAX_BUF_SIZE);
         builder.max_buf_size(n);
     }
+    // **[`HyperIo`] is where hyper's IO traits are entered and nowhere
+    // else.** Every stream reaching this crate is on
+    // `futures_io::{AsyncRead, AsyncWrite}` plus [`Shutdown`], so hyper's
+    // major version stays out of the manifest of every runtime and every
+    // TLS backend; `hyper::client::conn::http1::handshake` accepts
+    // `hyper::rt::Read + Write` and nothing else, so the conversion
+    // happens on this line.
     let (sender, conn) = builder
-        .handshake::<I, OutgoingBody>(io)
+        .handshake::<HyperIo<I>, OutgoingBody>(HyperIo::new(io))
         .await
         .map_err(|e| from_hyper_error(e, ErrorKind::Connect))?;
     Ok(Established { sender, conn, id })
@@ -579,7 +588,7 @@ where
 /// nothing has had the chance to answer yet.
 pub(crate) async fn is_reusable<I>(est: &mut Established<I>) -> bool
 where
-    I: Read + Write + Unpin + 'static,
+    I: Read + Write + Shutdown + Unpin + 'static,
 {
     poll_fn(|cx| {
         if Pin::new(&mut est.conn).poll(cx).is_ready() {
@@ -603,7 +612,7 @@ pub(crate) async fn exchange<I, H>(
     id: ConnectionId,
 ) -> Result<http::Response<H1Body<I, H>>, Failed>
 where
-    I: Read + Write + Unpin + 'static,
+    I: Read + Write + Shutdown + Unpin + 'static,
     H: Hooks,
 {
     let Established {
@@ -818,12 +827,12 @@ type Sent = Result<
 /// Exactly one poll, and it never suspends — the same shape and the same
 /// reason as [`is_reusable`] and the look at the top of [`exchange`].
 async fn claim_back<I, F>(
-    conn: http1::Connection<I, OutgoingBody>,
+    conn: http1::Connection<HyperIo<I>, OutgoingBody>,
     mut send: Pin<Box<F>>,
     error: Error,
 ) -> Failed
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     F: Future<Output = Sent>,
 {
     drop(conn);
@@ -886,8 +895,8 @@ mod tests {
         fn poll_read(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            _buf: hyper::rt::ReadBufCursor<'_>,
-        ) -> Poll<io::Result<()>> {
+            _buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
             Poll::Pending
         }
     }
@@ -903,6 +912,12 @@ mod tests {
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Shutdown for SinkIo {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
@@ -1010,21 +1025,25 @@ mod tests {
         fn poll_read(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            mut buf: hyper::rt::ReadBufCursor<'_>,
-        ) -> Poll<io::Result<()>> {
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
             let mut s = self.0.borrow_mut();
             if !s.wrote {
                 return Poll::Pending;
             }
             if !s.to_read.is_empty() {
-                let n = buf.remaining().min(s.to_read.len());
-                let chunk: Vec<u8> = s.to_read.drain(..n).collect();
-                buf.put_slice(&chunk);
-                return Poll::Ready(Ok(()));
+                let n = buf.len().min(s.to_read.len());
+                for (slot, byte) in buf.iter_mut().zip(s.to_read.drain(..n)) {
+                    *slot = byte;
+                }
+                return Poll::Ready(Ok(n));
             }
             match s.eof_after {
                 None => Poll::Pending,
-                Some(0) => Poll::Ready(Ok(())),
+                // End of stream, which the cursor form spelled as a
+                // buffer left untouched and `futures-io` spells as a
+                // count of zero.
+                Some(0) => Poll::Ready(Ok(0)),
                 Some(n) => {
                     s.eof_after = Some(n - 1);
                     Poll::Pending
@@ -1045,6 +1064,12 @@ mod tests {
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Shutdown for ScriptIo {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }

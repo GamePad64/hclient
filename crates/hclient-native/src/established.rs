@@ -37,9 +37,10 @@ use std::fmt::Debug;
 use std::sync::Arc;
 // Only the HTTP/2 arms build an `Informational` here; the HTTP/1 one hands
 // the job to hyper's own callback, installed in `crate::install_1xx`.
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 #[cfg(feature = "http2")]
 use hclient_core::hooks::{Event, Informational};
-use hyper::rt::{Read, Write};
+use hclient_rt::Shutdown;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -68,7 +69,7 @@ use std::task::{Context, Poll};
 )]
 pub(crate) enum Established<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     H1(crate::http1::Established<I>),
     #[cfg(feature = "http2")]
@@ -91,7 +92,7 @@ where
 
 impl<I> Established<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     /// Which connection this is, for
     /// [`Hooks`](hclient_core::hooks::Hooks).
@@ -155,7 +156,7 @@ where
 
 impl<I> Debug for Established<I>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -214,7 +215,7 @@ impl Failed {
 /// on both: exactly one poll, and it never suspends.
 pub(crate) async fn is_reusable<I>(est: &mut Established<I>) -> bool
 where
-    I: Read + Write + Unpin + 'static,
+    I: Read + Write + Shutdown + Unpin + 'static,
 {
     match est {
         Established::H1(e) => crate::http1::is_reusable(e).await,
@@ -255,7 +256,7 @@ pub(crate) async fn exchange<I, H>(
     how: Dispatch<'_, H>,
 ) -> Result<http::Response<NativeBody<I, H>>, Failed>
 where
-    I: Read + Write + Unpin + 'static,
+    I: Read + Write + Shutdown + Unpin + 'static,
     H: Hooks,
 {
     let id = est.id();
@@ -481,7 +482,7 @@ impl Rewritten {
 /// `http2.rs`'s module docs.
 pub struct NativeBody<I, H = hclient_core::hooks::NoHooks>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     inner: Inner<I, H>,
 }
@@ -498,7 +499,7 @@ where
 )]
 enum Inner<I, H>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     H1(crate::http1::H1Body<I, H>),
     /// A body from the QUIC arm, already erased.
@@ -524,7 +525,7 @@ where
 
 impl<I, H> NativeBody<I, H>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     pub(crate) fn h1(b: crate::http1::H1Body<I, H>) -> Self {
         Self {
@@ -535,7 +536,7 @@ where
 
 impl<I, H> Debug for NativeBody<I, H>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.inner {
@@ -550,7 +551,7 @@ where
 
 impl<I, H> Body for NativeBody<I, H>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
     H: Hooks + Unpin,
 {
     type Data = Bytes;
@@ -592,7 +593,7 @@ where
 
 impl<I, H> NativeBody<I, H>
 where
-    I: Read + Write + Unpin,
+    I: Read + Write + Shutdown + Unpin,
 {
     /// Wrap a body the QUIC arm produced.
     ///

@@ -31,11 +31,12 @@
 //! so a `native-tls` server would not start on two of the three platforms
 //! this crate exists for.
 
+use futures_io::{AsyncRead as _, AsyncWrite as _};
+use hclient_rt::Shutdown as _;
 use hclient_rt::TcpConnect;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsInfo, TlsRequest};
 use hclient_tls_native_tls::NativeTls;
-use hyper::rt::{Read as _, Write as _};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
@@ -163,13 +164,12 @@ async fn round_trip(stream: &mut Stream, msg: &[u8]) -> Vec<u8> {
     .expect("flush");
 
     let mut raw = [0u8; 64];
-    let mut buf = hyper::rt::ReadBuf::new(&mut raw);
-    bounded(std::future::poll_fn(|cx| {
-        Pin::new(&mut *stream).poll_read(cx, buf.unfilled())
+    let n = bounded(std::future::poll_fn(|cx| {
+        Pin::new(&mut *stream).poll_read(cx, &mut raw)
     }))
     .await
     .expect("read");
-    buf.filled().to_vec()
+    raw[..n].to_vec()
 }
 
 /// **The session carries bytes both ways.**

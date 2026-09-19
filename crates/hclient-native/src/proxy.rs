@@ -35,13 +35,13 @@
 
 use std::io;
 use std::pin::Pin;
-use std::task::Poll;
 
 pub use crate::error::{ProxyAndUnixSocket, ProxySpokeFirst};
 use bytes::{Bytes, BytesMut};
 
+use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 use hclient_core::error::{Error, ErrorKind};
-use hyper::rt::{Read, Write};
+use hclient_rt::Shutdown;
 use std::future::poll_fn;
 
 #[cfg(feature = "system-proxy")]
@@ -80,7 +80,7 @@ pub(crate) async fn drive<S, H>(
     port: u16,
 ) -> Result<Bytes, Error>
 where
-    S: Read + Write + Unpin,
+    S: Read + Write + Shutdown + Unpin,
     H: Handshake,
 {
     write_all(io, &h.begin(host, port)?).await?;
@@ -149,16 +149,9 @@ async fn write_all<S: Write + Unpin>(io: &mut S, mut buf: &[u8]) -> Result<(), E
 async fn read_some<S: Read + Unpin>(io: &mut S, buf: &mut BytesMut) -> Result<(), Error> {
     let at = buf.len();
     buf.resize(at + 4096, 0);
-    let n = poll_fn(|cx| {
-        let mut rb = hyper::rt::ReadBuf::new(&mut buf[at..]);
-        match Pin::new(&mut *io).poll_read(cx, rb.unfilled()) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(rb.filled().len())),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
-        }
-    })
-    .await
-    .map_err(conn)?;
+    let n = poll_fn(|cx| Pin::new(&mut *io).poll_read(cx, &mut buf[at..]))
+        .await
+        .map_err(conn)?;
     buf.truncate(at + n);
     if n == 0 {
         // A handshake that still wants bytes and a peer that has stopped
@@ -178,7 +171,9 @@ fn conn(e: io::Error) -> Error {
 #[cfg(all(test, feature = "proxy"))]
 mod tests {
     use super::*;
-    use std::task::Context;
+    // `Poll` is the test doubles' own, not the module's: the driver above
+    // awaits through `poll_fn` and never names it.
+    use std::task::{Context, Poll};
 
     /// A socket whose answers are decided in advance and whose writes are
     /// kept. Enough for a handshake, which is all `drive` does before it
@@ -221,16 +216,18 @@ mod tests {
         fn poll_read(
             mut self: Pin<&mut Self>,
             _: &mut Context<'_>,
-            mut buf: hyper::rt::ReadBufCursor<'_>,
-        ) -> Poll<io::Result<()>> {
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
             let left = &self.reply[self.at..];
             if left.is_empty() {
-                return Poll::Ready(Ok(()));
+                // End of stream, which the cursor form spelled as a
+                // buffer left untouched.
+                return Poll::Ready(Ok(0));
             }
-            let n = self.chunk.min(left.len()).min(buf.remaining());
-            buf.put_slice(&left[..n]);
+            let n = self.chunk.min(left.len()).min(buf.len());
+            buf[..n].copy_from_slice(&left[..n]);
             self.at += n;
-            Poll::Ready(Ok(()))
+            Poll::Ready(Ok(n))
         }
     }
 
@@ -246,6 +243,12 @@ mod tests {
         fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Shutdown for ScriptIo {
         fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }

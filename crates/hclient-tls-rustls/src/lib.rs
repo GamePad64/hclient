@@ -583,7 +583,7 @@ impl TlsConnect for Rustls {
     type Stream<S>
         = TlsStream<S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
     /// rustls reports the selection: `connect` below fills `TlsInfo::alpn`
     /// from `ClientConnection::alpn_protocol()`, so `None` from this
@@ -602,7 +602,7 @@ impl TlsConnect for Rustls {
         = Handshaking<S>
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     /// Everything that can fail without awaiting happens **here**, not in
     /// the future: the ECH refusal, the server name and the
@@ -612,7 +612,7 @@ impl TlsConnect for Rustls {
     /// dozen lines instead of a state machine.
     fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
     {
         if req.ech.is_some() {
             return Handshaking::failed(ech_refused());
@@ -857,7 +857,7 @@ impl<S> Handshaking<S> {
 
 impl<S> Future for Handshaking<S>
 where
-    S: hyper::rt::Read + hyper::rt::Write + Unpin,
+    S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin,
 {
     type Output = Result<(TlsStream<S>, TlsInfo), Error>;
 

@@ -24,7 +24,8 @@ hclient-core = { workspace = true }
 # its signature, which is why that seam is behind a feature and not simply
 # here. See `src/quic.rs`'s own doc.
 quinn-proto  = { version = "0.11", default-features = false, optional = true }
-hyper        = { version = "1.11", default-features = false }
+futures-io   = { version = "0.3", default-features = false, features = ["std"] }
+hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
 
 [lints]
 workspace = true

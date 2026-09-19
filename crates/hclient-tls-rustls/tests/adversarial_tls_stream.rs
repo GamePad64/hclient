@@ -1,9 +1,9 @@
 //! Adversarial test suite for `TlsStream`, modelled on the sibling suites
-//! for the runtime I/O bridges (`crates/hclient-rt/tests/adversarial_futures_io.rs`,
-//! `crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`) — both built
+//! for the runtime I/O bridges (`crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`,
+//! `crates/hclient-rt-smol/tests/adversarial_smol_io.rs`) — both built
 //! because mutation testing revealed real gaps in those bridges, and
 //! `TlsStream` sits in the identical architectural position (a
-//! `hyper::rt::{Read, Write}` adapter wrapping another such adapter) without
+//! `futures-io` + `Shutdown` adapter wrapping another such adapter) without
 //! ever getting the same treatment. Two defects — ciphertext loss under
 //! transport backpressure, and a hang on `close_notify` without a raw TCP
 //! close — both went unfound without this kind of coverage; this file
@@ -17,11 +17,12 @@
 //! (`bounded()` below) — a regression here must report FAILED, not hang the
 //! job with no diagnosis (the same discipline `adversarial_tokio_io.rs`
 //! documents for the same reason).
+use futures_io::{AsyncRead as SeamRead, AsyncWrite as SeamWrite};
+use hclient_rt::Shutdown;
 use hclient_rt::{TcpConnect, TcpOpts};
 use hclient_rt_tokio::{Tokio, TokioIo};
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::{Rustls, TlsStream};
-use hyper::rt::{Read as HyperRead, ReadBuf, ReadBufCursor, Write as HyperWrite};
 use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -93,7 +94,7 @@ impl<S> Scripted<S> {
     }
 }
 
-impl<S: HyperWrite + Unpin> HyperWrite for Scripted<S> {
+impl<S: SeamWrite + Unpin> SeamWrite for Scripted<S> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -116,17 +117,26 @@ impl<S: HyperWrite + Unpin> HyperWrite for Scripted<S> {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_flush(cx)
     }
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_close(cx)
+    }
+}
+
+/// Forwarded rather than scripted: no test here arms a half-close, and a
+/// double that answered one of its own would be asserting the fixture
+/// instead of `TlsStream`.
+impl<S: Shutdown + Unpin> Shutdown for Scripted<S> {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
     }
 }
 
-impl<S: HyperRead + Unpin> HyperRead for Scripted<S> {
+impl<S: SeamRead + Unpin> SeamRead for Scripted<S> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         let this = self.get_mut();
         {
             let mut st = this.script.0.lock().unwrap();
@@ -168,14 +178,15 @@ async fn scripted_client(
 }
 
 /// Drives `poll_write` to completion, retrying with the SAME remaining
-/// slice on `Pending` — exactly the contract `hyper::rt::Write::poll_write`
-/// documents and the one a real caller (hyper's own request writer) relies
+/// slice on `Pending` — exactly the contract
+/// `futures_io::AsyncWrite::poll_write` documents and the one a real
+/// caller (hyper's own request writer, through `HyperIo`) relies
 /// on. This is deliberately the naive, spec-compliant caller: it does not
 /// know or care whether `TlsStream` can avoid returning `Pending` after
 /// partially queueing data — it just does what the contract allows it to
 /// do. If `TlsStream` ever queues the same bytes twice under this exact
 /// usage, this is the caller shape that would trigger it.
-async fn write_all<S: HyperWrite + Unpin>(stream: &mut S, mut data: &[u8]) {
+async fn write_all<S: SeamWrite + Unpin>(stream: &mut S, mut data: &[u8]) {
     bounded(poll_fn(|cx| {
         while !data.is_empty() {
             match Pin::new(&mut *stream).poll_write(cx, data) {
@@ -190,26 +201,22 @@ async fn write_all<S: HyperWrite + Unpin>(stream: &mut S, mut data: &[u8]) {
     .await;
 }
 
-async fn flush<S: HyperWrite + Unpin>(stream: &mut S) {
+async fn flush<S: SeamWrite + Unpin>(stream: &mut S) {
     bounded(poll_fn(|cx| Pin::new(&mut *stream).poll_flush(cx)))
         .await
         .unwrap();
 }
 
-async fn read_n<S: HyperRead + Unpin>(stream: &mut S, n: usize) -> Vec<u8> {
+async fn read_n<S: SeamRead + Unpin>(stream: &mut S, n: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let mut store = [0u8; 64];
     bounded(poll_fn(|cx| {
         while out.len() < n {
-            let mut rb = ReadBuf::new(&mut store);
-            match Pin::new(&mut *stream).poll_read(cx, rb.unfilled()) {
-                Poll::Ready(Ok(())) => {
-                    assert!(
-                        !rb.filled().is_empty(),
-                        "EOF before {n} bytes arrived, got {out:?}"
-                    );
-                    out.extend_from_slice(rb.filled());
-                }
+            match Pin::new(&mut *stream).poll_read(cx, &mut store) {
+                // A count of zero is `futures-io`'s end of stream, which
+                // the cursor form spelled as a buffer left untouched.
+                Poll::Ready(Ok(0)) => panic!("EOF before {n} bytes arrived, got {out:?}"),
+                Poll::Ready(Ok(got)) => out.extend_from_slice(&store[..got]),
                 Poll::Ready(Err(e)) => panic!("read failed: {e}"),
                 Poll::Pending => return Poll::Pending,
             }
@@ -224,16 +231,15 @@ async fn read_n<S: HyperRead + Unpin>(stream: &mut S, n: usize) -> Vec<u8> {
 /// desired outcome, not a regression — a short timeout suffices because a
 /// real loopback echo would deliver a duplicate almost immediately if there
 /// were one; there is nothing to wait longer for.
-async fn nothing_more_arrives<S: HyperRead + Unpin>(stream: &mut S) -> Vec<u8> {
+async fn nothing_more_arrives<S: SeamRead + Unpin>(stream: &mut S) -> Vec<u8> {
     let mut store = [0u8; 64];
-    let mut rb = ReadBuf::new(&mut store);
     match tokio::time::timeout(
         Duration::from_millis(300),
-        poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, rb.unfilled())),
+        poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, &mut store)),
     )
     .await
     {
-        Ok(Ok(())) => rb.filled().to_vec(),
+        Ok(Ok(n)) => store[..n].to_vec(),
         Ok(Err(e)) => panic!("unexpected read error while checking for a duplicate: {e}"),
         Err(_elapsed) => Vec::new(),
     }
@@ -389,9 +395,8 @@ async fn abrupt_rst_close_without_close_notify_is_reported_as_a_real_error() {
     .expect("handshake");
 
     let mut store = [0u8; 16];
-    let mut rb = ReadBuf::new(&mut store);
     let result = bounded(poll_fn(|cx| {
-        Pin::new(&mut stream).poll_read(cx, rb.unfilled())
+        Pin::new(&mut stream).poll_read(cx, &mut store)
     }))
     .await;
 

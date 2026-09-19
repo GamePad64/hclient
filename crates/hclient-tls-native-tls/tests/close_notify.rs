@@ -24,11 +24,11 @@
 //! clean end; with the mutation applied it does not, and this file fails
 //! while the rest of the suite stays green.
 
+use hclient_rt::Shutdown as _;
 use hclient_rt::TcpConnect;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_native_tls::NativeTls;
-use hyper::rt::Write as _;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

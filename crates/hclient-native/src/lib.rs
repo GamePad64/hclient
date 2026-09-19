@@ -48,6 +48,7 @@ mod failures;
 mod http1;
 #[cfg(feature = "http3")]
 mod http3;
+pub mod hyperio;
 /// Bind a QUIC endpoint on this workspace's own runtime seam — quinn
 /// driven by whichever `hclient_rt` implementation the caller already has.
 ///
@@ -2349,7 +2350,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
 /// caught four times in this workspace.
 fn reuse_of<I>(pool: &Pool<I>) -> bool
 where
-    I: hyper::rt::Read + hyper::rt::Write + Unpin,
+    I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin,
 {
     pool.config().is_some()
 }
@@ -2999,7 +3000,7 @@ async fn handshake_for<I>(
     h2_opts: crate::http2::H2Opts,
 ) -> Result<established::Established<I>, Error>
 where
-    I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+    I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'static,
 {
     if is_h2(protocol) {
         Ok(established::Established::H2(Box::new(
@@ -3025,7 +3026,7 @@ async fn handshake_for<I>(
     h1_opts: crate::http1::H1Opts,
 ) -> Result<established::Established<I>, Error>
 where
-    I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+    I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'static,
 {
     debug_assert!(!is_h2(protocol));
     Ok(established::Established::H1(
@@ -4023,32 +4024,23 @@ pub mod testing {
         }
     }
 
-    impl hyper::rt::Read for BlockingIo {
+    impl futures_io::AsyncRead for BlockingIo {
+        /// **The scratch buffer went with the cursor.** It existed because
+        /// `hyper::rt::ReadBufCursor` hands out possibly-uninitialised
+        /// memory whose only safe entrance is `put_slice`;
+        /// `futures_io::AsyncRead` hands over an initialised `&mut [u8]`,
+        /// which is what `std::io::Read::read` wants, so the socket reads
+        /// straight into the caller's buffer.
         fn poll_read(
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
-            mut buf: hyper::rt::ReadBufCursor<'_>,
-        ) -> Poll<std::io::Result<()>> {
-            // No `unsafe`: read into a stack buffer, then copy via
-            // `put_slice` — the same path as the safe example in
-            // `hyper::rt::Read`'s doc comment.
-            let mut scratch = [0u8; 8192];
-            let want = buf.remaining().min(scratch.len());
-            match poll_would_block(
-                cx,
-                std::io::Read::read(&mut self.get_mut().0, &mut scratch[..want]),
-            ) {
-                Poll::Ready(Ok(n)) => {
-                    buf.put_slice(&scratch[..n]);
-                    Poll::Ready(Ok(()))
-                }
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                Poll::Pending => Poll::Pending,
-            }
+            buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            poll_would_block(cx, std::io::Read::read(&mut self.get_mut().0, buf))
         }
     }
 
-    impl hyper::rt::Write for BlockingIo {
+    impl futures_io::AsyncWrite for BlockingIo {
         fn poll_write(
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
@@ -4061,6 +4053,24 @@ pub mod testing {
             // never blocks and never returns `WouldBlock`.
             Poll::Ready(std::io::Write::flush(&mut self.get_mut().0))
         }
+        /// `futures-io`'s end of the stream. Forwarded to the half-close
+        /// below rather than closing both directions: this fixture stands
+        /// in for a real socket, and a real socket's `poll_close` is a
+        /// FIN on the writing half.
+        fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            hclient_rt::Shutdown::poll_shutdown(self, cx)
+        }
+    }
+
+    /// **The half-close, and this fixture used to get it wrong in a way
+    /// nothing could see.** It called `Shutdown::Both`, which closes the
+    /// reading half too — under `hyper::rt::Write` there was one method
+    /// for both meanings, so the over-broad call was indistinguishable
+    /// from the right one. `hclient_rt::Shutdown` names the narrower
+    /// promise, so this is `Shutdown::Write`: send FIN, keep reading the
+    /// response, which is what an HTTP/1 exchange needs and what every
+    /// shipped runtime already does.
+    impl hclient_rt::Shutdown for BlockingIo {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             // `NotConnected` is success, not failure. On macOS and the BSDs
             // `shutdown(2)` on a socket whose peer has already closed
@@ -4074,7 +4084,7 @@ pub mod testing {
             // Swallowing it is correct rather than lenient: the call asked
             // for the socket to be shut down, and it is. Any other error
             // still propagates.
-            let r = self.get_mut().0.shutdown(std::net::Shutdown::Both);
+            let r = self.get_mut().0.shutdown(std::net::Shutdown::Write);
             Poll::Ready(match r {
                 Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),
                 other => other,
@@ -4095,7 +4105,7 @@ pub mod testing {
         req: http::Request<crate::body::OutgoingBody>,
     ) -> Result<http::Response<crate::established::NativeBody<I>>, hclient_core::error::Error>
     where
-        I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+        I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'static,
     {
         use hclient_core::hooks::{ConnectionId, NoHooks};
         let est =
@@ -4111,7 +4121,7 @@ pub mod testing {
         b: crate::established::NativeBody<I>,
     ) -> Result<bytes::Bytes, hclient_core::error::Error>
     where
-        I: hyper::rt::Read + hyper::rt::Write + Unpin,
+        I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin,
     {
         use http_body_util::BodyExt;
         Ok(b.collect().await?.to_bytes())

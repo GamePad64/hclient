@@ -148,7 +148,7 @@ impl TlsConnect for SlowTls {
     type Stream<S>
         = S
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
     type Handshake<'a, S>
         = std::pin::Pin<
@@ -160,11 +160,11 @@ impl TlsConnect for SlowTls {
     >
     where
         Self: 'a,
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
     fn connect<'a, S>(&'a self, stream: S, _req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
-        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+        S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
     {
         Box::pin(async move {
             tokio::time::sleep(self.0).await;

@@ -10,16 +10,16 @@ use std::task::{Context, Poll};
 #[derive(Debug)]
 struct NeverTouched;
 
-impl hyper::rt::Read for NeverTouched {
+impl futures_io::AsyncRead for NeverTouched {
     fn poll_read(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
-        _: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        _: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         panic!("NoTls must not touch the transport");
     }
 }
-impl hyper::rt::Write for NeverTouched {
+impl futures_io::AsyncWrite for NeverTouched {
     fn poll_write(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
@@ -30,6 +30,11 @@ impl hyper::rt::Write for NeverTouched {
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         panic!("NoTls must not touch the transport");
     }
+    fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        panic!("NoTls must not touch the transport");
+    }
+}
+impl hclient_rt::Shutdown for NeverTouched {
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         panic!("NoTls must not touch the transport");
     }

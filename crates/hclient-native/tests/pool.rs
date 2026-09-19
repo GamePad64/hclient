@@ -652,37 +652,31 @@ struct HideFirstEof<S> {
     hide_remaining: u8,
 }
 
-impl<S: hyper::rt::Read + Unpin> hyper::rt::Read for HideFirstEof<S> {
+impl<S: futures_io::AsyncRead + Unpin> futures_io::AsyncRead for HideFirstEof<S> {
+    /// **The scratch buffer is gone, and its own comment said why it was
+    /// there.** It read into scratch and copied because
+    /// `hyper::rt::ReadBufCursor` moves into the inner call, so there was
+    /// no way to see how much it had been filled afterwards.
+    /// `futures_io::AsyncRead` answers with a count, so the EOF this
+    /// fixture exists to hide is simply a zero.
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        mut buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        // Reads into a scratch buffer and copies, the same shape as
-        // `testing::blocking_io`: `ReadBufCursor` moves into the inner
-        // call, so there is no way to look at how much it was filled
-        // afterwards.
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         let this = self.get_mut();
-        let mut scratch = [0u8; 8192];
-        let want = buf.remaining().min(scratch.len());
-        let mut rb = hyper::rt::ReadBuf::new(&mut scratch[..want]);
-        match Pin::new(&mut this.inner).poll_read(cx, rb.unfilled()) {
-            Poll::Ready(Ok(())) => {
-                let filled = rb.filled();
-                if filled.is_empty() && this.hide_remaining > 0 {
-                    this.hide_remaining -= 1;
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-                buf.put_slice(filled);
-                Poll::Ready(Ok(()))
+        match Pin::new(&mut this.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(0)) if this.hide_remaining > 0 => {
+                this.hide_remaining -= 1;
+                cx.waker().wake_by_ref();
+                Poll::Pending
             }
             other => other,
         }
     }
 }
 
-impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for HideFirstEof<S> {
+impl<S: futures_io::AsyncWrite + Unpin> futures_io::AsyncWrite for HideFirstEof<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -693,8 +687,20 @@ impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for HideFirstEof<S> {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_close(cx)
+    }
+}
+
+/// Forwarded: this fixture hides an EOF on the read side and has no
+/// opinion about the half-close.
+impl<S: hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown for HideFirstEof<S> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
     }
 }
 
@@ -866,12 +872,12 @@ mod alpn_guard {
         type Stream<S>
             = S
         where
-            S: hyper::rt::Read + hyper::rt::Write + Unpin;
+            S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
         type Handshake<'a, S>
             = std::future::Ready<Result<(S, hclient_tls::TlsInfo), hclient_core::error::Error>>
         where
             Self: 'a,
-            S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
+            S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
         fn connect<'a, S>(
             &'a self,
@@ -879,7 +885,7 @@ mod alpn_guard {
             _req: hclient_tls::TlsRequest<'a>,
         ) -> Self::Handshake<'a, S>
         where
-            S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
+            S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
         {
             std::future::ready({
                 Ok((

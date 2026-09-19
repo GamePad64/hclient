@@ -1,4 +1,5 @@
-//! `embassy_net::tcp::TcpSocket` → `hyper::rt::{Read, Write}`.
+//! `embassy_net::tcp::TcpSocket` → `futures_io::{AsyncRead, AsyncWrite}`
+//! plus [`hclient_rt::Shutdown`].
 //!
 //! # Why a one-shot future per poll is sound here
 //!
@@ -27,43 +28,32 @@
 use crate::sockets::PooledSocket;
 use core::pin::{Pin, pin};
 use core::task::{Context, Poll, ready};
-use hyper::rt::ReadBufCursor;
 
-/// Read scratch. `hyper::rt::Read` hands out possibly-uninitialised memory
-/// and the only safe way in is `ReadBufCursor::put_slice`, so a read goes
-/// through an initialised buffer of ours first — the same copy, for the
-/// same reason, as `hclient_rt::FuturesIo`.
-///
-/// Sized to fit the socket's own receive buffer rather than hyper's usual
-/// 8 KiB: on this backend the far side of the copy is `RX` bytes of
-/// application-owned RAM, typically 1-2 KiB, and a scratch larger than that
-/// can never be filled in one go. It is a field, allocated and zeroed once
-/// per connection, not a local zeroed on every `poll_read` (measured in
-/// `FuturesIo`'s doc comment: a stack array there compiled to a `memset`
-/// per call).
-const SCRATCH: usize = 2048;
+// **The read scratch is gone, and on this backend that is RAM rather than
+// a copy.** It existed because `hyper::rt::ReadBufCursor` hands out
+// possibly-uninitialised memory whose only safe entrance is `put_slice`, so
+// every read went through an initialised buffer of ours first — `SCRATCH`
+// was 2048 bytes of application-owned RAM per connection, on a part that
+// may have 256 KiB in total. `futures_io::AsyncRead` hands over an
+// initialised `&mut [u8]`, which is exactly what `TcpSocket::read` wants,
+// so the socket now reads straight into the caller's buffer.
 
-/// A pooled embassy-net socket, speaking hyper's IO traits.
+/// A pooled embassy-net socket, speaking this workspace's IO traits.
 pub struct EmbassyIo<const N: usize, const TX: usize, const RX: usize> {
     sock: PooledSocket<N, TX, RX>,
-    scratch: Box<[u8]>,
 }
 
 impl<const N: usize, const TX: usize, const RX: usize> core::fmt::Debug for EmbassyIo<N, TX, RX> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EmbassyIo")
             .field("sock", &self.sock)
-            .field("scratch_len", &self.scratch.len())
             .finish()
     }
 }
 
 impl<const N: usize, const TX: usize, const RX: usize> EmbassyIo<N, TX, RX> {
     pub(crate) fn new(sock: PooledSocket<N, TX, RX>) -> Self {
-        Self {
-            sock,
-            scratch: vec![0u8; SCRATCH.min(RX)].into_boxed_slice(),
-        }
+        Self { sock }
     }
 }
 
@@ -76,30 +66,28 @@ fn io_err(e: embassy_net::tcp::Error) -> std::io::Error {
     }
 }
 
-impl<const N: usize, const TX: usize, const RX: usize> hyper::rt::Read for EmbassyIo<N, TX, RX> {
+impl<const N: usize, const TX: usize, const RX: usize> futures_io::AsyncRead
+    for EmbassyIo<N, TX, RX>
+{
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        mut buf: ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let want = buf.remaining().min(self.scratch.len());
-        if want == 0 {
-            return Poll::Ready(Ok(()));
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
         }
-        // Disjoint fields, borrowed at the same time and independently.
-        let Self { sock, scratch } = &mut *self;
-        let n = {
-            let mut fut = pin!(sock.get_mut().read(&mut scratch[..want]));
-            ready!(fut.as_mut().poll(cx)).map_err(io_err)?
-        };
-        // `n == 0` is embassy's EOF, and filling nothing is how a
-        // `hyper::rt::Read` reports one.
-        buf.put_slice(&scratch[..n]);
-        Poll::Ready(Ok(()))
+        let mut fut = pin!(self.sock.get_mut().read(buf));
+        // `n == 0` is embassy's EOF, and `futures-io` reports one the same
+        // way — a count of zero rather than a buffer left untouched.
+        let n = ready!(fut.as_mut().poll(cx)).map_err(io_err)?;
+        Poll::Ready(Ok(n))
     }
 }
 
-impl<const N: usize, const TX: usize, const RX: usize> hyper::rt::Write for EmbassyIo<N, TX, RX> {
+impl<const N: usize, const TX: usize, const RX: usize> futures_io::AsyncWrite
+    for EmbassyIo<N, TX, RX>
+{
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -114,15 +102,35 @@ impl<const N: usize, const TX: usize, const RX: usize> hyper::rt::Write for Emba
         Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(io_err))
     }
 
+    /// `futures-io` calls the end of the stream `poll_close`, and here it
+    /// is the same half-close [`hclient_rt::Shutdown`] asks for, so this
+    /// forwards rather than saying it twice.
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        hclient_rt::Shutdown::poll_shutdown(self, cx)
+    }
+
+    // No `poll_write_vectored`: the default writes the first non-empty
+    // buffer through `poll_write`, and smoltcp's `send_slice` takes one
+    // slice, so a vectored write here would be a loop pretending to be a
+    // syscall. `is_write_vectored` is left at its `false` default on
+    // `Shutdown` for the same reason — the honest answer.
+}
+
+/// **The half-close this backend exists to be able to perform.**
+///
+/// `embassy_net::tcp::TcpSocket::close` sends FIN and leaves the read half
+/// open, which is why this crate owns the socket rather than reaching it
+/// through an `embedded-nal-async` `Connection` — that seam has `write` and
+/// `flush` and nothing else, so an adapter over it can only forward a
+/// shutdown to `flush` and report "a half-close hyper believes it performed
+/// and did not". `CLAUDE.md` records that as blocker two against a NAL
+/// adapter, and this impl is the other side of it.
+impl<const N: usize, const TX: usize, const RX: usize> hclient_rt::Shutdown
+    for EmbassyIo<N, TX, RX>
+{
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         self.sock.get_mut().close();
         let mut fut = pin!(self.sock.get_mut().flush());
         Poll::Ready(ready!(fut.as_mut().poll(cx)).map_err(io_err))
     }
-
-    // No `poll_write_vectored` and no `is_write_vectored`: hyper's default
-    // for the former writes the first non-empty buffer through
-    // `poll_write`, and the latter defaults to `false`, which is the honest
-    // answer — smoltcp's `send_slice` takes one slice, so a vectored write
-    // here would be a loop pretending to be a syscall.
 }
