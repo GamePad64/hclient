@@ -9,6 +9,7 @@ use super::{Entry, HstsStore};
 use hclient_core::kv::KeyValueStore;
 use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use web_time::SystemTime;
 
@@ -65,7 +66,27 @@ const NS: &str = "hsts";
 /// encoded [`Entry`], and one layer enforces it. A store that outlives
 /// the process therefore keeps expired entries until the next read
 /// sweeps them, which is what `MemoryStore` next door does today.
-#[derive(Debug, Clone)]
+///
+/// # This is the only `HstsStore` this crate ships
+///
+/// There was a second — a `MemoryStore` of 43 lines holding a
+/// `Mutex<HashMap<String, Entry>>` — and it went when this arrived,
+/// because it had become a name whose only purpose was a distinction the
+/// code no longer draws. Unlike [`cookie`](crate::cookie) and
+/// [`cache`](crate::cache), whose own memory stores carry a capacity and
+/// an eviction policy the byte seam deliberately has not got, this seam
+/// has neither: RFC 6797 entries are bounded by the origins a caller
+/// chose to visit, and evicting one ends with a request in clear text.
+/// So the old store held a map and nothing else, which is exactly what
+/// [`InMemory`](super::InMemory) is.
+///
+/// What it costs is real and is why this was a decision rather than a
+/// tidy-up: an encode and a decode per operation, where a map held the
+/// [`Entry`] itself. Against that, two in-memory `HstsStore`s are two
+/// readings of §8.2 that can drift — a defect this workspace has met
+/// before — and the encoding sits on a path that is about to touch the
+/// network.
+#[derive(Debug, Clone, Default)]
 pub struct KvStore<K> {
     kv: K,
 }
@@ -190,84 +211,164 @@ fn decode(bytes: &[u8]) -> Option<Entry> {
     ))
 }
 
-/// The future every method of this wrapper answers.
-///
-/// Boxed, and the reason is the `K` rather than a preference: each
-/// method awaits a future whose type is `K`'s own associated type, and
-/// naming the composition of those without an allocation needs either a
-/// named future per method or `impl Trait` in an associated type.
-/// **No `Send` is declared**, so the property is inferred from `K` —
-/// amendment C15 once more, and what keeps a single-threaded byte store
-/// usable here.
-type Answer<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+pin_project_lite::pin_project! {
+    /// [`KvStore`]'s answer to [`HstsStore::get`]: the byte store's own
+    /// future with this module's decoding applied to what it yields.
+    ///
+    /// **A named type rather than a boxed one, and that is the finding
+    /// rather than a style.** `Pin<Box<dyn Future<Output = _>>>` was the
+    /// first shape here, with a doc comment claiming `Send` would be
+    /// *inferred from `K`*. It is not: a `dyn` that declares no auto
+    /// traits does not hide `Send`, it **removes** it — so
+    /// [`ClientBuilder::hsts`](crate::ClientBuilder::hsts), which asks
+    /// `for<'a> S::Get<'a>: Send`, refused a store whose futures were
+    /// `Send` the whole time, and `Hsts::new()` stopped being usable with
+    /// a `Client` at all. This workspace has now met that shape five
+    /// times.
+    ///
+    /// Naming it makes the property real: a byte store answering
+    /// [`Ready`](std::future::Ready) yields a `Send` future here with
+    /// nothing declared, and one holding an `Rc` yields a `!Send` one and
+    /// stays usable outside a `Client`. Amendment C15 from one more
+    /// direction — and it allocates nothing, where the box allocated per
+    /// call.
+    #[derive(Debug)]
+    pub struct Get<F> {
+        #[pin]
+        inner: F,
+    }
+}
 
-impl<K: KeyValueStore<Instant = SystemTime>> HstsStore for KvStore<K> {
-    type Get<'a>
-        = Answer<'a, Vec<Entry>>
-    where
-        Self: 'a;
-    type Done<'a>
-        = Answer<'a, ()>
-    where
-        Self: 'a;
+impl<F: Future<Output = Vec<Vec<Vec<u8>>>>> Future for Get<F> {
+    type Output = Vec<Entry>;
 
-    fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
-        Box::pin(async move {
-            let keys: Vec<String> = domains.iter().map(|d| reverse_labels(d)).collect();
-            let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-            // One call rather than one per candidate: §8.2 asks about
-            // every ancestor of a host at once, and a remote store
-            // should pay one round trip for a request.
-            //
-            // `now` is the epoch because this wrapper stores no expiry —
-            // see the module docs. Passing a real clock would hide
-            // nothing extra and would need one, which this module does
-            // not have.
-            let found = self.kv.get_many(NS, &refs, SystemTime::UNIX_EPOCH).await;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.project().inner.poll(cx).map(|found| {
             found
                 .into_iter()
                 .flatten()
+                // A value this wrapper did not write is **skipped**, never
+                // repaired: handing `Hsts` a policy nobody asserted is the
+                // one outcome worse than losing one.
                 .filter_map(|bytes| decode(&bytes))
                 .collect()
         })
     }
+}
+
+pin_project_lite::pin_project! {
+    /// [`KvStore`]'s answer to [`HstsStore::put`]: a remove, and then the
+    /// write.
+    ///
+    /// Two steps because the byte seam **appends** — see
+    /// [`HstsStore::put`]'s own note on why replacement is the wrapper's
+    /// question. Named for [`Get`]'s reason, so that `Send` follows from
+    /// the byte store rather than being declared here.
+    #[project = PutProj]
+    #[derive(Debug)]
+    pub enum Put<'a, K: KeyValueStore> {
+        Removing {
+            #[pin]
+            removing: K::Done<'a>,
+            store: &'a K,
+            key: String,
+            value: Vec<u8>,
+        },
+        Writing {
+            #[pin]
+            writing: K::Done<'a>,
+        },
+    }
+}
+
+impl<K: KeyValueStore<Instant = SystemTime>> Future for Put<'_, K> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match self.as_mut().project() {
+                PutProj::Removing {
+                    removing,
+                    store,
+                    key,
+                    value,
+                } => {
+                    std::task::ready!(removing.poll(cx));
+                    let writing = store.put(
+                        NS,
+                        std::mem::take(key),
+                        std::mem::take(value),
+                        // No expiry, deliberately — see [`KvStore`].
+                        None,
+                        SystemTime::UNIX_EPOCH,
+                    );
+                    self.set(Put::Writing { writing });
+                }
+                PutProj::Writing { writing } => return writing.poll(cx),
+            }
+        }
+    }
+}
+
+impl<K: KeyValueStore<Instant = SystemTime>> HstsStore for KvStore<K> {
+    type Get<'a>
+        = Get<K::GetMany<'a>>
+    where
+        Self: 'a;
+    type Done<'a>
+        = Put<'a, K>
+    where
+        Self: 'a;
+
+    fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
+        // One call rather than one per candidate: §8.2 asks about every
+        // ancestor of a host at once, and a remote store should pay one
+        // round trip for a request.
+        //
+        // `now` is the epoch because this wrapper stores no expiry — see
+        // [`KvStore`]. Passing a real clock would hide nothing extra and
+        // would need one, which this module has not got.
+        let keys = domains.iter().map(|d| reverse_labels(d)).collect();
+        Get {
+            inner: self.kv.get_many(NS, keys, SystemTime::UNIX_EPOCH),
+        }
+    }
 
     fn put(&self, entry: Entry) -> Self::Done<'_> {
         let key = reverse_labels(entry.domain());
-        let value = encode(&entry);
-        Box::pin(async move {
-            // **Remove first, because the byte seam appends.** §8.1's
-            // second bullet is an *update* of one host's cached
-            // information, so two entries under one name is a state RFC
-            // 6797 has no reading for — and this seam's own second
-            // obligation says so. `KeyValueStore::put` deliberately does
-            // not replace, because what makes two values one entry is a
-            // domain question: here it is the domain, where a cache's
-            // two entries under one key are two `Vary` variants and both
-            // are kept.
+        Put::Removing {
+            // **Removed before it is written, because the byte seam
+            // appends.** §8.1's second bullet is an *update* of one
+            // host's cached information, so two entries under one name is
+            // a state RFC 6797 has no reading for.
             //
             // The pair is not atomic, and a store shared between
-            // processes can therefore be read between them — answering
-            // nothing for a domain that has a policy. That direction
-            // loses an upgrade for the width of one write rather than
-            // inventing one, and closing it needs a compare-and-set the
-            // byte seam does not have.
-            self.kv.remove(NS, &key).await;
-            self.kv
-                .put(NS, &key, value, None, SystemTime::UNIX_EPOCH)
-                .await;
-        })
+            // processes can be read between the two — answering nothing
+            // for a domain that has a policy. That loses an upgrade for
+            // the width of one write rather than inventing one, and
+            // closing it needs a compare-and-set the byte seam has not
+            // got.
+            removing: self.kv.remove(NS, key.clone()),
+            store: &self.kv,
+            value: encode(&entry),
+            key,
+        }
     }
 
     fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a> {
-        Box::pin(async move {
-            let key = reverse_labels(domain);
-            self.kv.remove(NS, &key).await;
-        })
+        let key = reverse_labels(domain);
+        // The same two-step type, with an empty write: `remove` is
+        // `put`'s first half, and one future type per `Done` is what the
+        // seam asks for.
+        Put::Writing {
+            writing: self.kv.remove(NS, key),
+        }
     }
 
     fn clear(&self) -> Self::Done<'_> {
-        Box::pin(async move { self.kv.clear(NS).await })
+        Put::Writing {
+            writing: self.kv.clear(NS),
+        }
     }
 }
 
@@ -464,7 +565,13 @@ mod tests {
     fn a_value_the_decoder_refuses_is_skipped_rather_than_substituted() {
         let kv = Kv::<SystemTime>::new();
         // Under the key `com.example` would be for `example.com`.
-        block_on(kv.put("hsts", "com.example", b"not an entry".to_vec(), None, at(0)));
+        block_on(kv.put(
+            "hsts",
+            "com.example".to_owned(),
+            b"not an entry".to_vec(),
+            None,
+            at(0),
+        ));
         let s = KvStore::new(kv);
 
         assert!(
@@ -478,7 +585,13 @@ mod tests {
     #[test]
     fn one_unreadable_value_does_not_hide_the_readable_ones_beside_it() {
         let kv = Kv::<SystemTime>::new();
-        block_on(kv.put("hsts", "com.example", b"rubbish".to_vec(), None, at(0)));
+        block_on(kv.put(
+            "hsts",
+            "com.example".to_owned(),
+            b"rubbish".to_vec(),
+            None,
+            at(0),
+        ));
         let s = KvStore::new(kv);
         block_on(s.put(entry("other.test", 100, true)));
 
@@ -520,7 +633,13 @@ mod tests {
     #[test]
     fn clear_leaves_another_namespace_alone() {
         let kv = Kv::<SystemTime>::new();
-        block_on(kv.put("cookie", "com.example", b"c".to_vec(), None, at(0)));
+        block_on(kv.put(
+            "cookie",
+            "com.example".to_owned(),
+            b"c".to_vec(),
+            None,
+            at(0),
+        ));
         let s = KvStore::new(kv);
         block_on(s.put(entry("example.com", 100, true)));
 

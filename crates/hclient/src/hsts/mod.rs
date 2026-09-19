@@ -96,7 +96,16 @@ use web_time::SystemTime;
 
 pub use kv::KvStore;
 pub use parse::Directives;
-pub use store::{Entry, HstsStore, MemoryStore};
+pub use store::{Entry, HstsStore};
+
+/// The store an [`Hsts::new`] builds: the byte seam's own map, with this
+/// module's encoding over it.
+///
+/// A name rather than the nest written out, because it appears in
+/// `Hsts`'s declaration, in its constructor and in whatever a caller
+/// writes down — and because what a reader needs to know is *in memory*,
+/// not which three types compose to say so.
+pub type InMemory = KvStore<hclient_core::kv::MemoryStore<web_time::SystemTime>>;
 
 use store::candidate_domains;
 
@@ -126,18 +135,18 @@ pub const MAX_AGE_CAP: Duration = Duration::from_hours(9600);
 
 /// The RFC 6797 rules over a [`HstsStore`].
 ///
-/// `Hsts::new()` is the plain form, over a [`MemoryStore`];
+/// `Hsts::new()` is the plain form, over an [`InMemory`];
 /// [`with_store`](Self::with_store) takes one of the caller's own.
 #[derive(Debug, Default)]
-pub struct Hsts<S = MemoryStore> {
+pub struct Hsts<S = InMemory> {
     store: S,
 }
 
-impl Hsts<MemoryStore> {
+impl Hsts<InMemory> {
     /// An empty policy set in memory.
     pub fn new() -> Self {
         Self {
-            store: MemoryStore::new(),
+            store: InMemory::default(),
         }
     }
 }
@@ -434,7 +443,7 @@ mod tests {
     }
 
     /// Note a policy from `https://<host>/` and hand back the rules.
-    fn known(host: &str, value: &str) -> Hsts<MemoryStore> {
+    fn known(host: &str, value: &str) -> Hsts<InMemory> {
         let h = Hsts::new();
         block_on(h.note(
             &uri(&format!("https://{host}/")),
@@ -855,7 +864,7 @@ mod tests {
     fn an_ip_literal_is_not_upgraded_even_by_a_store_that_holds_one() {
         // §8.3 step 3, checked at the reading end too: a store handed to
         // us may hold an entry §8.1.1 would never have written.
-        let store = MemoryStore::new();
+        let store = InMemory::default();
         block_on(store.put(Entry::new("127.0.0.1", at(100), false)));
         let h = Hsts::with_store(store);
         assert_eq!(block_on(h.upgrade(&uri("http://127.0.0.1/"), at(1))), None);

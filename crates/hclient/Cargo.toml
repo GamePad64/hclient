@@ -346,6 +346,12 @@ hsts = ["dep:winnow"]
 [dependencies]
 bytes         = { workspace = true }
 futures-core  = { workspace = true }
+# 's two named futures. A wrapper over the byte seam has to
+# compose the store's own futures, and naming the result is what lets
+# `Send` be *inferred* from the store rather than declared on the seam —
+# where declaring it would exclude every single-threaded byte store. This
+# crate forbids `unsafe`, so the projection is the macro's.
+pin-project-lite = "0.2"
 http          = { workspace = true }
 http-body     = { workspace = true }
 hclient-core  = { workspace = true }

@@ -1,9 +1,7 @@
 //! Where the known HSTS hosts live, and the enumeration that lets a
 //! store answer an exact lookup.
 
-use std::collections::HashMap;
-use std::future::{Future, Ready, ready};
-use std::sync::Mutex;
+use std::future::Future;
 // `web_time`, not `std::time`, for the reason the jar and the cache read
 // it: an entry's lifetime has to mean something outside the process that
 // stored it, and off `wasm32-unknown-unknown` this IS
@@ -113,9 +111,13 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
 /// Where an [`Hsts`](super::Hsts) keeps its known hosts.
 ///
 /// Implement it to put the policy set on disk, in a database or in the
-/// browser's own storage; [`MemoryStore`] is what a plain
-/// [`Hsts::new`](super::Hsts::new) uses and is the reference for what the
-/// methods mean.
+/// browser's own storage — though the cheaper route to all three is
+/// [`KvStore`](super::KvStore), which is this seam over the byte store
+/// [`hclient_core::kv::KeyValueStore`], so a backend is written once for
+/// every memory in this crate rather than once per seam.
+/// [`InMemory`](super::InMemory) is that pairing over a map, is what a
+/// plain [`Hsts::new`](super::Hsts::new) uses, and is the reference for
+/// what the methods mean.
 ///
 /// # The obligations
 ///
@@ -137,8 +139,12 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
 /// grows by one entry per *origin the caller chose to visit over HTTPS*,
 /// which the caller already bounded by making the requests — and evicting
 /// an HSTS policy to save memory is the one direction that ends with a
-/// request going out in clear text. [`MemoryStore`] therefore has no
-/// `with_capacity`, and that absence is the decision.
+/// request going out in clear text. Nothing this crate ships for this
+/// seam has a `with_capacity`, and that absence is the decision — it is
+/// also why this seam alone could give up its hand-written in-memory
+/// store: [`cookie`](crate::cookie)'s and [`cache`](crate::cache)'s each
+/// hold a bound and an eviction policy the byte seam deliberately has
+/// not got, where this one held a map and nothing else.
 ///
 /// # Associated futures, not `async fn`
 ///
@@ -195,48 +201,4 @@ pub trait HstsStore {
     /// That is why it is here rather than part of
     /// [`note`](super::Hsts::note)'s reading of a header.
     fn clear(&self) -> Self::Done<'_>;
-}
-
-/// The store this crate ships: a `HashMap` in memory.
-#[derive(Debug, Default)]
-pub struct MemoryStore {
-    entries: Mutex<HashMap<String, Entry>>,
-}
-
-impl MemoryStore {
-    /// An empty set of known hosts.
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl HstsStore for MemoryStore {
-    type Get<'a> = Ready<Vec<Entry>>;
-    type Done<'a> = Ready<()>;
-
-    fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
-        let map = self.entries.lock().expect("hsts store poisoned");
-        ready(domains.iter().filter_map(|d| map.get(d).cloned()).collect())
-    }
-
-    fn put(&self, entry: Entry) -> Self::Done<'_> {
-        self.entries
-            .lock()
-            .expect("hsts store poisoned")
-            .insert(entry.domain().to_owned(), entry);
-        ready(())
-    }
-
-    fn remove<'a>(&'a self, domain: &'a str) -> Self::Done<'a> {
-        self.entries
-            .lock()
-            .expect("hsts store poisoned")
-            .remove(domain);
-        ready(())
-    }
-
-    fn clear(&self) -> Self::Done<'_> {
-        self.entries.lock().expect("hsts store poisoned").clear();
-        ready(())
-    }
 }

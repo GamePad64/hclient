@@ -170,13 +170,19 @@ pub trait KeyValueStore {
     /// remote store should pay one round trip for a request rather than
     /// one per label. [`touch`] one seam up is the same decision.
     ///
+    /// **`keys` is owned where every other key here is borrowed**, and
+    /// the asymmetry is the wrapper's rather than a slip. A single key
+    /// is something a caller already has; a *batch* is always computed —
+    /// the four seams above each derive theirs, reversing a host's
+    /// labels — so a borrowed slice would have to be kept alive beside
+    /// the future by whoever built it, which is a self-referential
+    /// struct and needs `unsafe` in a crate that forbids it. Handing
+    /// ownership over costs one `Vec` per lookup and lets a wrapper's
+    /// future be an ordinary named type, whose `Send` is then *inferred*
+    /// rather than declared.
+    ///
     /// [`touch`]: https://docs.rs/hclient/latest/hclient/cookie/trait.CookieStore.html
-    fn get_many<'a>(
-        &'a self,
-        ns: &'a str,
-        keys: &'a [&'a str],
-        now: Self::Instant,
-    ) -> Self::GetMany<'a>;
+    fn get_many(&self, ns: &str, keys: Vec<String>, now: Self::Instant) -> Self::GetMany<'_>;
 
     /// Add `value` under `key`, **beside** whatever is already there.
     ///
@@ -194,14 +200,21 @@ pub trait KeyValueStore {
     fn put(
         &self,
         ns: &str,
-        key: &str,
+        key: String,
         value: Vec<u8>,
         expires: Option<Self::Instant>,
         now: Self::Instant,
     ) -> Self::Done<'_>;
 
     /// Drop everything held under `key` in `ns`.
-    fn remove<'a>(&'a self, ns: &'a str, key: &'a str) -> Self::Done<'a>;
+    ///
+    /// **`key` is owned, like [`get_many`](Self::get_many)'s and unlike
+    /// [`get`](Self::get)'s**, and for that method's reason: a wrapper
+    /// derives this key rather than receiving it, and a `remove` is
+    /// usually the first half of a replacement — so a borrowed key would
+    /// have to outlive a future that also holds it, which is a
+    /// self-referential struct.
+    fn remove(&self, ns: &str, key: String) -> Self::Done<'_>;
 
     /// Drop everything in `ns`, leaving every other namespace alone.
     fn clear<'a>(&'a self, ns: &'a str) -> Self::Done<'a>;
@@ -306,12 +319,7 @@ impl<I: Copy + PartialOrd> KeyValueStore for MemoryStore<I> {
         ready(read_one(&held, ns, key, now))
     }
 
-    fn get_many<'a>(
-        &'a self,
-        ns: &'a str,
-        keys: &'a [&'a str],
-        now: Self::Instant,
-    ) -> Self::GetMany<'a> {
+    fn get_many(&self, ns: &str, keys: Vec<String>, now: Self::Instant) -> Self::GetMany<'_> {
         let held = self.namespaces.lock().expect("kv store lock");
         // One lock for the batch, which is the point of the method: the
         // remote store it exists for pays one round trip, and this one
@@ -322,7 +330,7 @@ impl<I: Copy + PartialOrd> KeyValueStore for MemoryStore<I> {
     fn put(
         &self,
         ns: &str,
-        key: &str,
+        key: String,
         value: Vec<u8>,
         expires: Option<Self::Instant>,
         now: Self::Instant,
@@ -343,10 +351,10 @@ impl<I: Copy + PartialOrd> KeyValueStore for MemoryStore<I> {
         ready(())
     }
 
-    fn remove<'a>(&'a self, ns: &'a str, key: &'a str) -> Self::Done<'a> {
+    fn remove(&self, ns: &str, key: String) -> Self::Done<'_> {
         let mut held = self.namespaces.lock().expect("kv store lock");
         if let Some(keys) = held.get_mut(ns) {
-            keys.remove(key);
+            keys.remove(key.as_str());
             // An emptied namespace goes too, so a store that has been
             // cleared by removal holds no more than one that was never
             // written.
@@ -415,7 +423,7 @@ mod tests {
     #[test]
     fn a_value_put_is_a_value_got() {
         let kv = store();
-        now_or_never(kv.put("ns", "k", b"v".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), None, at(0)));
         assert_eq!(now_or_never(kv.get("ns", "k", at(0))), vec![b"v".to_vec()]);
     }
 
@@ -458,7 +466,7 @@ mod tests {
             "the fixture's own premise: these two are not ordered"
         );
 
-        now_or_never(kv.put("ns", "k", b"v".to_vec(), Some(expires), now));
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(expires), now));
 
         assert_eq!(
             now_or_never(kv.get("ns", "k", now)),
@@ -476,7 +484,7 @@ mod tests {
         let expires = Unsynced { clock: 1, tick: 10 };
         let now = Unsynced { clock: 1, tick: 11 };
 
-        now_or_never(kv.put("ns", "k", b"v".to_vec(), Some(expires), now));
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(expires), now));
 
         assert!(now_or_never(kv.get("ns", "k", now)).is_empty());
     }
@@ -488,8 +496,8 @@ mod tests {
     #[test]
     fn a_second_put_stores_beside_the_first_rather_than_replacing_it() {
         let kv = store();
-        now_or_never(kv.put("ns", "k", b"one".to_vec(), None, at(0)));
-        now_or_never(kv.put("ns", "k", b"two".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"one".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"two".to_vec(), None, at(0)));
 
         let mut got = now_or_never(kv.get("ns", "k", at(0)));
         got.sort();
@@ -512,7 +520,13 @@ mod tests {
         let kv = store();
         let namespaces = ["cookie", "hsts", "cache", "altsvc", "a", "b", "c", "d"];
         for ns in namespaces {
-            now_or_never(kv.put(ns, "com.example", ns.as_bytes().to_vec(), None, at(0)));
+            now_or_never(kv.put(
+                ns,
+                "com.example".to_owned(),
+                ns.as_bytes().to_vec(),
+                None,
+                at(0),
+            ));
         }
 
         for ns in namespaces {
@@ -530,7 +544,7 @@ mod tests {
     #[test]
     fn a_put_in_one_namespace_is_invisible_in_another() {
         let kv = store();
-        now_or_never(kv.put("cookie", "k", b"c".to_vec(), None, at(0)));
+        now_or_never(kv.put("cookie", "k".to_owned(), b"c".to_vec(), None, at(0)));
 
         assert!(
             now_or_never(kv.get("hsts", "k", at(0))).is_empty(),
@@ -544,7 +558,7 @@ mod tests {
     #[test]
     fn an_expired_value_is_not_answered() {
         let kv = store();
-        now_or_never(kv.put("ns", "k", b"v".to_vec(), Some(at(10)), at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(at(10)), at(0)));
 
         assert_eq!(
             now_or_never(kv.get("ns", "k", at(9))),
@@ -562,7 +576,7 @@ mod tests {
     #[test]
     fn a_value_with_no_expiry_outlives_any_now() {
         let kv = store();
-        now_or_never(kv.put("ns", "k", b"v".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), None, at(0)));
         assert_eq!(
             now_or_never(kv.get("ns", "k", at(u64::from(u32::MAX)))),
             vec![b"v".to_vec()]
@@ -575,8 +589,8 @@ mod tests {
     #[test]
     fn one_value_expiring_leaves_its_neighbour_under_the_same_key() {
         let kv = store();
-        now_or_never(kv.put("ns", "k", b"short".to_vec(), Some(at(10)), at(0)));
-        now_or_never(kv.put("ns", "k", b"long".to_vec(), Some(at(100)), at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"short".to_vec(), Some(at(10)), at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"long".to_vec(), Some(at(100)), at(0)));
 
         assert_eq!(
             now_or_never(kv.get("ns", "k", at(50))),
@@ -592,11 +606,12 @@ mod tests {
     #[test]
     fn get_many_answers_one_entry_per_key_in_order_including_the_misses() {
         let kv = store();
-        now_or_never(kv.put("ns", "com.example", b"a".to_vec(), None, at(0)));
-        now_or_never(kv.put("ns", "com.example.b", b"b".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "com.example".to_owned(), b"a".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "com.example.b".to_owned(), b"b".to_vec(), None, at(0)));
 
         let keys = ["com.example.b.a", "com.example.b", "com.example", "com"];
-        let got = now_or_never(kv.get_many("ns", &keys, at(0)));
+        let got =
+            now_or_never(kv.get_many("ns", keys.iter().map(|k| (*k).to_owned()).collect(), at(0)));
 
         assert_eq!(
             got,
@@ -615,10 +630,10 @@ mod tests {
     #[test]
     fn get_many_hides_an_expired_value_exactly_as_get_does() {
         let kv = store();
-        now_or_never(kv.put("ns", "k", b"v".to_vec(), Some(at(10)), at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(at(10)), at(0)));
 
         assert_eq!(
-            now_or_never(kv.get_many("ns", &["k"], at(20))),
+            now_or_never(kv.get_many("ns", vec!["k".to_owned()], at(20))),
             vec![Vec::<Vec<u8>>::new()]
         );
         assert!(now_or_never(kv.get("ns", "k", at(20))).is_empty());
@@ -627,11 +642,11 @@ mod tests {
     #[test]
     fn remove_drops_every_value_under_the_key_and_leaves_its_neighbours() {
         let kv = store();
-        now_or_never(kv.put("ns", "k", b"one".to_vec(), None, at(0)));
-        now_or_never(kv.put("ns", "k", b"two".to_vec(), None, at(0)));
-        now_or_never(kv.put("ns", "other", b"keep".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"one".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"two".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "other".to_owned(), b"keep".to_vec(), None, at(0)));
 
-        now_or_never(kv.remove("ns", "k"));
+        now_or_never(kv.remove("ns", "k".to_owned()));
 
         assert!(now_or_never(kv.get("ns", "k", at(0))).is_empty());
         assert_eq!(
@@ -646,8 +661,8 @@ mod tests {
     #[test]
     fn clear_empties_one_namespace_and_leaves_the_others() {
         let kv = store();
-        now_or_never(kv.put("cookie", "k", b"c".to_vec(), None, at(0)));
-        now_or_never(kv.put("hsts", "k", b"h".to_vec(), None, at(0)));
+        now_or_never(kv.put("cookie", "k".to_owned(), b"c".to_vec(), None, at(0)));
+        now_or_never(kv.put("hsts", "k".to_owned(), b"h".to_vec(), None, at(0)));
 
         now_or_never(kv.clear("cookie"));
 
@@ -666,7 +681,7 @@ mod tests {
     fn a_put_sweeps_the_expired_values_of_the_key_it_writes() {
         let kv = store();
         for _ in 0..8 {
-            now_or_never(kv.put("ns", "k", b"old".to_vec(), Some(at(10)), at(0)));
+            now_or_never(kv.put("ns", "k".to_owned(), b"old".to_vec(), Some(at(10)), at(0)));
         }
         assert_eq!(
             kv.namespaces.lock().unwrap()["ns"]["k"].len(),
@@ -674,7 +689,7 @@ mod tests {
             "all eight are held while they are live"
         );
 
-        now_or_never(kv.put("ns", "k", b"new".to_vec(), None, at(20)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"new".to_vec(), None, at(20)));
 
         assert_eq!(
             kv.namespaces.lock().unwrap()["ns"]["k"].len(),
@@ -691,8 +706,8 @@ mod tests {
     #[test]
     fn a_put_does_not_sweep_a_neighbouring_key() {
         let kv = store();
-        now_or_never(kv.put("ns", "stale", b"v".to_vec(), Some(at(10)), at(0)));
-        now_or_never(kv.put("ns", "fresh", b"v".to_vec(), None, at(20)));
+        now_or_never(kv.put("ns", "stale".to_owned(), b"v".to_vec(), Some(at(10)), at(0)));
+        now_or_never(kv.put("ns", "fresh".to_owned(), b"v".to_vec(), None, at(20)));
 
         assert_eq!(
             kv.namespaces.lock().unwrap()["ns"]["stale"].len(),
@@ -707,8 +722,8 @@ mod tests {
     #[test]
     fn removing_the_last_key_of_a_namespace_drops_the_namespace() {
         let kv = store();
-        now_or_never(kv.put("ns", "k", b"v".to_vec(), None, at(0)));
-        now_or_never(kv.remove("ns", "k"));
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), None, at(0)));
+        now_or_never(kv.remove("ns", "k".to_owned()));
         assert!(kv.namespaces.lock().unwrap().is_empty());
     }
 }

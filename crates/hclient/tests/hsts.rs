@@ -16,7 +16,7 @@
 #![cfg(all(feature = "hsts", feature = "test-util", not(target_family = "wasm")))]
 
 use hclient::Client;
-use hclient::hsts::{Entry, Hsts, HstsStore, MemoryStore};
+use hclient::hsts::{Entry, Hsts, HstsStore, InMemory};
 use hclient::mock::MockTransport;
 
 fn rt() -> tokio::runtime::Runtime {
@@ -43,7 +43,7 @@ fn a_known_host_is_requested_over_https_although_the_caller_wrote_http() {
     let rtx = rt();
     let m = MockTransport::new();
     m.push_response(ok());
-    let store = MemoryStore::new();
+    let store = InMemory::default();
     rtx.block_on(store.put(Entry::new(
         "a.test",
         std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
@@ -205,7 +205,7 @@ fn a_redirect_to_a_second_known_host_is_upgraded_on_that_hosts_own_policy() {
             .unwrap(),
     );
     m.push_response(ok());
-    let store = MemoryStore::new();
+    let store = InMemory::default();
     let far = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
     rtx.block_on(store.put(Entry::new("b.test", far, false)));
     let c = Client::builder(m.clone())
@@ -344,13 +344,17 @@ fn the_installed_store_is_the_one_consulted() {
 /// crate's trait for `Arc<Counting>` from out here.
 #[derive(Default, Clone)]
 struct Counting {
-    inner: std::sync::Arc<MemoryStore>,
+    inner: std::sync::Arc<InMemory>,
     reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl HstsStore for Counting {
-    type Get<'a> = std::future::Ready<Vec<Entry>>;
-    type Done<'a> = std::future::Ready<()>;
+    // The wrapped store's own types rather than `Ready`: `InMemory` is
+    // `KvStore` over the byte seam now, so its futures are that wrapper's
+    // named ones — and naming them here is what keeps this double's
+    // `Send`ness inferred from the store rather than declared.
+    type Get<'a> = <InMemory as HstsStore>::Get<'a>;
+    type Done<'a> = <InMemory as HstsStore>::Done<'a>;
 
     fn get<'a>(&'a self, domains: &'a [String]) -> Self::Get<'a> {
         self.reads
