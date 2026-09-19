@@ -59,7 +59,23 @@ use std::sync::Arc;
 /// [`QuicTlsRequest::early_data`]), and reusing a type whose fields have
 /// shifted meaning is how a caller ends up setting one and getting the
 /// other.
+/// # Extensible, and the constructor is what makes that true
+///
+/// `#[non_exhaustive]`, so a field added later is not a breaking change
+/// for a backend outside this workspace — and this crate's own rule says
+/// when that attribute is right: a type the library **hands to** an
+/// implementor, which reads it and never builds it. That is exactly this
+/// one. The rule's opposite case — `TcpOpts`, built by a caller as
+/// `Struct { one: .., ..Default::default() }` — is why the attribute is
+/// refused there and taken here.
+///
+/// It costs the three call sites a builder rather than a literal, which
+/// is the trade: `QuicTlsRequest::new(alpn).early_data(true)`. `alpn` is
+/// the constructor's argument because it is the one field with no honest
+/// default — RFC 9114 §3.2 makes it mandatory, and a `QuicTlsRequest`
+/// offering nothing is a connection that cannot succeed.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct QuicTlsRequest<'a> {
     /// The ALPN protocols to offer.
     ///
@@ -113,6 +129,134 @@ pub struct QuicTlsRequest<'a> {
     pub identity: Option<&'a str>,
 }
 
+impl<'a> QuicTlsRequest<'a> {
+    /// A request offering `alpn` and nothing else.
+    ///
+    /// The other three fields default to the understating answer this
+    /// workspace applies everywhere: no ECH config, no early data, no
+    /// named identity. Each is the safe direction — early data in
+    /// particular is replayable, so a request must never end up offering
+    /// it because nobody said otherwise.
+    #[must_use]
+    pub const fn new(alpn: &'a [&'a [u8]]) -> Self {
+        Self {
+            alpn,
+            ech: None,
+            early_data: false,
+            identity: None,
+        }
+    }
+
+    /// The ECH config list from an HTTPS record, if one is to be applied.
+    #[must_use]
+    pub const fn ech(mut self, ech: Option<&'a [u8]>) -> Self {
+        self.ech = ech;
+        self
+    }
+
+    /// Whether this connection may offer early data.
+    #[must_use]
+    pub const fn early_data(mut self, yes: bool) -> Self {
+        self.early_data = yes;
+        self
+    }
+
+    /// The client identity the caller named, by label.
+    #[must_use]
+    pub const fn identity(mut self, identity: Option<&'a str>) -> Self {
+        self.identity = identity;
+        self
+    }
+}
+
+/// The crypto configuration for one QUIC connection, as an opaque value.
+///
+/// **A newtype so that `quinn-proto` is not in this seam's signature**,
+/// which is the same argument the byte-stream seam settled when it stopped
+/// naming `hyper::rt`: a public bound naming a foreign type puts that
+/// crate's major version in the manifest of every implementor. `quinn` is
+/// at `0.11`, a series where every minor release may break — so a seam
+/// spelling `Arc<dyn quinn_proto::crypto::ClientConfig>` makes a
+/// `quinn-proto` bump a breaking change for every backend, in this
+/// workspace and outside it.
+///
+/// **This does not make the value portable and does not pretend to.** What
+/// is inside is quinn's, both ends know it, and a second QUIC
+/// implementation would need its own variant rather than reusing this one.
+/// What the newtype buys is narrower and is the whole of it: the *name*
+/// crosses the seam instead of the type, so the version is named in two
+/// manifests — this crate's and the transport's — rather than in every
+/// implementor's signature.
+///
+/// The value is opaque to everyone but the two lines that make it and
+/// consume it: `hclient-tls-rustls` builds one from a
+/// `rustls::ClientConfig`, and `hclient-native`'s QUIC arm hands it
+/// straight to `quinn::ClientConfig::new`. Nothing between those two ever
+/// looks inside, which is what makes a newtype sufficient where an
+/// associated type would have been ceremony — the objection the paragraph
+/// this replaces raised, and correctly.
+#[derive(Clone)]
+pub struct QuicCryptoConfig(Arc<dyn quinn_proto::crypto::ClientConfig>);
+
+/// The two doors, and they are **`#[doc(hidden)]` rather than `pub`**.
+///
+/// Together they are the only place in this crate's surface where a
+/// `quinn_proto` type is nameable, and that is what the hiding is for: a
+/// rendered page carrying `pub fn new(config: Arc<dyn
+/// quinn_proto::crypto::ClientConfig>)` puts quinn's `0.11` — a series
+/// where every minor release may break — into the public plane of a seam
+/// whose whole point is that a backend does not promise it.
+///
+/// **This is not the `bon` hole one crate over**, which is the objection
+/// to reach for and is worth answering rather than waving at.
+/// `hclient-core`'s `req.rs` records a generated builder whose *public
+/// setters named hidden types*, so a caller met `SetConnect<S>` in a
+/// signature and in a compiler error and could not write it. Nothing here
+/// appears in any public signature: `quic_client_config` answers
+/// `QuicCryptoConfig`, and a caller who never opens one never meets
+/// quinn at all.
+///
+/// **What it costs is real and is named rather than glossed.** A QUIC TLS
+/// backend written outside this workspace cannot construct one without
+/// reaching a hidden item, so it is not a supported extension point
+/// today. Two things make that the right trade rather than an oversight.
+/// `quinn_proto::crypto::ClientConfig` has exactly one implementation in
+/// practice — `quinn_proto::crypto::rustls::QuicClientConfig` — so the
+/// backend this excludes is a second rustls binding rather than a second
+/// QUIC stack. And the alternative measured before choosing: taking a
+/// `rustls::ClientConfig` instead would make the door portable and put
+/// **rustls and ring into `hclient-tls`'s own graph**, which is 33 crates
+/// with `quic` on and zero of them rustls today — trading a narrow leak
+/// for a heavier one, in the crate that exists to have neither.
+///
+/// The day a second implementation exists, the door becomes `pub` and
+/// takes whatever the two have in common. Until then it names the one
+/// thing it can.
+impl QuicCryptoConfig {
+    /// Wrap a backend's configuration.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_quinn(config: Arc<dyn quinn_proto::crypto::ClientConfig>) -> Self {
+        Self(config)
+    }
+
+    /// The configuration back, for the transport that drives quinn.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_quinn(self) -> Arc<dyn quinn_proto::crypto::ClientConfig> {
+        self.0
+    }
+}
+
+/// Hand-written: `quinn_proto::crypto::ClientConfig` is not `Debug`, and
+/// what a reader wants here is that the value exists rather than what is
+/// in it.
+impl std::fmt::Debug for QuicCryptoConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuicCryptoConfig").finish_non_exhaustive()
+    }
+}
+
 /// A TLS backend that can drive a QUIC handshake.
 ///
 /// One method that produces anything, like [`TlsConnect`], and for the same
@@ -122,18 +266,24 @@ pub struct QuicTlsRequest<'a> {
 pub trait QuicTlsConnect: TlsIdentity {
     /// Build the crypto configuration for one QUIC connection.
     ///
-    /// # Why this is typed on `quinn_proto`'s trait object rather than an opaque associated type
+    /// # Why a newtype rather than quinn's trait object or an associated type
     ///
-    /// The same decision `TlsConnect` made when it typed itself on
-    /// `hyper::rt::{Read, Write}` instead of inventing a stream trait: an
-    /// abstraction is worth having only if it carries something. An opaque
-    /// `type ClientConfig` here would carry nothing — the consumer would
-    /// have to bound it back to `Into<Arc<dyn quinn_proto::crypto::
-    /// ClientConfig>>` before it could do anything with it, which is this
-    /// module's empty-body adapter one level up, dressed as generality.
+    /// This returned `Arc<dyn quinn_proto::crypto::ClientConfig>` until the
+    /// byte-stream seam stopped naming `hyper::rt`, and the argument
+    /// recorded for it was that decision's: an abstraction is worth having
+    /// only if it carries something, and an opaque `type ClientConfig`
+    /// would carry nothing, since the consumer must bound it back to
+    /// `Into<Arc<dyn ..>>` before it can do anything — this module's
+    /// empty-body adapter one level up, dressed as generality.
     ///
-    /// The cost is honest and bounded: this crate depends on `quinn-proto`,
-    /// and nothing else in the workspace has to.
+    /// **That half is still right and is why there is no associated type
+    /// here.** What it did not weigh is *whose major version the seam
+    /// promises*. `quinn` is at `0.11`, where every minor may break, so
+    /// naming its type in this signature made a `quinn-proto` bump a
+    /// breaking change for every implementor rather than for the two lines
+    /// that actually touch the value. [`QuicCryptoConfig`] is neither of
+    /// the two shapes that argument compared: it carries the same value
+    /// unchanged and costs one `::new` and one `::into_inner`.
     ///
     /// # Errors
     ///
@@ -141,10 +291,7 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// [`identity`](QuicTlsRequest::identity) naming a label this backend
     /// has not registered is an error naming the label, never a config
     /// built with the default identity instead.
-    fn quic_client_config(
-        &self,
-        req: QuicTlsRequest<'_>,
-    ) -> Result<Arc<dyn quinn_proto::crypto::ClientConfig>, Error>;
+    fn quic_client_config(&self, req: QuicTlsRequest<'_>) -> Result<QuicCryptoConfig, Error>;
 
     /// Whether [`QuicTlsRequest::early_data`] is honoured when set.
     ///

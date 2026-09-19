@@ -2411,6 +2411,74 @@ adversarial backpressure tests, and `hclient-rt-embassy`'s 19 live TAP
 scenarios over a real network stack — which are the ones that would notice
 a half-close that stopped being one.
 
+### The QUIC TLS seam stopped naming `quinn-proto`, and the rule found its second subject
+
+`QuicTlsConnect::quic_client_config` answered
+`Arc<dyn quinn_proto::crypto::ClientConfig>` and answers a
+`QuicCryptoConfig`. Same week, same argument as the byte-stream seam one
+section up, and the second application is what says it was a rule rather
+than one crate's repair.
+
+**The version is the whole of it.** `quinn` is at `0.11`, a series where
+every minor release may break, so a seam spelling quinn's type made a
+`quinn-proto` bump a breaking change for **every** implementor rather
+than for the two lines that touch the value. `hyper` was the same shape
+at a different major.
+
+**The recorded objection was half right and is kept**, because the half
+that was right is what rules out the obvious alternative. `quic.rs`
+argued that an opaque `type ClientConfig` would carry nothing — the
+consumer must bound it back to `Into<Arc<dyn ..>>` before it can do
+anything, which is this module's empty-body adapter dressed as
+generality. That is still true, and it is why there is no associated
+type. What it did not weigh is *whose major version the signature
+promises*, and the newtype is neither of the two shapes it compared.
+
+**Measured before choosing, and one plausible answer was rejected on
+it.** The door could take a `rustls::ClientConfig` instead, which is
+portable and would let any rustls-based backend build one — and it puts
+**rustls and ring into `hclient-tls`'s own graph**, which is 33 crates
+with `quic` on and zero of them rustls today. That trades a narrow leak
+for a heavier one, in the crate that exists to have neither.
+
+**So the two doors are `#[doc(hidden)]`, and the cost is named rather
+than glossed.** A QUIC TLS backend written outside this workspace cannot
+construct a `QuicCryptoConfig` without reaching a hidden item, so it is
+not a supported extension point today. What makes that the right trade
+is a measurement rather than a preference:
+`quinn_proto::crypto::ClientConfig` has exactly **one** implementation in
+practice, `quinn_proto::crypto::rustls::QuicClientConfig`, so the backend
+this excludes is a second rustls binding rather than a second QUIC stack.
+
+**It is not the `bon` hole, and that objection is worth answering rather
+than waving at.** `hclient-core`'s `req.rs` records a generated builder
+whose *public setters named hidden types*, so a caller met
+`SetConnect<S>` in a signature and in a compiler error and could not
+write it. Nothing here appears in any public signature — rustdoc's own
+words on the rendered page are **"This impl block contains no public
+items"** — and a caller who never opens a `QuicCryptoConfig` never meets
+quinn at all.
+
+**`QuicTlsRequest` is `#[non_exhaustive]` with a builder**, which is the
+input half and the one this workspace's own three-answer rule settles
+immediately: it is a type the library *hands to* an implementor, which
+reads it and never builds it, so a field added later must not be a
+breaking change. The opposite case — `TcpOpts`, built by a caller as
+`Struct { one: .., ..Default::default() }` — is why the attribute is
+refused there and taken here. `QuicTlsRequest::new(alpn)` takes the one
+field with no honest default (RFC 9114 §3.2 makes ALPN mandatory) and
+`ech`/`early_data`/`identity` default to the understating answer.
+
+**Checked from outside the workspace in both directions**, which is the
+instrument this file records as different from a test written beside the
+code. A scratch crate with a path dependency implements `QuicTlsConnect`
+and calls the builder with **no `quinn` in its manifest or its source**;
+against the parent commit the same file is `E0432`, and a literal
+`QuicTlsRequest { .. }` is `E0639`. Two tests pin the builder's own
+properties, each killed by its own mutation and neither by the other's —
+a default flipped to `true` kills the defaults test alone, a setter made
+a no-op kills the setter test alone.
+
 ### `embedded-nal-async` is the right seam for later and blocked twice now
 
 Asked whether this workspace should implement `TcpConnect` over the

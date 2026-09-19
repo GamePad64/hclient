@@ -27,11 +27,20 @@
 /// widening of it, and behind a feature because it carries `quinn-proto`.
 ///
 /// **Off by default, and the feature is the whole reason this can live
-/// here.** `QuicTlsConnect::quic_client_config` returns
-/// `Arc<dyn quinn_proto::crypto::ClientConfig>` — quinn's own type, in the
-/// seam's signature — so an unconditional module would put `quinn-proto`
-/// and `ring` into every build that has any TLS at all, `NoTls` ones
-/// included.
+/// here.** `QuicTlsConnect::quic_client_config` answers a
+/// [`quic::QuicCryptoConfig`], which *wraps* quinn's own type — so the
+/// seam's signature names no foreign crate, and this crate still links
+/// `quinn-proto` to hold it. An unconditional module would therefore put
+/// `quinn-proto` and `ring` into every build that has any TLS at all,
+/// `NoTls` ones included.
+///
+/// The newtype and the feature answer different questions and neither
+/// replaces the other: the feature decides **who links quinn**, and the
+/// newtype decides **who names its version in a signature**. Before it,
+/// a backend that only reported its capabilities still had to spell
+/// `Arc<dyn quinn_proto::crypto::ClientConfig>` in a method it filled with
+/// `unreachable!` — measured from a scratch crate outside this workspace,
+/// which now implements the seam with no `quinn` in its manifest at all.
 ///
 /// What a *feature* costs is narrower and is a cost this workspace already
 /// accepts one crate over: Cargo unifies features, so a neighbour

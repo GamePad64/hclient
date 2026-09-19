@@ -299,20 +299,20 @@ fn every_tls_info_setter_writes_its_own_field_and_disturbs_no_other() {
 mod quic {
     use super::SaysNothing;
     use hclient_core::error::Error;
-    use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
-    use std::sync::Arc;
+    use hclient_tls::quic::{QuicCryptoConfig, QuicTlsConnect, QuicTlsRequest};
 
     /// `unreachable!` rather than a real config, which is
     /// `hclient-native`'s `http3::tests::StubTls` verbatim and for its
     /// stated reason: the caller reads `offers_early_data` and nothing
-    /// else, so producing a `quinn_proto::crypto::ClientConfig` would be
-    /// building a crypto provider to answer a question that never asks
-    /// for one.
+    /// else, so producing a real [`QuicCryptoConfig`] would be building a
+    /// crypto provider to answer a question that never asks for one.
+    ///
+    /// **This fixture names no quinn type at all now**, which is what the
+    /// newtype bought: a backend that only reports its capabilities used
+    /// to have to spell `Arc<dyn quinn_proto::crypto::ClientConfig>` in a
+    /// signature it never fills.
     impl QuicTlsConnect for SaysNothing {
-        fn quic_client_config(
-            &self,
-            _: QuicTlsRequest<'_>,
-        ) -> Result<Arc<dyn quinn_proto::crypto::ClientConfig>, Error> {
+        fn quic_client_config(&self, _: QuicTlsRequest<'_>) -> Result<QuicCryptoConfig, Error> {
             unreachable!("this fixture is read for its capabilities, never connected through")
         }
     }
@@ -325,5 +325,36 @@ mod quic {
     #[test]
     fn a_quic_backend_that_says_nothing_offers_no_early_data() {
         assert!(!SaysNothing::default().offers_early_data());
+    }
+
+    /// **The builder's defaults are the understating ones**, which is the
+    /// half `#[non_exhaustive]` makes load-bearing: a field added later
+    /// is only safe to add because a caller who never names it gets the
+    /// safe answer. Early data is the one that matters — it is replayable,
+    /// so a request must never end up offering it because nobody said
+    /// otherwise.
+    #[test]
+    fn a_request_offers_nothing_but_its_alpn_until_asked() {
+        let req = QuicTlsRequest::new(&[b"h3"]);
+        assert_eq!(req.alpn, &[b"h3"]);
+        assert!(!req.early_data, "early data is opt-in, never a default");
+        assert!(req.ech.is_none());
+        assert!(req.identity.is_none());
+    }
+
+    /// And each setter reaches its own field, which is what says the
+    /// builder is a translation rather than four names over one value.
+    /// Written as one request carrying all three, because a setter that
+    /// overwrote a neighbour would pass three separate assertions.
+    #[test]
+    fn each_setter_reaches_its_own_field() {
+        let req = QuicTlsRequest::new(&[b"h3"])
+            .early_data(true)
+            .ech(Some(b"ech"))
+            .identity(Some("corp"));
+        assert!(req.early_data);
+        assert_eq!(req.ech, Some(b"ech".as_slice()));
+        assert_eq!(req.identity, Some("corp"));
+        assert_eq!(req.alpn, &[b"h3"], "the constructor's argument survives");
     }
 }

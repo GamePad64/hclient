@@ -34,7 +34,7 @@
 
 use crate::Rustls;
 use hclient_core::error::{Error, ErrorKind};
-use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
+use hclient_tls::quic::{QuicCryptoConfig, QuicTlsConnect, QuicTlsRequest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -79,10 +79,7 @@ impl QuicState {
 }
 
 impl QuicTlsConnect for Rustls {
-    fn quic_client_config(
-        &self,
-        req: QuicTlsRequest<'_>,
-    ) -> Result<Arc<dyn quinn_proto::crypto::ClientConfig>, Error> {
+    fn quic_client_config(&self, req: QuicTlsRequest<'_>) -> Result<QuicCryptoConfig, Error> {
         if req.ech.is_some() {
             // A typed refusal rather than a silent drop. rustls builds ECH
             // into the `ClientConfig` through a different builder entry
@@ -105,7 +102,7 @@ impl QuicTlsConnect for Rustls {
             .map_err(|e| Error::new(ErrorKind::Tls, e))?;
         let quic = quinn_proto::crypto::rustls::QuicClientConfig::try_from(cfg)
             .map_err(|e| Error::new(ErrorKind::Tls, e))?;
-        Ok(Arc::new(quic))
+        Ok(QuicCryptoConfig::from_quinn(Arc::new(quic)))
     }
 
     /// `true`: rustls has `enable_early_data`, this module sets it when

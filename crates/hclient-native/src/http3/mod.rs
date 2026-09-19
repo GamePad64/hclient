@@ -773,23 +773,26 @@ where
         launched: Option<R::Instant>,
         early: bool,
     ) -> Result<(SendRequest, quinn::Connection, Option<ZeroRtt>, Duration), DialFailed> {
-        let crypto = self.tls.quic_client_config(QuicTlsRequest {
-            alpn: &[ALPN_H3],
-            ech: None,
-            early_data: key.early_data,
-            // **The field that would not have been a compile error.**
-            // `QuicTlsRequest` is a separate type from `TlsRequest`, so a
-            // client-certificate seam reaching only the TCP path would
-            // present an identity over HTTP/1 and HTTP/2 and silently omit
-            // it here — one request answered differently depending on
-            // which protocol the pool happened to offer.
-            identity: key
-                .identity
-                .as_ref()
-                .map(hclient_core::tls::ClientIdentity::name),
-        })?;
+        let crypto = self.tls.quic_client_config(
+            QuicTlsRequest::new(&[ALPN_H3])
+                .early_data(key.early_data)
+                // **The field that would not have been a compile error.**
+                // `QuicTlsRequest` is a separate type from `TlsRequest`, so
+                // a client-certificate seam reaching only the TCP path
+                // would present an identity over HTTP/1 and HTTP/2 and
+                // silently omit it here — one request answered differently
+                // depending on which protocol the pool happened to offer.
+                .identity(
+                    key.identity
+                        .as_ref()
+                        .map(hclient_core::tls::ClientIdentity::name),
+                ),
+        )?;
         let endpoint = self.endpoint(addr)?;
-        let mut cfg = quinn::ClientConfig::new(crypto);
+        // `into_inner` here and nowhere else: `QuicCryptoConfig` keeps
+        // `quinn-proto` out of the seam's signature, and this is the one
+        // line in the workspace that has to open it.
+        let mut cfg = quinn::ClientConfig::new(crypto.into_quinn());
         if let Some(d) = self.keep_alive {
             let mut transport = quinn::TransportConfig::default();
             transport.keep_alive_interval(Some(d));
@@ -1360,7 +1363,7 @@ mod tests {
         fn quic_client_config(
             &self,
             _: QuicTlsRequest<'_>,
-        ) -> Result<Arc<dyn quinn_proto::crypto::ClientConfig>, Error> {
+        ) -> Result<hclient_tls::quic::QuicCryptoConfig, Error> {
             unreachable!("this stub never connects")
         }
         fn offers_early_data(&self) -> bool {

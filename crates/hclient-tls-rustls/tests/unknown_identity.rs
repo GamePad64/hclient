@@ -107,25 +107,16 @@ fn the_quic_path_refuses_the_same_label() {
     let tls = Rustls::from_config(Arc::new(cfg.clone())).with_identity("corp", Arc::new(cfg));
 
     let err = tls
-        .quic_client_config(QuicTlsRequest {
-            alpn: &[b"h3"],
-            ech: None,
-            early_data: false,
-            identity: Some("not-corp"),
-        })
+        .quic_client_config(QuicTlsRequest::new(&[b"h3"]).identity(Some("not-corp")))
         // `err()` and not `expect_err`: the `Ok` side is a
-        // `dyn quinn_proto::crypto::ClientConfig`, which is not `Debug`.
+        // `QuicCryptoConfig`, whose `Debug` deliberately prints nothing of
+        // what it holds.
         .err()
         .expect("an unknown label must not produce a QUIC config");
     let chain = format!("{err:#}") + &format!("{:?}", std::error::Error::source(&err));
     assert!(chain.contains("not-corp"), "{chain}");
 
     // The control, on this path too.
-    tls.quic_client_config(QuicTlsRequest {
-        alpn: &[b"h3"],
-        ech: None,
-        early_data: false,
-        identity: Some("corp"),
-    })
-    .expect("a registered label must build a QUIC config");
+    tls.quic_client_config(QuicTlsRequest::new(&[b"h3"]).identity(Some("corp")))
+        .expect("a registered label must build a QUIC config");
 }
