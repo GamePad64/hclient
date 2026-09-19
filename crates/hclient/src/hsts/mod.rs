@@ -87,12 +87,14 @@
 //!   rule and the alt-svc cache's for the same reason: there is nothing
 //!   here to run a sweep.
 
+mod kv;
 mod parse;
 mod store;
 
 use std::time::Duration;
 use web_time::SystemTime;
 
+pub use kv::KvStore;
 pub use parse::Directives;
 pub use store::{Entry, HstsStore, MemoryStore};
 
