@@ -268,6 +268,23 @@ pub trait KeyValueStore {
     /// would have to outlive a future that also holds it.
     fn scan(&self, ns: &str, prefix: String, now: Self::Instant) -> Self::Scan<'_>;
 
+    /// [`scan`](Self::scan) for several prefixes at once, answering the
+    /// union of what each matches — with **no duplicates**, so a pair of
+    /// prefixes where one extends the other answers each value once.
+    ///
+    /// A batch for [`get_many`](Self::get_many)'s reason, and the same
+    /// consumer: a cookie lookup asks about every ancestor of a host,
+    /// and reversing the labels makes each ancestor a prefix — but of
+    /// *each other* rather than of one common string, so a single scan
+    /// cannot express it. A jar over a remote store should still pay one
+    /// round trip for a request rather than one per label.
+    ///
+    /// The union rather than one answer per prefix, unlike `get_many`'s
+    /// parallel list: a caller of this is gathering, and the key comes
+    /// back beside each value, so which prefix matched is recoverable
+    /// where it matters and costs nothing to discard where it does not.
+    fn scan_many(&self, ns: &str, prefixes: Vec<String>, now: Self::Instant) -> Self::Scan<'_>;
+
     /// Drop every value in `ns` whose key begins with `prefix`.
     ///
     /// [`scan`](Self::scan) followed by a [`remove`](Self::remove) each
@@ -446,6 +463,27 @@ impl<I: Copy + PartialOrd> KeyValueStore for MemoryStore<I> {
                 .into_iter()
                 .flat_map(|keys| keys.iter())
                 .filter(|(k, _)| k.starts_with(&prefix))
+                .flat_map(|(k, slots)| {
+                    slots
+                        .iter()
+                        .filter(|s| s.is_live(now))
+                        .map(move |s| (k.to_string(), s.value.clone()))
+                })
+                .collect(),
+        )
+    }
+
+    fn scan_many(&self, ns: &str, prefixes: Vec<String>, now: Self::Instant) -> Self::Scan<'_> {
+        let held = self.namespaces.lock().expect("kv store lock");
+        ready(
+            held.get(ns)
+                .into_iter()
+                .flat_map(|keys| keys.iter())
+                // One pass over the namespace rather than one per
+                // prefix, which is also what makes the answer a union
+                // rather than a concatenation: a key matching two
+                // prefixes is visited once.
+                .filter(|(k, _)| prefixes.iter().any(|p| k.starts_with(p.as_str())))
                 .flat_map(|(k, slots)| {
                     slots
                         .iter()
@@ -888,6 +926,53 @@ mod tests {
             now_or_never(kv.scan("cache", String::new(), at(0))),
             vec![("k".to_owned(), b"r".to_vec())]
         );
+    }
+
+    /// **The union, not a concatenation**: a key matching two prefixes
+    /// comes back once. A cookie lookup asks about every ancestor of a
+    /// host, and a descendant's reversed key really does begin with its
+    /// ancestor's prefix — so a per-prefix walk would double it.
+    #[test]
+    fn scan_many_answers_a_union_rather_than_one_pass_per_prefix() {
+        let kv = store();
+        now_or_never(kv.put(
+            "ns",
+            "com.example.b.a".to_owned(),
+            b"v".to_vec(),
+            None,
+            at(0),
+        ));
+
+        let got = now_or_never(kv.scan_many(
+            "ns",
+            vec!["com.example.b".to_owned(), "com.example".to_owned()],
+            at(0),
+        ));
+        assert_eq!(got.len(), 1, "one value, though two prefixes match it");
+    }
+
+    /// And it really does answer every prefix, not just the first.
+    #[test]
+    fn scan_many_answers_every_prefix_it_is_given() {
+        let kv = store();
+        now_or_never(kv.put("ns", "com.a".to_owned(), b"a".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "net.b".to_owned(), b"b".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "org.c".to_owned(), b"c".to_vec(), None, at(0)));
+
+        let mut got: Vec<String> =
+            now_or_never(kv.scan_many("ns", vec!["com.".to_owned(), "org.".to_owned()], at(0)))
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+        got.sort();
+        assert_eq!(got, ["com.a", "org.c"], "and nothing the prefixes miss");
+    }
+
+    #[test]
+    fn scan_many_hides_expired_values_as_scan_does() {
+        let kv = store();
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(at(10)), at(0)));
+        assert!(now_or_never(kv.scan_many("ns", vec!["k".to_owned()], at(10))).is_empty());
     }
 
     #[test]

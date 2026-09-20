@@ -71,6 +71,9 @@ fn a_single_threaded_byte_store_is_still_usable_here() {
         fn scan(&self, _: &str, _: String, _: SystemTime) -> Self::Scan<'_> {
             ready(vec![])
         }
+        fn scan_many(&self, _: &str, _: Vec<String>, _: SystemTime) -> Self::Scan<'_> {
+            ready(vec![])
+        }
         fn remove_prefix(&self, _: &str, _: String) -> Self::Done<'_> {
             ready(())
         }

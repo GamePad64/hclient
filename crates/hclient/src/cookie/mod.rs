@@ -68,6 +68,7 @@
 mod date;
 mod error;
 mod jar;
+mod kv;
 mod matching;
 mod parse;
 mod persist;
@@ -76,7 +77,12 @@ mod suffix;
 
 pub use error::{ParseError, Rejected};
 pub use jar::{Cookie, CookieJar, Limits};
+pub use kv::KvStore;
 pub use parse::{SameSite, SetCookie};
 pub use persist::CookieRecord;
 pub use store::{Capacity, CookieKey, CookieStore, MemoryStore};
+
+/// A jar's store over the byte seam's own map — what a caller gets
+/// without naming a backend.
+pub type InMemory = KvStore<hclient_core::kv::MemoryStore<web_time::SystemTime>>;
 pub use suffix::{BuiltinList, NoList, PublicSuffixList};
