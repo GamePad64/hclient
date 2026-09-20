@@ -152,8 +152,15 @@ pub trait KeyValueStore {
     where
         Self: 'a;
 
-    /// The answer to [`put`](Self::put), [`remove`](Self::remove) and
-    /// [`clear`](Self::clear).
+    /// The answer to [`scan`](Self::scan): `(key, value)` pairs, in no
+    /// particular order.
+    type Scan<'a>: Future<Output = Vec<(String, Vec<u8>)>> + 'a
+    where
+        Self: 'a;
+
+    /// The answer to [`put`](Self::put), [`remove`](Self::remove),
+    /// [`clear`](Self::clear) and
+    /// [`remove_prefix`](Self::remove_prefix).
     type Done<'a>: Future<Output = ()> + 'a
     where
         Self: 'a;
@@ -218,6 +225,60 @@ pub trait KeyValueStore {
 
     /// Drop everything in `ns`, leaving every other namespace alone.
     fn clear<'a>(&'a self, ns: &'a str) -> Self::Done<'a>;
+
+    /// Every unexpired `(key, value)` in `ns` whose key begins with
+    /// `prefix`, in no particular order. An empty prefix is the whole
+    /// namespace.
+    ///
+    /// # Why the seam has this at all
+    ///
+    /// It is the one operation that is **not** addressed by an exact
+    /// key, and it was added only after three of the four wrappers above
+    /// had each bent around its absence. A response cache holds every
+    /// `Vary` variant of one request and cannot know their selectors
+    /// before it reads them; a cookie jar holds many cookies under one
+    /// domain and evicts by comparing them; an `Alt-Svc` memory forgets
+    /// a whole class at once. Each of those is *enumerate what is under
+    /// this prefix*, and without it a wrapper has to either fold the
+    /// distinction into the key — which works when the classes are known
+    /// in advance, as `persist` is, and not otherwise — or read and
+    /// rewrite a whole list to change one member, which is neither cheap
+    /// nor atomic.
+    ///
+    /// **It stays a byte operation**, which is what makes it admissible:
+    /// a prefix is a string, and this seam still knows nothing of
+    /// cookies, variants or advertisements. The wrapper builds the
+    /// prefix out of its own vocabulary, exactly as it builds a key.
+    ///
+    /// # What an implementor owes, and what it may not promise
+    ///
+    /// The answer is a **snapshot of no particular instant**. An
+    /// in-memory store can take it under one lock; a remote one cannot,
+    /// and `SCAN` on Redis is explicitly a cursor that may miss a key
+    /// written during the walk and may repeat one. So a wrapper must
+    /// treat this as *what was there, roughly, a moment ago* — good for
+    /// choosing an eviction victim or listing variants, and never as the
+    /// basis of a claim that something is absent.
+    ///
+    /// Ordering is unspecified for the same reason. A wrapper that needs
+    /// an order sorts what comes back.
+    /// `prefix` is owned, like [`get_many`](Self::get_many)'s keys and
+    /// for that method's reason: a wrapper *derives* a prefix from its
+    /// own vocabulary rather than receiving one, so a borrowed prefix
+    /// would have to outlive a future that also holds it.
+    fn scan(&self, ns: &str, prefix: String, now: Self::Instant) -> Self::Scan<'_>;
+
+    /// Drop every value in `ns` whose key begins with `prefix`.
+    ///
+    /// [`scan`](Self::scan) followed by a [`remove`](Self::remove) each
+    /// would do it, and this exists because that reads every value back
+    /// in order to throw it away — a cache invalidating one URL's
+    /// variants would pull their bodies over a socket first. A store
+    /// with a range delete does it without them.
+    ///
+    /// An empty prefix is [`clear`](Self::clear), and an implementor may
+    /// answer it that way.
+    fn remove_prefix(&self, ns: &str, prefix: String) -> Self::Done<'_>;
 }
 
 /// The store this crate ships: a `HashMap` per namespace, in memory.
@@ -309,6 +370,10 @@ impl<I: Copy + PartialOrd> KeyValueStore for MemoryStore<I> {
         = Ready<Vec<Vec<Vec<u8>>>>
     where
         Self: 'a;
+    type Scan<'a>
+        = Ready<Vec<(String, Vec<u8>)>>
+    where
+        Self: 'a;
     type Done<'a>
         = Ready<()>
     where
@@ -368,6 +433,38 @@ impl<I: Copy + PartialOrd> KeyValueStore for MemoryStore<I> {
     fn clear<'a>(&'a self, ns: &'a str) -> Self::Done<'a> {
         let mut held = self.namespaces.lock().expect("kv store lock");
         held.remove(ns);
+        ready(())
+    }
+
+    fn scan(&self, ns: &str, prefix: String, now: Self::Instant) -> Self::Scan<'_> {
+        let held = self.namespaces.lock().expect("kv store lock");
+        // One lock for the walk, so this store's answer really is the
+        // snapshot the seam allows it to be. A remote one cannot promise
+        // that, which is why the seam promises less.
+        ready(
+            held.get(ns)
+                .into_iter()
+                .flat_map(|keys| keys.iter())
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .flat_map(|(k, slots)| {
+                    slots
+                        .iter()
+                        .filter(|s| s.is_live(now))
+                        .map(move |s| (k.to_string(), s.value.clone()))
+                })
+                .collect(),
+        )
+    }
+
+    fn remove_prefix(&self, ns: &str, prefix: String) -> Self::Done<'_> {
+        let mut held = self.namespaces.lock().expect("kv store lock");
+        if let Some(keys) = held.get_mut(ns) {
+            keys.retain(|k, _| !k.starts_with(&prefix));
+            // An emptied namespace goes, as it does for `remove`.
+            if keys.is_empty() {
+                held.remove(ns);
+            }
+        }
         ready(())
     }
 }
@@ -715,6 +812,117 @@ mod tests {
             "held, and unreachable through `get`"
         );
         assert!(now_or_never(kv.get("ns", "stale", at(20))).is_empty());
+    }
+
+    // ---- scan and remove_prefix --------------------------------------
+
+    /// The prefix selects, and an empty one is the whole namespace.
+    #[test]
+    fn scan_answers_the_pairs_under_a_prefix_and_no_others() {
+        let kv = store();
+        for key in ["com.example", "com.example.a", "com.other", "net.example"] {
+            now_or_never(kv.put("ns", key.to_owned(), key.as_bytes().to_vec(), None, at(0)));
+        }
+
+        let mut got: Vec<String> = now_or_never(kv.scan("ns", "com.example".to_owned(), at(0)))
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        got.sort();
+        assert_eq!(got, ["com.example", "com.example.a"]);
+
+        let all = now_or_never(kv.scan("ns", String::new(), at(0)));
+        assert_eq!(all.len(), 4, "an empty prefix is the whole namespace");
+    }
+
+    /// The value travels with the key, which is what an eviction victim
+    /// needs: a wrapper compares the values and removes by the key.
+    #[test]
+    fn scan_answers_the_value_beside_its_key() {
+        let kv = store();
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), None, at(0)));
+        assert_eq!(
+            now_or_never(kv.scan("ns", String::new(), at(0))),
+            vec![("k".to_owned(), b"v".to_vec())]
+        );
+    }
+
+    /// Several values under one key each get a pair, so a cache's
+    /// variants arrive as variants rather than as one entry.
+    #[test]
+    fn scan_answers_one_pair_per_value_not_per_key() {
+        let kv = store();
+        now_or_never(kv.put("ns", "k".to_owned(), b"one".to_vec(), None, at(0)));
+        now_or_never(kv.put("ns", "k".to_owned(), b"two".to_vec(), None, at(0)));
+
+        let mut got = now_or_never(kv.scan("ns", String::new(), at(0)));
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("k".to_owned(), b"one".to_vec()),
+                ("k".to_owned(), b"two".to_vec())
+            ]
+        );
+    }
+
+    /// Expiry applies here as it does to every read — the one promise
+    /// this seam makes.
+    #[test]
+    fn scan_hides_an_expired_value() {
+        let kv = store();
+        now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(at(10)), at(0)));
+        assert!(now_or_never(kv.scan("ns", String::new(), at(10))).is_empty());
+        assert_eq!(now_or_never(kv.scan("ns", String::new(), at(9))).len(), 1);
+    }
+
+    /// The namespace bounds it, which is what lets one store back four
+    /// seams: a cache scanning its own keys must not meet a cookie.
+    #[test]
+    fn scan_does_not_cross_namespaces() {
+        let kv = store();
+        now_or_never(kv.put("cookie", "k".to_owned(), b"c".to_vec(), None, at(0)));
+        now_or_never(kv.put("cache", "k".to_owned(), b"r".to_vec(), None, at(0)));
+
+        assert_eq!(
+            now_or_never(kv.scan("cache", String::new(), at(0))),
+            vec![("k".to_owned(), b"r".to_vec())]
+        );
+    }
+
+    #[test]
+    fn remove_prefix_drops_the_matching_keys_and_leaves_the_rest() {
+        let kv = store();
+        for key in ["com.example", "com.example.a", "com.other"] {
+            now_or_never(kv.put("ns", key.to_owned(), b"v".to_vec(), None, at(0)));
+        }
+
+        now_or_never(kv.remove_prefix("ns", "com.example".to_owned()));
+
+        let mut left: Vec<String> = now_or_never(kv.scan("ns", String::new(), at(0)))
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        left.sort();
+        assert_eq!(left, ["com.other"]);
+    }
+
+    /// An empty prefix is `clear`, and an implementor may answer it that
+    /// way — so this pins the behaviour rather than the route.
+    #[test]
+    fn remove_prefix_with_an_empty_prefix_empties_the_namespace() {
+        let kv = store();
+        now_or_never(kv.put("ns", "a".to_owned(), b"v".to_vec(), None, at(0)));
+        now_or_never(kv.put("other", "a".to_owned(), b"v".to_vec(), None, at(0)));
+
+        now_or_never(kv.remove_prefix("ns", String::new()));
+
+        assert!(now_or_never(kv.scan("ns", String::new(), at(0))).is_empty());
+        assert_eq!(
+            now_or_never(kv.scan("other", String::new(), at(0))).len(),
+            1,
+            "and no other namespace with it"
+        );
     }
 
     /// An emptied namespace goes with its last key, so a store cleared

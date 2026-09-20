@@ -77,10 +77,16 @@
 mod date;
 mod directives;
 mod error;
+mod kv;
 mod policy;
 mod store;
 
 pub use directives::{RequestDirectives, ResponseDirectives};
 pub use error::NotStored;
+pub use kv::KvStore;
 pub use policy::{HttpCache, Limits, Lookup, Storing};
 pub use store::{CacheStore, Key, MemoryStore, Selector, StoredResponse};
+
+/// A response cache over the byte seam's own map — what a caller gets
+/// without naming a backend.
+pub type InMemory = KvStore<hclient_core::kv::MemoryStore<web_time::SystemTime>>;

@@ -43,6 +43,7 @@ fn a_single_threaded_byte_store_is_still_usable_here() {
         type Instant = SystemTime;
         type Get<'a> = Ready<Vec<Vec<u8>>>;
         type GetMany<'a> = Ready<Vec<Vec<Vec<u8>>>>;
+        type Scan<'a> = Ready<Vec<(String, Vec<u8>)>>;
         type Done<'a> = Ready<()>;
 
         fn get<'a>(&'a self, _: &'a str, _: &'a str, _: SystemTime) -> Self::Get<'a> {
@@ -65,6 +66,12 @@ fn a_single_threaded_byte_store_is_still_usable_here() {
             ready(())
         }
         fn clear<'a>(&'a self, _: &'a str) -> Self::Done<'a> {
+            ready(())
+        }
+        fn scan(&self, _: &str, _: String, _: SystemTime) -> Self::Scan<'_> {
+            ready(vec![])
+        }
+        fn remove_prefix(&self, _: &str, _: String) -> Self::Done<'_> {
             ready(())
         }
     }
