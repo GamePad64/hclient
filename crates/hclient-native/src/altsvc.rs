@@ -160,8 +160,8 @@ impl Alternative {
 /// hold one would invite exactly that.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Origin {
-    host: Box<str>,
-    port: u16,
+    pub(crate) host: Box<str>,
+    pub(crate) port: u16,
 }
 
 impl Origin {
@@ -479,6 +479,14 @@ impl<S: AltSvcStore> AltSvcCache<S> {
         self.store.retain_persistent().await;
     }
 }
+
+mod kv;
+
+pub use kv::KvStore;
+
+/// The store an in-memory `Alt-Svc` cache uses: the byte seam's own map,
+/// with this module's encoding over it.
+pub type InMemory = KvStore<hclient_core::kv::MemoryStore<web_time::SystemTime>>;
 
 /// One `Alt-Svc` field value, parsed.
 ///
