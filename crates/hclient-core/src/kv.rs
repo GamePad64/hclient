@@ -15,6 +15,25 @@
 //! [`HstsStore`]: https://docs.rs/hclient/latest/hclient/hsts/trait.HstsStore.html
 //! [`CacheStore`]: https://docs.rs/hclient/latest/hclient/cache/trait.CacheStore.html
 //!
+//! # What belongs here, and what does not
+//!
+//! Four memories, and the rule that admits them is narrower than *state
+//! a crate keeps*: it is **state whose absence changes an answer**. A
+//! cookie that does not arrive, a policy that lets a request go out in
+//! clear text, an advertisement forgotten, a hit that becomes a miss the
+//! server has to answer — each is a fact a server told this client, and
+//! each is why those four want a backend that can outlive the process.
+//!
+//! A cache of values the client computed from its own settings is not
+//! that, however much it looks like a map. `hclient-tls-rustls` keeps
+//! `(alpn, early_data) -> Arc<rustls::ClientConfig>`; losing an entry
+//! costs a config clone and changes no answer at all, so it needs no
+//! persistence, no expiry and no capacity — it is a memo on a pure
+//! function, and a `Mutex<HashMap>` is the whole of it. Putting one
+//! behind this seam would promise a durability it has no use for and
+//! charge a serialisation its value cannot pay: an `Arc<ClientConfig>`
+//! is not bytes.
+//!
 //! # Why bytes rather than a type parameter
 //!
 //! A `KeyValueStore<V>` would mean one store instance per use — and the
