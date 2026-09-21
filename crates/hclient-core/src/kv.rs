@@ -128,7 +128,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::future::{Future, Ready, ready};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// A store of opaque bytes, partitioned by namespace and keyed by string.
 ///
@@ -339,9 +339,30 @@ pub trait KeyValueStore {
 /// expired. A wrapper whose bound is global keeps its own count, which
 /// drifts upward when entries expire here unobserved — evicting earlier
 /// than it needed to, which is the under-claiming direction.
+///
+/// # `Clone` shares the map, and that is a requirement rather than a
+/// convenience
+///
+/// A consumer of a store is routinely cloned — `AltSvcCache` is cloned
+/// into `Native`'s own routing half, and both copies must see one
+/// memory — so a `Clone` that *copied* would hand the two halves
+/// separate stores and lose every entry one of them wrote. It shares,
+/// which also makes one instance behind four wrappers the ordinary case
+/// rather than something a caller has to arrange.
 #[derive(Debug)]
 pub struct MemoryStore<I> {
-    namespaces: Mutex<Namespaces<I>>,
+    namespaces: Arc<Mutex<Namespaces<I>>>,
+}
+
+// Hand-written rather than derived: a derive would demand `I: Clone`,
+// which is true of every `Instant` here but is not what this says — the
+// `Arc` is what clones, and the instants inside it are untouched.
+impl<I> Clone for MemoryStore<I> {
+    fn clone(&self) -> Self {
+        Self {
+            namespaces: Arc::clone(&self.namespaces),
+        }
+    }
 }
 
 /// What a [`MemoryStore`] holds: a map of keys per namespace, and the
@@ -380,7 +401,7 @@ impl<I: Copy + PartialOrd> Slot<I> {
 impl<I> Default for MemoryStore<I> {
     fn default() -> Self {
         Self {
-            namespaces: Mutex::new(HashMap::new()),
+            namespaces: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

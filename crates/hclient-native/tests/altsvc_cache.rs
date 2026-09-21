@@ -13,9 +13,8 @@
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 use hclient_native::altsvc::{
-    AltSvcCache, AltSvcStore, Entry, FieldValue, MemoryStore, Origin, parse,
+    AltSvcCache, AltSvcStore, Entry, FieldValue, InMemory, Origin, parse,
 };
-use std::future::Ready;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
@@ -402,7 +401,7 @@ fn a_clone_is_the_same_cache() {
 // ── the seam ────────────────────────────────────────────────────────────
 
 /// A store that records what it was asked, and otherwise is
-/// [`MemoryStore`].
+/// [`InMemory`].
 ///
 /// The counter lives outside the cache, so a cache that quietly used a
 /// store of its own would leave it at zero — which is the only thing that
@@ -410,7 +409,7 @@ fn a_clone_is_the_same_cache() {
 /// above.
 #[derive(Default)]
 struct Watched {
-    inner: MemoryStore,
+    inner: InMemory,
     gets: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
     removes: Arc<AtomicUsize>,
@@ -418,8 +417,12 @@ struct Watched {
 }
 
 impl AltSvcStore for Watched {
-    type Get<'a> = Ready<Option<Entry>>;
-    type Done<'a> = Ready<()>;
+    // The wrapped store's own types rather than `Ready`: `InMemory` is
+    // `KvStore` over the byte seam now, so its futures are that
+    // wrapper's named ones — and naming them here is what keeps this
+    // double's `Send`ness inferred from the store rather than declared.
+    type Get<'a> = <InMemory as AltSvcStore>::Get<'a>;
+    type Done<'a> = <InMemory as AltSvcStore>::Done<'a>;
 
     fn get<'a>(&'a self, origin: &'a Origin) -> Self::Get<'a> {
         self.gets.fetch_add(1, Ordering::Relaxed);
@@ -457,7 +460,7 @@ fn the_rules_run_over_a_store_of_the_callers_own() {
             Arc::new(AtomicUsize::new(0)),
         );
         let c = AltSvcCache::with_store(Watched {
-            inner: MemoryStore::default(),
+            inner: InMemory::default(),
             gets: Arc::clone(&gets),
             puts: Arc::clone(&puts),
             removes: Arc::clone(&removes),
@@ -511,7 +514,7 @@ async fn a_store_installed_on_the_transport_is_the_one_consulted() {
         hclient_dns::IpLiteralOnly,
     )
     .alt_svc_store(Watched {
-        inner: MemoryStore::default(),
+        inner: InMemory::default(),
         gets: Arc::new(AtomicUsize::new(0)),
         puts: Arc::new(AtomicUsize::new(0)),
         removes: Arc::new(AtomicUsize::new(0)),
@@ -532,7 +535,7 @@ async fn a_store_installed_on_the_transport_is_the_one_consulted() {
 ///
 /// `Entry`'s fields are private, so an implementor of [`AltSvcStore`] —
 /// a public seam, on disk or in Redis — reaches `persist` and
-/// `expires_at` through these methods or not at all. [`MemoryStore`]
+/// `expires_at` through these methods or not at all. [`InMemory`]
 /// reads the field directly, being inside the crate, which is why
 /// `a_network_change_forgets_what_did_not_ask_to_persist` passes without
 /// ever calling `Entry::persist`: both of that method's mutations —

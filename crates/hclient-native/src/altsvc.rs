@@ -64,10 +64,9 @@
 //! its own. Acting on it is a change to a
 //! member, not a change here.
 
-use std::collections::HashMap;
 use std::fmt::Debug;
-use std::future::{Future, Ready, ready};
-use std::sync::{Arc, Mutex};
+use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 // `web_time`, not `std::time`, for the same reason the jar and the cache
 // read it: an entry's lifetime has to mean something outside the process
@@ -217,7 +216,7 @@ impl Origin {
 /// `persist` is not a field carried and never read: it is exactly what
 /// [`AltSvcCache::network_changed`] keeps.
 #[derive(Clone, Debug)]
-pub struct AltSvcCache<S = MemoryStore> {
+pub struct AltSvcCache<S = InMemory> {
     store: S,
 }
 
@@ -225,9 +224,9 @@ pub struct AltSvcCache<S = MemoryStore> {
 /// `AltSvcCache::default()` has to name one type, and a derive would make
 /// every `let c = AltSvcCache::default()` ambiguous. `HttpCache` and
 /// `CookieJar` are defaulted the same way and for the same reason.
-impl Default for AltSvcCache<MemoryStore> {
+impl Default for AltSvcCache<InMemory> {
     fn default() -> Self {
-        Self::with_store(MemoryStore::default())
+        Self::with_store(InMemory::default())
     }
 }
 
@@ -327,59 +326,6 @@ pub trait AltSvcStore {
     fn remove<'a>(&'a self, origin: &'a Origin) -> Self::Done<'a>;
     /// Forget every entry whose `persist` is false — RFC 7838 §2.2.
     fn retain_persistent(&self) -> Self::Done<'_>;
-}
-
-/// The store this crate ships: a `HashMap` in memory.
-///
-/// `Clone` shares it, because a `Native` is cloned into its own routing
-/// half and both must see one memory.
-#[derive(Clone, Default)]
-pub struct MemoryStore {
-    entries: Arc<Mutex<HashMap<Origin, Entry>>>,
-}
-
-impl Debug for MemoryStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemoryStore")
-            .field("advertised", &self.entries.lock().map_or(0, |m| m.len()))
-            .finish()
-    }
-}
-
-impl AltSvcStore for MemoryStore {
-    type Get<'a> = Ready<Option<Entry>>;
-    type Done<'a> = Ready<()>;
-
-    fn get<'a>(&'a self, origin: &'a Origin) -> Self::Get<'a> {
-        ready(
-            self.entries
-                .lock()
-                .expect("alt-svc store poisoned")
-                .get(origin)
-                .copied(),
-        )
-    }
-    fn put<'a>(&'a self, origin: &'a Origin, entry: Entry) -> Self::Done<'a> {
-        self.entries
-            .lock()
-            .expect("alt-svc store poisoned")
-            .insert(origin.clone(), entry);
-        ready(())
-    }
-    fn remove<'a>(&'a self, origin: &'a Origin) -> Self::Done<'a> {
-        self.entries
-            .lock()
-            .expect("alt-svc store poisoned")
-            .remove(origin);
-        ready(())
-    }
-    fn retain_persistent(&self) -> Self::Done<'_> {
-        self.entries
-            .lock()
-            .expect("alt-svc store poisoned")
-            .retain(|_, e| e.persist);
-        ready(())
-    }
 }
 
 impl<S: AltSvcStore> AltSvcCache<S> {

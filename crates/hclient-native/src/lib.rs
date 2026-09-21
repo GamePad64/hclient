@@ -905,7 +905,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             h3: None,
             #[cfg(feature = "http3")]
             alt_svc: altsvc::AltSvcCache::with_store(altsvc::BoxAltSvcStore::new(
-                altsvc::MemoryStore::default(),
+                altsvc::InMemory::default(),
             )),
             #[cfg(feature = "http3")]
             h3_failures: failures::H3Failures::default(),
