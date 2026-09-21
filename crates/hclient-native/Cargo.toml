@@ -58,7 +58,7 @@ http2 = ["dep:h2", "dep:tokio"]
 # rather than bounds: `Native<Embassy, NoTls, IpLiteralOnly>` compiles with
 # it on, it simply never calls `http3()`. What a neighbour switching this
 # on costs such a build is dead code in the graph, not a broken one.
-http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "hclient-tls/quic"]
+http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:quinn-proto"]
 # Still no `dep:` entry, and for the same reason it never had one: the
 # protocols moved to `hclient-proxy`, which carries no third-party
 # dependency of its own, so it is an ordinary dependency here and this
@@ -122,6 +122,14 @@ h3               = { version = "0.0.8",  optional = true }
 pin-project-lite = "0.2"
 h3-quinn         = { version = "0.0.10", optional = true }
 quinn            = { version = "0.11", default-features = false, features = ["ring", "futures-io"], optional = true }
+# **Named directly since the QUIC TLS seam stopped carrying quinn's
+# type.** `hclient-tls` now answers a declarative `QuicCryptoConfig` and
+# an opaque `Session`, so the crate that knows *which* QUIC stack this
+# is has to bound that type — and that is this one:
+# `T: QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>>`.
+# It arrives with `quinn` anyway, so the `http3` graph is unchanged;
+# what moved is which crate names the version.
+quinn-proto      = { version = "0.11", default-features = false, optional = true }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
 # The seam this crate receives its streams on, and the crate that
 # converts them to hyper's — see `src/hyperio.rs`.
@@ -144,9 +152,6 @@ tokio          = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]
 static_assertions = { workspace = true }
-# `mod h3`'s own unit tests build a stub `QuicTlsConnect`, whose one method
-# returns quinn's client-config trait object — the type that seam names.
-quinn-proto        = { version = "0.11", default-features = false }
 # The QUIC/TCP pair the routing tests stand up: two real servers behind one
 # authority, so a request reaching one is a choice and not the only
 # possibility.

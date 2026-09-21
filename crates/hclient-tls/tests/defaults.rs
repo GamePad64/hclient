@@ -295,7 +295,6 @@ fn every_tls_info_setter_writes_its_own_field_and_disturbs_no_other() {
 /// `quinn_proto::crypto::Session` *"type-checks with an empty body"*, and
 /// a seam whose failure mode is compiling is a seam whose members have to
 /// be asserted rather than read.
-#[cfg(feature = "quic")]
 mod quic {
     use super::SaysNothing;
     use hclient_core::error::Error;
@@ -307,12 +306,22 @@ mod quic {
     /// else, so producing a real [`QuicCryptoConfig`] would be building a
     /// crypto provider to answer a question that never asks for one.
     ///
-    /// **This fixture names no quinn type at all now**, which is what the
-    /// newtype bought: a backend that only reports its capabilities used
-    /// to have to spell `Arc<dyn quinn_proto::crypto::ClientConfig>` in a
-    /// signature it never fills.
+    /// **This fixture names no QUIC stack at all, and `()` is the proof
+    /// of it.** The newtype this replaced kept quinn out of the seam's
+    /// *signature* while this crate still linked it to hold the value —
+    /// so a backend that only reports its capabilities compiled against
+    /// a graph carrying `quinn-proto`, `ring` and `chacha20`. With a
+    /// declarative config and an opaque `Session`, the type a backend
+    /// names is its own, and a backend that never connects can name
+    /// nothing at all.
     impl QuicTlsConnect for SaysNothing {
+        type Session = ();
+
         fn quic_client_config(&self, _: QuicTlsRequest<'_>) -> Result<QuicCryptoConfig, Error> {
+            unreachable!("this fixture is read for its capabilities, never connected through")
+        }
+
+        fn quic_session(&self, _: &QuicCryptoConfig) -> Result<Self::Session, Error> {
             unreachable!("this fixture is read for its capabilities, never connected through")
         }
     }

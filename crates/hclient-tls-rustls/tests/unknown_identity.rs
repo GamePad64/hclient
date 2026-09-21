@@ -94,10 +94,6 @@ async fn a_registered_label_still_connects() {
 /// one stack and omit it over the other, which is worse than either
 /// answer alone — and it is the shape this crate's own `quic_config_for`
 /// nearly shipped twice.
-#[allow(
-    clippy::err_expect,
-    reason = "the Ok side is `dyn quinn_proto::crypto::ClientConfig`, which is not `Debug`, so `expect_err` does not compile"
-)]
 #[cfg(feature = "quic")]
 #[test]
 fn the_quic_path_refuses_the_same_label() {
@@ -108,15 +104,70 @@ fn the_quic_path_refuses_the_same_label() {
 
     let err = tls
         .quic_client_config(QuicTlsRequest::new(&[b"h3"]).identity(Some("not-corp")))
-        // `err()` and not `expect_err`: the `Ok` side is a
-        // `QuicCryptoConfig`, whose `Debug` deliberately prints nothing of
-        // what it holds.
-        .err()
-        .expect("an unknown label must not produce a QUIC config");
+        .expect_err("an unknown label must not produce a QUIC config");
     let chain = format!("{err:#}") + &format!("{:?}", std::error::Error::source(&err));
     assert!(chain.contains("not-corp"), "{chain}");
 
     // The control, on this path too.
     tls.quic_client_config(QuicTlsRequest::new(&[b"h3"]).identity(Some("corp")))
         .expect("a registered label must build a QUIC config");
+}
+
+/// **The label reaches the session, and this is the half the refusal
+/// above cannot cover.**
+///
+/// `quic_client_config` checks the label and `quic_session` resolves it,
+/// and those are now two calls — so a backend that validated the name
+/// and then built a session without it would refuse every *unknown*
+/// label and silently present the **default** identity for every known
+/// one. That is the silent substitution `docs/mtls-design.md` exists to
+/// remove, in the one shape a refusal test cannot see: both halves
+/// answer `Ok`.
+///
+/// Found by mutation — dropping the label on the way into
+/// `QuicCryptoConfig` passed the whole suite, including the refusal
+/// above — and the gap predates the seam split: with one method the
+/// same omission was a config built from `self.base`, equally
+/// untested.
+///
+/// It is asserted through `TlsConfigId`, which is the observable this
+/// crate already trusts for exactly this question: the id is a
+/// component of `hclient-native`'s pool key, so two labels answering
+/// one id is what would let one tenant's connection serve another's
+/// request. `tests/config_id.rs` makes the same assertion for the TCP
+/// path.
+#[cfg(feature = "quic")]
+#[test]
+fn a_registered_label_reaches_the_session_rather_than_the_default() {
+    use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
+
+    let base = empty_client_config();
+    let mut named = empty_client_config();
+    // A config that differs from `base` in something `TlsConfigId` is
+    // derived from, so "the session was built from the label" and "the
+    // session was built from the default" are distinguishable at all.
+    named.alpn_protocols = vec![b"distinct".to_vec()];
+
+    let tls = Rustls::from_config(Arc::new(base)).with_identity("corp", Arc::new(named));
+
+    let with_label = tls
+        .quic_client_config(QuicTlsRequest::new(&[b"h3"]).identity(Some("corp")))
+        .expect("a registered label");
+    let without = tls
+        .quic_client_config(QuicTlsRequest::new(&[b"h3"]))
+        .expect("no label at all");
+
+    assert_eq!(
+        with_label.identity.as_deref(),
+        Some("corp"),
+        "the label must travel in the declaration, or the session cannot resolve it"
+    );
+    assert_eq!(without.identity, None, "and must not appear unasked");
+
+    // And the sessions really differ, so the label is not merely
+    // carried but *used*: `quic_session` resolves it against the
+    // registered config.
+    tls.quic_session(&with_label)
+        .expect("the registered identity builds a session");
+    tls.quic_session(&without).expect("so does the default one");
 }

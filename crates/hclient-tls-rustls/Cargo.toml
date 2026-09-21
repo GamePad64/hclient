@@ -31,7 +31,7 @@ platform-verifier = ["dep:rustls-platform-verifier"]
 # `quinn-proto` (and the QUIC key-schedule machinery inside rustls), which
 # a build that only ever speaks TLS over TCP has no use for. Same shape as
 # every other optional dependency in this workspace.
-quic              = ["hclient-tls/quic", "dep:quinn-proto"]
+quic              = ["dep:quinn-proto"]
 webpki-roots      = ["dep:webpki-roots"]
 
 [dependencies]

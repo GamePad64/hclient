@@ -50,7 +50,6 @@
 
 use crate::TlsIdentity;
 use hclient_core::error::Error;
-use std::sync::Arc;
 
 /// Parameters for one QUIC connection's TLS.
 ///
@@ -169,91 +168,122 @@ impl<'a> QuicTlsRequest<'a> {
     }
 }
 
-/// The crypto configuration for one QUIC connection, as an opaque value.
+/// What a QUIC handshake is to be configured with — **this crate's own
+/// type, carrying no other crate's**.
 ///
-/// **A newtype so that `quinn-proto` is not in this seam's signature**,
-/// which is the same argument the byte-stream seam settled when it stopped
-/// naming `hyper::rt`: a public bound naming a foreign type puts that
-/// crate's major version in the manifest of every implementor. `quinn` is
-/// at `0.11`, a series where every minor release may break — so a seam
-/// spelling `Arc<dyn quinn_proto::crypto::ClientConfig>` makes a
-/// `quinn-proto` bump a breaking change for every backend, in this
-/// workspace and outside it.
+/// # It is declarative, and that is the decision
 ///
-/// **This does not make the value portable and does not pretend to.** What
-/// is inside is quinn's, both ends know it, and a second QUIC
-/// implementation would need its own variant rather than reusing this one.
-/// What the newtype buys is narrower and is the whole of it: the *name*
-/// crosses the seam instead of the type, so the version is named in two
-/// manifests — this crate's and the transport's — rather than in every
-/// implementor's signature.
+/// This was `Arc<dyn quinn_proto::crypto::ClientConfig>` in a newtype,
+/// then briefly a `rustls::ClientConfig` in one, and both are wrong in
+/// the same way: a seam whose purpose is that a backend does not promise
+/// somebody else's major version cannot *carry* a value typed by
+/// somebody else. A newtype hides the name from a rendered page and not
+/// from the dependency graph — measured, the wrapper cost this crate
+/// **38 crates** with `quinn-proto` and **29** with `rustls`, against
+/// **21** with neither, and `chacha20`, `rand` and `ring` were among
+/// them. A crate that exists to have no cryptography in it had
+/// cryptography in it.
 ///
-/// The value is opaque to everyone but the two lines that make it and
-/// consume it: `hclient-tls-rustls` builds one from a
-/// `rustls::ClientConfig`, and `hclient-native`'s QUIC arm hands it
-/// straight to `quinn::ClientConfig::new`. Nothing between those two ever
-/// looks inside, which is what makes a newtype sufficient where an
-/// associated type would have been ceremony — the objection the paragraph
-/// this replaces raised, and correctly.
-#[derive(Clone)]
-pub struct QuicCryptoConfig(Arc<dyn quinn_proto::crypto::ClientConfig>);
-
-/// The two doors, and they are **`#[doc(hidden)]` rather than `pub`**.
+/// So this carries **what was decided**, not a thing that was built
+/// from it: the ALPN list, whether early data is offered, the ECH
+/// config list a DNS answer supplied, and the client identity's
+/// **label**. Every field is data this crate already understands,
+/// because every one of them arrived in a [`QuicTlsRequest`].
 ///
-/// Together they are the only place in this crate's surface where a
-/// `quinn_proto` type is nameable, and that is what the hiding is for: a
-/// rendered page carrying `pub fn new(config: Arc<dyn
-/// quinn_proto::crypto::ClientConfig>)` puts quinn's `0.11` — a series
-/// where every minor release may break — into the public plane of a seam
-/// whose whole point is that a backend does not promise it.
+/// # Why a private key is not here, and cannot be
 ///
-/// **This is not the `bon` hole one crate over**, which is the objection
-/// to reach for and is worth answering rather than waving at.
-/// `hclient-core`'s `req.rs` records a generated builder whose *public
-/// setters named hidden types*, so a caller met `SetConnect<S>` in a
-/// signature and in a compiler error and could not write it. Nothing here
-/// appears in any public signature: `quic_client_config` answers
-/// `QuicCryptoConfig`, and a caller who never opens one never meets
-/// quinn at all.
+/// A label, never a key — which is the rule `docs/mtls-design.md` §3.1
+/// states for the TCP path and which this path now states the same way.
+/// What a label *means* is **implementation-defined**: it is a name the
+/// caller invented, registered with whichever backend they built, and
+/// resolved by that backend alone. A key in a smartcard cannot be handed
+/// over as bytes at all, so a seam carrying key material would exclude
+/// exactly the deployments a label serves — and a seam carrying a
+/// *store query* would have to pick a platform, since
+/// `CERT_FIND_SUBJECT_STR` means nothing to PKCS#11.
 ///
-/// **What it costs is real and is named rather than glossed.** A QUIC TLS
-/// backend written outside this workspace cannot construct one without
-/// reaching a hidden item, so it is not a supported extension point
-/// today. Two things make that the right trade rather than an oversight.
-/// `quinn_proto::crypto::ClientConfig` has exactly one implementation in
-/// practice — `quinn_proto::crypto::rustls::QuicClientConfig` — so the
-/// backend this excludes is a second rustls binding rather than a second
-/// QUIC stack. And the alternative measured before choosing: taking a
-/// `rustls::ClientConfig` instead would make the door portable and put
-/// **rustls and ring into `hclient-tls`'s own graph**, which is 33 crates
-/// with `quic` on and zero of them rustls today — trading a narrow leak
-/// for a heavier one, in the crate that exists to have neither.
+/// Trust roots, verifiers and certificate resolvers are absent for a
+/// simpler reason: they are the backend's own, settled when it was
+/// constructed — `Rustls::with_platform_verifier`, `with_webpki_roots`,
+/// `with_identity` — and never per connection. Nothing that is not a
+/// per-connection decision belongs in a per-connection value.
 ///
-/// The day a second implementation exists, the door becomes `pub` and
-/// takes whatever the two have in common. Until then it names the one
-/// thing it can.
-impl QuicCryptoConfig {
-    /// Wrap a backend's configuration.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn from_quinn(config: Arc<dyn quinn_proto::crypto::ClientConfig>) -> Self {
-        Self(config)
-    }
-
-    /// The configuration back, for the transport that drives quinn.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn into_quinn(self) -> Arc<dyn quinn_proto::crypto::ClientConfig> {
-        self.0
-    }
+/// # What a transport does with it
+///
+/// Turns it into whatever its QUIC stack wants. On `hclient-native` that
+/// is two expressions over `quinn`; a `quiche` transport would write two
+/// different ones, and **neither is expressible in terms of the other** —
+/// which is the whole reason this stopped being a wrapper. The
+/// conversion is the transport's because the QUIC stack is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct QuicCryptoConfig {
+    /// The ALPN protocols to offer, as [`QuicTlsRequest::alpn`] gave
+    /// them.
+    ///
+    /// Owned rather than borrowed because this outlives the request: a
+    /// transport holds it while it dials, and the backend that built it
+    /// has returned.
+    pub alpn: Vec<Vec<u8>>,
+    /// Whether to offer TLS 1.3 early data — [`QuicTlsRequest::early_data`]
+    /// as the backend resolved it.
+    ///
+    /// **Not the request's field copied.** A backend that cannot offer
+    /// early data answers `false` here however it was asked, which is
+    /// what makes [`QuicTlsConnect::offers_early_data`] a claim about
+    /// this value rather than beside it.
+    pub early_data: bool,
+    /// RFC 9849 Encrypted Client Hello, from an HTTPS/SVCB record.
+    ///
+    /// `None` where the request carried none **or** where the backend
+    /// refuses to apply one: `hclient-tls-rustls` errors rather than
+    /// dropping it silently, so a `None` here beside a `Some` on the
+    /// request cannot happen — the request is refused instead.
+    pub ech: Option<Vec<u8>>,
+    /// The client identity's label, and **only** the label.
+    ///
+    /// Implementation-defined: what it names is between the caller and
+    /// the backend they registered it with. See this type's own
+    /// documentation for why no key can be here.
+    pub identity: Option<String>,
 }
 
-/// Hand-written: `quinn_proto::crypto::ClientConfig` is not `Debug`, and
-/// what a reader wants here is that the value exists rather than what is
-/// in it.
-impl std::fmt::Debug for QuicCryptoConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QuicCryptoConfig").finish_non_exhaustive()
+impl QuicCryptoConfig {
+    /// A configuration offering `alpn` and nothing else.
+    ///
+    /// `const` and taking the one field with no honest default, which is
+    /// [`QuicTlsRequest::new`]'s shape: RFC 9114 §3.2 makes ALPN
+    /// mandatory over QUIC, where early data, ECH and an identity are
+    /// each absent until something asks for them.
+    #[must_use]
+    pub const fn new(alpn: Vec<Vec<u8>>) -> Self {
+        Self {
+            alpn,
+            early_data: false,
+            ech: None,
+            identity: None,
+        }
+    }
+
+    /// Offer early data on this connection.
+    #[must_use]
+    pub const fn early_data(mut self, offer: bool) -> Self {
+        self.early_data = offer;
+        self
+    }
+
+    /// Apply this ECH config list.
+    #[must_use]
+    pub fn ech(mut self, ech: Option<Vec<u8>>) -> Self {
+        self.ech = ech;
+        self
+    }
+
+    /// Present the identity this label names.
+    #[must_use]
+    pub fn identity(mut self, label: Option<String>) -> Self {
+        self.identity = label;
+        self
     }
 }
 
@@ -264,6 +294,14 @@ impl std::fmt::Debug for QuicCryptoConfig {
 ///
 /// [`TlsConnect`]: crate::TlsConnect
 pub trait QuicTlsConnect: TlsIdentity {
+    /// The QUIC stack's session configuration, whatever that stack is.
+    ///
+    /// Unbounded here **on purpose**: naming a bound would name a QUIC
+    /// stack, and this crate's reason for existing is that it names
+    /// none. The consumer bounds it — see
+    /// [`quic_session`](Self::quic_session).
+    type Session;
+
     /// Build the crypto configuration for one QUIC connection.
     ///
     /// # Why a newtype rather than quinn's trait object or an associated type
@@ -292,6 +330,46 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// has not registered is an error naming the label, never a config
     /// built with the default identity instead.
     fn quic_client_config(&self, req: QuicTlsRequest<'_>) -> Result<QuicCryptoConfig, Error>;
+
+    /// The QUIC stack's own session configuration, built from what
+    /// [`quic_client_config`](Self::quic_client_config) decided.
+    ///
+    /// # Why this is a second method and an associated type
+    ///
+    /// A QUIC handshake needs more than a declaration: quinn wants an
+    /// `Arc<dyn quinn_proto::crypto::ClientConfig>`, quiche wants a
+    /// `quiche::Config`, and **neither is expressible in terms of the
+    /// other**. Only the backend can build one, because only it holds
+    /// the trust roots, the verifier and the certificate resolver that
+    /// go into it — those are settled when the backend is constructed
+    /// and never per connection.
+    ///
+    /// So the value is the backend's and its *type* is the backend's
+    /// too. This crate names neither, which is the whole point: it had
+    /// `quinn-proto` in its graph for four verticals because the seam
+    /// carried quinn's trait object inside a newtype — 38 crates against
+    /// 21, with `chacha20`, `rand` and `ring` among the difference, in
+    /// the crate that exists to have no cryptography in it.
+    ///
+    /// **The objection this answers was recorded here and was half
+    /// right.** It said an opaque associated type carries nothing,
+    /// because a consumer must bound it back before it can do anything —
+    /// true, and the bound is exactly where it belongs:
+    /// `hclient-native`'s QUIC arm writes
+    /// `T: QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>>`,
+    /// naming the stack **it** drives. A `quiche` transport writes a
+    /// different bound and needs nothing of this crate changed. What the
+    /// objection missed is that the alternative was not a simpler seam
+    /// but a dependency: carrying the value means linking whoever
+    /// defines its type.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend's own construction can fail at — for
+    /// rustls, a provider with no initial cipher suite. A backend
+    /// refuses rather than substituting, as
+    /// [`quic_client_config`](Self::quic_client_config) does.
+    fn quic_session(&self, config: &QuicCryptoConfig) -> Result<Self::Session, Error>;
 
     /// Whether [`QuicTlsRequest::early_data`] is honoured when set.
     ///

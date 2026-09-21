@@ -1677,7 +1677,6 @@ dependencies = [
  "futures-io",
  "hclient-core",
  "hclient-rt",
- "quinn-proto",
 ]
 
 [[package]]

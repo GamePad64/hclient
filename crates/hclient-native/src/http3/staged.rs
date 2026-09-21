@@ -226,7 +226,7 @@ where
     R: H3Runtime,
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
-    T: QuicTlsConnect,
+    T: QuicTlsConnect<Session = std::sync::Arc<dyn quinn_proto::crypto::ClientConfig>>,
     D: hclient_dns::Resolve,
     // Nameable, which is the point: `H3`'s own handshake is `Send` when
     // its resolver's answers are, and the associated types let that be
@@ -284,7 +284,7 @@ where
     R: H3Runtime,
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
-    T: QuicTlsConnect,
+    T: QuicTlsConnect<Session = std::sync::Arc<dyn quinn_proto::crypto::ClientConfig>>,
     D: hclient_dns::Resolve,
     H: Hooks + Clone + Unpin,
 {

@@ -586,3 +586,6 @@ jobs:
       - name: hclient-dns performs no IO, on any target
         shell: bash
         run: just graph-dns-sans-io
+      - name: hclient-tls links no TLS or QUIC implementation
+        shell: bash
+        run: just graph-tls-seam-carries-no-stack

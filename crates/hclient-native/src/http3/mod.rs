@@ -552,7 +552,7 @@ where
     R: H3Runtime,
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
-    T: QuicTlsConnect,
+    T: QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>>,
     D: hclient_dns::Resolve,
     // `H: Clone` for the reason `hclient-native` gives: the response body
     // outlives `execute` and reports the connection's end from
@@ -789,10 +789,13 @@ where
                 ),
         )?;
         let endpoint = self.endpoint(addr)?;
-        // `into_inner` here and nowhere else: `QuicCryptoConfig` keeps
-        // `quinn-proto` out of the seam's signature, and this is the one
-        // line in the workspace that has to open it.
-        let mut cfg = quinn::ClientConfig::new(crypto.into_quinn());
+        // **The backend builds its own stack's session, and this is the
+        // one line that asks for it.** `crypto` is a declaration — an
+        // ALPN list, two flags and an identity *label* — and turning one
+        // into an `Arc<dyn quinn_proto::crypto::ClientConfig>` needs the
+        // trust roots and the certificate resolver, which live inside
+        // the backend and never cross the seam.
+        let mut cfg = quinn::ClientConfig::new(self.tls.quic_session(&crypto)?);
         if let Some(d) = self.keep_alive {
             let mut transport = quinn::TransportConfig::default();
             transport.keep_alive_interval(Some(d));
@@ -1186,7 +1189,20 @@ where
     R: H3Runtime,
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
-    T: QuicTlsConnect,
+    // **`Session` is bound here and not on the seam**, which is the
+    // QUIC-TLS decoupling in one line. `hclient-tls` answers a
+    // declarative `QuicCryptoConfig` and an *opaque* `Session`, so it
+    // names no QUIC stack and links none — 21 crates where carrying
+    // quinn's trait object cost 38, `ring` and `chacha20` among the
+    // difference. The crate that drives a stack is the crate that says
+    // which: this one drives quinn, a `quiche` transport would write a
+    // different bound, and neither needs the seam changed.
+    //
+    // Only the two transport impls carry it, because only `connect`
+    // builds a session: a constructor and the setters demand nothing of
+    // the stack, which is the rule that keeps `Spawn` off `Native`'s own
+    // signature one module over.
+    T: QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>>,
     D: hclient_dns::Resolve,
     // Argued where the sibling impl above declares it. `Unpin` joined
     // them when the response body gained an octet counter: that wrapper
@@ -1303,9 +1319,9 @@ where
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
     R::Instant: Send + Sync,  // send-bound-exception: amendment-C16
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
-    T: QuicTlsConnect + Sync, // send-bound-exception: amendment-C16
+    T: QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>> + Sync, // send-bound-exception: amendment-C16
     D: hclient_dns::Resolve + Sync, // send-bound-exception: amendment-C16
-    for<'a> D::Records<'a>: Send, // send-bound-exception: amendment-C16
+    for<'a> D::Records<'a>: Send,   // send-bound-exception: amendment-C16
     H: Hooks + Clone + Unpin + Send + Sync, // send-bound-exception: amendment-C16
 {
     fn execute_send(
@@ -1360,10 +1376,23 @@ mod tests {
     }
 
     impl QuicTlsConnect for StubTls {
+        /// quinn's, because these tests build an `H3` and that is the
+        /// stack it drives — the bound is on `impl Transport`, so a
+        /// stub used only for capabilities would need no such type at
+        /// all. Before the seam stopped carrying quinn's value, every
+        /// backend named this whether it connected or not.
+        type Session = Arc<dyn quinn_proto::crypto::ClientConfig>;
+
         fn quic_client_config(
             &self,
             _: QuicTlsRequest<'_>,
         ) -> Result<hclient_tls::quic::QuicCryptoConfig, Error> {
+            unreachable!("this stub never connects")
+        }
+        fn quic_session(
+            &self,
+            _: &hclient_tls::quic::QuicCryptoConfig,
+        ) -> Result<Self::Session, Error> {
             unreachable!("this stub never connects")
         }
         fn offers_early_data(&self) -> bool {

@@ -24,31 +24,28 @@
 #![forbid(unsafe_code)]
 
 /// Pluggable TLS **for QUIC** — a second seam beside [`TlsConnect`], not a
-/// widening of it, and behind a feature because it carries `quinn-proto`.
+/// widening of it.
 ///
-/// **Off by default, and the feature is the whole reason this can live
-/// here.** `QuicTlsConnect::quic_client_config` answers a
-/// [`quic::QuicCryptoConfig`], which *wraps* quinn's own type — so the
-/// seam's signature names no foreign crate, and this crate still links
-/// `quinn-proto` to hold it. An unconditional module would therefore put
-/// `quinn-proto` and `ring` into every build that has any TLS at all,
-/// `NoTls` ones included.
+/// **Unconditional, where it was behind a `quic` feature for four
+/// verticals**, and what changed is that there is nothing left to gate.
+/// The feature existed because `quic_client_config` answered a newtype
+/// *wrapping* `Arc<dyn quinn_proto::crypto::ClientConfig>`: the seam's
+/// signature named no foreign crate, and this crate still linked quinn
+/// to hold the value — so the module had to be optional or every build
+/// with any TLS, `NoTls` included, would have carried `quinn-proto` and
+/// `ring`.
 ///
-/// The newtype and the feature answer different questions and neither
-/// replaces the other: the feature decides **who links quinn**, and the
-/// newtype decides **who names its version in a signature**. Before it,
-/// a backend that only reported its capabilities still had to spell
-/// `Arc<dyn quinn_proto::crypto::ClientConfig>` in a method it filled with
-/// `unreachable!` — measured from a scratch crate outside this workspace,
-/// which now implements the seam with no `quinn` in its manifest at all.
+/// [`quic::QuicCryptoConfig`] is this crate's own declarative type now —
+/// an ALPN list, two flags and an identity **label** — so the module
+/// brings no dependency and a feature would be a flag a consumer has to
+/// remember for nothing. Measured: 38 crates with the wrapper, 21
+/// without it, and `chacha20`, `rand` and `ring` among the difference.
 ///
-/// What a *feature* costs is narrower and is a cost this workspace already
-/// accepts one crate over: Cargo unifies features, so a neighbour
-/// switching it on adds those crates to a graph that never asked — dead
-/// code, stripped by LTO, not a broken build. `hclient-native/http3` does
-/// exactly the same thing to exactly the same builds, which is what makes
-/// a separate crate here the inconsistency rather than the caution.
-#[cfg(feature = "quic")]
+/// The distinction the old note drew is worth keeping, because it is why
+/// the newtype was not enough on its own: a wrapper decides **who names
+/// a version in a signature**, and a feature decides **who links the
+/// crate**. A type of this crate's own is the answer to both at once,
+/// which neither of those was.
 pub mod quic;
 
 use hclient_core::caps::TlsSupport;

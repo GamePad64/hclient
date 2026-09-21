@@ -15,19 +15,18 @@ all-features = true
 
 [features]
 default = []
-# TLS for QUIC, and the crates it brings. Off by default.
-quic = ["dep:quinn-proto"]
+# **There is no `quic` feature any more**, and the reason is that it had
+# nothing left to gate. It existed because the QUIC seam *carried* an
+# `Arc<dyn quinn_proto::crypto::ClientConfig>`, so this crate linked
+# quinn to hold one — measured at 38 crates against 21, with `chacha20`
+# and `rand` among them, in the crate that exists to have no
+# cryptography. `QuicCryptoConfig` is this crate's own declarative type
+# now: an ALPN list, two flags and a label. A feature gating a trait and
+# two structs with no dependency behind them would be a flag a consumer
+# has to remember for nothing.
 
 [dependencies]
 hclient-core = { workspace = true }
-# `quic` only: the second seam *carries* a `quinn_proto::crypto::
-# ClientConfig` — inside `QuicCryptoConfig`, so it is not in the seam's
-# signature, but this crate still links quinn to hold it, which is why that
-# seam is behind a feature and not simply here. The newtype answers a
-# different question from the feature: the feature decides who links quinn,
-# the newtype decides who names its 0.11 version in a signature. See
-# `src/quic.rs`'s own doc.
-quinn-proto  = { version = "0.11", default-features = false, optional = true }
 futures-io   = { version = "0.3", default-features = false, features = ["std"] }
 hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
 

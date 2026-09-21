@@ -79,6 +79,10 @@ impl QuicState {
 }
 
 impl QuicTlsConnect for Rustls {
+    /// quinn's, because that is the stack `hclient-native` drives — and
+    /// the seam names no stack at all, so this is where one is chosen.
+    type Session = Arc<dyn quinn_proto::crypto::ClientConfig>;
+
     fn quic_client_config(&self, req: QuicTlsRequest<'_>) -> Result<QuicCryptoConfig, Error> {
         if req.ech.is_some() {
             // A typed refusal rather than a silent drop. rustls builds ECH
@@ -97,12 +101,34 @@ impl QuicTlsConnect for Rustls {
                 ),
             ));
         }
+        // **The label is checked here rather than in `quic_session`**, so
+        // an identity this backend has not registered is refused before
+        // anything is built — and refused by the method the transport
+        // calls first, which is what keeps the failure at the same point
+        // it is on the TCP path.
+        if let Some(name) = req.identity
+            && self.config_for_identity(name).is_none()
+        {
+            return Err(Error::new(
+                ErrorKind::Tls,
+                crate::UnknownIdentity(name.to_string()),
+            ));
+        }
+        Ok(
+            QuicCryptoConfig::new(req.alpn.iter().map(|a| a.to_vec()).collect())
+                .early_data(req.early_data)
+                .identity(req.identity.map(str::to_owned)),
+        )
+    }
+
+    fn quic_session(&self, config: &QuicCryptoConfig) -> Result<Self::Session, Error> {
+        let alpn: Vec<&[u8]> = config.alpn.iter().map(Vec::as_slice).collect();
         let cfg = self
-            .quic_config_for(req.alpn, req.early_data, req.identity)
+            .quic_config_for(&alpn, config.early_data, config.identity.as_deref())
             .map_err(|e| Error::new(ErrorKind::Tls, e))?;
         let quic = quinn_proto::crypto::rustls::QuicClientConfig::try_from(cfg)
             .map_err(|e| Error::new(ErrorKind::Tls, e))?;
-        Ok(QuicCryptoConfig::from_quinn(Arc::new(quic)))
+        Ok(Arc::new(quic))
     }
 
     /// `true`: rustls has `enable_early_data`, this module sets it when

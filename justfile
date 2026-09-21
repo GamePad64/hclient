@@ -1638,17 +1638,30 @@ graph-no-quic:
     # is the strong claim.
     cargo deny --manifest-path crates/hclient-rt/Cargo.toml \
       --config .github/deny/no-quic-in-the-seams.toml check bans
-    # `hclient-tls` is the weaker and more useful claim — **not by default**
-    # — and `cargo deny` structurally cannot express it: it walks optional
-    # edges regardless of features (checked with `--no-default-features`,
-    # which does not change its answer). `cargo tree` respects features, so
-    # the claim is made with it, in both directions.
+    # `hclient-tls` carries no QUIC crate **under any feature**, which is a
+    # stronger claim than the one this made before and is checked with
+    # `--all-features` rather than with none: the seam used to be behind a
+    # `quic` feature because it *carried* `Arc<dyn
+    # quinn_proto::crypto::ClientConfig>`, so a build that switched the
+    # feature on linked quinn. It answers a declarative `QuicCryptoConfig`
+    # and an opaque `Session` now, so there is no feature left to gate and
+    # nothing a feature could put back.
+    #
+    # `cargo deny` structurally cannot express this: it walks optional edges
+    # regardless of features (checked with `--no-default-features`, which
+    # does not change its answer). `cargo tree` respects them.
     ./scripts/tree-guard.sh absent '^(quinn-proto|quinn|quinn-udp|h3) ' \
-      "hclient-tls pulls a QUIC crate with no feature asked for. The quic seam is behind a feature precisely so a NoTls build carries none of it" \
-      -- -p hclient-tls
+      "hclient-tls pulls a QUIC crate. The seam names a QUIC stack nowhere and must link none — a backend chooses one, and hclient-native bounds T::Session to the one it drives" \
+      -- -p hclient-tls --all-features
+    # **The control, and it had to move with the feature.** This half used
+    # to assert that `hclient-tls/quic` really pulled `quinn-proto`, so the
+    # ban above was not vacuous — and that feature is gone, so the subject
+    # is gone with it. What keeps the ban meaningful now is that quinn is
+    # still one step away in the workspace: the *backend* pulls it, under
+    # its own feature, which is where the choice of stack belongs.
     ./scripts/tree-guard.sh present '^quinn-proto ' \
-      "hclient-tls/quic does not pull quinn-proto, so the check above is vacuous — it would pass a crate whose feature had stopped doing anything" \
-      -- -p hclient-tls --features quic
+      "hclient-tls-rustls/quic no longer pulls quinn-proto — either the backend stopped building quinn sessions or the ban above is now vacuous" \
+      -- -p hclient-tls-rustls --features quic
 
 # And the other direction, because a ban that would pass against an empty
 # graph proves nothing: the tokio runtime's `udp` feature really does pull
@@ -1782,6 +1795,35 @@ graph-proto-sans-io:
 # unifies them — caught by the gate above and by nothing else. This crate
 # already holds `futures-core`, so it starts half a step nearer that
 # trap, which is why both targets are checked rather than the host.
+
+# **`hclient-tls` names a TLS seam and links no TLS, no QUIC stack and no
+# cryptography** — the property the QUIC seam gave up when it stopped
+# carrying `Arc<dyn quinn_proto::crypto::ClientConfig>` inside a newtype.
+#
+# That wrapper kept quinn out of the seam's *signature* and not out of
+# its *graph*: this crate linked quinn to hold the value, measured at 38
+# crates against 21, with `chacha20`, `rand_core` and `ring` among the
+# difference — cryptography, in the crate whose whole job is that a
+# backend chooses it. `QuicCryptoConfig` is declarative now (an ALPN
+# list, two flags and an identity label) and `QuicTlsConnect::Session` is
+# opaque, so the crate that drives a QUIC stack is the crate that names
+# one.
+#
+# Both halves are checked, because each alone is satisfiable by the wrong
+# fix. Dropping `quic` back into a feature would pass an `absent` check
+# run without it while putting quinn back for every build that switched
+# it on — so this runs `--all-features`, which is what a feature cannot
+# hide from. And `present` on `hclient-core` is what keeps the pattern
+# honest: a typo in the crate name would make every `absent` vacuous.
+graph-tls-seam-carries-no-stack:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/tree-guard.sh absent '^(quinn|rustls|ring|aws-lc|native-tls|openssl|chacha20|aes-gcm)' \
+      "hclient-tls picked up a TLS or QUIC implementation — the seam names one and must link none, so a backend rather than this crate chooses it" \
+      -- -p hclient-tls --all-features
+    ./scripts/tree-guard.sh present '^hclient-core' \
+      "hclient-tls no longer depends on hclient-core — the pattern above is checking nothing" \
+      -- -p hclient-tls --all-features
 
 # hclient-dns describes a resolver and performs no IO, on any target
 graph-dns-sans-io:
