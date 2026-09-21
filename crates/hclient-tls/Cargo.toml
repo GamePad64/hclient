@@ -13,17 +13,25 @@ repository.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 
+# **This crate has no features, and the empty `default` is what says so
+# deliberately rather than by omission.**
+#
+# There was a `quic` one, gating the second seam, and it existed because
+# that seam *carried* an `Arc<dyn quinn_proto::crypto::ClientConfig>`: so
+# this crate linked quinn to hold the value, measured at 38 crates
+# against 21 with `chacha20`, `rand_core` and `ring` among the
+# difference — cryptography, in the crate whose purpose is that a backend
+# chooses it.
+#
+# `QuicCryptoConfig` is this crate's own declarative type now — an ALPN
+# list, two flags and an identity label — and `QuicTlsConnect::Session`
+# is opaque, so **the two seams are peers with nothing to gate**: TCP and
+# QUIC both describe what a backend must answer, and neither brings a
+# dependency the other does not. A flag over that would be one a consumer
+# has to remember for nothing, and `just graph-tls-seam-carries-no-stack`
+# asserts under `--all-features` that no feature can put a stack back.
 [features]
 default = []
-# **There is no `quic` feature any more**, and the reason is that it had
-# nothing left to gate. It existed because the QUIC seam *carried* an
-# `Arc<dyn quinn_proto::crypto::ClientConfig>`, so this crate linked
-# quinn to hold one — measured at 38 crates against 21, with `chacha20`
-# and `rand` among them, in the crate that exists to have no
-# cryptography. `QuicCryptoConfig` is this crate's own declarative type
-# now: an ALPN list, two flags and a label. A feature gating a trait and
-# two structs with no dependency behind them would be a flag a consumer
-# has to remember for nothing.
 
 [dependencies]
 hclient-core = { workspace = true }

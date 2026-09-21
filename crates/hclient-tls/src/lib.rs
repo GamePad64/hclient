@@ -23,29 +23,6 @@
 //! `hyper::client::conn::http1::handshake`.
 #![forbid(unsafe_code)]
 
-/// Pluggable TLS **for QUIC** — a second seam beside [`TlsConnect`], not a
-/// widening of it.
-///
-/// **Unconditional, where it was behind a `quic` feature for four
-/// verticals**, and what changed is that there is nothing left to gate.
-/// The feature existed because `quic_client_config` answered a newtype
-/// *wrapping* `Arc<dyn quinn_proto::crypto::ClientConfig>`: the seam's
-/// signature named no foreign crate, and this crate still linked quinn
-/// to hold the value — so the module had to be optional or every build
-/// with any TLS, `NoTls` included, would have carried `quinn-proto` and
-/// `ring`.
-///
-/// [`quic::QuicCryptoConfig`] is this crate's own declarative type now —
-/// an ALPN list, two flags and an identity **label** — so the module
-/// brings no dependency and a feature would be a flag a consumer has to
-/// remember for nothing. Measured: 38 crates with the wrapper, 21
-/// without it, and `chacha20`, `rand` and `ring` among the difference.
-///
-/// The distinction the old note drew is worth keeping, because it is why
-/// the newtype was not enough on its own: a wrapper decides **who names
-/// a version in a signature**, and a feature decides **who links the
-/// crate**. A type of this crate's own is the answer to both at once,
-/// which neither of those was.
 pub mod quic;
 
 use hclient_core::caps::TlsSupport;
@@ -404,7 +381,7 @@ impl TlsConfigId {
 /// # Why this is a trait of its own rather than a method on [`TlsConnect`]
 ///
 /// It was a method on `TlsConnect` until HTTP/3 (v0.3). QUIC needs a
-/// *second* TLS trait — `hclient_tls_quic::QuicTlsConnect` — because the
+/// *second* TLS trait — [`quic::QuicTlsConnect`] — because the
 /// intersection of `TlsConnect`'s methods with what a QUIC stack asks of a
 /// TLS session is empty: QUIC wants per-encryption-level key schedules and
 /// CRYPTO-frame payloads, and `TlsConnect` can only hand back a wrapped
@@ -481,7 +458,7 @@ pub trait TlsIdentity {
     /// # Why it lives on `TlsIdentity` and not on either connect trait
     ///
     /// Because it is the same fact on both paths. `TlsConnect` and
-    /// [`QuicTlsConnect`](https://docs.rs/hclient-tls-quic) share this
+    /// [`QuicTlsConnect`](quic::QuicTlsConnect) share this
     /// trait precisely because a connector has **one** configuration
     /// identity rather than two, and for `hclient-tls-rustls` the QUIC
     /// config is a clone of the TCP one — so a method on each would be two

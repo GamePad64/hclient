@@ -22,23 +22,41 @@
 //! defect rather than an inconvenience, so the answer is a separate trait
 //! that a backend either implements or does not.
 //!
-//! # Why this is its own crate rather than a feature of `hclient-tls`
+//! # Why this is neither its own crate nor a feature any more
 //!
-//! Cargo unifies features across a dependency graph. A `quic` feature on
-//! `hclient-tls` would put `quinn-proto` into the graph of every build in
-//! which *any* crate wanted HTTP/3 — including builds whose TLS is
-//! [`NoTls`] and whose whole reason for existing is that they have no room
-//! for a stack. A separate crate is paid for only by whoever depends on it.
-//! This is the argument `json`, `gzip` and `brotli` are already behind
-//! features for, applied one level up.
+//! It was both, in that order, and each reason expired rather than being
+//! wrong. As `hclient-tls-quic` it was a crate because Cargo unifies
+//! features: a `quic` feature on `hclient-tls` would have put
+//! `quinn-proto` into the graph of every build in which *any* crate
+//! wanted HTTP/3, including builds whose TLS is [`NoTls`] and whose
+//! reason for existing is that they have no room for a stack. Folded in
+//! at `169dbdd`, it became that feature, on the measurement that the
+//! identical cost had already been accepted one crate over.
+//!
+//! **Both arguments were about the same thing, and it is gone.** They
+//! turned on this module *carrying* an `Arc<dyn
+//! quinn_proto::crypto::ClientConfig>`, so whichever crate held the seam
+//! linked quinn — 38 crates against 21, with `chacha20`, `rand_core` and
+//! `ring` among the difference. [`QuicCryptoConfig`] is this crate's own
+//! declarative type now and [`QuicTlsConnect::Session`] is opaque, so
+//! there is no dependency to gate and no cost to move: the two seams are
+//! **peers**, each describing what a backend must answer, and a `NoTls`
+//! build carries both descriptions and neither implementation.
+//!
+//! What a feature would buy at this point is a flag a consumer has to
+//! remember for nothing, which is the distinction with one reachable
+//! side this workspace deletes rather than keeps.
 //!
 //! # What it costs the two shipped TLS backends
 //!
 //! `hclient-tls-rustls` gains one implementation behind its own `quic`
-//! feature. `hclient-tls-native-tls` gains **nothing at all, and implements
+//! feature — **which stays, and is the one place a feature still earns
+//! its keep**: that crate really does link `quinn-proto`, to turn a
+//! [`QuicCryptoConfig`] into the session its stack wants, and a build
+//! that speaks no HTTP/3 should not. `hclient-tls-native-tls` gains **nothing at all, and implements
 //! nothing** — and the reason is stronger than the ALPN one already
 //! recorded for it. It is not that `async-native-tls` fails to expose
-//! something; it is that SChannel's and Security.framework's QUIC support
+//! something; it is that `SChannel`'s and Security.framework's QUIC support
 //! is a different API surface which `native-tls` does not bind at any
 //! level, so there is no partial implementation to write. Using it for
 //! HTTP/3 is a compile error, which is the honest outcome and the same
@@ -46,7 +64,6 @@
 //!
 //! [`TlsConnect`]: crate::TlsConnect
 //! [`NoTls`]: crate::NoTls
-#![forbid(unsafe_code)]
 
 use crate::TlsIdentity;
 use hclient_core::error::Error;
