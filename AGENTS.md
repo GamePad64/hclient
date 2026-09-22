@@ -304,8 +304,8 @@ was written under in vertical 1.
 | `hclient-rt-smol` in isolation (without `hclient`, `async-io` gives the same capability) — **re-measured after the seam left `hyper::rt`** | **none at all.** It read `[default, sync]` — a leaf with no reactor — for as long as `hclient-rt` depended on `hyper`, which is where that leaf came from. The seam names `futures-io` now, `hclient-rt` names no `hyper`, and `cargo tree -p hclient-rt-smol -e normal -i tokio` answers *did not match any packages*. See below |
 | `hclient-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
 | native + HTTP/2 — the row above as it stood before W3: a hypothetical estimate from vertical 1, kept for the record | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
-| `hclient-native` **without** `http3` — measured | **32 crates**, and no `quinn` or `h3` among them: the QUIC stack is an optional dependency, so a build that does not ask for it does not resolve it |
-| `hclient-native` **with** `http3` — measured | **63 crates**, `quinn` + `quinn-proto` + `quinn-udp` + `ring` + `h3` + `h3-quinn` on top of the 32. Still no reactor from this crate's own dependencies — it arrives with whichever `R` the caller supplies, and the arm's `Spawn` bound means that `R` must have one |
+| `hclient-native` **without** `http3` — re-measured 2026-09-22 | **50 crates** (was 32), and no `quinn` or `h3` among them: the QUIC stack is an optional dependency, so a build that does not ask for it does not resolve it. The absence is the claim; the count is colour and drifts |
+| `hclient-native` **with** `http3` — re-measured 2026-09-22 | **84 crates** (was 63), `quinn` + `quinn-proto` + `quinn-udp` + `ring` + `h3` + `h3-quinn` on top of the 50. Still no reactor from this crate's own dependencies — it arrives with whichever `R` the caller supplies, and the arm's `Spawn` bound means that `R` must have one |
 
 **Every number in this table is a fact about a dependency *resolution*,
 not about this code, and they drift.** Re-measured on 2026-08-19 against
@@ -1396,8 +1396,9 @@ measurements and the decisions.
 that was not its own crate** (`.notes/w4-upgrade-seam.md` §8). Features are
 additive, so that feature put `tungstenite` into every build in any graph
 that switched it on: the argument that kept `hclient-h3` out of
-`hclient-native` and `hclient-tls-quic` out of `hclient-tls`, applied to
-the one place it was not. A dependency in the other direction cannot be
+`hclient-native` and the QUIC TLS seam out of `hclient-tls` — the second
+of those has since dissolved, because the seam stopped carrying
+`quinn-proto` at all — applied to the one place it was not. A dependency in the other direction cannot be
 switched on from outside, and `graph-no-framing-in-the-transport` checks
 it with `--all-features` on the transport rather than asserting it.
 
@@ -2478,6 +2479,78 @@ against the parent commit the same file is `E0432`, and a literal
 properties, each killed by its own mutation and neither by the other's —
 a default flipped to `true` kills the defaults test alone, a setter made
 a no-op kills the setter test alone.
+
+**And then the newtype went too, because it was the defect.** Everything
+above is about *whose major version a signature promises*, and the
+answer it reached — wrap quinn's trait object in a type of ours — is
+right about the signature and wrong about the graph: this crate linked
+quinn to **hold** the value. Measured, `--all-features`: **38 crates
+with the wrapper, 21 without**, and `chacha20`, `rand_core` and `ring`
+among the difference. Cryptography, in the crate whose whole purpose is
+that a backend chooses it.
+
+So `QuicCryptoConfig` carries **what was decided** rather than a thing
+built from it: the ALPN list, whether early data is offered, an ECH
+config list, and the client identity's **label**. Every field is data
+that arrived in a `QuicTlsRequest`. A private key is not there and
+cannot be — a key in a smartcard is not bytes, and what a label *means*
+is implementation-defined, resolved by the backend the caller registered
+it with. Trust roots, verifiers and certificate resolvers are absent for
+a simpler reason: they are the backend's own, settled at construction
+and never per connection.
+
+**Building a stack's session is a second method with an opaque
+associated type**, and the crate that drives a stack is the crate that
+names one: `hclient-native` writes `T: QuicTlsConnect<Session = Arc<dyn
+quinn_proto::crypto::ClientConfig>>` at the three sites that dial, and a
+`quiche` transport would write a different bound with nothing in the
+seam changed.
+
+**The objection recorded against an associated type was half right, and
+the half it missed is the whole of it.** It said such a type carries
+nothing, since a consumer must bound it back before it can do anything —
+true, and the bound is one line where it belongs. What it did not weigh
+is that *carrying* the value means **linking whoever defines its type**.
+An abstraction that carries nothing is cheaper than a dependency that
+carries cryptography.
+
+The `quic` feature went with it, because it had nothing left to gate:
+TCP and QUIC are two seams in one crate, peers, each describing what a
+backend must answer. `hclient-tls-rustls` keeps its own `quic` feature
+and is the one place a feature still earns its keep — that crate really
+does link `quinn-proto`.
+
+Two gates hold it. `just graph-tls-seam-carries-no-stack` checks the
+graph under `--all-features`, which is what a feature cannot hide from;
+`hclient-tls/tests/no_stack.rs` checks the source, with a backend naming
+no QUIC stack — written first **outside the workspace**, against
+`hclient-tls` and `hclient-core` alone, which is the instrument this
+file records as different from a test written beside the code.
+`graph-no-quic`'s control moved with the feature it tested: quinn must
+still be one step away, pulled by the *backend*.
+
+**And it found a pre-existing gap that only mutation named.** The
+identity label is checked by `quic_client_config` and used by
+`quic_session`, and dropping it in between passed the whole suite: every
+unknown label refused, every known one silently presenting the
+**default** identity — the silent substitution `docs/mtls-design.md`
+exists to remove, in the one shape a refusal test cannot see, since both
+halves answer `Ok`. It predates the split, where the same omission was a
+config built from `self.base`.
+
+**What cannot be given the same treatment is the session store, and that
+is rustls' shape rather than a decision.** Read in 0.23.41,
+`Tls13ClientSessionValue` holds a `&'static Tls13CipherSuite` over a
+`ClientSessionCommon` carrying `Weak<dyn ServerCertVerifier>` and `Weak<dyn
+ResolvesClientCert>` — weak references to live objects in this process —
+with no codec and a `pub(crate)` constructor. A seam of ours could carry
+only an opaque handle, which `Arc<dyn ClientSessionStore>` already is.
+So a session store here is an **in-process cache policy** and never a
+way to persist resumption across a restart. A test of that was written
+and deleted: a mutation that *dropped* the stored value passed it,
+because nothing out here can construct one to read back — a check that
+cannot fail is not a check, and a claim about a third party that cannot
+be checked belongs in prose naming the version it was read at.
 
 ### `embedded-nal-async` is the right seam for later and blocked twice now
 
@@ -5143,6 +5216,102 @@ store that is not a decorator, and the read count needs a store that is
 not `Ready`. All three came from a scratch crate outside the workspace,
 and all three are kept by tests inside it — which is the division that
 worked for the cache seam one section up and is now three for three.
+### And then the four seams got one backend, which is a byte store
+
+The section above asks whether the cookie and cache seams *admit* one
+backend; they do, and so do all four. `hclient_core::kv::KeyValueStore`
+is that backend's seam — **bytes and nothing else**: a namespace, a
+string key, opaque values, eight operations and five associated future
+types. `CookieStore`, `HstsStore`, `CacheStore` and `AltSvcStore` are
+wrappers over it now, so a store on disk or in Redis is written **once**
+rather than four times.
+
+**Bytes rather than a type parameter, and the dependency graph decides
+it rather than taste.** `altsvc::Entry` lives in `hclient-native`;
+`Cookie`, `hsts::Entry` and `StoredResponse` live in `hclient`; and
+`hclient-native` does not depend on `hclient` — the only edge is a
+dev-dependency, itself marked as a cycle `cargo package` refuses. So no
+crate can name all four value types, and a `KeyValueStore<V>` would mean
+one instance per use in every case anyway. The serialisation lands in
+the wrappers, which is where the knowledge of what a cookie *is* already
+was.
+
+**The clock is an associated type and not `SystemTime`**, which is what
+keeps `hclient-core` at 16 crates. Naming a wall clock there would cost
+every consumer `web-time` — the parent of `js-sys` and `wasm-bindgen` on
+`wasm32-unknown-unknown`, measured at +6 crates for a wasm build with no
+transport — and it is not needed, because **a store compares and never
+reads**: every calendar arithmetic in this family happens in the rules
+above the store. So `Instant` carries `Timer::Instant`'s own bounds and
+each wrapper binds it to `web_time::SystemTime` at its own site, where
+`no-std-wall-clock-in-the-client` still covers it.
+
+**The seam grew three operations after the fact, each on a measured
+need.** It shipped with `get`, `get_many`, `put`, `remove` and `clear`;
+`scan`, `scan_many` and `remove_prefix` were added only once three of
+the four wrappers had each bent around their absence — a cache cannot
+know its `Vary` selectors before reading them, a jar holds many cookies
+under one domain and evicts by comparing them, an `Alt-Svc` memory
+forgets a whole class at once. Each is *enumerate what is under this
+prefix*, and each stays a byte operation, because a prefix is a string.
+
+What `scan` promises is deliberately weak — a snapshot of no particular
+instant, in no particular order — because Redis' `SCAN` is a cursor that
+may miss a key written during the walk and may repeat one. A wrapper may
+choose an eviction victim with it and may **never** conclude from it
+that something is absent.
+
+**Two of the four hand-written `MemoryStore`s survive, and the rule that
+separates them is what to carry forward.** `cookie::MemoryStore` and
+`cache::MemoryStore` hold a capacity and an eviction policy the byte
+seam deliberately has not got; `hsts`'s and `altsvc`'s held a map and
+nothing else, so each had become a name whose only purpose was a
+distinction the code no longer draws. **What survives is a store that
+*decides* something the seam cannot; what goes is one that only *held*
+what it now holds.**
+
+**Three findings are worth more than the wrappers.**
+
+`persist` left the `Alt-Svc` value and became the **namespace**. RFC
+7838 §2.2 asks a client to forget, on a network change, every
+advertisement that did not ask to survive one — over a map that is a
+`retain` with a predicate, and over a byte store it cannot be, because
+the seam does not know what a `persist` flag is and must not grow a
+`retain` that takes one. Two namespaces make §2.2 one `clear`. It also
+reads as what the RFC says: *the ones that did not ask to survive* is a
+statement about a **set**, and this makes the set a thing that exists.
+
+**A `dyn` that declares no auto traits removes `Send` rather than hiding
+it**, met for the fifth time. The HSTS wrapper's futures were
+`Pin<Box<dyn Future>>` under a comment claiming `Send` would be inferred
+from the store; it is not, so `ClientBuilder::hsts` — which asks
+`for<'a> S::Get<'a>: Send` — refused `Hsts::new()` although every future
+underneath it was `Send`. The repair is `connect.rs`'s: stop erasing.
+The wrappers' futures are named types projected with `pin-project-lite`,
+and the property is read off the byte store. **What it cost to find is
+the line to carry**: `cargo check -p hclient --features hsts` was green
+over all of it, because the bound lives at the use site in another file.
+
+And **`Clone` joined `Send` on the list of properties a type can claim
+in a derive and fail to have where it is used.** Removing
+`altsvc::MemoryStore` found that `hclient_core::kv::MemoryStore` had no
+`Clone` impl at all, so every wrapper *declared* `Clone` and none was
+clonable — and `Native` clones its `AltSvcCache` into its own routing
+half, where both copies must see one memory. Nothing said so, because no
+test named the property: the wrappers are constructed and used in place
+everywhere the suite looks.
+
+**What is deliberately not on this seam is a cache.** The rule that
+admits the four is narrower than *state a crate keeps*: it is **state
+whose absence changes an answer** — a cookie that does not arrive, a
+policy that lets a request go out in clear text, an advertisement
+forgotten, a hit that becomes a miss the server has to answer. Each is a
+fact a server told this client. `hclient-tls-rustls`'s `(alpn,
+early_data) -> Arc<rustls::ClientConfig>` is not: it holds a value the
+client computed from its own settings, losing one costs a config clone
+and changes no answer, and its value is not bytes. A memo on a pure
+function is a `Mutex<HashMap>` and stays one.
+
 ### Two more seams, and the one that took a recorded argument down with it
 
 `hclient::cache` and `hclient::cookie` had stores; the inventory said the
@@ -5341,9 +5510,11 @@ public surface.
 
 **What made it defensible is a measurement, not a preference.** This
 workspace's test for a crate boundary is whether it holds a dependency a
-feature would otherwise spread — `hclient-tls-quic` carries
-`quinn-proto`, `hclient-tungstenite` carries `tungstenite`, and both are
-kept for that. `cargo tree -i` named **`hclient` and nothing else** for
+feature would otherwise spread — `hclient-tungstenite` carries
+`tungstenite` and is kept for that. (`hclient-tls-quic` stood beside it
+in this sentence and no longer does: it folded in, became a feature, and
+the feature lost its subject when the QUIC seam stopped carrying
+`quinn-proto`.) `cargo tree -i` named **`hclient` and nothing else** for
 each of these two, and their dependencies (`jiff`, `winnow`,
 `public-suffix`) are gated just as well by the `cookies` and `cache`
 features from inside. The boundary was being kept for a third-party
@@ -7436,10 +7607,26 @@ questions were measured rather than eyeballed, and they came out
 differently.
 
 **Nothing is redundant.** The test is this workspace's own: a crate exists
-to hold a dependency a feature would otherwise spread to every graph. The
-likeliest suspect passes it most sharply — `hclient-tls-quic` is **153
-lines**, the smallest here, and it carries `quinn-proto`, which is exactly
-the dependency the argument is about. `hclient-quinn` has one in-tree
+to hold a dependency a feature would otherwise spread to every graph.
+
+**The example this used to give has since inverted, and the inversion is
+worth more than the example.** It read: the likeliest suspect passes the
+test most sharply — `hclient-tls-quic` is 153 lines, the smallest here,
+and it carries `quinn-proto`, which is exactly the dependency the
+argument is about. That crate folded into `hclient-tls` at `169dbdd` and
+became a `quic` feature; the feature then had nothing left to gate,
+because the seam stopped *carrying* `Arc<dyn
+quinn_proto::crypto::ClientConfig>` and started answering a declarative
+`QuicCryptoConfig` with an opaque `Session`. So the dependency the whole
+argument turned on is gone: `hclient-tls` is 21 crates under
+`--all-features` where the seam cost 38, with `chacha20`, `rand_core`
+and `ring` among the difference.
+
+The rule survives its example, which is the point. A boundary is worth
+keeping for a dependency it holds — and the way to stop paying for one is
+to **stop holding the dependency**, which is a change to what crosses the
+seam rather than to where the seam is drawn. `hclient-tungstenite`
+carries `tungstenite` and is kept for exactly that reason, unchanged. `hclient-quinn` has one in-tree
 consumer and an external reason (41 crates against `hclient-h3`'s 56 for a
 caller who wants bare QUIC), enforced by a `just` recipe — **and it was
 misnamed, which this pass checked it for redundancy and missed.** It was
@@ -8070,8 +8257,10 @@ defaults, and cargo builds **one** `hclient` — `default,default-transport,idn`
 the shared graph it gets all three. **The party who wanted the small graph
 is not the party who decides.**
 
-That is the same argument that keeps `hclient-tls-quic` out of
-`hclient-tls` and the WebSocket framing in a crate of its own. **It is not
+That is the same argument that keeps the WebSocket framing in a crate of
+its own. It kept the QUIC TLS seam out of `hclient-tls` too, until that
+seam stopped carrying `quinn-proto` and there was nothing left for a
+boundary to hold. **It is not
 what keeps `hclient-h3` out of `hclient-native`** — that reason was
 measured and is wrong, see the HTTP/3 section. Applying it to the two it
 fits and not to a feature list would have been the inconsistency.
@@ -8231,7 +8420,7 @@ crate had one, `readme` was set nowhere, so 25 crates.io pages would have
 carried a single line of `description`. Each crate has one now, and each
 says the thing this workspace's own arguments turn on — **why it is its own
 crate** — because that is the question a reader landing on
-`hclient-tls-quic` actually has.
+`hclient-tungstenite` actually has.
 
 `just packaging` is the check, in the `lint` job, and it asserts against
 the **packaged file list** rather than the working tree, because the tree
