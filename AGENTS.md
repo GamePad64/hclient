@@ -9249,5 +9249,26 @@ finishes writing the request body either — that's inherent to duplex without
 `spawn` and needs documenting. Vertical 2's work, entirely inside
 `hclient-wasi`.
 
+**`wasm32-wasip3` is checked too, by its own job.** The target finally
+names the `wasi:http` 0.3 this crate already speaks, and the guest is the
+same source: `just test-wasip3` runs the unit suite under `wasm32-wasip3`
+and the whole live file with `HCLIENT_WASI_GUEST_TARGET=wasm32-wasip3`,
+which asserts the artifact cargo built is the target asked for — so a job
+that lost its variable cannot come back green on the `wasip2` guest. It
+is nightly (tier 3) and needs **wasmtime 49 or later**: under 47.0.3 the
+wasip3 guest traps on `out of bounds memory access` or hangs, measured on
+the live suite, and the recipe refuses an older host by name.
+
+**Wasmtime 49 also found a defect on `wasip2`, and the local runs hid
+it for a day.** 49 moved the connection task's abort-on-drop handle into
+the transmission future `request.new` hands back, and `execute` dropped
+that future — so the host closed the connection under a body still being
+read and the trailers behind the data never arrived. `Body` holds it now
+until the stream ends. It "passed locally" because `find_wasmtime`
+preferred `~/.cargo/bin` (47) over a `PATH` naming 49; it prefers `PATH`
+now. One fact about 49 reads like a defect and is not: it strips
+`transfer-encoding` from every response it hands a guest
+(`DEFAULT_FORBIDDEN_HEADERS`).
+
 The two invariants CI enforces and every exception to them:
 [`docs/exceptions.md`](docs/exceptions.md).

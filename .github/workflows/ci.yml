@@ -223,6 +223,24 @@ jobs:
           HCLIENT_REQUIRE_WASMTIME: "1"
         run: just test-wasi
 
+  wasip3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: nightly
+          targets: wasm32-wasip3
+          bins: cargo-nextest,wasmtime-cli,just
+      - shell: bash
+        env:
+          # As in `fuzz-smoke`: `rust-toolchain.toml` pins stable and the
+          # target is nightly-only, so the recipe sets RUSTUP_TOOLCHAIN and
+          # this marker turns "no nightly here" into a failure.
+          HCLIENT_REQUIRE_NIGHTLY: "1"
+          HCLIENT_REQUIRE_WASMTIME: "1"
+        run: just test-wasip3
+
   browser:
     strategy:
       # Engine-specific behaviour is the point of running both, so a Chrome

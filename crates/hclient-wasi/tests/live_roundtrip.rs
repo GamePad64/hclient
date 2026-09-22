@@ -970,19 +970,34 @@ fn find_wasmtime() -> Option<PathBuf> {
     None
 }
 
-/// Builds `examples/live_roundtrip_guest.rs` under `wasm32-wasip2` and
+/// The target the guest is built for: `wasm32-wasip2` unless
+/// `HCLIENT_WASI_GUEST_TARGET` names another.
+///
+/// **One source, two targets, and the second is why this exists.** The
+/// `wasip3` job builds the same guest for `wasm32-wasip3` — nightly, tier 3
+/// — and runs the same assertions against it, because the component this
+/// crate produces is a `wasi:http` 0.3 guest either way and a target that
+/// finally names that version is one the crate should be seen to work on.
+/// The host side of this file is native whatever the guest is, so the
+/// switch is an environment variable rather than a second test file.
+fn guest_target() -> String {
+    std::env::var("HCLIENT_WASI_GUEST_TARGET").unwrap_or_else(|_| "wasm32-wasip2".to_owned())
+}
+
+/// Builds `examples/live_roundtrip_guest.rs` under [`guest_target`] and
 /// returns the path to the resulting `.wasm`, read out of
 /// `--message-format=json` — not assembled by hand from a relative path
 /// (which breaks under a non-standard `CARGO_TARGET_DIR`).
 fn build_guest() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let target = guest_target();
     let output = Command::new(env!("CARGO"))
         .args([
             "build",
             "--manifest-path",
             &format!("{manifest_dir}/Cargo.toml"),
             "--target",
-            "wasm32-wasip2",
+            &target,
             "--example",
             "live_roundtrip_guest",
             "--message-format=json",
@@ -992,8 +1007,8 @@ fn build_guest() -> PathBuf {
 
     assert!(
         output.status.success(),
-        "failed to build live_roundtrip_guest for wasm32-wasip2 \
-         (is the `wasm32-wasip2` rustup target installed?)\n--- stderr ---\n{}",
+        "failed to build live_roundtrip_guest for {target} \
+         (is the `{target}` rustup target installed?)\n--- stderr ---\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -1030,6 +1045,16 @@ fn build_guest() -> PathBuf {
             .filter_map(|f| f.as_str())
             .find(|f| f.ends_with(".wasm"));
         if let Some(path) = wasm {
+            // **The artifact must be the target that was asked for**, or a
+            // `wasip3` job that lost its variable would run the `wasip2`
+            // guest and come back green having checked nothing new. Read
+            // off cargo's own path, which carries the target directory.
+            assert!(
+                Path::new(path)
+                    .components()
+                    .any(|c| c.as_os_str() == target.as_str()),
+                "asked for a {target} guest and cargo built {path}"
+            );
             return PathBuf::from(path);
         }
     }

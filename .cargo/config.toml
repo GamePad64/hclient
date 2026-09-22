@@ -6,3 +6,9 @@
 # would fail at import linking.
 [target.wasm32-wasip2]
 runner = "wasmtime run -S http --"
+
+# The same runner for `wasm32-wasip3` (nightly, tier 3): the component is a
+# `wasi:http` 0.3 guest on either target. Needs wasmtime 49 or later — see
+# `just test-wasip3`, which refuses an older one by name.
+[target.wasm32-wasip3]
+runner = "wasmtime run -S http --"

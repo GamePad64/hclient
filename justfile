@@ -322,6 +322,47 @@ test-wasi:
     fi
     cargo nextest run -p hclient-wasi --test shape
 
+# The same wasi suite with the guest built for `wasm32-wasip3`, the target
+# that names the `wasi:http` 0.3 this crate already speaks. Nightly-only
+# (tier 3) and wasmtime 49 or later: under 47 the wasip3 guest traps
+# (`out of bounds memory access`) or hangs, measured on the live suite, so
+# an older host is refused by name rather than read as a crate defect.
+# The runner comes from `.cargo/config.toml`; the live file's host side is
+# native, and `HCLIENT_WASI_GUEST_TARGET` is what moves its guest — the
+# test asserts the artifact really is the target asked for.
+
+# the wasi suite with a wasm32-wasip3 guest (nightly, wasmtime >= 49)
+test-wasip3:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTUP_TOOLCHAIN=nightly
+    if ! rustc --version 2>/dev/null | grep -q nightly \
+      || ! rustup target list --installed 2>/dev/null | grep -qx wasm32-wasip3; then
+      if [ -n "${HCLIENT_REQUIRE_NIGHTLY:-}" ]; then
+        echo "::error::no nightly with wasm32-wasip3 here — RUSTUP_TOOLCHAIN did not take effect, or \`targets:\` did not install it"
+        exit 1
+      fi
+      echo "NOTICE: no nightly with wasm32-wasip3 — the wasip3 suite was skipped, not run."
+      exit 0
+    fi
+    ver="$(wasmtime --version 2>/dev/null | awk '{print $2}' || true)"
+    major="${ver%%.*}"
+    if [ -z "$major" ] || [ "$major" -lt 49 ]; then
+      echo "::error::the wasip3 suite needs wasmtime 49 or later on PATH, found '${ver:-none}'"
+      exit 1
+    fi
+    cargo nextest run -p hclient-wasi --target wasm32-wasip3 || exit $?
+    rc=0
+    out="$(HCLIENT_WASI_GUEST_TARGET=wasm32-wasip3 WASMTIME="$(command -v wasmtime)" \
+      cargo nextest run -p hclient-wasi --test live_roundtrip \
+      --color never --no-capture 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    [ "$rc" -eq 0 ] || exit "$rc"
+    if printf '%s\n' "$out" | grep -q 'NOTICE: `wasmtime` not found'; then
+      echo "::error::the live wasip3 run skipped the tests instead of executing them"
+      exit 1
+    fi
+
 # The `--features` below are wasm-pack's own arguments, not a `cargo test --`
 # passthrough — `-- --features ...` is rejected outright.
 #
