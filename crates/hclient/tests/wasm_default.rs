@@ -33,7 +33,6 @@
 use hclient::Client;
 use hclient::caps::Capabilities;
 use hclient::caps::RedirectSupport;
-use hclient::redirect::RedirectPolicy;
 use std::time::Duration;
 use wasm_bindgen_test::*;
 

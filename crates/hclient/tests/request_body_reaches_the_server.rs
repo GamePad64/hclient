@@ -9,6 +9,16 @@
 //! does not need it — and a server that sizes the body from the header then
 //! reads nothing. `curl` fails the same way when the header is suppressed, so
 //! this was never about this client.
+//! **Native-only, and the line is needed for a reason no test run here
+//! shows.** This stands up a real TCP server and drives it through
+//! `hclient-native` over `hclient-rt-tokio`, none of which is built for
+//! wasm — and `wasm-pack test`, which runs the browser suites, builds
+//! **every** test target of the crate whatever it was told to run: the
+//! command it issues is `cargo build --tests --test wasm_default`, where
+//! `--tests` wins. So this file failed the browser job, and the failure
+//! read as *browser tests failed* rather than as a file that was never
+//! meant for that target. CI was red from 2026-09-15 for a week on it.
+#![cfg(not(target_family = "wasm"))]
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};

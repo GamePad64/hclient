@@ -572,6 +572,34 @@ build-three-targets:
     cargo build -p hclient --example portable --target wasm32-wasip2
     cargo build -p hclient --example portable --target wasm32-unknown-unknown
 
+# **`hclient`'s test targets must compile for the browser**, which is not
+# the same claim as the one above and is what the browser job actually
+# makes.
+#
+# `wasm-pack test` builds **every** test target of a crate, whatever it
+# was told to run: the command it issues is
+# `cargo build --tests --test wasm_default …`, where `--tests` wins. So a
+# test file that names a native dev-dependency — `hclient-mock`,
+# `hclient-rt-tokio`, `tokio` — fails the browser job even though nothing
+# runs it there, and the failure reads as *browser tests failed* rather
+# than *this file was never meant for wasm*.
+#
+# That is how CI went red on 2026-09-15 and stayed red for a week: two
+# ordinary test files grew, nobody could run the browser job before
+# pushing, and `cargo nextest run --workspace` does not build for this
+# target at all. The fix in each file is one
+# `#![cfg(not(target_family = "wasm"))]`; this is what says so before a
+# push rather than after one.
+#
+# `--tests` here deliberately mirrors what `wasm-pack` issues, rather
+# than the `--test wasm_default` a reader would expect — a check that
+# built one target would be green over exactly the defect it exists for.
+
+# hclient's test targets build for the browser, as wasm-pack builds them
+check-wasm-test-targets:
+    cargo check -p hclient --target wasm32-unknown-unknown --tests \
+      --features default-transport,test-util
+
 # `hclient-fetch` carries an `unsafe impl Send` that is sound only because
 # wasm32-unknown-unknown is single-threaded. With `+atomics` the build must
 # FAIL, and with a specific E0277 about Send — not merely fail for any

@@ -428,6 +428,12 @@ jobs:
       # branched per target; `invariants` checks it contains no #[cfg].
       - shell: bash
         run: just build-three-targets
+      # The browser job builds every test target of `hclient`, because
+      # `wasm-pack` issues `cargo build --tests`. This says so here,
+      # where it costs seconds, rather than there, where it costs a
+      # browser and reads as a test failure.
+      - shell: bash
+        run: just check-wasm-test-targets
 
   # Every target this workspace ships for, type-checked from one Linux
   # runner. It overlaps `browser`, `wasi` and `test (macos-latest)` on
