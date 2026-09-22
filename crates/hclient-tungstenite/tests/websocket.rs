@@ -1827,6 +1827,16 @@ async fn a_protocol_violation_and_a_vanishing_peer_differ_by_kind_alone() {
             while w.fill() {}
             return;
         }
+        // **Nothing is reset until the client says it has the `101`.**
+        // Windows discards whatever the receiver has not yet read when an
+        // RST arrives, so resetting straight after the `101` let the
+        // client's handshake read `WSAECONNRESET` instead of the head —
+        // `test (windows-latest)` failed the handshake, not the assertion.
+        // The client sends one frame once its handshake is done, which is
+        // a fact about the client rather than a wait on a clock.
+        if w.frame().is_none() {
+            return;
+        }
         // A header promising 65 536 bytes and not one byte of them, and
         // then an **abortive** close: `SO_LINGER` of zero makes the
         // kernel answer the next read with `ECONNRESET` rather than a
@@ -1869,6 +1879,10 @@ async fn a_protocol_violation_and_a_vanishing_peer_differ_by_kind_alone() {
     .await
     .expect("the handshake must not hang")
     .expect("the handshake must succeed");
+    tokio::time::timeout(BOUND, reset.send(Message::Text("go".into())))
+        .await
+        .expect("one frame must not block")
+        .expect("the server is reading, so the frame is sent");
 
     let err = tokio::time::timeout(BOUND, reset.next())
         .await
