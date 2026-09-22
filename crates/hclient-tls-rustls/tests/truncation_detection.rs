@@ -143,18 +143,9 @@ async fn fetch_body(addr: SocketAddr, ca_der: Vec<u8>) -> Result<Vec<u8>, String
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .unwrap();
-    let (stream, _info) = bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .expect("handshake");
+    let (stream, _info) = bounded(tls.connect(tcp, TlsRequest::new("localhost", &[])))
+        .await
+        .expect("handshake");
 
     let (mut sender, conn) = bounded(hyper::client::conn::http1::handshake(HyperIo::new(stream)))
         .await
@@ -290,18 +281,10 @@ async fn close_notify_and_a_bare_fin_are_observably_different_at_the_stream_leve
             .connect(addr, &hclient_rt::TcpOpts::default())
             .await
             .unwrap();
-        let (mut stream, _info): (TlsStream<_>, _) = bounded(tls.connect(
-            tcp,
-            TlsRequest {
-                identity: None,
-                server_name: "localhost",
-                alpn: &[],
-                ech: None,
-                early_data: None,
-            },
-        ))
-        .await
-        .expect("handshake");
+        let (mut stream, _info): (TlsStream<_>, _) =
+            bounded(tls.connect(tcp, TlsRequest::new("localhost", &[])))
+                .await
+                .expect("handshake");
 
         let mut store = [0u8; 16];
         bounded(poll_fn(|cx| {

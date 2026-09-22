@@ -80,18 +80,9 @@ async fn connect_with(
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .expect("loopback connect");
-    tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: SERVER_NAME,
-            alpn: &[b"h2"],
-            ech,
-            early_data: None,
-        },
-    )
-    .await
-    .map(|_| ())
+    tls.connect(tcp, TlsRequest::new(SERVER_NAME, &[b"h2"]).ech(ech))
+        .await
+        .map(|_| ())
 }
 
 /// An `EchConfigList` is opaque to this test: the refusal must not depend

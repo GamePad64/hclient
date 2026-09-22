@@ -191,13 +191,7 @@ async fn session_with_a_breakable_transport() -> (
                 inner: tcp,
                 failing: Arc::clone(&failing),
             },
-            TlsRequest {
-                identity: None,
-                server_name: "localhost",
-                alpn: &[],
-                ech: None,
-                early_data: None,
-            },
+            TlsRequest::new("localhost", &[]),
         ),
     )
     .await

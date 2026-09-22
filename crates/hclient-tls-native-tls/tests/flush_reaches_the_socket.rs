@@ -173,13 +173,7 @@ async fn a_flush_on_the_session_reaches_the_transport() {
             inner: tcp,
             counts: Arc::clone(&counts),
         },
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
+        TlsRequest::new("localhost", &[]),
     ))
     .await
     .expect("a root the client was given must verify");
@@ -234,13 +228,7 @@ async fn the_counting_transport_is_genuinely_under_the_session() {
             inner: tcp,
             counts: Arc::clone(&counts),
         },
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
+        TlsRequest::new("localhost", &[]),
     ))
     .await
     .expect("a root the client was given must verify");

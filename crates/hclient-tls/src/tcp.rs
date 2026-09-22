@@ -18,7 +18,69 @@ use std::future::Future;
 /// which recomputing this on every connect is expensive is free to cache
 /// its TLS config per concrete ALPN set internally — that's its own
 /// business, not this trait's.
+///
+/// # Built with [`new`](Self::new), read by field
+///
+/// `#[non_exhaustive]` by this workspace's three-answer rule: the transport
+/// builds one and a backend only reads it, so a field added later must not
+/// be a breaking change for every `TlsConnect` written against this. It
+/// used to carry **reserved slots** for exactly that reason — `ech` and
+/// `early_data` went in before anything filled them — and the attribute is
+/// what replaces the practice: the next field arrives when it is designed,
+/// in the shape the design gives it, rather than in a shape guessed ahead.
+/// [`QuicTlsRequest`](crate::quic::QuicTlsRequest) has had this form from
+/// the start.
+///
+/// # 0-RTT over TCP is not a field yet, deliberately
+///
+/// `early_data: Option<usize>` sat here, documented as reserved and read by
+/// no backend, and it left before this type was frozen: a stable field is a
+/// promise about a shape, and nobody had designed this one. Its answer,
+/// `TlsInfo::early_data_accepted: Option<bool>`, left with it.
+///
+/// Two things the pair had established and are worth keeping. The verdict
+/// needs **three** states — accepted, rejected and to be resent, *this
+/// backend cannot tell* — because a caller reading "cannot tell" as
+/// "rejected" resends needlessly and one reading it as "accepted" drops a
+/// request. And a field on a handshake result is the right shape only for
+/// TLS over TCP, where the verdict is known when the handshake completes:
+/// in QUIC it resolves *after* the response (measured, 8.63 ms against
+/// 8.58 ms), which is why `hclient-native`'s HTTP/3 arm holds a future.
+/// Three things whoever implements it needs, written down here so
+/// they are not rediscovered:
+///
+/// 1. **0-RTT is replayable, and that makes it a client policy
+///    question before it is a crypto one.** An attacker can replay
+///    early data; which requests may go into it is therefore a
+///    decision about the request, not about the connection. The
+///    vocabulary for that decision already exists —
+///    `hclient_core::body::RequestBody::retry_kind()`, and the reasoning
+///    around it that v0.2 W2's retry is built on. Start there.
+/// 2. **The floor rule applies here with unusual force.** Over-claiming
+///    a capability normally costs a buffered copy or a lost
+///    optimisation; over-claiming this one costs exposure to replay.
+///    So whatever `Capabilities` end up saying about it must be the
+///    value that holds on the worst case, exactly as
+///    `full_duplex` is (see `hclient-native`'s `Native::new`).
+/// 3. **`native-tls` will not be able to do it**, for the same reason
+///    it cannot report ALPN — so the answer must come from the backend
+///    ([`TlsConnect::reports_alpn`] is the shape), with the
+///    conservative value as the default.
+///
+/// One thing that is already half in place, and is not obvious:
+/// rustls keeps session resumption in `ClientConfig`
+/// (`ClientSessionStore`), and `hclient_tls_rustls::Rustls::
+/// from_config` stores exactly one `Arc<ClientConfig>` — so the
+/// session cache is already scoped to one `Rustls` value, which is
+/// the same thing [`TlsConfigId`] identifies and which v0.2 W2 already
+/// put in the connection pool's key. **Half, not ready**: rustls keys
+/// its ticket store by `ServerName` alone, while a TLS 1.3 ticket also
+/// carries transport parameters, and `enable_early_data` sits on the
+/// config rather than on a per-connection request. The part that
+/// assembled itself is "which client may resume whose sessions"; the
+/// rest has not been designed.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct TlsRequest<'a> {
     /// The name to present in SNI and to verify the certificate against —
     /// a DNS name or an IP address, **never a URI authority**.
@@ -58,13 +120,11 @@ pub struct TlsRequest<'a> {
     /// `tests/quic_server_name.rs`, each asserting a completed handshake
     /// against a certificate with an IP SAN.
     pub server_name: &'a str,
+    /// The ALPN protocols to offer, most preferred first — see the type's
+    /// own documentation for why this is per connection.
     pub alpn: &'a [&'a [u8]],
     /// RFC 9849 Encrypted Client Hello. The `EchConfigList` comes from an
     /// HTTPS/SVCB record (`hclient_dns::SvcbEndpoint::ech_config_list`).
-    /// The slot is reserved up front, not bolted on once the
-    /// first implementation needed it: adding a new field to a request
-    /// struct later would be a breaking change for every already-written
-    /// `TlsConnect` implementation.
     ///
     /// **Reserved is not the same as ignorable, and this field is the one
     /// where the difference is a security property.** No backend in this
@@ -90,50 +150,41 @@ pub struct TlsRequest<'a> {
     /// connect with its default — silently substituting an identity is
     /// how one tenant's certificate reaches another's server.
     pub identity: Option<&'a str>,
-    /// TLS 1.3 early data (0-RTT): `Some(n)` asks the backend to offer it
-    /// and to accept up to `n` bytes of application data in the first
-    /// flight, `None` asks for none. **Reserved, not implemented** — no
-    /// backend in this workspace reads it today.
+}
+
+impl<'a> TlsRequest<'a> {
+    /// A request for `server_name`, offering `alpn`, with no ECH and the
+    /// backend's default identity.
     ///
-    /// Reserved for exactly the reason [`TlsRequest::ech`] above was: a
-    /// new field on this struct later is a breaking change for every
-    /// `TlsConnect` written against it, and a slot that costs nothing now
-    /// costs a major version then.
-    ///
-    /// Three things whoever implements this needs, written down here so
-    /// they are not rediscovered:
-    ///
-    /// 1. **0-RTT is replayable, and that makes it a client policy
-    ///    question before it is a crypto one.** An attacker can replay
-    ///    early data; which requests may go into it is therefore a
-    ///    decision about the request, not about the connection. The
-    ///    vocabulary for that decision already exists —
-    ///    `hclient_core::body::RequestBody::retry_kind()`, and the reasoning
-    ///    around it that v0.2 W2's retry is built on. Start there.
-    /// 2. **The floor rule applies here with unusual force.** Over-claiming
-    ///    a capability normally costs a buffered copy or a lost
-    ///    optimisation; over-claiming this one costs exposure to replay.
-    ///    So whatever `Capabilities` end up saying about it must be the
-    ///    value that holds on the worst case, exactly as
-    ///    `full_duplex` is (see `hclient-native`'s `Native::new`).
-    /// 3. **`native-tls` will not be able to do it**, for the same reason
-    ///    it cannot report ALPN — so the answer must come from the backend
-    ///    ([`TlsConnect::reports_alpn`] is the shape), with the
-    ///    conservative value as the default.
-    ///
-    /// One thing that is already half in place, and is not obvious:
-    /// rustls keeps session resumption in `ClientConfig`
-    /// (`ClientSessionStore`), and `hclient_tls_rustls::Rustls::
-    /// from_config` stores exactly one `Arc<ClientConfig>` — so the
-    /// session cache is already scoped to one `Rustls` value, which is
-    /// the same thing [`TlsConfigId`] identifies and which v0.2 W2 already
-    /// put in the connection pool's key. **Half, not ready**: rustls keys
-    /// its ticket store by `ServerName` alone, while a TLS 1.3 ticket also
-    /// carries transport parameters, and `enable_early_data` sits on the
-    /// config rather than on a per-connection request. The part that
-    /// assembled itself is "which client may resume whose sessions"; the
-    /// rest has not been designed.
-    pub early_data: Option<usize>,
+    /// The two fields with no honest default, which is
+    /// [`QuicTlsRequest::new`](crate::quic::QuicTlsRequest::new)'s shape:
+    /// a handshake has to present *some* name, and an ALPN list — even an
+    /// empty one — is a decision the caller made.
+    #[must_use]
+    pub const fn new(server_name: &'a str, alpn: &'a [&'a [u8]]) -> Self {
+        Self {
+            server_name,
+            alpn,
+            ech: None,
+            identity: None,
+        }
+    }
+
+    /// Apply this ECH config list — see [`ech`](Self::ech) for what a
+    /// backend that cannot owes.
+    #[must_use]
+    pub const fn ech(mut self, ech: Option<&'a [u8]>) -> Self {
+        self.ech = ech;
+        self
+    }
+
+    /// Present the identity this label names, or the backend's default for
+    /// `None`.
+    #[must_use]
+    pub const fn identity(mut self, identity: Option<&'a str>) -> Self {
+        self.identity = identity;
+        self
+    }
 }
 
 /// The outcome of a TLS handshake, as visible to the caller.
@@ -205,29 +256,6 @@ pub struct TlsInfo {
     /// backends will report the same cipher as two different strings, and
     /// a caller comparing them will get it wrong.
     pub cipher_suite: Option<String>,
-    /// Whether the server accepted the TLS 1.3 early data offered through
-    /// [`TlsRequest::early_data`]. **Reserved, not implemented** — every
-    /// backend here leaves it `None` today.
-    ///
-    /// `Option<bool>`, and all three states are distinct and all needed:
-    /// `Some(true)` the early data counted, `Some(false)` it was rejected
-    /// and whatever was in it has to be sent again, `None` this backend
-    /// cannot tell — the same third state [`TlsInfo::alpn`] has, for the
-    /// same backend, for the same reason. A caller that read `None` as
-    /// `false` would resend needlessly; one that read it as `true` would
-    /// drop a request on the floor. See [`TlsRequest::early_data`] for
-    /// what an implementer needs to know before touching any of this.
-    ///
-    /// **This field answers for the streaming path — TLS 1.3 over TCP —
-    /// and must not be read as the general contract for early data.**
-    /// There the verdict is known by the time the handshake completes,
-    /// which is what makes a field on a handshake result the honest shape.
-    /// In QUIC it is not: measured, `into_0rtt()` returns at 1.3 ms, the response arrives at 8.5 ms and the
-    /// acceptance verdict only at 8.6 ms — *after* the response. HTTP/3
-    /// will therefore need a shape of its own for this (and has a third
-    /// rejection path nobody here has, `425 Too Early`, RFC 8470); it must
-    /// not be forced into this one.
-    pub early_data_accepted: Option<bool>,
 }
 
 impl TlsInfo {
@@ -269,14 +297,6 @@ impl TlsInfo {
     #[must_use]
     pub fn cipher_suite(mut self, suite: Option<String>) -> Self {
         self.cipher_suite = suite;
-        self
-    }
-
-    /// Whether the server accepted early data. `None` where none was
-    /// offered, which is a different fact from `Some(false)`.
-    #[must_use]
-    pub fn early_data_accepted(mut self, accepted: Option<bool>) -> Self {
-        self.early_data_accepted = accepted;
         self
     }
 
@@ -723,7 +743,6 @@ mod tests {
                         peer_certificates: None,
                         protocol_version: Some("TLSv1.3".to_string()),
                         cipher_suite: None,
-                        early_data_accepted: None,
                     },
                 ))
             })
@@ -742,13 +761,7 @@ mod tests {
         let h2 = b"h2".to_vec();
         let http11 = b"http/1.1".to_vec();
         let alpn = [h2.as_slice(), http11.as_slice()];
-        let req = TlsRequest {
-            identity: None,
-            server_name: "example.com",
-            alpn: &alpn,
-            ech: None,
-            early_data: None,
-        };
+        let req = TlsRequest::new("example.com", &alpn);
 
         // `io` already contains data BEFORE the handshake — proves below
         // that the returned `Stream<S>` actually wraps THIS `io`, rather

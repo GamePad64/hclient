@@ -45,18 +45,10 @@ async fn completes_handshake_and_echoes() {
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .unwrap();
-    let (mut stream, info) = bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[b"http/1.1"],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .expect("handshake");
+    let (mut stream, info) =
+        bounded(tls.connect(tcp, TlsRequest::new("localhost", &[b"http/1.1"])))
+            .await
+            .expect("handshake");
 
     assert_eq!(
         info.alpn.as_deref(),
@@ -90,18 +82,9 @@ async fn rejects_an_untrusted_certificate() {
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .unwrap();
-    let err = bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .expect_err("must fail");
+    let err = bounded(tls.connect(tcp, TlsRequest::new("localhost", &[])))
+        .await
+        .expect_err("must fail");
     assert!(
         matches!(err.kind(), hclient_core::error::ErrorKind::Tls),
         "{err}"

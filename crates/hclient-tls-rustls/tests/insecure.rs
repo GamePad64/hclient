@@ -49,18 +49,9 @@ async fn handshake(
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .unwrap();
-    bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[b"http/1.1"],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .map(|_| ())
+    bounded(tls.connect(tcp, TlsRequest::new("localhost", &[b"http/1.1"])))
+        .await
+        .map(|_| ())
 }
 
 #[tokio::test]
@@ -97,18 +88,9 @@ async fn the_negotiated_alpn_still_comes_back() {
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .unwrap();
-    let (_stream, info) = bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[b"http/1.1"],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .expect("handshake");
+    let (_stream, info) = bounded(tls.connect(tcp, TlsRequest::new("localhost", &[b"http/1.1"])))
+        .await
+        .expect("handshake");
     assert_eq!(info.alpn.as_deref(), Some(b"http/1.1".as_slice()));
 }
 

@@ -60,13 +60,7 @@ fn native_tls_implements_the_seam() {
 #[test]
 fn ech_is_refused_before_the_transport_is_touched() {
     let tls = NativeTls::new();
-    let req = TlsRequest {
-        identity: None,
-        server_name: "example.com",
-        alpn: &[b"h2"],
-        ech: Some(&[1, 2, 3]),
-        early_data: None,
-    };
+    let req = TlsRequest::new("example.com", &[b"h2"]).ech(Some(&[1, 2, 3]));
     let err = futures_executor::block_on(tls.connect(NeverTouched, req))
         .expect_err("ECH must be refused, not ignored");
     assert_eq!(*err.kind(), ErrorKind::Tls, "{err}");
@@ -84,13 +78,7 @@ fn ech_is_refused_before_the_transport_is_touched() {
 #[should_panic(expected = "the transport was")]
 fn without_ech_the_handshake_actually_starts() {
     let tls = NativeTls::new();
-    let req = TlsRequest {
-        identity: None,
-        server_name: "example.com",
-        alpn: &[b"h2"],
-        ech: None,
-        early_data: None,
-    };
+    let req = TlsRequest::new("example.com", &[b"h2"]);
     let _ = futures_executor::block_on(tls.connect(NeverTouched, req));
 }
 

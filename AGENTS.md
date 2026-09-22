@@ -518,6 +518,29 @@ waiting on confidence, they are waiting on the seams to stop growing,
 and that is a decision to take deliberately rather than as a companion
 to somebody else's bump.
 
+**`hclient-tls` is prepared and is not the sixth, and the reason is a
+bound rather than the crate.** Its surface was audited type by type:
+mutation leaves two survivors, both equivalent (a default whose body is
+already the mutant's value); `TlsRequest` is `#[non_exhaustive]` with
+`TlsRequest::new(server_name, alpn)` and setters, `QuicTlsRequest`'s shape,
+because the transport builds it and a backend only reads it; the two
+**reserved** fields went before the freeze rather than after —
+`TlsRequest::early_data: Option<usize>`, read by no backend and with no
+client-side meaning (rustls' `max_early_data_size` is a server field), and
+its answer `TlsInfo::early_data_accepted` — since a stable field is a
+promise about a shape and nobody had designed this one; and each type has
+one path, `tcp` being a private module named from the root. Checked from
+a crate outside the workspace: the builder compiles, a literal is
+`E0639`, `hclient_tls::tcp::..` is `E0603`.
+
+What blocks it is `TlsConnect::Stream<S>`'s bound, which names
+`hclient_rt::Shutdown` — and `hclient-rt` is in the series for the reason
+the paragraph above gives. A stable crate whose public bound names a
+pre-release trait promises that trait's stability without owning it. The
+owner's call is **`hclient-rt` first**, over moving `Shutdown` into
+`hclient-core`: so `hclient-tls` waits on that crate's seams settling, and
+nothing in it needs to change when they do.
+
 **`hclient-dns` is the fifth, and the owner's correction is worth more
 than the crate.** It had been held back twice on the ground that its
 surface was *broken two days ago* — a calendar rule, and the answer to

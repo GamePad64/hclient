@@ -79,18 +79,9 @@ async fn handshake(tls: &NativeTls, addr: SocketAddr) -> Result<(), hclient_core
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .unwrap();
-    bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .map(|_| ())
+    bounded(tls.connect(tcp, TlsRequest::new("localhost", &[])))
+        .await
+        .map(|_| ())
 }
 
 #[tokio::test]
@@ -138,13 +129,7 @@ async fn the_wrong_name_is_accepted_too() {
         .unwrap();
     bounded(tls.connect(
         tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "not-the-name-on-the-certificate.invalid",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
+        TlsRequest::new("not-the-name-on-the-certificate.invalid", &[]),
     ))
     .await
     .expect("a name mismatch must be accepted too, or the setting is half applied");

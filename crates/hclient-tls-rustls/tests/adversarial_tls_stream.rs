@@ -162,18 +162,9 @@ async fn scripted_client(
     let tls = Rustls::from_config(Arc::new(cfg));
     let tcp = Tokio.connect(addr, &TcpOpts::default()).await.unwrap();
     let (scripted, script) = Scripted::new(tcp);
-    let (stream, _info) = bounded(tls.connect(
-        scripted,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .expect("handshake");
+    let (stream, _info) = bounded(tls.connect(scripted, TlsRequest::new("localhost", &[])))
+        .await
+        .expect("handshake");
     (stream, script)
 }
 
@@ -381,18 +372,9 @@ async fn abrupt_rst_close_without_close_notify_is_reported_as_a_real_error() {
         .with_no_client_auth();
     let tls = Rustls::from_config(Arc::new(cfg));
     let tcp = Tokio.connect(addr, &TcpOpts::default()).await.unwrap();
-    let (mut stream, _info) = bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .expect("handshake");
+    let (mut stream, _info) = bounded(tls.connect(tcp, TlsRequest::new("localhost", &[])))
+        .await
+        .expect("handshake");
 
     let mut store = [0u8; 16];
     let result = bounded(poll_fn(|cx| {

@@ -141,7 +141,7 @@ type SendRequest = h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>;
 /// that offered early data.
 ///
 /// **A future, not a field, and that is the finding rather than a style
-/// choice.** `TlsInfo::early_data_accepted: Option<bool>` is the right
+/// choice.** A field on the handshake result is the right
 /// shape for TLS 1.3 over TCP, where the answer is known when the
 /// handshake completes. Over QUIC it is not: measured, `into_0rtt()`
 /// returns at 1.27 ms, the

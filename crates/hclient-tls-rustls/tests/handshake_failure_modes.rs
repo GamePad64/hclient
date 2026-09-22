@@ -32,13 +32,8 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
         Duration::from_secs(5),
         tls.connect(
             tcp,
-            TlsRequest {
-                identity: None,
-                server_name: "not-localhost.invalid", // trusted CA, wrong hostname
-                alpn: &[],
-                ech: None,
-                early_data: None,
-            },
+            // Trusted CA, wrong hostname.
+            TlsRequest::new("not-localhost.invalid", &[]),
         ),
     )
     .await
@@ -135,16 +130,7 @@ where
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        tls.connect(
-            tcp,
-            TlsRequest {
-                identity: None,
-                server_name: "localhost",
-                alpn: &[],
-                ech: None,
-                early_data: None,
-            },
-        ),
+        tls.connect(tcp, TlsRequest::new("localhost", &[])),
     )
     .await
     .expect("must not hang");

@@ -95,16 +95,7 @@ async fn close_notify_without_a_raw_tcp_close_resolves_as_clean_eof_not_a_hang()
         .await
         .unwrap();
     let (mut stream, _info) = tls
-        .connect(
-            tcp,
-            TlsRequest {
-                identity: None,
-                server_name: "localhost",
-                alpn: &[],
-                ech: None,
-                early_data: None,
-            },
-        )
+        .connect(tcp, TlsRequest::new("localhost", &[]))
         .await
         .expect("handshake");
 
@@ -162,16 +153,7 @@ async fn handshake_against_a_silent_peer_has_no_internal_bound_by_design() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        tls.connect(
-            tcp,
-            TlsRequest {
-                identity: None,
-                server_name: "localhost",
-                alpn: &[],
-                ech: None,
-                early_data: None,
-            },
-        ),
+        tls.connect(tcp, TlsRequest::new("localhost", &[])),
     )
     .await;
 

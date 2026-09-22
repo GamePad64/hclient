@@ -50,13 +50,7 @@ fn no_tls_advertises_none_not_full() {
 
 #[test]
 fn no_tls_refuses_and_names_the_host_without_touching_the_transport() {
-    let req = TlsRequest {
-        identity: None,
-        server_name: "example.com",
-        alpn: &[b"http/1.1"],
-        ech: None,
-        early_data: None,
-    };
+    let req = TlsRequest::new("example.com", &[b"http/1.1"]);
     let err = futures_executor::block_on(NoTls.connect(NeverTouched, req))
         .expect_err("NoTls must refuse every connection");
     assert_eq!(*err.kind(), ErrorKind::Tls, "{err}");

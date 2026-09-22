@@ -26,9 +26,11 @@
 //!
 //! Two seams, peers, each in its own module, and what they share here:
 //!
-//! - [`tcp`] — [`TlsConnect`], a handshake over a byte stream, with
-//!   [`TlsRequest`], [`TlsInfo`] and the [`NoTls`] backend. Re-exported at
-//!   this root, where every consumer has always named them.
+//! - `tcp` — [`TlsConnect`], a handshake over a byte stream, with
+//!   [`TlsRequest`], [`TlsInfo`] and the [`NoTls`] backend. A private
+//!   module whose items are named from this root, where every consumer
+//!   has always named them: one path per type, since a stable crate
+//!   promises every path it publishes.
 //! - [`quic`] — [`QuicTlsConnect`](quic::QuicTlsConnect), what a QUIC stack
 //!   asks of TLS, which is not a handshake over a stream at all.
 //! - here — [`TlsIdentity`] and [`TlsConfigId`], the configuration
@@ -37,7 +39,7 @@
 #![forbid(unsafe_code)]
 
 pub mod quic;
-pub mod tcp;
+mod tcp;
 
 pub use hclient_core::hooks::{ClientCertAsk, ClientCertRequest};
 pub use tcp::{NoStream, NoTls, TlsConnect, TlsInfo, TlsRequest};

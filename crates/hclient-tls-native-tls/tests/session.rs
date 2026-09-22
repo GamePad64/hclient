@@ -126,17 +126,7 @@ async fn connect_trusting(
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .expect("tcp");
-    bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn,
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
+    bounded(tls.connect(tcp, TlsRequest::new("localhost", alpn))).await
 }
 
 /// One `write` -> `flush` -> `read` round trip over the session, returning
@@ -323,18 +313,9 @@ async fn the_same_server_without_the_added_root_is_refused() {
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .expect("tcp");
-    let err = bounded(NativeTls::new().connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .expect_err("no trust store issued this certificate, so it must be refused");
+    let err = bounded(NativeTls::new().connect(tcp, TlsRequest::new("localhost", &[])))
+        .await
+        .expect_err("no trust store issued this certificate, so it must be refused");
 
     assert_eq!(
         *err.kind(),

@@ -34,16 +34,7 @@ async fn handshake_and_echo<R: TcpConnect>(rt: R, addr: SocketAddr, ca_der: Vec<
 
     let tcp = rt.connect(addr, &TcpOpts::default()).await.unwrap();
     let (mut stream, info) = tls
-        .connect(
-            tcp,
-            TlsRequest {
-                identity: None,
-                server_name: "localhost",
-                alpn: &[],
-                ech: None,
-                early_data: None,
-            },
-        )
+        .connect(tcp, TlsRequest::new("localhost", &[]))
         .await
         .expect("handshake");
     assert_eq!(info.protocol_version.as_deref(), Some("TLSv1.3"));

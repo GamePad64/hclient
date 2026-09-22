@@ -247,7 +247,7 @@ fn an_unknown_label_resolves_to_no_identity_rather_than_to_the_default_one() {
 /// to `Default::default()` left the crate's 6 tests passing, and each one
 /// alone also passed.
 ///
-/// Each field is asserted on a chain that has already set the other five,
+/// Each field is asserted on a chain that has already set the other four,
 /// so a setter that discards its receiver is caught as well as one that
 /// discards its argument, and each is read individually so that a setter
 /// writing into the *wrong* field cannot pass either.
@@ -258,7 +258,6 @@ fn every_tls_info_setter_writes_its_own_field_and_disturbs_no_other() {
         .peer_certificates(Some(vec![vec![0xde, 0xad]]))
         .protocol_version(Some("TLSv1.3".to_string()))
         .cipher_suite(Some("TLS13_AES_128_GCM_SHA256".to_string()))
-        .early_data_accepted(Some(true))
         .client_cert(ClientCertAsk::NotAsked);
 
     assert_eq!(full.alpn.as_deref(), Some(b"h2".as_slice()));
@@ -268,22 +267,17 @@ fn every_tls_info_setter_writes_its_own_field_and_disturbs_no_other() {
         full.cipher_suite.as_deref(),
         Some("TLS13_AES_128_GCM_SHA256")
     );
-    assert_eq!(full.early_data_accepted, Some(true));
     assert_eq!(full.client_cert, ClientCertAsk::NotAsked);
 
     // The reverse direction, and it is the half a `Default::default()`
     // mutation alone would not distinguish: a setter handed `None` must
     // *clear* the field rather than leave what an earlier call put there.
-    // `None` and `Some(false)` are different facts on
-    // `early_data_accepted` by its own doc, so a backend that offered no
-    // early data has to be able to say so after one that did.
     let cleared = full
         .clone()
         .alpn(None)
         .peer_certificates(None)
         .protocol_version(None)
-        .cipher_suite(None)
-        .early_data_accepted(None);
+        .cipher_suite(None);
     assert_eq!(cleared, TlsInfo::new().client_cert(ClientCertAsk::NotAsked));
 }
 

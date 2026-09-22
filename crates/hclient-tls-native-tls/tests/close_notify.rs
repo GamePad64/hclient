@@ -107,16 +107,9 @@ async fn closing_the_session_sends_close_notify_and_the_peer_sees_a_clean_end() 
         .expect("tcp");
     let (mut stream, _) = tokio::time::timeout(
         OP_TIMEOUT,
-        NativeTls::new().add_root_certificate(root).connect(
-            tcp,
-            TlsRequest {
-                identity: None,
-                server_name: "localhost",
-                alpn: &[],
-                ech: None,
-                early_data: None,
-            },
-        ),
+        NativeTls::new()
+            .add_root_certificate(root)
+            .connect(tcp, TlsRequest::new("localhost", &[])),
     )
     .await
     .expect("handshake within the bound")

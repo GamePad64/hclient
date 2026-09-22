@@ -41,13 +41,7 @@ async fn an_unregistered_label_is_refused_before_the_handshake() {
     let err = tls
         .connect(
             tcp,
-            TlsRequest {
-                identity: Some("a-name-nobody-registered"),
-                server_name: "localhost",
-                alpn: &[b"http/1.1"],
-                ech: None,
-                early_data: None,
-            },
+            TlsRequest::new("localhost", &[b"http/1.1"]).identity(Some("a-name-nobody-registered")),
         )
         .await
         .expect_err("an unknown label must not produce a connection");
@@ -77,13 +71,7 @@ async fn a_registered_label_still_connects() {
         .unwrap();
     tls.connect(
         tcp,
-        TlsRequest {
-            identity: Some("corp"),
-            server_name: "localhost",
-            alpn: &[b"http/1.1"],
-            ech: None,
-            early_data: None,
-        },
+        TlsRequest::new("localhost", &[b"http/1.1"]).identity(Some("corp")),
     )
     .await
     .expect("a registered label must connect");

@@ -129,18 +129,9 @@ async fn handshake(addr: SocketAddr, tls: Rustls) -> TlsInfo {
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .unwrap();
-    let (_stream, info) = bounded(tls.connect(
-        tcp,
-        TlsRequest {
-            identity: None,
-            server_name: "localhost",
-            alpn: &[b"http/1.1"],
-            ech: None,
-            early_data: None,
-        },
-    ))
-    .await
-    .expect("handshake");
+    let (_stream, info) = bounded(tls.connect(tcp, TlsRequest::new("localhost", &[b"http/1.1"])))
+        .await
+        .expect("handshake");
     info
 }
 

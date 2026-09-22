@@ -2,9 +2,9 @@
 //!
 //! # The verdict is a future, not a field
 //!
-//! `TlsInfo::early_data_accepted: Option<bool>` is the right shape for
-//! TLS 1.3 over TCP, where the answer is known by the time the handshake
-//! completes. **In QUIC it is not.** Measured on a live loopback
+//! A field on the handshake result — `Option<bool>`, as `TlsInfo` once
+//! reserved — is the right shape for TLS 1.3 over TCP, where the answer
+//! is known by the time the handshake completes. **In QUIC it is not.** Measured on a live loopback
 //! exchange: the connection exists at 1.27 ms, the h3 layer is up at
 //! 1.68 ms, the response arrives at **8.58 ms**, and the acceptance verdict
 //! resolves at **8.63 ms** — fifty microseconds *after* the response body.
@@ -12,8 +12,7 @@
 //! wait for the handshake, which is precisely the round trip 0-RTT exists
 //! to skip.
 //!
-//! So this crate never touches `TlsInfo::early_data_accepted`, and the
-//! quantity it would have held is `quinn::ZeroRttAccepted`, a
+//! So the quantity such a field would have held is `quinn::ZeroRttAccepted`, a
 //! `Future<Output = bool>` that nobody outside this module ever sees.
 //!
 //! # Three failure paths, and only two of them are covered

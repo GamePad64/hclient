@@ -993,10 +993,6 @@ where
             Err(_) => hclient_tls::ClientCertAsk::Unobserved,
         };
         let c = stream.conn();
-        // `early_data_accepted` is left unset: this backend never offers
-        // early data, so there is nothing to report as accepted or
-        // refused — see the field's own doc on why the two are different
-        // answers.
         let info = TlsInfo::new()
             .alpn(c.alpn_protocol().map(<[u8]>::to_vec))
             .peer_certificates(

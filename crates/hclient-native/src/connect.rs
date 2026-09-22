@@ -954,16 +954,10 @@ where
     }
 
     // The **origin's** name, never the proxy's: the tunnel is transport,
-    // and a certificate is checked against who the caller asked for.
-    let req = TlsRequest {
-        server_name: hclient_core::url::bare_host(host),
-        alpn,
-        identity,
-        // No record was consulted, so there is nothing to apply — see this
-        // function's doc comment.
-        ech: None,
-        early_data: None,
-    };
+    // and a certificate is checked against who the caller asked for. No
+    // ECH: no record was consulted, so there is nothing to apply — see
+    // this function's doc comment.
+    let req = TlsRequest::new(hclient_core::url::bare_host(host), alpn).identity(identity);
     let handshake_began = mark::<H, R>(rt);
     let (stream, info) = tls.connect(tcp, req).await?;
     if let Some(a) = attempted.as_mut() {
@@ -1025,13 +1019,7 @@ where
     // The name from the URI, because a certificate is checked against who
     // the caller asked for — the socket is transport, exactly as a tunnel
     // is.
-    let req = TlsRequest {
-        server_name: hclient_core::url::bare_host(host),
-        alpn,
-        identity,
-        ech: None,
-        early_data: None,
-    };
+    let req = TlsRequest::new(hclient_core::url::bare_host(host), alpn).identity(identity);
     let handshake_began = mark::<H, R>(rt);
     let (tls_stream, info) = tls.connect(stream, req).await?;
     if let Some(a) = attempted.as_mut() {
@@ -1403,35 +1391,34 @@ where
     if use_tls {
         // Held outside the `TlsRequest` so the borrowed list outlives it.
         let restricted = endpoint.map(|e| discovery::alpn_offer(alpn, &e.alpn));
-        let req = TlsRequest {
-            // The one place in this crate where a URI's host stops being
-            // URI syntax and becomes a name. `host` is `Uri::host()`'s
-            // answer, so an IPv6 literal still wears the brackets RFC 3986
-            // §3.2.2 gives the *authority*; `ServerName::try_from` reads
-            // them as neither a DNS name nor an address and every
-            // `https://[…]/` request failed at the handshake. The duty is
-            // the caller's rather than the backend's, and
-            // `TlsRequest::server_name`'s own doc is where that is argued.
-            //
-            // Not stripped anywhere else on purpose: the `Host` header and
-            // h2's `:authority` (`established.rs`, `websocket.rs`) are
-            // authority syntax and keep their brackets.
-            server_name: hclient_core::url::bare_host(host),
-            alpn: restricted.as_deref().unwrap_or(alpn),
-            identity,
-            // The whole of the ECH decision, and the reason it is a
-            // question rather than an assignment: see the module doc.
-            // `applies_ech()` is `false` for every backend here today, so
-            // this is `None` today — but it is `None` because a backend
-            // said it would not use one, not because nobody asked.
-            ech: endpoint
+        // The one place in this crate where a URI's host stops being URI
+        // syntax and becomes a name. `host` is `Uri::host()`'s answer, so
+        // an IPv6 literal still wears the brackets RFC 3986 §3.2.2 gives
+        // the *authority*; `ServerName::try_from` reads them as neither a
+        // DNS name nor an address and every `https://[…]/` request failed
+        // at the handshake. The duty is the caller's rather than the
+        // backend's, and `TlsRequest::server_name`'s own doc is where that
+        // is argued.
+        //
+        // Not stripped anywhere else on purpose: the `Host` header and
+        // h2's `:authority` (`established.rs`, `websocket.rs`) are
+        // authority syntax and keep their brackets.
+        //
+        // The ECH argument is the whole of the ECH decision, and the
+        // reason it is a question rather than an assignment: see the
+        // module doc. `applies_ech()` is `false` for every backend here
+        // today, so this is `None` today — but it is `None` because a
+        // backend said it would not use one, not because nobody asked.
+        let req = TlsRequest::new(
+            hclient_core::url::bare_host(host),
+            restricted.as_deref().unwrap_or(alpn),
+        )
+        .identity(identity)
+        .ech(
+            endpoint
                 .filter(|_| tls.applies_ech())
                 .and_then(|e| e.ech.as_deref()),
-            // Reserved, not used — see `hclient_tls::TlsRequest::
-            // early_data`, which explains what a transport has to settle
-            // before it may ask for 0-RTT, and why none of that is v0.2's.
-            early_data: None,
-        };
+        );
         // The handshake and nothing else between these two marks: the
         // stream it wraps is already connected, and whatever the caller
         // does with the result afterwards is not TLS.

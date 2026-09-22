@@ -70,11 +70,10 @@ use hclient_core::error::Error;
 
 /// Parameters for one QUIC connection's TLS.
 ///
-/// Deliberately **not** `TlsRequest`: two of that struct's four fields mean
-/// something different here (see [`QuicTlsRequest::alpn`] and
-/// [`QuicTlsRequest::early_data`]), and reusing a type whose fields have
-/// shifted meaning is how a caller ends up setting one and getting the
-/// other.
+/// Deliberately **not** `TlsRequest`: [`QuicTlsRequest::alpn`] means
+/// something different here, and [`QuicTlsRequest::early_data`] has no
+/// counterpart there at all — and reusing a type whose fields have shifted
+/// meaning is how a caller ends up setting one and getting the other.
 /// # Extensible, and the constructor is what makes that true
 ///
 /// `#[non_exhaustive]`, so a field added later is not a breaking change
@@ -119,18 +118,16 @@ pub struct QuicTlsRequest<'a> {
     pub ech: Option<&'a [u8]>,
     /// Whether to offer TLS 1.3 early data (0-RTT) on this connection.
     ///
-    /// **A `bool`, where [`TlsRequest::early_data`] is an
-    /// `Option<usize>`,** and the difference is a correction rather than a
-    /// simplification: `max_early_data_size` is a *server* field in rustls,
-    /// and a client's early-data budget comes from the ticket it
-    /// remembered, not from a number it chooses. The `usize` had no
-    /// client-side meaning to carry.
+    /// **A `bool`, and it corrected the `Option<usize>` `TlsRequest`
+    /// reserved for the same idea** — which is part of why that slot left
+    /// before the type was frozen: `max_early_data_size` is a *server*
+    /// field in rustls, and a client's early-data budget comes from the
+    /// ticket it remembered, not from a number it chooses. The `usize` had
+    /// no client-side meaning to carry.
     ///
     /// `true` here asks the backend to offer early data. It does not say
     /// anything went into it — the acceptance verdict is not available at
     /// this layer or at this time, see [`QuicTlsConnect::offers_early_data`].
-    ///
-    /// [`TlsRequest::early_data`]: crate::TlsRequest::early_data
     pub early_data: bool,
     /// The client identity the caller named, mirroring
     /// [`TlsRequest::identity`](crate::TlsRequest::identity).
