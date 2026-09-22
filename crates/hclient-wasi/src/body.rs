@@ -6,12 +6,41 @@ use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use wasip3::http::types::ErrorCode;
 use wasip3::http_compat::IncomingResponseBody;
+use wasip3::wit_bindgen::FutureReader;
+
+/// The second half of what `wasi:http`'s `request.new` hands back —
+/// *"resolves to result of transmission of this request"*.
+pub(crate) type Transmitted = FutureReader<Result<(), ErrorCode>>;
 
 /// `wasi:http` response body. Reads the stream inline, with no background
 /// task — meaning the transport doesn't need the `spawn` capability.
 pub struct Body {
     inner: Inner,
+    /// Held, never polled, until the stream ends — **because on wasmtime
+    /// 49 dropping it ends the connection**.
+    ///
+    /// Read in `wasmtime-wasi-http` 49.0.0, `p3/host/handler.rs`: the
+    /// handle to the task driving the connection is sent into the future
+    /// that resolves *this* value (`io_task_result`, holding it as
+    /// `_io`), and the handle aborts its task on drop. In 48 the response
+    /// body kept its own reference to the same task (`with_state(io)`),
+    /// and 49 removed it. So a guest that drops the transmission future —
+    /// which this crate did, deliberately, in `execute` — has the
+    /// connection torn down under a body still being read: the data
+    /// already buffered arrives, and **the trailers behind it do not**.
+    /// No error says so; the body just ends early.
+    ///
+    /// `test (wasip2)` found it the first run after CI took 49, and every
+    /// local run passed for a day because the test's `find_wasmtime`
+    /// prefers `~/.cargo/bin` over `PATH` and that one was 47.
+    ///
+    /// Awaiting it — surfacing a failed transmission as a body error — is
+    /// the larger change `convert::resolve_send`'s doc argues for, and it
+    /// is not this one: holding it is the whole of what keeps the
+    /// connection alive, and changes nothing a caller observes otherwise.
+    transmitted: Option<Transmitted>,
 }
 
 enum Inner {
@@ -40,9 +69,10 @@ impl Debug for Body {
 }
 
 impl Body {
-    pub(crate) fn from_incoming(i: IncomingResponseBody) -> Self {
+    pub(crate) fn from_incoming(i: IncomingResponseBody, transmitted: Transmitted) -> Self {
         Self {
             inner: Inner::Incoming(i),
+            transmitted: Some(transmitted),
         }
     }
 
@@ -52,13 +82,17 @@ impl Body {
     pub(crate) fn from_bytes(b: Bytes) -> Self {
         Self {
             inner: Inner::Buffered(Some(b)),
+            transmitted: None,
         }
     }
 
     /// Empty body: no frames at all, `is_end_stream()` is true from the
     /// start, `size_hint()` is an exact zero.
     pub fn empty() -> Self {
-        Self { inner: Inner::Done }
+        Self {
+            inner: Inner::Done,
+            transmitted: None,
+        }
     }
 }
 
@@ -89,10 +123,14 @@ impl HttpBody for Body {
                     // downcast to the real type via `Error::source()`,
                     // while a wrapper would close off that option.
                     self.inner = Inner::Done;
+                    self.transmitted = None;
                     Poll::Ready(Some(Err(Error::new(ErrorKind::Body, e))))
                 }
                 Poll::Ready(None) => {
+                    // The trailers have been read, so the connection has
+                    // nothing left to deliver and may go.
                     self.inner = Inner::Done;
+                    self.transmitted = None;
                     Poll::Ready(None)
                 }
                 Poll::Pending => Poll::Pending,

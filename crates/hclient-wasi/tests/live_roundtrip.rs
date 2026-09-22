@@ -946,17 +946,23 @@ fn find_wasmtime() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let candidate = Path::new(&home).join(".cargo/bin/wasmtime");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
+    // `PATH` before `~/.cargo/bin`, which was the other order for as long
+    // as this function existed and cost a day: a `PATH` naming wasmtime
+    // 49 still ran the 47 in `~/.cargo/bin`, so the trailer defect 49
+    // exposes "passed locally" on every run that tried to reproduce it.
+    // The `PATH` is what whoever ran the test chose; the fallback is for
+    // an environment whose `PATH` does not carry cargo's bin at all.
     for dir in std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
     {
         let candidate = dir.join("wasmtime");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let candidate = Path::new(&home).join(".cargo/bin/wasmtime");
         if candidate.is_file() {
             return Some(candidate);
         }

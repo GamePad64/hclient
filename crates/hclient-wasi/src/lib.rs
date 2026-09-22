@@ -456,16 +456,14 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
         // `execute()` doesn't return for a typical response with a body
         // until it has drained it entirely itself (destroying the
         // streaming `Body` exists for), or it hangs for the ordinary case
-        // of "the body is read after getting the `Response`". Neither
-        // option is compatible with THIS shape of the seam — but carrying
-        // the future into `Body` and awaiting it at the end of the
-        // stream, surfacing a transmission failure as a terminal body
-        // error, is compatible and remains a candidate for v0.2 (details
-        // and full argument in the `convert::resolve_send` doc comment).
-        // Dropped here explicitly, with this comment, rather than via
-        // `let (.., _) = ..`.
+        // of "the body is read after getting the `Response`".
+        //
+        // **It used to be dropped here, and on wasmtime 49 that ends the
+        // connection** — see `Body::transmitted`. So it is carried into the
+        // response body unpolled and released when the body ends; an
+        // error path before a body exists drops it, which is right there,
+        // since nothing is left to read.
         let (wasi_request, transmitted) = Request::new(fields, contents, trailers, Some(opts));
-        drop(transmitted);
         wasi_request
             .set_method(&convert::to_wasi_method(&parts.method))
             .map_err(|()| convert::rejected("method"))?;
@@ -551,7 +549,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
         let out = http::Response::from_parts(
             resp_parts,
             hclient_core::hooks::Counting::new(
-                Body::from_incoming(incoming),
+                Body::from_incoming(incoming, transmitted),
                 self.hooks.clone(),
                 ConnectionId::UNWATCHED,
                 request,

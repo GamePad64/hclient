@@ -166,33 +166,34 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
         return Err(());
     }
 
-    // **Diagnostics, and they are here because the failure is only
-    // reproducible in CI.** `wasi_transport_round_trips_a_real_response`
-    // fails on every GitHub run with *expected a trailers frame, got
-    // none* and passes locally under wasmtime 47 and 49, at any
-    // concurrency, on the same `wasip2 1.0.4+wasi-0.2.12`. So the next
-    // red run has to say what the guest actually received rather than
-    // only what it wanted, which is the difference between three live
-    // hypotheses: the host delivered no trailers frame at all, delivered
-    // an empty one, or delivered it as data.
+    // **Diagnostics, kept because they found the defect they were added
+    // for.** `wasi_transport_round_trips_a_real_response` failed on every
+    // GitHub run with *expected a trailers frame, got none* and passed on
+    // every local one, and these lines are what separated the three
+    // hypotheses — no trailers frame at all, an empty one, or trailers
+    // delivered as data. The first red run printed one data frame and
+    // nothing after it.
+    //
+    // **"Passes locally under 49" was false, and that is worth more than
+    // the fix.** `find_wasmtime` preferred `~/.cargo/bin` over `PATH`, so
+    // a `PATH` naming 49 still ran 47; forced with `WASMTIME=`, 49 fails
+    // here exactly as CI did. The cause is `Body::transmitted`'s.
     //
     // Written to stderr, which the harness already captures and prints
     // on failure, and unconditional: a diagnostic behind a flag is one
     // nobody turns on for the run that mattered.
     //
-    // **What a healthy run says**, captured locally under wasmtime 49
-    // against the same mock server, so that a red log can be read
-    // against it rather than guessed at:
+    // **What a healthy run says, and it differs by host version**:
     //
-    //     DIAG response headers: {"transfer-encoding": "chunked", "trailer": "X-Checksum"}
+    //     DIAG response headers: {"trailer": "X-Checksum"}
     //     DIAG frame 1: trailers=false data=true
     //     DIAG   data frame of 32 bytes
     //     DIAG frame 2: trailers=true data=false
     //
-    // A red run that prints one data frame and no second frame means the
-    // host ended the body without delivering trailers; one that prints a
-    // second *data* frame means it delivered them as data; and no `DIAG`
-    // lines at all would mean the guest never got a response to read.
+    // Under wasmtime 49 the headers carry no `transfer-encoding`: it is
+    // in `wasmtime_wasi_http::DEFAULT_FORBIDDEN_HEADERS`, which 49 strips
+    // from every response it hands a guest. Under 47 it is there. Neither
+    // is a defect, so the frames are what to read a red log against.
     eprintln!("DIAG response headers: {:?}", resp.headers());
 
     let mut body = resp.into_body();
