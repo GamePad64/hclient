@@ -152,6 +152,26 @@ fn spawn_tls_server() -> (std::net::SocketAddr, Vec<u8>) {
 
 /// Completes a handshake over a `Faulty` transport and hands back the
 /// session together with the switch that breaks it.
+/// What a poll answered, in one line, for a failure message.
+///
+/// `Poll<io::Result<usize>>` has no `Display` and its `Debug` prints the
+/// error's kind without its OS code — which is the half that would say
+/// whether Security.framework reported something of its own or simply
+/// handed back bytes it already held.
+fn describe(p: &Poll<io::Result<usize>>) -> String {
+    match p {
+        Poll::Pending => "Pending".to_owned(),
+        Poll::Ready(Ok(n)) => format!("Ready(Ok({n}))"),
+        Poll::Ready(Err(e)) => {
+            format!(
+                "Ready(Err(kind={:?}, raw_os_error={:?}, {e}))",
+                e.kind(),
+                e.raw_os_error()
+            )
+        }
+    }
+}
+
 async fn session_with_a_breakable_transport() -> (
     <NativeTls as TlsConnect>::Stream<Faulty<hclient_rt_tokio::TokioIo>>,
     Arc<AtomicBool>,
@@ -208,7 +228,8 @@ async fn a_transport_error_on_write_is_an_error_and_not_pending() {
         "a connection reset must reach the caller as an error. `Pending` here \
          parks the request on a waker nobody holds, so it never completes and \
          never fails — which is why `cvt` has to tell WouldBlock from every \
-         other kind rather than treating them alike"
+         other kind rather than treating them alike — got {}",
+        describe(&polled)
     );
 }
 
@@ -226,10 +247,19 @@ async fn a_transport_error_on_read_is_an_error_and_not_pending() {
     let mut cx = Context::from_waker(std::task::Waker::noop());
     let polled = Pin::new(&mut stream).poll_read(&mut cx, &mut raw);
 
+    // **The diagnostic is here because this fails on macOS and on no
+    // machine this workspace can run.** `cvt` is platform-independent
+    // and correct — `WouldBlock` to `Pending`, everything else to an
+    // error — so what differs is what `native-tls` answers *before* it
+    // gets there: OpenSSL reaches the broken transport at once, and
+    // Security.framework apparently does not. Printing the answer is
+    // what separates *the error was swallowed* from *the session never
+    // asked the transport*.
     assert!(
         matches!(polled, Poll::Ready(Err(_))),
         "a reset while reading must surface, or a caller waits for a body the \
-         peer will never send"
+         peer will never send — got {}",
+        describe(&polled)
     );
 }
 
