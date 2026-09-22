@@ -4,7 +4,7 @@
 //! [`TlsConnect`](hclient_tls::TlsConnect), which has three — the only one
 //! there can be for now: `native-tls` binds no QUIC API at any level, so
 //! for HTTP/3 it is a compile error rather than a weaker backend. See
-//! `hclient-tls-quic`'s module doc.
+//! `hclient_tls::quic`'s module doc.
 //!
 //! # Two things this module does that the TCP path does not, and why
 //!

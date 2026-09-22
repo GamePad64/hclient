@@ -13,8 +13,8 @@
 //! machine's own settings carry `proxy_cfg`, and through it `url` and the
 //! ICU tables. A feature on this crate would put those into every build
 //! in any graph that switched it on, which is the argument that keeps
-//! `quinn-proto` in `hclient-tls-quic` and `tungstenite` in
-//! `hclient-tungstenite`.
+//! `tungstenite` in `hclient-tungstenite` (and kept `quinn-proto` out of
+//! `hclient-tls` until that seam stopped carrying it at all).
 //!
 //! What the split bought beyond that is measurable in this file: driving
 //! `CONNECT` used to mean driving **hyper's h1 dispatcher** through

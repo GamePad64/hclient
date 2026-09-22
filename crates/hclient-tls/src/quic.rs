@@ -321,24 +321,17 @@ pub trait QuicTlsConnect: TlsIdentity {
 
     /// Build the crypto configuration for one QUIC connection.
     ///
-    /// # Why a newtype rather than quinn's trait object or an associated type
+    /// # Why a declaration rather than a built thing
     ///
-    /// This returned `Arc<dyn quinn_proto::crypto::ClientConfig>` until the
-    /// byte-stream seam stopped naming `hyper::rt`, and the argument
-    /// recorded for it was that decision's: an abstraction is worth having
-    /// only if it carries something, and an opaque `type ClientConfig`
-    /// would carry nothing, since the consumer must bound it back to
-    /// `Into<Arc<dyn ..>>` before it can do anything — this module's
-    /// empty-body adapter one level up, dressed as generality.
-    ///
-    /// **That half is still right and is why there is no associated type
-    /// here.** What it did not weigh is *whose major version the seam
-    /// promises*. `quinn` is at `0.11`, where every minor may break, so
-    /// naming its type in this signature made a `quinn-proto` bump a
-    /// breaking change for every implementor rather than for the two lines
-    /// that actually touch the value. [`QuicCryptoConfig`] is neither of
-    /// the two shapes that argument compared: it carries the same value
-    /// unchanged and costs one `::new` and one `::into_inner`.
+    /// This returned `Arc<dyn quinn_proto::crypto::ClientConfig>`, then
+    /// the same value inside a newtype of ours — the second fixed *whose
+    /// major version the signature promised* and still made this crate
+    /// link quinn to hold the value. [`QuicCryptoConfig`] is what was
+    /// **decided** — ALPN, early data, ECH, the identity's label — and
+    /// building the stack's own object from it is
+    /// [`quic_session`](Self::quic_session)'s job. The split is what lets
+    /// every check here run with no QUIC stack in the graph: a refusal is
+    /// answered at this method, before anything a stack defines exists.
     ///
     /// # Errors
     ///

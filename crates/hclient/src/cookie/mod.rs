@@ -13,8 +13,8 @@
 //! out to have exactly one consumer: `cargo tree -i hclient-cookie` named
 //! `hclient` and nothing else. A crate boundary earns its keep in this
 //! workspace when it holds a dependency a feature would otherwise spread
-//! (`hclient-tls-quic` carries `quinn-proto`; `hclient-tungstenite`
-//! carries `tungstenite`), and this one carried `public-suffix` — which
+//! (`hclient-tungstenite` carries `tungstenite`), and this one carried
+//! `public-suffix` — which
 //! the `cookies` feature already gates just as well from here.
 //!
 //! **What is unchanged is the discipline, and it is worth naming because

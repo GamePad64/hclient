@@ -2,7 +2,7 @@
 //!
 //! # Why this is not a method on [`Transport`](crate::transport::Transport)
 //!
-//! The same reasoning `hclient-tls-quic`'s `QuicTlsConnect` rests on, and
+//! The same reasoning `hclient_tls::quic::QuicTlsConnect` rests on, and
 //! `hclient_rt::TcpAdoptStd` before it: the intersection between "send a
 //! request, read a response" and "exchange messages until somebody closes"
 //! is empty, and an adapter between them would type-check *with an empty

@@ -1008,7 +1008,7 @@ never acting on it.
 `async-native-tls` left with its dependencies.
 
 **A second TLS seam, for QUIC, and it is not a widening of the first.**
-`hclient-tls`'s `QuicTlsConnect` — behind its `quic` feature — exists because the intersection of
+`hclient-tls`'s `QuicTlsConnect` exists because the intersection of
 `TlsConnect`'s four methods with `quinn_proto::crypto::Session`'s eleven is
 **empty** — QUIC wants key schedules per encryption level and CRYPTO-frame
 payloads, `TlsConnect` can only hand back a wrapped byte stream — and the
@@ -2450,6 +2450,13 @@ is a measurement rather than a preference:
 `quinn_proto::crypto::ClientConfig` has exactly **one** implementation in
 practice, `quinn_proto::crypto::rustls::QuicClientConfig`, so the backend
 this excludes is a second rustls binding rather than a second QUIC stack.
+
+**That exclusion ended with the newtype, and the paragraph above is kept
+for the trade it weighed.** `QuicCryptoConfig` is a public declaration
+now, with `QuicCryptoConfig::new` and a builder and nothing hidden, so a
+QUIC TLS backend written outside this workspace is a supported extension
+point — and `hclient-tls/tests/no_stack.rs` is one, implementing the
+trait with no QUIC stack in its graph at all.
 
 **It is not the `bon` hole, and that objection is worth answering rather
 than waving at.** `hclient-core`'s `req.rs` records a generated builder
