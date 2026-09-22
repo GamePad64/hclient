@@ -166,13 +166,50 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
         return Err(());
     }
 
+    // **Diagnostics, and they are here because the failure is only
+    // reproducible in CI.** `wasi_transport_round_trips_a_real_response`
+    // fails on every GitHub run with *expected a trailers frame, got
+    // none* and passes locally under wasmtime 47 and 49, at any
+    // concurrency, on the same `wasip2 1.0.4+wasi-0.2.12`. So the next
+    // red run has to say what the guest actually received rather than
+    // only what it wanted, which is the difference between three live
+    // hypotheses: the host delivered no trailers frame at all, delivered
+    // an empty one, or delivered it as data.
+    //
+    // Written to stderr, which the harness already captures and prints
+    // on failure, and unconditional: a diagnostic behind a flag is one
+    // nobody turns on for the run that mattered.
+    //
+    // **What a healthy run says**, captured locally under wasmtime 49
+    // against the same mock server, so that a red log can be read
+    // against it rather than guessed at:
+    //
+    //     DIAG response headers: {"transfer-encoding": "chunked", "trailer": "X-Checksum"}
+    //     DIAG frame 1: trailers=false data=true
+    //     DIAG   data frame of 32 bytes
+    //     DIAG frame 2: trailers=true data=false
+    //
+    // A red run that prints one data frame and no second frame means the
+    // host ended the body without delivering trailers; one that prints a
+    // second *data* frame means it delivered them as data; and no `DIAG`
+    // lines at all would mean the guest never got a response to read.
+    eprintln!("DIAG response headers: {:?}", resp.headers());
+
     let mut body = resp.into_body();
     let mut collected = Vec::new();
     let mut end_flagged_at_trailers = false;
     let mut saw_trailers = false;
+    let mut frames = 0usize;
+    let mut data_frames = 0usize;
     loop {
         match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
             Some(Ok(f)) => {
+                frames += 1;
+                eprintln!(
+                    "DIAG frame {frames}: trailers={} data={}",
+                    f.is_trailers(),
+                    f.is_data()
+                );
                 if f.is_trailers() {
                     // The task's key check, and key on timing: poll
                     // `is_end_stream()` RIGHT AFTER the trailers frame,
@@ -188,6 +225,8 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
                     saw_trailers = true;
                     end_flagged_at_trailers = body.is_end_stream();
                 } else if let Ok(data) = f.into_data() {
+                    data_frames += 1;
+                    eprintln!("DIAG   data frame of {} bytes", data.len());
                     collected.extend_from_slice(&data);
                 }
             }
@@ -204,7 +243,12 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
         return Err(());
     }
     if !saw_trailers {
-        eprintln!("expected a trailers frame from the mock server, got none");
+        eprintln!(
+            "expected a trailers frame from the mock server, got none \
+             (DIAG {frames} frames, {data_frames} of them data, \
+             {} body bytes)",
+            collected.len()
+        );
         return Err(());
     }
     if !end_flagged_at_trailers {
