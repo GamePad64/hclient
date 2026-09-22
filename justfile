@@ -2372,10 +2372,14 @@ mutants crate:
     CARGO_BUILD_BUILD_DIR="$scratch/build" \
         cargo mutants -p {{ crate }} --all-features -o "$scratch/out" \
         || status=$?
-    # cargo-mutants exits 2 for surviving mutants, which is a finding
-    # rather than a failure of the run; anything else is the run breaking.
+    # cargo-mutants exits 2 for surviving mutants and 3 for mutants that
+    # timed out, and both are findings rather than failures of the run;
+    # anything else is the run breaking. **3 was missing**, and the cost
+    # was worse than a red exit: the `trap` above deletes the scratch
+    # directory, so an 8-minute sweep of `hclient-tls-rustls` that found
+    # seven timeouts printed its survivors and then lost every log.
     status="${status:-0}"
-    if [ "$status" != 0 ] && [ "$status" != 2 ]; then
+    if [ "$status" != 0 ] && [ "$status" != 2 ] && [ "$status" != 3 ]; then
         echo "cargo mutants itself failed (exit $status)" >&2
         exit "$status"
     fi
