@@ -181,6 +181,26 @@ fn encode(entry: &Entry) -> Vec<u8> {
     out
 }
 
+/// Seconds since the epoch as an instant, or `None` where the platform
+/// cannot represent it.
+///
+/// **`checked_add`, and this is a defect this decoder shipped with.**
+/// Every one of these values came out of a store and none is trusted, so
+/// a length or a count that is wrong is refused — and a *timestamp* that
+/// is wrong was being added to `UNIX_EPOCH` unchecked, which panics
+/// rather than refusing. `SystemTime`'s range is the platform's: on
+/// Windows it is narrower than on Linux, so `u64::MAX` seconds overflows
+/// there and does not here, and the test that feeds this decoder rubbish
+/// passed on every machine this workspace runs and failed on
+/// `test (windows-latest)`.
+///
+/// Refusing loses one entry; panicking takes the caller's thread down
+/// for a value a store handed back, which is the one outcome a decoder
+/// written to refuse must not have.
+fn at_epoch_plus(secs: u64) -> Option<SystemTime> {
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs))
+}
+
 /// The inverse of [`encode`], or `None` for bytes it did not write.
 ///
 /// A store can hand back anything — a truncated write, a value from an
@@ -204,11 +224,7 @@ fn decode(bytes: &[u8]) -> Option<Entry> {
     if domain.is_empty() {
         return None;
     }
-    Some(Entry::new(
-        domain,
-        SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
-        include_subdomains,
-    ))
+    Some(Entry::new(domain, at_epoch_plus(secs)?, include_subdomains))
 }
 
 pin_project_lite::pin_project! {
@@ -406,6 +422,15 @@ mod tests {
         ] {
             assert_eq!(decode(&encode(&e)).as_ref(), Some(&e), "{e:?}");
         }
+    }
+
+    /// A timestamp too large for this platform is refused rather than
+    /// panicking — see `cookie::kv`'s test of the same name.
+    #[test]
+    fn a_timestamp_that_overflows_the_clock_is_refused_rather_than_panicking() {
+        let mut bytes = encode(&entry("example.com", 100, false));
+        bytes[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(decode(&bytes).is_none());
     }
 
     /// **A store hands back whatever it holds**, including bytes this

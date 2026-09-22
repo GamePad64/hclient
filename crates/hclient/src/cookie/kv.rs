@@ -268,6 +268,26 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Seconds since the epoch as an instant, or `None` where the platform
+/// cannot represent it.
+///
+/// **`checked_add`, and this is a defect this decoder shipped with.**
+/// Every one of these values came out of a store and none is trusted, so
+/// a length or a count that is wrong is refused — and a *timestamp* that
+/// is wrong was being added to `UNIX_EPOCH` unchecked, which panics
+/// rather than refusing. `SystemTime`'s range is the platform's: on
+/// Windows it is narrower than on Linux, so `u64::MAX` seconds overflows
+/// there and does not here, and the test that feeds this decoder rubbish
+/// passed on every machine this workspace runs and failed on
+/// `test (windows-latest)`.
+///
+/// Refusing loses one entry; panicking takes the caller's thread down
+/// for a value a store handed back, which is the one outcome a decoder
+/// written to refuse must not have.
+fn at_epoch_plus(secs: u64) -> Option<SystemTime> {
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs))
+}
+
 /// The inverse of [`encode`], or `None` for bytes it did not write.
 ///
 /// A store hands back whatever it holds — a truncated write, an older
@@ -280,10 +300,10 @@ fn decode(bytes: &[u8]) -> Option<Cookie> {
     let mut r = Reader(bytes);
     let expires = match r.u64()? {
         NO_EXPIRY => None,
-        s => Some(SystemTime::UNIX_EPOCH + Duration::from_secs(s)),
+        s => Some(at_epoch_plus(s)?),
     };
-    let creation = SystemTime::UNIX_EPOCH + Duration::from_secs(r.u64()?);
-    let last_access = SystemTime::UNIX_EPOCH + Duration::from_secs(r.u64()?);
+    let creation = at_epoch_plus(r.u64()?)?;
+    let last_access = at_epoch_plus(r.u64()?)?;
     let seq = r.u64()?;
     let flags = r.u8()?;
     // Bits above the four this encoder writes mean the value came from
@@ -795,6 +815,31 @@ mod tests {
 
         let back = decode(&encode(&c).expect("encodable")).expect("decodable");
         assert_eq!(back.seq, 42, "this encoding does");
+    }
+
+    /// **A timestamp too large for this platform is refused, not a
+    /// panic** — the defect this decoder shipped with, and the one
+    /// `test (windows-latest)` found because `SystemTime`'s range is
+    /// narrower there: `u64::MAX` seconds overflowed on Windows and not
+    /// on Linux, so every machine this workspace runs was green over it.
+    ///
+    /// The value is unrepresentable on both platforms, so the check is
+    /// not a fact about the runner.
+    #[test]
+    fn a_timestamp_that_overflows_the_clock_is_refused_rather_than_panicking() {
+        assert!(
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(u64::MAX))
+                .is_none(),
+            "the fixture's premise: this many seconds is not a SystemTime anywhere"
+        );
+
+        let mut bytes = encode(&cookie("sid", "example.com", Some(100), 0)).expect("enc");
+        // `creation`, the second fixed-width field — not `expires`,
+        // whose `u64::MAX` is this encoding's *no expiry* sentinel and
+        // is therefore the one value that must NOT be read as a time.
+        bytes[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(decode(&bytes).is_none());
     }
 
     /// A store hands back whatever it holds. Refusing loses one cookie;

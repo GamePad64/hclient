@@ -143,6 +143,26 @@ fn encode(entry: Entry) -> Vec<u8> {
         .to_vec()
 }
 
+/// Seconds since the epoch as an instant, or `None` where the platform
+/// cannot represent it.
+///
+/// **`checked_add`, and this is a defect this decoder shipped with.**
+/// Every one of these values came out of a store and none is trusted, so
+/// a length or a count that is wrong is refused — and a *timestamp* that
+/// is wrong was being added to `UNIX_EPOCH` unchecked, which panics
+/// rather than refusing. `SystemTime`'s range is the platform's: on
+/// Windows it is narrower than on Linux, so `u64::MAX` seconds overflows
+/// there and does not here, and the test that feeds this decoder rubbish
+/// passed on every machine this workspace runs and failed on
+/// `test (windows-latest)`.
+///
+/// Refusing loses one entry; panicking takes the caller's thread down
+/// for a value a store handed back, which is the one outcome a decoder
+/// written to refuse must not have.
+fn at_epoch_plus(secs: u64) -> Option<SystemTime> {
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs))
+}
+
 /// The inverse of [`encode`], or `None` for bytes it did not write.
 ///
 /// A store can hand back anything — a truncated write, an older format,
@@ -152,10 +172,7 @@ fn encode(entry: Entry) -> Vec<u8> {
 /// alt-authority nobody advertised.
 fn decode(bytes: &[u8], persist: bool) -> Option<Entry> {
     let secs = u64::from_le_bytes(<[u8; 8]>::try_from(bytes).ok()?);
-    Some(Entry::new(
-        SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
-        persist,
-    ))
+    Some(Entry::new(at_epoch_plus(secs)?, persist))
 }
 
 pin_project_lite::pin_project! {
@@ -415,6 +432,15 @@ mod tests {
                 "the same eight bytes, read out of the other namespace"
             );
         }
+    }
+
+    /// A timestamp too large for this platform is refused rather than
+    /// panicking — the same defect `hclient::cookie::kv` records, found
+    /// by `test (windows-latest)`.
+    #[test]
+    fn a_timestamp_that_overflows_the_clock_is_refused_rather_than_panicking() {
+        let bytes = u64::MAX.to_le_bytes().to_vec();
+        assert!(decode(&bytes, false).is_none());
     }
 
     /// A store hands back whatever it holds, including bytes this
