@@ -8,13 +8,13 @@
 mod caps;
 mod error;
 mod io;
+mod ipc;
 mod udp;
 
-pub use caps::{
-    Blocking, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, UnixUnsupported,
-};
-pub use error::{Cancelled, UnixSocketsUnsupported, UnsupportedTcpOpts, UnsupportedUdpOffload};
+pub use caps::{Blocking, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport};
+pub use error::{Cancelled, UnsupportedIpc, UnsupportedTcpOpts, UnsupportedUdpOffload};
 pub use io::Shutdown;
+pub use ipc::{IpcAddr, IpcSupport, RefuseIpc};
 pub use udp::{Datagrams, EcnCodepoint, RecvMeta, UdpAdoptStd, UdpBind, UdpCaps, UdpDatagrams};
 
 /// `Timer` is defined once, in `hclient-core`: the portable core needs it

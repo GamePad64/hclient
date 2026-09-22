@@ -1,8 +1,8 @@
 //! The two halves of `SmolSocket` that nothing in this crate reached: the
 //! Unix-domain arm, and the write side of `AsyncWrite`.
 //!
-//! Both were whole-method mutation survivors. `connect_unix` had no test
-//! at all — `SUPPORTS_UNIX` is `cfg!(unix)` and this crate says so, but
+//! Both were whole-method mutation survivors. `connect_ipc` — `connect_unix`
+//! then — had no test at all: `IPC.unix` is `cfg!(unix)` and this crate says so, but
 //! the claim and the connect were each unasserted — and every one of
 //! `poll_write`, `poll_flush`, `poll_close` and `poll_write_vectored`
 //! could be replaced by a success that moves no bytes with the suite
@@ -231,30 +231,26 @@ fn a_vectored_write_carries_every_buffer_in_order() {
     );
 }
 
-/// `SUPPORTS_UNIX` is not a free-floating claim: where it says `true`, a
+/// `IPC.unix` is not a free-floating claim: where it says `true`, a
 /// Unix-domain connect really works, and the stream really carries bytes.
 ///
-/// `connect_unix` is a defaulted-refusal seam — the trait's own default is
-/// an error — so the whole of this arm is a thing that can be removed with
+/// `connect_ipc`'s wildcard arm is a refusal, so the whole of the Unix arm is a thing that can be removed with
 /// nothing local noticing. `SmolSocket::Unix` is also the second `either!`
 /// arm, so this is what says the macro routes it rather than falling
 /// through to the TCP one.
 ///
-/// It pins the `#[cfg(unix)]` arm, which is the one Linux compiles.
-/// `cargo mutants` also reports a survivor in the `#[cfg(not(unix))]`
-/// twin — `UnixUnsupported::new()` replaced by `Default::default()` — and
-/// that one is doubly unkillable: it is not compiled on this host, and
-/// `impl Default for UnixUnsupported` is literally `fn default() { Self::new() }`,
-/// so the two expressions are the same call. Recorded rather than chased.
+/// It pins the `#[cfg(unix)]` arm, which is the one Linux compiles. The
+/// refusal every other target takes is `RefuseIpc`, pinned in
+/// `hclient-rt` itself.
 #[cfg(unix)]
 #[test]
-fn a_unix_socket_connects_and_carries_bytes_when_supports_unix_says_so() {
+fn a_unix_socket_connects_and_carries_bytes_when_ipc_says_so() {
     // A `const` block, because the claim is a compile-time one: this
-    // function is `#[cfg(unix)]` and `SUPPORTS_UNIX` is `cfg!(unix)`, so
+    // function is `#[cfg(unix)]` and `IPC.unix` is `cfg!(unix)`, so
     // the two must agree before anything runs. Written as a runtime
     // `assert!` first, which clippy correctly refused as an assertion on a
     // constant.
-    const { assert!(<Smol as TcpConnect>::SUPPORTS_UNIX) };
+    const { assert!(<Smol as TcpConnect>::IPC.unix) };
 
     let dir = std::env::temp_dir().join(format!(
         "hclient-smol-unix-{}-{}",
@@ -276,9 +272,9 @@ fn a_unix_socket_connects_and_carries_bytes_when_supports_unix_says_so() {
     });
 
     futures_executor::block_on(async {
-        let mut s = bounded(Smol.connect_unix(&path))
+        let mut s = bounded(Smol.connect_ipc(&hclient_rt::IpcAddr::unix(&path)))
             .await
-            .expect("connect_unix to a bound unix socket");
+            .expect("connect_ipc to a bound unix socket");
         write_all(&mut s, b"over-a-unix-socket")
             .await
             .expect("write");
@@ -298,12 +294,12 @@ fn a_unix_socket_connects_and_carries_bytes_when_supports_unix_says_so() {
 /// The negative half: a path nobody is listening on is refused, rather
 /// than answering a stream that fails on first use.
 ///
-/// The control for the test above — without it, a `connect_unix` that
+/// The control for the test above — without it, a `connect_ipc` that
 /// returned a connected-looking stream for every path would pass the
 /// positive case only by luck of the ordering.
 #[cfg(unix)]
 #[test]
-fn connect_unix_to_a_path_with_no_listener_is_an_error() {
+fn connect_ipc_to_a_path_with_no_listener_is_an_error() {
     let missing = std::env::temp_dir().join(format!(
         "hclient-smol-unix-absent-{}-{}",
         std::process::id(),
@@ -313,11 +309,11 @@ fn connect_unix_to_a_path_with_no_listener_is_an_error() {
             .as_nanos()
     ));
     futures_executor::block_on(async {
-        let r = bounded(Smol.connect_unix(&missing)).await;
+        let r = bounded(Smol.connect_ipc(&hclient_rt::IpcAddr::unix(&missing))).await;
         let err = r
             .map(|_| ())
             .expect_err("connecting to a path with no listener must fail");
-        println!("connect_unix to an absent path: {:?}", err.kind());
+        println!("connect_ipc to an absent path: {:?}", err.kind());
     });
 }
 

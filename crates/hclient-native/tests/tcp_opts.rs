@@ -91,13 +91,13 @@ const fn all_but(i: usize) -> TcpOptsSupport {
 struct FakeRt<const MISSING: usize>;
 
 impl<const MISSING: usize> TcpConnect for FakeRt<MISSING> {
-    type ConnectingUnix<'a>
-        = hclient_rt::UnixUnsupported<Self::Stream>
+    type ConnectingIpc<'a>
+        = hclient_rt::RefuseIpc<Self::Stream>
     where
         Self: 'a;
 
-    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-        hclient_rt::UnixUnsupported::new()
+    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+        hclient_rt::RefuseIpc::new(addr)
     }
 
     type Stream = hclient_rt_tokio::TokioIo;
@@ -307,13 +307,13 @@ fn two_unappliable_options_are_both_named() {
     #[derive(Debug, Clone, Copy)]
     struct AppliesNothing;
     impl TcpConnect for AppliesNothing {
-        type ConnectingUnix<'a>
-            = hclient_rt::UnixUnsupported<Self::Stream>
+        type ConnectingIpc<'a>
+            = hclient_rt::RefuseIpc<Self::Stream>
         where
             Self: 'a;
 
-        fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-            hclient_rt::UnixUnsupported::new()
+        fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+            hclient_rt::RefuseIpc::new(addr)
         }
 
         type Stream = hclient_rt_tokio::TokioIo;
@@ -407,13 +407,13 @@ struct Silent(Seen);
 macro_rules! recording_runtime {
     ($ty:ty $(, $applies:expr)?) => {
         impl TcpConnect for $ty {
-            type ConnectingUnix<'a>
-                = hclient_rt::UnixUnsupported<Self::Stream>
+            type ConnectingIpc<'a>
+                = hclient_rt::RefuseIpc<Self::Stream>
             where
                 Self: 'a;
 
-            fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-                hclient_rt::UnixUnsupported::new()
+            fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+                hclient_rt::RefuseIpc::new(addr)
             }
 
             type Stream = hclient_rt_tokio::TokioIo;

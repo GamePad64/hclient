@@ -230,7 +230,7 @@ fn no_socket_option_is_claimed() {
         <SendRt as TcpConnect>::APPLIES,
         hclient_rt::TcpOptsSupport::NONE
     );
-    const { assert!(!<SendRt as TcpConnect>::SUPPORTS_UNIX) };
+    const { assert!(!<SendRt as TcpConnect>::IPC.unix) };
 }
 
 /// `adapt_local!` produces a **working** runtime, not merely one that

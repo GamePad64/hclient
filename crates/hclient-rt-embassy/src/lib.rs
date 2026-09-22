@@ -209,13 +209,13 @@ fn to_embassy(d: Duration) -> embassy_time::Duration {
 }
 
 impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N, TX, RX> {
-    type ConnectingUnix<'a>
-        = hclient_rt::UnixUnsupported<Self::Stream>
+    type ConnectingIpc<'a>
+        = hclient_rt::RefuseIpc<Self::Stream>
     where
         Self: 'a;
 
-    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-        hclient_rt::UnixUnsupported::new()
+    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+        hclient_rt::RefuseIpc::new(addr)
     }
 
     type Stream = EmbassyIo<N, TX, RX>;

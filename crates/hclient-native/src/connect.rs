@@ -1004,7 +1004,7 @@ where
     // connection whose beginning was never announced. `remote` is `None`
     // inside it, which is the honest absence: there is no address. `dns`
     // is zero because nothing was resolved, and `tcp` is the whole of the
-    // connect, since `connect_unix` is the only thing that dialled.
+    // connect, since `connect_ipc` is the only thing that dialled.
     let mut attempted = began.map(|b| {
         Box::new(Attempted {
             remote: None,
@@ -1033,7 +1033,7 @@ pub(crate) async fn connect<R, D, L, P, H>(
     dns: &D,
     tls: &L,
     proxies: &[crate::proxy::Proxy<P>],
-    unix_socket: Option<&std::path::Path>,
+    unix_socket: Option<&hclient_rt::IpcAddr>,
     uri: &Uri,
     opts: &TcpOpts,
     alpn: &[&[u8]],
@@ -1084,9 +1084,9 @@ where
     // There is no bypass list here and there should not be: a bypassed
     // origin would have nowhere to go, since the whole point is that this
     // process reaches the service only through this socket.
-    if let Some(path) = unix_socket {
+    if let Some(addr) = unix_socket {
         let stream = rt
-            .connect_unix(path)
+            .connect_ipc(addr)
             .await
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
         return finish_unix::<R, L, H>(rt, tls, stream, host, use_tls, alpn, identity, began).await;
@@ -1645,13 +1645,13 @@ mod tests {
     }
 
     impl TcpConnect for FakeRt {
-        type ConnectingUnix<'a>
-            = hclient_rt::UnixUnsupported<Self::Stream>
+        type ConnectingIpc<'a>
+            = hclient_rt::RefuseIpc<Self::Stream>
         where
             Self: 'a;
 
-        fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-            hclient_rt::UnixUnsupported::new()
+        fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+            hclient_rt::RefuseIpc::new(addr)
         }
 
         type Stream = FakeStream;

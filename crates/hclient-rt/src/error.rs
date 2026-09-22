@@ -5,7 +5,7 @@
 //! What is left is a runtime saying **no** to something a caller asked
 //! for, and that is what unites these four: three are a capability the
 //! platform does not have ([`UnsupportedTcpOpts`],
-//! [`UnsupportedUdpOffload`], [`UnixSocketsUnsupported`]) and the fourth
+//! [`UnsupportedUdpOffload`], [`UnsupportedIpc`]) and the fourth
 //! is a capability withdrawn mid-flight ([`Cancelled`], the thread pool
 //! going away before the work started).
 //!
@@ -90,16 +90,30 @@ impl Display for UnsupportedTcpOpts {
 
 impl StdError for UnsupportedTcpOpts {}
 
-/// A runtime that declares no Unix-domain support was asked for a
-/// connection to one.
+/// A runtime was asked to dial a kind of same-machine endpoint it does
+/// not dial.
 ///
-/// Reachable only past [`TcpConnect::SUPPORTS_UNIX`](crate::TcpConnect::SUPPORTS_UNIX), which
+/// Carried inside an [`std::io::Error`] with
+/// [`ErrorKind::Unsupported`](std::io::ErrorKind::Unsupported) by
+/// [`RefuseIpc`](crate::RefuseIpc), the shape [`UnsupportedTcpOpts`] and
+/// [`UnsupportedUdpOffload`] already use. Reachable only past
+/// [`TcpConnect::IPC`](crate::TcpConnect::IPC), which
 /// `hclient_native::Native::unix_socket` checks at the call that
 /// configures it — so a caller normally meets the refusal where they
 /// wrote the path, not on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("this runtime does not connect to Unix-domain sockets")]
-pub struct UnixSocketsUnsupported;
+#[error("this runtime does not connect to {kind} endpoints")]
+pub struct UnsupportedIpc {
+    pub(crate) kind: &'static str,
+}
+
+impl UnsupportedIpc {
+    /// The refused kind — [`IpcAddr::kind`](crate::IpcAddr::kind)'s name.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        self.kind
+    }
+}
 
 /// The background thread pool that `Blocking::run` was supposed to run on
 /// went away before the task got to start — for example, the runtime is

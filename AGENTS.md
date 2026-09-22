@@ -2240,7 +2240,7 @@ reaches `Native` through `http3::arm`'s erasure, and the erasure is
 **Every defaulted constant has the reader it was designed for**, which is
 the `UpgradeSupport` question asked of the pattern that replaced it:
 `reports_alpn` is read by `may_speak_h2`, `applies_ech` by the connector,
-`SUPPORTS_UNIX` by `unix_socket`, `presents_client_certs` by both
+`TcpConnect::IPC` by `unix_socket`, `presents_client_certs` by both
 capability tables. None is a distinction with one reachable side.
 
 **Three of thirty-five traits are named in no test**, and all three are
@@ -5926,6 +5926,18 @@ read by the layer above to decide whether to *ask*. Both shipped runtimes
 compute it with `cfg!(unix)`, and each holds an enum internally
 (`TokioIo`'s `Socket`, `hclient-rt-smol`'s `SmolSocket`) because one
 associated type must cover both.
+
+**It is `connect_ipc(&IpcAddr)` now, and the reason is the freeze.** A
+method per kind carried its own associated future type, and an associated
+type cannot have a default on stable Rust — so the second kind, Windows
+named pipes (where Docker, containerd and the gRPC daemons listen), would
+have broken every `TcpConnect` implementor at once, after `hclient-rt` had
+promised not to. `IpcAddr` is a `#[non_exhaustive]` enum with `Unix` today,
+`TcpConnect::IPC` an `IpcSupport` in `TcpOptsSupport`'s shape, and a
+runtime's `match` has to carry a wildcard arm — which is where a kind added
+later is refused with `RefuseIpc`, naming it. The two shipped runtimes lost
+their `cfg`-ed pair of items with it: one type on every target, and the
+`cfg` on the Unix arm. `Native::unix_socket` did not move.
 
 **It replaces the whole resolve → discovery → Happy Eyeballs → connect
 block, which is `Proxy`'s slot exactly** — and a proxy and a socket

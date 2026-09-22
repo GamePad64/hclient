@@ -92,7 +92,7 @@ where
     // type notation is unstable and, when written across a crate
     // boundary, ICEs — measured, and recorded in CLAUDE.md.
     for<'a> R::Connecting<'a>: Send,
-    for<'a> R::ConnectingUnix<'a>: Send,
+    for<'a> R::ConnectingIpc<'a>: Send,
 {
     let t = Native::new(rt.clone(), Rustls::with_webpki_roots(), SystemDns::new(rt));
     let c = Client::builder(t)

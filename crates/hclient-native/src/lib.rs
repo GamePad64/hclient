@@ -588,7 +588,7 @@ where
     /// argument the TLS identity and the proxy already carry there.
     /// Send every request over this Unix-domain socket instead of
     /// resolving and dialling the origin — see [`Native::unix_socket`].
-    unix_socket: Option<Arc<std::path::Path>>,
+    unix_socket: Option<Arc<hclient_rt::IpcAddr>>,
     /// What this client accepts in an HTTP/1 response head — see
     /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
     /// the HTTP/1 path is the one every build has.
@@ -1695,12 +1695,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///     type Stream = <Tokio as TcpConnect>::Stream;
     ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
     ///     type Connecting<'a> = <Tokio as TcpConnect>::Connecting<'a>;
-    ///     type ConnectingUnix<'a> = <Tokio as TcpConnect>::ConnectingUnix<'a>;
+    ///     type ConnectingIpc<'a> = <Tokio as TcpConnect>::ConnectingIpc<'a>;
     ///     fn connect<'a>(&'a self, a: SocketAddr, o: &TcpOpts) -> Self::Connecting<'a> {
     ///         Tokio.connect(a, o)
     ///     }
-    ///     fn connect_unix<'a>(&'a self, p: &std::path::Path) -> Self::ConnectingUnix<'a> {
-    ///         Tokio.connect_unix(p)
+    ///     fn connect_ipc<'a>(&'a self, a: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+    ///         Tokio.connect_ipc(a)
     ///     }
     /// }
     ///
@@ -1732,12 +1732,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///     type Stream = <Tokio as TcpConnect>::Stream;
     ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
     ///     type Connecting<'a> = <Tokio as TcpConnect>::Connecting<'a>;
-    ///     type ConnectingUnix<'a> = <Tokio as TcpConnect>::ConnectingUnix<'a>;
+    ///     type ConnectingIpc<'a> = <Tokio as TcpConnect>::ConnectingIpc<'a>;
     ///     fn connect<'a>(&'a self, a: SocketAddr, o: &TcpOpts) -> Self::Connecting<'a> {
     ///         Tokio.connect(a, o)
     ///     }
-    ///     fn connect_unix<'a>(&'a self, p: &std::path::Path) -> Self::ConnectingUnix<'a> {
-    ///         Tokio.connect_unix(p)
+    ///     fn connect_ipc<'a>(&'a self, a: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+    ///         Tokio.connect_ipc(a)
     ///     }
     /// }
     /// impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for CanSpawn {
@@ -2276,32 +2276,31 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// URI, so a daemon that speaks TLS over a socket is reachable. Every
     /// [`TcpOpts`] field, on the other hand, is a TCP or IP option that
     /// `AF_UNIX` does not have — they are simply not applied here, which
-    /// is what `TcpConnect::connect_unix` taking no options says.
+    /// is what `TcpConnect::connect_ipc` taking no options says.
     ///
     /// # It is refused where the runtime says it cannot
     ///
-    /// [`hclient_rt::TcpConnect::SUPPORTS_UNIX`],
+    /// [`hclient_rt::TcpConnect::IPC`],
     /// which both shipped runtimes compute with `cfg!(unix)`
     /// — so this fails at the call that configures it rather than on the
     /// first request, which is `tcp_opts`' rule one method over.
     ///
     /// # Errors
     ///
-    /// [`hclient_rt::UnixSocketsUnsupported`] when the runtime cannot
-    /// apply one, per "It is refused where the runtime says it cannot"
+    /// [`ErrorKind::Unsupported`] carrying the [`std::io::Error`] that
+    /// [`hclient_rt::IpcAddr::reject_unsupported`] builds, with
+    /// [`hclient_rt::UnsupportedIpc`] inside, when the runtime cannot
+    /// dial one, per "It is refused where the runtime says it cannot"
     /// above; [`ProxyAndUnixSocket`] when a proxy is already configured,
     /// per "What it replaces" above.
     pub fn unix_socket(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
-        if !<R as TcpConnect>::SUPPORTS_UNIX {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                hclient_rt::UnixSocketsUnsupported,
-            ));
-        }
+        let addr = hclient_rt::IpcAddr::unix(path.as_ref());
+        addr.reject_unsupported(<R as TcpConnect>::IPC)
+            .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         if !self.proxies.is_empty() {
             return Err(Error::new(ErrorKind::Unsupported, ProxyAndUnixSocket));
         }
-        self.unix_socket = Some(Arc::from(path.as_ref()));
+        self.unix_socket = Some(Arc::new(addr));
         Ok(self)
     }
 
@@ -2450,7 +2449,10 @@ where
             proxy: self
                 .unix_socket
                 .as_ref()
-                .map(|p| format!("unix:{}", p.display()).into_boxed_str())
+                // `Debug` rather than a path: it names the kind as well as
+                // the address, so a named pipe and a socket that happened to
+                // share a spelling could not share a slot.
+                .map(|a| format!("{a:?}").into_boxed_str())
                 .or_else(|| {
                     crate::proxy::Proxy::choose(
                         &self.proxies,
@@ -4150,7 +4152,7 @@ hclient_core::transport::send_transport!(
         R::Instant: Send + Sync,                     // send-bound-exception: amendment-C16
         R::Sleep: Send,                              // send-bound-exception: amendment-C16
         for<'a> R::Connecting<'a>: Send,             // send-bound-exception: amendment-C16
-        for<'a> R::ConnectingUnix<'a>: Send,         // send-bound-exception: amendment-C16
+        for<'a> R::ConnectingIpc<'a>: Send,         // send-bound-exception: amendment-C16
         T: TlsConnect + Sync + Send,                 // send-bound-exception: amendment-C16
         T::Stream<R::Stream>: 'static + Send,        // send-bound-exception: amendment-C16
         for<'a> T::Handshake<'a, R::Stream>: Send,   // send-bound-exception: amendment-C16

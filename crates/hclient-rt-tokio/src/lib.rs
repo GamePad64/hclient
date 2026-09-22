@@ -106,10 +106,10 @@ impl TcpConnect for Tokio {
     /// The direction of the `cfg` matters: an understated `APPLIES` costs
     /// a caller a named `Unsupported` error, an overstated one costs them
     /// an option silently not applied.
-    /// `cfg!(unix)`, which is what `tokio::net::UnixStream` compiles on.
-    /// Understated on Windows, where `AF_UNIX` exists in the OS but tokio
-    /// binds no stream type for it.
-    const SUPPORTS_UNIX: bool = cfg!(unix);
+    /// Unix-domain sockets where `tokio::net::UnixStream` compiles, which
+    /// is `cfg!(unix)`. Understated on Windows, where `AF_UNIX` exists in
+    /// the OS but tokio binds no stream type for it.
+    const IPC: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
 
     const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL
         .bind_device(cfg!(any(
@@ -157,46 +157,37 @@ impl TcpConnect for Tokio {
         })
     }
 
-    #[cfg(unix)]
-    type ConnectingUnix<'a>
+    type ConnectingIpc<'a>
         = std::pin::Pin<Box<dyn Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>
     where
         Self: 'a;
 
-    // **Both halves are `cfg`-ed, and for one merge only the first was.**
-    // `SUPPORTS_UNIX` above is `cfg!(unix)`, so this crate already knew the
-    // answer on Windows; what was missing is the arm that says it in types.
-    // A `cfg` on an associated type alone leaves the impl incomplete
-    // (`E0046`) *and* leaves a body reaching for `tokio::net::UnixStream`,
-    // so the crate did not build for `x86_64-pc-windows-msvc` at all —
-    // caught by CI rather than by `cargo check`, because a Linux host has
-    // no reason to try. `TokioHandle` one file over had the pair right the
-    // whole time, which is what made the repair a copy.
-    #[cfg(not(unix))]
-    type ConnectingUnix<'a>
-        = hclient_rt::UnixUnsupported<Self::Stream>
-    where
-        Self: 'a;
-
-    #[cfg(not(unix))]
-    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-        hclient_rt::UnixUnsupported::new()
-    }
-
-    #[cfg(unix)]
-    fn connect_unix<'a>(&'a self, path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-        // Owned, because the seam's future is parameterised by `&self`'s
-        // lifetime alone — the same rule `connect` follows for `opts`.
-        let path = path.to_owned();
-        Box::pin(async move {
-            // No `TcpOpts`, because `AF_UNIX` has none of them — see the
-            // trait's own doc. And no `socket2` dance either: there is nothing
-            // to set before the connect, so tokio's own connector is the whole
-            // of it.
-            Ok(crate::io::TokioIo::unix(
-                tokio::net::UnixStream::connect(&path).await?,
-            ))
-        })
+    // One type on every target, and the `cfg` on an arm rather than on the
+    // impl's items. It was a pair of `cfg`-ed items — the type and the
+    // method — and for one merge only the first was, so the crate did not
+    // build for `x86_64-pc-windows-msvc` at all. A `match` whose wildcard
+    // arm is required anyway (`IpcAddr` is `#[non_exhaustive]`) has no pair
+    // to get half right.
+    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+        match addr {
+            #[cfg(unix)]
+            hclient_rt::IpcAddr::Unix(path) => {
+                // Owned, because the seam's future is parameterised by
+                // `&self`'s lifetime alone — the same rule `connect`
+                // follows for `opts`.
+                let path = path.clone();
+                Box::pin(async move {
+                    // No `TcpOpts`, because `AF_UNIX` has none of them — see
+                    // the trait's own doc. And no `socket2` dance either:
+                    // there is nothing to set before the connect, so tokio's
+                    // own connector is the whole of it.
+                    Ok(crate::io::TokioIo::unix(
+                        tokio::net::UnixStream::connect(&path).await?,
+                    ))
+                })
+            }
+            _ => Box::pin(hclient_rt::RefuseIpc::new(addr)),
+        }
     }
 }
 

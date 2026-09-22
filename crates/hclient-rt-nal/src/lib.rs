@@ -240,11 +240,11 @@ macro_rules! __adapt_impl {
                 })
             }
 
-            type ConnectingUnix<'a> =
-                $crate::reexport::hclient_rt::UnixUnsupported<Self::Stream>;
+            type ConnectingIpc<'a> =
+                $crate::reexport::hclient_rt::RefuseIpc<Self::Stream>;
 
-            fn connect_unix<'a>(&'a self, _path: &::std::path::Path) -> Self::ConnectingUnix<'a> {
-                $crate::reexport::hclient_rt::UnixUnsupported::new()
+            fn connect_ipc<'a>(&'a self, addr: &$crate::reexport::hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+                $crate::reexport::hclient_rt::RefuseIpc::new(addr)
             }
         }
     };

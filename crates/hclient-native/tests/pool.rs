@@ -619,13 +619,13 @@ impl hclient_rt::Timer for LateEof {
 }
 
 impl hclient_rt::TcpConnect for LateEof {
-    type ConnectingUnix<'a>
-        = hclient_rt::UnixUnsupported<Self::Stream>
+    type ConnectingIpc<'a>
+        = hclient_rt::RefuseIpc<Self::Stream>
     where
         Self: 'a;
 
-    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-        hclient_rt::UnixUnsupported::new()
+    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+        hclient_rt::RefuseIpc::new(addr)
     }
 
     type Stream = HideFirstEof<<Tokio as hclient_rt::TcpConnect>::Stream>;

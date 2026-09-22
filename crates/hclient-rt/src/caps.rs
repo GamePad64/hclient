@@ -1,4 +1,4 @@
-use crate::error::{Cancelled, UnixSocketsUnsupported, UnsupportedTcpOpts};
+use crate::error::{Cancelled, UnsupportedTcpOpts};
 use futures_core::future::BoxFuture;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -381,42 +381,6 @@ impl TcpOpts {
     }
 }
 
-/// The refusal a runtime with no `AF_UNIX` hands back from
-/// [`TcpConnect::connect_unix`], as a type it can name.
-///
-/// Ready on the first poll, and `Send` whatever `S` is, because it never
-/// holds one.
-#[derive(Debug)]
-pub struct UnixUnsupported<S>(std::marker::PhantomData<fn() -> S>);
-
-impl<S> UnixUnsupported<S> {
-    /// The only way to make one.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(std::marker::PhantomData)
-    }
-}
-
-impl<S> Default for UnixUnsupported<S> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<S> Future for UnixUnsupported<S> {
-    type Output = std::io::Result<S>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            UnixSocketsUnsupported,
-        )))
-    }
-}
-
 pub trait TcpConnect {
     type Stream: ::futures_io::AsyncRead + ::futures_io::AsyncWrite + crate::io::Shutdown + Unpin;
 
@@ -471,64 +435,53 @@ pub trait TcpConnect {
 
     fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a>;
 
-    /// Whether [`connect_unix`](Self::connect_unix) does anything.
+    /// Which same-machine endpoint kinds [`connect_ipc`](Self::connect_ipc)
+    /// dials — see [`IpcSupport`](crate::IpcSupport).
     ///
     /// [`APPLIES`](Self::APPLIES)' shape, and defaulted the same way and
-    /// for the same reason: a claim made by silence must never be stronger
-    /// than the truth. A runtime that says nothing here refuses the
+    /// for the same reason: a runtime that says nothing here refuses the
     /// setting, where one that over-claimed would fail every connect at
-    /// the socket instead of at the call that asked.
-    ///
-    /// It is a `const` rather than something the connect discovers,
-    /// because the answer is a property of the runtime and the target and
-    /// a caller should learn it at configuration rather than on the wire —
-    /// which is what lets `hclient_native::Native::unix_socket` refuse.
-    const SUPPORTS_UNIX: bool = false;
+    /// the socket instead of at the call that asked — which is what lets
+    /// `hclient_native::Native::unix_socket` refuse at configuration.
+    const IPC: crate::IpcSupport = crate::IpcSupport::NONE;
 
-    /// Connect to a Unix-domain socket at `path`.
+    /// Connect to a same-machine endpoint: a Unix-domain socket today, and
+    /// the kinds [`IpcAddr`](crate::IpcAddr) gains later.
     ///
     /// # Why it is here rather than on a seam of its own
     ///
     /// Because a seam of its own could not be reached. `Native`'s IO type
     /// **is** [`Self::Stream`], so a second trait would have to produce
     /// the same associated type — at which point it is this trait with an
-    /// extra method — and putting `R: UnixConnect` on `Native` would tax
+    /// extra method — and putting `R: IpcConnect` on `Native` would tax
     /// every runtime that has no file descriptors. The `fn`-pointer trick
     /// that keeps `Spawn` off `Native`'s signature does not work here:
     /// `spawn` returns `()` where this returns a future, and boxing it
     /// would drop auto traits (spec amendment C1).
     ///
-    /// So it is a defaulted method on the seam that already exists —
-    /// `TlsConnect::reports_alpn`'s shape, `applies_ech`'s and
-    /// `TlsIdentity::presents_client_certs`': a constant defaulted to the
-    /// understating value, read by the layer above to decide whether to
-    /// **ask**.
+    /// # One method for every kind
+    ///
+    /// See the `ipc` module's own documentation: an associated type cannot
+    /// have a default, so a method per kind would make the second kind a
+    /// breaking change for every runtime. A runtime matches the kinds it
+    /// dials and hands [`RefuseIpc`](crate::RefuseIpc) to the rest — a
+    /// wildcard arm it cannot omit, since the enum is `#[non_exhaustive]`.
     ///
     /// # No `TcpOpts`
     ///
     /// Not an omission: every field of [`TcpOpts`] is a TCP or IP socket
-    /// option, and `AF_UNIX` has none of them — no Nagle, no keepalive, no
-    /// source address, no interface. A parameter that could only ever be
-    /// ignored is worse than no parameter.
+    /// option, and no same-machine endpoint has them. A parameter that
+    /// could only ever be ignored is worse than no parameter.
     ///
-    /// The default is a refusal rather than a panic, and the error carries
-    /// [`std::io::ErrorKind::Unsupported`] so a caller who reached it
-    /// through some path that skipped
-    /// [`SUPPORTS_UNIX`](Self::SUPPORTS_UNIX) still gets an answer rather
-    /// than an abort.
-    /// [`Connecting`](Self::Connecting)'s shape, and defaulted the same
-    /// way: a runtime with no `AF_UNIX` returns the refusal without
-    /// naming a type of its own.
-    /// [`Connecting`](Self::Connecting)'s shape. **Not defaulted**, for
-    /// the reason nothing here is: an associated type default is
-    /// unstable, so a runtime with no `AF_UNIX` names
-    /// [`UnixUnsupported`] and forwards to it — two lines, and the
-    /// refusal it hands back is the one this method always had.
-    type ConnectingUnix<'a>: Future<Output = std::io::Result<Self::Stream>>
+    /// **Not defaulted**, for the reason nothing here is: an associated
+    /// type default is unstable, so a runtime with no same-machine
+    /// endpoints names [`RefuseIpc`](crate::RefuseIpc) and forwards to it —
+    /// two lines, and a refusal naming the kind it was asked for.
+    type ConnectingIpc<'a>: Future<Output = std::io::Result<Self::Stream>>
     where
         Self: 'a;
 
-    fn connect_unix<'a>(&'a self, path: &std::path::Path) -> Self::ConnectingUnix<'a>;
+    fn connect_ipc<'a>(&'a self, addr: &crate::IpcAddr) -> Self::ConnectingIpc<'a>;
 }
 
 /// On platforms with file descriptors, the whole set of socket options is
@@ -945,13 +898,13 @@ mod tests {
         type NeverConnect<'a> = Pin<Box<dyn Future<Output = std::io::Result<NeverIo>> + Send + 'a>>; // send-bound-exception: amendment-C15
 
         impl TcpConnect for Forgetful {
-            type ConnectingUnix<'a>
-                = super::UnixUnsupported<Self::Stream>
+            type ConnectingIpc<'a>
+                = crate::RefuseIpc<Self::Stream>
             where
                 Self: 'a;
 
-            fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-                super::UnixUnsupported::new()
+            fn connect_ipc<'a>(&'a self, addr: &crate::IpcAddr) -> Self::ConnectingIpc<'a> {
+                crate::RefuseIpc::new(addr)
             }
 
             type Stream = NeverIo;

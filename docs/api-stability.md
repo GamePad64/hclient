@@ -211,7 +211,7 @@ shape exactly.
 Adding a method to any of them breaks every implementor — and this
 workspace already has the pattern that makes additions free: a **defaulted
 method beside a constant defaulted to the understating value**.
-`SUPPORTS_UNIX`/`connect_unix`, `reports_alpn`, `applies_ech` and
+`IPC`/`connect_ipc`, `reports_alpn`, `applies_ech` and
 `APPLIES` are all that shape.
 
 Nothing to change; what is missing is that it is a **policy** rather than

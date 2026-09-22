@@ -127,7 +127,7 @@ impl Blocking for Smol {
 /// An enum rather than a type parameter on the stream, because
 /// `TcpConnect::Stream` is one associated type and both connects must
 /// produce it — the same shape `hclient-rt-tokio`'s `Socket` has, and for
-/// the reason `TcpConnect::connect_unix` gives for being one trait rather
+/// the reason `TcpConnect::connect_ipc` gives for being one trait rather
 /// than two.
 #[derive(Debug)]
 pub enum SmolSocket {
@@ -250,8 +250,9 @@ impl futures_lite::io::AsyncWrite for SmolSocket {
 impl TcpConnect for Smol {
     type Stream = SmolSocket;
 
-    /// `cfg!(unix)`, which is what `async_net::unix` compiles on.
-    const SUPPORTS_UNIX: bool = cfg!(unix);
+    /// Unix-domain sockets where `async_net::unix` compiles, which is
+    /// `cfg!(unix)`.
+    const IPC: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
 
     /// Every field, and `build_socket` below is where each one is applied.
     /// Stated rather than left to the trait's `NONE` default, which would
@@ -337,42 +338,34 @@ impl TcpConnect for Smol {
         })
     }
 
-    #[cfg(unix)]
-    #[cfg(unix)]
-    type ConnectingUnix<'a>
+    type ConnectingIpc<'a>
         = std::pin::Pin<Box<dyn Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>
     where
         Self: 'a;
 
-    // The non-unix arm, for the reason `hclient-rt-tokio`'s says at
-    // length: `SUPPORTS_UNIX` is `cfg!(unix)`, so this crate already
-    // answers the question — and `SmolSocket::Unix` is `#[cfg(unix)]` two
-    // hundred lines up, so without this the impl neither type-checks nor
-    // has a variant to build.
-    #[cfg(not(unix))]
-    type ConnectingUnix<'a>
-        = hclient_rt::UnixUnsupported<Self::Stream>
-    where
-        Self: 'a;
-
-    #[cfg(not(unix))]
-    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-        hclient_rt::UnixUnsupported::new()
-    }
-
-    #[cfg(unix)]
-    fn connect_unix<'a>(&'a self, path: &std::path::Path) -> Self::ConnectingUnix<'a> {
-        // Owned, because the seam's future is parameterised by `&self`'s
-        // lifetime alone — the same rule `connect` follows for `opts`.
-        let path = path.to_owned();
-        Box::pin(async move {
-            // No `TcpOpts` and no `socket2` dance, for the reason the trait's
-            // own doc gives: `AF_UNIX` has none of those options, so there is
-            // nothing to set before the connect.
-            Ok(SmolSocket::Unix(
-                async_net::unix::UnixStream::connect(&path).await?,
-            ))
-        })
+    // One type on every target, for the reason `hclient-rt-tokio`'s says:
+    // `SmolSocket::Unix` is `#[cfg(unix)]`, so the arm that builds one is
+    // too, and the wildcard `IpcAddr`'s `#[non_exhaustive]` requires is the
+    // refusal everywhere else.
+    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+        match addr {
+            #[cfg(unix)]
+            hclient_rt::IpcAddr::Unix(path) => {
+                // Owned, because the seam's future is parameterised by
+                // `&self`'s lifetime alone — the same rule `connect`
+                // follows for `opts`.
+                let path = path.clone();
+                Box::pin(async move {
+                    // No `TcpOpts` and no `socket2` dance, for the reason
+                    // the trait's own doc gives: `AF_UNIX` has none of those
+                    // options, so there is nothing to set before the connect.
+                    Ok(SmolSocket::Unix(
+                        async_net::unix::UnixStream::connect(&path).await?,
+                    ))
+                })
+            }
+            _ => Box::pin(hclient_rt::RefuseIpc::new(addr)),
+        }
     }
 }
 
