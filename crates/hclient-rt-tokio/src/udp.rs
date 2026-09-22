@@ -48,12 +48,11 @@ impl TokioUdpSocket {
         std.set_nonblocking(true)?;
         let io = tokio::net::UdpSocket::from_std(std)?;
         let state = quinn_udp::UdpSocketState::new((&io).into())?;
-        let caps = UdpCaps {
-            max_send_segments: state.max_gso_segments(),
-            max_recv_segments: state.gro_segments(),
-            ecn: ecn_is_really_on(&io),
-            may_fragment: state.may_fragment(),
-        };
+        let caps = UdpCaps::NONE
+            .max_send_segments(state.max_gso_segments())
+            .max_recv_segments(state.gro_segments())
+            .ecn(ecn_is_really_on(&io))
+            .may_fragment(state.may_fragment());
         Ok(Self { io, state, caps })
     }
 }

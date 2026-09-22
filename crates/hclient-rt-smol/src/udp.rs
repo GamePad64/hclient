@@ -77,12 +77,11 @@ impl SmolUdpSocket {
         // same reason, as `Smol::connect` in this crate's `lib.rs`.
         let io = async_io::Async::new_nonblocking(std)?;
         let state = quinn_udp::UdpSocketState::new(io.get_ref().into())?;
-        let caps = UdpCaps {
-            max_send_segments: state.max_gso_segments(),
-            max_recv_segments: state.gro_segments(),
-            ecn: ecn_is_really_on(io.get_ref()),
-            may_fragment: state.may_fragment(),
-        };
+        let caps = UdpCaps::NONE
+            .max_send_segments(state.max_gso_segments())
+            .max_recv_segments(state.gro_segments())
+            .ecn(ecn_is_really_on(io.get_ref()))
+            .may_fragment(state.may_fragment());
         Ok(Self { io, state, caps })
     }
 }

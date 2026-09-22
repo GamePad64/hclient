@@ -7,7 +7,7 @@
 
 mod caps;
 mod error;
-pub mod io;
+mod io;
 mod udp;
 
 pub use caps::{

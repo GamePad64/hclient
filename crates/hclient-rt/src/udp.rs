@@ -361,7 +361,18 @@ impl EcnCodepoint {
 /// `max_send_segments = 64`, `max_recv_segments = 64`, `ecn = true`,
 /// `may_fragment = false`. Those are that kernel's numbers, not this
 /// crate's: they are what the report exists to carry.
+///
+/// # Built from [`NONE`](Self::NONE), which is `TcpOptsSupport`'s shape
+///
+/// `#[non_exhaustive]` because a runtime writes one and a transport only
+/// reads it, so the next offload — a new kernel feature is how this gains a
+/// field — must not break every runtime that reports UDP. A runtime starts
+/// from the understating base and says what it has:
+/// `UdpCaps::NONE.max_send_segments(64).ecn(true)`. A field the runtime
+/// does not set keeps the answer that costs an understatement rather than
+/// a promise, which is what a forgetful runtime reported before too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct UdpCaps {
     /// Datagrams one `try_send` may carry. `1` means no GSO.
     pub max_send_segments: usize,
@@ -390,6 +401,34 @@ impl UdpCaps {
         ecn: false,
         may_fragment: true,
     };
+
+    /// Datagrams one `try_send` may carry.
+    #[must_use]
+    pub const fn max_send_segments(mut self, n: usize) -> Self {
+        self.max_send_segments = n;
+        self
+    }
+
+    /// Datagrams one `poll_recv` slot may describe.
+    #[must_use]
+    pub const fn max_recv_segments(mut self, n: usize) -> Self {
+        self.max_recv_segments = n;
+        self
+    }
+
+    /// Whether ECN is applied on send and reported on receive.
+    #[must_use]
+    pub const fn ecn(mut self, applied: bool) -> Self {
+        self.ecn = applied;
+        self
+    }
+
+    /// Whether datagrams may be fragmented in flight.
+    #[must_use]
+    pub const fn may_fragment(mut self, may: bool) -> Self {
+        self.may_fragment = may;
+        self
+    }
 }
 
 impl Datagrams<'_> {
@@ -525,6 +564,27 @@ mod tests {
         assert_eq!(Forgetful.caps(), UdpCaps::NONE);
     }
 
+    /// Each setter writes its own field and keeps the ones before it —
+    /// asserted on a chain from [`UdpCaps::NONE`], field by field, so a
+    /// setter that discards its argument or its receiver fails a line.
+    #[test]
+    fn each_udp_caps_setter_sets_its_own_field_and_keeps_the_rest() {
+        let c = UdpCaps::NONE
+            .max_send_segments(64)
+            .max_recv_segments(32)
+            .ecn(true)
+            .may_fragment(false);
+        assert_eq!(c.max_send_segments, 64);
+        assert_eq!(c.max_recv_segments, 32);
+        assert!(c.ecn);
+        assert!(!c.may_fragment);
+        let untouched = UdpCaps::NONE.max_recv_segments(8);
+        assert_eq!(untouched.max_send_segments, UdpCaps::NONE.max_send_segments);
+        assert_eq!(untouched.max_recv_segments, 8);
+        assert_eq!(untouched.ecn, UdpCaps::NONE.ecn);
+        assert_eq!(untouched.may_fragment, UdpCaps::NONE.may_fragment);
+    }
+
     #[test]
     fn segments_counts_datagrams_not_bytes() {
         assert_eq!(plain(&[0u8; 3600]).segments(), 1, "no GSO asked for");
@@ -567,17 +627,11 @@ mod tests {
         // Exactly at the limit is fine; one over is not. Checking both is
         // what stops an off-by-one from passing.
         assert!(
-            g.reject_unsupported(UdpCaps {
-                max_send_segments: 3,
-                ..UdpCaps::NONE
-            })
-            .is_ok()
+            g.reject_unsupported(UdpCaps::NONE.max_send_segments(3))
+                .is_ok()
         );
         let err = g
-            .reject_unsupported(UdpCaps {
-                max_send_segments: 2,
-                ..UdpCaps::NONE
-            })
+            .reject_unsupported(UdpCaps::NONE.max_send_segments(2))
             .expect_err("three datagrams asked of a two-datagram socket");
         assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
         let payload = err

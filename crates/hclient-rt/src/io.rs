@@ -97,3 +97,30 @@ pub trait Shutdown {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Shutdown;
+    use std::io::Result;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// A stream that implements only what it must.
+    struct Minimal;
+
+    impl Shutdown for Minimal {
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// **The understating default, asserted rather than described.** A
+    /// stream that says nothing about vectored writes must be read as not
+    /// having them: a wrong `false` costs a writer one buffer at a time,
+    /// a wrong `true` costs it a syscall per slice. It was the one
+    /// defaulted member of this seam a mutation could flip unnoticed.
+    #[test]
+    fn a_stream_that_says_nothing_does_not_claim_vectored_writes() {
+        assert!(!Minimal.is_write_vectored());
+    }
+}
