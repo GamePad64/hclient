@@ -69,6 +69,34 @@ use std::task::{Context, Poll};
 pub(crate) struct StdAdapter<S> {
     pub(crate) inner: S,
     pub(crate) context: *mut (),
+    /// The last transport error that was not `WouldBlock`, kept because
+    /// the stack above may **not pass it on** — see [`settle_read`].
+    pub(crate) failed: Option<io::Error>,
+}
+
+impl<S> StdAdapter<S> {
+    pub(crate) const fn new(inner: S, context: *mut ()) -> Self {
+        Self {
+            inner,
+            context,
+            failed: None,
+        }
+    }
+
+    /// Remembers `r`'s error when it is one a caller must hear about.
+    fn note<T>(&mut self, r: io::Result<T>) -> io::Result<T> {
+        if let Err(e) = &r
+            && e.kind() != io::ErrorKind::WouldBlock
+        {
+            // A copy, since `io::Error` is not `Clone`: the OS code where
+            // there is one, which is what a caller reporting it wants.
+            self.failed = Some(e.raw_os_error().map_or_else(
+                || io::Error::new(e.kind(), e.to_string()),
+                io::Error::from_raw_os_error,
+            ));
+        }
+        r
+    }
 }
 
 #[allow(
@@ -109,7 +137,7 @@ impl<S: Unpin> StdAdapter<S> {
 impl<S: AsyncRead + Unpin> Read for StdAdapter<S> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.with_context(|cx, s| s.poll_read(cx, buf)) {
-            Poll::Ready(r) => r,
+            Poll::Ready(r) => self.note(r),
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
         }
     }
@@ -118,14 +146,14 @@ impl<S: AsyncRead + Unpin> Read for StdAdapter<S> {
 impl<S: AsyncWrite + Unpin> Write for StdAdapter<S> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.with_context(|cx, s| s.poll_write(cx, buf)) {
-            Poll::Ready(r) => r,
+            Poll::Ready(r) => self.note(r),
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
         match self.with_context(|cx, s| s.poll_flush(cx)) {
-            Poll::Ready(r) => r,
+            Poll::Ready(r) => self.note(r),
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
         }
     }
@@ -208,6 +236,45 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TlsStream<S> {
     }
 }
 
+/// A read's answer once the transport has had its say.
+///
+/// **Security.framework reports a broken connection as the end of the
+/// stream.** Read in `security-framework` 3.7.0: its read callback
+/// translates `ConnectionReset` into `errSSLClosedAbort`, and
+/// `SslStream::read` answers `errSSLClosedAbort` — beside the graceful
+/// close — with `Ok(0)`. So on macOS a reset in the middle of a body read
+/// as a clean end, and a body with no `Content-Length` was **truncated
+/// without an error**. OpenSSL passes the error through; the difference
+/// is a platform's, found by `test (macos-latest)` and by nothing on
+/// Linux.
+///
+/// The error was never lost, only not passed on: it went through
+/// [`StdAdapter`], which is ours and remembers it. So an `Ok(0)` with a
+/// remembered failure is that failure, and a read that returned bytes
+/// keeps them — `SSLRead` can hand back the last plaintext and the error
+/// in one call, and the error then answers the next read.
+fn settle_read(r: io::Result<usize>, failed: &mut Option<io::Error>) -> io::Result<usize> {
+    match r {
+        Ok(0) => failed.take().map_or(Ok(0), Err),
+        other => other,
+    }
+}
+
+/// A write's answer once the transport has had its say.
+///
+/// The same platform, the other half: `SslStream::write` bases its answer
+/// on `nwritten` rather than on the status, so a record the transport
+/// refused to carry still reports the plaintext as written — `Ok(4)` for
+/// four bytes that never left. A remembered failure wins here even over a
+/// count, because the count is a claim about bytes nothing will deliver;
+/// the connection is gone and saying so is the only honest answer.
+fn settle_write(r: io::Result<usize>, failed: &mut Option<io::Error>) -> io::Result<usize> {
+    match failed.take() {
+        Some(e) => Err(e),
+        None => r,
+    }
+}
+
 fn cvt<T>(r: io::Result<T>) -> Poll<io::Result<T>> {
     match r {
         Ok(v) => Poll::Ready(Ok(v)),
@@ -222,7 +289,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for TlsStream<S> {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        self.with_context(cx, |s| cvt(s.read(buf)))
+        let r = self.with_context(cx, |s| s.read(buf));
+        cvt(settle_read(r, &mut self.0.get_mut().failed))
     }
 }
 
@@ -232,7 +300,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TlsStream<S> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        self.with_context(cx, |s| cvt(s.write(buf)))
+        let r = self.with_context(cx, |s| s.write(buf));
+        cvt(settle_write(r, &mut self.0.get_mut().failed))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -358,10 +427,7 @@ where
 
             Handshaking2::Start(taken) => {
                 let (connector, name, io) = taken.take().expect(polled_again);
-                let adapter = StdAdapter {
-                    inner: io,
-                    context: ptr,
-                };
+                let adapter = StdAdapter::new(io, ptr);
                 // The adapter is moved in, so the pointer is cleared on
                 // whichever value comes back rather than by a `Guard` —
                 // and on the `Failure` arm nothing comes back at all,
@@ -398,5 +464,53 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{settle_read, settle_write};
+    use std::io;
+
+    fn reset() -> io::Error {
+        io::Error::from(io::ErrorKind::ConnectionReset)
+    }
+
+    /// What Security.framework answers for a reset is `Ok(0)`; with the
+    /// failure remembered, the caller hears the reset rather than an end.
+    #[test]
+    fn an_end_of_stream_after_a_transport_failure_is_that_failure() {
+        let mut failed = Some(reset());
+        let r = settle_read(Ok(0), &mut failed);
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
+        assert!(failed.is_none(), "reported once, not for ever");
+    }
+
+    /// The control: a clean close stays a clean close.
+    #[test]
+    fn an_end_of_stream_with_nothing_remembered_is_an_end() {
+        assert_eq!(settle_read(Ok(0), &mut None).unwrap(), 0);
+    }
+
+    /// Plaintext handed back beside the failure is kept, and the failure
+    /// waits for the next read.
+    #[test]
+    fn bytes_read_before_the_failure_are_kept_and_the_failure_waits() {
+        let mut failed = Some(reset());
+        assert_eq!(settle_read(Ok(7), &mut failed).unwrap(), 7);
+        assert!(failed.is_some());
+    }
+
+    /// Security.framework's `Ok(n)` for a record that never left.
+    #[test]
+    fn a_write_counted_after_a_transport_failure_is_that_failure() {
+        let mut failed = Some(reset());
+        let r = settle_write(Ok(4), &mut failed);
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
+    }
+
+    #[test]
+    fn a_write_with_nothing_remembered_is_its_count() {
+        assert_eq!(settle_write(Ok(4), &mut None).unwrap(), 4);
     }
 }
