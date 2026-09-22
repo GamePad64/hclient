@@ -218,6 +218,43 @@ impl Rustls {
     /// The identity is redrawn, because it must be: [`TlsConfigId`] is a
     /// component of `hclient-native`'s pool key and says *which client
     /// may resume whose sessions*, which is exactly what changed.
+    ///
+    /// # Why this takes rustls' trait and not one of this family's
+    ///
+    /// The QUIC crypto config stopped being an
+    /// `Arc<dyn quinn_proto::crypto::ClientConfig>` and became a
+    /// declarative type of `hclient-tls`'s own, so that the seam names no
+    /// stack. **The same move is not available here, and the reason is a
+    /// measurement rather than a preference.**
+    ///
+    /// A store holds `rustls::client::Tls13ClientSessionValue`, and read
+    /// in 0.23.41 that value holds a `&'static Tls13CipherSuite` — a
+    /// pointer to a static inside rustls — over a `ClientSessionCommon`
+    /// carrying `Weak<dyn ServerCertVerifier>` and
+    /// `Weak<dyn ResolvesClientCert>`: **weak references to live objects
+    /// in this process**. There is no codec on the type and there could
+    /// not be one; the value does not outlive the process that made it,
+    /// let alone cross a crate boundary as bytes.
+    ///
+    /// It cannot be *built* from outside rustls either — the constructor
+    /// is `pub(crate)` — so even a test of what a store does with one has
+    /// to go through a live handshake. That is why this paragraph is a
+    /// reading rather than an assertion: the property is about rustls'
+    /// types, and there is no expression out here whose value depends on
+    /// it.
+    ///
+    /// So a seam of this family's own could carry only an opaque handle,
+    /// and an opaque handle is what `Arc<dyn ClientSessionStore>` already
+    /// is — with the difference that rustls' version is the one rustls
+    /// will actually call. A wrapper would add a name and no capability,
+    /// which is the *abstraction that carries nothing* this workspace
+    /// rejects elsewhere.
+    ///
+    /// What follows for a caller is worth stating plainly: a session
+    /// store here is an **in-process cache policy** — how many, how long,
+    /// evicted how — and never a way to persist resumption across a
+    /// restart. That is not this crate declining to implement it; rustls'
+    /// own types make it unrepresentable.
     #[must_use]
     pub fn with_session_store(
         mut self,
@@ -254,6 +291,48 @@ impl Rustls {
         self
     }
 
+    /// A connector over a `rustls::ClientConfig` the caller built.
+    ///
+    /// # The escape hatch, and it is load-bearing rather than a leftover
+    ///
+    /// Every other constructor here answers one question —
+    /// [`with_platform_verifier`](Self::with_platform_verifier) the trust
+    /// store, [`with_webpki_roots`](Self::with_webpki_roots) a bundled
+    /// one, [`with_identity`](Self::with_identity) a client certificate —
+    /// and this one answers the rest. `docs/competitive-gaps.md` names it
+    /// for a whole class at once: adding a root, using *only* supplied
+    /// roots, a minimum TLS version, a custom `ServerCertVerifier` and
+    /// certificate-fingerprint pinning are each a `rustls::ClientConfig`
+    /// this crate has no named setter for, and each is reachable here.
+    ///
+    /// **So it is deliberately not a named setter per capability.** rustls'
+    /// own builder already expresses all of them; a setter per question
+    /// would be this crate re-exporting a configuration API it does not
+    /// own, and going stale against it — which is the objection
+    /// `hclient-tower`'s `map_request` answers one crate over, where the
+    /// caller already has the tool.
+    ///
+    /// # What it costs, said rather than discovered
+    ///
+    /// The caller writes rustls directly, so **this is the one place a
+    /// consumer of this backend meets rustls' major version**. That is a
+    /// fact about `hclient-tls-rustls` and not about the seam: `hclient-tls`
+    /// names no TLS implementation at all, which
+    /// `just graph-tls-seam-carries-no-stack` asserts — so a caller who
+    /// wants to stay clear of rustls' version picks a different backend
+    /// rather than a different constructor.
+    ///
+    /// # Two things it does anyway, and both are the crate's own
+    ///
+    /// The config is wrapped in this crate's recording
+    /// `ResolvesClientCert` — **every** constructor goes through it, and
+    /// the reason is written where that wrapper is: a caller who builds
+    /// their own config is exactly the caller doing mTLS, so a
+    /// `ClientCertRequest` must be observable here too. And it draws a
+    /// fresh [`TlsConfigId`], which is a component of `hclient-native`'s
+    /// pool key: two connectors built from two configs must not share a
+    /// connection, however alike the configs look.
+    #[must_use]
     pub fn from_config(cfg: Arc<rustls::ClientConfig>) -> Self {
         Self {
             identities: Arc::new(HashMap::new()),
