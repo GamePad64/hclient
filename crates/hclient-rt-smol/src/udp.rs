@@ -115,13 +115,24 @@ impl SmolUdpSocket {
 /// Platforms where the options are not reachable through `socket2` report
 /// `false` — an understatement, which is the direction a capability is
 /// allowed to be wrong in.
+///
+/// **Windows is one of them, and it was listed here as reachable.**
+/// `quinn-udp` 0.6.2 turns ECN on there with `IP_RECVECN` and
+/// `IPV6_RECVECN` (`src/windows.rs`), while `socket2`'s `recv_tos_v4` and
+/// `recv_tclass_v6` read `IP_RECVTOS` and `IPV6_RECVTCLASS`, which nothing
+/// sets on that platform. So the question asked here was always answered
+/// `false` on Windows, whatever the socket did — found the first time
+/// `test (windows-latest)` finished a run, by the v6-only test demanding
+/// `true`. Reading the right option means `getsockopt` through
+/// `windows-sys`, which is `unsafe` this crate does not carry; until then
+/// the platform takes the fallback below rather than a probe that cannot
+/// see what it probes.
 #[cfg(any(
     target_os = "linux",
     target_os = "android",
     target_os = "macos",
     target_os = "ios",
     target_os = "freebsd",
-    windows
 ))]
 fn ecn_is_really_on(io: &std::net::UdpSocket) -> bool {
     let sock = socket2::SockRef::from(io);
@@ -147,7 +158,6 @@ fn ecn_is_really_on(io: &std::net::UdpSocket) -> bool {
     target_os = "macos",
     target_os = "ios",
     target_os = "freebsd",
-    windows
 )))]
 fn ecn_is_really_on(_io: &std::net::UdpSocket) -> bool {
     false

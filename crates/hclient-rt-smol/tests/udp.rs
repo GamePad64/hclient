@@ -311,7 +311,16 @@ fn a_socket_that_claims_ecn_reports_the_codepoint_it_received() {
 /// and widening that surface for a test is the wrong direction. `adopt` is
 /// the seam's own entry point for a caller-configured socket, so this
 /// exercises it as well.
+///
+/// **Not on Windows**, where the probe cannot see the option `quinn-udp`
+/// sets there and so answers `false` for every socket — see
+/// `ecn_is_really_on`'s own doc. The claim this pins is about the v6 arm's
+/// logic, and on Windows no arm runs.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "the ECN probe reads IPV6_RECVTCLASS, and quinn-udp sets IPV6_RECVECN on Windows"
+)]
 fn a_v6_only_socket_claims_ecn_although_it_grants_no_v4_recvtos() {
     use hclient_rt::UdpAdoptStd;
     let Ok(raw) = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, None) else {
