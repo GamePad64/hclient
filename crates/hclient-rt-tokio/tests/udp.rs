@@ -2,7 +2,7 @@
 //!
 //! Two jobs. It pins the behaviour the seam promises — a socket enforces
 //! the offloads it declares, and reports ECN it can actually observe — and
-//! it **prints** the numbers, because `UdpCaps` is a report about a kernel
+//! it **prints** the numbers, because `UdpSupport` is a report about a kernel
 //! and the only way anyone notices a runner where GSO or ECN has quietly
 //! vanished is if the run says so. Asserting the numbers would be flaky by
 //! construction: 64/64 is this kernel's `UDP_MAX_SEGMENTS`, not a property
@@ -41,12 +41,12 @@ async fn send(sock: &hclient_rt_tokio::TokioUdpSocket, d: &Datagrams<'_>) -> std
 #[tokio::test]
 async fn the_capabilities_this_kernel_reports() {
     let s = bind();
-    let c = s.caps();
+    let c = s.support();
     // Printed, not asserted — see the module doc. `--nocapture` shows it;
     // a runner where these collapse to 1/1/false is a fact worth having in
     // the log rather than a red build.
     println!(
-        "UdpCaps on this host: gso={} gro={} ecn={} may_fragment={}",
+        "UdpSupport on this host: gso={} gro={} ecn={} may_fragment={}",
         c.max_send_segments, c.max_recv_segments, c.ecn, c.may_fragment
     );
     // The one thing that is a property of this code rather than of the
@@ -62,7 +62,7 @@ async fn the_socket_refuses_a_gso_batch_it_cannot_send() {
     // putting one oversized datagram on a path that will drop it without
     // telling anyone.
     let s = bind();
-    let caps = s.caps();
+    let caps = s.support();
     let seg = 1200usize;
     let too_many = caps.max_send_segments + 1;
     let payload = vec![0u8; seg * too_many];
@@ -147,7 +147,7 @@ async fn ecn_claim_matches_reality(
     assert_eq!(n, 1);
     assert_eq!(&buf[..meta[0].len], b"ecn");
 
-    if b.caps().ecn {
+    if b.support().ecn {
         assert_eq!(
             meta[0].ecn,
             Some(EcnCodepoint::Ect0),
@@ -206,8 +206,8 @@ async fn ecn_is_reported_from_the_kernel_on_a_dual_stack_socket_too() {
         .expect("the first v6 bind succeeded, so the second must too");
     println!(
         "dual-stack v6 socket reports ecn={} (v4 socket reports {})",
-        b.caps().ecn,
-        bind().caps().ecn
+        b.support().ecn,
+        bind().support().ecn
     );
     ecn_claim_matches_reality(&a, &b).await;
 }
@@ -301,7 +301,7 @@ async fn a_dual_stack_socket_reports_ecn_for_v4_mapped_traffic_exactly_when_it_c
 
     println!(
         "dual-stack socket claims ecn={}, v4-mapped datagram reported {:?}",
-        b.caps().ecn,
+        b.support().ecn,
         meta[0].ecn
     );
     // **One direction only, and macOS is why.** A biconditional was
@@ -319,7 +319,7 @@ async fn a_dual_stack_socket_reports_ecn_for_v4_mapped_traffic_exactly_when_it_c
     // and written down rather than changed on the strength of one
     // kernel — but only `true` is a promise, and this asserts exactly
     // that.
-    if b.caps().ecn {
+    if b.support().ecn {
         assert_eq!(
             meta[0].ecn,
             Some(EcnCodepoint::Ect0),

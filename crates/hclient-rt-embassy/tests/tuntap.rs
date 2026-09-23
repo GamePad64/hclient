@@ -135,7 +135,7 @@ fn connect_timeout_is_enforced_over_this_runtimes_clock() {
 /// `src/lib.rs`'s unit tests call `TcpOpts::reject_unsupported` directly,
 /// which proves the check computes the right answer and nothing about
 /// whether `connect` ever calls it. Deleting the
-/// `opts.reject_unsupported(Self::APPLIES)?` line from `Embassy::connect`
+/// `opts.reject_unsupported(Self::TCP_SUPPORT)?` line from `Embassy::connect`
 /// — a backend that silently ignores every option it cannot apply, the one
 /// answer `TcpConnect::connect`'s doc says is unavailable — passes the
 /// whole crate suite, 14/14. This scenario is what makes that mutation

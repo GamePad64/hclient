@@ -39,7 +39,7 @@ use hclient_core::hooks::{Event, Hooks, NoHooks};
 use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
-use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+use hclient_rt::{TcpConnect, TcpOpts, TcpSupport, Timer};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use std::io::{Read, Write};
@@ -96,7 +96,7 @@ impl TcpConnect for Counting {
     }
 
     type Stream = <Tokio as TcpConnect>::Stream;
-    const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
     type Connecting<'a>
         = std::pin::Pin<
         Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,

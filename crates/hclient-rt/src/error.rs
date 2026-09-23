@@ -4,8 +4,8 @@
 //! way work fails — there is no socket to time out and no query to lose.
 //! What is left is a runtime saying **no** to something a caller asked
 //! for, and that is what unites these four: three are a capability the
-//! platform does not have ([`UnsupportedTcpOpts`],
-//! [`UnsupportedUdpOffload`], [`UnsupportedIpc`]) and the fourth
+//! platform does not have ([`UnsupportedTcp`],
+//! [`UnsupportedUdp`], [`UnsupportedIpc`]) and the fourth
 //! is a capability withdrawn mid-flight ([`Cancelled`], the thread pool
 //! going away before the work started).
 //!
@@ -24,7 +24,25 @@
 use std::error::Error as StdError;
 use std::fmt::Display;
 
-use crate::caps::TcpOptsSupport;
+use crate::caps::TcpSupport;
+
+/// The lead of a refusal and every offending name, `", "`-separated after
+/// one space — written once for all three, so the three messages cannot
+/// drift into three punctuations. The separator is pinned by the TCP
+/// refusal's two-name test, the only one of the three that can name two
+/// today.
+fn refusal(
+    f: &mut std::fmt::Formatter<'_>,
+    lead: &str,
+    names: impl Iterator<Item = &'static str>,
+) -> std::fmt::Result {
+    f.write_str(lead)?;
+    for (i, name) in names.enumerate() {
+        f.write_str(if i > 0 { ", " } else { " " })?;
+        f.write_str(name)?;
+    }
+    Ok(())
+}
 
 /// The caller set socket options this runtime cannot apply.
 ///
@@ -37,14 +55,14 @@ use crate::caps::TcpOptsSupport;
 /// who set two unappliable options and fixed the one the message mentioned
 /// would otherwise get a second, identical-looking failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnsupportedTcpOpts {
+pub struct UnsupportedTcp {
     /// `true` where the caller asked for an option the runtime does not
     /// apply — i.e. set in [`TcpOpts`](crate::TcpOpts) and absent from
-    /// [`TcpConnect::APPLIES`](crate::TcpConnect::APPLIES).
-    pub(crate) missing: TcpOptsSupport,
+    /// [`TcpConnect::TCP_SUPPORT`](crate::TcpConnect::TCP_SUPPORT).
+    pub(crate) missing: TcpSupport,
 }
 
-impl UnsupportedTcpOpts {
+impl UnsupportedTcp {
     /// The offending option names, in [`TcpOpts`](crate::TcpOpts)' own field order.
     pub fn names(&self) -> impl Iterator<Item = &'static str> {
         let m = self.missing;
@@ -68,52 +86,64 @@ impl UnsupportedTcpOpts {
 // Hand-written rather than `thiserror`: the message is a computed list, so
 // the derive would buy nothing, and this way the names are written straight
 // into the formatter instead of through an intermediate `String`.
-impl Display for UnsupportedTcpOpts {
+impl Display for UnsupportedTcp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
+        refusal(
+            f,
             "this runtime cannot apply these TCP socket options, and does not ignore them:",
+            self.names(),
         )?;
-        for (i, name) in self.names().enumerate() {
-            f.write_str(if i > 0 { ", " } else { " " })?;
-            f.write_str(name)?;
-        }
         // Where the claim came from, because half the readers of this
-        // message are on the wrong side of it. `TcpConnect::APPLIES`
+        // message are on the wrong side of it. `TcpConnect::TCP_SUPPORT`
         // defaults to `NONE`, so a runtime that *does* apply an option and
         // forgot the line refuses it here — which has happened once in
         // this workspace already (`TokioHandle`, found by measurement).
         // Naming the option alone sends that author looking at their
         // `connect` body, where the code is correct and the bug is not.
-        f.write_str(" (a runtime that does apply one declares it in TcpConnect::APPLIES)")
+        f.write_str(" (a runtime that does apply one declares it in TcpConnect::TCP_SUPPORT)")
     }
 }
 
-impl StdError for UnsupportedTcpOpts {}
+impl StdError for UnsupportedTcp {}
 
 /// A runtime was asked to dial a kind of same-machine endpoint it does
 /// not dial.
 ///
 /// Carried inside an [`std::io::Error`] with
 /// [`ErrorKind::Unsupported`](std::io::ErrorKind::Unsupported) by
-/// [`RefuseIpc`](crate::RefuseIpc), the shape [`UnsupportedTcpOpts`] and
-/// [`UnsupportedUdpOffload`] already use. Reachable only past
-/// [`TcpConnect::IPC`](crate::TcpConnect::IPC), which
+/// [`RefuseIpc`](crate::RefuseIpc), the shape [`UnsupportedTcp`] and
+/// [`UnsupportedUdp`] already use. Reachable only past
+/// [`TcpConnect::IPC_SUPPORT`](crate::TcpConnect::IPC_SUPPORT), which
 /// `hclient_native::Native::unix_socket` checks at the call that
 /// configures it — so a caller normally meets the refusal where they
 /// wrote the path, not on the wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("this runtime does not connect to {kind} endpoints")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnsupportedIpc {
     pub(crate) kind: &'static str,
 }
 
 impl UnsupportedIpc {
-    /// The refused kind — [`IpcAddr::kind`](crate::IpcAddr::kind)'s name.
-    #[must_use]
-    pub const fn kind(&self) -> &'static str {
-        self.kind
+    /// The refused kinds — one, since an endpoint has one — as
+    /// [`IpcAddr::kind`](crate::IpcAddr::kind) names it. An iterator for the
+    /// shape [`UnsupportedTcp::names`] and [`UnsupportedUdp::names`] have,
+    /// so the three refusals read the same way.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.kind)
     }
 }
+
+impl Display for UnsupportedIpc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        refusal(
+            f,
+            "this runtime cannot dial these same-machine endpoints, and does not fall back:",
+            self.names(),
+        )?;
+        f.write_str(" (a runtime that does dial one declares it in TcpConnect::IPC_SUPPORT)")
+    }
+}
+
+impl StdError for UnsupportedIpc {}
 
 /// The background thread pool that `Blocking::run` was supposed to run on
 /// went away before the task got to start — for example, the runtime is
@@ -133,142 +163,105 @@ pub struct Cancelled;
 /// Carried inside an [`std::io::Error`] with
 /// [`ErrorKind::Unsupported`](std::io::ErrorKind::Unsupported) by
 /// [`Datagrams::reject_unsupported`](crate::Datagrams::reject_unsupported), and reachable again through
-/// `io::Error::get_ref().downcast_ref()` — the shape [`UnsupportedTcpOpts`]
+/// `io::Error::get_ref().downcast_ref()` — the shape [`UnsupportedTcp`]
 /// already uses, so a caller who wants to react per-offload does not have
 /// to scrape `Display`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnsupportedUdpOffload {
+pub struct UnsupportedUdp {
     pub(crate) gso: bool,
-    pub(crate) ecn: bool,
 }
 
-impl UnsupportedUdpOffload {
+impl UnsupportedUdp {
     /// The offending offload names. Every one of them, not just the first.
     pub fn names(&self) -> impl Iterator<Item = &'static str> {
-        [("gso", self.gso), ("ecn", self.ecn)]
+        [("gso", self.gso)]
             .into_iter()
             .filter_map(|(name, bad)| bad.then_some(name))
     }
 }
 
-impl Display for UnsupportedUdpOffload {
+impl Display for UnsupportedUdp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
+        refusal(
+            f,
             "this socket does not have these UDP offloads, and does not silently drop them:",
+            self.names(),
         )?;
-        for (i, name) in self.names().enumerate() {
-            f.write_str(if i > 0 { ", " } else { " " })?;
-            f.write_str(name)?;
-        }
-        Ok(())
+        f.write_str(" (a socket that does have one declares it in UdpDatagrams::support)")
     }
 }
 
-impl StdError for UnsupportedUdpOffload {}
+impl StdError for UnsupportedUdp {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caps::TcpOptsSupport;
+    use crate::caps::TcpSupport;
 
     /// Both list-shaped errors write their own separators — `" "` before
     /// the first name and `", "` before every one after it — and until
     /// this module nothing read a rendered message at all. `caps.rs`'s
     /// tests assert `contains(name)`, which is true of every separator a
     /// mutation can produce, so all four `i > 0` mutants survived the
-    /// suite and the whole `UnsupportedUdpOffload::fmt` body did too.
+    /// suite and the whole `UnsupportedUdp::fmt` body did too.
     ///
     /// Pinned as a whole string rather than by `contains`, because the
     /// defect these errors exist to prevent is a caller reading the
-    /// message: `"…: gso, ecn"` and `"…:, gso, ecn"` name the same two
-    /// offloads and only one of them is a sentence.
+    /// message: `"…: nodelay, keepalive"` and `"…:, nodelay, keepalive"`
+    /// name the same two options and only one of them is a sentence.
     #[test]
     fn the_tcp_message_separates_names_with_a_comma_and_the_first_with_a_space() {
-        let one = UnsupportedTcpOpts {
-            missing: TcpOptsSupport::NONE.nodelay(true),
+        let one = UnsupportedTcp {
+            missing: TcpSupport::NONE.nodelay(true),
         };
         assert_eq!(
             one.to_string(),
             "this runtime cannot apply these TCP socket options, and does not ignore them: \
-             nodelay (a runtime that does apply one declares it in TcpConnect::APPLIES)"
+             nodelay (a runtime that does apply one declares it in TcpConnect::TCP_SUPPORT)"
         );
 
         // Two names, which is the case that discriminates: with one name
         // the separator is whatever the `else` arm writes whatever the
         // condition does.
-        let two = UnsupportedTcpOpts {
-            missing: TcpOptsSupport::NONE.nodelay(true).reuse_address(true),
+        let two = UnsupportedTcp {
+            missing: TcpSupport::NONE.nodelay(true).reuse_address(true),
         };
         assert_eq!(
             two.to_string(),
             "this runtime cannot apply these TCP socket options, and does not ignore them: \
              nodelay, reuse_address \
-             (a runtime that does apply one declares it in TcpConnect::APPLIES)"
+             (a runtime that does apply one declares it in TcpConnect::TCP_SUPPORT)"
         );
 
         // And the empty case, which no caller can reach — `reject_unsupported`
         // returns `Ok` when nothing is missing — but which the `Display` is
         // free to render, so it is pinned rather than left to a reader to
         // work out. It is the only rendering with no separator at all.
-        let none = UnsupportedTcpOpts {
-            missing: TcpOptsSupport::NONE,
+        let none = UnsupportedTcp {
+            missing: TcpSupport::NONE,
         };
         assert_eq!(
             none.to_string(),
             "this runtime cannot apply these TCP socket options, and does not ignore them: \
-             (a runtime that does apply one declares it in TcpConnect::APPLIES)"
+             (a runtime that does apply one declares it in TcpConnect::TCP_SUPPORT)"
         );
     }
 
     #[test]
     fn the_udp_message_names_every_offload_in_the_same_shape() {
         assert_eq!(
-            UnsupportedUdpOffload {
-                gso: true,
-                ecn: false
-            }
-            .to_string(),
-            "this socket does not have these UDP offloads, and does not silently drop them: gso"
-        );
-        // `ecn: true` is unreachable from `Datagrams::reject_unsupported`
-        // today — see that method's own comment, where the `ecn` local is a
-        // deliberate constant `false`. The field is `pub(crate)`, so this
-        // module can still build the value, and it is worth building: the
-        // two-name rendering is the only one where the separator between
-        // names is observable, and `names()`' `ecn` arm has no other reader.
-        assert_eq!(
-            UnsupportedUdpOffload {
-                gso: true,
-                ecn: true
-            }
-            .to_string(),
-            "this socket does not have these UDP offloads, and does not silently drop them: \
-             gso, ecn"
-        );
-        assert_eq!(
-            UnsupportedUdpOffload {
-                gso: false,
-                ecn: true
-            }
-            .to_string(),
-            "this socket does not have these UDP offloads, and does not silently drop them: ecn"
+            UnsupportedUdp { gso: true }.to_string(),
+            "this socket does not have these UDP offloads, and does not silently drop them: gso \
+             (a socket that does have one declares it in UdpDatagrams::support)"
         );
     }
 
-    /// `names()` is the half a caller reads as data rather than as prose,
-    /// and the `ecn` arm of the UDP one is reachable from nowhere else in
-    /// the workspace.
+    /// `names()` is the half a caller reads as data rather than as prose.
     #[test]
     fn names_are_yielded_in_field_order_and_only_for_offending_entries() {
-        let both = UnsupportedUdpOffload {
-            gso: true,
-            ecn: true,
-        };
-        assert_eq!(both.names().collect::<Vec<_>>(), ["gso", "ecn"]);
-        let neither = UnsupportedUdpOffload {
-            gso: false,
-            ecn: false,
-        };
+        let offending = UnsupportedUdp { gso: true };
+        assert_eq!(offending.names().collect::<Vec<_>>(), ["gso"]);
+        let neither = UnsupportedUdp { gso: false };
         assert_eq!(neither.names().count(), 0);
     }
 }

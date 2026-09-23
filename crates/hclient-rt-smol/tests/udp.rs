@@ -99,9 +99,9 @@ async fn recv_one(sock: &SmolUdpSocket, buf: &mut [u8]) -> std::io::Result<(usiz
 #[test]
 fn the_capabilities_this_kernel_reports() {
     let s = bind();
-    let c = s.caps();
+    let c = s.support();
     println!(
-        "UdpCaps on this host: gso={} gro={} ecn={} may_fragment={}",
+        "UdpSupport on this host: gso={} gro={} ecn={} may_fragment={}",
         c.max_send_segments, c.max_recv_segments, c.ecn, c.may_fragment
     );
     // The one part that is a property of this code rather than of the
@@ -203,7 +203,7 @@ fn zero_slots_answers_zero_and_does_not_consume_the_datagram() {
 fn the_socket_refuses_a_gso_batch_it_cannot_send() {
     futures_executor::block_on(async {
         let (a, b) = (bind(), bind());
-        let max = a.caps().max_send_segments;
+        let max = a.support().max_send_segments;
         if max <= 1 {
             println!("this kernel reports max_send_segments={max}; nothing to exceed");
             return;
@@ -254,7 +254,7 @@ fn a_socket_that_claims_ecn_reports_the_codepoint_it_received() {
         assert_eq!(n, 1);
         assert_eq!(&buf[..meta.len], b"ecn");
 
-        if b.caps().ecn {
+        if b.support().ecn {
             assert_eq!(
                 meta.ecn,
                 Some(EcnCodepoint::Ect0),
@@ -302,7 +302,7 @@ fn a_socket_that_claims_ecn_reports_the_codepoint_it_received() {
 /// the `!dual` short-circuit **inside** the v6 arm, verified by
 /// `v6 && (dual && tos4)`, which fails exactly this test and nothing
 /// else. The distinction matters because AGENTS.md records a *different*
-/// ECN mutant — the hardcoded `ecn: true` in `UdpCaps` — as unkillable on
+/// ECN mutant — the hardcoded `ecn: true` in `UdpSupport` — as unkillable on
 /// every platform, and a reader who merges the two concludes no ECN
 /// mutation is worth a test.
 /// The socket is built here and **adopted** rather than bound, because
@@ -347,9 +347,9 @@ fn a_v6_only_socket_claims_ecn_although_it_grants_no_v4_recvtos() {
     let s = Smol
         .adopt(std::net::UdpSocket::from(raw))
         .expect("adopting a bound v6-only socket");
-    println!("v6-only socket reports ecn={}", s.caps().ecn);
+    println!("v6-only socket reports ecn={}", s.support().ecn);
     assert!(
-        s.caps().ecn,
+        s.support().ecn,
         "a v6-only socket receives no v4-mapped traffic, so `IP_RECVTOS` being \
          unset cannot disclaim ECN — the v6 arm must not require it"
     );

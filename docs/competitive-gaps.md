@@ -297,7 +297,7 @@ of an off-by-default feature is treated in the `ng` column.
 | a reaper that closes idle sockets | Y\* | Y | — | Y | Y\* | — | ng: `Native::with_reaper`, opt-in, bounded on `R: Spawn` |
 | `TCP_NODELAY` | Y | Y | — | Y | Y | N | |
 | local source address | Y | Y | — | Y | Y | N | `TcpOpts::local_address` |
-| **bind to an interface** (`SO_BINDTODEVICE`) | Y\* | Y | — | Y | seam | N | closed — `TcpOpts::bind_device`. `isahc` 2.0.1 has `interface(..)` taking a name, an address or `Any` (`src/config/mod.rs:393`, `src/net/interface.rs`), which is libcurl's `CURLOPT_INTERFACE` and covers both what ng splits into `bind_device` and `local_address`. Not `local_address` renamed: an address binds the *source address* and the kernel still routes by its table, where this binds the interface. Linux/Android/Fuchsia only, which is why `Tokio::APPLIES` stopped being `TcpOptsSupport::ALL`. See G11 |
+| **bind to an interface** (`SO_BINDTODEVICE`) | Y\* | Y | — | Y | seam | N | closed — `TcpOpts::bind_device`. `isahc` 2.0.1 has `interface(..)` taking a name, an address or `Any` (`src/config/mod.rs:393`, `src/net/interface.rs`), which is libcurl's `CURLOPT_INTERFACE` and covers both what ng splits into `bind_device` and `local_address`. Not `local_address` renamed: an address binds the *source address* and the kernel still routes by its table, where this binds the interface. Linux/Android/Fuchsia only, which is why `Tokio::TCP_SUPPORT` stopped being `TcpSupport::ALL`. See G11 |
 | TCP keepalive | Y | Y | — | Y | seam | N | **closed since this row said *one duration*** — `TcpOpts` has `keepalive`, `keepalive_interval`, `keepalive_retries` and `user_timeout`, which is rq's set exactly. Setting any of the three enables `SO_KEEPALIVE`, so a caller who sets only the interval has switched keepalive on with the OS's idle time; asserted, because it reads as a surprise otherwise. nq reaches it through urllib3's `socket_options`, i.e. by naming the constant. See G11 |
 | Unix domain socket transport | Y | N | N | **Y** | Y | N | closed — `Native::unix_socket(path)`, curl's `--unix-socket` exactly. `isahc` 2.0.1 has it too and spells it as a *dialer*: `Dialer::unix_socket("/var/run/docker.sock")`, or the URI form `"unix:/path/to/my.sock".parse::<Dialer>()` (`src/net/dial.rs:41, :95`) — which is a nicer shape than a transport-wide setting for a caller who wants one request over a socket. **Not a sibling trait**, which is what this document expected: a second trait would have to produce `TcpConnect::Stream` anyway, so it is a defaulted method on that seam — `reports_alpn`'s shape. See G11 |
 | static host→address override (`--resolve`) | Y | Y | — | Y | Y | N | **the `seam` this row used to say is closed**: `hclient_dns::Overrides<D>` (`overrides.rs:61`) answers from a table and hands the rest to `D`, so it composes over the system resolver, over DoH, over anything. Host-wide rather than curl's `host:port:addr`, because `Resolve` is asked for a name and a family and never sees a port. nq spells it as a resolver URL, `in-memory://` |
@@ -752,16 +752,16 @@ times what is sent, and each is on the side its own threat is on.
 ### G11. Interface binding, TCP keepalive detail, Unix sockets — **closed**
 
 `TcpOpts` gains `bind_device`, `keepalive_interval`, `keepalive_retries`
-and `user_timeout`, with the matching `TcpOptsSupport` bools — the
+and `user_timeout`, with the matching `TcpSupport` bools — the
 field-per-field mirror this section correctly called *the designed-for
 change*, since the error has to name the option a caller set.
 
-**The interesting consequence is that `Tokio::APPLIES` stopped being
-`TcpOptsSupport::ALL`.** `SO_BINDTODEVICE` exists on Linux, Android and
+**The interesting consequence is that `Tokio::TCP_SUPPORT` stopped being
+`TcpSupport::ALL`.** `SO_BINDTODEVICE` exists on Linux, Android and
 Fuchsia; `TCP_USER_TIMEOUT` on those plus Cygwin; and
 `TcpKeepalive::with_retries` is absent on three others. A constant
 claiming all of them everywhere would be a capability that lies on macOS
-and Windows — so `APPLIES` is now a `cfg!`-computed value, and `ALL` still
+and Windows — so `TCP_SUPPORT` is now a `cfg!`-computed value, and `ALL` still
 means *every field* while no longer being a value a real runtime can claim
 on every target it builds for. Checked by compiling for
 `aarch64-apple-darwin` and `x86_64-pc-windows-msvc` as well as the host.

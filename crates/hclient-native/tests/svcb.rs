@@ -38,7 +38,7 @@ use hclient_core::body::RequestBody;
 use hclient_core::transport::Transport;
 use hclient_dns::{RData, Record, Resolve, SvcbEndpoint, rtype};
 use hclient_native::{Native, SVCB_FAILURE_TTL};
-use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+use hclient_rt::{TcpConnect, TcpOpts, TcpSupport, Timer};
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use std::io::Read;
@@ -363,7 +363,7 @@ impl TcpConnect for Skewed {
     }
 
     type Stream = <Tokio as TcpConnect>::Stream;
-    const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
     type Connecting<'a>
         = std::pin::Pin<
         Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,

@@ -28,7 +28,7 @@
 //! `getsockopt` after the fact and reports what it finds, rather than what
 //! was attempted.
 
-use hclient_rt::{Datagrams, RecvMeta, UdpAdoptStd, UdpBind, UdpCaps, UdpDatagrams};
+use hclient_rt::{Datagrams, RecvMeta, UdpAdoptStd, UdpBind, UdpDatagrams, UdpSupport};
 use std::io;
 use std::io::IoSliceMut;
 use std::net::SocketAddr;
@@ -40,7 +40,7 @@ use tokio::io::Interest;
 pub struct TokioUdpSocket {
     io: tokio::net::UdpSocket,
     state: quinn_udp::UdpSocketState,
-    caps: UdpCaps,
+    caps: UdpSupport,
 }
 
 impl TokioUdpSocket {
@@ -48,7 +48,7 @@ impl TokioUdpSocket {
         std.set_nonblocking(true)?;
         let io = tokio::net::UdpSocket::from_std(std)?;
         let state = quinn_udp::UdpSocketState::new((&io).into())?;
-        let caps = UdpCaps::NONE
+        let caps = UdpSupport::NONE
             .max_send_segments(state.max_gso_segments())
             .max_recv_segments(state.gro_segments())
             .ecn(ecn_is_really_on(&io))
@@ -233,7 +233,7 @@ impl UdpDatagrams for TokioUdpSocket {
         self.io.local_addr()
     }
 
-    fn caps(&self) -> UdpCaps {
+    fn support(&self) -> UdpSupport {
         self.caps
     }
 }

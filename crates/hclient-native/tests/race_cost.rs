@@ -351,11 +351,12 @@ fn tcp(cert: &rustls::pki_types::CertificateDer<'static>) -> Tcp {
 ///    peer's delayed ACK.
 /// 2. `TokioHandle` cannot be asked for it. Its `TcpConnect::connect`
 ///    delegates to `Tokio::connect`, which applies every option, but it
-///    does **not** restate `APPLIES`, so it inherits the trait's `NONE`
+///    does **not** restate `TCP_SUPPORT`, so it inherits the trait's `NONE`
 ///    and `Native::tcp_opts` refuses `nodelay` with an
-///    `UnsupportedTcpOpts` naming it. Measured, not read: the first
+///    `UnsupportedTcp` naming it. Measured, not read: the first
 ///    version of this function used `TokioHandle` and panicked with that
-///    error. `Tokio` states `TcpOptsSupport::ALL` and accepts it.
+///    error. `Tokio` states `nodelay` and accepts it. (`TokioHandle` has
+///    since been made to state exactly what `Tokio` states.)
 ///
 /// The second is why this control also has a Nagle-**on** arm on the same
 /// runtime: without it the comparison would be confounded by the runtime
@@ -366,7 +367,7 @@ fn tcp_on_unit_runtime(
 ) -> Native<hclient_rt_tokio::Tokio, Tls, FakeDns> {
     Native::new(hclient_rt_tokio::Tokio, client_tls(cert), FakeDns::new())
         .tcp_opts(hclient_rt::TcpOpts::default().nodelay(nodelay))
-        .expect("`Tokio` declares TcpOptsSupport::ALL")
+        .expect("`Tokio` declares nodelay")
 }
 
 fn get(port: u16) -> http::Request<RequestBody> {

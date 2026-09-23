@@ -17,7 +17,7 @@
 //!
 //! # What is asserted, and what is only printed
 //!
-//! The numbers in [`UdpCaps`] are a report about a **kernel**, not about
+//! The numbers in [`UdpSupport`] are a report about a **kernel**, not about
 //! this code: `64` is this machine's `UDP_MAX_SEGMENTS` and a virtualised
 //! runner may honestly answer `1`. So they are printed, and what is
 //! asserted is the *relationship* between what a socket claims and what it
@@ -33,7 +33,7 @@
 //!   is what [`RecvMeta::stride`] is for.
 //!
 //! Between them those cover the direction a capability report must never be
-//! wrong in. Under-claiming is permitted by the seam (`UdpCaps::NONE` is
+//! wrong in. Under-claiming is permitted by the seam (`UdpSupport::NONE` is
 //! the default *because* it is the weakest answer) and is therefore not an
 //! assertion here — with one exception that costs nothing: ECN, where the
 //! claim-versus-reality check below is two-sided and so catches an
@@ -154,7 +154,7 @@ async fn ecn_claim_matches_reality<S: UdpDatagrams>(a: &S, b: &S) {
     // congestion controller as evidence of a mark that never happened — is
     // still covered, by the `if`: a socket that claims ECN must deliver
     // the codepoint that was actually sent.
-    if b.caps().ecn {
+    if b.support().ecn {
         assert_eq!(
             meta.ecn,
             Some(EcnCodepoint::Ect0),
@@ -173,7 +173,7 @@ async fn ecn_claim_matches_reality<S: UdpDatagrams>(a: &S, b: &S) {
 /// cannot split would return a `stride` that does not divide what arrived.
 async fn a_declared_gso_batch_really_goes_out<S: UdpDatagrams>(a: &S, b: &S) {
     const SEG: usize = 1200;
-    let segments = a.caps().max_send_segments.min(4);
+    let segments = a.support().max_send_segments.min(4);
     if segments < 2 {
         println!("  gso: this socket declares no batching, nothing to check");
         return;
@@ -229,7 +229,7 @@ async fn a_declared_gso_batch_really_goes_out<S: UdpDatagrams>(a: &S, b: &S) {
 /// Checking both is what stops an off-by-one, and what stops the check
 /// degenerating into a blanket refusal of GSO.
 fn the_declared_limit_is_a_limit_and_not_a_ban<S: UdpDatagrams>(s: &S) {
-    let caps = s.caps();
+    let caps = s.support();
     let seg = 1200usize;
     let too_many = caps.max_send_segments + 1;
     let payload = vec![0u8; seg * too_many];
@@ -257,9 +257,9 @@ async fn exercise_udp<R: UdpBind>(rt: R, label: &str) {
         .bind(v4)
         .expect("the first bind worked, so the second must");
 
-    let c = a.caps();
+    let c = a.support();
     println!(
-        "{label}: UdpCaps on this host: gso={} gro={} ecn={} may_fragment={}",
+        "{label}: UdpSupport on this host: gso={} gro={} ecn={} may_fragment={}",
         c.max_send_segments, c.max_recv_segments, c.ecn, c.may_fragment
     );
     // The only part of the report that is a property of this code rather
@@ -307,7 +307,7 @@ async fn exercise_udp<R: UdpBind>(rt: R, label: &str) {
         .expect("the first v6 bind succeeded, so the second must too");
     println!(
         "{label}: dual-stack v6 socket reports ecn={} (v4 socket reports {})",
-        b6.caps().ecn,
+        b6.support().ecn,
         c.ecn
     );
     ecn_claim_matches_reality(&a6, &b6).await;
@@ -328,7 +328,7 @@ fn udp_pair_property_holds_for_smol() {
 /// **This is the check that makes `caps` a query rather than a constant**,
 /// and it is the one thing this crate can assert that neither runtime crate
 /// can on its own: each backend is the other's oracle. A backend that
-/// stopped asking the descriptor and returned a literal — `UdpCaps::NONE`,
+/// stopped asking the descriptor and returned a literal — `UdpSupport::NONE`,
 /// or a hardcoded `64/64/true` — would differ from its twin on any machine
 /// whose real answer is not that literal, and this line says so.
 ///
@@ -344,8 +344,8 @@ async fn both_backends_report_the_same_kernel() {
     let t = hclient_rt_tokio::Tokio.bind(v4).expect("bind on tokio");
     let s = hclient_rt_smol::Smol.bind(v4).expect("bind on smol");
     assert_eq!(
-        t.caps(),
-        s.caps(),
+        t.support(),
+        s.support(),
         "the two backends read the same descriptor through the same \
          `quinn-udp`; a difference means one of them stopped asking"
     );

@@ -54,7 +54,7 @@ impl IpcAddr {
         }
     }
 
-    /// `Ok` when `can` dials this kind, and the refusal a runtime would
+    /// `Ok` when `support` dials this kind, and the refusal a runtime would
     /// hand back when it does not — so a caller configuring a transport
     /// meets it at configuration rather than on the wire.
     /// [`TcpOpts::reject_unsupported`](crate::TcpOpts::reject_unsupported)'s
@@ -63,9 +63,9 @@ impl IpcAddr {
     /// # Errors
     ///
     /// An [`std::io::ErrorKind::Unsupported`] carrying [`UnsupportedIpc`]
-    /// naming this kind, when `can` does not dial it.
-    pub fn reject_unsupported(&self, can: IpcSupport) -> std::io::Result<()> {
-        if can.allows(self) {
+    /// naming this kind, when `support` does not dial it.
+    pub fn reject_unsupported(&self, support: IpcSupport) -> std::io::Result<()> {
+        if support.allows(self) {
             return Ok(());
         }
         Err(refusal(self.kind()))
@@ -78,9 +78,9 @@ fn refusal(kind: &'static str) -> std::io::Error {
 
 /// Which [`IpcAddr`] kinds a runtime dials.
 ///
-/// [`TcpOptsSupport`](crate::TcpOptsSupport)'s shape: `#[non_exhaustive]`,
+/// [`TcpSupport`](crate::TcpSupport)'s shape: `#[non_exhaustive]`,
 /// built from [`NONE`](Self::NONE) with `const` setters, and defaulted to
-/// `NONE` on [`TcpConnect::IPC`](crate::TcpConnect::IPC) — a claim made by
+/// `NONE` on [`TcpConnect::IPC_SUPPORT`](crate::TcpConnect::IPC_SUPPORT) — a claim made by
 /// silence must never be stronger than the truth. It is a constant rather
 /// than something a connect discovers because the answer is a property of
 /// the runtime and the target, and a caller should learn it at
@@ -104,9 +104,12 @@ impl IpcSupport {
         self
     }
 
-    /// Whether `addr`'s kind is one this runtime dials.
+    /// Whether `addr`'s kind is one this runtime dials. Crate-private, as
+    /// its TCP and UDP counterparts would be: the question is asked through
+    /// [`IpcAddr::reject_unsupported`], which is the one answer a caller
+    /// acts on.
     #[must_use]
-    pub const fn allows(&self, addr: &IpcAddr) -> bool {
+    pub(crate) const fn allows(self, addr: &IpcAddr) -> bool {
         match addr {
             IpcAddr::Unix(_) => self.unix,
         }
@@ -170,8 +173,8 @@ mod tests {
         assert_eq!(
             err.get_ref()
                 .and_then(|p| p.downcast_ref::<UnsupportedIpc>())
-                .map(UnsupportedIpc::kind),
-            Some("unix")
+                .map(|p| p.names().collect::<Vec<_>>()),
+            Some(vec!["unix"])
         );
     }
 
@@ -190,7 +193,11 @@ mod tests {
             .get_ref()
             .and_then(|p| p.downcast_ref::<UnsupportedIpc>())
             .expect("the payload is typed, not only a message");
-        assert_eq!(payload.kind(), "unix");
-        assert!(e.to_string().contains("unix"), "{e}");
+        assert_eq!(payload.names().collect::<Vec<_>>(), ["unix"]);
+        assert_eq!(
+            e.to_string(),
+            "this runtime cannot dial these same-machine endpoints, and does not fall back: unix \
+             (a runtime that does dial one declares it in TcpConnect::IPC_SUPPORT)"
+        );
     }
 }

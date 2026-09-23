@@ -271,16 +271,16 @@ fn no_keepalive_part_leaves_keepalive_off() {
     });
 }
 
-/// `APPLIES` claims `keepalive_retries` exactly where
+/// `TCP_SUPPORT` claims `keepalive_retries` exactly where
 /// `socket2::TcpKeepalive::with_retries` exists, and the direction is the
 /// one the seam requires.
 ///
 /// The constant is written `!cfg!(any(openbsd, redox, solaris))`, and
 /// deleting that `!` inverts it — which no test could see, because
-/// `APPLIES` was only ever compared against a socket for `nodelay` and
+/// `TCP_SUPPORT` was only ever compared against a socket for `nodelay` and
 /// `keepalive`. The inversion is the **overstating** direction on the
 /// three platforms it names and the **understating** one everywhere else,
-/// and this workspace's rule is that an understated `APPLIES` costs a
+/// and this workspace's rule is that an understated `TCP_SUPPORT` costs a
 /// caller a named `Unsupported` error while an overstated one costs them
 /// an option silently not applied.
 ///
@@ -299,17 +299,17 @@ fn applies_claims_keepalive_retries_exactly_where_socket2_can_set_them() {
         target_os = "solaris"
     ));
     assert_eq!(
-        <Smol as TcpConnect>::APPLIES.keepalive_retries,
+        <Smol as TcpConnect>::TCP_SUPPORT.keepalive_retries,
         with_retries_exists,
-        "APPLIES.keepalive_retries must be true exactly where \
+        "TCP_SUPPORT.keepalive_retries must be true exactly where \
          socket2::TcpKeepalive::with_retries exists — an overstated claim is \
          an option silently not applied"
     );
 }
 
-/// The two `cfg`-computed `APPLIES` fields say Linux, which is what this
+/// The two `cfg`-computed `TCP_SUPPORT` fields say Linux, which is what this
 /// host is, and the whole point of them being `cfg!` rather than constants
-/// is that they are **not** `TcpOptsSupport::ALL` everywhere.
+/// is that they are **not** claimed on every target.
 ///
 /// Asserted against the same predicates `build_socket` gates the applying
 /// code on, for `keepalive_retries`' reason: the claim and the code that
@@ -328,14 +328,14 @@ fn the_platform_gated_applies_fields_agree_with_the_code_that_applies_them() {
         target_os = "linux",
         target_os = "cygwin"
     ));
-    let a = <Smol as TcpConnect>::APPLIES;
+    let a = <Smol as TcpConnect>::TCP_SUPPORT;
     assert_eq!(
         a.bind_device, bind_device_compiles,
-        "APPLIES.bind_device must match where SO_BINDTODEVICE is actually set"
+        "TCP_SUPPORT.bind_device must match where SO_BINDTODEVICE is actually set"
     );
     assert_eq!(
         a.user_timeout, user_timeout_compiles,
-        "APPLIES.user_timeout must match where TCP_USER_TIMEOUT is actually set"
+        "TCP_SUPPORT.user_timeout must match where TCP_USER_TIMEOUT is actually set"
     );
     // And the fields that are unconditional stay claimed, so an edit that
     // narrows the constant wholesale is caught here rather than by a

@@ -958,7 +958,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // on a runtime that cannot apply it — deliberately, since
             // dropping a caller's option silently is worse — so asking
             // unconditionally would turn every connect on a backend whose
-            // `TcpConnect::APPLIES` is the trait's default `NONE` into an
+            // `TcpConnect::TCP_SUPPORT` is the trait's default `NONE` into an
             // `Unsupported` error, for an option that caller never
             // mentioned. That default exists precisely to protect a
             // backend that forgot the line; a performance fix that broke
@@ -975,7 +975,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // `tcp_opts(TcpOpts::default().nodelay(true))` on a `NONE`
             // backend fails at connect, naming `nodelay`.
             // `tests/tcp_opts.rs` pins both halves.
-            opts: TcpOpts::default().nodelay(<R as TcpConnect>::APPLIES.nodelay),
+            opts: TcpOpts::default().nodelay(<R as TcpConnect>::TCP_SUPPORT.nodelay),
             caps,
             pool,
             svcb_failures: discovery::NegativeCache::default(),
@@ -1678,7 +1678,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// ```compile_fail
     /// use hclient_native::Native;
-    /// use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+    /// use hclient_rt::{TcpConnect, TcpOpts, TcpSupport, Timer};
     /// use hclient_rt_tokio::Tokio;
     /// use std::{future::Future, net::SocketAddr, time::Duration};
     ///
@@ -1693,7 +1693,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// }
     /// impl TcpConnect for NoSpawn {
     ///     type Stream = <Tokio as TcpConnect>::Stream;
-    ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    ///     const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
     ///     type Connecting<'a> = <Tokio as TcpConnect>::Connecting<'a>;
     ///     type ConnectingIpc<'a> = <Tokio as TcpConnect>::ConnectingIpc<'a>;
     ///     fn connect<'a>(&'a self, a: SocketAddr, o: &TcpOpts) -> Self::Connecting<'a> {
@@ -1715,7 +1715,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// ```
     /// use hclient_native::Native;
-    /// use hclient_rt::{Spawn, TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+    /// use hclient_rt::{Spawn, TcpConnect, TcpOpts, TcpSupport, Timer};
     /// use hclient_rt_tokio::Tokio;
     /// use std::{future::Future, net::SocketAddr, time::Duration};
     ///
@@ -1730,7 +1730,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// }
     /// impl TcpConnect for CanSpawn {
     ///     type Stream = <Tokio as TcpConnect>::Stream;
-    ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    ///     const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
     ///     type Connecting<'a> = <Tokio as TcpConnect>::Connecting<'a>;
     ///     type ConnectingIpc<'a> = <Tokio as TcpConnect>::ConnectingIpc<'a>;
     ///     fn connect<'a>(&'a self, a: SocketAddr, o: &TcpOpts) -> Self::Connecting<'a> {
@@ -2132,7 +2132,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// cannot apply them.**
     ///
     /// `Result`, not `Self`, and that is the whole point of the method.
-    /// W7 gave [`hclient_rt::TcpConnect`] an `APPLIES` constant and
+    /// W7 gave [`hclient_rt::TcpConnect`] an `TCP_SUPPORT` constant and
     /// [`TcpOpts::reject_unsupported`], so a runtime that cannot apply an
     /// option the caller set fails the connect rather than dropping it —
     /// honest, but it fails once per `connect`, on a request that had
@@ -2146,15 +2146,15 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # Errors
     ///
     /// **The error names the options**, not merely their number: the
-    /// source is a [`hclient_rt::UnsupportedTcpOpts`], carried inside an
+    /// source is a [`hclient_rt::UnsupportedTcp`], carried inside an
     /// [`std::io::Error`] exactly as `reject_unsupported` builds it, and
-    /// [`UnsupportedTcpOpts::names`](hclient_rt::UnsupportedTcpOpts::names)
+    /// [`UnsupportedTcp::names`](hclient_rt::UnsupportedTcp::names)
     /// lists every offending field rather than the first — a caller who
     /// fixed the one option a message mentioned would otherwise meet a
     /// second, identical-looking failure.
     ///
     /// This does not replace the per-`connect` refusal, and must not: the
-    /// `APPLIES` contract belongs to the runtime, `connect` is reachable
+    /// `TCP_SUPPORT` contract belongs to the runtime, `connect` is reachable
     /// without ever going through this method (`connect::connect` takes a
     /// `&TcpOpts`), and a check here would be a second place deciding a
     /// question the trait already decides. What it does is move the moment
@@ -2162,7 +2162,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// **This replaces the whole set, including the `nodelay` this
     /// transport asked for itself.** [`Native::new`] sets `nodelay` to
-    /// whatever the runtime's [`TcpConnect::APPLIES`] says it can apply —
+    /// whatever the runtime's [`TcpConnect::TCP_SUPPORT`] says it can apply —
     /// Nagle's algorithm costs the head of a TLS exchange 41 ms, measured
     /// there — and a caller passing
     /// `TcpOpts::default().keepalive(Some(..))` here turns it back off
@@ -2182,7 +2182,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// still takes it — which is what makes `Native::new`'s conditional
     /// `nodelay` free of the refusal this method exists to give.
     pub fn tcp_opts(mut self, opts: TcpOpts) -> Result<Self, Error> {
-        opts.reject_unsupported(<R as TcpConnect>::APPLIES)
+        opts.reject_unsupported(<R as TcpConnect>::TCP_SUPPORT)
             .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         self.opts = opts;
         Ok(self)
@@ -2280,7 +2280,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// # It is refused where the runtime says it cannot
     ///
-    /// [`hclient_rt::TcpConnect::IPC`],
+    /// [`hclient_rt::TcpConnect::IPC_SUPPORT`],
     /// which both shipped runtimes compute with `cfg!(unix)`
     /// — so this fails at the call that configures it rather than on the
     /// first request, which is `tcp_opts`' rule one method over.
@@ -2295,7 +2295,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// per "What it replaces" above.
     pub fn unix_socket(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
         let addr = hclient_rt::IpcAddr::unix(path.as_ref());
-        addr.reject_unsupported(<R as TcpConnect>::IPC)
+        addr.reject_unsupported(<R as TcpConnect>::IPC_SUPPORT)
             .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         if !self.proxies.is_empty() {
             return Err(Error::new(ErrorKind::Unsupported, ProxyAndUnixSocket));

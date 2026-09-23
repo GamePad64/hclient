@@ -4,10 +4,10 @@
 //! Two halves. `Native::tcp_opts` refuses, at construction, an option the
 //! runtime cannot apply — and names it. And `Native::new` asks for exactly
 //! one option of its own, `nodelay`, **only where the runtime's
-//! `TcpConnect::APPLIES` says it applies it**: Nagle's algorithm costs the
+//! `TcpConnect::TCP_SUPPORT` says it applies it**: Nagle's algorithm costs the
 //! head of a TLS exchange 41 ms (`tests/nagle_cost.rs`), and asking
 //! unconditionally would turn the refusal above into every connect's fate
-//! on a backend that left `APPLIES` at its `NONE` default.
+//! on a backend that left `TCP_SUPPORT` at its `NONE` default.
 //!
 //! # One test per option, deliberately
 //!
@@ -15,12 +15,12 @@
 //! none of them would go green on an implementation that noticed only
 //! `nodelay`, and would stay green for the other five for ever. Worse, it
 //! is the shape that invites the eventual "why does this fail — let me
-//! declare `TcpOptsSupport::ALL` and move on": one assertion covering a
+//! declare every option and move on": one assertion covering a
 //! set has no way of saying which member of the set it lost.
 //!
 //! So each of `TcpOpts`' six fields gets its own test, against a runtime
 //! that applies **every option but that one** (`FakeRt<N>`, whose
-//! `APPLIES` is `TcpOptsSupport::ALL` with field `N` turned off). Setting
+//! `TCP_SUPPORT` is [`EVERY`] with field `N` turned off). Setting
 //! the one option it cannot apply must fail; the error must name that
 //! option and no other. A seventh test sets all six against a runtime
 //! that applies all six and requires success, so the six above are
@@ -50,7 +50,7 @@ use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
-use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer, UnsupportedTcpOpts};
+use hclient_rt::{TcpConnect, TcpOpts, TcpSupport, Timer, UnsupportedTcp};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use hclient_tls_rustls::Rustls;
@@ -59,12 +59,27 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// `TcpOptsSupport::ALL` with exactly one field turned off, indexed in
+/// Every option applied — this file's own, since `hclient-rt` has no
+/// `ALL`: a public constant meaning *every field* would silently claim the
+/// next field too, the day one is added.
+const EVERY: TcpSupport = TcpSupport::NONE
+    .nodelay(true)
+    .keepalive(true)
+    .keepalive_interval(true)
+    .keepalive_retries(true)
+    .bind_device(true)
+    .user_timeout(true)
+    .local_address(true)
+    .send_buffer_size(true)
+    .recv_buffer_size(true)
+    .reuse_address(true);
+
+/// [`EVERY`] with exactly one field turned off, indexed in
 /// `TcpOpts`' own field order — the same order, and the same construction,
 /// as `hclient-rt`'s own `all_but`, so the two files cannot disagree about
 /// which index is which option.
-const fn all_but(i: usize) -> TcpOptsSupport {
-    let mut can = TcpOptsSupport::ALL;
+const fn all_but(i: usize) -> TcpSupport {
+    let mut can = EVERY;
     match i {
         0 => can.nodelay = false,
         1 => can.keepalive = false,
@@ -81,7 +96,7 @@ const fn all_but(i: usize) -> TcpOptsSupport {
 ///
 /// A const parameter rather than six hand-written structs: the only thing
 /// that differs between them is one index, and six copies of the same
-/// `impl` blocks would be six places for the `APPLIES` line to be edited
+/// `impl` blocks would be six places for the `TCP_SUPPORT` line to be edited
 /// into agreement with a failing test.
 ///
 /// It never connects — `connect` returns a future that stays `Pending`
@@ -101,7 +116,7 @@ impl<const MISSING: usize> TcpConnect for FakeRt<MISSING> {
     }
 
     type Stream = hclient_rt_tokio::TokioIo;
-    const APPLIES: TcpOptsSupport = all_but(MISSING);
+    const TCP_SUPPORT: TcpSupport = all_but(MISSING);
 
     type Connecting<'a>
         = std::pin::Pin<
@@ -162,7 +177,7 @@ fn every_field_set() -> TcpOpts {
 /// for an error that named `nodelay` inside a sentence about
 /// `local_address`. `hclient_core::error::Error`'s source is the
 /// `std::io::Error` that `TcpOpts::reject_unsupported` built, and that
-/// error's own payload is the `UnsupportedTcpOpts`.
+/// error's own payload is the `UnsupportedTcp`.
 fn refused_options<const MISSING: usize>(opts: TcpOpts) -> Vec<&'static str> {
     let err = native::<MISSING>()
         .tcp_opts(opts)
@@ -178,7 +193,7 @@ fn refused_options<const MISSING: usize>(opts: TcpOpts) -> Vec<&'static str> {
     assert_eq!(io.kind(), std::io::ErrorKind::Unsupported);
     let named = io
         .get_ref()
-        .and_then(|s| s.downcast_ref::<UnsupportedTcpOpts>())
+        .and_then(|s| s.downcast_ref::<UnsupportedTcp>())
         .expect("and its payload names the options");
     named.names().collect()
 }
@@ -221,10 +236,10 @@ fn reuse_address_is_refused_by_name() {
 
 /// Every option the runtime **claims**, and only those.
 ///
-/// Built from `APPLIES` rather than written out, because `APPLIES` is
+/// Built from `TCP_SUPPORT` rather than written out, because `TCP_SUPPORT` is
 /// `cfg!`-computed: `SO_BINDTODEVICE` is Linux/Android/Fuchsia and
 /// `TCP_USER_TIMEOUT` those plus Cygwin, so the set differs per target.
-fn every_field_it_applies(a: TcpOptsSupport) -> TcpOpts {
+fn every_field_it_applies(a: TcpSupport) -> TcpOpts {
     let all = every_field_set();
     TcpOpts::default()
         .nodelay(a.nodelay && all.nodelay)
@@ -251,14 +266,13 @@ fn every_field_it_applies(a: TcpOptsSupport) -> TcpOpts {
 /// the options it claims. Without it, `tcp_opts` returning `Err` for every
 /// input whatsoever would pass every one of them.
 ///
-/// **It asserted `Tokio::APPLIES == TcpOptsSupport::ALL` and that was
+/// **It asserted `Tokio::TCP_SUPPORT == TcpSupport::ALL` and that was
 /// wrong on two of this project's three platforms**, which is how it
 /// stood: red on macOS and Windows, where `bind_device` and
 /// `user_timeout` are honestly `false`. `caps.rs` says so in as many
-/// words — *"`ALL` is still literally every field, and is therefore no
-/// longer a value any real runtime can claim on every platform it builds
-/// for"* — so the test was contradicting a doc comment in the library it
-/// tests. `APPLIES` became `cfg!`-computed and this did not follow.
+/// words — `bind_device` and `user_timeout` are decided per target — so
+/// the test was contradicting a doc comment in the library it tests (and
+/// `ALL` has since gone altogether). `TCP_SUPPORT` became `cfg!`-computed and this did not follow.
 ///
 /// What it asserts now is the property the control actually needs, on
 /// every target: whatever the runtime claims, it takes. The floor guard
@@ -267,7 +281,7 @@ fn every_field_it_applies(a: TcpOptsSupport) -> TcpOpts {
 #[test]
 fn a_runtime_refuses_nothing_among_the_options_it_claims() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
-    let applies = <Tokio as TcpConnect>::APPLIES;
+    let applies = <Tokio as TcpConnect>::TCP_SUPPORT;
     assert!(
         applies.nodelay && applies.keepalive && applies.local_address,
         "a shipped runtime claiming none of the portable options would make \
@@ -278,7 +292,7 @@ fn a_runtime_refuses_nothing_among_the_options_it_claims() {
 }
 
 /// And the other half of that control: the six refusals are about the
-/// options the caller **set**, not about the runtime's `APPLIES` alone.
+/// options the caller **set**, not about the runtime's `TCP_SUPPORT` alone.
 /// `TcpOpts::default()` is all-off, so even a runtime that applies
 /// nothing serves a caller who asked for nothing — a transport built
 /// without ever calling `tcp_opts` must keep working on such a runtime,
@@ -317,7 +331,7 @@ fn two_unappliable_options_are_both_named() {
         }
 
         type Stream = hclient_rt_tokio::TokioIo;
-        // No `APPLIES` line: the trait's default is `NONE`, and this type
+        // No `TCP_SUPPORT` line: the trait's default is `NONE`, and this type
         // exists to use it.
         type Connecting<'a>
             = std::pin::Pin<
@@ -356,8 +370,8 @@ fn two_unappliable_options_are_both_named() {
         .expect("io::Error");
     let named = io
         .get_ref()
-        .and_then(|s| s.downcast_ref::<UnsupportedTcpOpts>())
-        .expect("UnsupportedTcpOpts");
+        .and_then(|s| s.downcast_ref::<UnsupportedTcp>())
+        .expect("UnsupportedTcp");
     assert_eq!(
         named.names().collect::<Vec<_>>(),
         ["nodelay", "reuse_address"]
@@ -397,7 +411,7 @@ impl Seen {
 struct Declaring(Seen);
 
 /// The same, and the whole point of it is the line that is missing:
-/// **no `APPLIES`**, so it inherits `TcpConnect`'s `NONE` default. This is
+/// **no `TCP_SUPPORT`**, so it inherits `TcpConnect`'s `NONE` default. This is
 /// the third-party backend that default was written to protect — the one
 /// that would refuse every connect if this transport asked for an option
 /// unconditionally.
@@ -417,7 +431,7 @@ macro_rules! recording_runtime {
             }
 
             type Stream = hclient_rt_tokio::TokioIo;
-            $(const APPLIES: TcpOptsSupport = $applies;)?
+            $(const TCP_SUPPORT: TcpSupport = $applies;)?
 
             type Connecting<'a>
         = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>
@@ -462,7 +476,7 @@ macro_rules! recording_runtime {
     };
 }
 
-recording_runtime!(Declaring, TcpOptsSupport::ALL);
+recording_runtime!(Declaring, EVERY);
 // No second argument, deliberately — that absence is the subject of
 // `a_runtime_that_declares_nothing_is_asked_for_nothing`.
 recording_runtime!(Silent);
@@ -525,7 +539,7 @@ async fn nodelay_is_the_only_option_this_transport_asks_for_by_itself() {
 async fn a_runtime_that_declares_nothing_is_asked_for_nothing() {
     // **The compatibility half, and the reason the fix is not
     // `TcpOpts::default()` gaining `nodelay: true`.** A third-party
-    // backend that forgot its `APPLIES` line gets exactly what it got
+    // backend that forgot its `TCP_SUPPORT` line gets exactly what it got
     // before this change: an all-off `TcpOpts`, a connect that proceeds,
     // and Nagle left on. Silence understates, and this transport believes
     // it.
@@ -539,7 +553,7 @@ async fn a_runtime_that_declares_nothing_is_asked_for_nothing() {
     // Said as the runtime itself would say it, since that is the
     // consequence rather than the field: whatever `Native::new` put in
     // there, a `NONE` runtime that checks refuses none of it.
-    opts.reject_unsupported(<Silent as TcpConnect>::APPLIES)
+    opts.reject_unsupported(<Silent as TcpConnect>::TCP_SUPPORT)
         .expect("a transport built with `new` alone never refuses a connect on any runtime");
 }
 
@@ -568,7 +582,7 @@ async fn tcp_opts_replaces_the_whole_set_including_the_nodelay_new_asked_for() {
 /// It fails at construction rather than at connect, and the message says
 /// both what was refused and where the claim that it cannot be applied
 /// comes from — which is the half a backend author needs, because their
-/// `connect` may well apply it and their `APPLIES` line be the defect.
+/// `connect` may well apply it and their `TCP_SUPPORT` line be the defect.
 #[test]
 fn a_caller_who_asks_a_silent_runtime_for_nodelay_is_still_refused_by_name() {
     let err = Native::new(Silent::default(), NoTls, IpLiteralOnly)
@@ -580,11 +594,11 @@ fn a_caller_who_asks_a_silent_runtime_for_nodelay_is_still_refused_by_name() {
         .expect("the source is the io::Error reject_unsupported built");
     let named = io
         .get_ref()
-        .and_then(|s| s.downcast_ref::<UnsupportedTcpOpts>())
+        .and_then(|s| s.downcast_ref::<UnsupportedTcp>())
         .expect("and its payload names the options");
     assert_eq!(named.names().collect::<Vec<_>>(), ["nodelay"]);
     assert!(
-        io.to_string().contains("TcpConnect::APPLIES"),
+        io.to_string().contains("TcpConnect::TCP_SUPPORT"),
         "the message has to name the constant an implementor would change: {io}"
     );
 }
@@ -605,16 +619,16 @@ fn a_caller_who_asks_a_silent_runtime_for_nodelay_is_still_refused_by_name() {
 /// looks for it.
 #[test]
 fn every_shipped_runtime_declares_the_option_this_transport_asks_for() {
-    const { assert!(<Tokio as TcpConnect>::APPLIES.nodelay, "Tokio") };
+    const { assert!(<Tokio as TcpConnect>::TCP_SUPPORT.nodelay, "Tokio") };
     const {
         assert!(
-            <hclient_rt_tokio::TokioHandle as TcpConnect>::APPLIES.nodelay,
+            <hclient_rt_tokio::TokioHandle as TcpConnect>::TCP_SUPPORT.nodelay,
             "TokioHandle"
         );
     };
     const {
         assert!(
-            <hclient_rt_smol::Smol as TcpConnect>::APPLIES.nodelay,
+            <hclient_rt_smol::Smol as TcpConnect>::TCP_SUPPORT.nodelay,
             "Smol"
         );
     };

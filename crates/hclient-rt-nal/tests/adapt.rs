@@ -227,10 +227,10 @@ fn a_shutdown_on_a_healthy_connection_flushes_it_and_succeeds() {
 #[test]
 fn no_socket_option_is_claimed() {
     assert_eq!(
-        <SendRt as TcpConnect>::APPLIES,
-        hclient_rt::TcpOptsSupport::NONE
+        <SendRt as TcpConnect>::TCP_SUPPORT,
+        hclient_rt::TcpSupport::NONE
     );
-    const { assert!(!<SendRt as TcpConnect>::IPC.unix) };
+    const { assert!(!<SendRt as TcpConnect>::IPC_SUPPORT.unix) };
 }
 
 /// `adapt_local!` produces a **working** runtime, not merely one that

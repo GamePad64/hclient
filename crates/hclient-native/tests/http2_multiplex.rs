@@ -34,7 +34,7 @@ use hclient_core::hooks::{CloseReason, Event, Hooks};
 use hclient_core::req::Timeouts;
 use hclient_dns_system::SystemDns;
 use hclient_native::{Native, PoolConfig};
-use hclient_rt::{Spawn, TcpConnect, TcpOpts, TcpOptsSupport};
+use hclient_rt::{Spawn, TcpConnect, TcpOpts, TcpSupport};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::future::Future;
@@ -430,7 +430,7 @@ impl TcpConnect for HoldsTasks {
     }
 
     type Stream = <Tokio as TcpConnect>::Stream;
-    const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
     type Connecting<'a>
         = std::pin::Pin<
         Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,

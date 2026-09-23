@@ -73,7 +73,7 @@ use embassy_time::Duration;
 /// `TX`/`RX` are the send and receive window this backend can offer, fixed
 /// at build time. That is also why `TcpOpts::send_buffer_size` and
 /// `recv_buffer_size` are refused rather than approximated — see
-/// `Embassy::APPLIES`.
+/// `Embassy::TCP_SUPPORT`.
 #[derive(Debug)]
 pub struct SocketBuffers<const TX: usize, const RX: usize> {
     rx: [u8; RX],

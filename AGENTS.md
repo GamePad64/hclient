@@ -512,7 +512,7 @@ whole subject; the three since are the ones where being wrong is
 survivable — a test double, and a terminal backend a caller chooses.
 What stays in the series is everything a *seam*: `hclient-rt` carries
 `TcpConnect`, `Timer`, `Blocking`, `Spawn` and `UdpBind` with eleven
-in-workspace consumers, and this file records `APPLIES`, `type Sleep`
+in-workspace consumers, and this file records `TCP_SUPPORT`, `type Sleep`
 and `UdpBind` itself arriving inside the last few weeks. Those are not
 waiting on confidence, they are waiting on the seams to stop growing,
 and that is a decision to take deliberately rather than as a companion
@@ -656,14 +656,14 @@ workspace has been breaking things weekly on purpose.
 
 **Measured rather than recalled, over the last 31 commits alone**: six
 public types took a change that would have been a major bump, and **not
-one of them is `#[non_exhaustive]`** — `TcpOpts` and `TcpOptsSupport`
+one of them is `#[non_exhaustive]`** — `TcpOpts` and `TcpSupport`
 (6 fields to 10), `Timeouts` and `TimeoutSupport` (3 to 4, the `resolve`
 bound), `Phase` (a fifth variant, so an exhaustive `match` outside this
 workspace stops compiling), and `Connected::remote`, which became
 `Option<SocketAddr>` for the Unix-socket work. Before that week
 `TlsConnect` changed three times in one session (`reports_alpn`, the
 `TlsIdentity` extraction, the 0-RTT slots), `Timer` gained `type Sleep`,
-`TcpConnect` gained `APPLIES`, and `UdpBind` arrived from nothing.
+`TcpConnect` gained `TCP_SUPPORT`, and `UdpBind` arrived from nothing.
 
 So the freedom that made those changes cheap is what ends here, and naming
 it is the point: a change to a public trait has cost a rebase in this
@@ -2240,7 +2240,7 @@ reaches `Native` through `http3::arm`'s erasure, and the erasure is
 **Every defaulted constant has the reader it was designed for**, which is
 the `UpgradeSupport` question asked of the pattern that replaced it:
 `reports_alpn` is read by `may_speak_h2`, `applies_ech` by the connector,
-`TcpConnect::IPC` by `unix_socket`, `presents_client_certs` by both
+`TcpConnect::IPC_SUPPORT` by `unix_socket`, `presents_client_certs` by both
 capability tables. None is a distinction with one reachable side.
 
 **Three of thirty-five traits are named in no test**, and all three are
@@ -5933,11 +5933,38 @@ type cannot have a default on stable Rust — so the second kind, Windows
 named pipes (where Docker, containerd and the gRPC daemons listen), would
 have broken every `TcpConnect` implementor at once, after `hclient-rt` had
 promised not to. `IpcAddr` is a `#[non_exhaustive]` enum with `Unix` today,
-`TcpConnect::IPC` an `IpcSupport` in `TcpOptsSupport`'s shape, and a
+`TcpConnect::IPC_SUPPORT` an `IpcSupport` in `TcpSupport`'s shape, and a
 runtime's `match` has to carry a wildcard arm — which is where a kind added
 later is refused with `RefuseIpc`, naming it. The two shipped runtimes lost
 their `cfg`-ed pair of items with it: one type on every target, and the
 `cfg` on the Unix arm. `Native::unix_socket` did not move.
+
+**And the three reports became one shape, which found a defect and a
+promise nobody could keep.** `TcpOptsSupport`, `UdpCaps` and `IpcSupport`
+are `TcpSupport`, `UdpSupport` and `IpcSupport`, declared as
+`TCP_SUPPORT`, `UdpDatagrams::support()` and `IPC_SUPPORT`, checked by a
+`reject_unsupported` on the request, refused as `UnsupportedTcp`,
+`UnsupportedUdp` and `UnsupportedIpc` — each with `names()` and one shared
+message formatter. `hclient-rt`'s crate doc carries the table. The one
+difference is real: UDP support is a property of one socket on one kernel,
+measured at bind, so it is a method where the other two are constants.
+
+**`TcpSupport::ALL` is gone, and it had done the damage it predicts.**
+`TokioHandle` declared `ALL` while delegating every connect to `Tokio`,
+which declares a per-target set — so on macOS and Windows it claimed
+`bind_device` and `user_timeout`, `reject_unsupported` let them through,
+and nothing applied them. It declares `<Tokio as
+TcpConnect>::TCP_SUPPORT` now: a delegate's claim is its delegate's. And a
+public *every field* would claim the next field too, the day one is added
+under a stable version, so every report starts from `NONE`.
+
+**`Datagrams::reject_unsupported` promised an ECN check it could not
+make.** Its doc said a socket claiming `ecn: true` and handed a codepoint
+it would not apply is refused; the code said `let ecn = false`, because
+nothing in a send and a declaration says whether the kernel applied a
+mark, and the error carried an `ecn` field no path could set — kept alive
+by a test that built the value by hand. Both went; the claim is checked
+where it can be, on receive.
 
 **It replaces the whole resolve → discovery → Happy Eyeballs → connect
 block, which is `Proxy`'s slot exactly** — and a proxy and a socket
@@ -6089,21 +6116,21 @@ a secrecy the protocol does not have. Two details every implementation gets
 wrong once, both pinned: the reply's version byte is **zero**, not four,
 and the grant is `CD = 90`, not `0`.
 
-### Four more socket options, and `APPLIES` stopped being a constant
+### Four more socket options, and `TCP_SUPPORT` stopped being a constant
 
 `TcpOpts` gains `bind_device`, `keepalive_interval`, `keepalive_retries`
-and `user_timeout`, with the matching `TcpOptsSupport` bools — the
+and `user_timeout`, with the matching `TcpSupport` bools — the
 field-per-field mirror exists precisely so the error can name the option a
 caller set, so growing it is the designed-for change.
 
-**The consequence worth knowing is that `Tokio::APPLIES` and
-`Smol::APPLIES` are no longer `TcpOptsSupport::ALL`.** `SO_BINDTODEVICE`
+**The consequence worth knowing is that `Tokio::TCP_SUPPORT` and
+`Smol::TCP_SUPPORT` are no longer `TcpSupport::ALL`.** `SO_BINDTODEVICE`
 is Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` those plus Cygwin, and
 `TcpKeepalive::with_retries` is missing on three more. A constant claiming
 all of them everywhere would be a capability that lies on macOS and
-Windows, so `APPLIES` is `cfg!`-computed now. `ALL` still means *every
+Windows, so `TCP_SUPPORT` is `cfg!`-computed now. `ALL` still means *every
 field*; it is simply no longer a value any real runtime can claim on every
-target it builds for. The direction matters: an understated `APPLIES`
+target it builds for. The direction matters: an understated `TCP_SUPPORT`
 costs a caller a named `Unsupported` error, an overstated one costs them an
 option silently not applied.
 
@@ -8512,7 +8539,7 @@ So of 236 public types the question is even *live* for about 40.
 `H1Opts`, `H2Opts` and `FetchOpts` exist to be written
 `Struct { one: Some(n), ..Default::default() }`, and the attribute forbids
 exactly that expression from outside the defining crate — functional
-update included. `TcpOptsSupport` and `TimeoutSupport` are the same answer
+update included. `TcpSupport` and `TimeoutSupport` are the same answer
 with a different caller: a **runtime or transport implementor** writes
 those, and an implementor outside this workspace is the whole point of the
 seam. `WebSocketKeepAlive` looked like this group and is **not** in it,
@@ -8555,7 +8582,7 @@ WebTransport ones), parsed values that will grow with their RFCs
 prompted the exercise.** Of the six types that took a semver-breaking
 change in the 31 commits before the trigger, `#[non_exhaustive]` would
 have saved **two** — `Phase`'s new variant, and nothing else that is now
-marked. `TcpOpts`, `TcpOptsSupport`, `Timeouts` and `TimeoutSupport` are
+marked. `TcpOpts`, `TcpSupport`, `Timeouts` and `TimeoutSupport` are
 all answer 1, and `Connected::remote` changed a field's *type*, which no
 attribute has ever protected. The freedom this workspace has been spending
 was never mostly about additions.
@@ -9100,10 +9127,10 @@ stalls because there the request head is the connection's first write.
 **The default did not change, and that is the decision.** `TcpOpts` is a
 socket seam that cannot know its caller writes request/response, and in this
 workspace a *set* option is a **refusal**: `nodelay: true` in the seam's
-default would turn every connect on a backend that left `TcpConnect::APPLIES`
+default would turn every connect on a backend that left `TcpConnect::TCP_SUPPORT`
 at its understating `NONE` into an `Unsupported` error for an option nobody
 asked for. So `Native::new` asks for exactly what the runtime declares —
-`nodelay: <R as TcpConnect>::APPLIES.nodelay` — which is `applies_ech`'s and
+`nodelay: <R as TcpConnect>::TCP_SUPPORT.nodelay` — which is `applies_ech`'s and
 `reports_alpn`'s shape one seam over: a constant defaulted to the
 understating value, read by the layer above to decide whether to *ask*.
 Silence now costs a slow connection rather than a refused one. The cost is

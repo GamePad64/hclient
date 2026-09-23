@@ -29,7 +29,7 @@ building the very value it exists to produce.
 
 ## Ranked by what history says will move
 
-### 1. `TcpOpts` and `TcpOptsSupport` — the highest-churn public structs — **done**
+### 1. `TcpOpts` and `TcpSupport` — the highest-churn public structs — **done**
 
 **Measured**: they grew from 6 fields to 10 in the last thirty-odd
 commits, and `AGENTS.md` lists both among six types that took a
@@ -49,7 +49,7 @@ TcpOpts::default().nodelay(true).keepalive_interval(Duration::from_secs(30))
 One line per option at the call site, and the struct can grow for ever.
 **This is the single highest-value change in this document**, and it is
 made: both types carry the attribute and a full set of chained setters,
-`TcpOptsSupport`'s of them `const` because a runtime writes it into an
+`TcpSupport`'s of them `const` because a runtime writes it into an
 associated constant computed with `cfg!`.
 
 The conversion touched fifty-odd literals across ten files and every one
@@ -58,7 +58,7 @@ became shorter. The one that did not is `tests/tcp_opts.rs`'s
 — exactly the shape a literal is for, and exactly the shape that would
 have broken on the eleventh option.
 
-`TcpOptsSupport` is the same shape with a different writer — a runtime
+`TcpSupport` is the same shape with a different writer — a runtime
 implementor — and takes the same treatment, because an out-of-tree runtime
 is exactly who must not be broken by a tenth option.
 
@@ -135,7 +135,7 @@ obvious crate — 52.6M downloads, one direct dependency, a `no_std` mode,
 released three days before this was written. Three measurements decided
 against it, in rising order of weight.
 
-**It cannot express `TcpOptsSupport` at all.** `TcpConnect::APPLIES` is an
+**It cannot express `TcpSupport` at all.** `TcpConnect::TCP_SUPPORT` is an
 associated **constant** computed with `cfg!`, and a builder call chain is
 not a constant expression — measured, `E0015: cannot call non-const
 associated function`. The `const fn` setters that type now carries are the
@@ -211,8 +211,8 @@ shape exactly.
 Adding a method to any of them breaks every implementor — and this
 workspace already has the pattern that makes additions free: a **defaulted
 method beside a constant defaulted to the understating value**.
-`IPC`/`connect_ipc`, `reports_alpn`, `applies_ech` and
-`APPLIES` are all that shape.
+`IPC_SUPPORT`/`connect_ipc`, `reports_alpn`, `applies_ech` and
+`TCP_SUPPORT` are all that shape.
 
 Nothing to change; what is missing is that it is a **policy** rather than
 four coincidences. Written here so the next method follows it: *a new seam

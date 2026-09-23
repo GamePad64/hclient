@@ -22,9 +22,9 @@
 //!    datagrams (GSO) and one receive can return several (GRO). A
 //!    `recv_from(&mut [u8]) -> (usize, SocketAddr)` shape cannot express
 //!    either, and cannot carry ECN at all.
-//! 3. **Offloads are capabilities, not assumptions.** See [`UdpCaps`].
+//! 3. **Offloads are capabilities, not assumptions.** See [`UdpSupport`].
 
-use crate::error::UnsupportedUdpOffload;
+use crate::error::UnsupportedUdp;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, SocketAddr};
 use std::task::{Context, Poll};
@@ -138,7 +138,7 @@ pub trait UdpDatagrams {
     /// [`RecvMeta::stride`] to split them again, and each read needs its
     /// own [`RecvMeta::ecn`] and its own destination address. A `recv_from`
     /// shape can carry neither, so a capability built on it would silently
-    /// drop ECN — see [`UdpCaps`].
+    /// drop ECN — see [`UdpSupport`].
     ///
     /// Returns the number of `meta`/`bufs` slots filled.
     fn poll_recv(
@@ -159,7 +159,7 @@ pub trait UdpDatagrams {
     ///
     /// # Why a method on the socket and not an associated const on the trait
     ///
-    /// [`TcpConnect::APPLIES`] is a const because "does this runtime hand
+    /// [`TcpConnect::TCP_SUPPORT`] is a const because "does this runtime hand
     /// the whole `TcpOpts` set to a `socket2::Socket`" is a fact about the
     /// runtime crate. GSO, GRO and ECN are not: they are `cmsg` support on
     /// a descriptor on a kernel, and two sockets from the same runtime can
@@ -170,14 +170,14 @@ pub trait UdpDatagrams {
     /// A const would be a claim the runtime crate is not in a position to
     /// make.
     ///
-    /// The default is [`UdpCaps::NONE`], the weakest answer, for the reason
-    /// [`TcpConnect::APPLIES`] defaults to `TcpOptsSupport::NONE`: a
+    /// The default is [`UdpSupport::NONE`], the weakest answer, for the reason
+    /// [`TcpConnect::TCP_SUPPORT`] defaults to `TcpSupport::NONE`: a
     /// default is a claim made by silence and must never be stronger than
     /// the truth.
     ///
-    /// [`TcpConnect::APPLIES`]: crate::TcpConnect::APPLIES
-    fn caps(&self) -> UdpCaps {
-        UdpCaps::NONE
+    /// [`TcpConnect::TCP_SUPPORT`]: crate::TcpConnect::TCP_SUPPORT
+    fn support(&self) -> UdpSupport {
+        UdpSupport::NONE
     }
 }
 
@@ -196,7 +196,7 @@ pub struct Datagrams<'a> {
     /// (the last may be shorter), to be sent by one syscall. `None` is a
     /// single datagram.
     ///
-    /// A socket whose [`UdpCaps::max_send_segments`] is `1` must never
+    /// A socket whose [`UdpSupport::max_send_segments`] is `1` must never
     /// receive a `Some(_)` covering more than one datagram — see
     /// [`Datagrams::reject_unsupported`] — and must never quietly send the
     /// whole buffer as one oversized datagram, which is what "graceful
@@ -354,7 +354,7 @@ impl EcnCodepoint {
 /// treats them so — `max_transmit_segments`, `max_receive_segments` and a
 /// per-datagram `ecn` field are three separate questions on
 /// `quinn::AsyncUdpSocket`, with `may_fragment` a fourth. Collapsing them
-/// into one `bool` would be the mistake `TcpOptsSupport` exists not to make:
+/// into one `bool` would be the mistake `TcpSupport` exists not to make:
 /// the caller's decision differs per offload, so the report must too.
 ///
 /// Measured on x86-64 Linux 7.0.0 for a plain `std::net::UdpSocket`:
@@ -362,18 +362,18 @@ impl EcnCodepoint {
 /// `may_fragment = false`. Those are that kernel's numbers, not this
 /// crate's: they are what the report exists to carry.
 ///
-/// # Built from [`NONE`](Self::NONE), which is `TcpOptsSupport`'s shape
+/// # Built from [`NONE`](Self::NONE), which is `TcpSupport`'s shape
 ///
 /// `#[non_exhaustive]` because a runtime writes one and a transport only
 /// reads it, so the next offload — a new kernel feature is how this gains a
 /// field — must not break every runtime that reports UDP. A runtime starts
 /// from the understating base and says what it has:
-/// `UdpCaps::NONE.max_send_segments(64).ecn(true)`. A field the runtime
+/// `UdpSupport::NONE.max_send_segments(64).ecn(true)`. A field the runtime
 /// does not set keeps the answer that costs an understatement rather than
 /// a promise, which is what a forgetful runtime reported before too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct UdpCaps {
+pub struct UdpSupport {
     /// Datagrams one `try_send` may carry. `1` means no GSO.
     pub max_send_segments: usize,
     /// Datagrams one `poll_recv` slot may describe. `1` means no GRO.
@@ -383,18 +383,18 @@ pub struct UdpCaps {
     pub ecn: bool,
     /// Whether datagrams may be fragmented in flight — which makes path
     /// MTU discovery unreliable. `true` is the pessimistic answer, so it is
-    /// the one in [`UdpCaps::NONE`].
+    /// the one in [`UdpSupport::NONE`].
     pub may_fragment: bool,
 }
 
-impl UdpCaps {
+impl UdpSupport {
     /// A socket with no offloads at all, and the default for
-    /// [`UdpDatagrams::caps`].
+    /// [`UdpDatagrams::support`].
     ///
     /// Note `may_fragment: true` — the *worse* answer, not the tidier one.
     /// Every field here is the value that costs a forgetful implementer an
     /// understatement rather than a promise it cannot keep, which is the
-    /// rule `TcpOptsSupport::NONE` established.
+    /// rule `TcpSupport::NONE` established.
     pub const NONE: Self = Self {
         max_send_segments: 1,
         max_recv_segments: 1,
@@ -440,7 +440,7 @@ impl Datagrams<'_> {
         }
     }
 
-    /// Fail when this send asks for an offload `caps` says the socket does
+    /// Fail when this send asks for an offload `support` says the socket does
     /// not have — the twin of `TcpOpts::reject_unsupported`, and the only
     /// sanctioned answer to an offload that cannot be applied, since
     /// applying it invisibly-not-at-all is not one.
@@ -448,52 +448,48 @@ impl Datagrams<'_> {
     /// # The two offloads are not symmetric, and pretending otherwise would break QUIC
     ///
     /// **GSO can refuse, and must.** A caller reads
-    /// [`UdpCaps::max_send_segments`] before it batches, so a
+    /// [`UdpSupport::max_send_segments`] before it batches, so a
     /// `segment_size` describing more datagrams than the socket declared is
     /// a bug in the caller, not a fact about the environment. Refusing puts
     /// the error where the bug is. Not refusing puts a 3600-byte datagram
     /// on a 1200-byte path, where it is dropped by something that will
     /// never tell anyone why.
     ///
-    /// **ECN cannot refuse on send, and this is the one degradation this
+    /// **ECN is never refused on send, and this is the one degradation this
     /// module permits.** A QUIC stack marks unconditionally; a socket that
     /// failed every send on a kernel with no `IP_TOS` support would make
     /// QUIC unusable exactly where the stack itself works fine. So a socket
-    /// may drop the marking — but *only while it declares `ecn: false`*,
-    /// and this check is what makes that conditional real: a socket that
-    /// claims `ecn: true` and is handed a codepoint it will not apply is
-    /// refused, so the declaration is a contract rather than a decoration.
+    /// may drop the marking — but *only while it declares `ecn: false`*.
     /// The permission is one-directional: nothing here lets a socket
     /// under-report on the *receive* side, where the cost is a congestion
     /// controller acting on a marking that never happened
     /// ([`RecvMeta::ecn`]).
     ///
+    /// **This used to promise a check it could not make.** It said a socket
+    /// claiming `ecn: true` and handed a codepoint it would not apply is
+    /// refused here — but nothing in a send and a declaration says whether
+    /// the kernel applied a mark, so the code carried `let ecn = false`
+    /// and the error an `ecn` field no path could set. Both went before
+    /// the freeze. Where the claim *can* be checked is on receive, which is
+    /// what the runtimes' `ecn_is_really_on` probes and their tests read.
+    ///
     /// An offload not asked for is not an offence: a `Datagrams` with
     /// `segment_size: None` and `ecn: None` passes against
-    /// [`UdpCaps::NONE`], so the weakest socket still serves every caller
+    /// [`UdpSupport::NONE`], so the weakest socket still serves every caller
     /// that wanted nothing.
     ///
     /// # Errors
     ///
-    /// An [`std::io::ErrorKind::Unsupported`] carrying [`UnsupportedUdpOffload`]
-    /// when this send describes more segments than `caps` declares, or —
-    /// see the asymmetry above — when `caps` claims `ecn: true` for a
-    /// codepoint it will not actually apply.
-    pub fn reject_unsupported(&self, caps: UdpCaps) -> std::io::Result<()> {
-        let gso = self.segments() > caps.max_send_segments;
-        // Asymmetric on purpose — see this method's doc comment. A socket
-        // that declares no ECN is *allowed* to be handed a codepoint and
-        // drop it; one that declares ECN is not allowed to be handed one it
-        // will not apply. The second half is unreachable from a correct
-        // implementation, which is what makes it worth checking: it is the
-        // assertion that the declaration means something.
-        let ecn = false;
-        if !gso && !ecn {
+    /// An [`std::io::ErrorKind::Unsupported`] carrying [`UnsupportedUdp`]
+    /// when this send describes more segments than `support` declares.
+    pub fn reject_unsupported(&self, support: UdpSupport) -> std::io::Result<()> {
+        let gso = self.segments() > support.max_send_segments;
+        if !gso {
             return Ok(());
         }
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            UnsupportedUdpOffload { gso, ecn },
+            UnsupportedUdp { gso },
         ))
     }
 }
@@ -522,7 +518,7 @@ mod tests {
         // test: it is the one whose conservative value is `true`, so a
         // reader (or a mutation) that "tidied" the struct to all-false or
         // all-zero would be caught here and nowhere else.
-        let c = UdpCaps::NONE;
+        let c = UdpSupport::NONE;
         assert_eq!(c.max_send_segments, 1, "1 == no GSO, not 0 and not 64");
         assert_eq!(c.max_recv_segments, 1, "1 == no GRO");
         assert!(!c.ecn);
@@ -536,7 +532,7 @@ mod tests {
     #[test]
     fn a_default_caps_impl_reports_nothing() {
         // The default is a claim made by silence, and this is the only test
-        // that reads it. `TcpConnect::APPLIES` has the same test for the
+        // that reads it. `TcpConnect::TCP_SUPPORT` has the same test for the
         // same reason: with every shipped implementation overriding the
         // method, flipping the default to something optimistic would
         // otherwise pass the whole suite.
@@ -561,15 +557,15 @@ mod tests {
             }
             // No `caps` — that absence is the subject of this test.
         }
-        assert_eq!(Forgetful.caps(), UdpCaps::NONE);
+        assert_eq!(Forgetful.support(), UdpSupport::NONE);
     }
 
     /// Each setter writes its own field and keeps the ones before it —
-    /// asserted on a chain from [`UdpCaps::NONE`], field by field, so a
+    /// asserted on a chain from [`UdpSupport::NONE`], field by field, so a
     /// setter that discards its argument or its receiver fails a line.
     #[test]
     fn each_udp_caps_setter_sets_its_own_field_and_keeps_the_rest() {
-        let c = UdpCaps::NONE
+        let c = UdpSupport::NONE
             .max_send_segments(64)
             .max_recv_segments(32)
             .ecn(true)
@@ -578,11 +574,14 @@ mod tests {
         assert_eq!(c.max_recv_segments, 32);
         assert!(c.ecn);
         assert!(!c.may_fragment);
-        let untouched = UdpCaps::NONE.max_recv_segments(8);
-        assert_eq!(untouched.max_send_segments, UdpCaps::NONE.max_send_segments);
+        let untouched = UdpSupport::NONE.max_recv_segments(8);
+        assert_eq!(
+            untouched.max_send_segments,
+            UdpSupport::NONE.max_send_segments
+        );
         assert_eq!(untouched.max_recv_segments, 8);
-        assert_eq!(untouched.ecn, UdpCaps::NONE.ecn);
-        assert_eq!(untouched.may_fragment, UdpCaps::NONE.may_fragment);
+        assert_eq!(untouched.ecn, UdpSupport::NONE.ecn);
+        assert_eq!(untouched.may_fragment, UdpSupport::NONE.may_fragment);
     }
 
     #[test]
@@ -604,15 +603,15 @@ mod tests {
 
     #[test]
     fn asking_for_nothing_is_never_an_offence() {
-        // Without this, `UdpCaps::NONE` would refuse every send and the
+        // Without this, `UdpSupport::NONE` would refuse every send and the
         // weakest socket would be unusable rather than merely slow.
-        assert!(plain(b"hello").reject_unsupported(UdpCaps::NONE).is_ok());
+        assert!(plain(b"hello").reject_unsupported(UdpSupport::NONE).is_ok());
         let marked = Datagrams {
             ecn: Some(EcnCodepoint::Ect0),
             ..plain(b"hello")
         };
         assert!(
-            marked.reject_unsupported(UdpCaps::NONE).is_ok(),
+            marked.reject_unsupported(UdpSupport::NONE).is_ok(),
             "a socket that declares no ECN is allowed to drop the marking — \
              refusing here would make QUIC unusable on such a kernel"
         );
@@ -627,16 +626,16 @@ mod tests {
         // Exactly at the limit is fine; one over is not. Checking both is
         // what stops an off-by-one from passing.
         assert!(
-            g.reject_unsupported(UdpCaps::NONE.max_send_segments(3))
+            g.reject_unsupported(UdpSupport::NONE.max_send_segments(3))
                 .is_ok()
         );
         let err = g
-            .reject_unsupported(UdpCaps::NONE.max_send_segments(2))
+            .reject_unsupported(UdpSupport::NONE.max_send_segments(2))
             .expect_err("three datagrams asked of a two-datagram socket");
         assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
         let payload = err
             .get_ref()
-            .and_then(|e| e.downcast_ref::<UnsupportedUdpOffload>())
+            .and_then(|e| e.downcast_ref::<UnsupportedUdp>())
             .expect("the typed payload survives the trip through io::Error");
         assert_eq!(payload.names().collect::<Vec<_>>(), ["gso"]);
     }

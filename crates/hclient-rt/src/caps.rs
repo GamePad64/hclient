@@ -1,4 +1,4 @@
-use crate::error::{Cancelled, UnsupportedTcpOpts};
+use crate::error::{Cancelled, UnsupportedTcp};
 use futures_core::future::BoxFuture;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -31,9 +31,9 @@ pub trait Spawn<F: Future<Output = ()>> {
 ///   every other caller of the trait.
 /// - **A set option is a refusal, not a preference.**
 ///   [`TcpOpts::reject_unsupported`] fails the connect on a runtime whose
-///   [`TcpConnect::APPLIES`] does not cover it, and that default is `NONE`.
+///   [`TcpConnect::TCP_SUPPORT`] does not cover it, and that default is `NONE`.
 ///   Turning a field on here would turn every connect on a backend that
-///   forgot to declare `APPLIES` into an `Unsupported` error for an option
+///   forgot to declare `TCP_SUPPORT` into an `Unsupported` error for an option
 ///   its caller never mentioned — a performance fix aimed straight at the
 ///   implementors the `NONE` default was written to protect.
 ///
@@ -76,7 +76,7 @@ pub struct TcpOpts {
     /// that happens to hold the same address. This binds the **interface**,
     /// which is what a caller on a multi-homed host or inside a VRF
     /// actually means. Linux, Android and Fuchsia only — see
-    /// [`TcpOptsSupport`], which is where a runtime says so per target.
+    /// [`TcpSupport`], which is where a runtime says so per target.
     ///
     /// A `String` rather than a `&'static str` because an interface name
     /// is configuration a caller reads at run time, and rather than bytes
@@ -206,16 +206,14 @@ impl TcpOpts {
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct TcpOptsSupport {
+pub struct TcpSupport {
     pub nodelay: bool,
     pub keepalive: bool,
     pub keepalive_interval: bool,
     pub keepalive_retries: bool,
     /// `SO_BINDTODEVICE`, which exists on Linux, Android and Fuchsia and
     /// nowhere else — so a runtime that sets this **must** decide it per
-    /// target rather than in one constant. `TcpOptsSupport::ALL` is still
-    /// literally every field, and is therefore no longer a value any real
-    /// runtime can claim on every platform it builds for.
+    /// target rather than in one constant.
     pub bind_device: bool,
     /// `TCP_USER_TIMEOUT`, Linux/Android/Fuchsia/Cygwin — the same
     /// per-target rule as [`bind_device`](Self::bind_device).
@@ -226,22 +224,8 @@ pub struct TcpOptsSupport {
     pub reuse_address: bool,
 }
 
-impl TcpOptsSupport {
-    /// Everything applied — what a runtime that hands the whole set to a
-    /// `socket2::Socket` says. Both shipped runtimes do exactly that.
-    pub const ALL: Self = Self {
-        nodelay: true,
-        keepalive: true,
-        keepalive_interval: true,
-        keepalive_retries: true,
-        bind_device: true,
-        user_timeout: true,
-        local_address: true,
-        send_buffer_size: true,
-        recv_buffer_size: true,
-        reuse_address: true,
-    };
-    /// Nothing applied — the default for [`TcpConnect::APPLIES`], and the
+impl TcpSupport {
+    /// Nothing applied — the default for [`TcpConnect::TCP_SUPPORT`], and the
     /// conservative base a runtime turns individual fields on from.
     pub const NONE: Self = Self {
         nodelay: false,
@@ -260,9 +244,9 @@ impl TcpOptsSupport {
     /// [`Self::NONE`] and this type can grow.
     ///
     /// `const` rather than plain, because the value a runtime writes is an
-    /// associated **constant** — `TcpConnect::APPLIES` — computed with
+    /// associated **constant** — `TcpConnect::TCP_SUPPORT` — computed with
     /// `cfg!`. So the ordinary shape is
-    /// `TcpOptsSupport::NONE.nodelay(true).bind_device(cfg!(target_os = "linux"))`,
+    /// `TcpSupport::NONE.nodelay(true).bind_device(cfg!(target_os = "linux"))`,
     /// which reads as the claim it is.
     ///
     /// Starting from `NONE` rather than from a literal is also the
@@ -341,42 +325,38 @@ impl TcpOptsSupport {
 }
 
 impl TcpOpts {
-    /// Fail when the caller set an option `can` says this runtime does not
+    /// Fail when the caller set an option `support` says this runtime does not
     /// apply — the one sanctioned answer to an option a runtime cannot
     /// honour, since silently ignoring it is not one.
     ///
     /// Only fields that are actually *set* can offend: [`TcpOpts::default`]
-    /// is all-off, so even a runtime with [`TcpOptsSupport::NONE`] still
+    /// is all-off, so even a runtime with [`TcpSupport::NONE`] still
     /// serves every caller that never asked for anything.
-    ///
-    /// A runtime whose [`TcpConnect::APPLIES`] is [`TcpOptsSupport::ALL`]
-    /// need not call this at all — the call is a no-op by construction,
-    /// which `reject_unsupported_is_a_no_op_against_all` pins.
     ///
     /// # Errors
     ///
-    /// An [`std::io::ErrorKind::Unsupported`] carrying [`UnsupportedTcpOpts`]
-    /// when a field this caller set is one `can` says the runtime cannot
+    /// An [`std::io::ErrorKind::Unsupported`] carrying [`UnsupportedTcp`]
+    /// when a field this caller set is one `support` says the runtime cannot
     /// apply, naming every such field rather than just the first.
-    pub fn reject_unsupported(&self, can: TcpOptsSupport) -> std::io::Result<()> {
-        let missing = TcpOptsSupport {
-            nodelay: self.nodelay && !can.nodelay,
-            keepalive: self.keepalive.is_some() && !can.keepalive,
-            keepalive_interval: self.keepalive_interval.is_some() && !can.keepalive_interval,
-            keepalive_retries: self.keepalive_retries.is_some() && !can.keepalive_retries,
-            bind_device: self.bind_device.is_some() && !can.bind_device,
-            user_timeout: self.user_timeout.is_some() && !can.user_timeout,
-            local_address: self.local_address.is_some() && !can.local_address,
-            send_buffer_size: self.send_buffer_size.is_some() && !can.send_buffer_size,
-            recv_buffer_size: self.recv_buffer_size.is_some() && !can.recv_buffer_size,
-            reuse_address: self.reuse_address && !can.reuse_address,
+    pub fn reject_unsupported(&self, support: TcpSupport) -> std::io::Result<()> {
+        let missing = TcpSupport {
+            nodelay: self.nodelay && !support.nodelay,
+            keepalive: self.keepalive.is_some() && !support.keepalive,
+            keepalive_interval: self.keepalive_interval.is_some() && !support.keepalive_interval,
+            keepalive_retries: self.keepalive_retries.is_some() && !support.keepalive_retries,
+            bind_device: self.bind_device.is_some() && !support.bind_device,
+            user_timeout: self.user_timeout.is_some() && !support.user_timeout,
+            local_address: self.local_address.is_some() && !support.local_address,
+            send_buffer_size: self.send_buffer_size.is_some() && !support.send_buffer_size,
+            recv_buffer_size: self.recv_buffer_size.is_some() && !support.recv_buffer_size,
+            reuse_address: self.reuse_address && !support.reuse_address,
         };
-        if missing == TcpOptsSupport::NONE {
+        if missing == TcpSupport::NONE {
             return Ok(());
         }
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            UnsupportedTcpOpts { missing },
+            UnsupportedTcp { missing },
         ))
     }
 }
@@ -395,7 +375,7 @@ pub trait TcpConnect {
     /// backend that forgot the line claim it applies every option; `NONE`
     /// makes it understate itself, so the worst case is one refused connect
     /// too many rather than an option dropped on the floor without a trace.
-    const APPLIES: TcpOptsSupport = TcpOptsSupport::NONE;
+    const TCP_SUPPORT: TcpSupport = TcpSupport::NONE;
 
     /// # The options are not optional
     ///
@@ -409,8 +389,8 @@ pub trait TcpConnect {
     /// On platforms with file descriptors the whole set is applied outside
     /// the runtime, on a `socket2::Socket`, and the runtime only adopts the
     /// finished socket ([`TcpAdoptStd`]) — which is why both shipped
-    /// runtimes declare [`TcpOptsSupport::ALL`] and never have to refuse
-    /// anything.
+    /// runtimes declare every option their target has and refuse only the
+    /// ones it has not.
     /// **An associated type, not an RPITIT, and it demands nothing.**
     /// A consumer that must prove its own future `Send` — `Native`, so
     /// that `hclient::Client`'s can be — has to *name* this one, and
@@ -438,12 +418,12 @@ pub trait TcpConnect {
     /// Which same-machine endpoint kinds [`connect_ipc`](Self::connect_ipc)
     /// dials — see [`IpcSupport`](crate::IpcSupport).
     ///
-    /// [`APPLIES`](Self::APPLIES)' shape, and defaulted the same way and
+    /// [`TCP_SUPPORT`](Self::TCP_SUPPORT)' shape, and defaulted the same way and
     /// for the same reason: a runtime that says nothing here refuses the
     /// setting, where one that over-claimed would fail every connect at
     /// the socket instead of at the call that asked — which is what lets
     /// `hclient_native::Native::unix_socket` refuse at configuration.
-    const IPC: crate::IpcSupport = crate::IpcSupport::NONE;
+    const IPC_SUPPORT: crate::IpcSupport = crate::IpcSupport::NONE;
 
     /// Connect to a same-machine endpoint: a Unix-domain socket today, and
     /// the kinds [`IpcAddr`](crate::IpcAddr) gains later.
@@ -572,9 +552,9 @@ mod tests {
         // the 41 ms was measured, and it was half right: the user, or the
         // transport that knows what protocol is about to be spoken —
         // `hclient_native::Native::new`, which asks for it and only where
-        // `TcpConnect::APPLIES` says the runtime applies it. Not this
+        // `TcpConnect::TCP_SUPPORT` says the runtime applies it. Not this
         // seam, which cannot know either thing, and where a `true` would
-        // become a refused connect on every backend that left `APPLIES`
+        // become a refused connect on every backend that left `TCP_SUPPORT`
         // at its default. See the type's doc.
         assert!(!o.nodelay, "the seam has no opinion about who is writing");
         assert!(o.keepalive.is_none());
@@ -657,7 +637,7 @@ mod tests {
     }
 
     /// Every field of `TcpOpts` set to something a runtime would have to
-    /// act on, paired with the `TcpOptsSupport` field that covers it.
+    /// act on, paired with the `TcpSupport` field that covers it.
     ///
     /// Named for a count until the count changed, which is why it is not
     /// named for one any more: the pairing is what the tests below read,
@@ -679,7 +659,7 @@ mod tests {
     }
 
     /// Every option name, in `TcpOpts`' own field order — which is the
-    /// order `UnsupportedTcpOpts::names` walks, so this list going stale
+    /// order `UnsupportedTcp::names` walks, so this list going stale
     /// is the same failure as that one going stale.
     ///
     /// The length is inferred rather than written: it was `[&str; 6]`, and
@@ -698,11 +678,29 @@ mod tests {
         "reuse_address",
     ];
 
-    /// `TcpOptsSupport::ALL` with exactly one field turned off, in the same
-    /// order as `NAMES` — so a test can walk both together and check that
-    /// the error names the one option that was withheld.
-    fn all_but(i: usize) -> TcpOptsSupport {
-        let mut can = TcpOptsSupport::ALL;
+    /// Every option applied. Local to the tests since `TcpSupport::ALL`
+    /// went: see [`TcpSupport`]'s own doc on why no public constant may mean
+    /// *every field*.
+    fn all() -> TcpSupport {
+        TcpSupport {
+            nodelay: true,
+            keepalive: true,
+            keepalive_interval: true,
+            keepalive_retries: true,
+            bind_device: true,
+            user_timeout: true,
+            local_address: true,
+            send_buffer_size: true,
+            recv_buffer_size: true,
+            reuse_address: true,
+        }
+    }
+
+    /// [`all`] with exactly one field turned off, in the same order as
+    /// `NAMES` — so a test can walk both together and check that the error
+    /// names the one option that was withheld.
+    fn all_but(i: usize) -> TcpSupport {
+        let mut can = all();
         match i {
             0 => can.nodelay = false,
             1 => can.keepalive = false,
@@ -721,24 +719,20 @@ mod tests {
 
     #[test]
     fn reject_unsupported_is_a_no_op_against_all() {
-        // The claim `TcpConnect::APPLIES`' doc makes about the two shipped
+        // The claim `TcpConnect::TCP_SUPPORT`' doc makes about the two shipped
         // runtimes: they apply the whole set, so the check they don't call
         // could not have refused anything anyway.
-        assert!(
-            every_field_set()
-                .reject_unsupported(TcpOptsSupport::ALL)
-                .is_ok()
-        );
+        assert!(every_field_set().reject_unsupported(all()).is_ok());
     }
 
     #[test]
     fn a_runtime_that_applies_nothing_still_serves_a_caller_that_asked_for_nothing() {
-        // Why `TcpOptsSupport::NONE` is a usable default and not a brick
+        // Why `TcpSupport::NONE` is a usable default and not a brick
         // wall: `TcpOpts::default()` sets nothing, and that is what
         // `Native` passes unless the caller called `tcp_opts`.
         assert!(
             TcpOpts::default()
-                .reject_unsupported(TcpOptsSupport::NONE)
+                .reject_unsupported(TcpSupport::NONE)
                 .is_ok()
         );
     }
@@ -761,7 +755,7 @@ mod tests {
                 .expect_err("the one option this runtime cannot apply was set");
             let named: Vec<&str> = err
                 .get_ref()
-                .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+                .and_then(|e| e.downcast_ref::<UnsupportedTcp>())
                 .expect("typed payload")
                 .names()
                 .collect();
@@ -779,7 +773,7 @@ mod tests {
     #[test]
     fn the_message_names_the_constant_an_implementor_would_have_to_change() {
         // The other audience for this error is the backend author whose
-        // `connect` applies the option perfectly well and whose `APPLIES`
+        // `connect` applies the option perfectly well and whose `TCP_SUPPORT`
         // line is missing — `TokioHandle`, in this workspace, found by
         // measurement rather than by reading. The option's name sends
         // them to their `connect` body; the constant's name sends them to
@@ -788,13 +782,13 @@ mod tests {
             .reject_unsupported(all_but(0))
             .expect_err("nodelay was withheld");
         let msg = err.to_string();
-        assert!(msg.contains("TcpConnect::APPLIES"), "{msg}");
+        assert!(msg.contains("TcpConnect::TCP_SUPPORT"), "{msg}");
     }
 
     #[test]
     fn all_offending_options_are_named_not_only_the_first() {
         let err = every_field_set()
-            .reject_unsupported(TcpOptsSupport::NONE)
+            .reject_unsupported(TcpSupport::NONE)
             .expect_err("nothing can be applied and everything was asked for");
         let msg = err.to_string();
         for name in NAMES {
@@ -819,7 +813,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
         let payload = err
             .get_ref()
-            .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+            .and_then(|e| e.downcast_ref::<UnsupportedTcp>())
             .expect("the typed payload survives the trip through io::Error");
         assert_eq!(payload.names().collect::<Vec<_>>(), [NAMES[I]]);
         assert_eq!(NAMES[I], "local_address", "the index still names it");
@@ -830,17 +824,17 @@ mod tests {
         // The check is about what the caller ASKED for, not about what the
         // runtime lacks: a runtime that applies nothing owes nothing to a
         // caller who set nothing. Without this distinction
-        // `TcpOptsSupport::NONE` would refuse every connect.
+        // `TcpSupport::NONE` would refuse every connect.
         let opts = TcpOpts {
             nodelay: true,
             ..TcpOpts::default()
         };
         let err = opts
-            .reject_unsupported(TcpOptsSupport::NONE)
+            .reject_unsupported(TcpSupport::NONE)
             .expect_err("nodelay was set and cannot be applied");
         let payload = err
             .get_ref()
-            .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+            .and_then(|e| e.downcast_ref::<UnsupportedTcp>())
             .expect("typed payload");
         assert_eq!(payload.names().collect::<Vec<_>>(), ["nodelay"], "{err}");
     }
@@ -849,7 +843,7 @@ mod tests {
     fn a_runtime_that_declares_nothing_applies_nothing() {
         // The default is a claim made by silence, and this is the only
         // test that reads it. All three shipped runtimes declare
-        // `APPLIES` explicitly — tokio and smol `ALL`, embassy its own
+        // `TCP_SUPPORT` explicitly — tokio and smol `ALL`, embassy its own
         // two-of-six — so flipping the default to `ALL` passes the whole
         // workspace suite otherwise: 878/878, measured.
         // The rule it protects is that a backend which forgets the line
@@ -908,7 +902,7 @@ mod tests {
             }
 
             type Stream = NeverIo;
-            // No `APPLIES` line, deliberately — that absence is the
+            // No `TCP_SUPPORT` line, deliberately — that absence is the
             // subject of this test.
             type Connecting<'a>
                 = NeverConnect<'a>
@@ -921,19 +915,19 @@ mod tests {
         }
 
         assert_eq!(
-            <Forgetful as TcpConnect>::APPLIES,
-            TcpOptsSupport::NONE,
+            <Forgetful as TcpConnect>::TCP_SUPPORT,
+            TcpSupport::NONE,
             "a runtime that declares nothing must not claim to apply anything"
         );
         // And the consequence, not only the constant: a caller who asks
         // such a runtime for all six gets all six refused by name, rather
         // than silently honoured on paper.
         let err = every_field_set()
-            .reject_unsupported(<Forgetful as TcpConnect>::APPLIES)
+            .reject_unsupported(<Forgetful as TcpConnect>::TCP_SUPPORT)
             .expect_err("a runtime that applies nothing must refuse everything asked of it");
         let payload = err
             .get_ref()
-            .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+            .and_then(|e| e.downcast_ref::<UnsupportedTcp>())
             .expect("typed payload");
         assert_eq!(payload.names().collect::<Vec<_>>(), NAMES);
     }

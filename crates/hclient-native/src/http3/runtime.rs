@@ -276,15 +276,15 @@ impl Wake for WakeAll {
 struct SeamSocket<S> {
     inner: S,
     writable: Arc<WakeAll>,
-    caps: hclient_rt::UdpCaps,
+    caps: hclient_rt::UdpSupport,
 }
 
 impl<S: UdpDatagrams> SeamSocket<S> {
     fn new(inner: S) -> Self {
-        // Read once, at construction. `caps()` is allowed to be a real
+        // Read once, at construction. `support()` is allowed to be a real
         // query of the descriptor, and quinn asks `max_transmit_segments`
         // on a hot path.
-        let caps = inner.caps();
+        let caps = inner.support();
         Self {
             inner,
             writable: Arc::new(WakeAll::default()),

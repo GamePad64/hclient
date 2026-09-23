@@ -53,7 +53,7 @@
 //! because a caller written against this backend alone would have a bug
 //! only the other one finds.
 
-use hclient_rt::{Datagrams, RecvMeta, UdpAdoptStd, UdpBind, UdpCaps, UdpDatagrams};
+use hclient_rt::{Datagrams, RecvMeta, UdpAdoptStd, UdpBind, UdpDatagrams, UdpSupport};
 use std::io;
 use std::io::IoSliceMut;
 use std::net::SocketAddr;
@@ -64,7 +64,7 @@ use std::task::{Context, Poll};
 pub struct SmolUdpSocket {
     io: async_io::Async<std::net::UdpSocket>,
     state: quinn_udp::UdpSocketState,
-    caps: UdpCaps,
+    caps: UdpSupport,
 }
 
 impl SmolUdpSocket {
@@ -77,7 +77,7 @@ impl SmolUdpSocket {
         // same reason, as `Smol::connect` in this crate's `lib.rs`.
         let io = async_io::Async::new_nonblocking(std)?;
         let state = quinn_udp::UdpSocketState::new(io.get_ref().into())?;
-        let caps = UdpCaps::NONE
+        let caps = UdpSupport::NONE
             .max_send_segments(state.max_gso_segments())
             .max_recv_segments(state.gro_segments())
             .ecn(ecn_is_really_on(io.get_ref()))
@@ -258,7 +258,7 @@ impl UdpDatagrams for SmolUdpSocket {
         self.io.get_ref().local_addr()
     }
 
-    fn caps(&self) -> UdpCaps {
+    fn support(&self) -> UdpSupport {
         self.caps
     }
 }

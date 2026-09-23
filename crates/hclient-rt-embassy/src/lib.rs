@@ -101,7 +101,7 @@ pub use sockets::{PooledSocket, SocketBuffers, SocketPool};
 
 use core::net::SocketAddr;
 use embassy_net::Stack;
-use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+use hclient_rt::{TcpConnect, TcpOpts, TcpSupport, Timer};
 use std::time::Duration;
 
 /// The runtime: an `embassy-net` stack plus a bounded pool of sockets on
@@ -242,7 +242,7 @@ impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N,
     // From `NONE` up, which is the understating direction the seam
     // requires: what is not named here is not claimed. The two smoltcp
     // does have are the two turned on.
-    const APPLIES: TcpOptsSupport = TcpOptsSupport::NONE.nodelay(true).keepalive(true);
+    const TCP_SUPPORT: TcpSupport = TcpSupport::NONE.nodelay(true).keepalive(true);
 
     /// **A plain box, deliberately not a `Send` one**, and this is the
     /// case the seam's associated type exists for. `embassy_net::Stack`
@@ -262,7 +262,7 @@ impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N,
             // First, before a slot is taken: an option this runtime cannot
             // apply fails the connect, naming itself. See `TcpConnect::connect`
             // — silently ignoring it is the one answer that is not available.
-            opts.reject_unsupported(Self::APPLIES)?;
+            opts.reject_unsupported(Self::TCP_SUPPORT)?;
             let endpoint = endpoint(addr)?;
 
             let mut sock = self.sockets.acquire().await;
@@ -458,14 +458,17 @@ mod tests {
         let ok = TcpOpts::default()
             .nodelay(true)
             .keepalive(Some(Duration::from_secs(30)));
-        assert!(ok.reject_unsupported(<Rt as TcpConnect>::APPLIES).is_ok());
+        assert!(
+            ok.reject_unsupported(<Rt as TcpConnect>::TCP_SUPPORT)
+                .is_ok()
+        );
     }
 
     #[test]
     fn each_option_this_runtime_cannot_apply_is_refused_by_name() {
         // One case per unappliable option, not one case for the set: an
         // implementation that refused a fixed option, or that had
-        // `APPLIES` wrong in only one field, would pass a single-case
+        // `TCP_SUPPORT` wrong in only one field, would pass a single-case
         // test.
         type Rt = Embassy<1>;
         let cases: [(&str, TcpOpts); 4] = [
@@ -487,10 +490,10 @@ mod tests {
             // `let ... else`, not `expect_err`: `expect_err` takes a
             // plain `&str`, so a `{name}` in it is printed literally and
             // all four cases fail with the same message naming nothing.
-            // Measured — each of the four `APPLIES` fields was flipped to
+            // Measured — each of the four `TCP_SUPPORT` fields was flipped to
             // `true` in turn, and all four reported
             // an identical "cannot apply {name}".
-            let Err(err) = opts.reject_unsupported(<Rt as TcpConnect>::APPLIES) else {
+            let Err(err) = opts.reject_unsupported(<Rt as TcpConnect>::TCP_SUPPORT) else {
                 panic!("this runtime cannot apply {name}, so asking for it must be refused");
             };
             assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
@@ -500,7 +503,7 @@ mod tests {
             );
             let payload = err
                 .get_ref()
-                .and_then(|e| e.downcast_ref::<hclient_rt::UnsupportedTcpOpts>())
+                .and_then(|e| e.downcast_ref::<hclient_rt::UnsupportedTcp>())
                 .expect("typed payload");
             assert_eq!(
                 payload.names().collect::<Vec<_>>(),
@@ -517,7 +520,7 @@ mod tests {
         type Rt = Embassy<1>;
         assert!(
             TcpOpts::default()
-                .reject_unsupported(<Rt as TcpConnect>::APPLIES)
+                .reject_unsupported(<Rt as TcpConnect>::TCP_SUPPORT)
                 .is_ok()
         );
     }

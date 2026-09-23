@@ -66,9 +66,7 @@
 
 use super::{Tokio, TokioIo, classify};
 use futures_core::future::BoxFuture;
-use hclient_rt::{
-    Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
-};
+use hclient_rt::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport, Timer};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -182,7 +180,8 @@ impl TcpConnect for TokioHandle {
 
     type Stream = TokioIo;
 
-    /// **The same `ALL` [`Tokio`] declares, and leaving it out was a bug.**
+    /// **Exactly what [`Tokio`] declares, and both other answers were
+    /// bugs.**
     /// `connect` below delegates to `Tokio::connect`, which applies every
     /// option on the `socket2::Socket` — so the options really are applied
     /// here. Without this line the trait's `NONE` default stood, and
@@ -193,7 +192,13 @@ impl TcpConnect for TokioHandle {
     /// It mattered more than a stray default because `TokioHandle` is the
     /// runtime `hclient-select` requires, and v0.4's race measurement found
     /// Nagle costing 41 ms on the head of every connection made without it.
-    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL;
+    ///
+    /// The second was the line that fixed the first: it declared
+    /// `TcpSupport::ALL` while `Tokio` declared a per-target set, so on
+    /// macOS and Windows this claimed `bind_device` and `user_timeout`,
+    /// `reject_unsupported` let them through, and `Tokio::connect` did
+    /// not apply them. A delegate's claim is its delegate's.
+    const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
 
     /// **Deliberately identical to [`Tokio`]'s, guard and all — there is
     /// no guard.** See the module doc's last table row: the registration
@@ -450,7 +455,7 @@ mod tests {
 
     /// `TokioHandle` delegates `connect` to `Tokio`, so it applies every
     /// option — and until v0.4 it declared none, because it left
-    /// `TcpConnect::APPLIES` to the trait's `NONE` default. The effect was
+    /// `TcpConnect::TCP_SUPPORT` to the trait's `NONE` default. The effect was
     /// not cosmetic: `TcpOpts::reject_unsupported` turned a `nodelay: true`
     /// the caller asked for into a refused connect.
     ///
@@ -472,11 +477,11 @@ mod tests {
         let opts = TcpOpts::default().nodelay(true);
         let s = rt.connect(addr, &opts).await.expect(
             "a runtime that applies nodelay must not refuse it -- if this \
-             fails with an unsupported-option error, APPLIES has drifted \
+             fails with an unsupported-option error, TCP_SUPPORT has drifted \
              below what connect does",
         );
         let applied = s.get_ref().nodelay().expect("nodelay query");
         assert!(applied, "nodelay did not reach the socket");
-        assert_eq!(<TokioHandle as TcpConnect>::APPLIES.nodelay, applied);
+        assert_eq!(<TokioHandle as TcpConnect>::TCP_SUPPORT.nodelay, applied);
     }
 }

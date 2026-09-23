@@ -12,9 +12,7 @@ pub use io::TokioIo;
 pub use udp::TokioUdpSocket;
 
 use futures_core::future::BoxFuture;
-use hclient_rt::{
-    Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
-};
+use hclient_rt::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport, Timer};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -93,25 +91,33 @@ impl TcpConnect for Tokio {
 
     /// Every field, and `build_socket` below is where each one is applied.
     /// Stated rather than left to the trait's `NONE` default, which would
-    /// understate this runtime — see `TcpConnect::APPLIES`.
-    /// **No longer `TcpOptsSupport::ALL`, and that is the point.** Two of
+    /// understate this runtime — see `TcpConnect::TCP_SUPPORT`.
+    /// **Built from `NONE`, one option at a time, and that is the
+    /// point.** Two of
     /// the fields are Linux socket options with no counterpart elsewhere —
     /// `SO_BINDTODEVICE` on Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` on
     /// those plus Cygwin — and a constant claiming them on macOS or
     /// Windows would be a capability that lies, refused at the wrong
-    /// moment or not at all. `ALL` still means *every field*; it is simply
-    /// no longer a value this runtime can honestly claim on every target
-    /// it builds for.
+    /// moment or not at all. There is no `ALL` to start from any more:
+    /// a constant meaning *every field* would silently claim the next field
+    /// too, the day `hclient-rt` adds one.
     ///
-    /// The direction of the `cfg` matters: an understated `APPLIES` costs
+    /// The direction of the `cfg` matters: an understated `TCP_SUPPORT` costs
     /// a caller a named `Unsupported` error, an overstated one costs them
     /// an option silently not applied.
     /// Unix-domain sockets where `tokio::net::UnixStream` compiles, which
     /// is `cfg!(unix)`. Understated on Windows, where `AF_UNIX` exists in
     /// the OS but tokio binds no stream type for it.
-    const IPC: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
+    const IPC_SUPPORT: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
 
-    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL
+    const TCP_SUPPORT: TcpSupport = TcpSupport::NONE
+        .nodelay(true)
+        .keepalive(true)
+        .keepalive_interval(true)
+        .local_address(true)
+        .send_buffer_size(true)
+        .recv_buffer_size(true)
+        .reuse_address(true)
         .bind_device(cfg!(any(
             target_os = "android",
             target_os = "fuchsia",
@@ -252,7 +258,7 @@ fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::So
         }
         sock.set_tcp_keepalive(&k)?;
     }
-    // Linux, Android and Fuchsia only, which is why `APPLIES` is a
+    // Linux, Android and Fuchsia only, which is why `TCP_SUPPORT` is a
     // `cfg` and not a constant: on every other target a caller who set
     // this is refused before the connect rather than having it ignored.
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -398,10 +404,10 @@ mod tests {
             applied,
             "TcpOpts::nodelay was not applied to the connected socket"
         );
-        // And `APPLIES` is not a free-floating claim: it is compared
+        // And `TCP_SUPPORT` is not a free-floating claim: it is compared
         // against what the socket just said, so the constant is checked by
         // the test that measures the behaviour rather than by nobody.
-        assert_eq!(<Tokio as TcpConnect>::APPLIES.nodelay, applied);
+        assert_eq!(<Tokio as TcpConnect>::TCP_SUPPORT.nodelay, applied);
     }
 
     #[tokio::test]
@@ -427,7 +433,7 @@ mod tests {
             enabled,
             "TcpOpts::keepalive was not applied to the connected socket"
         );
-        assert_eq!(<Tokio as TcpConnect>::APPLIES.keepalive, enabled);
+        assert_eq!(<Tokio as TcpConnect>::TCP_SUPPORT.keepalive, enabled);
     }
     /// **The four options added in v0.4, read back off the connected
     /// socket** — the same principle as the two tests above and for the
@@ -435,7 +441,7 @@ mod tests {
     /// whether an option was applied, and `build_socket` silently ignoring
     /// one is the exact defect this file's own history records.
     ///
-    /// Each is compared against `APPLIES` as well as against the socket,
+    /// Each is compared against `TCP_SUPPORT` as well as against the socket,
     /// so the constant is checked by the test that measures the behaviour
     /// rather than by nobody — which is what makes it a claim instead of a
     /// wish, and what would catch a `cfg` that drifted from the code.
@@ -472,7 +478,7 @@ mod tests {
         // `const`-evaluable, so clippy asks for a `const` block — which
         // is the right shape anyway: this is a claim about the constant
         // and not about the socket this test just opened.
-        const { assert!(<Tokio as TcpConnect>::APPLIES.keepalive_interval) };
+        const { assert!(<Tokio as TcpConnect>::TCP_SUPPORT.keepalive_interval) };
 
         // **The interval alone switches keepalive on**, which is what
         // `TcpOpts::keepalive`'s doc says and is otherwise a surprise: the
@@ -502,7 +508,7 @@ mod tests {
         // rules out.
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         {
-            const { assert!(<Tokio as TcpConnect>::APPLIES.bind_device) };
+            const { assert!(<Tokio as TcpConnect>::TCP_SUPPORT.bind_device) };
             let opts = TcpOpts::default().bind_device(Some("lo".to_owned()));
             match Tokio.connect(addr, &opts).await {
                 Ok(s) => {
@@ -536,9 +542,9 @@ mod tests {
             target_os = "cygwin"
         ))]
         {
-            const { assert!(<Tokio as TcpConnect>::APPLIES.user_timeout) };
+            const { assert!(<Tokio as TcpConnect>::TCP_SUPPORT.user_timeout) };
             let opts = TcpOpts::default().user_timeout(Some(Duration::from_secs(20)));
-            opts.reject_unsupported(<Tokio as TcpConnect>::APPLIES)
+            opts.reject_unsupported(<Tokio as TcpConnect>::TCP_SUPPORT)
                 .expect("declared, so not refused");
             Tokio.connect(addr, &opts).await.expect("connect");
         }

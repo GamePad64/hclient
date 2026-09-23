@@ -163,7 +163,7 @@ pub mod reexport {
 /// forcing `pub`.
 ///
 /// `TcpOpts` are **not** applied: `embedded-nal-async` exposes no socket
-/// options at all, so `APPLIES` stays at `TcpOptsSupport::NONE` and a
+/// options at all, so `TCP_SUPPORT` stays at `TcpSupport::NONE` and a
 /// caller who set one gets the named `Unsupported` the seam already
 /// produces. That is the understating direction, which is this workspace's
 /// rule for every capability constant.

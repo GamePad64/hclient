@@ -13,7 +13,7 @@ pub use udp::SmolUdpSocket;
 
 use futures_core::future::BoxFuture;
 use hclient_rt::{
-    Blocking, Cancelled, Discard, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
+    Blocking, Cancelled, Discard, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport, Timer,
 };
 use std::future::Future;
 use std::net::SocketAddr;
@@ -252,24 +252,32 @@ impl TcpConnect for Smol {
 
     /// Unix-domain sockets where `async_net::unix` compiles, which is
     /// `cfg!(unix)`.
-    const IPC: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
+    const IPC_SUPPORT: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
 
     /// Every field, and `build_socket` below is where each one is applied.
     /// Stated rather than left to the trait's `NONE` default, which would
-    /// understate this runtime — see `TcpConnect::APPLIES`.
-    /// **No longer `TcpOptsSupport::ALL`, and that is the point.** Two of
+    /// understate this runtime — see `TcpConnect::TCP_SUPPORT`.
+    /// **Built from `NONE`, one option at a time, and that is the
+    /// point.** Two of
     /// the fields are Linux socket options with no counterpart elsewhere —
     /// `SO_BINDTODEVICE` on Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` on
     /// those plus Cygwin — and a constant claiming them on macOS or
     /// Windows would be a capability that lies, refused at the wrong
-    /// moment or not at all. `ALL` still means *every field*; it is simply
-    /// no longer a value this runtime can honestly claim on every target
-    /// it builds for.
+    /// moment or not at all. There is no `ALL` to start from any more:
+    /// a constant meaning *every field* would silently claim the next field
+    /// too, the day `hclient-rt` adds one.
     ///
-    /// The direction of the `cfg` matters: an understated `APPLIES` costs
+    /// The direction of the `cfg` matters: an understated `TCP_SUPPORT` costs
     /// a caller a named `Unsupported` error, an overstated one costs them
     /// an option silently not applied.
-    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL
+    const TCP_SUPPORT: TcpSupport = TcpSupport::NONE
+        .nodelay(true)
+        .keepalive(true)
+        .keepalive_interval(true)
+        .local_address(true)
+        .send_buffer_size(true)
+        .recv_buffer_size(true)
+        .reuse_address(true)
         .bind_device(cfg!(any(
             target_os = "android",
             target_os = "fuchsia",
@@ -440,7 +448,7 @@ fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::So
         }
         sock.set_tcp_keepalive(&k)?;
     }
-    // Linux, Android and Fuchsia only, which is why `APPLIES` is a
+    // Linux, Android and Fuchsia only, which is why `TCP_SUPPORT` is a
     // `cfg` and not a constant: on every other target a caller who set
     // this is refused before the connect rather than having it ignored.
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -532,11 +540,11 @@ mod tests {
                 applied,
                 "TcpOpts::nodelay was not applied to the connected socket"
             );
-            // And `APPLIES` is not a free-floating claim: it is compared
+            // And `TCP_SUPPORT` is not a free-floating claim: it is compared
             // against what the socket just said, so the constant is
             // checked by the test that measures the behaviour rather than
             // by nobody.
-            assert_eq!(<Smol as TcpConnect>::APPLIES.nodelay, applied);
+            assert_eq!(<Smol as TcpConnect>::TCP_SUPPORT.nodelay, applied);
         });
     }
 
@@ -567,7 +575,7 @@ mod tests {
                 enabled,
                 "TcpOpts::keepalive was not applied to the connected socket"
             );
-            assert_eq!(<Smol as TcpConnect>::APPLIES.keepalive, enabled);
+            assert_eq!(<Smol as TcpConnect>::TCP_SUPPORT.keepalive, enabled);
         });
     }
 }
