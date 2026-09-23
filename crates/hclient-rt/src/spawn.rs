@@ -2,11 +2,53 @@ use crate::error::Cancelled;
 use futures_core::future::BoxFuture;
 use std::future::Future;
 
+/// Run `f` to completion in the background.
+///
 /// The shape is deliberately copied from `hyper::rt::Executor`: generic
 /// over the future, zero bounds in the declaration. `Send` is added by the
 /// `impl`, not the trait, so single-threaded runtimes can implement it
 /// honestly.
+///
+/// # `spawn` does not fail
+///
+/// It returns `()`, and that is the contract rather than an omission: **a
+/// runtime that implements this trait accepts every future it is handed.**
+/// Whatever it needs in order to do that is a precondition it states on
+/// its own type and discharges where it can — at construction, as a
+/// `Result`, is the form to reach for. `hclient-rt-tokio` has both shapes:
+/// `TokioHandle` carries its runtime and is total everywhere, while the
+/// `Tokio` ZST reads an ambient runtime and says, on its own doc, that
+/// calling it off one panics.
+///
+/// [`Blocking::run`] answers [`Cancelled`] for the neighbouring case and
+/// this does not, and the asymmetry is about the caller rather than the
+/// runtime. A blocking call's caller is waiting on the answer and has an
+/// error path to put a refusal on. The callers of `spawn` — a connection
+/// driver, a pool reaper — are handing over work that keeps something
+/// alive *after* the call returns, mid-way through a connect that has
+/// already happened; a refusal there has no better answer than the one
+/// the runtime was in a position to give earlier, at construction.
+///
+/// So a runtime that can find itself unable to spawn has two honest
+/// options: make that impossible at the type (carry what it needs, as
+/// `TokioHandle` does), or state the precondition where a caller reads it.
+/// What it must not do is accept the future and drop it: the caller cannot
+/// tell, and a driver that never runs is a connection that hangs.
+///
+/// **A runtime whose spawn can run out should not implement this trait**,
+/// and that is the one real cost of the shape. Embassy's executor is the
+/// example: tasks come from a pool whose size is fixed at compile time,
+/// so its own spawn answers an error when the pool is full — a condition
+/// of the moment, which no constructor can discharge.
+/// `hclient-rt-embassy` therefore leaves `Spawn` unimplemented (its module
+/// doc has the alternative, a leaked task per call). Nothing essential is
+/// lost: `hclient_native::Native` needs `Spawn` only for its opt-ins —
+/// `multiplexed()`, the HTTP/3 arm and the pool reaper — and a runtime
+/// without it meets a compile error at the line that asked, which is the
+/// honest form of *cannot*.
 pub trait Spawn<F: Future<Output = ()>> {
+    /// Hand `f` to the runtime. See the trait documentation for why this
+    /// cannot refuse.
     fn spawn(&self, f: F);
 }
 

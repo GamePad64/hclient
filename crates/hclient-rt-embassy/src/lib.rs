@@ -80,6 +80,9 @@
 //!   *implementable* on embassy — `raw::TaskStorage::<F>::spawn` takes a
 //!   `&'static self`, so `Box::leak` per call would do it — at the cost of
 //!   one leaked `TaskStorage<F>` per spawn, with no way to reclaim it.
+//!   The pooled form is ruled out by the seam rather than by cost: a full
+//!   pool refuses, and `Spawn::spawn` is a promise not to — see its
+//!   documentation, which names this crate as the case it was written for.
 //! - **`Blocking`.** There is no thread pool on a microcontroller. The one
 //!   consequence is that `hclient_dns_system::SystemDns` (which is
 //!   `impl<B: Blocking> Resolve`) cannot be used; `IpLiteralOnly` can.
