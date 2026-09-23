@@ -624,7 +624,8 @@ mod tests {
         }
     }
 
-    /// `hyper::rt::Read + Write` with zero third-party dependencies:
+    /// The seam's byte stream — `futures-io`'s read and write halves plus
+    /// [`Shutdown`] — with zero third-party dependencies beyond them:
     /// writes into a shared buffer, reads from that same buffer. Not a
     /// call-counting mock — working I/O, enough to actually push bytes
     /// through `TlsConnect::Stream<S>` and back.
