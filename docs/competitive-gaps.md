@@ -761,9 +761,11 @@ change*, since the error has to name the option a caller set.
 Fuchsia; `TCP_USER_TIMEOUT` on those plus Cygwin; and
 `TcpKeepalive::with_retries` is absent on three others. A constant
 claiming all of them everywhere would be a capability that lies on macOS
-and Windows — so `TCP_SUPPORT` is now a `cfg!`-computed value, and `ALL` still
-means *every field* while no longer being a value a real runtime can claim
-on every target it builds for. Checked by compiling for
+and Windows — so `TCP_SUPPORT` is now a `cfg!`-computed value. `ALL` has
+since gone altogether: a constant meaning *every field* would also claim
+the next field the day one is added, and `TokioHandle` was found declaring
+it while delegating to a runtime that declares less. Every report is built
+up from `NONE`. Checked by compiling for
 `aarch64-apple-darwin` and `x86_64-pc-windows-msvc` as well as the host.
 
 **`user_timeout` is the one that catches a peer which vanished
@@ -774,21 +776,25 @@ retransmission for minutes with keepalive never firing. It overlaps
 applies to a socket rather than an exchange, and is the only one of the two
 a build with no `Client` above it can reach.
 
-**The Unix-domain socket is in too, and it is not the sibling trait this
-section expected.** A second trait would have to produce
-`TcpConnect::Stream` — `Native`'s IO type *is* that associated type — at
-which point it is `TcpConnect` with an extra method; and `R: UnixConnect`
-on `Native` would tax every runtime with no file descriptors. The
-`fn`-pointer trick that keeps `Spawn` off `Native`'s signature does not
-work either, because `spawn` returns `()` where this returns a future and
-boxing it drops auto traits (amendment C1).
+**The Unix-domain socket is in too, and it ended up as the sibling trait
+this section expected — after a vertical of arguing it could not be.** It
+first shipped as `TcpConnect::connect_unix`, a defaulted method beside a
+`SUPPORTS_UNIX` flag, on two objections: `R: UnixConnect` on `Native` would
+tax every runtime with no file descriptors, and a stored `fn` pointer
+returning a boxed future drops its auto traits (amendment C1).
 
-So it is `TcpConnect::connect_unix`, a **defaulted method** whose default
-is a refusal, beside `SUPPORTS_UNIX` defaulted to `false` — `reports_alpn`
-and `applies_ech`'s shape one seam over: a constant defaulted to the
-understating value, read by the layer above to decide whether to *ask*.
-`Native::unix_socket` refuses where the runtime says it cannot, at the call
-that configures it.
+Both objections were answered by `Native::http3`'s arrangement. A box that
+**declares** `Send` keeps it, and the bound can sit on the opt-in
+constructor, where the runtime is concrete, instead of on `Native`. So
+`hclient_rt::IpcConnect: TcpConnect` is a trait of its own — the
+supertrait being the one real constraint, since the stream must be the one
+TCP hands back — with `connect_ipc(&IpcAddr)` and `IPC_SUPPORT: IpcSupport`
+in the shape of `TcpSupport`. `IpcAddr` is a `#[non_exhaustive]` enum, so
+Windows named pipes can arrive as a variant without breaking any runtime.
+A runtime refuses a kind it does not dial with
+`IpcAddr::reject_unsupported` on entry, and `Native::unix_socket` asks the
+same question when it is configured. Nothing but that constructor names
+the trait, so a runtime with no file descriptors implements nothing.
 
 It replaces the whole resolve → discovery → Happy Eyeballs → connect block,
 which is `Proxy`'s slot exactly — and a proxy and a socket together are a
@@ -1145,7 +1151,7 @@ worth a section of its own.
 | **upload progress** | the `on_upload` hook plus `PreparedRequest.upload_progress` | no event exists; `Event` has `Connected`, `Reused`, `Closed`, `Head` and `Informational`, all of which are about a connection or a head |
 
 **The one that is a type rather than a method is `local_address`.** It is
-`Option<IpAddr>` (`hclient-rt/src/caps.rs:101`) where niquests'
+`Option<IpAddr>` (`hclient_rt::TcpOpts`, in `hclient-rt/src/tcp.rs`) where niquests'
 `source_address` is `tuple[str, int]` — an address *and a port*. Binding a
 source port is what a caller behind a firewall rule keyed on one needs, and
 it is not reachable through `TcpOpts` at any price, because the field
