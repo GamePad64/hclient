@@ -5936,8 +5936,15 @@ named pipes (where Docker, containerd and the gRPC daemons listen), would
 have broken every `TcpConnect` implementor at once, after `hclient-rt` had
 promised not to. `IpcAddr` is a `#[non_exhaustive]` enum with `Unix` today,
 `TcpConnect::IPC_SUPPORT` an `IpcSupport` in `TcpSupport`'s shape, and a
-runtime's `match` has to carry a wildcard arm — which is where a kind added
-later is refused with `RefuseIpc`, naming it. The two shipped runtimes lost
+runtime's `match` has to carry a wildcard arm. That arm used to *be* the
+refusal, a `RefuseIpc` future naming the kind — and that made IPC the one
+seam refusing by which arm ran rather than by what the report said. So a
+runtime now calls `IpcAddr::reject_unsupported(IPC_SUPPORT)` on entry, the
+way it calls `TcpOpts::reject_unsupported` on a connect and
+`Datagrams::reject_unsupported` on a send, and the wildcard is an
+`unreachable!` naming the disagreement between report and `match`.
+`RefuseIpc` is gone with nothing lost: it was a ready error, which any
+`async` block is. The two shipped runtimes lost
 their `cfg`-ed pair of items with it: one type on every target, and the
 `cfg` on the Unix arm. `Native::unix_socket` did not move.
 
@@ -5950,6 +5957,18 @@ are `TcpSupport`, `UdpSupport` and `IpcSupport`, declared as
 message formatter. `hclient-rt`'s crate doc carries the table. The one
 difference is real: UDP support is a property of one socket on one kernel,
 measured at bind, so it is a method where the other two are constants.
+
+**Making the three consistent found that TCP was the one not checking.**
+The rule is *a runtime checks its request on entry, and a transport checks
+again at configuration so a caller meets the refusal early*. UDP's
+`try_send` did the first, embassy's `connect` did, and `hclient-rt-tokio`
+and `hclient-rt-smol`'s `connect` did not — the check lived only in
+`Native::tcp_opts`. So a caller reaching either runtime directly had
+`bind_device` silently dropped on macOS and Windows, where `build_socket`'s
+`cfg` skips it: the *silently ignored setting* this workspace refuses
+everywhere else, in the two runtimes that ship. Both check first now, and a
+test gated to exactly the targets that lack the option asserts the refusal
+— which on Linux is vacuous, so the pin is `test (macos-latest)`.
 
 **`TcpSupport::ALL` is gone, and it had done the damage it predicts.**
 `TokioHandle` declared `ALL` while delegating every connect to `Tokio`,

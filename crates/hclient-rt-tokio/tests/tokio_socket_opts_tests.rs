@@ -204,3 +204,29 @@ async fn default_reuse_address_is_off() {
         "SO_REUSEADDR must default to off; TcpOpts::default() must not enable it"
     );
 }
+
+/// **A direct caller is refused an option this target cannot apply**, with
+/// nothing dialled. The check used to live only in
+/// `hclient_native::Native::tcp_opts`, so a caller reaching the runtime
+/// directly had `bind_device` silently dropped where `build_socket`'s `cfg`
+/// skips it. Gated to exactly those targets: on Linux the option is
+/// applied, and the test that reads it back off the socket is the pin.
+#[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
+#[test]
+fn an_option_this_target_cannot_apply_is_refused_before_connecting() {
+    const { assert!(!<Tokio as TcpConnect>::TCP_SUPPORT.bind_device) };
+    // Nothing listens here, so a connect that went ahead would fail with
+    // a different kind — the refusal is what separates the two.
+    let addr = std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, 9));
+    let opts = TcpOpts::default().bind_device(Some("lo0".to_owned()));
+    let err = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(Tokio.connect(addr, &opts))
+        .expect_err("refused");
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    let names = err
+        .get_ref()
+        .and_then(|p| p.downcast_ref::<hclient_rt::UnsupportedTcp>())
+        .map(|p| p.names().collect::<Vec<_>>());
+    assert_eq!(names, Some(vec!["bind_device"]));
+}

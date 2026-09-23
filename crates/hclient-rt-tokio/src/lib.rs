@@ -144,6 +144,13 @@ impl TcpConnect for Tokio {
         // parameterised by `&self`'s lifetime alone.
         let opts = opts.clone();
         Box::pin(async move {
+            // First, as every seam in `hclient-rt` does with its request:
+            // an option this runtime does not apply on this target fails
+            // the connect, naming itself. It was checked only by
+            // `hclient_native::Native::tcp_opts`, so a caller reaching this
+            // runtime directly had `bind_device` silently dropped on macOS
+            // and Windows, where the `cfg` below skips it.
+            opts.reject_unsupported(<Self as TcpConnect>::TCP_SUPPORT)?;
             // Options are applied on the `socket2::Socket` **once**, and the
             // runtime adopts the finished descriptor. This is exactly the seam
             // `TcpAdoptStd` provides: without it, every runtime crate would
@@ -177,25 +184,31 @@ impl hclient_rt::IpcConnect for Tokio {
     // arm is required anyway (`IpcAddr` is `#[non_exhaustive]`) has no pair
     // to get half right.
     fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-        match addr {
-            #[cfg(unix)]
-            hclient_rt::IpcAddr::Unix(path) => {
-                // Owned, because the seam's future is parameterised by
-                // `&self`'s lifetime alone — the same rule `connect`
-                // follows for `opts`.
-                let path = path.clone();
-                Box::pin(async move {
-                    // No `TcpOpts`, because `AF_UNIX` has none of them — see
-                    // the trait's own doc. And no `socket2` dance either:
-                    // there is nothing to set before the connect, so tokio's
-                    // own connector is the whole of it.
-                    Ok(crate::io::TokioIo::unix(
-                        tokio::net::UnixStream::connect(&path).await?,
-                    ))
-                })
+        // Owned, because the seam's future is parameterised by `&self`'s
+        // lifetime alone — the same rule `connect` follows for `opts`.
+        let addr = addr.clone();
+        Box::pin(async move {
+            // The check first, as `connect` does with its options: a kind
+            // this runtime does not dial is refused by name, typed, before
+            // anything else happens.
+            addr.reject_unsupported(<Self as hclient_rt::IpcConnect>::IPC_SUPPORT)?;
+            match addr {
+                // No `TcpOpts`, because `AF_UNIX` has none of them, and no
+                // `socket2` dance: there is nothing to set before the
+                // connect.
+                #[cfg(unix)]
+                hclient_rt::IpcAddr::Unix(path) => Ok(crate::io::TokioIo::unix(
+                    tokio::net::UnixStream::connect(&path).await?,
+                )),
+                // Reached only by a kind `IPC_SUPPORT` claims and no arm
+                // above dials — a declaration this runtime got wrong, which
+                // is a bug to report rather than an answer to give.
+                other => unreachable!(
+                    "IPC_SUPPORT claims `{}` endpoints and connect_ipc has no arm for them",
+                    other.kind()
+                ),
             }
-            _ => Box::pin(hclient_rt::RefuseIpc::new(addr)),
-        }
+        })
     }
 }
 
@@ -262,7 +275,8 @@ fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::So
     }
     // Linux, Android and Fuchsia only, which is why `TCP_SUPPORT` is a
     // `cfg` and not a constant: on every other target a caller who set
-    // this is refused before the connect rather than having it ignored.
+    // this is refused by `connect`'s first line rather than having it
+    // ignored here.
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     if let Some(dev) = &opts.bind_device {
         sock.bind_device(Some(dev.as_bytes()))?;

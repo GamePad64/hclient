@@ -16,8 +16,10 @@
 //! variants to `SmolSocket::Tcp`, and `tcp()` panics on a Unix stream, so
 //! the arms cannot be confused silently.
 use futures_lite::io::AsyncWrite as _;
+#[cfg(unix)]
+use hclient_rt::IpcConnect;
 use hclient_rt::Shutdown as _;
-use hclient_rt::{IpcConnect, TcpConnect, TcpOpts};
+use hclient_rt::{TcpConnect, TcpOpts};
 use hclient_rt_smol::{Smol, SmolSocket};
 use std::future::poll_fn;
 use std::io::Read as _;
@@ -236,14 +238,15 @@ fn a_vectored_write_carries_every_buffer_in_order() {
 /// `IPC_SUPPORT.unix` is not a free-floating claim: where it says `true`, a
 /// Unix-domain connect really works, and the stream really carries bytes.
 ///
-/// `connect_ipc`'s wildcard arm is a refusal, so the whole of the Unix arm is a thing that can be removed with
-/// nothing local noticing. `SmolSocket::Unix` is also the second `either!`
+/// `connect_ipc` refuses whatever `IPC_SUPPORT` does not claim, so the
+/// whole of the Unix arm is a thing that can be removed with nothing local
+/// noticing. `SmolSocket::Unix` is also the second `either!`
 /// arm, so this is what says the macro routes it rather than falling
 /// through to the TCP one.
 ///
 /// It pins the `#[cfg(unix)]` arm, which is the one Linux compiles. The
-/// refusal every other target takes is `RefuseIpc`, pinned in
-/// `hclient-rt` itself.
+/// refusal every other target takes is `IpcAddr::reject_unsupported`,
+/// pinned in `hclient-rt` itself.
 #[cfg(unix)]
 #[test]
 fn a_unix_socket_connects_and_carries_bytes_when_ipc_says_so() {

@@ -111,12 +111,12 @@ impl StdError for UnsupportedTcp {}
 ///
 /// Carried inside an [`std::io::Error`] with
 /// [`ErrorKind::Unsupported`](std::io::ErrorKind::Unsupported) by
-/// [`RefuseIpc`](crate::RefuseIpc), the shape [`UnsupportedTcp`] and
-/// [`UnsupportedUdp`] already use. Reachable only past
-/// [`IpcConnect::IPC_SUPPORT`](crate::IpcConnect::IPC_SUPPORT), which
-/// `hclient_native::Native::unix_socket` checks at the call that
-/// configures it — so a caller normally meets the refusal where they
-/// wrote the path, not on the wire.
+/// [`IpcAddr::reject_unsupported`](crate::IpcAddr::reject_unsupported),
+/// the shape [`UnsupportedTcp`] and [`UnsupportedUdp`] already use. A
+/// runtime raises it on entry to `connect_ipc`, and
+/// `hclient_native::Native::unix_socket` raises it at the call that
+/// configures one — so a caller normally meets it where they wrote the
+/// path, not on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnsupportedIpc {
     pub(crate) kind: &'static str,

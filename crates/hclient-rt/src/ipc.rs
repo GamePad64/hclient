@@ -1,5 +1,5 @@
-//! Same-machine connections: where one goes, which kinds a runtime can
-//! dial, and the refusal for the kinds it cannot.
+//! Same-machine connections: where one goes, and which kinds a runtime
+//! can dial.
 //!
 //! # A seam of its own, extending the TCP one
 //!
@@ -28,19 +28,29 @@
 //! cannot have a default on stable Rust, so a `connect_named_pipe` with
 //! its own future would have broken every implementor at once.
 //!
-//! So the kind is a value: [`IpcAddr`] is `#[non_exhaustive]`, a runtime
-//! matches the kinds it dials and refuses the rest with a wildcard arm,
-//! and [`IpcSupport`] says which kinds it dials before anybody tries. A
-//! new kind is then a new variant and a new flag — additive for every
-//! runtime, each of which refuses it until it learns it.
+//! So the kind is a value: [`IpcAddr`] is `#[non_exhaustive]`,
+//! [`IpcSupport`] says which kinds a runtime dials, and a runtime refuses
+//! the rest with [`IpcAddr::reject_unsupported`] on entry — exactly as a
+//! TCP connect refuses an option with
+//! [`TcpOpts::reject_unsupported`](crate::TcpOpts::reject_unsupported) and
+//! a UDP send an offload with
+//! [`Datagrams::reject_unsupported`](crate::Datagrams::reject_unsupported).
+//! A new kind is then a new variant and a new flag — additive for every
+//! runtime, whose report says `false` for it until it learns it.
+//!
+//! **There was a refusal future here, `RefuseIpc`, and it made IPC the one
+//! seam refusing in a different way.** A runtime handed it to the kinds its
+//! `match` did not name, so the refusal came from *which arm ran* rather
+//! than from the report — and a runtime whose `IPC_SUPPORT` said `true`
+//! for a kind its `match` forgot would refuse through the wildcard with no
+//! sign the two disagreed. Checking the report first makes the wildcard
+//! arm unreachable by construction, which is the same claim TCP and UDP
+//! make, and costs a runtime nothing it did not already have.
 
 use crate::TcpConnect;
 use crate::error::UnsupportedIpc;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 /// A runtime that can connect to a same-machine endpoint — a Unix-domain
 /// socket today, and the kinds [`IpcAddr`] gains later. See the module
@@ -70,9 +80,13 @@ pub trait IpcConnect: TcpConnect {
 
     /// Connect to `addr`.
     ///
-    /// **One method for every kind**: a runtime matches the kinds it dials
-    /// and hands [`RefuseIpc`] to the rest — a wildcard arm it cannot
-    /// omit, since [`IpcAddr`] is `#[non_exhaustive]`.
+    /// **One method for every kind**, and the refusal comes first: a
+    /// runtime calls [`IpcAddr::reject_unsupported`] with its own
+    /// [`IPC_SUPPORT`](Self::IPC_SUPPORT) on entry, then matches the kinds
+    /// it dials. The `match` still needs a wildcard arm, since [`IpcAddr`]
+    /// is `#[non_exhaustive]`, and after the check that arm is
+    /// unreachable — a runtime reaching it has a report claiming a kind
+    /// its `match` does not dial, which is the runtime's bug.
     ///
     /// **No [`TcpOpts`](crate::TcpOpts)**: every field there is a TCP or
     /// IP socket option, and no same-machine endpoint has them. A parameter
@@ -110,9 +124,13 @@ impl IpcAddr {
         }
     }
 
-    /// `Ok` when `support` dials this kind, and the refusal a runtime would
-    /// hand back when it does not — so a caller configuring a transport
-    /// meets it at configuration rather than on the wire.
+    /// `Ok` when `support` dials this kind, and the refusal otherwise.
+    ///
+    /// Asked twice, by two parties: a runtime asks it of its own
+    /// [`IpcConnect::IPC_SUPPORT`] on entry to
+    /// [`connect_ipc`](IpcConnect::connect_ipc), and a transport asks it at
+    /// configuration, so a caller meets the refusal where they wrote the
+    /// path rather than on the first request.
     /// [`TcpOpts::reject_unsupported`](crate::TcpOpts::reject_unsupported)'s
     /// shape, one seam over.
     ///
@@ -124,12 +142,11 @@ impl IpcAddr {
         if support.allows(self) {
             return Ok(());
         }
-        Err(refusal(self.kind()))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            UnsupportedIpc { kind: self.kind() },
+        ))
     }
-}
-
-fn refusal(kind: &'static str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Unsupported, UnsupportedIpc { kind })
 }
 
 /// Which [`IpcAddr`] kinds a runtime dials.
@@ -172,40 +189,6 @@ impl IpcSupport {
     }
 }
 
-/// The refusal a runtime hands back from
-/// [`IpcConnect::connect_ipc`] for a kind it
-/// does not dial, as a type it can name.
-///
-/// Ready on the first poll with [`ErrorKind::Unsupported`] carrying
-/// [`UnsupportedIpc`], and `Send` whatever `S` is, because it never holds
-/// one.
-///
-/// [`ErrorKind::Unsupported`]: std::io::ErrorKind::Unsupported
-#[derive(Debug)]
-pub struct RefuseIpc<S> {
-    kind: &'static str,
-    stream: PhantomData<fn() -> S>,
-}
-
-impl<S> RefuseIpc<S> {
-    /// A refusal naming `addr`'s kind.
-    #[must_use]
-    pub const fn new(addr: &IpcAddr) -> Self {
-        Self {
-            kind: addr.kind(),
-            stream: PhantomData,
-        }
-    }
-}
-
-impl<S> Future for RefuseIpc<S> {
-    type Output = std::io::Result<S>;
-
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(Err(refusal(self.kind)))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,21 +218,10 @@ mod tests {
     }
 
     #[test]
-    fn the_refusal_is_unsupported_and_names_the_kind() {
-        let addr = IpcAddr::unix("/run/x.sock");
-        let mut f = std::pin::pin!(RefuseIpc::<()>::new(&addr));
-        let Poll::Ready(Err(e)) = f
-            .as_mut()
-            .poll(&mut Context::from_waker(std::task::Waker::noop()))
-        else {
-            panic!("a refusal is ready at once and is an error");
-        };
-        assert_eq!(e.kind(), std::io::ErrorKind::Unsupported);
-        let payload = e
-            .get_ref()
-            .and_then(|p| p.downcast_ref::<UnsupportedIpc>())
-            .expect("the payload is typed, not only a message");
-        assert_eq!(payload.names().collect::<Vec<_>>(), ["unix"]);
+    fn the_refusal_reads_as_a_sentence() {
+        let e = IpcAddr::unix("/run/x.sock")
+            .reject_unsupported(IpcSupport::NONE)
+            .expect_err("nothing is dialled");
         assert_eq!(
             e.to_string(),
             "this runtime cannot dial these same-machine endpoints, and does not fall back: unix \

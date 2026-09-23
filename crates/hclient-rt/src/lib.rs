@@ -51,7 +51,7 @@ mod udp;
 
 pub use error::{Cancelled, UnsupportedIpc, UnsupportedTcp, UnsupportedUdp};
 pub use io::Shutdown;
-pub use ipc::{IpcAddr, IpcConnect, IpcSupport, RefuseIpc};
+pub use ipc::{IpcAddr, IpcConnect, IpcSupport};
 pub use spawn::{Blocking, Spawn};
 pub use tcp::{TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport};
 pub use udp::{Datagrams, EcnCodepoint, RecvMeta, UdpAdoptStd, UdpBind, UdpDatagrams, UdpSupport};
