@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-tls-v0.1.0-alpha.10...hclient-tls-v0.1.0-alpha.11) - 2026-09-23
+
+### Added
+
+- *(tls)* [**breaking**] TlsRequest is built with new(), and the reserved 0-RTT slots go before the freeze
+
+### Other
+
+- *(rt)* hclient-rt 0.1.0, and the eleven requirements naming it
+- *(tls)* stop describing the QUIC seam as it was two designs ago
+- *(tls)* split the crate into its two seams and what they share
+- *(tls)* the two seams are peers, and the crate says so
+- *(tls)* [**breaking**] the QUIC seam carries its own config, and links no stack
+- *(tls)* [**breaking**] take `quinn-proto` out of the QUIC TLS seam
+- *(rt)* [**breaking**] take `hyper` out of the byte-stream seam
+
 ## [0.1.0-alpha.10](https://github.com/GamePad64/hclient/compare/hclient-tls-v0.1.0-alpha.9...hclient-tls-v0.1.0-alpha.10) - 2026-09-18
 
 ### Other

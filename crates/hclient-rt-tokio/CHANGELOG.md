@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-rt-tokio-v0.1.0-alpha.12...hclient-rt-tokio-v0.1.0-alpha.13) - 2026-09-23
+
+### Added
+
+- *(rt)* [**breaking**] TCP, UDP and IPC refuse the same way, on entry
+- *(rt)* [**breaking**] Shutdown is half-close and nothing else
+- *(rt)* [**breaking**] IPC is a trait of its own, and hclient-rt's modules follow its seams
+- *(rt)* [**breaking**] the three support reports share one name, one shape and one refusal
+- *(rt)* [**breaking**] one connect for every same-machine endpoint, so named pipes are not a major version
+- *(rt)* [**breaking**] UdpCaps is built from NONE, and Shutdown has one path
+
+### Fixed
+
+- *(rt)* the ECN probe cannot see Windows' option, so stop claiming it can
+
+### Other
+
+- *(rt)* hclient-rt 0.1.0, and the eleven requirements naming it
+- *(rt)* [**breaking**] take `hyper` out of the byte-stream seam
+
 ## [0.1.0-alpha.12](https://github.com/GamePad64/hclient/compare/hclient-rt-tokio-v0.1.0-alpha.11...hclient-rt-tokio-v0.1.0-alpha.12) - 2026-09-18
 
 ### Other

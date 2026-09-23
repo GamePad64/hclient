@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-dns-system-v0.1.0-alpha.13...hclient-dns-system-v0.1.0-alpha.14) - 2026-09-23
+
+### Other
+
+- *(rt)* hclient-rt 0.1.0, and the eleven requirements naming it
+
 ## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-dns-system-v0.1.0-alpha.12...hclient-dns-system-v0.1.0-alpha.13) - 2026-09-18
 
 ### Other

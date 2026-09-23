@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-tls-native-tls-v0.1.0-alpha.13...hclient-tls-native-tls-v0.1.0-alpha.14) - 2026-09-23
+
+### Added
+
+- *(rt)* [**breaking**] Shutdown is half-close and nothing else
+- *(tls)* [**breaking**] TlsRequest is built with new(), and the reserved 0-RTT slots go before the freeze
+
+### Fixed
+
+- *(native-tls)* a reset on macOS was read as the end of the body
+
+### Other
+
+- *(rt)* hclient-rt 0.1.0, and the eleven requirements naming it
+- *(native-tls)* say what the platform answered, since it fails only on macOS
+- *(rt)* [**breaking**] take `hyper` out of the byte-stream seam
+
 ## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-tls-native-tls-v0.1.0-alpha.12...hclient-tls-native-tls-v0.1.0-alpha.13) - 2026-09-18
 
 ### Other

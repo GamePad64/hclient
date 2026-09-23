@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.15](https://github.com/GamePad64/hclient/compare/hclient-dns-doh-v0.1.0-alpha.14...hclient-dns-doh-v0.1.0-alpha.15) - 2026-09-23
+
+### Other
+
+- updated the following local packages: hclient-core, hclient-tls, hclient-native, hclient-rt-tokio, hclient-tls-rustls, hclient-dns
+
 ## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-dns-doh-v0.1.0-alpha.13...hclient-dns-doh-v0.1.0-alpha.14) - 2026-09-18
 
 ### Other

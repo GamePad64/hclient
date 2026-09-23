@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.15](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.14...hclient-native-v0.1.0-alpha.15) - 2026-09-23
+
+### Added
+
+- *(rt)* [**breaking**] Shutdown is half-close and nothing else
+- *(rt)* [**breaking**] IPC is a trait of its own, and hclient-rt's modules follow its seams
+- *(rt)* [**breaking**] the three support reports share one name, one shape and one refusal
+- *(rt)* [**breaking**] one connect for every same-machine endpoint, so named pipes are not a major version
+- *(tls)* [**breaking**] TlsRequest is built with new(), and the reserved 0-RTT slots go before the freeze
+- *(altsvc)* an `AltSvcStore` over the byte KV
+
+### Fixed
+
+- *(native)* unix_socket's example bounds its runtime on IpcConnect
+- *(kv)* a decoder written to refuse was panicking on a bad timestamp
+
+### Other
+
+- *(rt)* hclient-rt 0.1.0, and the eleven requirements naming it
+- *(tls)* stop describing the QUIC seam as it was two designs ago
+- *(tls)* [**breaking**] the QUIC seam carries its own config, and links no stack
+- *(altsvc)* [**breaking**] drop `MemoryStore`, and make the byte store share on clone
+- *(tls)* [**breaking**] take `quinn-proto` out of the QUIC TLS seam
+- *(rt)* [**breaking**] take `hyper` out of the byte-stream seam
+
 ## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.13...hclient-native-v0.1.0-alpha.14) - 2026-09-18
 
 ### Other

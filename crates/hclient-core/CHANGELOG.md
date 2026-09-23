@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/GamePad64/hclient/compare/hclient-core-v0.1.0...hclient-core-v0.2.0) - 2026-09-23
+
+### Added
+
+- *(rt)* [**breaking**] IPC is a trait of its own, and hclient-rt's modules follow its seams
+- *(rt)* [**breaking**] the three support reports share one name, one shape and one refusal
+- *(rt)* [**breaking**] one connect for every same-machine endpoint, so named pipes are not a major version
+- *(cookie)* a `CookieStore` over the byte KV, and `scan_many` with it
+- *(cache)* a `CacheStore` over the byte KV, and `scan` to make it possible
+- *(core)* a byte-level KV seam under the four stores
+
+### Other
+
+- *(tls)* stop describing the QUIC seam as it was two designs ago
+- *(altsvc)* [**breaking**] drop `MemoryStore`, and make the byte store share on clone
+- *(core)* say on the seam what is not a store
+- *(hsts)* [**breaking**] drop `MemoryStore`, and name the wrapper's futures
+
 ## [0.1.0-alpha.9](https://github.com/GamePad64/hclient/compare/hclient-core-v0.1.0-alpha.8...hclient-core-v0.1.0-alpha.9) - 2026-09-10
 
 ### Other

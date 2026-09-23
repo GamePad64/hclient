@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/GamePad64/hclient/compare/hclient-rt-v0.1.0-alpha.11...hclient-rt-v0.1.0) - 2026-09-23
+
+### Added
+
+- *(rt)* [**breaking**] TCP, UDP and IPC refuse the same way, on entry
+- *(rt)* [**breaking**] Shutdown is half-close and nothing else
+- *(rt)* [**breaking**] IPC is a trait of its own, and hclient-rt's modules follow its seams
+- *(rt)* [**breaking**] the three support reports share one name, one shape and one refusal
+- *(rt)* [**breaking**] one connect for every same-machine endpoint, so named pipes are not a major version
+- *(rt)* [**breaking**] UdpCaps is built from NONE, and Shutdown has one path
+
+### Other
+
+- *(rt)* hclient-rt 0.1.0, and the eleven requirements naming it
+- hclient-rt's README, the seam-growth policy, and where it stands
+- *(rt)* say what a seam stream's poll_close should be
+- *(rt)* Spawn::spawn does not fail, and says who that excludes
+- *(rt)* [**breaking**] take `hyper` out of the byte-stream seam
+
 ## [0.1.0-alpha.11](https://github.com/GamePad64/hclient/compare/hclient-rt-v0.1.0-alpha.10...hclient-rt-v0.1.0-alpha.11) - 2026-09-18
 
 ### Other

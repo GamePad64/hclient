@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.1...hclient-wasi-v0.1.2) - 2026-09-23
+
+### Fixed
+
+- *(wasi)* on wasmtime 49 dropping the transmission future lost the trailers
+
+### Other
+
+- run the wasi suite with a wasm32-wasip3 guest
+- *(wasi)* make the guest say what it received, not only what it wanted
+
 ## [0.1.1](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.0...hclient-wasi-v0.1.1) - 2026-09-18
 
 ### Other
