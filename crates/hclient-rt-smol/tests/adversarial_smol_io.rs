@@ -1,10 +1,7 @@
 //! Reviewer-written adversarial test suite for `hclient_rt_smol::SmolSocket`
 //! driven through the real `Smol` runtime. The sibling suite for `TokioIo`
-//! is `crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`, and the
-//! mock-source one for `FuturesIo` is
-//! `crates/hclient-rt/tests/adversarial_futures_io.rs`. Those exercise
-//! `FuturesIo` against hand-written mock `AsyncRead`/`AsyncWrite` sources;
-//! this drives it against a real loopback
+//! is `crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`. This drives
+//! `SmolSocket` against a real loopback
 //! TCP pair through `Smol::connect`/`Smol::adopt`, so a bug that only shows
 //! up against a genuine socket (partial reads, real EOF, a real RST) is
 //! covered on the smol side the same way it already is on the tokio side.
@@ -14,12 +11,14 @@
 //! report FAILED with a clear message, not hang the test binary (and the CI
 //! job) with nothing to investigate.
 //!
-//! Confirmed non-vacuous the same way the tokio suite is: temporarily
-//! dropping
-//! `hclient-rt`'s `FuturesIo::poll_read`'s `.min(self.scratch.len())` made
-//! `cursor_one_byte_larger_than_scratch_buffer` go red with the exact panic
-//! the doc comment predicts (`range end index 8193 out of range for slice of
-//! length 8192`), then restored (`cp` from a backup) and reconfirmed green.
+//! **One claim here has outlived its subject.** This header recorded the
+//! suite as confirmed non-vacuous by dropping a `.min(self.scratch.len())`
+//! from `hclient-rt`'s `FuturesIo::poll_read`. That adapter was deleted when
+//! the byte-stream seam moved to `futures-io`, and `SmolSocket` reads
+//! straight into the caller's buffer with no scratch at all — so
+//! `cursor_one_byte_larger_than_scratch_buffer` now asserts that a read
+//! larger than a buffer nobody has still succeeds, which is true and no
+//! longer guards a boundary.
 //! Also mirrors the tokio suite's other design note: only 7 tests here where
 //! the tokio sibling settled on 7 too (its own former 8th was dropped as
 //! vacuous) - no equivalent gap found on the smol side.
@@ -328,8 +327,8 @@ fn cursor_one_byte_larger_than_scratch_buffer() {
     });
 }
 
-// Also confirmed: adopt() goes through the same FuturesIo, so it inherits
-// the same read behaviour as connect() - spot check with TcpAdoptStd.
+// adopt() hands back the same `SmolSocket` connect() does, so it inherits
+// the same read behaviour - spot check with TcpAdoptStd.
 #[test]
 fn adopted_stream_reads_correctly_too() {
     futures_executor::block_on(async {

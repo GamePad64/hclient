@@ -105,7 +105,7 @@ impl Debug for Socket {
 
 // A hand-written `Debug`, not `#[derive]`: `derive` would dump all 8 KiB of
 // `scratch` as a list of numbers on every format call — useless and noisy
-// in logs. The same technique is already used in `hclient_rt::FuturesIo`.
+// in logs.
 impl Debug for TokioIo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokioIo")

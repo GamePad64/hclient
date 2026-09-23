@@ -8,7 +8,7 @@
 //! could be replaced by a success that moves no bytes with the suite
 //! staying green, because `adversarial_smol_io.rs` is a **read**-side
 //! suite: it writes to the socket from the plain `std` end and reads
-//! through `FuturesIo`, so the wrapper's own write path is never driven.
+//! through `SmolSocket`, so the socket's own write path is never driven.
 //!
 //! The two live in one file because the Unix arm is what makes the write
 //! tests discriminate the `either!` macro as well: a `poll_write` that

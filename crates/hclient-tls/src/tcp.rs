@@ -316,6 +316,18 @@ impl TlsInfo {
 /// reverse.
 pub trait TlsConnect: TlsIdentity {
     /// The wrapped stream after the handshake.
+    ///
+    /// **A backend over somebody else's TLS library needs a newtype here**,
+    /// because that library's stream implements `futures-io` and cannot
+    /// implement [`hclient_rt::Shutdown`], a trait it has never heard of.
+    /// Forwarding `poll_shutdown` to the library's own `poll_close` is
+    /// right when that `poll_close` sends `close_notify` and then closes
+    /// the transport beneath with *its* `poll_close` — which is the
+    /// half-close [`hclient_rt::Shutdown`]'s documentation asks every
+    /// runtime stream's `poll_close` to be. Checked by writing exactly
+    /// that backend over `futures-rustls`, from a crate outside this
+    /// workspace, and running it under `hclient::Client`.
+    ///
     /// The `S` bound appears in both places (on the
     /// type itself and in its where clause) — an implementation can't
     /// promise a wrapper for only some possible `S`; every `S` capable of
@@ -324,10 +336,9 @@ pub trait TlsConnect: TlsIdentity {
     where
         S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
-    /// Performs a TLS handshake over an already established `io` (a TCP
-    /// socket from `hclient_rt::TcpConnect`, wrapped in
-    /// `FuturesIo`/`TokioIo` — `connect` itself knows nothing about the
-    /// transport) and returns the encrypted stream along with whatever
+    /// Performs a TLS handshake over an already established `io` (a
+    /// runtime's own `hclient_rt::TcpConnect::Stream`, handed over as it
+    /// is — `connect` itself knows nothing about the transport) and returns the encrypted stream along with whatever
     /// negotiated parameters the implementation can honestly report.
     /// **An associated type, not an RPITIT**, for the reason
     /// `hclient_rt::TcpConnect::Connecting` gives at length: a consumer
