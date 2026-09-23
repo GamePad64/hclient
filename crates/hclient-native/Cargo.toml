@@ -106,7 +106,7 @@ hclient-dns    = { path = "../hclient-dns", version = "0.1.1" }
 # `default-transport`.
 hclient-proto  = { workspace = true }
 hclient-rt     = { path = "../hclient-rt", version = "0.1.0" }
-hclient-tls    = { path = "../hclient-tls", version = "0.1.0-alpha.11" }
+hclient-tls    = { path = "../hclient-tls", version = "0.1.0" }
 # The HTTP/3 stack, folded in as `mod h3` and `mod quinn` — these are the
 # dependencies those two modules bring, all of them optional and all
 # reached only through the `http3` feature.

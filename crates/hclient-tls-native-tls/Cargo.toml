@@ -26,7 +26,7 @@ all-features = true
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core     = { workspace = true }
 hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
-hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.11" }
+hclient-tls      = { path = "../hclient-tls", version = "0.1.0" }
 native-tls       = { version = "0.2", features = ["alpn"] }
 
 [dev-dependencies]

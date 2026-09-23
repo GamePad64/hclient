@@ -31,7 +31,7 @@ hclient-core = { workspace = true }
 hclient-dns  = { path = "../hclient-dns", version = "0.1.1" }
 hclient-native = { path = "../hclient-native", version = "0.1.0-alpha.15" }
 hclient-rt   = { path = "../hclient-rt", version = "0.1.0" }
-hclient-tls  = { path = "../hclient-tls", version = "0.1.0-alpha.11" }
+hclient-tls  = { path = "../hclient-tls", version = "0.1.0" }
 # For the seam's read and write halves and nothing else. It was `hyper`
 # with every feature off for exactly the same reason — this workspace's
 # `TcpConnect::Stream` is bounded by those two traits, so a framing layer

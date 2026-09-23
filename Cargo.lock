@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tls"
-version = "0.1.0-alpha.11"
+version = "0.1.0"
 dependencies = [
  "futures-executor",
  "futures-io",

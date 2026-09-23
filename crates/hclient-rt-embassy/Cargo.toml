@@ -143,7 +143,7 @@ hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.15" }
 # being tiny — no runtime, no TLS — since this crate is the embedded one.
 hclient-mock     = { path = "../hclient-mock", version = "0.1.1" }
 hclient-dns      = { path = "../hclient-dns", version = "0.1.1" }
-hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.11" }
+hclient-tls      = { path = "../hclient-tls", version = "0.1.0" }
 # The scenarios collect response bodies themselves, because the embedded
 # path is `Transport` rather than `hclient::Client` — see `tuntap.rs`'s
 # `get`. `hclient::Collected` is not reachable from outside that facade.

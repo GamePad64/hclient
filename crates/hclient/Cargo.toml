@@ -643,7 +643,7 @@ url               = "2"
 # consumer's graph — which matters here, since the example's whole point is
 # how small that graph can be.
 hclient-dns        = { path = "../hclient-dns", version = "0.1.1" }
-hclient-tls        = { path = "../hclient-tls", version = "0.1.0-alpha.11" }
+hclient-tls        = { path = "../hclient-tls", version = "0.1.0" }
 
 # `tests/two_runtimes.rs`'s dependencies — an end-to-end run of one generic
 # body on both tokio and smol without a single `#[cfg]` (Task 14).
