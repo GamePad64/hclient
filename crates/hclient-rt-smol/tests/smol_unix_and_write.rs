@@ -171,9 +171,11 @@ fn poll_close_half_closes_so_the_peer_sees_eof() {
 /// The vectored write path carries every buffer, in order.
 ///
 /// `poll_write_vectored` has its own mutants (`Ok(0)`, `Ok(1)`) and its own
-/// `either!` arm, and nothing reached it: hyper writes through it for a
-/// head-plus-body, so it is a real path rather than a courtesy
-/// implementation. Three slices rather than one, because a single slice
+/// `either!` arm, and nothing reached it. hyper no longer writes through
+/// it — `Shutdown` stopped answering whether vectored writes pay — but it
+/// is `futures_io::AsyncWrite`'s own method on a public stream, so a caller
+/// can, and a forwarding that dropped buffers would be a defect whoever
+/// called it. Three slices rather than one, because a single slice
 /// cannot tell a correct implementation from one that writes only the
 /// first.
 #[test]

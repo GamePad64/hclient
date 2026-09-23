@@ -170,19 +170,6 @@ fn shutdown_is_done(r: std::io::Result<()>) -> std::io::Result<()> {
 }
 
 impl hclient_rt::Shutdown for TokioIo {
-    /// An honest delegation to the underlying socket rather than a
-    /// decision made on its behalf: `tokio::io::AsyncWrite` carries
-    /// `is_write_vectored` as a trait method, so the answer is the
-    /// stream's own. `futures_io::AsyncWrite` has no such method, which
-    /// is why this one lives on [`hclient_rt::Shutdown`].
-    fn is_write_vectored(&self) -> bool {
-        match &self.inner {
-            Socket::Tcp(s) => s.is_write_vectored(),
-            #[cfg(unix)]
-            Socket::Unix(s) => s.is_write_vectored(),
-        }
-    }
-
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let p = either!(self, s => Pin::new(s).poll_shutdown(cx));
         Poll::Ready(shutdown_is_done(std::task::ready!(p)))
@@ -302,18 +289,5 @@ mod tests {
         }
         writer.join().unwrap();
         assert_eq!(out, data);
-    }
-
-    #[tokio::test]
-    async fn is_write_vectored_delegates_to_the_inner_stream() {
-        let (client, _server) = connected_pair();
-        // `TcpStream::is_write_vectored` is an honest delegation, not a
-        // conservative stub: compare against `TcpStream` itself, not a
-        // hardcoded value, so the test doesn't drift from the platform
-        // independently of `TokioIo`.
-        assert_eq!(
-            hclient_rt::Shutdown::is_write_vectored(&client),
-            client.get_ref().is_write_vectored()
-        );
     }
 }

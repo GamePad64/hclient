@@ -689,10 +689,6 @@ impl<S: hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown for HideFirstEof<S> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
-
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
-    }
 }
 
 /// One run of the race, with the close made visible after exactly

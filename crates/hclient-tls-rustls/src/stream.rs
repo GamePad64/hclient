@@ -426,15 +426,6 @@ impl<S: Read + Write + Shutdown + Unpin> Write for TlsStream<S> {
 /// asks the transport beneath for its FIN. A transport that cannot
 /// half-close says so there rather than here.
 impl<S: Read + Write + Shutdown + Unpin> Shutdown for TlsStream<S> {
-    // No `is_write_vectored`, so it keeps the seam's understating
-    // `false` — and that is about **this** stream rather than about the
-    // transport beneath it. `TlsStream` implements no
-    // `poll_write_vectored`, so a vectored write reaches
-    // `futures_io::AsyncWrite`'s default, which writes the first
-    // non-empty buffer and no more. Forwarding the transport's answer
-    // would claim a syscall per slice that this stream never issues,
-    // which is the over-claiming direction the constant exists to avoid.
-
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = &mut *self;
         this.conn.send_close_notify();

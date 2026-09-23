@@ -241,21 +241,6 @@ where
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         hclient_rt::Shutdown::poll_shutdown(Pin::new(&mut self.get_mut().inner), cx)
     }
-
-    /// Forwarded rather than left at the default `false`: h2 writes a
-    /// frame header and its payload as separate buffers, so a transport
-    /// that can gather them into one syscall should be told it may.
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
-    }
 }
 
 /// A connection that has completed its HTTP/2 handshake: the two halves

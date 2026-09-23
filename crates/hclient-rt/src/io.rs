@@ -46,13 +46,26 @@
 //! So the seam is `AsyncRead + AsyncWrite + Shutdown`: two traits that
 //! already exist for what they already say, and one of ours for the thing
 //! only this vertical asks about.
+//!
+//! # And nothing else, which is why vectored writes went
+//!
+//! This trait also carried `is_write_vectored`, because
+//! `futures_io::AsyncWrite` has no such method and `hyper::rt::Write` does,
+//! and a writer cannot otherwise tell a sink that gathers slices into one
+//! syscall from one that issues a syscall per slice. It left before the
+//! freeze: a trait named for half-close carried a question about writes,
+//! and the answer mattered on one path only. Over TLS the record layer
+//! copies whatever it is handed into its own buffer, so a gathered write
+//! gains nothing; on plaintext HTTP/1 hyper now flattens a head and a body
+//! into one buffer rather than handing both to `writev`, which costs one
+//! copy per request. Every adapter says `false`, by the default of
+//! whichever trait asks.
 
 use std::io::Result;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// Send FIN while remaining able to read, and say whether vectored writes
-/// are worth issuing.
+/// Send FIN while remaining able to read.
 ///
 /// This is not [`futures_io::AsyncWrite::poll_close`], and the difference
 /// is the whole reason the trait exists: `poll_close` ends the stream,
@@ -78,49 +91,4 @@ pub trait Shutdown {
     /// report it, which `hclient-rt-tokio` documents where it maps the
     /// result.
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>>;
-
-    /// Whether `poll_write_vectored` reaches a real vectored write.
-    ///
-    /// **`futures_io::AsyncWrite` has no such method and `hyper::rt::Write`
-    /// does**, which is the one capability that did not survive the move to
-    /// somebody else's traits — so it lives here, beside the other thing
-    /// only this vertical asks about. Without it a writer cannot tell a
-    /// sink that coalesces from one that issues a syscall per slice, and
-    /// `hclient-native` forwards the answer to hyper, which chooses its
-    /// write strategy from it.
-    ///
-    /// Defaulted to `false`, the understating direction this workspace
-    /// applies to every capability constant: a caller that believes a
-    /// `false` merely writes one buffer at a time, where one that believes
-    /// a wrong `true` pays a syscall per slice.
-    fn is_write_vectored(&self) -> bool {
-        false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Shutdown;
-    use std::io::Result;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-
-    /// A stream that implements only what it must.
-    struct Minimal;
-
-    impl Shutdown for Minimal {
-        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    /// **The understating default, asserted rather than described.** A
-    /// stream that says nothing about vectored writes must be read as not
-    /// having them: a wrong `false` costs a writer one buffer at a time,
-    /// a wrong `true` costs it a syscall per slice. It was the one
-    /// defaulted member of this seam a mutation could flip unnoticed.
-    #[test]
-    fn a_stream_that_says_nothing_does_not_claim_vectored_writes() {
-        assert!(!Minimal.is_write_vectored());
-    }
 }

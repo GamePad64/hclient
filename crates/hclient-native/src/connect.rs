@@ -221,13 +221,6 @@ impl<P: Shutdown + Unpin, T: Shutdown + Unpin> Shutdown for Conn<P, T> {
             Conn::Tls(t) => Pin::new(t).poll_shutdown(cx),
         }
     }
-
-    fn is_write_vectored(&self) -> bool {
-        match self {
-            Conn::Plain(p) => p.is_write_vectored(),
-            Conn::Tls(t) => t.is_write_vectored(),
-        }
-    }
 }
 
 /// Builds a [`Scheduler`], rejecting an out-of-range `attempt_delay` as a

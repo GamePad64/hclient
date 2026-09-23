@@ -125,20 +125,4 @@ impl<S: futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin> hyper::rt::Write 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
-
-    /// The seam's own answer, forwarded — this is the capability
-    /// `futures_io::AsyncWrite` has no method for and
-    /// `hyper::rt::Write` does, which is why it lives on
-    /// [`hclient_rt::Shutdown`] rather than being lost in the move.
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
-    }
-
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
-    }
 }

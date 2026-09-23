@@ -2371,10 +2371,12 @@ what `hyper::rt::Write::poll_shutdown` meant and what `TcpStream::shutdown`
 does. Folding the two would lose a distinction this file treats as
 load-bearing two sections down, where a half-close is *blocker two* against
 an `embedded-nal-async` adapter. So `hclient_rt::Shutdown` carries
-`poll_shutdown` and `is_write_vectored` — the latter because
-`futures_io::AsyncWrite` has no such method and `hyper::rt::Write` does, and
-losing it would leave a writer unable to tell a sink that coalesces from one
-that issues a syscall per slice.
+`poll_shutdown`. It carried `is_write_vectored` too, for a while — the one
+capability `hyper::rt::Write` had and `futures_io::AsyncWrite` does not —
+and that left before the freeze: over TLS the record layer copies whatever
+it is handed, so a gathered write gains nothing, and on plaintext HTTP/1
+the cost of losing it is one copy per request as hyper flattens a head and
+a body. A trait named for half-close had no business answering it.
 
 **The uninitialised-buffer machinery went with it and was not being used.**
 `hyper::rt::ReadBufCursor` exists to let an implementation fill memory that

@@ -342,12 +342,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TlsStream<S> {
 impl<S: AsyncRead + AsyncWrite + hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown
     for TlsStream<S>
 {
-    // No `is_write_vectored`, so it keeps the seam's understating `false`.
-    // This stream implements no `poll_write_vectored`, so a vectored write
-    // reaches `futures_io::AsyncWrite`'s default, which writes the first
-    // non-empty buffer and no more — forwarding the transport's answer
-    // would claim a syscall per slice that never happens.
-
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self
             .as_mut()

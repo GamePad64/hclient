@@ -93,10 +93,6 @@ impl<S: hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown for Counting<S> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
-
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
-    }
 }
 
 /// A TLS server that accepts a handshake and then reads. It never answers,

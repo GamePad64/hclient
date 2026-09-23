@@ -112,8 +112,7 @@ impl<const N: usize, const TX: usize, const RX: usize> futures_io::AsyncWrite
     // No `poll_write_vectored`: the default writes the first non-empty
     // buffer through `poll_write`, and smoltcp's `send_slice` takes one
     // slice, so a vectored write here would be a loop pretending to be a
-    // syscall. `is_write_vectored` is left at its `false` default on
-    // `Shutdown` for the same reason — the honest answer.
+    // syscall.
 }
 
 /// **The half-close this backend exists to be able to perform.**
