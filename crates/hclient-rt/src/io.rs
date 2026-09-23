@@ -75,6 +75,20 @@ use std::task::{Context, Poll};
 /// would break the exchange, and one that forwarded to `flush` would
 /// silently do nothing at all.
 ///
+/// # What to put in `poll_close`, since the stream must have one too
+///
+/// **The same half-close, and every implementation in this family does.**
+/// `futures-io` promises only that `poll_close` ends the *writing*; it
+/// says nothing about whether reading goes on, which is why the seam
+/// cannot lean on it. Nothing in this family calls `poll_close` on a
+/// seam stream — hyper's adapter, the h2 adapter and both TLS layers all
+/// go through this trait — so it is there for a caller who holds the
+/// stream as plain `futures-io`, and forwarding it to
+/// [`poll_shutdown`](Self::poll_shutdown) keeps the stricter promise for
+/// them too. This was written down after a runtime was implemented from
+/// outside the workspace and its author had to guess: the contrast
+/// above reads as though the two must differ, and they need not.
+///
 /// **A runtime that cannot half-close should say so rather than pretend**,
 /// which is what the `embedded-nal-async` note in this module's
 /// documentation is about: `embedded_io_async::Write` is `write` and
