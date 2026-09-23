@@ -8240,7 +8240,14 @@ is concrete.
 `.notes/erased-client.md` has the measurements, including the
 `package-build` trap met on the way: it verifies against the shared
 `target/debug/deps`, so a stale `rmeta` for an unchanged version makes it
-fail — or, worse, pass — misleadingly.
+fail — or, worse, pass — misleadingly. **It is closed now, and it took CI failing
+on a real push to close it**: renaming `hclient-rt`'s seam without moving
+its number made `hclient-rt-smol` verify against the previous push's
+compiled `hclient-rt`, restored from CI's cache, because cargo fingerprints
+a registry crate by version and never rebuilds it for a changed source.
+Clearing `target/package` was tried first and did nothing — the stale
+thing was the artifact, not the tarball. `just package-build` verifies in a
+scratch build directory of its own now, at about two minutes a run.
 
 ### A `dyn` that declares no auto traits does not hide `Send` — it removes it
 
