@@ -2240,7 +2240,7 @@ reaches `Native` through `http3::arm`'s erasure, and the erasure is
 **Every defaulted constant has the reader it was designed for**, which is
 the `UpgradeSupport` question asked of the pattern that replaced it:
 `reports_alpn` is read by `may_speak_h2`, `applies_ech` by the connector,
-`TcpConnect::IPC_SUPPORT` by `unix_socket`, `presents_client_certs` by both
+`IpcConnect::IPC_SUPPORT` by `unix_socket`, `presents_client_certs` by both
 capability tables. None is a distinction with one reachable side.
 
 **Three of thirty-five traits are named in no test**, and all three are
@@ -5965,6 +5965,22 @@ nothing in a send and a declaration says whether the kernel applied a
 mark, and the error carried an `ecn` field no path could set — kept alive
 by a test that built the value by hand. Both went; the claim is checked
 where it can be, on receive.
+
+**And then IPC left `TcpConnect` for a trait of its own**, reversing the
+argument this section opens with. `IpcConnect: TcpConnect` — the
+supertrait is the one real constraint, since a same-machine connect must
+hand back the stream a TCP one does — and `hclient-rt`'s modules follow the
+seams: `tcp.rs`, `ipc.rs`, `udp.rs`, and `spawn.rs` for `Spawn` and
+`Blocking`. The objection was that a stored `fn` pointer returning a boxed
+future drops its auto traits (amendment C1), so `Native` would have had to
+bound every runtime on the trait. It drops them only if the box declares
+none: `Native::unix_socket` now keeps an `IpcRoute` — the address and a
+pointer to `dial_ipc::<R>`, whose box **declares** `Send` — and carries the
+bound itself, which is `Native::http3`'s arrangement (amendment C15). So
+nothing but that constructor names `IpcConnect`, and a runtime with no
+file descriptors — `hclient-rt-embassy`, a NAL stack, every test double —
+implements nothing instead of naming a refusal. The cost is one
+allocation per same-machine connect.
 
 **It replaces the whole resolve → discovery → Happy Eyeballs → connect
 block, which is `Proxy`'s slot exactly** — and a proxy and a socket

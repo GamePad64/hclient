@@ -527,7 +527,7 @@ where
             &self.dns,
             &self.tls,
             &self.proxies,
-            self.unix_socket.as_deref(),
+            self.unix_socket.as_ref(),
             &uri,
             &self.opts,
             alpn,

@@ -113,7 +113,7 @@ pub struct Error {
     /// **`false` is the default**: a backend that says nothing costs a
     /// caller a retry that did not happen, where a wrong `true` costs
     /// them a duplicated request. The understating value is the safe one,
-    /// which is `reports_alpn`'s and `TcpConnect::IPC_SUPPORT`'s rule one seam over.
+    /// which is `reports_alpn`'s and `IpcConnect::IPC_SUPPORT`'s rule one seam over.
     unsent: bool,
 }
 

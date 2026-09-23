@@ -169,15 +169,6 @@ impl Blocking for TokioHandle {
 }
 
 impl TcpConnect for TokioHandle {
-    type ConnectingIpc<'a>
-        = hclient_rt::RefuseIpc<Self::Stream>
-    where
-        Self: 'a;
-
-    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-        hclient_rt::RefuseIpc::new(addr)
-    }
-
     type Stream = TokioIo;
 
     /// **Exactly what [`Tokio`] declares, and both other answers were

@@ -210,7 +210,6 @@ where
     <H::Rt as Timer>::Instant: Send + Sync,
     <H::Rt as Timer>::Sleep: Send + 'static,
     for<'a> <H::Rt as TcpConnect>::Connecting<'a>: Send,
-    for<'a> <H::Rt as TcpConnect>::ConnectingIpc<'a>: Send,
 {
     let (addr, closed) = watching_server();
     let client = h.run(async {
@@ -246,7 +245,6 @@ where
     <H::Rt as Timer>::Instant: Send + Sync,
     <H::Rt as Timer>::Sleep: Send + 'static,
     for<'a> <H::Rt as TcpConnect>::Connecting<'a>: Send,
-    for<'a> <H::Rt as TcpConnect>::ConnectingIpc<'a>: Send,
 {
     let (addr, closed) = watching_server();
     let client = h.run(async {

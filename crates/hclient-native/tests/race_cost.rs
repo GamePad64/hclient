@@ -346,7 +346,7 @@ fn tcp(cert: &rustls::pki_types::CertificateDer<'static>) -> Tcp {
 /// convenience:
 ///
 /// 1. `TcpOpts::default()` is all-off — *"the user turns nodelay on, not
-///    us"*, `hclient-rt`'s `caps.rs` — so [`tcp`] above connects with
+///    us"*, `hclient-rt`'s `tcp.rs` — so [`tcp`] above connects with
 ///    Nagle **on**, and the TLS handshake's small writes then meet the
 ///    peer's delayed ACK.
 /// 2. `TokioHandle` cannot be asked for it. Its `TcpConnect::connect`

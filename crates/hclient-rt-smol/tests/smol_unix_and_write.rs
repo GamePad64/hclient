@@ -17,7 +17,7 @@
 //! the arms cannot be confused silently.
 use futures_lite::io::AsyncWrite as _;
 use hclient_rt::Shutdown as _;
-use hclient_rt::{TcpConnect, TcpOpts};
+use hclient_rt::{IpcConnect, TcpConnect, TcpOpts};
 use hclient_rt_smol::{Smol, SmolSocket};
 use std::future::poll_fn;
 use std::io::Read as _;
@@ -250,7 +250,7 @@ fn a_unix_socket_connects_and_carries_bytes_when_ipc_says_so() {
     // the two must agree before anything runs. Written as a runtime
     // `assert!` first, which clippy correctly refused as an assertion on a
     // constant.
-    const { assert!(<Smol as TcpConnect>::IPC_SUPPORT.unix) };
+    const { assert!(<Smol as IpcConnect>::IPC_SUPPORT.unix) };
 
     let dir = std::env::temp_dir().join(format!(
         "hclient-smol-unix-{}-{}",

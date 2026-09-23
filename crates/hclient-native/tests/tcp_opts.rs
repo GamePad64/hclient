@@ -106,15 +106,6 @@ const fn all_but(i: usize) -> TcpSupport {
 struct FakeRt<const MISSING: usize>;
 
 impl<const MISSING: usize> TcpConnect for FakeRt<MISSING> {
-    type ConnectingIpc<'a>
-        = hclient_rt::RefuseIpc<Self::Stream>
-    where
-        Self: 'a;
-
-    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-        hclient_rt::RefuseIpc::new(addr)
-    }
-
     type Stream = hclient_rt_tokio::TokioIo;
     const TCP_SUPPORT: TcpSupport = all_but(MISSING);
 
@@ -269,7 +260,7 @@ fn every_field_it_applies(a: TcpSupport) -> TcpOpts {
 /// **It asserted `Tokio::TCP_SUPPORT == TcpSupport::ALL` and that was
 /// wrong on two of this project's three platforms**, which is how it
 /// stood: red on macOS and Windows, where `bind_device` and
-/// `user_timeout` are honestly `false`. `caps.rs` says so in as many
+/// `user_timeout` are honestly `false`. `hclient-rt`'s `tcp.rs` says so in as many
 /// words — `bind_device` and `user_timeout` are decided per target — so
 /// the test was contradicting a doc comment in the library it tests (and
 /// `ALL` has since gone altogether). `TCP_SUPPORT` became `cfg!`-computed and this did not follow.
@@ -321,15 +312,6 @@ fn two_unappliable_options_are_both_named() {
     #[derive(Debug, Clone, Copy)]
     struct AppliesNothing;
     impl TcpConnect for AppliesNothing {
-        type ConnectingIpc<'a>
-            = hclient_rt::RefuseIpc<Self::Stream>
-        where
-            Self: 'a;
-
-        fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-            hclient_rt::RefuseIpc::new(addr)
-        }
-
         type Stream = hclient_rt_tokio::TokioIo;
         // No `TCP_SUPPORT` line: the trait's default is `NONE`, and this type
         // exists to use it.
@@ -421,14 +403,6 @@ struct Silent(Seen);
 macro_rules! recording_runtime {
     ($ty:ty $(, $applies:expr)?) => {
         impl TcpConnect for $ty {
-            type ConnectingIpc<'a>
-                = hclient_rt::RefuseIpc<Self::Stream>
-            where
-                Self: 'a;
-
-            fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-                hclient_rt::RefuseIpc::new(addr)
-            }
 
             type Stream = hclient_rt_tokio::TokioIo;
             $(const TCP_SUPPORT: TcpSupport = $applies;)?

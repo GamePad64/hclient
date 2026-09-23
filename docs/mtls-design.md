@@ -111,7 +111,7 @@ pub identity: Option<&'a str>,
 The default **refuses every name**. A backend that knows nothing about
 labels says so, rather than silently connecting with its default
 identity — the understating direction, and the same rule as
-`reports_alpn`, `applies_ech` and `TcpConnect::IPC_SUPPORT`.
+`reports_alpn`, `applies_ech` and `IpcConnect::IPC_SUPPORT`.
 
 The label is not a credential, so it may travel in `http::Extensions`
 alongside `RequireVersion` and `AllowEarlyData`. A *certificate* may not,

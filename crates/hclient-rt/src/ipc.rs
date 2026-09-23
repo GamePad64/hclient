@@ -1,6 +1,24 @@
 //! Same-machine connections: where one goes, which kinds a runtime can
 //! dial, and the refusal for the kinds it cannot.
 //!
+//! # A seam of its own, extending the TCP one
+//!
+//! [`IpcConnect`] requires [`TcpConnect`], and for one reason: the stream a
+//! same-machine connect hands back must be the **same type** a TCP connect
+//! does, because a transport carries one IO type and puts TLS and HTTP on
+//! it either way. What the split buys is that a runtime with no file
+//! descriptors — `hclient-rt-embassy`, a NAL stack, every test double —
+//! implements nothing here rather than a refusal it has to name.
+//!
+//! It lived on [`TcpConnect`] for a vertical, on the argument that a seam
+//! of its own could not be reached: putting `R: IpcConnect` on
+//! `hclient_native::Native` would tax every runtime, and a stored function
+//! pointer returning a boxed future drops its auto traits. The second half
+//! is answered the way `Native::http3` answers it — the box **declares**
+//! `Send` and the bound sits on the opt-in `Native::unix_socket`, so it is
+//! proven where the runtime is concrete — and the first half then has no
+//! subject: nothing but that constructor names this trait.
+//!
 //! # One method and one enum, so the next kind is not a major version
 //!
 //! This was `connect_unix(&Path)` with its own associated future type and
@@ -8,8 +26,7 @@
 //! listens on a Unix-domain socket on Linux listen on a **named pipe** on
 //! Windows, so a second kind was always coming — and an associated type
 //! cannot have a default on stable Rust, so a `connect_named_pipe` with
-//! its own future would have broken every [`TcpConnect`](crate::TcpConnect)
-//! implementor at once.
+//! its own future would have broken every implementor at once.
 //!
 //! So the kind is a value: [`IpcAddr`] is `#[non_exhaustive]`, a runtime
 //! matches the kinds it dials and refuses the rest with a wildcard arm,
@@ -17,12 +34,51 @@
 //! new kind is then a new variant and a new flag — additive for every
 //! runtime, each of which refuses it until it learns it.
 
+use crate::TcpConnect;
 use crate::error::UnsupportedIpc;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
+/// A runtime that can connect to a same-machine endpoint — a Unix-domain
+/// socket today, and the kinds [`IpcAddr`] gains later. See the module
+/// documentation for why this extends [`TcpConnect`] rather than living on
+/// it.
+pub trait IpcConnect: TcpConnect {
+    /// Which endpoint kinds [`connect_ipc`](Self::connect_ipc) dials — see
+    /// [`IpcSupport`].
+    ///
+    /// [`TcpConnect::TCP_SUPPORT`]'s shape, and defaulted the same way and
+    /// for the same reason: a runtime that says nothing here refuses the
+    /// setting, where one that over-claimed would fail every connect at
+    /// the socket instead of at the call that asked — which is what lets
+    /// `hclient_native::Native::unix_socket` refuse at configuration. A
+    /// runtime implements this trait for the kinds some of its targets
+    /// have, and says per target here which ones this one does.
+    const IPC_SUPPORT: IpcSupport = IpcSupport::NONE;
+
+    /// The future [`connect_ipc`](Self::connect_ipc) hands back.
+    ///
+    /// [`TcpConnect::Connecting`]'s shape: an associated type rather than
+    /// an RPITIT, so a consumer that must prove its own future `Send` can
+    /// name this one.
+    type ConnectingIpc<'a>: Future<Output = std::io::Result<Self::Stream>>
+    where
+        Self: 'a;
+
+    /// Connect to `addr`.
+    ///
+    /// **One method for every kind**: a runtime matches the kinds it dials
+    /// and hands [`RefuseIpc`] to the rest — a wildcard arm it cannot
+    /// omit, since [`IpcAddr`] is `#[non_exhaustive]`.
+    ///
+    /// **No [`TcpOpts`](crate::TcpOpts)**: every field there is a TCP or
+    /// IP socket option, and no same-machine endpoint has them. A parameter
+    /// that could only ever be ignored is worse than no parameter.
+    fn connect_ipc<'a>(&'a self, addr: &IpcAddr) -> Self::ConnectingIpc<'a>;
+}
 
 /// Where a same-machine connection goes.
 ///
@@ -80,7 +136,7 @@ fn refusal(kind: &'static str) -> std::io::Error {
 ///
 /// [`TcpSupport`](crate::TcpSupport)'s shape: `#[non_exhaustive]`,
 /// built from [`NONE`](Self::NONE) with `const` setters, and defaulted to
-/// `NONE` on [`TcpConnect::IPC_SUPPORT`](crate::TcpConnect::IPC_SUPPORT) — a claim made by
+/// `NONE` on [`IpcConnect::IPC_SUPPORT`](crate::IpcConnect::IPC_SUPPORT) — a claim made by
 /// silence must never be stronger than the truth. It is a constant rather
 /// than something a connect discovers because the answer is a property of
 /// the runtime and the target, and a caller should learn it at
@@ -117,7 +173,7 @@ impl IpcSupport {
 }
 
 /// The refusal a runtime hands back from
-/// [`TcpConnect::connect_ipc`](crate::TcpConnect::connect_ipc) for a kind it
+/// [`IpcConnect::connect_ipc`] for a kind it
 /// does not dial, as a type it can name.
 ///
 /// Ready on the first poll with [`ErrorKind::Unsupported`] carrying
@@ -197,7 +253,7 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "this runtime cannot dial these same-machine endpoints, and does not fall back: unix \
-             (a runtime that does dial one declares it in TcpConnect::IPC_SUPPORT)"
+             (a runtime that does dial one declares it in IpcConnect::IPC_SUPPORT)"
         );
     }
 }

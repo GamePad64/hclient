@@ -240,12 +240,6 @@ macro_rules! __adapt_impl {
                 })
             }
 
-            type ConnectingIpc<'a> =
-                $crate::reexport::hclient_rt::RefuseIpc<Self::Stream>;
-
-            fn connect_ipc<'a>(&'a self, addr: &$crate::reexport::hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-                $crate::reexport::hclient_rt::RefuseIpc::new(addr)
-            }
         }
     };
 }

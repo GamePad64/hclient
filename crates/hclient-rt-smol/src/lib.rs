@@ -126,9 +126,8 @@ impl Blocking for Smol {
 ///
 /// An enum rather than a type parameter on the stream, because
 /// `TcpConnect::Stream` is one associated type and both connects must
-/// produce it — the same shape `hclient-rt-tokio`'s `Socket` has, and for
-/// the reason `TcpConnect::connect_ipc` gives for being one trait rather
-/// than two.
+/// produce it — `IpcConnect` extends `TcpConnect` for exactly that, and
+/// this is the same shape `hclient-rt-tokio`'s `Socket` has.
 #[derive(Debug)]
 pub enum SmolSocket {
     Tcp(async_net::TcpStream),
@@ -250,10 +249,6 @@ impl futures_lite::io::AsyncWrite for SmolSocket {
 impl TcpConnect for Smol {
     type Stream = SmolSocket;
 
-    /// Unix-domain sockets where `async_net::unix` compiles, which is
-    /// `cfg!(unix)`.
-    const IPC_SUPPORT: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
-
     /// Every field, and `build_socket` below is where each one is applied.
     /// Stated rather than left to the trait's `NONE` default, which would
     /// understate this runtime — see `TcpConnect::TCP_SUPPORT`.
@@ -345,6 +340,12 @@ impl TcpConnect for Smol {
             Ok(SmolSocket::Tcp(async_net::TcpStream::from(async_stream)))
         })
     }
+}
+
+impl hclient_rt::IpcConnect for Smol {
+    /// Unix-domain sockets where `async_net::unix` compiles, which is
+    /// `cfg!(unix)`.
+    const IPC_SUPPORT: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
 
     type ConnectingIpc<'a>
         = std::pin::Pin<Box<dyn Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>

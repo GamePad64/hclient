@@ -105,11 +105,6 @@ impl TcpConnect for Tokio {
     /// The direction of the `cfg` matters: an understated `TCP_SUPPORT` costs
     /// a caller a named `Unsupported` error, an overstated one costs them
     /// an option silently not applied.
-    /// Unix-domain sockets where `tokio::net::UnixStream` compiles, which
-    /// is `cfg!(unix)`. Understated on Windows, where `AF_UNIX` exists in
-    /// the OS but tokio binds no stream type for it.
-    const IPC_SUPPORT: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
-
     const TCP_SUPPORT: TcpSupport = TcpSupport::NONE
         .nodelay(true)
         .keepalive(true)
@@ -162,6 +157,13 @@ impl TcpConnect for Tokio {
             Ok(TokioIo::new(tcp))
         })
     }
+}
+
+impl hclient_rt::IpcConnect for Tokio {
+    /// Unix-domain sockets where `tokio::net::UnixStream` compiles, which
+    /// is `cfg!(unix)`. Understated on Windows, where `AF_UNIX` exists in
+    /// the OS but tokio binds no stream type for it.
+    const IPC_SUPPORT: hclient_rt::IpcSupport = hclient_rt::IpcSupport::NONE.unix(cfg!(unix));
 
     type ConnectingIpc<'a>
         = std::pin::Pin<Box<dyn Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>

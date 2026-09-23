@@ -24,7 +24,7 @@
 use std::error::Error as StdError;
 use std::fmt::Display;
 
-use crate::caps::TcpSupport;
+use crate::tcp::TcpSupport;
 
 /// The lead of a refusal and every offending name, `", "`-separated after
 /// one space — written once for all three, so the three messages cannot
@@ -113,7 +113,7 @@ impl StdError for UnsupportedTcp {}
 /// [`ErrorKind::Unsupported`](std::io::ErrorKind::Unsupported) by
 /// [`RefuseIpc`](crate::RefuseIpc), the shape [`UnsupportedTcp`] and
 /// [`UnsupportedUdp`] already use. Reachable only past
-/// [`TcpConnect::IPC_SUPPORT`](crate::TcpConnect::IPC_SUPPORT), which
+/// [`IpcConnect::IPC_SUPPORT`](crate::IpcConnect::IPC_SUPPORT), which
 /// `hclient_native::Native::unix_socket` checks at the call that
 /// configures it — so a caller normally meets the refusal where they
 /// wrote the path, not on the wire.
@@ -139,7 +139,7 @@ impl Display for UnsupportedIpc {
             "this runtime cannot dial these same-machine endpoints, and does not fall back:",
             self.names(),
         )?;
-        f.write_str(" (a runtime that does dial one declares it in TcpConnect::IPC_SUPPORT)")
+        f.write_str(" (a runtime that does dial one declares it in IpcConnect::IPC_SUPPORT)")
     }
 }
 
@@ -196,11 +196,11 @@ impl StdError for UnsupportedUdp {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caps::TcpSupport;
+    use crate::tcp::TcpSupport;
 
     /// Both list-shaped errors write their own separators — `" "` before
     /// the first name and `", "` before every one after it — and until
-    /// this module nothing read a rendered message at all. `caps.rs`'s
+    /// this module nothing read a rendered message at all. `tcp.rs`'s
     /// tests assert `contains(name)`, which is true of every separator a
     /// mutation can produce, so all four `i > 0` mutants survived the
     /// suite and the whole `UnsupportedUdp::fmt` body did too.

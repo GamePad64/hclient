@@ -31,7 +31,7 @@
 //! `TcpConnect::Stream` itself: `Sync`,
 //! `Send`, `std::panic::UnwindSafe`, and `std::panic::RefUnwindSafe` were
 //! each added in turn to that same `type Stream` bound
-//! in `hclient-rt/src/caps.rs` (one at a time, `cargo check
+//! in `hclient-rt/src/caps.rs` — `tcp.rs` since — (one at a time, `cargo check
 //! --workspace --all-features`, restored via `cp` between attempts) - all
 //! four held for BOTH `TokioIo` and `FuturesIo<async_net::TcpStream>`, with
 //! no divergence. `Clone` was tried too and broke both uniformly (neither

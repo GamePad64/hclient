@@ -209,15 +209,6 @@ fn to_embassy(d: Duration) -> embassy_time::Duration {
 }
 
 impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N, TX, RX> {
-    type ConnectingIpc<'a>
-        = hclient_rt::RefuseIpc<Self::Stream>
-    where
-        Self: 'a;
-
-    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-        hclient_rt::RefuseIpc::new(addr)
-    }
-
     type Stream = EmbassyIo<N, TX, RX>;
 
     /// Two of the six, and the other four are refused rather than ignored.

@@ -420,15 +420,6 @@ impl hclient_core::timer::Timer for HoldsTasks {
 }
 
 impl TcpConnect for HoldsTasks {
-    type ConnectingIpc<'a>
-        = hclient_rt::RefuseIpc<Self::Stream>
-    where
-        Self: 'a;
-
-    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-        hclient_rt::RefuseIpc::new(addr)
-    }
-
     type Stream = <Tokio as TcpConnect>::Stream;
     const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
     type Connecting<'a>

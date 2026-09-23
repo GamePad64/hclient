@@ -22,7 +22,7 @@ impl TokioIo {
         Self::over(Socket::Tcp(inner))
     }
 
-    /// The same, over a Unix-domain stream — `TcpConnect::connect_ipc`.
+    /// The same, over a Unix-domain stream — `IpcConnect::connect_ipc`.
     #[cfg(unix)]
     pub(crate) fn unix(inner: tokio::net::UnixStream) -> Self {
         Self::over(Socket::Unix(inner))
@@ -69,8 +69,8 @@ impl TokioIo {
 ///
 /// An enum here rather than a type parameter on `TokioIo`, because
 /// `TcpConnect::Stream` is one associated type and both connects must
-/// produce it — see `TcpConnect::connect_ipc` for why that seam is one
-/// trait rather than two. The cost is one branch per `poll_*`, against a
+/// produce it — which is why `IpcConnect` extends `TcpConnect` rather than
+/// naming a stream of its own. The cost is one branch per `poll_*`, against a
 /// syscall.
 enum Socket {
     Tcp(tokio::net::TcpStream),

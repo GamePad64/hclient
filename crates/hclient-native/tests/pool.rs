@@ -619,15 +619,6 @@ impl hclient_rt::Timer for LateEof {
 }
 
 impl hclient_rt::TcpConnect for LateEof {
-    type ConnectingIpc<'a>
-        = hclient_rt::RefuseIpc<Self::Stream>
-    where
-        Self: 'a;
-
-    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-        hclient_rt::RefuseIpc::new(addr)
-    }
-
     type Stream = HideFirstEof<<Tokio as hclient_rt::TcpConnect>::Stream>;
     type Connecting<'a>
         = std::pin::Pin<

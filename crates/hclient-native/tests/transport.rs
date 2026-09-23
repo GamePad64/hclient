@@ -622,15 +622,6 @@ impl hclient_rt::Shutdown for NeverStream {
     }
 }
 impl hclient_rt::TcpConnect for NeverConnects {
-    type ConnectingIpc<'a>
-        = hclient_rt::RefuseIpc<Self::Stream>
-    where
-        Self: 'a;
-
-    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-        hclient_rt::RefuseIpc::new(addr)
-    }
-
     type Stream = NeverStream;
     type Connecting<'a>
         = std::pin::Pin<
@@ -866,15 +857,6 @@ struct LoggingNeverConnects {
     attempts: Arc<Mutex<Vec<std::time::Instant>>>,
 }
 impl hclient_rt::TcpConnect for LoggingNeverConnects {
-    type ConnectingIpc<'a>
-        = hclient_rt::RefuseIpc<Self::Stream>
-    where
-        Self: 'a;
-
-    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-        hclient_rt::RefuseIpc::new(addr)
-    }
-
     type Stream = NeverStream;
     type Connecting<'a>
         = std::pin::Pin<

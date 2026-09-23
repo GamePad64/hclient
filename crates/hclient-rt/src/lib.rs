@@ -13,7 +13,7 @@
 //! |---|---|---|---|---|---|
 //! | TCP options | [`TcpSupport`] | [`TcpConnect::TCP_SUPPORT`] | [`TcpOpts`] | [`TcpOpts::reject_unsupported`] | [`UnsupportedTcp`] |
 //! | UDP offloads | [`UdpSupport`] | [`UdpDatagrams::support`] | [`Datagrams`] | [`Datagrams::reject_unsupported`] | [`UnsupportedUdp`] |
-//! | same-machine endpoints | [`IpcSupport`] | [`TcpConnect::IPC_SUPPORT`] | [`IpcAddr`] | [`IpcAddr::reject_unsupported`] | [`UnsupportedIpc`] |
+//! | same-machine endpoints | [`IpcSupport`] | [`IpcConnect::IPC_SUPPORT`] | [`IpcAddr`] | [`IpcAddr::reject_unsupported`] | [`UnsupportedIpc`] |
 //!
 //! What they share, and why:
 //!
@@ -42,16 +42,18 @@
 //! [`UdpDatagrams::support`] is a method on the socket.
 #![forbid(unsafe_code)]
 
-mod caps;
 mod error;
 mod io;
 mod ipc;
+mod spawn;
+mod tcp;
 mod udp;
 
-pub use caps::{Blocking, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport};
 pub use error::{Cancelled, UnsupportedIpc, UnsupportedTcp, UnsupportedUdp};
 pub use io::Shutdown;
-pub use ipc::{IpcAddr, IpcSupport, RefuseIpc};
+pub use ipc::{IpcAddr, IpcConnect, IpcSupport, RefuseIpc};
+pub use spawn::{Blocking, Spawn};
+pub use tcp::{TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport};
 pub use udp::{Datagrams, EcnCodepoint, RecvMeta, UdpAdoptStd, UdpBind, UdpDatagrams, UdpSupport};
 
 /// `Timer` is defined once, in `hclient-core`: the portable core needs it

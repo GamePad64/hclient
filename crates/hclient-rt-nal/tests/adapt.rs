@@ -230,7 +230,9 @@ fn no_socket_option_is_claimed() {
         <SendRt as TcpConnect>::TCP_SUPPORT,
         hclient_rt::TcpSupport::NONE
     );
-    const { assert!(!<SendRt as TcpConnect>::IPC_SUPPORT.unix) };
+    // No same-machine endpoint either, and that is now a fact about the
+    // type rather than a constant: the adapter does not implement
+    // `hclient_rt::IpcConnect` at all, so there is no claim to check.
 }
 
 /// `adapt_local!` produces a **working** runtime, not merely one that

@@ -1033,7 +1033,7 @@ pub(crate) async fn connect<R, D, L, P, H>(
     dns: &D,
     tls: &L,
     proxies: &[crate::proxy::Proxy<P>],
-    unix_socket: Option<&hclient_rt::IpcAddr>,
+    unix_socket: Option<&crate::IpcRoute<R>>,
     uri: &Uri,
     opts: &TcpOpts,
     alpn: &[&[u8]],
@@ -1084,9 +1084,8 @@ where
     // There is no bypass list here and there should not be: a bypassed
     // origin would have nowhere to go, since the whole point is that this
     // process reaches the service only through this socket.
-    if let Some(addr) = unix_socket {
-        let stream = rt
-            .connect_ipc(addr)
+    if let Some(route) = unix_socket {
+        let stream = (route.dial)(rt, &route.addr)
             .await
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
         return finish_unix::<R, L, H>(rt, tls, stream, host, use_tls, alpn, identity, began).await;
@@ -1645,15 +1644,6 @@ mod tests {
     }
 
     impl TcpConnect for FakeRt {
-        type ConnectingIpc<'a>
-            = hclient_rt::RefuseIpc<Self::Stream>
-        where
-            Self: 'a;
-
-        fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-            hclient_rt::RefuseIpc::new(addr)
-        }
-
         type Stream = FakeStream;
         // A plain box on purpose: this fixture keeps its log in a
         // `RefCell` and its stream holds an `Rc`, so it is genuinely

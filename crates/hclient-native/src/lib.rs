@@ -170,6 +170,53 @@ use std::time::Duration;
 #[cfg(feature = "http2")]
 type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H, R>);
 
+/// Where [`Native::unix_socket`] sends every request, and how it gets there.
+///
+/// **A pointer, for [`SpawnH2`]'s reason**: `dial` is monomorphised in
+/// `unix_socket`, where `R: IpcConnect` is known, and called from the
+/// connector, where it is not — so no signature a runtime without
+/// same-machine endpoints meets names [`hclient_rt::IpcConnect`], and
+/// `hclient-rt-embassy` or a NAL stack implements nothing for it.
+///
+/// **The future is boxed and declares `Send`**, which is the half the old
+/// objection to this shape missed. It said a stored pointer returning a
+/// boxed future drops the future's auto traits (amendment C1); it does if
+/// the box declares none, and a box that declares `Send` has its proof
+/// owed where the runtime is concrete — the bound on `unix_socket`, which
+/// is `Native::http3`'s arrangement (amendment C15).
+pub(crate) struct IpcRoute<R: TcpConnect> {
+    pub(crate) addr: Arc<hclient_rt::IpcAddr>,
+    pub(crate) dial: DialIpc<R>,
+}
+
+impl<R: TcpConnect> Clone for IpcRoute<R> {
+    fn clone(&self) -> Self {
+        Self {
+            addr: Arc::clone(&self.addr),
+            dial: self.dial,
+        }
+    }
+}
+
+impl<R: TcpConnect> std::fmt::Debug for IpcRoute<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("IpcRoute").field(&self.addr).finish()
+    }
+}
+
+type DialIpc<R> =
+    for<'a, 'b> fn(&'a R, &'b hclient_rt::IpcAddr) -> IpcDialing<'a, <R as TcpConnect>::Stream>;
+type IpcDialing<'a, S> = std::pin::Pin<Box<dyn Future<Output = std::io::Result<S>> + Send + 'a>>; // send-bound-exception: amendment-C15
+
+/// [`DialIpc`]'s one body, instantiated in [`Native::unix_socket`].
+fn dial_ipc<'a, R>(rt: &'a R, addr: &hclient_rt::IpcAddr) -> IpcDialing<'a, R::Stream>
+where
+    R: hclient_rt::IpcConnect,
+    for<'c> R::ConnectingIpc<'c>: Send, // send-bound-exception: amendment-C15
+{
+    Box::pin(rt.connect_ipc(addr))
+}
+
 /// Monomorphised where `H: Clone + Send + Sync + 'static` is known, called
 /// where it is not.
 type Watch1xx<H> = fn(
@@ -588,7 +635,7 @@ where
     /// argument the TLS identity and the proxy already carry there.
     /// Send every request over this Unix-domain socket instead of
     /// resolving and dialling the origin — see [`Native::unix_socket`].
-    unix_socket: Option<Arc<hclient_rt::IpcAddr>>,
+    unix_socket: Option<IpcRoute<R>>,
     /// What this client accepts in an HTTP/1 response head — see
     /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
     /// the HTTP/1 path is the one every build has.
@@ -1695,12 +1742,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///     type Stream = <Tokio as TcpConnect>::Stream;
     ///     const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
     ///     type Connecting<'a> = <Tokio as TcpConnect>::Connecting<'a>;
-    ///     type ConnectingIpc<'a> = <Tokio as TcpConnect>::ConnectingIpc<'a>;
     ///     fn connect<'a>(&'a self, a: SocketAddr, o: &TcpOpts) -> Self::Connecting<'a> {
     ///         Tokio.connect(a, o)
-    ///     }
-    ///     fn connect_ipc<'a>(&'a self, a: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-    ///         Tokio.connect_ipc(a)
     ///     }
     /// }
     ///
@@ -1732,12 +1775,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///     type Stream = <Tokio as TcpConnect>::Stream;
     ///     const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
     ///     type Connecting<'a> = <Tokio as TcpConnect>::Connecting<'a>;
-    ///     type ConnectingIpc<'a> = <Tokio as TcpConnect>::ConnectingIpc<'a>;
     ///     fn connect<'a>(&'a self, a: SocketAddr, o: &TcpOpts) -> Self::Connecting<'a> {
     ///         Tokio.connect(a, o)
-    ///     }
-    ///     fn connect_ipc<'a>(&'a self, a: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
-    ///         Tokio.connect_ipc(a)
     ///     }
     /// }
     /// impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for CanSpawn {
@@ -2276,11 +2315,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// URI, so a daemon that speaks TLS over a socket is reachable. Every
     /// [`TcpOpts`] field, on the other hand, is a TCP or IP option that
     /// `AF_UNIX` does not have — they are simply not applied here, which
-    /// is what `TcpConnect::connect_ipc` taking no options says.
+    /// is what `IpcConnect::connect_ipc` taking no options says.
     ///
     /// # It is refused where the runtime says it cannot
     ///
-    /// [`hclient_rt::TcpConnect::IPC_SUPPORT`],
+    /// [`hclient_rt::IpcConnect::IPC_SUPPORT`],
     /// which both shipped runtimes compute with `cfg!(unix)`
     /// — so this fails at the call that configures it rather than on the
     /// first request, which is `tcp_opts`' rule one method over.
@@ -2293,14 +2332,21 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// dial one, per "It is refused where the runtime says it cannot"
     /// above; [`ProxyAndUnixSocket`] when a proxy is already configured,
     /// per "What it replaces" above.
-    pub fn unix_socket(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
+    pub fn unix_socket(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, Error>
+    where
+        R: hclient_rt::IpcConnect,
+        for<'a> R::ConnectingIpc<'a>: Send, // send-bound-exception: amendment-C15
+    {
         let addr = hclient_rt::IpcAddr::unix(path.as_ref());
-        addr.reject_unsupported(<R as TcpConnect>::IPC_SUPPORT)
+        addr.reject_unsupported(<R as hclient_rt::IpcConnect>::IPC_SUPPORT)
             .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         if !self.proxies.is_empty() {
             return Err(Error::new(ErrorKind::Unsupported, ProxyAndUnixSocket));
         }
-        self.unix_socket = Some(Arc::new(addr));
+        self.unix_socket = Some(IpcRoute {
+            addr: Arc::new(addr),
+            dial: dial_ipc::<R>,
+        });
         Ok(self)
     }
 
@@ -2452,7 +2498,7 @@ where
                 // `Debug` rather than a path: it names the kind as well as
                 // the address, so a named pipe and a socket that happened to
                 // share a spelling could not share a slot.
-                .map(|a| format!("{a:?}").into_boxed_str())
+                .map(|r| format!("{:?}", r.addr).into_boxed_str())
                 .or_else(|| {
                     crate::proxy::Proxy::choose(
                         &self.proxies,
@@ -3537,7 +3583,7 @@ where
             &self.dns,
             &self.tls,
             &self.proxies,
-            self.unix_socket.as_deref(),
+            self.unix_socket.as_ref(),
             &uri,
             &self.opts,
             alpn,
@@ -4152,7 +4198,6 @@ hclient_core::transport::send_transport!(
         R::Instant: Send + Sync,                     // send-bound-exception: amendment-C16
         R::Sleep: Send,                              // send-bound-exception: amendment-C16
         for<'a> R::Connecting<'a>: Send,             // send-bound-exception: amendment-C16
-        for<'a> R::ConnectingIpc<'a>: Send,         // send-bound-exception: amendment-C16
         T: TlsConnect + Sync + Send,                 // send-bound-exception: amendment-C16
         T::Stream<R::Stream>: 'static + Send,        // send-bound-exception: amendment-C16
         for<'a> T::Handshake<'a, R::Stream>: Send,   // send-bound-exception: amendment-C16
