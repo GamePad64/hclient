@@ -2288,10 +2288,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// ```no_run
     /// # use hclient_native::Native;
-    /// # use hclient_rt::{TcpConnect, Timer};
+    /// # use hclient_rt::{IpcConnect, Timer};
     /// # use hclient_tls::TlsConnect;
-    /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
-    /// # -> Result<Native<R, T, D>, hclient_core::error::Error> {
+    /// # fn f<R, T: TlsConnect, D>(t: Native<R, T, D>)
+    /// # -> Result<Native<R, T, D>, hclient_core::error::Error>
+    /// # where R: IpcConnect + Timer, for<'a> R::ConnectingIpc<'a>: Send {
     /// t.unix_socket("/var/run/docker.sock")
     /// # }
     /// ```
