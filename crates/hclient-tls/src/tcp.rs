@@ -373,11 +373,18 @@ pub trait TlsConnect: TlsIdentity {
     /// What a transport built on this implementation should advertise in
     /// [`Capabilities::tls_config`](hclient_core::caps::Capabilities::tls_config).
     ///
-    /// Defaulted to `Full` so that adding this method broke no existing
-    /// implementation — every one of them does perform TLS. It exists for
-    /// the one that does not: [`NoTls`] returns `None`, and a transport
-    /// that asks instead of assuming cannot end up advertising TLS it will
-    /// refuse to perform.
+    /// Defaulted to [`TlsSupport::Full`], the one default on these seams
+    /// that is not the understating value — because here it is the truth
+    /// by construction. A `TlsConnect` is built by whoever builds the
+    /// transport, so its roots, its identity and its ALPN list are that
+    /// caller's configuration, which is what `Full` says.
+    ///
+    /// The method exists for the backend that performs no TLS at all:
+    /// [`NoTls`] answers [`TlsSupport::None`], and a transport that asks
+    /// instead of assuming cannot advertise TLS it will refuse to perform.
+    /// No `TlsConnect` answers [`TlsSupport::Platform`]; that one belongs
+    /// to backends whose platform does TLS beneath them, which is a
+    /// transport's fact and not a TLS seam's.
     ///
     /// The same shape as `hclient_dns::Resolve::supports`, and for
     /// the same reason: a capability has to come from the component that

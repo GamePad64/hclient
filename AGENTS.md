@@ -563,6 +563,24 @@ associated future type has no default on stable Rust, and which is why
 `connect_unix` became `IpcConnect`. The policy there is a variant for a
 new kind of request and a trait for a new capability.
 
+**`hclient-tls`'s blocker is gone with `hclient-rt` 0.1.0, and its audit
+moved a type it does not own.** Mutation leaves the same two equivalent
+survivors; a TLS backend written from outside the workspace over
+`futures-rustls` served HTTPS under `Client` and refused an untrusted
+certificate as `ErrorKind::Tls`, and what its author had to work out —
+a newtype to carry `Shutdown`, and why forwarding to the library's
+`poll_close` is right — is written on `TlsConnect::Stream` now. The
+sharper finding was `TlsConnect::tls_support`'s return type,
+`hclient_core::caps::TlsSupport`: three undocumented variants, one of
+which (`ServerTrustCallbackOnly`) no backend had ever produced, while
+`None` was said both by `NoTls` and by the browser — so *`https://` will
+fail* and *the platform does it* were one value. The owner chose three
+reachable states: `None` for no TLS, **`Platform`** for TLS the OS or the
+browser performs and nothing here configures (`fetch`, `wasi`,
+`urlsession`, `winhttp`), `Full` for TLS this client configures. It is a
+breaking change to `hclient-core`, taken now because freezing
+`hclient-tls` would otherwise have frozen the ambiguity with it.
+
 **`hclient-dns` is the fifth, and the owner's correction is worth more
 than the crate.** It had been held back twice on the ground that its
 surface was *broken two days ago* — a calendar rule, and the answer to

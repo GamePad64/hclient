@@ -328,10 +328,10 @@ fn capabilities() -> Capabilities {
     // them.
     c.response_decompression = false;
     // SChannel's configuration is the machine's, and this crate exposes
-    // no way to change it. `None` is the honest report of a stack whose
+    // no way to change it. `Platform` is the honest report of a stack whose
     // trust decisions are not the caller's to make here — which is the
     // whole reason somebody would choose this backend.
-    c.tls_config = TlsSupport::None;
+    c.tls_config = TlsSupport::Platform;
     // `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`: WPAD and any PAC script are
     // evaluated by the OS, per request. This is a *report* rather than a
     // gate, and it is the one this backend exists to be able to answer
@@ -900,7 +900,7 @@ mod tests {
         assert_eq!(c.redirects, RedirectSupport::Transparent);
         assert!(c.cancel_on_drop);
         assert!(!c.response_decompression);
-        assert_eq!(c.tls_config, TlsSupport::None);
+        assert_eq!(c.tls_config, TlsSupport::Platform);
         assert!(c.proxy, "the whole reason this backend exists");
         assert!(!c.owns_cookie_jar, "WINHTTP_DISABLE_COOKIES is set");
         assert!(!c.owns_cache, "WinHTTP has no response cache");

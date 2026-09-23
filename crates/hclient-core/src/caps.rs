@@ -117,11 +117,39 @@ pub enum RedirectSupport {
     Internal,
 }
 
+/// Whether this transport performs TLS, and whether this client configures
+/// it — [`Capabilities::tls_config`].
+///
+/// **Three states, and all three are reachable in this workspace.** It had
+/// two values carrying them, plus a `ServerTrustCallbackOnly` variant that
+/// no backend ever reported: `None` was said both by `NoTls`, which cannot
+/// secure a connection at all, and by the browser, which certainly can.
+/// So a caller could not tell *`https://` will fail* from *`https://`
+/// works and the platform handles it*, which are the two answers the
+/// field is read for. The variant with no producer went, and the state
+/// with two producers got a name.
+///
+/// Not `#[non_exhaustive]`, for the reason [`RedirectSupport`] is not: a
+/// reader branches on it, and a fourth state must be a compile error at
+/// every reader rather than a `_` arm that guesses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TlsSupport {
+    /// No TLS: an `https://` request fails at connect, with a typed
+    /// error. `hclient_tls::NoTls`, and a transport with no network at
+    /// all (an in-process service). The default, because it is the
+    /// understating answer: a transport that forgets to say is taken at
+    /// its least.
     #[default]
     None,
-    ServerTrustCallbackOnly,
+    /// TLS the platform performs, configured by the platform and by
+    /// nothing in this client: trust roots, client certificates and ALPN
+    /// are the OS's or the browser's. `hclient-fetch`, `hclient-wasi`,
+    /// `hclient-urlsession` and `hclient-winhttp`.
+    Platform,
+    /// TLS this client configures — trust roots, a client identity and
+    /// the ALPN list all come from the `TlsConnect` the transport was
+    /// built with. `hclient-native` over `hclient-tls-rustls` or
+    /// `hclient-tls-native-tls`, and its QUIC arm.
     Full,
 }
 

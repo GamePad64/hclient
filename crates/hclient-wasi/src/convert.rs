@@ -517,7 +517,7 @@ mod tests {
             hclient_core::caps::Capabilities::default().redirects,
             "a declared capability must differ from \"the field was never filled in\""
         );
-        assert_eq!(caps.tls_config, hclient_core::caps::TlsSupport::None);
+        assert_eq!(caps.tls_config, hclient_core::caps::TlsSupport::Platform);
         assert!(!caps.proxy);
         // five headers the host actually
         // refuses to accept from the guest.

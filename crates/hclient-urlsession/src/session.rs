@@ -139,12 +139,13 @@ fn capabilities(proxied: bool) -> Capabilities {
     // reason: it also sets `Accept-Encoding` on its own, and a body
     // handed back has already been decoded.
     c.response_decompression = true;
-    // `None`, the same value `hclient-fetch` reports and for the same
-    // reason: no TLS configuration is reachable through this seam. The
+    // `Platform`, the same value `hclient-fetch` reports and for the same
+    // reason: the OS performs TLS and none of it is configurable through
+    // this seam. The
     // trust decisions are the OS's — which is the whole reason to be here
     // — and a caller who needs to choose roots wants
     // `hclient-native` with `hclient-tls-rustls`, not this.
-    c.tls_config = TlsSupport::None;
+    c.tls_config = TlsSupport::Platform;
     c
 }
 

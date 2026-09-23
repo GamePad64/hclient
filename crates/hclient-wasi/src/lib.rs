@@ -288,7 +288,9 @@ impl WasiHttp {
         // surprised. Moving it back up needs a measurement, the way this
         // move down had one.
         caps.connection_reuse = false;
-        caps.tls_config = TlsSupport::None;
+        // The host performs TLS for an `https://` `wasi:http` request, and
+        // the guest configures none of it.
+        caps.tls_config = TlsSupport::Platform;
         caps.forbidden_request_headers = FORBIDDEN_REQUEST_HEADERS.as_slice();
         Self {
             caps,

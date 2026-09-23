@@ -13,7 +13,7 @@ fn declares_what_fetch_genuinely_cannot_do() {
     assert!(!c.version_select);
     assert!(!c.version_reported);
     // No TLS, no client certificates, no proxy.
-    assert_eq!(c.tls_config, hclient_core::caps::TlsSupport::None);
+    assert_eq!(c.tls_config, hclient_core::caps::TlsSupport::Platform);
     assert!(!c.client_certs);
     assert!(!c.proxy);
     // Cookies and cache are ambient, owned by the browser.

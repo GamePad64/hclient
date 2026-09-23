@@ -407,7 +407,7 @@ pub(crate) fn probe() -> Capabilities {
         .with_connect(false)
         .with_first_byte(false)
         .with_between_bytes(false);
-    c.tls_config = TlsSupport::None;
+    c.tls_config = TlsSupport::Platform;
     // There is no `upgrade` field to set: `WebSocket` in the browser is a
     // wholly separate global, unreachable from a `fetch`-shaped
     // `Transport`, and `src/websocket.rs` is the conclusion drawn from
