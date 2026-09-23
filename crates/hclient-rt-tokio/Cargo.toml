@@ -26,7 +26,7 @@ udp = ["dep:quinn-udp"]
 
 [dependencies]
 futures-core = { workspace = true }
-hclient-rt = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
+hclient-rt = { path = "../hclient-rt", version = "0.1.0" }
 quinn-udp  = { version = "0.6", default-features = false, optional = true }
 futures-io = { version = "0.3", default-features = false, features = ["std"] }
 socket2    = { version = "0.6", features = ["all"] }

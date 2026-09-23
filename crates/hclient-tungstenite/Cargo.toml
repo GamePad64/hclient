@@ -30,7 +30,7 @@ http         = { workspace = true }
 hclient-core = { workspace = true }
 hclient-dns  = { path = "../hclient-dns", version = "0.1.0" }
 hclient-native = { path = "../hclient-native", version = "0.1.0-alpha.14" }
-hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
+hclient-rt   = { path = "../hclient-rt", version = "0.1.0" }
 hclient-tls  = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
 # For the seam's read and write halves and nothing else. It was `hyper`
 # with every feature off for exactly the same reason — this workspace's

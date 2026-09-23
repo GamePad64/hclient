@@ -36,7 +36,7 @@ default = []
 [dependencies]
 hclient-core = { workspace = true }
 futures-io   = { version = "0.3", default-features = false, features = ["std"] }
-hclient-rt   = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
+hclient-rt   = { path = "../hclient-rt", version = "0.1.0" }
 
 [lints]
 workspace = true

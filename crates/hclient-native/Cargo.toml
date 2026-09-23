@@ -105,7 +105,7 @@ hclient-dns    = { path = "../hclient-dns", version = "0.1.0" }
 # switch into a no-op for exactly the native builds that have
 # `default-transport`.
 hclient-proto  = { workspace = true }
-hclient-rt     = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
+hclient-rt     = { path = "../hclient-rt", version = "0.1.0" }
 hclient-tls    = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
 # The HTTP/3 stack, folded in as `mod h3` and `mod quinn` — these are the
 # dependencies those two modules bring, all of them optional and all

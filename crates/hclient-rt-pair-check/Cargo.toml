@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 
 [dev-dependencies]
-hclient-rt       = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
+hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
 # `udp` on both, because the point of this crate is that the seam has two
 # implementations and the same body runs on either.
 hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.12", features = ["udp"] }

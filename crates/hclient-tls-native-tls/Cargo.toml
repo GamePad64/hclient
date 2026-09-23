@@ -25,7 +25,7 @@ all-features = true
 # is public where the wrapper's was not.
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core     = { workspace = true }
-hclient-rt       = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
+hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
 native-tls       = { version = "0.2", features = ["alpn"] }
 

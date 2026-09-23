@@ -39,7 +39,7 @@ thiserror = { workspace = true }
 hclient-core     = { workspace = true }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.10" }
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
-hclient-rt       = { path = "../hclient-rt", version = "0.1.0-alpha.11" }
+hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
 rustls           = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pki-types = "1.15"
 # `rustls-ring` and nothing else: this crate already picks `ring` for
