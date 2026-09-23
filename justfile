@@ -1112,6 +1112,27 @@ package-build:
     # Deliberately not `cargo publish --dry-run`: that does this and also
     # talks to the registry about ownership and version collisions, which is
     # a different question and one CI has no credentials to ask.
+    # **Start from no packages at all**, `tmp-registry` included. A
+    # dependent is verified against the copy of its dependency that
+    # verification unpacks from `<dir>/package/tmp-registry`, and CI
+    # restores `target/` from cache: on the push that renamed `hclient-rt`'s
+    # seam without moving its number (the normal state between releases,
+    # since release-plz bumps at release), `hclient-rt-smol` failed to
+    # verify against an `hclient-rt 0.1.0-alpha.11` with the *old* API,
+    # unpacked from that registry, while the same command passed here.
+    # Which cached file held the old copy was not reproduced locally — a
+    # planted stale extraction in `CARGO_HOME` did not do it — so this
+    # clears the whole of what the command writes rather than one guess.
+    # A stale copy can as easily make a broken tree pass, which is the
+    # worse half.
+    #
+    # Both directories, because they are one on CI and two here: the
+    # `.crate` files go to the target directory and the unpacked copies to
+    # the **build** directory, which this machine's `[build] build-dir`
+    # moves elsewhere.
+    dirs="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["target_directory"]); print(d.get("build_directory") or d["target_directory"])')"
+    [ -n "$dirs" ] || { echo "::error::cargo metadata named no target directory"; exit 1; }
+    while IFS= read -r dir; do rm -rf "$dir/package"; done <<< "$dirs"
     rc=0
     out="$(cargo package --workspace --allow-dirty --color never 2>&1)" || rc=$?
     printf '%s\n' "$out"
