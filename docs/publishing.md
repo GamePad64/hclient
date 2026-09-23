@@ -383,8 +383,8 @@ upload.
 **Why this rather than an `hclient-transport-*` rename.** A
 `hclient-<seam>-<impl>` name is legitimate here only when a
 `hclient-<seam>` crate exists to hold something `hclient-core` must not —
-`hclient-rt` and `hclient-tls` hold `hyper`, `hclient-dns` holds a DNS
-codec. `Transport` lives *in* `hclient-core` and needs nothing extra, so
+`hclient-rt` holds the runtime seams and their `futures-io` byte-stream
+bound, `hclient-tls` the two TLS seams, `hclient-dns` the resolver's. `Transport` lives *in* `hclient-core` and needs nothing extra, so
 `hclient-transport` would be an empty crate and the name would promise
 one the dependency rule forbids. That is the same defect that renamed
 `hclient-ws-tungstenite`.

@@ -205,19 +205,33 @@ understating direction. Its own `match` keeps no `_` arm, because
 there is a compile error **there**, which is `Event`'s and `Capabilities`'
 shape exactly.
 
-### 5. Runtime seams: every method is required, and that is already handled
+### 5. Runtime seams: every method is required, and growth goes around them
 
 `TcpConnect` 2 of 2, `Spawn` 1 of 1, `Blocking` 1 of 1, `UdpBind` 1 of 1.
-Adding a method to any of them breaks every implementor — and this
-workspace already has the pattern that makes additions free: a **defaulted
-method beside a constant defaulted to the understating value**.
-`IPC_SUPPORT`/`connect_ipc`, `reports_alpn`, `applies_ech` and
-`TCP_SUPPORT` are all that shape.
+Adding a method to any of them breaks every implementor, and **the
+obvious escape does not exist for the methods these seams grow**. A
+synchronous method can arrive defaulted beside a constant defaulted to
+the understating value — `reports_alpn` and `applies_ech` are that
+shape. An async one cannot: its future is an associated type, so that a
+consumer can name it and prove it `Send`, and an associated type cannot
+have a default on stable Rust. That is how `TcpConnect::connect_unix`
+was found to be a trap rather than a precedent — a second kind of
+same-machine endpoint would have needed a second associated future,
+breaking every runtime at once.
 
-Nothing to change; what is missing is that it is a **policy** rather than
-four coincidences. Written here so the next method follows it: *a new seam
-method arrives defaulted, and the layer above asks a constant before it
-asks the method.*
+So the policy has two shapes, and both are in the tree:
+
+- **A new kind of request is a variant.** `IpcAddr` is
+  `#[non_exhaustive]`, and a runtime refuses a kind its `IPC_SUPPORT`
+  does not claim on entry with `IpcAddr::reject_unsupported` — so a
+  Windows named pipe is a variant and a flag, and no implementor breaks.
+- **A new capability is a trait.** `IpcConnect: TcpConnect` is one, with
+  its bound on the one constructor that needs it (`Native::unix_socket`),
+  so a runtime that has no file descriptors implements nothing and loses
+  only that constructor, as a compile error where it was asked for.
+
+A method added to an existing seam is the thing neither shape needs, and
+it is written here so the next one is not.
 
 ## `SendTransport` earns its place, and not on the argument it looks like
 

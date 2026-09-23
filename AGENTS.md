@@ -541,6 +541,28 @@ owner's call is **`hclient-rt` first**, over moving `Shutdown` into
 `hclient-core`: so `hclient-tls` waits on that crate's seams settling, and
 nothing in it needs to change when they do.
 
+**`hclient-rt` has been through the same audit, and one step is left.**
+Mutation leaves **no** survivors (89 mutants: 68 caught, 21 unviable);
+its graph holds nothing pre-release; the three support reports share one
+shape and are checked both on entry and at configuration. The one design
+question was `Spawn::spawn`'s `()`, and the owner's answer is that it
+stays: **a runtime accepts every future it is handed**, states whatever
+that needs on its own type, and a runtime whose spawn can run out —
+embassy's fixed task pool — does not implement the trait, losing only
+`Native`'s opt-ins. The last check was the one this file trusts most, a
+runtime written **from outside the workspace** on plain tokio types and
+run under `Native` and `Client` over TCP, a Unix socket and UDP. Every
+seam type-checked on the first try; the one place its author had to
+guess, `poll_close` on a stream that also has `Shutdown`, is now written
+on the trait. What remains is mechanical: the version and the
+requirements naming it, then the owner's publish.
+
+The same sweep found `docs/api-stability.md` recommending *a new seam
+method arrives defaulted* — which cannot work for an async method, whose
+associated future type has no default on stable Rust, and which is why
+`connect_unix` became `IpcConnect`. The policy there is a variant for a
+new kind of request and a trait for a new capability.
+
 **`hclient-dns` is the fifth, and the owner's correction is worth more
 than the crate.** It had been held back twice on the ground that its
 surface was *broken two days ago* — a calendar rule, and the answer to
