@@ -132,7 +132,7 @@ async fn connect_trusting(
 /// One `write` -> `flush` -> `read` round trip over the session, returning
 /// what came back.
 ///
-/// Written as `poll_fn` over the seam's own `hyper::rt` traits rather than
+/// Written as `poll_fn` over the seam's own `futures-io` traits rather than
 /// through an extension trait, because that is the shape a consumer meets
 /// and because it is the only way to reach these four `poll_*` bodies
 /// without adding a dependency for the privilege.
@@ -189,11 +189,11 @@ async fn a_completed_session_carries_bytes_in_both_directions() {
     );
 }
 
-/// **`close` completes**, which is `poll_close`'s own arm and not
-/// `poll_flush`'s.
+/// **The half-close completes**, which is `poll_shutdown`'s own arm and
+/// not `poll_flush`'s.
 ///
 /// Kept separate from the round trip above because it is a different
-/// mutation: `poll_close` replaced by `Ok(())` skips
+/// mutation: `poll_shutdown` replaced by `Ok(())` skips
 /// `native_tls::TlsStream::shutdown` — the call that emits `close_notify`
 /// — and a peer cannot tell a bare FIN from a truncation attack. The
 /// round-trip test passes either way, having already got its bytes.
@@ -278,6 +278,21 @@ async fn the_peer_certificate_is_the_leaf_the_server_actually_presented() {
     let (_, info) = connect_trusting(addr, &der, &[])
         .await
         .expect("a root the client was given must verify");
+
+    // What `native-tls` has no getter for stays `None`, and what it has no
+    // hook for stays `Unobserved`: *cannot tell you*, never a guess. A
+    // handshake that just succeeded is where a plausible `"TLSv1.3"` would
+    // be most tempting to fill in, so it is asserted here.
+    assert_eq!(info.protocol_version, None, "native-tls exposes no version");
+    assert_eq!(
+        info.cipher_suite, None,
+        "native-tls exposes no cipher suite"
+    );
+    assert_eq!(
+        info.client_cert,
+        hclient_tls::ClientCertAsk::Unobserved,
+        "native-tls exposes no CertificateRequest hook"
+    );
 
     let certs = info
         .peer_certificates

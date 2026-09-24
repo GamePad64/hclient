@@ -72,6 +72,10 @@ pub(crate) struct StdAdapter<S> {
     /// The last transport error that was not `WouldBlock`, kept because
     /// the stack above may **not pass it on** — see [`settle_read`].
     pub(crate) failed: Option<io::Error>,
+    /// Whether `close_notify` has gone out — see
+    /// [`TlsStream::poll_close_notify`] for why a second call into
+    /// `native-tls`'s `shutdown` is not the same as the first.
+    pub(crate) close_notified: bool,
 }
 
 impl<S> StdAdapter<S> {
@@ -80,6 +84,7 @@ impl<S> StdAdapter<S> {
             inner,
             context,
             failed: None,
+            close_notified: false,
         }
     }
 
@@ -203,15 +208,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TlsStream<S> {
         Self(inner)
     }
 
-    /// The negotiated ALPN protocol, if the peer chose one.
+    /// The negotiated ALPN protocol, if the peer chose one — the same
+    /// value the handshake reported as `TlsInfo::alpn`.
     ///
-    /// Reachable only because this crate owns the stream; see the module
-    /// doc.
+    /// Reachable only because this crate owns the stream; see the crate
+    /// documentation.
     pub fn negotiated_alpn(&self) -> Option<Vec<u8>> {
         self.0.negotiated_alpn().ok().flatten()
     }
 
-    /// The peer's leaf certificate in DER, if it sent one.
+    /// The peer's leaf certificate in DER, if it sent one. The leaf only:
+    /// `native-tls` does not hand back the chain.
     pub fn peer_certificate_der(&self) -> Option<Vec<u8>> {
         self.0
             .peer_certificate()
@@ -233,6 +240,34 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TlsStream<S> {
         self.0.get_mut().context = std::ptr::from_mut(cx).cast::<()>();
         let guard = Guard(self);
         f(&mut guard.0.0)
+    }
+
+    /// Sends `close_notify`, **once** — the half both closes share.
+    ///
+    /// The flag is not bookkeeping. OpenSSL's `SSL_shutdown` sends the
+    /// alert on its first call and, on every call after, tries to *receive*
+    /// the peer's — so a close whose transport answered `Pending` after the
+    /// alert went out would, on being polled again, wait for a
+    /// `close_notify` an HTTP peer has no reason to send, and end in a hang
+    /// or an unexpected-EOF error instead of the FIN it was asked for.
+    ///
+    /// The three arms are `cvt`'s, written out because `shutdown` answers
+    /// `io::Result<()>` where the others answer a count.
+    fn poll_close_notify(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>>
+    where
+        StdAdapter<S>: Read + Write,
+    {
+        if self.0.get_ref().close_notified {
+            return Poll::Ready(Ok(()));
+        }
+        match self.with_context(cx, native_tls::TlsStream::shutdown) {
+            Ok(()) => {
+                self.0.get_mut().close_notified = true;
+                Poll::Ready(Ok(()))
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) => Poll::Ready(Err(e)),
+        }
     }
 }
 
@@ -308,26 +343,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TlsStream<S> {
         self.with_context(cx, |s| cvt(s.flush()))
     }
 
-    /// The three arms are `cvt`'s, written out rather than reused because
-    /// `shutdown` answers `io::Result<()>` where the other three answer a
-    /// count.
+    /// **`close_notify`, then the transport's own `poll_close`** — the
+    /// same shape as the half-close below, one trait over.
     ///
-    /// **One mutation of this guard survives and is not a gap.** Forcing it
-    /// to `false` turns a `WouldBlock` during the close into a hard error,
-    /// and `tests/transport_errors.rs` kills the other three variants but
-    /// not this one: reaching it needs the socket's send buffer to fill
-    /// while `close_notify` — a handful of bytes — is being written, which
+    /// It sent the alert and stopped, for as long as the seam's half-close
+    /// was spelled `poll_close`: the transport was never asked for its FIN,
+    /// and nothing noticed once every test moved to `poll_shutdown`.
+    /// `hclient_rt::Shutdown`'s documentation asks a seam stream's
+    /// `poll_close` to be the same half-close, and a transport's
+    /// `poll_close` is that by the same rule, so forwarding to it keeps the
+    /// promise without asking `S` for `Shutdown` here.
+    ///
+    /// **One mutation of the shared guard survives and is not a gap.**
+    /// Forcing it to `false` in `TlsStream::poll_close_notify` turns a
+    /// `WouldBlock` during the close into a hard error, and
+    /// `tests/transport_errors.rs` kills the other variants but not this
+    /// one: reaching it needs the socket's send buffer to fill while
+    /// `close_notify` — a handful of bytes — is being written, which
     /// nothing on loopback can arrange deterministically. What it would
     /// cost if wrong is one spurious error on a close whose bytes are
     /// already queued, which is the understating direction; what the
     /// killed variants rule out is the opposite one, where a real error
     /// becomes `Pending` and the caller waits for ever.
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self.with_context(cx, native_tls::TlsStream::shutdown) {
-            Ok(()) => Poll::Ready(Ok(())),
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
-            Err(e) => Poll::Ready(Err(e)),
-        }
+        std::task::ready!(self.poll_close_notify(cx))?;
+        Pin::new(&mut self.get_mut().0.get_mut().inner).poll_close(cx)
     }
 }
 
@@ -343,14 +383,7 @@ impl<S: AsyncRead + AsyncWrite + hclient_rt::Shutdown + Unpin> hclient_rt::Shutd
     for TlsStream<S>
 {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self
-            .as_mut()
-            .with_context(cx, native_tls::TlsStream::shutdown)
-        {
-            Ok(()) => {}
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
-            Err(e) => return Poll::Ready(Err(e)),
-        }
+        std::task::ready!(self.poll_close_notify(cx))?;
         hclient_rt::Shutdown::poll_shutdown(Pin::new(&mut self.get_mut().0.get_mut().inner), cx)
     }
 }
@@ -506,5 +539,24 @@ mod tests {
     #[test]
     fn a_write_with_nothing_remembered_is_its_count() {
         assert_eq!(settle_write(Ok(4), &mut None).unwrap(), 4);
+    }
+
+    /// The two settles above act on what `StdAdapter::note` remembers, and
+    /// only Security.framework drops an error on the way up — so on any
+    /// other host the choice of *what* to remember is invisible end to end,
+    /// and a `note` that kept `WouldBlock` and dropped the reset survived
+    /// the Linux sweep. Asked of the function directly: a real failure is
+    /// kept, a `WouldBlock` is not — kept, it would turn the next write's
+    /// count into an error and park the caller on `Pending`.
+    #[test]
+    fn a_transport_failure_is_remembered_and_would_block_is_not() {
+        let mut adapter = super::StdAdapter::new((), std::ptr::null_mut());
+        let _ = adapter.note::<()>(Err(io::Error::from(io::ErrorKind::WouldBlock)));
+        assert!(adapter.failed.is_none(), "WouldBlock is not a failure");
+        let _ = adapter.note::<()>(Err(reset()));
+        assert_eq!(
+            adapter.failed.map(|e| e.kind()),
+            Some(io::ErrorKind::ConnectionReset),
+        );
     }
 }

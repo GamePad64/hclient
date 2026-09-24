@@ -3,7 +3,7 @@
 //! transport.
 
 use hclient_core::error::ErrorKind;
-use hclient_tls::{TlsConnect, TlsRequest};
+use hclient_tls::{TlsConnect, TlsIdentity, TlsRequest};
 use hclient_tls_native_tls::NativeTls;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -67,6 +67,29 @@ fn ech_is_refused_before_the_transport_is_touched() {
     assert!(
         err.to_string().to_lowercase().contains("ech"),
         "the error must name what was refused, so a caller can tell it from a handshake failure: {err}"
+    );
+}
+
+/// **A named client identity is refused, not substituted** — this backend
+/// resolves no labels (`config_id_for` is the seam's `None` for all of
+/// them), so a label is one it cannot serve, and connecting with whatever
+/// identity it holds instead is how one tenant's certificate reaches
+/// another's server. `hclient-native` refuses the label first; this is the
+/// refusal a caller driving `connect` directly is owed. Before the
+/// transport is touched, and naming the label, for the ECH test's reasons.
+/// `without_ech_the_handshake_actually_starts` below is the control: the
+/// same request with no label reaches the transport.
+#[test]
+fn a_named_identity_is_refused_before_the_transport_is_touched() {
+    let tls = NativeTls::new();
+    assert_eq!(tls.config_id_for("tenant-a"), None, "the premise");
+    let req = TlsRequest::new("example.com", &[b"h2"]).identity(Some("tenant-a"));
+    let err = futures_executor::block_on(tls.connect(NeverTouched, req))
+        .expect_err("an identity this backend cannot resolve must be refused");
+    assert_eq!(*err.kind(), ErrorKind::Tls, "{err}");
+    assert!(
+        err.to_string().contains("tenant-a"),
+        "the error must name the label it refused: {err}"
     );
 }
 

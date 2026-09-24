@@ -48,19 +48,28 @@
 
 mod stream;
 
+/// The `native-tls` this crate is built against, so that a caller builds
+/// the [`native_tls::Identity`] and [`native_tls::Certificate`] that
+/// [`NativeTls`] takes from the same version, without a second dependency
+/// line to keep in step. `native-tls` has been 0.2 since 2018; a major
+/// step there is a major step here, because this crate *is* a binding of
+/// it.
+pub use native_tls;
+pub use stream::TlsStream;
+
 use hclient_core::error::{Error, ErrorKind};
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::fmt::Debug;
 
 /// The platform TLS backend.
 ///
-/// Holds only what can be re-applied per connection. `async-native-tls`'s
-/// `TlsConnector` is a consuming builder — every setter takes `self` by
-/// value — so there is no built connector to store and share. That turns
-/// out to suit the seam rather than fight it: `TlsRequest::alpn` is
-/// per-connection by design (version pinning and h2-prior-knowledge need
-/// different lists against the same origin), so a connector has to be built
-/// per `connect` regardless.
+/// Holds only what can be re-applied per connection, and builds a
+/// `native_tls::TlsConnector` on every [`connect`](TlsConnect::connect)
+/// rather than storing one: `TlsRequest::alpn` is per-connection by design
+/// (version pinning and h2-prior-knowledge need different lists against the
+/// same origin), and `native-tls` fixes the ALPN list when the connector is
+/// built, so one connector could not serve two requests offering different
+/// lists.
 #[derive(Clone)]
 pub struct NativeTls {
     identity: Option<native_tls::Identity>,
@@ -168,8 +177,13 @@ impl NativeTls {
     }
 
     /// An extra trust root, *in addition to* the platform store — not
-    /// instead of it. `native-tls` offers no way to replace the store, and
-    /// this method does not pretend otherwise.
+    /// instead of it.
+    ///
+    /// `native-tls` 0.2 can replace the store —
+    /// `TlsConnectorBuilder::disable_built_in_roots` — and this crate does
+    /// not expose that yet; what it offers is the platform's own trust
+    /// decision widened by the roots given here, never narrowed. (This doc
+    /// used to say `native-tls` had no such switch; 0.2.18 has one.)
     #[must_use]
     pub fn add_root_certificate(mut self, cert: native_tls::Certificate) -> Self {
         self.roots.push(cert);
@@ -241,6 +255,23 @@ impl TlsConnect for NativeTls {
                 std::io::Error::other(
                     "native-tls cannot perform ECH: no platform stack exposes ClientHello encryption",
                 ),
+            )));
+        }
+        if let Some(label) = req.identity {
+            // Refused, not substituted. This backend holds at most one
+            // client identity and names none of them — `config_id_for` is
+            // the seam's default, `None` for every label — so a label here
+            // is one it cannot resolve. Connecting with the configured
+            // identity (or none) instead is how one tenant's certificate
+            // reaches another tenant's server. `hclient-native` refuses the
+            // label before it gets this far; this is the refusal the seam
+            // owes a caller who drives `connect` directly.
+            return Handshaking::new(crate::stream::Handshaking::failed(Error::new(
+                ErrorKind::Tls,
+                std::io::Error::other(format!(
+                    "native-tls has no client identity named {label:?}: this backend \
+                     presents only the one set with `NativeTls::identity`, and names none"
+                )),
             )));
         }
 

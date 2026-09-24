@@ -5,7 +5,8 @@
 //! `native-tls` reports "the stream underneath is not ready" the same way
 //! it reports nothing else: an `io::Error` of kind `WouldBlock`, because a
 //! synchronous interface has no other vocabulary for it. So `cvt` — and
-//! `poll_close`'s own copy of the same three arms — has to tell that one
+//! `poll_close_notify`'s own copy of the same three arms, which both closes
+//! share — has to tell that one
 //! kind apart from every other, turning `WouldBlock` into
 //! `Poll::Pending` and leaving the rest as errors.
 //!
@@ -253,11 +254,12 @@ async fn a_transport_error_on_read_is_an_error_and_not_pending() {
     );
 }
 
-/// **And for `close`**, which carries its own copy of the three arms rather
-/// than going through `cvt`.
+/// **And for the half-close**, which carries its own copy of the three
+/// arms (`poll_close_notify`, shared by `poll_shutdown` and `poll_close`)
+/// rather than going through `cvt`.
 ///
 /// That duplication is why this is a third test and not a third assertion:
-/// `poll_close`'s guard is a separate mutation site, and it survived
+/// the close's guard is a separate mutation site, and it survived
 /// separately.
 #[tokio::test]
 async fn a_transport_error_on_close_is_an_error_and_not_pending() {
@@ -270,7 +272,7 @@ async fn a_transport_error_on_close_is_an_error_and_not_pending() {
     assert!(
         matches!(polled, Poll::Ready(Err(_))),
         "a close that cannot be written must fail rather than hang: this arm is \
-         `poll_close`'s own, not `cvt`'s, and gets the guard wrong separately"
+         the close's own, not `cvt`'s, and gets the guard wrong separately"
     );
 }
 
