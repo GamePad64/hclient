@@ -15,10 +15,14 @@ use std::future::Future;
 /// runtime that implements this trait accepts every future it is handed.**
 /// Whatever it needs in order to do that is a precondition it states on
 /// its own type and discharges where it can — at construction, as a
-/// `Result`, is the form to reach for. `hclient-rt-tokio` has both shapes:
-/// `TokioHandle` carries its runtime and is total everywhere, while the
-/// `Tokio` ZST reads an ambient runtime and says, on its own doc, that
-/// calling it off one panics.
+/// `Result`, is the form to reach for. `hclient-rt-tokio` shows both
+/// ways of stating one: `TokioHandle` carries a handle to its runtime and
+/// is total from any thread **for as long as that runtime is alive** —
+/// which it says on its own type, because a tokio `Handle` does not keep
+/// its `Runtime` alive and a spawn after shutdown is discarded unrun,
+/// something no caller can detect — while the `Tokio` ZST reads an
+/// ambient runtime and says, on its own doc, that calling it off one
+/// panics.
 ///
 /// [`Blocking::run`] answers [`Cancelled`] for the neighbouring case and
 /// this does not, and the asymmetry is about the caller rather than the
@@ -31,7 +35,12 @@ use std::future::Future;
 ///
 /// So a runtime that can find itself unable to spawn has two honest
 /// options: make that impossible at the type (carry what it needs, as
-/// `TokioHandle` does), or state the precondition where a caller reads it.
+/// `hclient-rt-smol`'s `Smol` does — its executor is process-wide and never
+/// shuts down), or state the precondition where a caller reads it, as both
+/// of `hclient-rt-tokio`'s runtimes do. **Carrying a handle is not the same
+/// as carrying what it needs**, and `TokioHandle` is the example: this
+/// paragraph named it as the total one until an audit dropped the runtime
+/// under it and watched a spawned future vanish.
 /// What it must not do is accept the future and drop it: the caller cannot
 /// tell, and a driver that never runs is a connection that hangs.
 ///
