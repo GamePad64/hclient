@@ -581,6 +581,42 @@ browser performs and nothing here configures (`fetch`, `wasi`,
 breaking change to `hclient-core`, taken now because freezing
 `hclient-tls` would otherwise have frozen the ambiguity with it.
 
+**It ships as `hclient-core` 0.2.1, a deliberate semver break inside the
+0.2 series, and the measurement is why.** The honest number was 0.3.0,
+and 0.3.0 is not the break it looks like — it is **four**. `hclient-rt`
+re-exports core's `Timer`, `hclient-dns`'s `Resolve` returns core's
+`Error`, and `hclient-mock` implements core's `Transport`, so each exposes
+core types and each would change which core it exposes. A runtime written
+against `hclient-core = "0.2"` and `hclient-rt = "0.1"` stops compiling
+the moment `hclient-rt` moves to core 0.3 — `E0277`, *multiple different
+versions of `hclient_core`* — while the same program against the
+published 0.1.0 compiles. And **release-plz proposed only patch bumps
+for those three**, because `cargo semver-checks` compares a crate's own
+shape and a re-exported trait keeps its shape while becoming another
+trait. So the release as planned would have shipped three semver breaks
+labelled as patches, to buy one labelled honestly.
+
+The owner's call is the opposite trade: one break, in the one enum it
+touches, confined to a variant no backend ever produced
+(`ServerTrustCallbackOnly`) and a variant nobody could have matched on
+yet (`Platform`), a few days after 0.2.0 reached the index. Under
+`[patch.crates-io]` standing in for the publish, the same outside runtime
+resolves one core and compiles. The workspace requirement is `0.2.1`
+rather than `0.2`, because the four ambient backends name `Platform` —
+which also keeps `cargo package -p hclient-tls` refusing until the core
+is in the index, so the stable TLS seam cannot be published against
+0.2.0's enum by mistake.
+
+**Two consequences to know before touching the release.** `just semver`,
+run by hand, now **fails** on `hclient-core` — `enum_variant_added` and
+`enum_variant_missing` against 0.2.0 — and that failure is the decision
+being reported, not a defect to fix by bumping. And the gap it exposed
+is general: **a dependency whose types a stable crate exposes cannot
+change major without that crate changing major too**, and nothing here
+checks it — not `cargo semver-checks`, not release-plz, not
+`versions-agree`. It is written here rather than gated, which this
+file's own rule says is the weaker of the two.
+
 **`hclient-dns` is the fifth, and the owner's correction is worth more
 than the crate.** It had been held back twice on the ground that its
 surface was *broken two days ago* — a calendar rule, and the answer to
