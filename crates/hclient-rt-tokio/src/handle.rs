@@ -77,6 +77,26 @@ use std::time::Duration;
 /// `!Send` local-executor type, this costs `Native<TokioHandle, _, _>` none
 /// of its auto traits. See the module doc for what it buys and what it
 /// does not.
+///
+/// # Precondition: the runtime is still alive
+///
+/// A `Handle` does not keep its `Runtime` alive. While the runtime this
+/// handle came from is running, every entry point here is callable from
+/// any thread (the module doc's table says which futures must still be
+/// polled on a runtime thread). **Once that `Runtime` has been dropped or shut down**, tokio
+/// behaves differently per call, and none of it is this crate's choice:
+///
+/// - [`Spawn::spawn`] accepts the future and tokio discards it unpolled —
+///   no panic and no error. `hclient_rt::Spawn` forbids exactly that
+///   shape, so keeping the runtime alive for as long as anything built on
+///   this handle (a `Native`, a `Client`) can spawn is the caller's side of
+///   the contract.
+/// - [`Blocking::run`] answers [`Cancelled`], as the seam asks.
+/// - [`Timer::sleep`] and the connects panic inside tokio.
+///
+/// Pinned by `spawn_after_the_runtime_is_dropped_runs_nothing_and_says_nothing`,
+/// so this paragraph fails a test rather than going stale if tokio changes
+/// the first answer.
 #[derive(Debug, Clone)]
 pub struct TokioHandle(tokio::runtime::Handle);
 
@@ -147,8 +167,9 @@ impl Timer for TokioHandle {
     }
 }
 
-/// The impl this type exists for. `Handle::spawn` is total: no guard, no
-/// panic, and the task runs on the runtime's own threads.
+/// The impl this type exists for. `Handle::spawn` needs no guard and does
+/// not panic, and the task runs on the runtime's own threads — while that
+/// runtime is alive, which is [`TokioHandle`]'s stated precondition.
 impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for TokioHandle {
     fn spawn(&self, f: F) {
         self.0.spawn(f);
@@ -181,8 +202,9 @@ impl TcpConnect for TokioHandle {
     /// code, which is the shape this workspace has caught repeatedly.
     ///
     /// It mattered more than a stray default because `TokioHandle` is the
-    /// runtime `hclient-select` requires, and v0.4's race measurement found
-    /// Nagle costing 41 ms on the head of every connection made without it.
+    /// runtime the HTTP/3 race was measured on, and v0.4's race measurement
+    /// found Nagle costing 41 ms on the head of every connection made
+    /// without it.
     ///
     /// The second was the line that fixed the first: it declared
     /// `TcpSupport::ALL` while `Tokio` declared a per-target set, so on
@@ -191,17 +213,18 @@ impl TcpConnect for TokioHandle {
     /// not apply them. A delegate's claim is its delegate's.
     const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
 
-    /// **Deliberately identical to [`Tokio`]'s, guard and all — there is
-    /// no guard.** See the module doc's last table row: the registration
-    /// this would have to cover happens at first poll, inside the async
-    /// body, where no `EnterGuard` can reach it. Delegating rather than
-    /// copying keeps `build_socket`'s "all options, once, on the
-    /// `socket2::Socket`" promise stated in exactly one place.
     /// [`Tokio`]'s, forwarded — including the `Send`, which is what lets
     /// a handle stand in for the ambient runtime wherever one is proved.
     type Connecting<'a> =
         std::pin::Pin<Box<dyn Future<Output = std::io::Result<TokioIo>> + Send + 'a>>;
 
+    /// **Delegated to [`Tokio`]'s, with no `EnterGuard`.** See the module
+    /// doc's last table row: the registration a guard would have to cover
+    /// happens at first poll, inside the async body, where no guard can
+    /// reach it — so this future must be polled on a runtime thread, as
+    /// `Tokio`'s must. Delegating rather than copying keeps the option
+    /// check and `build_socket`'s "all options, once, on the
+    /// `socket2::Socket`" stated in exactly one place.
     fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
         let opts = opts.clone();
         Box::pin(async move { Tokio.connect(addr, &opts).await })
@@ -441,6 +464,51 @@ mod tests {
             by_zst < Duration::from_secs(1),
             "Tokio::elapsed_since reported {by_zst:?} for an instant the \
              handle produced — the two Instant types are not the same clock"
+        );
+
+        // **And a lower bound, which the two upper bounds above cannot
+        // give.** A mutant answering `Duration::ZERO` from
+        // `TokioHandle::elapsed_since` satisfies `< 1s` — the same shape
+        // as the constant hour the first version missed, from the other
+        // side. Measured: that mutant survived a crate-scoped sweep until
+        // this line existed.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            h.elapsed_since(a) >= Duration::from_millis(20),
+            "TokioHandle::elapsed_since must measure time that passed"
+        );
+    }
+
+    /// **"Total" holds while the runtime the handle came from is alive,
+    /// and not after.** A `tokio::runtime::Handle` does not keep its
+    /// `Runtime` alive: once the `Runtime` is dropped, `Handle::spawn`
+    /// accepts the future and tokio discards it unpolled — no panic, no
+    /// error, nothing run. Measured on tokio 1.x from an outside consumer
+    /// before this test was written.
+    ///
+    /// That is the one shape `hclient_rt::Spawn` forbids — *accept the
+    /// future and drop it* — so it is stated on [`TokioHandle`] as its
+    /// precondition, and pinned here so that the statement goes stale
+    /// loudly if tokio ever changes the answer (to a panic, say, which
+    /// would move this type's precondition rather than remove it).
+    #[test]
+    fn spawn_after_the_runtime_is_dropped_runs_nothing_and_says_nothing() {
+        let rt = rt();
+        let h = TokioHandle::from_handle(rt.handle().clone());
+        drop(rt);
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let r = ran.clone();
+        assert!(
+            !panicked(move || Spawn::spawn(&h, async move { r.store(true, Ordering::SeqCst) })),
+            "tokio started panicking on a spawn after shutdown — TokioHandle's \
+             precondition moved; update its documentation"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a future spawned onto a dropped runtime ran — tokio changed, and \
+             TokioHandle's stated precondition is stale"
         );
     }
 

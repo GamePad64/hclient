@@ -24,9 +24,8 @@
 //! right default for a QUIC library and the wrong one here: a client
 //! without ECN is a client whose congestion controller cannot tell
 //! congestion from loss, and nothing about that failure is visible. So
-//! [`caps`](TokioUdpSocket::caps) reads the option back with
-//! `getsockopt` after the fact and reports what it finds, rather than what
-//! was attempted.
+//! [`support`](hclient_rt::UdpDatagrams::support) reports what
+//! `getsockopt` reads back after the fact, rather than what was attempted.
 
 use hclient_rt::{Datagrams, RecvMeta, UdpAdoptStd, UdpBind, UdpDatagrams, UdpSupport};
 use std::io;
@@ -35,7 +34,13 @@ use std::net::SocketAddr;
 use std::task::{Context, Poll};
 use tokio::io::Interest;
 
-/// A bound UDP socket on tokio's reactor.
+/// A bound UDP socket on tokio's reactor — what [`UdpBind::bind`] and
+/// [`UdpAdoptStd::adopt`] hand back, used through [`UdpDatagrams`].
+///
+/// Opaque on purpose: the `quinn-udp` state inside is an implementation
+/// detail, and `hclient-rt`'s own [`EcnCodepoint`](hclient_rt::EcnCodepoint)
+/// is what crosses the seam, so no `quinn-udp` type is part of this
+/// crate's API.
 #[derive(Debug)]
 pub struct TokioUdpSocket {
     io: tokio::net::UdpSocket,

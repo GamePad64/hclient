@@ -1,29 +1,22 @@
-//! Adversarial test suite for `TokioIo`. The sibling suite for `FuturesIo`
-//! is `crates/hclient-rt/tests/adversarial_futures_io.rs`; this one is
-//! adapted to the fact that `TokioIo` is concrete over
-//! `tokio::net::TcpStream`
-//! rather than generic over an injectable `AsyncRead`/`AsyncWrite` - so
-//! these drive a real loopback TCP pair instead of hand-written mock
-//! sources, and `tokio::io::AsyncRead` fills a `ReadBuf` rather than
-//! returning a byte count.
+//! Adversarial read-side suite for `TokioIo`, over a real loopback TCP
+//! pair rather than mock sources — `TokioIo` is concrete over tokio's
+//! sockets, so there is nothing to inject.
 //!
-//! Confirmed non-vacuous by mutating
-//! `poll_read`'s `.min(self.scratch.len())` away and watching
-//! `cursor_one_byte_larger_than_scratch_buffer` go red with the exact
-//! panic the doc comment predicts (`range end index 8193 out of range for
-//! slice of length 8192`), then restoring and reconfirming green. To
-//! re-run: drop this file into `crates/hclient-rt-tokio/tests/` in a
-//! scratch clone and `cargo test -p hclient-rt-tokio --test
-//! adversarial_tokio_io --all-features`.
+//! **Its header outlived its subject once, and this is the rewrite.** It
+//! described a sibling suite for `hclient-rt`'s `FuturesIo` and a
+//! per-connection 8 KiB scratch buffer whose `.min(..)` a mutation had
+//! removed to prove the suite non-vacuous. Both are gone: `FuturesIo` was
+//! deleted when the byte-stream seam moved to `futures-io`, and `TokioIo`
+//! reads straight into the caller's buffer. Section D below still runs
+//! reads either side of 8 KiB, which now asserts a property — any read
+//! size delivers every byte in order — rather than guarding a boundary.
 //!
-//! Landed as 7 executable tests, not 8: the reviewer's 8th,
-//! `no_sticky_eof_state_field_exists_by_construction`, was an empty
-//! `#[test]` fn whose own doc comment already calls it "a documentation
-//! test, not a behavioural one" — it can never turn red under any code
-//! change, which is the vacuous-test pattern this project removes rather
-//! than accumulates. Its reasoning is real and worth keeping, so it
-//! survives below as a plain comment (section E) instead of a test item
-//! that always reports "ok".
+//! The write side, the half-close and the Unix arm are in
+//! `write_unix_and_half_close.rs`.
+//!
+//! A former eighth test, an empty `#[test]` whose own doc called it "a
+//! documentation test, not a behavioural one", was dropped as vacuous; its
+//! reasoning survives as section E.
 use futures_io::AsyncRead as SeamRead;
 use hclient_rt::{TcpAdoptStd, TcpConnect, TcpOpts};
 use hclient_rt_tokio::{Tokio, TokioIo};
@@ -35,7 +28,9 @@ use std::sync::Mutex;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
-const SCRATCH: usize = 8 * 1024; // must match the private const in io.rs
+/// A read size either side of which section D probes. It used to have to
+/// match a private scratch buffer in `io.rs`; there is no such buffer now.
+const SIZE: usize = 8 * 1024;
 
 /// Every direct wait on `poll_read` in this file goes through this helper
 /// instead of a bare `.await` on `poll_fn(...)`, so
@@ -262,8 +257,9 @@ async fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_e
 }
 
 // ---------------------------------------------------------------------
-// D. Scratch-buffer boundary: caller cursor sizes smaller than, exactly
-//    equal to, and one byte larger than SCRATCH (8 KiB).
+// D. Read sizes smaller than, equal to and one byte larger than 8 KiB —
+//    once a scratch-buffer boundary, now a check that any size delivers
+//    every byte in order.
 // ---------------------------------------------------------------------
 
 async fn read_exactly(client: &mut TokioIo, dest_len: usize, expected_len: usize) -> Vec<u8> {
@@ -284,9 +280,9 @@ async fn read_exactly(client: &mut TokioIo, dest_len: usize, expected_len: usize
 }
 
 #[tokio::test]
-async fn cursor_smaller_than_scratch_buffer() {
+async fn a_read_smaller_than_8_kib_delivers_every_byte() {
     let (mut client, mut server) = connected_pair().await;
-    let data = vec![0xABu8; SCRATCH / 2];
+    let data = vec![0xABu8; SIZE / 2];
     let writer = {
         let data = data.clone();
         std::thread::spawn(move || server.write_all(&data).unwrap())
@@ -297,59 +293,51 @@ async fn cursor_smaller_than_scratch_buffer() {
 }
 
 #[tokio::test]
-async fn cursor_exactly_equal_to_scratch_buffer() {
+async fn a_read_of_exactly_8_kib_delivers_every_byte() {
     let (mut client, mut server) = connected_pair().await;
     // `i % 256` is always in 0..256, which fits `u8` — bounded by the
-    // modulus, not by `SCRATCH`.
+    // modulus, not by `SIZE`.
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "`i % 256` is always in 0..256, which fits `u8` — bounded by the modulus, not by `SCRATCH`."
+        reason = "`i % 256` is always in 0..256, which fits `u8` — bounded by the modulus, not by `SIZE`."
     )]
-    let data: Vec<u8> = (0..SCRATCH).map(|i| (i % 256) as u8).collect();
+    let data: Vec<u8> = (0..SIZE).map(|i| (i % 256) as u8).collect();
     let writer = {
         let data = data.clone();
         std::thread::spawn(move || server.write_all(&data).unwrap())
     };
-    let out = read_exactly(&mut client, SCRATCH, SCRATCH).await;
+    let out = read_exactly(&mut client, SIZE, SIZE).await;
     writer.join().unwrap();
     assert_eq!(out, data);
 }
 
 #[tokio::test]
-async fn cursor_one_byte_larger_than_scratch_buffer() {
+async fn a_read_one_byte_over_8_kib_delivers_every_byte() {
     let (mut client, mut server) = connected_pair().await;
     // `i % 251` is always in 0..251, which fits `u8` — bounded by the
-    // modulus, not by `SCRATCH`.
+    // modulus, not by `SIZE`.
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "`i % 251` is always in 0..251, which fits `u8` — bounded by the modulus, not by `SCRATCH`."
+        reason = "`i % 251` is always in 0..251, which fits `u8` — bounded by the modulus, not by `SIZE`."
     )]
-    let data: Vec<u8> = (0..=SCRATCH).map(|i| (i % 251) as u8).collect();
+    let data: Vec<u8> = (0..=SIZE).map(|i| (i % 251) as u8).collect();
     let writer = {
         let data = data.clone();
         std::thread::spawn(move || server.write_all(&data).unwrap())
     };
-    let out = read_exactly(&mut client, SCRATCH + 1, SCRATCH + 1).await;
+    let out = read_exactly(&mut client, SIZE + 1, SIZE + 1).await;
     writer.join().unwrap();
     assert_eq!(out, data);
 }
 
 // ---------------------------------------------------------------------
-// E. Structural note on "spurious Ok(0) mid-stream, shim keeps no sticky
-//    EOF state" (one of the 13 FuturesIo adversarial tests): unlike
-//    FuturesIo<S>, TokioIo is concrete over tokio::net::TcpStream, so a
-//    real socket cannot be driven to emit a "spurious" non-final Ok(0) -
-//    tokio's AsyncRead for TcpStream only ever returns a 0-fill at genuine,
-//    permanent EOF. There is no way to turn this into a behavioural test
-//    against a real socket: the property in question is that `poll_read`
-//    holds no "have we seen EOF" flag, so it cannot wedge into a stale
-//    state - confirmed by reading io.rs (the only per-instance state is
-//    `inner` and `scratch`, and `poll_read` always re-polls `inner` fresh).
-//    That is a claim about private struct layout, invisible to an
-//    integration test, so it stays a comment rather than a `#[test]` fn
-//    that would report "ok" unconditionally and never be able to catch a
-//    regression — an empty body under a name implying a real check is
-//    vacuous, see the module doc comment above.
+// E. Structural note on "a spurious Ok(0) mid-stream, and no sticky EOF
+//    state": a real tokio socket only ever reads 0 at genuine, permanent
+//    EOF, so the property cannot be driven from outside. What it rests on
+//    is that `TokioIo` holds no "have we seen EOF" flag — its one field is
+//    the socket, and `poll_read` re-polls it every time — which is a claim
+//    about private layout, invisible to an integration test. So it stays a
+//    comment rather than a `#[test]` that could never fail.
 
 // Also confirmed: adopt() goes through the same TokioIo, so it inherits
 // the same read behaviour as connect() - spot check with TcpAdoptStd.

@@ -32,8 +32,7 @@
 //!   that structural argument, not as a probabilistic argument on its own
 //!   that would need more iterations to be trusted further.
 //!
-//! Run with `cargo test -p hclient-rt-tokio --test panic_fidelity_probes
-//! --all-features`.
+//! Run with `cargo nextest run -p hclient-rt-tokio --test panic_fidelity_probes`.
 use hclient_rt::{Blocking, Cancelled};
 use hclient_rt_tokio::Tokio;
 

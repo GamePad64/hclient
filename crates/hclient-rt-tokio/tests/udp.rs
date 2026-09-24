@@ -357,3 +357,147 @@ async fn a_plain_datagram_round_trips_with_no_offload_asked_for() {
     assert_eq!(&buf[..meta[0].len], b"plain");
     assert_eq!(meta[0].addr.ip(), a.local_addr().unwrap().ip());
 }
+
+/// The ECN claim's v6 arm, on the one socket shape that separates it from
+/// its mutants: **v6-only**, where `IP_RECVTOS` is not granted and yet the
+/// socket legitimately reports ECN, because no v4-mapped traffic can reach
+/// it.
+///
+/// Ported from `hclient-rt-smol`'s `a_v6_only_socket_claims_ecn_although_it_grants_no_v4_recvtos`,
+/// whose doc has the measured table. It was missing here, and a
+/// crate-scoped sweep said so: `ecn_is_really_on -> false`, the `!`
+/// deleted from `dual`, and `!dual && tos4` all survived this file,
+/// because every socket above is v4 or dual-stack, where the original
+/// and those mutants agree on this kernel.
+///
+/// What it does **not** kill is `ecn_is_really_on -> true`, since it
+/// asserts `true`; see `AGENTS.md` on why that one is unkillable on every
+/// platform this project runs.
+#[test]
+#[cfg_attr(
+    windows,
+    ignore = "the ECN probe reads IPV6_RECVTCLASS, and quinn-udp sets IPV6_RECVECN on Windows"
+)]
+fn a_v6_only_socket_claims_ecn_although_it_grants_no_v4_recvtos() {
+    use hclient_rt::UdpAdoptStd;
+    let Ok(raw) = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, None) else {
+        println!("no IPv6 support on this host; nothing to measure");
+        return;
+    };
+    if raw.set_only_v6(true).is_err() {
+        println!("IPV6_V6ONLY is not settable here; the discriminating shape is unavailable");
+        return;
+    }
+    let addr: SocketAddr = "[::1]:0".parse().expect("a v6 loopback literal");
+    if raw.bind(&addr.into()).is_err() {
+        println!("no IPv6 loopback on this host; nothing to measure");
+        return;
+    }
+    if !raw.only_v6().unwrap_or(false) {
+        println!("this socket is not v6-only; the discriminating shape is unavailable");
+        return;
+    }
+    // A runtime for the adopt's reactor registration, entered rather than
+    // driven: nothing here awaits.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("runtime");
+    let _guard = rt.enter();
+    let s = hclient_rt_tokio::Tokio
+        .adopt(std::net::UdpSocket::from(raw))
+        .expect("adopting a bound v6-only socket");
+    println!("v6-only socket reports ecn={}", s.support().ecn);
+    assert!(
+        s.support().ecn,
+        "a v6-only socket receives no v4-mapped traffic, so `IP_RECVTOS` being \
+         unset cannot disclaim ECN — the v6 arm must not require it"
+    );
+}
+
+/// A socket adopted with a clone of its descriptor kept outside the
+/// reactor — the seam's own `UdpAdoptStd` entry point, and the one way a
+/// test can take a datagram **after** the reactor reported it readable.
+fn adopted_with_a_thief() -> (hclient_rt_tokio::TokioUdpSocket, std::net::UdpSocket) {
+    use hclient_rt::UdpAdoptStd;
+    let std = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+    let thief = std.try_clone().expect("clone the descriptor");
+    let sock = hclient_rt_tokio::Tokio.adopt(std).expect("adopt");
+    (sock, thief)
+}
+
+fn poll_once(
+    sock: &hclient_rt_tokio::TokioUdpSocket,
+    buf: &mut [u8],
+) -> std::task::Poll<std::io::Result<usize>> {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut meta = [RecvMeta::default(); 1];
+    let mut bufs = [IoSliceMut::new(buf)];
+    sock.poll_recv(&mut cx, &mut bufs, &mut meta)
+}
+
+/// **Readiness the reactor reported, for a datagram someone else then
+/// took, is waited out rather than returned as an error.** That is the
+/// `WouldBlock` arm of `poll_recv`'s loop, and it exists because quinn
+/// drives one socket from several tasks: two of them can be woken for one
+/// datagram. tokio caches readiness, so the loser's `try_io` reaches the
+/// `recv`, which answers `WouldBlock`, and the loop must go back to
+/// `poll_recv_ready` — `Pending` — rather than surface `WouldBlock` as a
+/// failure of the socket.
+///
+/// Kills `guard -> false` and `== -> !=` on that arm, each re-applied by
+/// hand: both answer `Ready(Err(WouldBlock))` here.
+#[tokio::test]
+async fn readiness_for_a_datagram_someone_else_took_is_waited_out() {
+    let (sock, thief) = adopted_with_a_thief();
+    let mut buf = [0u8; 64];
+    assert!(
+        poll_once(&sock, &mut buf).is_pending(),
+        "nothing sent yet, so the first poll must register and wait"
+    );
+
+    let sender = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+    sender
+        .send_to(b"taken", sock.local_addr().expect("local_addr"))
+        .expect("send");
+    // Let the reactor see the datagram, so this socket's readiness is set.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // The thief takes it through the other descriptor. The adopt made the
+    // shared file description non-blocking, so this loops rather than
+    // blocking.
+    let mut got = [0u8; 64];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let n = loop {
+        match thief.recv(&mut got) {
+            Ok(n) => break n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the datagram never arrived"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => panic!("the thief's recv failed: {e}"),
+        }
+    };
+    assert_eq!(&got[..n], b"taken");
+
+    match poll_once(&sock, &mut buf) {
+        std::task::Poll::Pending => {}
+        other @ std::task::Poll::Ready(_) => panic!(
+            "a readiness whose datagram was already taken must be waited out, \
+             not answered: {other:?}"
+        ),
+    }
+}
+
+// **`guard -> true` on that arm is not killable from a loopback test, and
+// the reason is `quinn-udp` rather than this crate.** It would need a
+// receive that fails with something other than `WouldBlock`. The obvious
+// one — a connected socket's `ECONNREFUSED` after an ICMP port-unreachable
+// — never reaches `recvmsg` here: `quinn-udp` 0.6 sets `IP_RECVERR`, so the
+// ICMP error goes to the socket's error queue (`MSG_ERRQUEUE`, its
+// `linux.rs`) and the ordinary receive keeps answering `WouldBlock`.
+// Written, run, and measured timing out under the *unmutated* code before
+// it was removed.

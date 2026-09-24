@@ -1,4 +1,3 @@
-use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -13,6 +12,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// into the caller's buffer and the field is gone. What remains is the
 /// enum, because one associated `Stream` type has to cover both TCP and
 /// Unix sockets.
+///
+/// `Debug` is derived: the scratch buffer that once made a hand-written
+/// one worth having left with the `hyper::rt` seam.
+#[derive(Debug)]
 pub struct TokioIo {
     inner: Socket,
 }
@@ -53,6 +56,8 @@ impl TokioIo {
         }
     }
 
+    /// The underlying `tokio::net::TcpStream`, by value.
+    ///
     /// # Panics
     ///
     /// On a Unix-domain stream, for [`get_ref`](Self::get_ref)'s reason.
@@ -72,6 +77,7 @@ impl TokioIo {
 /// produce it — which is why `IpcConnect` extends `TcpConnect` rather than
 /// naming a stream of its own. The cost is one branch per `poll_*`, against a
 /// syscall.
+#[derive(Debug)]
 enum Socket {
     Tcp(tokio::net::TcpStream),
     #[cfg(unix)]
@@ -91,27 +97,6 @@ macro_rules! either {
             Socket::Unix($io) => $call,
         }
     };
-}
-
-impl Debug for Socket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Socket::Tcp(s) => s.fmt(f),
-            #[cfg(unix)]
-            Socket::Unix(s) => s.fmt(f),
-        }
-    }
-}
-
-// A hand-written `Debug`, not `#[derive]`: `derive` would dump all 8 KiB of
-// `scratch` as a list of numbers on every format call — useless and noisy
-// in logs.
-impl Debug for TokioIo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TokioIo")
-            .field("inner", &self.inner)
-            .finish()
-    }
 }
 
 impl futures_io::AsyncRead for TokioIo {

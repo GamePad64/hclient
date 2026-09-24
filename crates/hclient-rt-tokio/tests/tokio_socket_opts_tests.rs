@@ -6,8 +6,7 @@
 //! must be actually applied on a real connected socket, not merely
 //! accepted without effect.
 //!
-//! Run with `cargo test -p hclient-rt-tokio --test
-//! tokio_socket_opts_tests --all-features`.
+//! Run with `cargo nextest run -p hclient-rt-tokio --test tokio_socket_opts_tests`.
 //!
 //! IMPORTANT design note for whoever extends this file: the first version
 //! of the buffer-size tests asserted "explicit request > default/untouched

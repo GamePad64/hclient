@@ -17,9 +17,22 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-/// ZST: the tokio handle is picked up from the ambient runtime, the same
-/// way reqwest does it. Outside a runtime, `spawn`/`sleep` panic —
-/// documented behavior.
+/// The `hclient-rt` capabilities on tokio's **ambient** runtime.
+///
+/// A ZST: the tokio handle is picked up from the thread's current runtime
+/// context, the same way reqwest does it.
+///
+/// # Panics
+///
+/// Every capability that reaches the runtime panics, inside tokio, when it
+/// is used on a thread with no tokio runtime entered: [`Spawn::spawn`],
+/// [`Blocking::run`] and [`Timer::sleep`] at the call, and
+/// [`TcpConnect::connect`], [`IpcConnect::connect_ipc`](hclient_rt::IpcConnect::connect_ipc)
+/// and the adopt/bind entry points at the point they register with the
+/// reactor. That is this type's precondition, stated here because
+/// `hclient_rt::Spawn` asks a runtime that can refuse to say so on its
+/// own type. [`Timer::now`] and [`Timer::elapsed_since`] never read the
+/// context and work anywhere.
 ///
 /// [`TokioHandle`] is the same capabilities with the runtime carried as a
 /// value instead, which turns that panic into a `Result` at construction.
@@ -54,7 +67,7 @@ impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Tokio {
 
 impl Blocking for Tokio {
     /// `tokio::task::spawn_blocking` returns `JoinError` for two distinct
-    /// cases, and `caps::Blocking`'s contract requires not conflating
+    /// cases, and `hclient_rt::Blocking`'s contract requires not conflating
     /// them: the closure panicked, OR the
     /// background thread pool went away before the task got to start (not
     /// hypothetical — happens when a `spawn_blocking` task is still queued
@@ -89,12 +102,12 @@ fn classify<T>(r: Result<T, tokio::task::JoinError>) -> Result<T, Cancelled> {
 impl TcpConnect for Tokio {
     type Stream = TokioIo;
 
-    /// Every field, and `build_socket` below is where each one is applied.
-    /// Stated rather than left to the trait's `NONE` default, which would
-    /// understate this runtime — see `TcpConnect::TCP_SUPPORT`.
+    /// What `build_socket` below applies on this target — stated rather
+    /// than left to the trait's `NONE` default, which would understate
+    /// this runtime (see `TcpConnect::TCP_SUPPORT`).
+    ///
     /// **Built from `NONE`, one option at a time, and that is the
-    /// point.** Two of
-    /// the fields are Linux socket options with no counterpart elsewhere —
+    /// point.** Two of the fields are Linux socket options with no counterpart elsewhere —
     /// `SO_BINDTODEVICE` on Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` on
     /// those plus Cygwin — and a constant claiming them on macOS or
     /// Windows would be a capability that lies, refused at the wrong
@@ -224,16 +237,12 @@ impl TcpAdoptStd for Tokio {
 /// comment on `TcpConnect::connect` promises: the runtime only adopts a
 /// finished socket.
 ///
-/// Applying `nodelay`/`keepalive` in a separate step AFTER `connect()`,
-/// on the already tokio-wrapped `TcpStream` (`apply_post_connect`), is
-/// wrong even though this
-/// comment promises "once, on the `socket2::Socket`".
-/// Not a bug (`TCP_NODELAY`/`SO_KEEPALIVE` behave identically whether set
-/// before or after `connect()`), but a mismatch between the text and the
-/// code — and `hclient-rt-smol` copies this exact file. Both `nodelay` and
-/// `keepalive` can be set on a `socket2::Socket`
-/// before `connect()`; no exception turned up that would have to stay
-/// post-connect — the whole list now lives in one place.
+/// There used to be a second step, `apply_post_connect`, setting
+/// `nodelay`/`keepalive` on the tokio stream after `connect()`. It was not
+/// a behavioural bug — both options act the same set before or after —
+/// but it contradicted this comment, and `hclient-rt-smol` copies this
+/// function. Every option can be set before `connect()`, so the whole list
+/// lives here.
 fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::Socket> {
     let domain = socket2::Domain::for_address(addr);
     let sock = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
