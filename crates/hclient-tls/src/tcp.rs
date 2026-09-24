@@ -192,11 +192,9 @@ impl<'a> TlsRequest<'a> {
 /// **Every field is `Option`**: native-tls (the only backend available
 /// without picking a specific crypto library) hands back only the leaf
 /// certificate, ALPN, and tls-server-end-point — not the full chain, not
-/// the protocol version, not the cipher suite. Note that this describes
-/// `native-tls` itself; `hclient-tls-native-tls`, the backend built on it,
-/// reports even less — its `alpn` is always `None`, because the async
-/// wrapper it uses does not expose the negotiated protocol. See that
-/// crate's module doc before relying on ALPN from it. The trait must allow for a
+/// the protocol version, not the cipher suite. `hclient-tls-native-tls`
+/// reports exactly that set — the negotiated ALPN and the leaf — and `None`
+/// for the version and the suite. The trait must allow for a
 /// backend with that reduced a set. Symmetrically: a backend that can't
 /// report a field must leave it `None`, not substitute a plausible-looking
 /// value — a capability that lies about its own state is worse than a
