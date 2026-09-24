@@ -5,8 +5,8 @@
 //! implementation is a design. `crates/hclient/tests/two_runtimes.rs` is
 //! what makes "the runtime seam is real" a measurement rather than a claim
 //! for TCP; `crates/hclient-rt-pair-check/tests/udp_pair_property.rs` and
-//! `crates/hclient-h3/tests/two_runtimes.rs` are what make it one for UDP
-//! and for HTTP/3.
+//! `crates/hclient-native/tests/h3_two_runtimes.rs` are what make it one for
+//! UDP and for HTTP/3.
 //!
 //! # What was in doubt before this file, and what it answered
 //!
@@ -59,7 +59,13 @@ use std::io::IoSliceMut;
 use std::net::SocketAddr;
 use std::task::{Context, Poll};
 
-/// A bound UDP socket on smol's reactor.
+/// A bound UDP socket on smol's reactor — what [`UdpBind::bind`] and
+/// [`UdpAdoptStd::adopt`] hand back, used through [`UdpDatagrams`].
+///
+/// Opaque on purpose: the `quinn-udp` state inside is an implementation
+/// detail, and `hclient-rt`'s own [`EcnCodepoint`](hclient_rt::EcnCodepoint)
+/// is what crosses the seam, so no `quinn-udp` type is part of this
+/// crate's API.
 #[derive(Debug)]
 pub struct SmolUdpSocket {
     io: async_io::Async<std::net::UdpSocket>,

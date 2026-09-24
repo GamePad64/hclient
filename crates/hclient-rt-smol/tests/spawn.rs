@@ -100,3 +100,36 @@ fn every_spawn_runs_when_several_threads_race_the_executor_bootstrap() {
         "sixteen spawns from four threads",
     );
 }
+
+/// **A task that panics does not stop the ones spawned after it.**
+///
+/// There is one executor thread for the whole process, started once. If a
+/// panicking task unwound through it, the thread would die, `Once` would
+/// never start another, and every later `spawn` would be accepted and never
+/// run — the one shape `hclient_rt::Spawn` forbids, and a hang rather than
+/// an error for whoever spawned a connection driver.
+///
+/// It holds because `async-executor` 1.x builds each task with
+/// `propagate_panic(true)`, catching the unwind into the task handle that
+/// `detach` then discards. That is a claim about a third party, so it is
+/// pinned rather than described: an `async-executor` that stopped catching
+/// fails this line instead of hanging a client.
+#[test]
+fn a_panicking_task_does_not_stop_later_ones() {
+    let before = Arc::new(AtomicUsize::new(0));
+    let b = Arc::clone(&before);
+    Smol.spawn(async move {
+        b.fetch_add(1, Ordering::SeqCst);
+        panic!("a spawned task that panics, on purpose");
+    });
+    wait_for(&before, 1, "the panicking task");
+    // Give the unwind time to reach the executor thread, if it is going to.
+    std::thread::sleep(Duration::from_millis(50));
+
+    let after = Arc::new(AtomicUsize::new(0));
+    let a = Arc::clone(&after);
+    Smol.spawn(async move {
+        a.fetch_add(1, Ordering::SeqCst);
+    });
+    wait_for(&after, 1, "a task spawned after one that panicked");
+}

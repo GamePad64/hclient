@@ -355,10 +355,10 @@ fn a_v6_only_socket_claims_ecn_although_it_grants_no_v4_recvtos() {
     );
 }
 
-// **Four `poll_recv` mutants are left alive deliberately**, and all four
-// are the same observable: the `WouldBlock` arm of its receive loop, which
-// on this backend is never taken. Counted with an `eprintln!` in that arm
-// — **0** hits across every test in this crate, and **0** again under a
+// **Three `poll_recv` mutants are left alive deliberately**, and all
+// three are the same observable: the `WouldBlock` arm of its receive loop,
+// which on this backend is never taken. Counted with an `eprintln!` in that
+// arm — **0** hits across every test in this crate, and **0** again under a
 // purpose-built race with four threads polling one socket against 200
 // queued datagrams, which is the shape that arm exists for (readiness
 // reported, then the datagram taken by someone else before the `recv`).
@@ -368,16 +368,22 @@ fn a_v6_only_socket_claims_ecn_although_it_grants_no_v4_recvtos() {
 // `Ready` only when the reactor's tick has moved past the one recorded at
 // the caller's last `Pending`, and re-arms on every registration — so a
 // poller that loses the race is told `Pending` by `poll_readable` rather
-// than being waved through to a `recv` that finds nothing. Reaching the
-// arm needs a consumer *outside* this reactor, which a test of this crate
-// cannot arrange without reaching past the seam.
+// than being waved through to a `recv` that finds nothing.
+//
+// **A consumer outside the reactor does not reach it either**, which this
+// note used to name as the missing instrument. It was built — a socket
+// adopted through `UdpAdoptStd` with a clone of its descriptor kept back,
+// polled once to register, sent a datagram, the datagram taken through the
+// clone, then polled again — and it answers `Pending` under the original
+// *and* under `guard -> false`, so the arm is not entered. The same test
+// kills both mutants on `hclient-rt-tokio`, whose reactor does cache
+// readiness (`readiness_for_a_datagram_someone_else_took_is_waited_out`
+// there). Here it would be a test that cannot fail, so it is not kept.
 //
 // So the arm is right to exist — `quinn` drives this socket from several
-// tasks, and `hclient-rt-tokio`'s twin, whose reactor *does* cache
-// readiness, genuinely takes it — and it is not pinnable from here. Same
-// verdict, same evidence, as the `begin_connect` note in
-// `adversarial_smol_connect.rs`: an observable this backend cannot reach
-// is not a gap.
-//
-// `poll_writable` is the fifth, for the reason recorded above the
-// capability test at the head of this file.
+// tasks, and the tokio twin genuinely takes it — and it is not pinnable
+// from here: an observable this backend cannot reach is not a gap.
+
+// `poll_writable -> Ready(Ok(()))` stays alive, for the reason recorded
+// above the capability test at the head of this file: a loopback UDP send
+// drops rather than queues, so no socket here is ever unwritable.

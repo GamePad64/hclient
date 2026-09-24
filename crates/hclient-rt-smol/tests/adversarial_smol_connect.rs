@@ -29,9 +29,7 @@
 //! `reuse_address`, and `nodelay` mutations each turned exactly their own
 //! named test in `smol_socket_opts_tests.rs` red and nothing else.
 //!
-//! To re-run: drop this file into `crates/hclient-rt-smol/tests/` in a
-//! scratch clone and `cargo test -p hclient-rt-smol --test
-//! adversarial_smol_connect --all-features`.
+//! To run: `cargo nextest run -p hclient-rt-smol --test adversarial_smol_connect`.
 use hclient_rt::{TcpConnect, TcpOpts};
 use hclient_rt_smol::Smol;
 use std::net::SocketAddr;

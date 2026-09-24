@@ -170,6 +170,54 @@ fn poll_close_half_closes_so_the_peer_sees_eof() {
     assert_eq!(joiner.join().expect("reader thread"), 0);
 }
 
+/// **The half-close leaves the reading half open**, which is the half of
+/// `hclient_rt::Shutdown`'s contract the EOF test above cannot see: a full
+/// close sends the same FIN. The peer reads to EOF and only then answers,
+/// so the answer can arrive only after this side's `poll_shutdown` — and a
+/// `shutdown(Both)` in its place loses it.
+///
+/// Re-applied by hand: `poll_shutdown` replaced with
+/// `self.tcp().shutdown(std::net::Shutdown::Both)` fails here and passes
+/// every other test in this file.
+#[test]
+fn after_the_half_close_the_peers_answer_still_arrives() {
+    use futures_lite::io::AsyncRead as _;
+    use std::io::Write as _;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = l.local_addr().expect("local_addr");
+    let joiner = std::thread::spawn(move || {
+        let (mut s, _) = l.accept().expect("accept");
+        s.set_read_timeout(Some(BOUND)).expect("read timeout");
+        let mut got = Vec::new();
+        s.read_to_end(&mut got).expect("EOF from the half-close");
+        s.write_all(b"the-answer").expect("answer");
+        got
+    });
+
+    futures_executor::block_on(async {
+        let mut s = bounded(Smol.connect(addr, &TcpOpts::default()))
+            .await
+            .expect("connect");
+        write_all(&mut s, b"the-request").await.expect("write");
+        bounded(poll_fn(|cx| Pin::new(&mut s).poll_shutdown(cx)))
+            .await
+            .expect("shutdown");
+        let mut out = Vec::new();
+        let mut buf = [0u8; 64];
+        loop {
+            let n = bounded(poll_fn(|cx| Pin::new(&mut s).poll_read(cx, &mut buf)))
+                .await
+                .expect("the read half must still be open after the half-close");
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(out, b"the-answer");
+    });
+    assert_eq!(joiner.join().expect("peer thread"), b"the-request");
+}
+
 /// The vectored write path carries every buffer, in order.
 ///
 /// `poll_write_vectored` has its own mutants (`Ok(0)`, `Ok(1)`) and its own

@@ -23,13 +23,7 @@
 //! the tokio sibling settled on 7 too (its own former 8th was dropped as
 //! vacuous) - no equivalent gap found on the smol side.
 //!
-//! To re-run: this file needs `hyper = { version = "1.11", default-features
-//! = false }` as a **dev-dependency** of `hclient-rt-smol` (it is only a
-//! normal, non-dev dependency of `hclient-rt`, so it is not visible to an
-//! integration test under `crates/hclient-rt-smol/tests/` without this) -
-//! drop this file into `crates/hclient-rt-smol/tests/` in a scratch clone,
-//! add that dev-dependency, and `cargo test -p hclient-rt-smol --test
-//! adversarial_smol_io --all-features`.
+//! To run: `cargo nextest run -p hclient-rt-smol --test adversarial_smol_io`.
 use futures_lite::io::AsyncRead as _;
 use hclient_rt::{TcpAdoptStd, TcpConnect, TcpOpts};
 use hclient_rt_smol::Smol;

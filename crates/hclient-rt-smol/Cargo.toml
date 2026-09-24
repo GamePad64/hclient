@@ -51,9 +51,6 @@ libc = "0.2.172"
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
-# Only for `tests/adversarial_smol_io.rs`: `hyper` is a normal (non-dev)
-# dependency of `hclient-rt`, not of this crate, so it's not visible to an
-# integration test here without its own dev-dependency.
 
 [lints]
 workspace = true

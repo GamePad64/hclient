@@ -1,8 +1,9 @@
 //! `hclient-rt` capabilities implemented on top of smol.
 //!
 //! **No `async-compat`.** It spins up a second runtime in-process if no
-//! tokio context is found — which hides exactly the problem this vertical
-//! is meant to surface.
+//! tokio context is found — which hides exactly the problem a second
+//! runtime is here to surface: code that only works because tokio happens
+//! to be around.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "udp")]
@@ -22,6 +23,17 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+/// The `hclient-rt` capabilities on smol's building blocks: `async-io`'s
+/// process-global reactor and timers, `blocking`'s thread pool, and
+/// `async-executor` for [`Spawn`].
+///
+/// A ZST with **no precondition**, unlike `hclient_rt_tokio::Tokio`: there
+/// is no ambient runtime to be outside of. `async-io` starts its reactor on
+/// its own thread on first use, and the first [`Spawn::spawn`] starts one
+/// process-wide executor thread, named `hclient-smol`, that runs every
+/// spawned task for the life of the process. So every capability here works
+/// from any thread and under any executor — `futures_executor::block_on`
+/// included — and a spawned future is never dropped unrun.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Smol;
 
@@ -55,7 +67,13 @@ impl Timer for Smol {
 impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Smol {
     fn spawn(&self, f: F) {
         // `detach` is deliberate: the task's lifetime is tied to the
-        // connection, not to the caller.
+        // connection, not to the caller. A task that panics does not take
+        // the executor thread with it: `async-executor` 1.x builds every
+        // task with `propagate_panic(true)`, so the unwind is caught into
+        // the task's handle — which `detach` discards — and the tasks
+        // spawned after it still run. Pinned by `tests/spawn.rs`, because
+        // a dead executor thread would turn every later spawn into the
+        // accepted-and-never-run future `hclient_rt::Spawn` forbids.
         smol_spawn(f);
     }
 }
@@ -128,9 +146,21 @@ impl Blocking for Smol {
 /// `TcpConnect::Stream` is one associated type and both connects must
 /// produce it — `IpcConnect` extends `TcpConnect` for exactly that, and
 /// this is the same shape `hclient-rt-tokio`'s `Socket` has.
+///
+/// **`#[non_exhaustive]`, because this crate hands it back and a caller only
+/// reads it.** A new endpoint kind — `hclient_rt::IpcAddr` is itself
+/// non-exhaustive, and named pipes are the next one — is a new variant
+/// here. The attribute also keeps a caller's `match` portable: `Unix` exists
+/// only on `cfg(unix)`, so an exhaustive match written on Linux would not
+/// compile on Windows, where a wildcard arm is required anyway.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum SmolSocket {
+    /// A TCP connection, from [`TcpConnect::connect`] or
+    /// [`TcpAdoptStd::adopt`].
     Tcp(async_net::TcpStream),
+    /// A Unix-domain connection, from
+    /// [`IpcConnect::connect_ipc`](hclient_rt::IpcConnect::connect_ipc).
     #[cfg(unix)]
     Unix(async_net::unix::UnixStream),
 }
@@ -249,12 +279,12 @@ impl futures_lite::io::AsyncWrite for SmolSocket {
 impl TcpConnect for Smol {
     type Stream = SmolSocket;
 
-    /// Every field, and `build_socket` below is where each one is applied.
-    /// Stated rather than left to the trait's `NONE` default, which would
-    /// understate this runtime — see `TcpConnect::TCP_SUPPORT`.
+    /// What `build_socket` below applies on this target — stated rather
+    /// than left to the trait's `NONE` default, which would understate
+    /// this runtime (see `TcpConnect::TCP_SUPPORT`).
+    ///
     /// **Built from `NONE`, one option at a time, and that is the
-    /// point.** Two of
-    /// the fields are Linux socket options with no counterpart elsewhere —
+    /// point.** Two of the fields are Linux socket options with no counterpart elsewhere —
     /// `SO_BINDTODEVICE` on Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` on
     /// those plus Cygwin — and a constant claiming them on macOS or
     /// Windows would be a capability that lies, refused at the wrong
@@ -361,8 +391,9 @@ impl hclient_rt::IpcConnect for Smol {
 
     // One type on every target, for the reason `hclient-rt-tokio`'s says:
     // `SmolSocket::Unix` is `#[cfg(unix)]`, so the arm that builds one is
-    // too, and the wildcard `IpcAddr`'s `#[non_exhaustive]` requires is the
-    // refusal everywhere else.
+    // too. The refusal everywhere else is `reject_unsupported` on entry;
+    // the wildcard `IpcAddr`'s `#[non_exhaustive]` requires is only ever
+    // reached by a kind `IPC_SUPPORT` claims and no arm dials.
     fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
         // Owned, because the seam's future is parameterised by `&self`'s
         // lifetime alone — the same rule `connect` follows for `opts`.
