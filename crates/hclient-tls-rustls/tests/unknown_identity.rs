@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 mod server;
 
+#[cfg(feature = "quic")]
 fn empty_client_config() -> rustls::ClientConfig {
     let (_addr, ca) = server::spawn_tls_echo();
     let mut roots = rustls::RootCertStore::empty();
@@ -105,36 +106,42 @@ fn the_quic_path_refuses_the_same_label() {
 /// above cannot cover.**
 ///
 /// `quic_client_config` checks the label and `quic_session` resolves it,
-/// and those are now two calls — so a backend that validated the name
-/// and then built a session without it would refuse every *unknown*
-/// label and silently present the **default** identity for every known
-/// one. That is the silent substitution `docs/mtls-design.md` exists to
-/// remove, in the one shape a refusal test cannot see: both halves
-/// answer `Ok`.
+/// and those are two calls — so a backend that validated the name and
+/// then built a session without it would refuse every *unknown* label and
+/// silently present the **default** identity for every known one. That is
+/// the silent substitution `docs/mtls-design.md` exists to remove, in the
+/// one shape a refusal test cannot see: both halves answer `Ok`.
 ///
 /// Found by mutation — dropping the label on the way into
 /// `QuicCryptoConfig` passed the whole suite, including the refusal
-/// above — and the gap predates the seam split: with one method the
-/// same omission was a config built from `self.base`, equally
-/// untested.
+/// above. **The first version of this test could not fail either**: it
+/// asserted that the label travelled in the declaration and then that
+/// `quic_session` answered `Ok` for both, which is also true of a
+/// `quic_config_for` that resolves the label and then builds from `base`.
 ///
-/// It is asserted through `TlsConfigId`, which is the observable this
-/// crate already trusts for exactly this question: the id is a
-/// component of `hclient-native`'s pool key, so two labels answering
-/// one id is what would let one tenant's connection serve another's
-/// request. `tests/config_id.rs` makes the same assertion for the TCP
-/// path.
+/// So the two configs now differ in something `quic_session` itself
+/// decides on. QUIC protects its Initial packets with
+/// `TLS13_AES_128_GCM_SHA256` (RFC 9001 §5.2), and
+/// `quinn_proto::crypto::rustls::QuicClientConfig::try_from` refuses a
+/// config whose crypto provider lacks it. The registered identity's
+/// provider carries `ChaCha20` alone; the default is ordinary. A session
+/// built from the label must therefore fail, and one built from the
+/// default must not — the only outcome a substitution cannot produce.
 #[cfg(feature = "quic")]
 #[test]
 fn a_registered_label_reaches_the_session_rather_than_the_default() {
     use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
 
     let base = empty_client_config();
-    let mut named = empty_client_config();
-    // A config that differs from `base` in something `TlsConfigId` is
-    // derived from, so "the session was built from the label" and "the
-    // session was built from the default" are distinguishable at all.
-    named.alpn_protocols = vec![b"distinct".to_vec()];
+    let mut chacha_only = rustls::crypto::ring::default_provider();
+    chacha_only
+        .cipher_suites
+        .retain(|s| s.suite() == rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256);
+    let named = rustls::ClientConfig::builder_with_provider(Arc::new(chacha_only))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
 
     let tls = Rustls::from_config(Arc::new(base)).with_identity("corp", Arc::new(named));
 
@@ -152,10 +159,54 @@ fn a_registered_label_reaches_the_session_rather_than_the_default() {
     );
     assert_eq!(without.identity, None, "and must not appear unasked");
 
-    // And the sessions really differ, so the label is not merely
-    // carried but *used*: `quic_session` resolves it against the
-    // registered config.
-    tls.quic_session(&with_label)
-        .expect("the registered identity builds a session");
-    tls.quic_session(&without).expect("so does the default one");
+    tls.quic_session(&without)
+        .expect("the default identity is a TLS 1.3 config QUIC accepts");
+    assert!(
+        tls.quic_session(&with_label).is_err(),
+        "the session for `corp` was built from a config with QUIC's Initial suite, so it \
+         was not built from `corp`'s ChaCha20-only config: the default was substituted"
+    );
+}
+
+/// **The TCP half of the same property**: a registered label is *served*,
+/// not merely accepted.
+///
+/// `a_registered_label_still_connects` above registers a config identical
+/// to the default, so it passes for a `config_for` that checks the name
+/// and then connects with `base`. Here only the named config trusts the
+/// server: with the label the handshake must succeed, and without it the
+/// same server must be refused.
+#[tokio::test]
+async fn a_registered_label_is_the_config_the_handshake_uses() {
+    let (addr, ca) = server::spawn_tls_echo();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca.into()).unwrap();
+    let trusting = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let trusting_nothing = rustls::ClientConfig::builder()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    let tls =
+        Rustls::from_config(Arc::new(trusting_nothing)).with_identity("corp", Arc::new(trusting));
+
+    let dial = || async {
+        hclient_rt_tokio::Tokio
+            .connect(addr, &hclient_rt::TcpOpts::default())
+            .await
+            .unwrap()
+    };
+
+    tls.connect(
+        dial().await,
+        TlsRequest::new("localhost", &[b"http/1.1"]).identity(Some("corp")),
+    )
+    .await
+    .expect("the named config trusts this server, so the labelled handshake must succeed");
+
+    // The control: the default config does not trust it, so a substitution
+    // is exactly what this refusal looks like.
+    tls.connect(dial().await, TlsRequest::new("localhost", &[b"http/1.1"]))
+        .await
+        .expect_err("the default config trusts nothing");
 }

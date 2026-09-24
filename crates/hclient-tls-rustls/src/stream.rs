@@ -14,6 +14,13 @@ const SCRATCH: usize = 16 * 1024;
 /// `unbuffered` — that was removed on rustls main (PR #2905, 2026-02-06),
 /// and an adapter built on it would have to be rewritten wholesale for
 /// 0.24.
+///
+/// **This one will be rewritten for 0.24 too, only less.** Read in
+/// `0.24.0-dev.1` rather than assumed: `unbuffered` is gone as predicted,
+/// and so is `read_tls` — `process_new_packets` takes a caller-owned
+/// `&mut dyn TlsInputBuffer` instead. That moves the ciphertext buffer from
+/// rustls into this type, which is roughly what `Pending` already is, so
+/// the change is to the read half's plumbing rather than its shape.
 #[derive(Debug)]
 pub struct TlsStream<S> {
     io: S,
@@ -348,9 +355,9 @@ impl<S: Read + Write + Shutdown + Unpin> Write for TlsStream<S> {
     /// the leftover from the previous call before touching this call's
     /// `data` — otherwise `conn.writer().write(data)` below would queue
     /// the same bytes AGAIN on top of ones not yet sent from last time.
-    /// The `hyper::rt::Write` contract requires repeating `poll_write`
-    /// with the SAME `data` after a `Pending`, and `rustls::Writer::write`
-    /// is not idempotent — every call unconditionally buffers and
+    /// A caller that got `Pending` repeats `poll_write` with the SAME
+    /// `data` — `futures_io::AsyncWrite`'s contract, as it was
+    /// `hyper::rt`'s — and `rustls::Writer::write` is not idempotent — every call unconditionally buffers and
     /// encrypts new bytes, with no deduplication (`Writer::write`'s doc:
     /// "buffers plaintext sent... and sends it as soon as it can" — not a
     /// word there about repeated calls with already-seen bytes, because
@@ -380,7 +387,7 @@ impl<S: Read + Write + Shutdown + Unpin> Write for TlsStream<S> {
             // `common_state::DEFAULT_BUFFER_LIMIT`) is full — temporary
             // backpressure at the rustls level, NOT "the transport will
             // never accept another byte," which is what `Ok(0)` means in
-            // the `hyper::rt::Write::poll_write` contract. The only way
+            // the `futures_io::AsyncWrite::poll_write` contract. The only way
             // to free up room is to flush what's already queued to the
             // transport.
             return match flush_outgoing(&mut this.io, &mut this.conn, cx) {
@@ -435,52 +442,395 @@ impl<S: Read + Write + Shutdown + Unpin> Shutdown for TlsStream<S> {
 }
 
 #[cfg(test)]
-mod trace_emission {
-    /// A collector that counts events at `TRACE` from this crate.
-    ///
-    /// `tracing` alone has no subscriber, so without one every `trace!`
-    /// is a no-op and "the feature is on" would prove nothing about
-    /// whether the lines exist. This is the smallest thing that can tell
-    /// the two apart, and it is why the assertion is a **count** rather
-    /// than a rendering: the text is a diagnostic and may be reworded,
-    /// where "this path emits at all" is the property worth pinning.
-    struct Counting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+mod in_memory {
+    //! `TlsStream` over an in-memory transport, driven by hand against a
+    //! rustls server — so each property below happens on purpose rather than
+    //! when a kernel happens to cut a read in the right place.
+    //!
+    //! This module exists because a mutation sweep found the stream's
+    //! backpressure, write, flush, close and half-close paths all
+    //! replaceable with the suite green. The loopback tests in `tests/` go
+    //! through real sockets and a real runtime, which is what makes them
+    //! worth having and also what keeps them from choosing *which* path is
+    //! taken.
 
-    impl tracing::subscriber::Subscriber for Counting {
-        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
-            *m.level() == tracing::Level::TRACE
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// One direction of an in-memory pipe.
+    type Pipe = Arc<Mutex<Vec<u8>>>;
+
+    /// What the transport beneath the stream was asked to do, and how it
+    /// answers writes.
+    #[derive(Default)]
+    struct Transport {
+        /// Writes answered `Pending` before the transport accepts any.
+        refuse_writes: AtomicUsize,
+        /// Every write answered `Ready(Ok(0))` — a transport that will
+        /// never take another byte.
+        write_zero: std::sync::atomic::AtomicBool,
+        shutdowns: AtomicUsize,
+        closes: AtomicUsize,
+    }
+
+    /// The client's end: reads from `inbound`, writes to `outbound`, and is
+    /// `Pending` rather than at end-of-stream when there is nothing to read,
+    /// because the test drives the peer by hand between polls.
+    struct Mem {
+        inbound: Pipe,
+        outbound: Pipe,
+        t: Arc<Transport>,
+    }
+
+    impl Read for Mem {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let mut inbound = self.inbound.lock().unwrap();
+            if inbound.is_empty() {
+                return Poll::Pending;
+            }
+            let n = buf.len().min(inbound.len());
+            buf[..n].copy_from_slice(&inbound[..n]);
+            inbound.drain(..n);
+            Poll::Ready(Ok(n))
+        }
+    }
+
+    impl Write for Mem {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.t.write_zero.load(Ordering::SeqCst) {
+                return Poll::Ready(Ok(0));
+            }
+            if self
+                .t
+                .refuse_writes
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Poll::Pending;
+            }
+            self.outbound.lock().unwrap().extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.t.closes.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Shutdown for Mem {
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.t.shutdowns.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A handshaken client stream and the server at the other end.
+    struct Pair {
+        stream: TlsStream<Mem>,
+        server: rustls::ServerConnection,
+        to_client: Pipe,
+        to_server: Pipe,
+        t: Arc<Transport>,
+    }
+
+    impl Pair {
+        fn new() -> Self {
+            let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+            let server_cfg = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![cert.cert.der().clone()],
+                    rustls_pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into()),
+                )
+                .unwrap();
+            let mut server = rustls::ServerConnection::new(Arc::new(server_cfg)).unwrap();
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(cert.cert.der().clone()).unwrap();
+            let client = crate::Rustls::from_config(Arc::new(
+                rustls::ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+            ));
+
+            let to_client: Pipe = Arc::default();
+            let to_server: Pipe = Arc::default();
+            let t = Arc::new(Transport::default());
+            let io = Mem {
+                inbound: Arc::clone(&to_client),
+                outbound: Arc::clone(&to_server),
+                t: Arc::clone(&t),
+            };
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            let mut handshake = std::pin::pin!(hclient_tls::TlsConnect::connect(
+                &client,
+                io,
+                hclient_tls::TlsRequest::new("localhost", &[]),
+            ));
+            let stream = loop {
+                match handshake.as_mut().poll(&mut cx) {
+                    Poll::Ready(r) => break r.expect("handshake").0,
+                    Poll::Pending => exchange(&mut server, &to_server, &to_client),
+                }
+            };
+            let mut pair = Self {
+                stream,
+                server,
+                to_client,
+                to_server,
+                t,
+            };
+            // The client's `Finished`, so the server may send data.
+            pair.exchange();
+            pair
+        }
+
+        /// Everything the client wrote goes to the server, and everything
+        /// the server has to say goes back.
+        fn exchange(&mut self) {
+            exchange(&mut self.server, &self.to_server, &self.to_client);
+        }
+
+        fn server_flush(&mut self) {
+            server_flush(&mut self.server, &self.to_client);
+        }
+
+        /// What the server has received as plaintext: `Some(bytes)` while
+        /// the stream is open, `None` once `close_notify` has arrived and
+        /// nothing precedes it.
+        fn server_reads(&mut self) -> Option<Vec<u8>> {
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut self.server.reader(), &mut buf) {
+                    Ok(0) if got.is_empty() => return None,
+                    Ok(0) => return Some(got),
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Some(got),
+                    Err(e) => panic!("server read: {e}"),
+                }
+            }
+        }
+
+        fn client_read_all(&mut self, cx: &mut Context<'_>) -> Vec<u8> {
+            let mut got = Vec::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match Pin::new(&mut self.stream).poll_read(cx, &mut buf) {
+                    Poll::Ready(Ok(0)) | Poll::Pending => return got,
+                    Poll::Ready(Ok(n)) => got.extend_from_slice(&buf[..n]),
+                    Poll::Ready(Err(e)) => panic!("after {} bytes: {e}", got.len()),
+                }
+            }
+        }
+    }
+
+    fn exchange(server: &mut rustls::ServerConnection, to_server: &Pipe, to_client: &Pipe) {
+        let bytes = std::mem::take(&mut *to_server.lock().unwrap());
+        let mut cursor = std::io::Cursor::new(bytes);
+        while cursor.position() < cursor.get_ref().len() as u64 {
+            server.read_tls(&mut cursor).unwrap();
+            server.process_new_packets().unwrap();
+        }
+        server_flush(server, to_client);
+    }
+
+    fn server_flush(server: &mut rustls::ServerConnection, to_client: &Pipe) {
+        while server.wants_write() {
+            server.write_tls(&mut *to_client.lock().unwrap()).unwrap();
+        }
+    }
+
+    fn cx() -> Context<'static> {
+        Context::from_waker(std::task::Waker::noop())
+    }
+
+    /// Counts `trace!` events whose message mentions backpressure.
+    struct Signals(Arc<AtomicUsize>);
+
+    struct Message(bool);
+    impl tracing::field::Visit for Message {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" && format!("{value:?}").contains("backpressure") {
+                self.0 = true;
+            }
+        }
+    }
+
+    impl tracing::subscriber::Subscriber for Signals {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
         }
         fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::Id {
             tracing::Id::from_u64(1)
         }
         fn record(&self, _: &tracing::Id, _: &tracing::span::Record<'_>) {}
         fn record_follows_from(&self, _: &tracing::Id, _: &tracing::Id) {}
-        fn event(&self, _: &tracing::Event<'_>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        fn event(&self, e: &tracing::Event<'_>) {
+            let mut m = Message(false);
+            e.record(&mut m);
+            if m.0 {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
         }
         fn enter(&self, _: &tracing::Id) {}
         fn exit(&self, _: &tracing::Id) {}
     }
 
-    /// Feeding rustls reports what it took, so a reader of the log can
-    /// tell a full read from a short one — which is the whole of the
-    /// backpressure diagnosis.
+    /// **rustls' backpressure, reached on purpose and not by luck.**
+    ///
+    /// The regression test for the `act` defect —
+    /// `a_pushed_body_larger_than_the_plaintext_buffer_survives_a_slow_reader`
+    /// in `tests/adversarial_tls_stream.rs` — never reached this path: a
+    /// mutation sweep turned the backpressure arm of `feed` into an error,
+    /// and dropped the carried-over tail, and that test stayed green both
+    /// times. Over loopback TCP whether a feed crosses rustls' 16 KiB
+    /// received-plaintext limit depends on how the kernel cuts the reads.
+    ///
+    /// Here it does not. The transport hands over exactly as much as
+    /// `pump_incoming` asks for, and the server writes 3000-byte records —
+    /// about 3022 bytes on the wire — so a 16 KiB read holds five or six
+    /// whole records. Six are 18 000 bytes of plaintext against a limit
+    /// `is_full` compares with `>`, so the feed stops part-way and the
+    /// remainder must survive to the next poll. The phase drifts by 16 384
+    /// mod 3022 per read, so over a mebibyte that happens many times.
+    ///
+    /// And the claim that it happened is not inferred: `feed` emits a
+    /// `trace!` line at exactly that moment, and a subscriber counts it.
+    /// This replaces a test that emitted its own `trace!` and counted that,
+    /// which could not fail.
     #[test]
-    fn feeding_ciphertext_emits_a_trace_line() {
-        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let sub = Counting(std::sync::Arc::clone(&seen));
-        tracing::subscriber::with_default(sub, || {
-            tracing::trace!(
-                "tls: read {} ciphertext bytes, rustls took {}, carrying {}",
-                1,
-                2,
-                3
-            );
+    fn a_feed_stopped_by_backpressure_loses_nothing_and_says_so() {
+        const BODY: usize = 1024 * 1024;
+        const RECORD: usize = 3000;
+        let mut p = Pair::new();
+
+        let body: Vec<u8> = (0..BODY).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        for chunk in body.chunks(RECORD) {
+            std::io::Write::write_all(&mut p.server.writer(), chunk).unwrap();
+            p.server_flush();
+        }
+        p.server.send_close_notify();
+        p.server_flush();
+
+        let signals = Arc::new(AtomicUsize::new(0));
+        let got = tracing::subscriber::with_default(Signals(Arc::clone(&signals)), || {
+            p.client_read_all(&mut cx())
         });
-        assert_eq!(
-            seen.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "with the feature on and a subscriber installed, `trace!` must reach it"
+
+        assert!(
+            signals.load(Ordering::SeqCst) > 0,
+            "rustls never signalled backpressure, so this test measured nothing about it"
         );
+        assert_eq!(got.len(), BODY, "the whole body must come back");
+        assert!(got == body, "and byte for byte");
+    }
+
+    /// **The half-close is `close_notify` and then the transport's own
+    /// `poll_shutdown` — never its `poll_close` — and the read half stays
+    /// open.** That is `hclient_rt::Shutdown`'s whole promise, and what an
+    /// HTTP/1 client relies on to send FIN and still read the response.
+    #[test]
+    fn shutdown_sends_close_notify_half_closes_the_transport_and_keeps_reading() {
+        let mut p = Pair::new();
+        let Poll::Ready(Ok(())) = Pin::new(&mut p.stream).poll_shutdown(&mut cx()) else {
+            panic!("an in-memory shutdown completes at once");
+        };
+        assert_eq!(
+            p.t.shutdowns.load(Ordering::SeqCst),
+            1,
+            "the transport half-closed"
+        );
+        assert_eq!(p.t.closes.load(Ordering::SeqCst), 0, "and was not closed");
+
+        p.exchange();
+        assert_eq!(p.server_reads(), None, "the server received close_notify");
+
+        // The other direction is still open: the server answers after the
+        // client's close_notify, and the client reads it.
+        std::io::Write::write_all(&mut p.server.writer(), b"after").unwrap();
+        p.server_flush();
+        assert_eq!(p.client_read_all(&mut cx()), b"after");
+    }
+
+    /// `futures-io`'s `poll_close` is the same half-close here, forwarded
+    /// rather than implemented twice — see its doc.
+    #[test]
+    fn close_is_the_same_half_close() {
+        let mut p = Pair::new();
+        let Poll::Ready(Ok(())) = Pin::new(&mut p.stream).poll_close(&mut cx()) else {
+            panic!("an in-memory close completes at once");
+        };
+        assert_eq!(p.t.shutdowns.load(Ordering::SeqCst), 1);
+        assert_eq!(p.t.closes.load(Ordering::SeqCst), 0);
+        p.exchange();
+        assert_eq!(p.server_reads(), None, "the server received close_notify");
+    }
+
+    /// A write the transport could not take yet is **accepted** — rustls
+    /// has encrypted it and will not lose it — and `poll_flush` is what
+    /// puts it on the wire.
+    #[test]
+    fn flush_delivers_what_a_refused_write_left_queued() {
+        let mut p = Pair::new();
+        p.t.refuse_writes.store(1, Ordering::SeqCst);
+        let Poll::Ready(Ok(5)) = Pin::new(&mut p.stream).poll_write(&mut cx(), b"hello") else {
+            panic!("the write is accepted even though the transport was not ready");
+        };
+        assert!(
+            p.to_server.lock().unwrap().is_empty(),
+            "nothing reached the transport yet"
+        );
+
+        let Poll::Ready(Ok(())) = Pin::new(&mut p.stream).poll_flush(&mut cx()) else {
+            panic!("the transport is ready now, so the flush completes");
+        };
+        p.exchange();
+        assert_eq!(p.server_reads().as_deref(), Some(&b"hello"[..]));
+    }
+
+    /// An empty write is an empty answer, not a `Pending` nobody will wake.
+    #[test]
+    fn an_empty_write_is_ready_at_once() {
+        let mut p = Pair::new();
+        let Poll::Ready(Ok(0)) = Pin::new(&mut p.stream).poll_write(&mut cx(), b"") else {
+            panic!("an empty write must complete immediately");
+        };
+    }
+
+    /// A transport answering `Ok(0)` to a non-empty write will never take
+    /// another byte, per `futures_io::AsyncWrite`'s own contract — so that
+    /// is `WriteZero`, not a `wants_write` loop that spins forever.
+    #[test]
+    ///
+    /// On a thread with a bound, because the defect this guards against
+    /// is a spin inside one poll — no `Pending`, nothing a timeout around
+    /// a future could interrupt.
+    fn a_transport_that_takes_nothing_is_write_zero() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut p = Pair::new();
+            p.t.write_zero.store(true, Ordering::SeqCst);
+            let answer = match Pin::new(&mut p.stream).poll_write(&mut cx(), b"hello") {
+                Poll::Ready(Err(e)) => Ok(e.kind()),
+                other => Err(format!("{other:?}")),
+            };
+            let _ = tx.send(answer);
+        });
+        let answer = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("poll_write spun on a transport answering Ok(0) instead of failing");
+        assert_eq!(answer, Ok(std::io::ErrorKind::WriteZero));
     }
 }

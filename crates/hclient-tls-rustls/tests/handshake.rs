@@ -77,7 +77,10 @@ async fn completes_handshake_and_echoes() {
 #[tokio::test]
 async fn rejects_an_untrusted_certificate() {
     let (addr, _ca) = server::spawn_tls_echo();
-    let tls = Rustls::with_webpki_roots(); // public roots — our cert is unknown to them
+    // A trust store holding one real root that did not issue the fixture's
+    // certificate. Not `with_webpki_roots()`: that needs a feature, and
+    // this test is about refusal rather than about which roots are bundled.
+    let tls = Rustls::from_config(Arc::new(trusting_someone_else()));
     let tcp = Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
@@ -103,5 +106,17 @@ async fn rejects_an_untrusted_certificate() {
 /// without it the override is a claim with nothing behind it.
 #[test]
 fn this_backend_declares_that_it_reports_alpn() {
-    assert!(Rustls::with_webpki_roots().reports_alpn());
+    assert!(Rustls::from_config(Arc::new(trusting_someone_else())).reports_alpn());
+}
+
+/// A client config whose only root is an unrelated self-signed certificate,
+/// so it verifies properly and trusts nothing this file's server presents.
+fn trusting_someone_else() -> rustls::ClientConfig {
+    let unrelated =
+        rcgen::generate_simple_self_signed(vec!["someone-else.invalid".into()]).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(unrelated.cert.der().clone()).unwrap();
+    rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
 }

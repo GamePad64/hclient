@@ -68,8 +68,15 @@ impl rustls::client::ClientSessionStore for Counting {
     }
 }
 
+/// No roots: the property is about the identity, not about verification,
+/// and a constructor that needs no feature keeps this file building in every
+/// feature setting.
 fn connector() -> Rustls {
-    Rustls::with_platform_verifier().expect("a platform verifier")
+    Rustls::from_config(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth(),
+    ))
 }
 
 /// Changing where sessions are kept changes *which client may resume
@@ -86,5 +93,20 @@ fn installing_a_store_redraws_the_configuration_identity() {
         before,
         with.config_id(),
         "a connector with a different session store is a different configuration"
+    );
+}
+
+/// The QUIC store is the same kind of change, on the other path, and it
+/// owes the same redraw — which nothing asserted until this test.
+#[cfg(feature = "quic")]
+#[test]
+fn installing_a_quic_store_redraws_the_configuration_identity() {
+    let base = connector();
+    let before = base.config_id();
+    let with = base.with_quic_session_store(Arc::new(Counting::default()));
+    assert_ne!(
+        before,
+        with.config_id(),
+        "a connector with a different QUIC session store is a different configuration"
     );
 }

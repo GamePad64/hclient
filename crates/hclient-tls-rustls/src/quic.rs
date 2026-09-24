@@ -138,7 +138,7 @@ impl QuicTlsConnect for Rustls {
     /// This says the backend can *offer* early data. It says nothing about
     /// whether any particular request's early data was accepted — in QUIC
     /// that verdict arrives after the response, so it cannot be a property
-    /// of a connector. See `hclient_h3`'s early-data module.
+    /// of a connector. See `hclient-native`'s `http3::early` module.
     fn offers_early_data(&self) -> bool {
         true
     }

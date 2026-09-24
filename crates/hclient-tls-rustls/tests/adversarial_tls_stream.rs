@@ -239,7 +239,7 @@ async fn nothing_more_arrives<S: SeamRead + Unpin>(stream: &mut S) -> Vec<u8> {
 // ---------------------------------------------------------------------
 // A. Pending on the very first transport write must not lose the write
 //    nor duplicate it if the caller retries with the same buffer per the
-//    `hyper::rt::Write` contract — `poll_write` queueing `data` into
+//    `futures_io::AsyncWrite` contract — `poll_write` queueing `data` into
 //    rustls BEFORE learning whether the transport can accept it makes a
 //    `Pending`-then-retry cycle queue the same plaintext twice.
 // ---------------------------------------------------------------------

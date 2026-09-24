@@ -118,3 +118,42 @@ impl ResolvesClientCert for Recording {
         self.inner.only_raw_public_keys()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn current() -> Option<Slot> {
+        CURRENT.with(|c| c.borrow().clone())
+    }
+
+    /// **The guard restores what it replaced**, so a slot is installed for
+    /// exactly one scope. Unobservable through a handshake today — rustls'
+    /// client has no post-handshake authentication, so `resolve` is only
+    /// ever reached inside a poll that installs its own slot — which is
+    /// why it is pinned here rather than trusted: `TlsStream::poll_read`
+    /// calls `process_new_packets` with nothing installed, and a guard that
+    /// leaked would leave the last handshake's slot in place for it.
+    #[test]
+    fn a_slot_is_installed_for_one_scope_and_the_previous_one_comes_back() {
+        assert!(current().is_none());
+        let outer = Slot::default();
+        let inner = Slot::default();
+        {
+            let _o = Installed::new(&outer);
+            assert!(Arc::ptr_eq(&current().unwrap(), &outer));
+            {
+                let _i = Installed::new(&inner);
+                assert!(Arc::ptr_eq(&current().unwrap(), &inner));
+            }
+            assert!(
+                Arc::ptr_eq(&current().unwrap(), &outer),
+                "leaving the inner scope restores the outer slot"
+            );
+        }
+        assert!(
+            current().is_none(),
+            "and leaving the outer one restores none"
+        );
+    }
+}

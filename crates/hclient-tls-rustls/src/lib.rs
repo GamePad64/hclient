@@ -1,10 +1,25 @@
 //! TLS backend on rustls.
 //!
-//! **rustls does not appear in `hclient`'s public API** — otherwise 0.24's
-//! release would become our own breaking release. 0.24 is expected to
-//! bring: the `std` feature removed, providers split out into
-//! `rustls-ring`/`rustls-aws-lc-rs`, edition 2024. One
-//! rewritten crate is budgeted for.
+//! # rustls' major version is this crate's
+//!
+//! **rustls does not appear in `hclient`'s public API**, nor in
+//! `hclient-tls`'s: the seams name no TLS implementation. It does appear in
+//! **this** crate's — [`Rustls::from_config`], [`Rustls::with_identity`],
+//! [`Rustls::with_session_store`] and, with `quic`, the
+//! `QuicTlsConnect::Session` type all name rustls or quinn types — so a
+//! rustls release that breaks those types is a major release here, and
+//! only here. That is inherent rather than a leak: a caller who hands this
+//! crate a `rustls::ClientConfig` is configuring rustls, and a wrapper that
+//! re-declared rustls' configuration would go stale against it.
+//!
+//! rustls 0.23 has been current since February 2024; `0.24.0-dev.1` is on
+//! crates.io (2026-07-23) and tracked in rustls#2400. What it changes that
+//! reaches this crate, read in that pre-release rather than assumed: the
+//! built-in providers are no longer features (no `ring` feature, no
+//! `std`), ALPN gains a per-connection setter on a new connection builder,
+//! and `ClientConfig::client_auth_cert_resolver` stops being a public field
+//! — which is what the recording wrapper below writes to. One rewritten
+//! crate is budgeted for.
 //!
 //! `forbid`, not `deny`: `deny(unsafe_code)` could be overridden with a
 //! local
@@ -53,6 +68,22 @@ mod stream;
 use error::UnknownIdentity;
 pub use stream::TlsStream;
 
+/// The `rustls` this backend links, re-exported so a caller building a
+/// [`rustls::ClientConfig`] for [`Rustls::from_config`] uses exactly this
+/// version and these features. Adding `rustls` to a caller's own manifest
+/// instead invites a second crypto provider into the graph — rustls'
+/// default is `aws-lc-rs`, this crate's is `ring` — and with two compiled
+/// in, `ClientConfig::builder()` panics for want of a process default.
+/// The major is ours already, since `from_config` takes rustls' type, so
+/// the re-export adds no coupling that was not there.
+pub use rustls;
+
+/// The `quinn-proto` the `quic` feature links, re-exported for the reason
+/// [`rustls`] is: [`QuicTlsConnect::Session`](hclient_tls::quic::QuicTlsConnect::Session)
+/// names its type, so its major is already this crate's.
+#[cfg(feature = "quic")]
+pub use quinn_proto;
+
 use hclient_core::error::{Error, ErrorKind};
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::collections::HashMap;
@@ -80,9 +111,9 @@ type AlpnCache = Arc<Mutex<HashMap<Vec<Vec<u8>>, Arc<rustls::ClientConfig>>>>;
 /// same configuration. So both live behind an `Arc`.
 ///
 /// What a caller gets from this is one read of the OS trust store where
-/// two stacks need the same connector — `Selecting` owns a `Native` and an
-/// `H3` and its `T` is one type, so without `Clone` the only way to build
-/// the pair is to construct the backend twice.
+/// two stacks need the same connector — `hclient-native`'s TCP path and
+/// its QUIC arm (`Native::http3`) each hold a `T`, so without `Clone` the
+/// only way to build the pair is to construct the backend twice.
 #[derive(Debug, Clone)]
 pub struct Rustls {
     base: Arc<rustls::ClientConfig>,
@@ -145,7 +176,7 @@ struct Named {
 // here would only make the caller's `Arc` outlive the call for no reason.
 #[allow(
     clippy::needless_pass_by_value,
-    reason = "Wraps a config's client-certificate resolver so that what the server asks for is observable. **Every constructor goes through this**, [`Rustls::from_config`] and [`Rustls::with_identity`] included, because the caller who builds their own config is exactly the caller doing mTLS. It costs one `Clie..."
+    reason = "both callers own the `Arc` and are done with it, so taking it by value costs nothing and a reference would only keep theirs alive past the call"
 )]
 fn recording(cfg: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig> {
     let mut cfg = (*cfg).clone();
@@ -194,7 +225,7 @@ impl Rustls {
     ///
     /// # It is the TCP half, and the split is deliberate
     ///
-    /// [`with_quic_session_store`](Self::with_quic_session_store) is the
+    /// `with_quic_session_store` (behind the `quic` feature) is the
     /// other, and `crate::quic`'s module doc has the reason they are two:
     /// `ClientSessionStore` is keyed by `ServerName` **alone**, while a
     /// TLS 1.3 ticket issued over QUIC also carries `quic_params`, so one
@@ -296,7 +327,7 @@ impl Rustls {
     /// # The escape hatch, and it is load-bearing rather than a leftover
     ///
     /// Every other constructor here answers one question —
-    /// [`with_platform_verifier`](Self::with_platform_verifier) the trust
+    /// `with_platform_verifier` (behind `platform-verifier`) the trust
     /// store, [`with_webpki_roots`](Self::with_webpki_roots) a bundled
     /// one, [`with_identity`](Self::with_identity) a client certificate —
     /// and this one answers the rest. `docs/competitive-gaps.md` names it
@@ -332,6 +363,28 @@ impl Rustls {
     /// fresh [`TlsConfigId`], which is a component of `hclient-native`'s
     /// pool key: two connectors built from two configs must not share a
     /// connection, however alike the configs look.
+    ///
+    /// # Example
+    ///
+    /// Trusting one private CA and nothing else. The `rustls` in the
+    /// caller's manifest must be this crate's major (0.23), with a crypto
+    /// provider enabled — `ring`, as here, or a process default installed.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use hclient_tls_rustls::Rustls;
+    ///
+    /// # let ca = rcgen::generate_simple_self_signed(vec!["ca.invalid".into()]).unwrap();
+    /// # let ca_der = ca.cert.der().clone();
+    /// let mut roots = rustls::RootCertStore::empty();
+    /// roots.add(ca_der).expect("a DER certificate");
+    /// let tls = Rustls::from_config(Arc::new(
+    ///     rustls::ClientConfig::builder()
+    ///         .with_root_certificates(roots)
+    ///         .with_no_client_auth(),
+    /// ));
+    /// # drop(tls);
+    /// ```
     #[must_use]
     pub fn from_config(cfg: Arc<rustls::ClientConfig>) -> Self {
         Self {
@@ -849,9 +902,14 @@ mod tests {
         }
 
         let asked = Arc::new(AtomicUsize::new(0));
-        let c = Rustls::with_platform_verifier()
-            .expect("a platform verifier")
-            .with_session_store(Arc::new(Counting(Arc::clone(&asked))));
+        // `from_config` rather than a trust-store constructor: both of
+        // those need a feature, and this test is about the store.
+        let c = Rustls::from_config(Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        ))
+        .with_session_store(Arc::new(Counting(Arc::clone(&asked))));
 
         let cfg = c.config_for(&[], None).expect("a config for no ALPN");
         let name = rustls::pki_types::ServerName::try_from("example.com").expect("a name");
@@ -1047,7 +1105,7 @@ where
     message = "`Rustls::with_webpki_roots()` needs the `webpki-roots` feature of `hclient-tls-rustls`",
     label = "this build of `hclient-tls-rustls` compiled in no root certificates",
     note = "add it: `hclient-tls-rustls = {{ version = \"..\", features = [\"webpki-roots\"] }}`",
-    note = "or use the platform's own trust store, which needs no feature and is what `Client::new()` uses: `Rustls::with_platform_verifier()`",
+    note = "or use the platform's own trust store, which is what `Client::new()` uses: `Rustls::with_platform_verifier()`, behind the `platform-verifier` feature",
     note = "`Rustls::from_config(..)` also works and is a much larger step — it asks you to build the whole `rustls::ClientConfig`"
 )]
 pub trait WebpkiRootsFeature<'g> {}

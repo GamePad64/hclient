@@ -75,7 +75,14 @@ async fn connect_with(
     ech: Option<&[u8]>,
     addr: SocketAddr,
 ) -> Result<(), hclient_core::error::Error> {
-    let tls = Rustls::with_webpki_roots();
+    // No roots at all: nothing here gets as far as verifying a certificate,
+    // and a constructor that needs no feature keeps this file building in
+    // every feature setting.
+    let tls = Rustls::from_config(std::sync::Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth(),
+    ));
     let tcp = Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
@@ -147,4 +154,30 @@ async fn without_ech_the_name_goes_out_in_the_clear() {
          leak ECH exists to prevent, and the reason the request above is \
          refused rather than downgraded to this"
     );
+}
+
+/// **The QUIC path refuses too, and it had no test.** A mutation deleting
+/// the refusal in `quic_client_config` left the whole suite green: this
+/// file's two tests go through `TlsConnect` only. There is no wire to watch
+/// here — the QUIC config is built before any datagram — so the refusal is
+/// the observable, and the control is the same request without ECH, which
+/// must build.
+#[cfg(feature = "quic")]
+#[test]
+fn the_quic_path_refuses_ech_as_well() {
+    use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
+
+    let tls = Rustls::from_config(std::sync::Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth(),
+    ));
+    let err = tls
+        .quic_client_config(QuicTlsRequest::new(&[b"h3"]).ech(Some(SOME_ECH_CONFIG)))
+        .expect_err("ECH must be refused on the QUIC path, not ignored");
+    assert_eq!(*err.kind(), ErrorKind::Tls, "{err}");
+    assert!(err.to_string().to_lowercase().contains("ech"), "{err}");
+
+    tls.quic_client_config(QuicTlsRequest::new(&[b"h3"]))
+        .expect("without ECH the same request builds");
 }
