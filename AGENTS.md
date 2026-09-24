@@ -617,6 +617,55 @@ checks it — not `cargo semver-checks`, not release-plz, not
 `versions-agree`. It is written here rather than gated, which this
 file's own rule says is the weaker of the two.
 
+**The two runtimes and the two TLS backends were audited next, in
+parallel, and the first result is a correction to a sentence written two
+days earlier.** `hclient_rt::Spawn`'s doc named `TokioHandle` as the
+runtime that *carries what it needs and is total everywhere*. A tokio
+`Handle` does not keep its `Runtime` alive: drop the runtime and
+`TokioHandle`'s `spawn` accepts the future and tokio discards it unrun —
+no panic, no error, exactly what the contract forbids. Nothing can
+detect it, since tokio has no *is shut down* query on a `Handle`, so it
+is a precondition stated on the type and pinned by a test that fails if
+tokio's behaviour changes; the `Spawn` doc now names `Smol`, whose
+executor is process-wide and never shuts down, as the one that really
+carries what it needs. **Carrying a handle is not carrying what it
+needs**, and the difference was found by an outside consumer dropping
+the runtime and watching.
+
+**All four were weaker than their test counts suggested, and in the same
+way: the tests pinned what the author had just changed.** When the seam's
+half-close moved to `Shutdown::poll_shutdown`, every test moved with it,
+so `hclient-tls-native-tls`'s `poll_close` was left sending
+`close_notify` without the FIN, and `hclient-rt-tokio`'s own suite
+pinned none of its write path, half-close or Unix path. The rustls
+backend's backpressure test never reached backpressure, its QUIC
+*label reaches the session* test could not fail, and its test targets
+built only under `--all-features`. Survivors fell from 20 to 5 (tokio),
+7 to 2 (native-tls) and 32 to 6 (rustls), each remaining one classified.
+Two were behaviour defects: native-tls **substituted its own identity**
+for a caller's label rather than refusing it — the one failure
+`docs/mtls-design.md` exists to prevent, unreached only because
+`hclient-native` refuses first — and **re-polled a pending close called
+OpenSSL's `SSL_shutdown` again**, which then tried to *read* the peer's
+alert and failed.
+
+**Both TLS backends re-export their library now** (`pub use native_tls`,
+`pub use rustls`, and `quinn_proto` under `quic`). Their constructors
+already take its types, so the major was theirs already; what the
+re-export removes is a caller guessing the version, which for rustls is
+worse than a guess — a second crypto provider compiled in makes
+`ClientConfig::builder()` panic.
+
+**`hclient-tls-rustls` 0.1.x lasts exactly as long as rustls 0.23**, and
+the migration is a redesign rather than a bump. Read in
+`0.24.0-dev.1`: `ClientConfig::client_auth_cert_resolver` becomes private
+with no setter, and the recording wrapper that lets this backend answer
+`ClientCertAsk::NotAsked` re-wraps exactly that field on a config a
+caller built — so under 0.24, `from_config` answers `Unobserved` unless
+its input changes. `quinn-proto`'s `Arc<dyn ClientConfig>` is public API
+through `QuicTlsConnect::Session` even for a caller who never enables
+`quic`, because a feature-gated public type is still public.
+
 **`hclient-dns` is the fifth, and the owner's correction is worth more
 than the crate.** It had been held back twice on the ground that its
 surface was *broken two days ago* — a calendar rule, and the answer to
