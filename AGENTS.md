@@ -649,15 +649,27 @@ for a caller's label rather than refusing it — the one failure
 OpenSSL's `SSL_shutdown` again**, which then tried to *read* the peer's
 alert and failed.
 
-**Both TLS backends re-export their library now** (`pub use native_tls`,
-`pub use rustls`, and `quinn_proto` under `quic`). Their constructors
-already take its types, so the major was theirs already; what the
-re-export removes is a caller guessing the version, which for rustls is
-worse than a guess — a second crypto provider compiled in makes
-`ClientConfig::builder()` panic.
+**Both TLS backends re-export what their constructors take, and the two
+answers differ on purpose.** `hclient-tls-rustls` re-exports all of
+`rustls` (and `quinn_proto` under `quic`), because a caller builds a whole
+`ClientConfig` and a second rustls compiled in beside it can bring a
+second crypto provider, which makes `ClientConfig::builder()` panic.
+`hclient-tls-native-tls` re-exports `Certificate` and `Identity` and
+nothing else, the owner's call: those two are all its constructors take,
+and re-exporting the whole crate would make the rest of it part of this
+API with nothing gained. Its major version was ours already through those
+two signatures; what the re-export removes is the caller having to guess
+the version.
+
+**`hclient-rt-smol` names `SmolSleep` where it named `async_io::Timer`**,
+for the same reason one layer down: `Timer::Sleep` is public, so the
+concrete timer made `async-io`'s major version this crate's too, for a
+value a caller only awaits. `async-net`'s streams stay public inside
+`SmolSocket`, because reading the socket back is what that type is for.
 
 **`hclient-tls-rustls` 0.1.x lasts exactly as long as rustls 0.23**, and
-the migration is a redesign rather than a bump. Read in
+the migration is a redesign rather than a bump. The owner's call is to stay
+on `0.23.45` and ship a breaking release when 0.24 is out. Read in
 `0.24.0-dev.1`: `ClientConfig::client_auth_cert_resolver` becomes private
 with no setter, and the recording wrapper that lets this backend answer
 `ClientCertAsk::NotAsked` re-wraps exactly that field on a config a
