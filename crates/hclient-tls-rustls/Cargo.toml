@@ -40,7 +40,11 @@ hclient-core     = { workspace = true }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0" }
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
 hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
-rustls           = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+# The 0.23 series is this crate's 0.1 series: `rustls` is re-exported, so
+# its major is this crate's major. 0.24 means a breaking release here, and
+# its API needs changes, not just a version bump. `.45` is the floor
+# this has been built and tested against.
+rustls           = { version = "0.23.45", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pki-types = "1.15"
 # `rustls-ring` and nothing else: this crate already picks `ring` for
 # rustls itself, and the two must agree or the QUIC config would be built
