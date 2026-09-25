@@ -42,3 +42,5 @@ spikes/
 # the history still holds it; what is not wanted is a published crate
 # shipping a reader an archive of how it came to be.
 .notes/
+
+.serena/
