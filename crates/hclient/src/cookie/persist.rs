@@ -118,6 +118,43 @@ use super::parse::{SameSite, is_ctl};
 use super::store::CookieStore;
 use super::suffix::PublicSuffixList;
 
+// Maintainer notes (not rendered):
+//
+// # A record and not a `CookieStore` trait
+//
+// The sibling `HttpCache` delegates to a
+// `CacheStore` and a caller may back that
+// with anything, because RFC 9111 lookup is **by key**: a wrong store
+// loses entries or keeps too many and cannot answer the wrong request.
+// RFC 6265bis §5.4 retrieval is a **scan** — every held cookie tested
+// with §5.1.3's domain-match and §5.1.4's path-match — so a trait wide
+// enough to serve it carries those two rules across the seam, and a
+// wrong implementation hands one origin's cookie to another. The jar
+// therefore keeps its own storage and hands out records instead: what a
+// caller gets is everything they need to persist a jar, and what they
+// do not get is the ability to break domain matching.
+//
+// The ecosystem reached the same place. `cookie_store` 0.22.1 — the jar
+// under `reqwest_cookie_store` — is a **struct** and not a trait, and
+// persists by round-tripping records exactly like this;
+// `reqwest::cookie::CookieStore` *is* a trait and is not a storage seam
+// either, taking `Set-Cookie` values in and a whole `Cookie` header out.
+// Two things here go further, both read off `cookie_store`'s source: its
+// record carries no creation time and no last-access time at all, so a
+// reloaded jar cannot implement §5.4's creation tiebreak or §5.3's
+// least-recently-used eviction; and its load path runs none of the
+// storage-model checks, where [`CookieJar::restore`] runs them.
+//
+// The fields are public and there is no `serde` impl. `serde` with
+// `derive` is **7 crates** in this graph and 2 without —
+// measured — and Cargo unifies features, so a `cookies` feature that
+// pulled it would be a floor for every build in the graph rather than a
+// default.
+//
+// The caller **builds** this — that is the whole of the load side — and
+// the attribute forbids a struct literal from outside the defining
+// crate. Same answer as [`Limits`](super::Limits) and `TcpOpts`, for the
+// same reason and not by analogy.
 /// One persistent cookie, as plain data: every fact [`CookieJar::restore`]
 /// needs to put it back the way it was.
 ///
@@ -131,49 +168,27 @@ use super::suffix::PublicSuffixList;
 /// `jar.iter().filter_map(Cookie::to_record)` cannot save a session
 /// cookie, and neither can a caller who forgets why they should not.
 ///
-/// # A record and not a `CookieStore` trait
-///
-/// The sibling `HttpCache` delegates to a
-/// `CacheStore` and a caller may back that
-/// with anything, because RFC 9111 lookup is **by key**: a wrong store
-/// loses entries or keeps too many and cannot answer the wrong request.
-/// RFC 6265bis §5.4 retrieval is a **scan** — every held cookie tested
-/// with §5.1.3's domain-match and §5.1.4's path-match — so a trait wide
-/// enough to serve it carries those two rules across the seam, and a
-/// wrong implementation hands one origin's cookie to another. The jar
-/// therefore keeps its own storage and hands out records instead: what a
-/// caller gets is everything they need to persist a jar, and what they
-/// do not get is the ability to break domain matching.
-///
-/// The ecosystem reached the same place. `cookie_store` 0.22.1 — the jar
-/// under `reqwest_cookie_store` — is a **struct** and not a trait, and
-/// persists by round-tripping records exactly like this;
-/// `reqwest::cookie::CookieStore` *is* a trait and is not a storage seam
-/// either, taking `Set-Cookie` values in and a whole `Cookie` header out.
-/// Two things here go further, both read off `cookie_store`'s source: its
-/// record carries no creation time and no last-access time at all, so a
-/// reloaded jar cannot implement §5.4's creation tiebreak or §5.3's
-/// least-recently-used eviction; and its load path runs none of the
-/// storage-model checks, where [`CookieJar::restore`] runs them.
+/// A record is deliberately not a storage trait: the jar keeps its own
+/// storage and hands out records instead, so what a caller gets is
+/// everything they need to persist a jar, and what they do not get is
+/// the ability to break domain matching.
 ///
 /// # The serialisation is yours
 ///
-/// The fields are public and there is no `serde` impl. `serde` with
-/// `derive` is **7 crates** in this graph and 2 without — measured — and
-/// Cargo unifies features, so a `cookies` feature that pulled it would be
-/// a floor for every build in the graph rather than a default. The cost
-/// of that is named rather than waved away: a caller cannot derive on a
-/// foreign type, so they write a mirror struct with `From` both ways, or
-/// `#[serde(remote = "..")]`. Public fields are what make either a few
-/// lines, and the format — a file, a database row, a `localStorage` key
-/// — really is theirs.
+/// The fields are public and there is no `serde` impl. Cargo unifies
+/// features, so a `cookies` feature that pulled in `serde` with `derive`
+/// would be a floor for every build in the graph rather than a default.
+/// The cost of that is named rather than waved away: a caller cannot
+/// derive on a foreign type, so they write a mirror struct with `From`
+/// both ways, or `#[serde(remote = "..")]`. Public fields are what make
+/// either a few lines, and the format — a file, a database row, a
+/// `localStorage` key — really is theirs.
 ///
 /// # Not `#[non_exhaustive]`
 ///
 /// The caller **builds** this — that is the whole of the load side — and
 /// the attribute forbids a struct literal from outside the defining
-/// crate. Same answer as [`Limits`](super::Limits) and `TcpOpts`, for the
-/// same reason and not by analogy.
+/// crate.
 ///
 /// There is deliberately no `Default` either: `creation` and
 /// `last_access` have no honest default, and `UNIX_EPOCH` is not a
@@ -306,13 +321,15 @@ impl Cookie {
 }
 
 impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
+    // Maintainer notes (not rendered):
+    // will type, and a feature nobody can find is one this crate has
+    // already shipped twice.
     /// Everything worth saving, in the order [`restore`](Self::restore)
     /// wants it back.
     ///
     /// `jar.iter().filter_map(Cookie::to_record)` exactly — spelled as a
     /// method because this is the name a reader looking for persistence
-    /// will type, and a feature nobody can find is one this crate has
-    /// already shipped twice.
+    /// will type.
     ///
     /// Expired cookies are **not** filtered, because that would need a
     /// clock this type does not have; [`restore`](Self::restore) drops

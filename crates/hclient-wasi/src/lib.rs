@@ -9,9 +9,7 @@
 //! **`wasi:http` offers no conversion and the host will not take a
 //! U-label.** `set-authority`'s contract is *fails if the string given is
 //! not a syntactically valid URI authority*, and RFC 3986's `reg-name` is
-//! ASCII — asked of wasmtime rather than read off the document, by
-//! `a_unicode_authority_is_refused_by_the_host_and_the_a_label_is_not`,
-//! with the A-label as its control. The one place IDNA appears in WASI at
+//! ASCII. The one place IDNA appears in WASI at
 //! all is `wasi:sockets`' `resolve-addresses`, which this crate does not
 //! import and which hands back addresses rather than labels.
 //!
@@ -26,6 +24,13 @@
 //! answering `UriError::NonAsciiHost`, which names the A-label to send
 //! instead, and whoever builds the URL converts once. That is the right
 //! trade far more often here than anywhere else this crate builds for.
+
+// Maintainer notes (not rendered):
+// ASCII — asked of wasmtime rather than read off the document, by
+// `a_unicode_authority_is_refused_by_the_host_and_the_a_label_is_not`,
+// with the A-label as its control. The one place IDNA appears in WASI at
+// all is `wasi:sockets`' `resolve-addresses`.
+
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -77,24 +82,35 @@ static FORBIDDEN_REQUEST_HEADERS: std::sync::LazyLock<[http::HeaderName; 5]> =
         ]
     });
 
+// Maintainer notes (not rendered):
+// [`NoHooks`] by default — a zero-sized type whose `Hooks::WATCHING` is
+// `false` — so `WasiHttp` still names the transport it always named, and
+// a build that asks for nothing reads no clock.
+//
+// **This backend emits two of the six events, and the four it does not
+// are the finding rather than an omission**: `wasi:http@0.3.0` has no
+// connection resource anywhere in it, so `Connected`, `Reused` and
+// `Closed` have nothing to be about, and `Informational` is a fact about
+// an HTTP/1 or h2 exchange this backend does not conduct. See
+// `crate::hooks`. The second event it does emit is `Progress` — octets
+// are a fact about a body rather than about a connection.
 /// Transport over the ambient `wasi:http/client.send` — the guest holds no
 /// socket of its own, all network interaction is delegated to the host.
 ///
 /// # `H`, the observability hook
 ///
 /// [`NoHooks`] by default — a zero-sized type whose `Hooks::WATCHING` is
-/// `false` — so `WasiHttp` still names the transport it always named, and
+/// `false` — so
 /// a build that asks for nothing reads no clock. [`WasiHttp::hooks`] is
 /// how a caller asks; what comes back is a *different type*, because the
 /// hook is a type parameter rather than a `Box<dyn Hooks>`, which is the
 /// whole of the zero-cost claim.
 ///
-/// **This backend emits two of the six events, and the four it does not
-/// are the finding rather than an omission**: `wasi:http@0.3.0` has no
+/// This backend emits two of the six events, `Head` and `Progress`:
+/// `wasi:http@0.3.0` has no
 /// connection resource anywhere in it, so `Connected`, `Reused` and
 /// `Closed` have nothing to be about, and `Informational` is a fact about
-/// an HTTP/1 or h2 exchange this backend does not conduct. See
-/// `crate::hooks`. The second event it does emit is `Progress` — octets
+/// an HTTP/1 or h2 exchange this backend does not conduct. The second event it does emit is `Progress` — octets
 /// are a fact about a body rather than about a connection, so a host that
 /// names no connection can still count them.
 #[derive(Debug)]
@@ -106,10 +122,18 @@ pub struct WasiHttp<H = NoHooks> {
 }
 
 impl<H> WasiHttp<H> {
+    // Maintainer notes (not rendered):
+    // costs, and `crate::hooks` for the three quarters of the
+    // vocabulary `wasi:http` cannot speak.
+    //
+    // working (P13; `crates/hclient-core/tests/shape.rs`). The cost is
+    // visible and is the caller's to weigh — `tests/shape.rs` here pins
+    // that a `Send` hook leaves `execute`'s future `Send`, which is what
+    // the streaming-body path in this crate spends a
+    // `send-bound-exception` marker on.
     /// Send this transport's events to `hooks` — see
     /// [`hclient_core::hooks::Hooks`] for what it hears and what it
-    /// costs, and `crate::hooks` for the three quarters of the
-    /// vocabulary `wasi:http` cannot speak.
+    /// costs.
     ///
     /// **It returns a different type**, and that is the zero-cost
     /// mechanism rather than an inconvenience: the hook is a type
@@ -120,11 +144,7 @@ impl<H> WasiHttp<H> {
     ///
     /// The hook may be `!Send`: nothing on this path declares it, so an
     /// `Rc` inside a hook makes this transport `!Send` and leaves it
-    /// working (P13; `crates/hclient-core/tests/shape.rs`). The cost is
-    /// visible and is the caller's to weigh — `tests/shape.rs` here pins
-    /// that a `Send` hook leaves `execute`'s future `Send`, which is what
-    /// the streaming-body path in this crate spends a
-    /// `send-bound-exception` marker on.
+    /// working. A `Send` hook leaves `execute`'s future `Send`.
     pub fn hooks<H2>(self, hooks: H2) -> WasiHttp<H2> {
         WasiHttp {
             caps: self.caps,

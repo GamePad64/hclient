@@ -191,9 +191,12 @@ pub fn native_tls_transport(cfg: &Config) -> Result<NativeTlsTransport, Refused>
     ))
 }
 
+// Maintainer notes (not rendered):
+// of this program be written once — see `.notes/erased-client.md`. A
 /// Build the client. **Every arm returns the same `hclient::Client`**,
 /// which is what makes `--backend` an ordinary `match` and lets the rest
-/// of this program be written once — see `.notes/erased-client.md`. A
+/// of this program be written once.
+/// A
 /// generic client would have made this function's return type name a
 /// transport, and the two arms name different ones.
 /// Which backend a run will use, decided from what was asked and what the

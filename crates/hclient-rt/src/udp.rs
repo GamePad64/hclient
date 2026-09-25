@@ -48,23 +48,35 @@ use std::task::{Context, Poll};
 ///
 /// [`TcpConnect::connect`]: crate::TcpConnect::connect
 pub trait UdpBind {
+    // Maintainer notes (not rendered):
+    // A QUIC stack needs all four (`quinn::AsyncUdpSocket: Send + Sync +
+    // Debug + 'static`), and the research this crate is built on proposed
+    // putting them on this associated type. They are not here, because a
+    // bound in the trait is paid by every implementer for the benefit of
+    // one consumer, and this seam has an implementer — an `embassy-net`
+    // backend — for which `Send` is not free. The bounds live in
+    // `hclient_h3::H3`'s `where` clause instead, so the compile error lands
+    // on whoever asked for QUIC rather than on whoever implemented UDP.
+    //
+    // `TcpConnect::Stream` keeps the same property and pays nothing for
+    // it: `hclient-native`'s `FakeStream` holds an `Rc<()>` precisely to
+    // prove that no path in that vertical requires `Send`. This trait
+    // preserves that proof rather than spending it.
+    /// The bound socket [`bind`](Self::bind) hands back.
+    ///
     /// **No `Send`, `Sync`, `'static` or `Debug` bound here, deliberately.**
     ///
     /// A QUIC stack needs all four (`quinn::AsyncUdpSocket: Send + Sync +
-    /// Debug + 'static`), and the research this crate is built on proposed
-    /// putting them on this associated type. They are not here, because a
+    /// Debug + 'static`). They are not here, because a
     /// bound in the trait is paid by every implementer for the benefit of
     /// one consumer, and this seam has an implementer — an `embassy-net`
-    /// backend — for which `Send` is not free. The bounds live in
-    /// `hclient_h3::H3`'s `where` clause instead, so the compile error lands
+    /// backend — for which `Send` is not free. The bounds live on the
+    /// consumer that needs them instead, so the compile error lands
     /// on whoever asked for QUIC rather than on whoever implemented UDP.
-    ///
-    /// `TcpConnect::Stream` keeps the same property and pays nothing for
-    /// it: `hclient-native`'s `FakeStream` holds an `Rc<()>` precisely to
-    /// prove that no path in that vertical requires `Send`. This trait
-    /// preserves that proof rather than spending it.
     type Socket: UdpDatagrams;
 
+    /// Bind a socket to `local`.
+    ///
     /// # Errors
     ///
     /// Whatever the OS's `bind` syscall (or the runtime's registration of
@@ -85,6 +97,8 @@ pub trait UdpBind {
 /// [`TcpAdoptStd`]: crate::TcpAdoptStd
 /// [`TcpConnect`]: crate::TcpConnect
 pub trait UdpAdoptStd: UdpBind {
+    /// Take ownership of an already-configured `std` socket.
+    ///
     /// # Errors
     ///
     /// Whatever the OS or the runtime's own reactor registration returns
@@ -148,6 +162,8 @@ pub trait UdpDatagrams {
         meta: &mut [RecvMeta],
     ) -> Poll<std::io::Result<usize>>;
 
+    /// The address this socket is bound to.
+    ///
     /// # Errors
     ///
     /// Whatever the OS's `getsockname` (or equivalent) call returns for
@@ -290,9 +306,12 @@ impl RecvMeta {
         }
     }
 
+    // Maintainer notes (not rendered):
+    // The ECN codepoint the kernel reported. `None` means it did not,
+    // which is the understating direction this seam requires — see
+    // `ecn_is_really_on`.
     /// The ECN codepoint the kernel reported. `None` means it did not,
-    /// which is the understating direction this seam requires — see
-    /// `ecn_is_really_on`.
+    /// which is the understating direction this seam requires.
     #[must_use]
     pub fn ecn(mut self, ecn: Option<EcnCodepoint>) -> Self {
         self.ecn = ecn;
@@ -351,6 +370,10 @@ impl EcnCodepoint {
     }
 }
 
+// Maintainer notes (not rendered):
+// A field the runtime does not set keeps the answer that costs an
+// understatement rather than a promise, which is what a forgetful
+// runtime reported before too.
 /// Which offloads a socket has.
 ///
 /// # Three answers, not one boolean
@@ -375,7 +398,7 @@ impl EcnCodepoint {
 /// from the understating base and says what it has:
 /// `UdpSupport::NONE.max_send_segments(64).ecn(true)`. A field the runtime
 /// does not set keeps the answer that costs an understatement rather than
-/// a promise, which is what a forgetful runtime reported before too.
+/// a promise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct UdpSupport {
@@ -445,6 +468,14 @@ impl Datagrams<'_> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    // **This used to promise a check it could not make.** It said a socket
+    // claiming `ecn: true` and handed a codepoint it would not apply is
+    // refused here — but nothing in a send and a declaration says whether
+    // the kernel applied a mark, so the code carried `let ecn = false`
+    // and the error an `ecn` field no path could set. Both went before
+    // the freeze. Where the claim *can* be checked is on receive, which is
+    // what the runtimes' `ecn_is_really_on` probes and their tests read.
     /// Fail when this send asks for an offload `support` says the socket does
     /// not have — the twin of `TcpOpts::reject_unsupported`, and the only
     /// sanctioned answer to an offload that cannot be applied, since
@@ -469,14 +500,6 @@ impl Datagrams<'_> {
     /// under-report on the *receive* side, where the cost is a congestion
     /// controller acting on a marking that never happened
     /// ([`RecvMeta::ecn`]).
-    ///
-    /// **This used to promise a check it could not make.** It said a socket
-    /// claiming `ecn: true` and handed a codepoint it would not apply is
-    /// refused here — but nothing in a send and a declaration says whether
-    /// the kernel applied a mark, so the code carried `let ecn = false`
-    /// and the error an `ecn` field no path could set. Both went before
-    /// the freeze. Where the claim *can* be checked is on receive, which is
-    /// what the runtimes' `ecn_is_really_on` probes and their tests read.
     ///
     /// An offload not asked for is not an offence: a `Datagrams` with
     /// `segment_size: None` and `ecn: None` passes against

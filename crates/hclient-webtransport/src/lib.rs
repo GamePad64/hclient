@@ -1,8 +1,7 @@
-//! WebTransport sessions over this workspace's HTTP/3.
+//! WebTransport sessions over HTTP/3.
 //!
 //! `conn` is a `quinn::Connection` that negotiated ALPN `h3` — see "Where
-//! the connection comes from" below, which is the part that is missing
-//! rather than the part that is here.
+//! the connection comes from" below.
 //!
 //! ```no_run
 //! # async fn example(
@@ -26,46 +25,18 @@
 //! A WebSocket is **one** message channel — `Stream<Item =
 //! Message> + Sink<Message>` — and a WebTransport session is a
 //! **multiplexer**: streams opened on demand, in both directions, plus
-//! datagrams. The intersection of the two method sets is as empty as
-//! `QuicTlsConnect`'s was with `TlsConnect`, and the failure mode of
-//! forcing one onto the other is the same one: an adapter that type-checks
-//! *with an empty body*. Nothing here reuses
+//! datagrams. Nothing here reuses
 //! [`Message`](hclient_core::websocket::Message).
-//!
-//! # Why there is no trait here
-//!
-//! `WebSocketConnect` lives in `hclient-core` because two
-//! backends implement it, and the second one — the browser — is what
-//! proved the shape. There is exactly one thing in this workspace that can
-//! open a WebTransport session, so a trait here would be a shape nobody
-//! has tested — and declaring a seam before a second backend fits it is
-//! how a seam gets the wrong shape. The trait belongs
-//! beside `WebSocketConnect` when there is a second implementer — the
-//! browser's own `WebTransport` global, which has shipped in all four
-//! engines (§4) — and not before.
 //!
 //! # Where the connection comes from
 //!
 //! [`Session::connect`] takes a `quinn::Connection` that has already
-//! negotiated ALPN `h3`. That is the shape §2 of the same document rejects
-//! as a **public** seam and §8 accepts as an **internal** one, for the
-//! reason given there: "a shape can be wrong at one level and right at the
-//! next". Everything on the other side of it — a QUIC endpoint over
-//! `hclient_rt::{UdpBind, Spawn, Timer}`, a `QuicTlsConnect` backend,
-//! resolution, and the pool policy — already exists, once, in
-//! `hclient-h3`, and none of it is reachable from outside that crate.
-//!
-//! So this crate is the half nobody provides for a client, and the half it
-//! is missing is a **finding** rather than a design: what `hclient-h3`
-//! would have to expose, and why a WebTransport session cannot share one
-//! of its pooled connections even if it did, is written up on
-//! [`Session::connect`].
+//! negotiated ALPN `h3`. Dialling it — the QUIC endpoint, TLS and
+//! resolution — is the caller's.
 //!
 //! # Nothing is spawned
 //!
-//! `hclient-h3` spawns a connection driver because **a pooled QUIC
-//! connection that nobody polls is dying** and between requests the pool is
-//! the only thing holding it. Neither half of that is true here. The QUIC
+//! The QUIC
 //! connection is driven by the endpoint driver `quinn` already runs for the
 //! endpoint it came from, and a session is the caller's own object rather
 //! than a pool entry, so there are no future requests on whose behalf
@@ -74,13 +45,11 @@
 //! The h3 *control* stream is polled exactly once, inside
 //! [`Session::connect`], to receive the peer's SETTINGS — which the draft
 //! makes a precondition of sending the CONNECT at all — and never again.
-//! What that costs is named rather than discovered, and now measured: a
-//! `GOAWAY` arriving later is not observed. It arrives on the control
+//! A `GOAWAY` arriving later is not observed. It arrives on the control
 //! stream, which is the driver's, and the driver is held rather than
-//! polled. `tests/goaway.rs` is four assertions about why leaving it that
-//! way is a choice rather than an oversight, and one about what the choice
-//! costs — a round trip and a typed `H3_REQUEST_REJECTED`, because the peer
-//! enforces the rule this client cannot see.
+//! polled. What that costs is a round trip and a typed
+//! `H3_REQUEST_REJECTED`, because the peer enforces the rule this client
+//! cannot see.
 //!
 //! The **CONNECT** stream is a different stream and is now read:
 //! [`Session::closed`] is the caller's own future over it, spawning
@@ -100,29 +69,14 @@
 //! The framing splits cleanly in two and only half of it is ours. RFC 9297
 //! §3.2 carries capsules in the payload of HTTP/3 DATA frames, and that
 //! layer is `h3`'s — `RequestStream::send_data` and `poll_recv_data`, on
-//! the CONNECT stream this crate has held since v0.4 W2 without reading it.
-//! The capsule itself is fifty-nine lines here, encoder and decoder
-//! together, because **`h3` 0.0.8 has no capsule code at all** and neither
-//! does `h3-datagram` 0.0.2 or the crate named `h3-webtransport` 0.1.2.
-//! See `close_capsule`.
+//! the CONNECT stream. The capsule itself is encoded and decoded here.
 //!
 //! # More than one session on one connection
 //!
 //! [`Session::open_session`] opens another, bounded by the peer's
-//! `SETTINGS_WT_MAX_SESSIONS`. Two things about it are worth knowing before
-//! reading it, and both were recorded here as blockers and turned out
-//! otherwise.
-//!
-//! **The limit is readable**: not from `h3::config::Settings`, which has
-//! no getter for it,
-//! but from the SETTINGS **frame** [`Session::connect`] already awaits and
-//! used to discard. See `PeerSettings`.
-//!
-//! **A second h3 client is not the way**, and that part was right — it is a
-//! *connection* error, `H3_STREAM_CREATION_ERROR`, which takes the first
-//! session with it, and `tests/sessions.rs` executes the prediction. So
-//! `Shared` holds one h3 client and every session clones its
-//! `SendRequest`.
+//! `SETTINGS_WT_MAX_SESSIONS`. Further sessions go through it, not through
+//! a second [`Session::connect`] on the same connection, which would build
+//! a second h3 client — see [`Session::connect`].
 //!
 //! # Datagrams
 //!
@@ -133,17 +87,6 @@
 //! format is the Quarter Stream ID — this session's CONNECT stream ID
 //! divided by four — as a variable-length integer, then the payload; the
 //! draft adds no framing of its own.
-//!
-//! **Neither `h3-datagram` nor `h3-quinn`'s `datagram` feature is used**,
-//! and that is not a preference. `h3-datagram` 0.0.2's `Datagram::encode`
-//! encodes the Quarter Stream ID into a local buffer and then builds its
-//! `EncodedDatagram` from a **freshly zeroed array**, discarding it — so
-//! every datagram it writes carries a Quarter Stream ID of zero, of the
-//! right length. A session on stream 0 is unaffected and every other
-//! session addresses its datagrams to the wrong one — measured rather
-//! than read. Beyond that, this crate already
-//! owns the QUIC varint for the stream header, for the reason on
-//! `put_varint`, and the datagram header is the same two lines.
 //!
 //! # What is deliberately not here
 //!
@@ -160,6 +103,95 @@
 //!   `AcceptedRecvStream::WebTransportUni` and then discards it, because
 //!   the arm that keeps it is guarded by `enable_webtransport`, which
 //!   `h3` 0.0.8's **client** builder has no setter for.
+
+// Maintainer notes (not rendered):
+// WebTransport sessions over this workspace's HTTP/3.
+//
+// `conn` is a `quinn::Connection` that negotiated ALPN `h3` — see "Where
+// the connection comes from" below, which is the part that is missing
+// rather than the part that is here.
+//
+// datagrams. The intersection of the two method sets is as empty as
+// `QuicTlsConnect`'s was with `TlsConnect`, and the failure mode of
+// forcing one onto the other is the same one: an adapter that type-checks
+// *with an empty body*. Nothing here reuses
+//
+// # Why there is no trait here
+//
+// `WebSocketConnect` lives in `hclient-core` because two
+// backends implement it, and the second one — the browser — is what
+// proved the shape. There is exactly one thing in this workspace that can
+// open a WebTransport session, so a trait here would be a shape nobody
+// has tested — and declaring a seam before a second backend fits it is
+// how a seam gets the wrong shape. The trait belongs
+// beside `WebSocketConnect` when there is a second implementer — the
+// browser's own `WebTransport` global, which has shipped in all four
+// engines (§4) — and not before.
+//
+// # Where the connection comes from
+//
+// [`Session::connect`] takes a `quinn::Connection` that has already
+// negotiated ALPN `h3`. That is the shape §2 of the same document rejects
+// as a **public** seam and §8 accepts as an **internal** one, for the
+// reason given there: "a shape can be wrong at one level and right at the
+// next". Everything on the other side of it — a QUIC endpoint over
+// `hclient_rt::{UdpBind, Spawn, Timer}`, a `QuicTlsConnect` backend,
+// resolution, and the pool policy — already exists, once, in
+// `hclient-h3`, and none of it is reachable from outside that crate.
+//
+// So this crate is the half nobody provides for a client, and the half it
+// is missing is a **finding** rather than a design: what `hclient-h3`
+// would have to expose, and why a WebTransport session cannot share one
+// of its pooled connections even if it did, is written up on
+// [`Session::connect`].
+//
+// `hclient-h3` spawns a connection driver because **a pooled QUIC
+// connection that nobody polls is dying** and between requests the pool is
+// the only thing holding it. Neither half of that is true here. The QUIC
+//
+// What that costs is named rather than discovered, and now measured: a
+// `GOAWAY` arriving later is not observed. It arrives on the control
+// stream, which is the driver's, and the driver is held rather than
+// polled. `tests/goaway.rs` is four assertions about why leaving it that
+// way is a choice rather than an oversight, and one about what the choice
+// costs — a round trip and a typed `H3_REQUEST_REJECTED`, because the peer
+// enforces the rule this client cannot see.
+//
+// The framing splits cleanly in two and only half of it is ours. RFC 9297
+// §3.2 carries capsules in the payload of HTTP/3 DATA frames, and that
+// layer is `h3`'s — `RequestStream::send_data` and `poll_recv_data`, on
+// the CONNECT stream this crate has held since v0.4 W2 without reading it.
+// The capsule itself is fifty-nine lines here, encoder and decoder
+// together, because **`h3` 0.0.8 has no capsule code at all** and neither
+// does `h3-datagram` 0.0.2 or the crate named `h3-webtransport` 0.1.2.
+// See `close_capsule`.
+//
+// [`Session::open_session`] opens another, bounded by the peer's
+// `SETTINGS_WT_MAX_SESSIONS`. Two things about it are worth knowing before
+// reading it, and both were recorded here as blockers and turned out
+// otherwise.
+//
+// **The limit is readable**: not from `h3::config::Settings`, which has
+// no getter for it,
+// but from the SETTINGS **frame** [`Session::connect`] already awaits and
+// used to discard. See `PeerSettings`.
+//
+// **A second h3 client is not the way**, and that part was right — it is a
+// *connection* error, `H3_STREAM_CREATION_ERROR`, which takes the first
+// session with it, and `tests/sessions.rs` executes the prediction. So
+// `Shared` holds one h3 client and every session clones its
+// `SendRequest`.
+//
+// **Neither `h3-datagram` nor `h3-quinn`'s `datagram` feature is used**,
+// and that is not a preference. `h3-datagram` 0.0.2's `Datagram::encode`
+// encodes the Quarter Stream ID into a local buffer and then builds its
+// `EncodedDatagram` from a **freshly zeroed array**, discarding it — so
+// every datagram it writes carries a Quarter Stream ID of zero, of the
+// right length. A session on stream 0 is unaffected and every other
+// session addresses its datagrams to the wrong one — measured rather
+// than read. Beyond that, this crate already
+// owns the QUIC varint for the stream header, for the reason on
+// `put_varint`, and the datagram header is the same two lines.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -208,6 +240,10 @@ impl Display for SessionId {
     }
 }
 
+// Maintainer notes (not rendered):
+// mistrust. `wtransport` 0.7.2 reads it the same way, in
+// `src/driver/streams/connect.rs`, and that is an implementation sharing
+// no code with this one.
 /// How a session ended, when it ended cleanly.
 ///
 /// draft-ietf-webtrans-http3 §5 gives an ending session an *application*
@@ -226,9 +262,7 @@ impl Display for SessionId {
 /// its half is reported here as `{ code: 0, reason: "" }` and **not** as a
 /// separate variant: the specification says the two are the same fact, and
 /// a distinction the wire does not carry is one a caller would learn to
-/// mistrust. `wtransport` 0.7.2 reads it the same way, in
-/// `src/driver/streams/connect.rs`, and that is an implementation sharing
-/// no code with this one.
+/// mistrust.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionClose {
     /// The application error code the peer closed with.
@@ -251,6 +285,11 @@ impl BadCloseCapsule {
     pub const MAX_REASON: usize = 1024;
 }
 
+// Maintainer notes (not rendered):
+// Both live in `Shared` rather than here, because they belong to the
+// **connection** and not to any one session — which is what
+// [`open_session`](Self::open_session) needed and what this crate spent
+// its whole first version without.
 /// An open WebTransport session: a multiplexer over one QUIC connection.
 ///
 /// # What it holds, and why none of it is dead weight
@@ -272,11 +311,6 @@ impl BadCloseCapsule {
 ///
 /// The second is the one worth knowing about: the driver is held to keep a
 /// stream open, not to be polled. See the crate doc.
-///
-/// Both live in `Shared` rather than here, because they belong to the
-/// **connection** and not to any one session — which is what
-/// [`open_session`](Self::open_session) needed and what this crate spent
-/// its whole first version without.
 ///
 /// # Why the two halves are behind mutexes
 ///
@@ -470,6 +504,23 @@ impl Session {
         establish(shared.claim(), uri).await
     }
 
+    // Maintainer notes (not rendered):
+    // # The limit is the peer's, and reading it is the whole finding
+    //
+    // draft-ietf-webtrans-http3 §3.1 bounds the number of simultaneous
+    // sessions by the peer's `SETTINGS_WT_MAX_SESSIONS`, whose default is
+    // **0** — *"the endpoint is not willing to receive any WebTransport
+    // sessions"* — and whose value of `1` the draft makes an explicit
+    // *"clients MUST NOT attempt to establish more than one simultaneous
+    // WebTransport session"*. So this method is only correct if that
+    // number can be read, and `h3::config::Settings` is not where to read
+    // it: that has getters for three flags and none for this one.
+    //
+    // That was true of `h3::config::Settings` and false of `h3`. The
+    // number arrives in the SETTINGS **frame** that
+    // [`connect`](Self::connect) already awaits and used to discard with a
+    // `_`, and `h3::proto::frame::Settings::get` is public under the same
+    // feature this crate already takes. See `PeerSettings`.
     /// Open a **second** WebTransport session on the same QUIC connection.
     ///
     /// This is one extended CONNECT more, on the h3 client the first
@@ -480,22 +531,14 @@ impl Session {
     /// either leaves the other running; the connection outlives both, and
     /// the last one dropped takes the h3 client with it.
     ///
-    /// # The limit is the peer's, and reading it is the whole finding
+    /// # The limit is the peer's
     ///
     /// draft-ietf-webtrans-http3 §3.1 bounds the number of simultaneous
     /// sessions by the peer's `SETTINGS_WT_MAX_SESSIONS`, whose default is
     /// **0** — *"the endpoint is not willing to receive any WebTransport
     /// sessions"* — and whose value of `1` the draft makes an explicit
     /// *"clients MUST NOT attempt to establish more than one simultaneous
-    /// WebTransport session"*. So this method is only correct if that
-    /// number can be read, and `h3::config::Settings` is not where to read
-    /// it: that has getters for three flags and none for this one.
-    ///
-    /// That was true of `h3::config::Settings` and false of `h3`. The
-    /// number arrives in the SETTINGS **frame** that
-    /// [`connect`](Self::connect) already awaits and used to discard with a
-    /// `_`, and `h3::proto::frame::Settings::get` is public under the same
-    /// feature this crate already takes. See `PeerSettings`.
+    /// WebTransport session"*.
     ///
     /// # What it does not bound
     ///
@@ -576,17 +619,27 @@ impl Session {
     /// type `0x2843`) on the CONNECT stream, followed by the FIN that ends
     /// it. Both halves matter — the capsule is what carries the code and
     /// the reason, and the FIN is what tells a peer reading capsules that
+    // Maintainer notes (not rendered):
+    // Dropping ends the session too, and until v0.4 it was the only way:
+    // the send half's `Drop` finishes the QUIC stream, which the draft
+    // makes *"semantically equivalent to … an error code of 0 and an
+    // empty error string"*. So `close(0, "")` and `drop` do put the same
+    // meaning on the wire, and a `close` that could only ever say that
+    // would indeed be a second name for one behaviour — which is what
+    // this crate's own documentation said when it declined to write one.
+    //
+    // [`closed`](Self::closed) — so it would be a guard with one of its
+    // two cases missing, which is exactly the shape this crate deleted
+    // `BadSessionUri::NoAuthority` for. What actually stops a stream
     /// no more are coming.
     ///
     /// # Why this is not the same as dropping the `Session`
     ///
-    /// Dropping ends the session too, and until v0.4 it was the only way:
+    /// Dropping ends the session too:
     /// the send half's `Drop` finishes the QUIC stream, which the draft
     /// makes *"semantically equivalent to … an error code of 0 and an
     /// empty error string"*. So `close(0, "")` and `drop` do put the same
-    /// meaning on the wire, and a `close` that could only ever say that
-    /// would indeed be a second name for one behaviour — which is what
-    /// this crate's own documentation said when it declined to write one.
+    /// meaning on the wire.
     /// What makes it a different method is the code and the reason: those
     /// have no other way out.
     ///
@@ -602,8 +655,7 @@ impl Session {
     /// closed and false when the **peer** did, since the peer's close is
     /// only ever noticed by a caller who awaited
     /// [`closed`](Self::closed) — so it would be a guard with one of its
-    /// two cases missing, which is exactly the shape this crate deleted
-    /// `BadSessionUri::NoAuthority` for. What actually stops a stream
+    /// two cases missing. What actually stops a stream
     /// opened afterwards is the peer, which is where the session's state
     /// really lives.
     ///
@@ -671,10 +723,13 @@ impl Session {
     /// the QUIC connection lost, or a capsule that could not be read
     /// ([`BadCloseCapsule`]).
     ///
-    /// **That difference is the whole point of this method.** Before it,
-    /// the only way a caller learned the session was over was a stream
-    /// operation failing, which says nothing about whether the peer meant
-    /// it. It is the distinction `hclient-fetch` draws for a WebSocket with
+    // Maintainer notes (not rendered):
+    // **That difference is the whole point of this method.** Before it,
+    // the only way a caller learned the session was over was a stream
+    // operation failing, which says nothing about whether the peer meant
+    // it. It is the distinction `hclient-fetch` draws for a WebSocket with
+    /// **That difference is the whole point of this method.**
+    /// It is the distinction `hclient-fetch` draws for a WebSocket with
     /// `wasClean`, and the error kind agrees with that one deliberately
     /// rather than inventing a second vocabulary: an unclean end is
     /// [`ErrorKind::Body`], never `ErrorKind::Timeout`, because no
@@ -847,13 +902,18 @@ impl Session {
     /// There is one datagram queue per QUIC connection and it is quinn's,
     /// so whichever session is being polled reads *everything* — including
     /// what belongs to a session opened by
-    /// [`open_session`](Self::open_session). Until v0.4 this method
-    /// discarded anything that was not its own, which was exactly right
-    /// while a connection could hold only one session and is silent data
-    /// loss now. So a foreign datagram is parked for its owner and its
-    /// owner is woken; see `Shared::hand_over` for what happens when the
-    /// owner is not listening, which is still the discard, and still
-    /// RFC 9297 §2.1's *"SHALL either drop that datagram silently or
+    // Maintainer notes (not rendered):
+    // [`open_session`](Self::open_session). Until v0.4 this method
+    // discarded anything that was not its own, which was exactly right
+    // while a connection could hold only one session and is silent data
+    // loss now. So a foreign datagram is parked for its owner and its
+    // owner is woken; see `Shared::hand_over` for what happens when the
+    // owner is not listening, which is still the discard, and still
+    // RFC 9297 §2.1's *"SHALL either drop that datagram silently or
+    // buffer it temporarily"*.
+    /// [`open_session`](Self::open_session). A foreign datagram is parked for
+    /// its owner and its owner is woken; when the owner is not listening it
+    /// is discarded, which is RFC 9297 §2.1's *"SHALL either drop that datagram silently or
     /// buffer it temporarily"*.
     ///
     /// # What it silently drops, and why silence is right

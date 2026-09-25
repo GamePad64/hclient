@@ -7,13 +7,11 @@
 //!
 //! **Every field is a gate or a report**, and the difference decides who
 //! reads it. A *gate* guards a setting a caller made on the `Client`, and
-//! `build()` refuses when the transport cannot honour it — the
-//! *silently ignored setting* defect, which this workspace has closed four
-//! times. A *report* states a fact about the transport that nothing at the
-//! client level could refuse, because the setting it describes is
-//! configured on the transport; its reader is the caller. That
-//! classification is enforced rather than described — see
-//! `every_capability_is_a_gate_or_a_report` in this module.
+//! `build()` refuses when the transport cannot honour it rather than
+//! silently ignoring the setting. A *report* states a fact about the
+//! transport that nothing at the client level could refuse, because the
+//! setting it describes is configured on the transport; its reader is the
+//! caller.
 //!
 //! **The stored value is a floor.** Where a transport might negotiate
 //! either of two protocols, the honest answer is the one that holds
@@ -21,17 +19,45 @@
 //! an under-claimed one costs a buffered copy. A caller who needs to know
 //! what *this* connection can do asks [`crate::req::RequireVersion`]
 //! before the head instead.
+
+// Maintainer notes (not rendered):
+//
+// **Every field is a gate or a report**, and the difference decides who
+// reads it. A *gate* guards a setting a caller made on the `Client`, and
+// `build()` refuses when the transport cannot honour it — the
+// *silently ignored setting* defect, which this workspace has closed four
+// times. A *report* states a fact about the transport that nothing at the
+// client level could refuse, because the setting it describes is
+// configured on the transport; its reader is the caller. That
+// classification is enforced rather than described — see
+// `every_capability_is_a_gate_or_a_report` in this module.
+
 use http::HeaderName;
 
+// Maintainer notes (not rendered):
+//
+// Only [`Internal`](Self::Internal) is branched on: `Client::build()`
+// refuses a `RedirectPolicy` against a backend that walks the chain
+// itself, because a policy it cannot honour must not be silently ignored.
+// Between [`None`](Self::None) and [`Transparent`](Self::Transparent) the
+// field is a claim a caller reads and nothing in this workspace can
+// contradict — so a variant here earns its place from a backend that
+// carries it, not from being describable.
+//
+// This enum is deliberately not `#[non_exhaustive]`, so a new variant
+// breaks an external `match`. That
+// cost is the point: it should arrive **with** the backend that carries
+// it. A `libcurl` backend (`CURLOPT_FOLLOWLOCATION` plus
+// `CURLOPT_MAXREDIRS` is a genuinely declarative policy) or `WinHTTP` would
+// be candidates, and both would also need the seam to start carrying the
+// merged policy.
 /// Who follows a redirect chain: nobody, `Client`, or the backend.
 ///
 /// Only [`Internal`](Self::Internal) is branched on: `Client::build()`
 /// refuses a `RedirectPolicy` against a backend that walks the chain
 /// itself, because a policy it cannot honour must not be silently ignored.
 /// Between [`None`](Self::None) and [`Transparent`](Self::Transparent) the
-/// field is a claim a caller reads and nothing in this workspace can
-/// contradict — so a variant here earns its place from a backend that
-/// carries it, not from being describable.
+/// field is a claim a caller reads.
 ///
 /// # Implementing this
 ///
@@ -57,12 +83,7 @@ use http::HeaderName;
 /// # Adding a variant
 ///
 /// This enum is deliberately not `#[non_exhaustive]`, so a new variant
-/// breaks an external `match`. That
-/// cost is the point: it should arrive **with** the backend that carries
-/// it. A `libcurl` backend (`CURLOPT_FOLLOWLOCATION` plus
-/// `CURLOPT_MAXREDIRS` is a genuinely declarative policy) or `WinHTTP` would
-/// be candidates, and both would also need the seam to start carrying the
-/// merged policy.
+/// breaks an external `match`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedirectSupport {
     /// No redirects, and nothing to observe.
@@ -91,25 +112,40 @@ pub enum RedirectSupport {
     /// delegate, which is a choice the platform allows rather than one it
     /// makes; see that crate's own doc.
     Transparent,
+    // Maintainer notes (not rendered):
+    //
+    // **The example is in this workspace**: `hclient-fetch` reports this
+    // variant. A browser's `fetch()` with `redirect: "follow"` (the
+    // default, and the only thing that crate ever sends — its
+    // `convert.rs` never calls `RequestInit::set_redirect`) follows the
+    // redirect inside the browser, and the JS code sees only the final
+    // response, with no way to intercept the intermediate hops.
+    //
+    // For such a backend, `Client`'s redirect stage will never see a
+    // single 3xx, and whatever `RedirectPolicy` was set would be a silent
+    // no-op. So `check_supported` **does** check this field
+    // (`hclient/src/config.rs`, `check_redirect_supported`): a
+    // `RedirectPolicy` the caller actually asked for — client-level at
+    // `build()`, or per-request at `execute()`, whichever is in effect —
+    // against an `Internal` backend is an `UnsupportedCapability { what:
+    // "redirect_policy" }`, not a setting that quietly does nothing. A
+    // caller who configured nothing is unaffected: that is why
+    // `Config::redirect` is an `Option`.
     /// The backend follows redirects itself; we neither control nor see it.
     ///
-    /// **The example is in this workspace**: `hclient-fetch` reports this
-    /// variant. A browser's `fetch()` with `redirect: "follow"` (the
-    /// default, and the only thing that crate ever sends — its
-    /// `convert.rs` never calls `RequestInit::set_redirect`) follows the
-    /// redirect inside the browser, and the JS code sees only the final
-    /// response, with no way to intercept the intermediate hops.
+    /// `hclient-fetch` reports this variant. A browser's `fetch()` with
+    /// `redirect: "follow"` follows the redirect inside the browser, and the
+    /// JS code sees only the final response, with no way to intercept the
+    /// intermediate hops.
     ///
     /// For such a backend, `Client`'s redirect stage will never see a
     /// single 3xx, and whatever `RedirectPolicy` was set would be a silent
-    /// no-op. So `check_supported` **does** check this field
-    /// (`hclient/src/config.rs`, `check_redirect_supported`): a
-    /// `RedirectPolicy` the caller actually asked for — client-level at
-    /// `build()`, or per-request at `execute()`, whichever is in effect —
-    /// against an `Internal` backend is an `UnsupportedCapability { what:
-    /// "redirect_policy" }`, not a setting that quietly does nothing. A
-    /// caller who configured nothing is unaffected: that is why
-    /// `Config::redirect` is an `Option`.
+    /// no-op. So a `RedirectPolicy` the caller actually asked for —
+    /// client-level at `build()`, or per-request at `execute()`, whichever is
+    /// in effect — against an `Internal` backend is an
+    /// `UnsupportedCapability { what: "redirect_policy" }`, not a setting
+    /// that quietly does nothing. A caller who configured nothing is
+    /// unaffected.
     ///
     /// It is also the variant an `hclient-urlsession` **background** session
     /// must report, and there it is forced rather than chosen: the redirect
@@ -117,17 +153,22 @@ pub enum RedirectSupport {
     Internal,
 }
 
+// Maintainer notes (not rendered):
+//
+// **Three states, and all three are reachable in this workspace.** It had
+// two values carrying them, plus a `ServerTrustCallbackOnly` variant that
+// no backend ever reported: `None` was said both by `NoTls`, which cannot
+// secure a connection at all, and by the browser, which certainly can.
+// So a caller could not tell *`https://` will fail* from *`https://`
+// works and the platform handles it*, which are the two answers the
+// field is read for. The variant with no producer went, and the state
+// with two producers got a name.
 /// Whether this transport performs TLS, and whether this client configures
 /// it — [`Capabilities::tls_config`].
 ///
-/// **Three states, and all three are reachable in this workspace.** It had
-/// two values carrying them, plus a `ServerTrustCallbackOnly` variant that
-/// no backend ever reported: `None` was said both by `NoTls`, which cannot
-/// secure a connection at all, and by the browser, which certainly can.
-/// So a caller could not tell *`https://` will fail* from *`https://`
-/// works and the platform handles it*, which are the two answers the
-/// field is read for. The variant with no producer went, and the state
-/// with two producers got a name.
+/// **Three states, and all three are reachable.** A caller can tell
+/// *`https://` will fail* from *`https://` works and the platform handles
+/// it*, which are the two answers the field is read for.
 ///
 /// Not `#[non_exhaustive]`, for the reason [`RedirectSupport`] is not: a
 /// reader branches on it, and a fourth state must be a compile error at
@@ -153,6 +194,31 @@ pub enum TlsSupport {
     Full,
 }
 
+// Maintainer notes (not rendered):
+//
+// This struct has grown once — `resolve` joined three fields in v0.4 —
+// and it grows again whenever [`crate::req::Timeouts`] does. The
+// attribute keeps that additive for everyone who reads one, and
+// [`Self::none`] plus the `with_*` setters keep it constructible for
+// everyone who writes one.
+//
+// **It was a generated builder whose members were required**, so that a
+// field added here was a compile error at every transport rather than a
+// silent `false`. The argument was that an unset claim is a transport
+// saying it does not enforce a bound, and a claim nobody wrote is the
+// thing to refuse. **The ordering is the other way round**: a transport
+// cannot honestly report `true` before it implements the bound, so on
+// the day a field arrives `false` is the only true answer anywhere
+// except the crate that added the enforcement. The compile error did not
+// surface a decision; it demanded a diff whose content was forced.
+//
+// The one time it happened says so. `resolve` arrived together with the
+// connector code in `hclient-native` that enforces it, and `true` was
+// written **once**: every other transport got a `false` carrying no
+// information. And [`Capabilities`] has always derived `Default`, with
+// eleven `bool` capabilities that become `false` when a transport does
+// not set them — so the requirement was giving this struct a property
+// its own container never had.
 /// Which of [`crate::req::Timeouts`]' bounds this transport enforces —
 /// the field-per-field mirror of that struct, so a refusal can name the
 /// bound a caller set rather than saying *timeouts*.
@@ -160,29 +226,13 @@ pub enum TlsSupport {
 /// # `#[non_exhaustive]`, and why an added claim is `false` rather than a
 /// compile error
 ///
-/// This struct has grown once — `resolve` joined three fields in v0.4 —
-/// and it grows again whenever [`crate::req::Timeouts`] does. The
-/// attribute keeps that additive for everyone who reads one, and
-/// [`Self::none`] plus the `with_*` setters keep it constructible for
-/// everyone who writes one.
+/// It grows whenever [`crate::req::Timeouts`] does. The attribute keeps
+/// that additive for everyone who reads one, and [`Self::none`] plus the
+/// `with_*` setters keep it constructible for everyone who writes one.
 ///
-/// **It was a generated builder whose members were required**, so that a
-/// field added here was a compile error at every transport rather than a
-/// silent `false`. The argument was that an unset claim is a transport
-/// saying it does not enforce a bound, and a claim nobody wrote is the
-/// thing to refuse. **The ordering is the other way round**: a transport
-/// cannot honestly report `true` before it implements the bound, so on
-/// the day a field arrives `false` is the only true answer anywhere
-/// except the crate that added the enforcement. The compile error did not
-/// surface a decision; it demanded a diff whose content was forced.
-///
-/// The one time it happened says so. `resolve` arrived together with the
-/// connector code in `hclient-native` that enforces it, and `true` was
-/// written **once**: every other transport got a `false` carrying no
-/// information. And [`Capabilities`] has always derived `Default`, with
-/// eleven `bool` capabilities that become `false` when a transport does
-/// not set them — so the requirement was giving this struct a property
-/// its own container never had.
+/// A transport cannot honestly report `true` before it implements a
+/// bound, so on the day a field arrives `false` is the only true answer
+/// anywhere except the crate that added the enforcement.
 // A capability that answers yes or no is a `bool`, not a two-variant enum
 // or a differently-shaped struct — deliberate, see AGENTS.md "A capability
 // that answers yes or no is a `bool`". Each field here answers a separate
@@ -252,6 +302,27 @@ impl TimeoutSupport {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// - **A gate.** The field guards a setting a caller made on the
+//   *`Client`*, and `ClientBuilder::build` refuses when the transport
+//   cannot honour it — the model this whole type exists for, taken from
+//   `wasi:http`'s own setters returning
+//   `result<_, request-options-error::not-supported>`. A gate with no
+//   branch is the *silently ignored setting* defect, and this project has
+//   closed four of them: `redirects`, `owns_cookie_jar`, `owns_cache` and
+//   the `timeouts` triple each earned a branch the day the setting
+//   arrived.
+//
+// **A report is not a dead field.** `upgrade` was deleted for having no
+// reader, and the difference is that its four variants encoded a
+// distinction with one reachable side — where a report has both values
+// reachable and answers a question only it can answer.
+//
+// The classification is enforced rather than described:
+// `every_capability_is_a_gate_or_a_report` in this module destructures
+// the struct with no `..`, so a field added later is a compile error
+// until somebody decides which kind it is.
 /// What the transport can do **in this process, right now**.
 ///
 /// A runtime fact, not a `cfg!`: one wasm binary runs in both Chrome
@@ -267,27 +338,13 @@ impl TimeoutSupport {
 ///   *`Client`*, and `ClientBuilder::build` refuses when the transport
 ///   cannot honour it — the model this whole type exists for, taken from
 ///   `wasi:http`'s own setters returning
-///   `result<_, request-options-error::not-supported>`. A gate with no
-///   branch is the *silently ignored setting* defect, and this project has
-///   closed four of them: `redirects`, `owns_cookie_jar`, `owns_cache` and
-///   the `timeouts` triple each earned a branch the day the setting
-///   arrived.
+///   `result<_, request-options-error::not-supported>`.
 /// - **A report.** The field states a fact about the transport, and
 ///   nothing at the client level could refuse it, because the setting it
 ///   describes is configured *on the transport*. `proxy`, `client_certs`,
 ///   `tls_config`, `early_data`, `connection_reuse`, `cancel_on_drop`,
 ///   `full_duplex`, `streaming_request_body`, the two trailer flags and
 ///   `version_reported` are all this kind. Its reader is the caller.
-///
-/// **A report is not a dead field.** `upgrade` was deleted for having no
-/// reader, and the difference is that its four variants encoded a
-/// distinction with one reachable side — where a report has both values
-/// reachable and answers a question only it can answer.
-///
-/// The classification is enforced rather than described:
-/// `every_capability_is_a_gate_or_a_report` in this module destructures
-/// the struct with no `..`, so a field added later is a compile error
-/// until somebody decides which kind it is.
 // A capability that answers yes or no is a `bool` — deliberate, see
 // AGENTS.md "A capability that answers yes or no is a `bool`". Each of
 // these is a separate gate or report over a separate question; the count
@@ -353,6 +410,15 @@ pub struct Capabilities {
     /// property of the transport, and a caller cannot ask which
     /// connection served it.
     pub connection_reuse: bool,
+    // Maintainer notes (not rendered):
+    //
+    // **Silence and the substantive claim coincide**, and here that costs
+    // nothing: "the backend never filled this in" and "the backend hands
+    // the bytes over untouched" mean the same thing to a caller — decode
+    // it yourself. The [`RedirectSupport`] problem, where the default was
+    // a strictly stronger claim than silence and a `Transparent` backend
+    // was misread for want of a third value, does not arise, because
+    // there is no third party who could decode.
     /// **Who reverses a `Content-Encoding`: this transport, or the client
     /// above it.**
     ///
@@ -372,14 +438,6 @@ pub struct Capabilities {
     /// afterwards.** `fetch` leaves `Content-Encoding` and
     /// `Content-Length` on the response describing the wire rather than
     /// the body you get, which is why a size hint must distrust them.
-    ///
-    /// **Silence and the substantive claim coincide**, and here that costs
-    /// nothing: "the backend never filled this in" and "the backend hands
-    /// the bytes over untouched" mean the same thing to a caller — decode
-    /// it yourself. The [`RedirectSupport`] problem, where the default was
-    /// a strictly stronger claim than silence and a `Transparent` backend
-    /// was misread for want of a third value, does not arise, because
-    /// there is no third party who could decode.
     pub response_decompression: bool,
     /// **Whether this transport can put a marked request into TLS 1.3
     /// early data (0-RTT).**
@@ -412,14 +470,25 @@ pub struct Capabilities {
     /// configured on the `TlsConnect` a transport was built with. See this
     /// type's own doc for the two kinds of field.
     pub tls_config: TlsSupport,
+    // Maintainer notes (not rendered):
+    //
+    // Reported, for [`tls_config`](Self::tls_config)'s reason. Read off
+    // `TlsIdentity::presents_client_certs` by the backends rather than
+    // from a constant, which is what stopped one connector giving two
+    // answers depending on which stack held it.
     /// Whether the TLS configuration this transport holds presents a
     /// client certificate.
     ///
     /// Reported, for [`tls_config`](Self::tls_config)'s reason. Read off
-    /// `TlsIdentity::presents_client_certs` by the backends rather than
-    /// from a constant, which is what stopped one connector giving two
-    /// answers depending on which stack held it.
+    /// `TlsIdentity::presents_client_certs` by the backends.
     pub client_certs: bool,
+    // Maintainer notes (not rendered):
+    //
+    // It is not [`upgrade`](https://docs.rs/hclient-core)'s case either,
+    // the four-variant enum deleted for having no reader: both values
+    // here are reachable, and the reader is the caller — *will my
+    // requests go through a proxy* is a question a diagnostic asks and
+    // only this field answers.
     /// Whether this transport sends through a proxy.
     ///
     /// **Reported, and it will never be a gate.** The
@@ -429,12 +498,27 @@ pub struct Capabilities {
     /// [`owns_cookie_jar`](Self::owns_cookie_jar), where the client owns
     /// the setting and the transport owns the conflict.
     ///
-    /// It is not [`upgrade`](https://docs.rs/hclient-core)'s case either,
-    /// the four-variant enum deleted for having no reader: both values
-    /// here are reachable, and the reader is the caller — *will my
-    /// requests go through a proxy* is a question a diagnostic asks and
-    /// only this field answers.
+    /// *Will my requests go through a proxy* is a question a diagnostic asks
+    /// and only this field answers.
     pub proxy: bool,
+    // Maintainer notes (not rendered):
+    //
+    // # Why a `bool` and not an enum
+    //
+    // The question every capability here answers: a variant exists only
+    // if a caller decision turns on it, and a `bool` is what a yes/no
+    // question deserves. Four fields carried a two-variant enum for this
+    // same shape until they did not.
+    // This field answers exactly one decision — "do I run a jar of my own
+    // for this transport?" — and it is binary. The two axes an enum would
+    // add do not carry decisions:
+    //
+    // - *Who* owns it (the browser, an ambient host) is a split this
+    //   set rejects wherever it appears, for the same reason.
+    // - Attaching versus storing could in principle come apart, and in
+    //   practice never has: a backend that attaches cookies it did not
+    //   store, or stores cookies it will not attach, is not a shape any
+    //   of the three backends here or any ambient HTTP API takes.
     /// Whether the transport keeps its own cookie jar: attaching `Cookie`
     /// to outgoing requests and processing `Set-Cookie` on incoming ones,
     /// without being asked.
@@ -445,22 +529,6 @@ pub struct Capabilities {
     /// twice and store every `Set-Cookie` twice. `false` for
     /// `hclient-native` and `hclient-wasi`.
     ///
-    /// # Why a `bool` and not an enum
-    ///
-    /// The question every capability here answers: a variant exists only
-    /// if a caller decision turns on it, and a `bool` is what a yes/no
-    /// question deserves. Four fields carried a two-variant enum for this
-    /// same shape until they did not.
-    /// This field answers exactly one decision — "do I run a jar of my own
-    /// for this transport?" — and it is binary. The two axes an enum would
-    /// add do not carry decisions:
-    ///
-    /// - *Who* owns it (the browser, an ambient host) is a split this
-    ///   set rejects wherever it appears, for the same reason.
-    /// - Attaching versus storing could in principle come apart, and in
-    ///   practice never has: a backend that attaches cookies it did not
-    ///   store, or stores cookies it will not attach, is not a shape any
-    ///   of the three backends here or any ambient HTTP API takes.
     ///
     /// What it does *not* answer — deliberately, and this is where a third
     /// state would arrive if it ever arrives — is whether a jar-owning
@@ -470,6 +538,26 @@ pub struct Capabilities {
     /// way [`RedirectSupport::Internal`] earned its variant: the setting,
     /// the variant and the `check_supported` arm arrive together.
     pub owns_cookie_jar: bool,
+    // Maintainer notes (not rendered):
+    //
+    // # This field had no reader for four verticals
+    //
+    // It shipped in v0.1 as `false` everywhere but one backend, branched
+    // on nowhere, and was on the same list `version_select` was rescued
+    // from — *a variant exists only if a caller decision turns on it*. The
+    // decision that arrived is `ClientBuilder::cache`, and a client-side
+    // cache against a transport reporting `true` is an
+    // [`UnsupportedCapability`](crate::error::UnsupportedCapability) at `build()`, the same arm
+    // `owns_cookie_jar` takes for a jar and [`RedirectSupport::Internal`]
+    // takes for a redirect policy.
+    //
+    // # Why a `bool` and not an enum
+    //
+    // [`Self::owns_cookie_jar`]'s answer, one field up, applies verbatim:
+    // this field settles exactly one decision — *do I run a cache of my
+    // own for this transport?* — and it is binary. *Who* owns it is a
+    // split this set rejects; storing versus serving could in
+    // principle come apart and in practice never has.
     /// Whether the transport keeps its own HTTP response cache: serving a
     /// stored response instead of sending, and storing what it fetches,
     /// without being asked.
@@ -482,24 +570,11 @@ pub struct Capabilities {
     /// does rather than about what is downstream of it — the same line
     /// `owns_cookie_jar` holds for the same backend.
     ///
-    /// # This field had no reader for four verticals
-    ///
-    /// It shipped in v0.1 as `false` everywhere but one backend, branched
-    /// on nowhere, and was on the same list `version_select` was rescued
-    /// from — *a variant exists only if a caller decision turns on it*. The
-    /// decision that arrived is `ClientBuilder::cache`, and a client-side
-    /// cache against a transport reporting `true` is an
+    /// A client-side cache (`ClientBuilder::cache`) against a transport
+    /// reporting `true` is an
     /// [`UnsupportedCapability`](crate::error::UnsupportedCapability) at `build()`, the same arm
     /// `owns_cookie_jar` takes for a jar and [`RedirectSupport::Internal`]
     /// takes for a redirect policy.
-    ///
-    /// # Why a `bool` and not an enum
-    ///
-    /// [`Self::owns_cookie_jar`]'s answer, one field up, applies verbatim:
-    /// this field settles exactly one decision — *do I run a cache of my
-    /// own for this transport?* — and it is binary. *Who* owns it is a
-    /// split this set rejects; storing versus serving could in
-    /// principle come apart and in practice never has.
     ///
     /// What it deliberately does **not** answer is whether a cache-owning
     /// backend can be asked to bypass, revalidate or clear. There is no
@@ -508,6 +583,15 @@ pub struct Capabilities {
     /// there is nothing to refuse. That is where a third state would
     /// arrive if it ever arrives.
     pub owns_cache: bool,
+    // Maintainer notes (not rendered):
+    //
+    // # Why this field exists
+    //
+    // The rule is that *a capability exists only if a caller decision
+    // turns on it* — `RedirectSupport` lost two variants to it.
+    // [`crate::req::RequireVersion`] is the decision this one answers, and it is the
+    // reason the demand and this
+    // field's first `true` land in one change.
     /// Whether the transport honours a per-request [`crate::req::RequireVersion`]
     /// demand: reads it, and either serves the request over that version
     /// or fails it with [`crate::error::VersionNotAvailable`] **before the head is
@@ -527,14 +611,6 @@ pub struct Capabilities {
     /// against either becomes an [`UnsupportedCapability`](crate::error::UnsupportedCapability) from `Client` —
     /// the same arm a `RedirectPolicy` against
     /// [`RedirectSupport::Internal`] takes.
-    ///
-    /// # Why this field exists
-    ///
-    /// The rule is that *a capability exists only if a caller decision
-    /// turns on it* — `RedirectSupport` lost two variants to it.
-    /// [`crate::req::RequireVersion`] is the decision this one answers, and it is the
-    /// reason the demand and this
-    /// field's first `true` land in one change.
     pub version_select: bool,
     /// Whether `Response::version()` is something the transport observed.
     ///

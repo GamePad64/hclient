@@ -59,6 +59,12 @@ enum Ending {
     Failed,
 }
 
+// Maintainer notes (not rendered):
+//
+// "That is the same shape as `Timeouts`' `total` against `between_bytes`,
+// which this workspace already argues one crate over: neither bound
+// implies the other, and a caller who set only one has bounded only one
+// thing. ..."
 /// A stream of lines over any response body.
 ///
 /// # The bound is its own, and `response_limit` cannot stand in for it
@@ -73,11 +79,11 @@ enum Ending {
 /// - a 1 MiB body that is one unterminated run is nothing at all to a
 ///   total bound and is the whole of the memory this type would hold.
 ///
-/// That is the same shape as `Timeouts`' `total` against `between_bytes`,
-/// which this workspace already argues one crate over: neither bound
-/// implies the other, and a caller who set only one has bounded only one
-/// thing. Setting `response_limit` as well is still worth doing — it is
-/// the bound on the sum, and it is enforced in the body rather than here.
+/// That is the same shape as `Timeouts`' `total` against `between_bytes`:
+/// neither bound implies the other, and a caller who set only one has
+/// bounded only one thing. Setting `response_limit` as well is still worth
+/// doing — it is the bound on the sum, and it is enforced in the body
+/// rather than here.
 ///
 /// **The count is the buffered tail, and it over-counts by at most three
 /// bytes**: an undecided leading BOM and a terminator swallowed at a frame
@@ -125,6 +131,12 @@ where
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // "... and
+    // dropping it would lose a whole record with nothing said, which is
+    // the silent-loss shape this workspace refuses. The WHATWG rules
+    // [`hclient_proto::lines`] otherwise implements go the other way ..."
     /// The next line, without its terminator.
     ///
     /// Reads as many chunks from the body as it takes to complete one
@@ -144,9 +156,8 @@ where
     /// **A final line with no terminator is yielded**, on a clean end of
     /// body only. A file whose last record has no trailing newline is
     /// ordinary — half the NDJSON writers in the world produce one — and
-    /// dropping it would lose a whole record with nothing said, which is
-    /// the silent-loss shape this workspace refuses. The WHATWG rules
-    /// [`hclient_proto::lines`] otherwise implements go the other way for
+    /// dropping it would lose a whole record with nothing said. The WHATWG
+    /// rules [`hclient_proto::lines`] otherwise implements go the other way for
     /// SSE, and that is a fact about *events*: an event is dispatched by a
     /// blank line, so a partial one was never a whole anything.
     ///

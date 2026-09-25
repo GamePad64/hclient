@@ -26,6 +26,12 @@ pub struct UrlSession {
 }
 
 impl UrlSession {
+    // Maintainer notes (not rendered):
+    //
+    // See the crate doc for why: cookies, caching and redirects are
+    // portable behaviour this workspace already implements once, and a
+    // caller must not lose `hclient`'s versions by choosing this
+    // backend for the OS-owned things it *is* here for.
     /// A session that persists nothing of its own.
     ///
     /// `ephemeral` is Apple's name for a configuration with no on-disk
@@ -34,10 +40,8 @@ impl UrlSession {
     /// in-memory jar rather than none — and an in-memory jar is still a
     /// second jar, which is the thing this backend is refusing to be.
     ///
-    /// See the crate doc for why: cookies, caching and redirects are
-    /// portable behaviour this workspace already implements once, and a
-    /// caller must not lose `hclient`'s versions by choosing this
-    /// backend for the OS-owned things it *is* here for.
+    /// Cookies, caching and redirects are left to `hclient`'s own
+    /// implementations; see the crate docs.
     pub fn new() -> Self {
         let cfg = NSURLSessionConfiguration::ephemeralSessionConfiguration();
         cfg.setHTTPCookieStorage(None);

@@ -1,33 +1,62 @@
 //! Where a URI stops being URI syntax.
 //!
-//! One function today — [`bare_host`], which takes an IPv6 literal's
-//! brackets off — and the module is named for the question rather than
-//! for it. **That is deliberate and it is the second name this module has
-//! had**: as `host` it was named after its one function's subject, so
-//! the next piece of URI handling this workspace hoists would either have
-//! sat under a name that did not cover it or arrived as a second
-//! one-function module. Both happen: `hclient-native` holds a `Uri` on
-//! both of its stacks, and it, `hclient-dns` and `hclient-dns-doh` each
-//! parse address literals — every one a place where a fact about RFC 3986
-//! is re-derived.
+//! Today that is [`bare_host`], which takes an IPv6 literal's brackets
+//! off.
 //!
 //! What belongs here is the narrow kind: a piece of URI syntax that
 //! several crates need, that `http::Uri` does not answer, and that has one
 //! right answer. Parsing, resolution and IDN are not — those are
 //! `hclient-proto`'s, which is where a URI is actually taken apart.
 
+// Maintainer notes (not rendered):
+//
+// One function today — [`bare_host`], which takes an IPv6 literal's
+// brackets off — and the module is named for the question rather than
+// for it. **That is deliberate and it is the second name this module has
+// had**: as `host` it was named after its one function's subject, so
+// the next piece of URI handling this workspace hoists would either have
+// sat under a name that did not cover it or arrived as a second
+// one-function module. Both happen: `hclient-native` holds a `Uri` on
+// both of its stacks, and it, `hclient-dns` and `hclient-dns-doh` each
+// parse address literals — every one a place where a fact about RFC 3986
+// is re-derived.
+
+// Maintainer notes (not rendered):
+//
+// # Why this exists at all, and why in this crate
+//
+// `http::Uri::host()` returns an IPv6 literal **with its brackets**,
+// because that is what the URI says: RFC 3986 §3.2.2 puts `IP-literal =
+// "[" ( IPv6address / IPvFuture ) "]"` in the *authority*'s grammar, not
+// in the host's. Nothing outside a URI wants them, and everything outside
+// a URI is where this workspace kept meeting the same failure:
+//
+// The duty is the **caller's**, not the backend's — see
+// `hclient_tls::TlsRequest::server_name`, whose doc says so at the seam
+// where it matters. A backend that stripped defensively would be the
+// second place normalising, and two places normalising is how they drift;
+// worse, it would have to guess, since a backend cannot tell a host that
+// came from a URI from one a caller built by hand.
+//
+// This crate is the home because it is the only one every consumer
+// already has. `hclient-native` holds a `Uri` on both of its stacks and
+// feeds a TLS seam from each; `hclient-dns` and `hclient-dns-doh` both parse
+// literals; `hclient-tls`, whose doc has to name the duty, depends on
+// this crate and not on any of them. Putting it in `hclient-dns` would
+// make a TLS server name reach through a resolver crate for a fact about
+// URI syntax, and putting it in `hclient-tls` would do the mirror image
+// to a resolver.
 /// The host a URI names, with an IPv6 literal's brackets removed.
 ///
 /// `[2001:db8::1]` becomes `2001:db8::1`; every other host — a name, an
 /// IPv4 literal, an already-bare v6 address — comes back untouched.
 ///
-/// # Why this exists at all, and why in this crate
+/// # Why
 ///
 /// `http::Uri::host()` returns an IPv6 literal **with its brackets**,
 /// because that is what the URI says: RFC 3986 §3.2.2 puts `IP-literal =
 /// "[" ( IPv6address / IPvFuture ) "]"` in the *authority*'s grammar, not
-/// in the host's. Nothing outside a URI wants them, and everything outside
-/// a URI is where this workspace kept meeting the same failure:
+/// in the host's. Nothing outside a URI wants them:
 ///
 /// * `str::parse::<IpAddr>()` rejects `[::1]`, so a resolver's literal
 ///   shortcut falls through and asks DNS about a string no zone contains.
@@ -37,19 +66,7 @@
 ///
 /// The duty is the **caller's**, not the backend's — see
 /// `hclient_tls::TlsRequest::server_name`, whose doc says so at the seam
-/// where it matters. A backend that stripped defensively would be the
-/// second place normalising, and two places normalising is how they drift;
-/// worse, it would have to guess, since a backend cannot tell a host that
-/// came from a URI from one a caller built by hand.
-///
-/// This crate is the home because it is the only one every consumer
-/// already has. `hclient-native` holds a `Uri` on both of its stacks and
-/// feeds a TLS seam from each; `hclient-dns` and `hclient-dns-doh` both parse
-/// literals; `hclient-tls`, whose doc has to name the duty, depends on
-/// this crate and not on any of them. Putting it in `hclient-dns` would
-/// make a TLS server name reach through a resolver crate for a fact about
-/// URI syntax, and putting it in `hclient-tls` would do the mirror image
-/// to a resolver.
+/// where it matters.
 ///
 /// # What it does not do
 ///

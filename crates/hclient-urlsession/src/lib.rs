@@ -3,18 +3,11 @@
 //! The fourth ambient backend — after `hclient-wasi` and `hclient-fetch`,
 //! it owns no connection of its own — and the reason it exists is the list
 //! of things a userspace stack cannot reach on an Apple platform: per-app
-//! VPN, the system proxy and its PAC file, and background transfer. Every
-//! one of those is a fact about the device rather than a preference,
-//! which is the same argument `hclient-tls-native-tls` is built on one
-//! seam over.
+//! VPN, the system proxy and its PAC file, and background transfer.
 //!
-//! **Enterprise roots pushed by MDM were on that list and should not have
-//! been.** `rustls-platform-verifier` 0.7.0 already reaches them — its
-//! Apple path builds the trust evaluation with
-//! `SecTrust::create_with_certificates` and then, for any extra roots,
-//! calls `set_trust_anchor_certificates_only(false)` specifically so the
-//! system's own anchors survive. Read rather than assumed, and it is the
-//! verifier `hclient`'s own `DefaultTransport` already uses.
+//! Enterprise roots pushed by MDM are not a reason to choose it:
+//! `hclient`'s own `DefaultTransport` verifies with
+//! `rustls-platform-verifier`, which already honours them.
 //!
 //! # What it deliberately does NOT take from the OS
 //!
@@ -22,11 +15,8 @@
 //! for you, and this transport **turns all three off**. That is the
 //! decision worth knowing about, and it is not caution:
 //!
-//! - None of the three is in the list above. They are portable behaviour,
-//!   and this workspace already has portable implementations of all three
-//!   — `hclient-cookie`, `hclient-cache` and `hclient_proto::redirect` —
-//!   whose whole point is that a caller gets the same answers on every
-//!   backend.
+//! - They are portable behaviour that `hclient`'s `Client` implements
+//!   itself, so a caller gets the same answers on every backend.
 //! - Leaving them on would make this the *second* backend to report
 //!   `owns_cookie_jar` and `owns_cache`, and a client-side jar or cache
 //!   against it would be an `UnsupportedCapability` at `build()`. A caller
@@ -41,16 +31,13 @@
 //!
 //! The configuration is `ephemeral`, which is Apple's own name for a
 //! session that persists nothing, plus an explicit `nil` for the cookie
-//! storage. Both are asserted rather than assumed: see `tests/live.rs`.
+//! storage.
 //!
 //! # What it does take, and says so
 //!
 //! The proxy configuration, which is one of the three reasons above — and
 //! [`Capabilities::proxy`](hclient_core::caps::Capabilities::proxy) reports it,
 //! read from the machine at construction rather than left at `false`.
-//! Left at `false` it was a **capability that lies**: a caller asking
-//! *will my requests go through a proxy* got `no` from a transport that
-//! hands every request to a stack which proxies them.
 //!
 //! What is read is the **platform's own settings** —
 //! `hclient_proxy::system::SystemProxies::detect_platform`, which skips
@@ -73,18 +60,8 @@
 //!
 //! [`UrlSessionWebSocket`] implements
 //! [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect) over
-//! `NSURLSessionWebSocketTask`, **in this crate** rather than one of its
-//! own: the rule that puts framing in a separate crate is about a
-//! dependency to keep out of other graphs, and this costs zero crates —
-//! the task is in the `objc2-foundation` feature already named here.
-//!
-//! **Three platforms now fit a seam shaped around the first.**
-//! `WebSocketConnect` hands over *messages* because that is all a browser
-//! can give; `WinHTTP` turned out to be the same shape and so is
-//! Foundation, which delivers an `NSURLSessionWebSocketMessage` and takes
-//! one back with the handshake, the masking and the ping/pong inside the
-//! system. Three implementations that share no code agreeing on the shape
-//! is what says the seam is not the browser's accident.
+//! `NSURLSessionWebSocketTask`. Foundation performs the handshake, the
+//! masking and the ping/pong itself, and hands over whole messages.
 //!
 //! Two details are Foundation's own and are handled rather than papered
 //! over: a task opens **lazily**, so the handshake's failure arrives
@@ -92,6 +69,48 @@
 //! the peer's close arrives as a **failed receive** with the code on the
 //! task, which is read back and reported as
 //! [`Message::Close`](hclient_core::websocket::Message::Close).
+
+// Maintainer notes (not rendered):
+//
+// VPN, the system proxy and its PAC file, and background transfer. Every
+// one of those is a fact about the device rather than a preference,
+// which is the same argument `hclient-tls-native-tls` is built on one
+// seam over.
+//
+// **Enterprise roots pushed by MDM were on that list and should not have
+// been.** `rustls-platform-verifier` 0.7.0 already reaches them — its
+// Apple path builds the trust evaluation with
+// `SecTrust::create_with_certificates` and then, for any extra roots,
+// calls `set_trust_anchor_certificates_only(false)` specifically so the
+// system's own anchors survive. Read rather than assumed, and it is the
+// verifier `hclient`'s own `DefaultTransport` already uses.
+//
+// - None of the three is in the list above. They are portable behaviour,
+//   and this workspace already has portable implementations of all three
+//   — `hclient-cookie`, `hclient-cache` and `hclient_proto::redirect` —
+//   whose whole point is that a caller gets the same answers on every
+//   backend.
+//
+// storage. Both are asserted rather than assumed: see `tests/live.rs`.
+//
+// Left at `false` it was a **capability that lies**: a caller asking
+// *will my requests go through a proxy* got `no` from a transport that
+// hands every request to a stack which proxies them.
+//
+// [`UrlSessionWebSocket`] implements
+// [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect) over
+// `NSURLSessionWebSocketTask`, **in this crate** rather than one of its
+// own: the rule that puts framing in a separate crate is about a
+// dependency to keep out of other graphs, and this costs zero crates —
+// the task is in the `objc2-foundation` feature already named here.
+//
+// **Three platforms now fit a seam shaped around the first.**
+// `WebSocketConnect` hands over *messages* because that is all a browser
+// can give; `WinHTTP` turned out to be the same shape and so is
+// Foundation, which delivers an `NSURLSessionWebSocketMessage` and takes
+// one back with the handshake, the masking and the ping/pong inside the
+// system. Three implementations that share no code agreeing on the shape
+// is what says the seam is not the browser's accident.
 
 mod body;
 mod delegate;

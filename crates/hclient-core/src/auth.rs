@@ -1,45 +1,64 @@
 //! Authentication as a seam: a scheme, and one exchange's state.
 //!
-//! **Here rather than in `hclient` because a scheme is written by
-//! somebody else.** NTLM and Negotiate need a platform's own security
-//! provider, and those crates have real users while no HTTP glue over any
-//! of them is published — `reqwest` and `hyper` have nowhere to put one.
-//! So this crate does not grow a Kerberos dependency; it grows the two
-//! traits a third party needs, in the crate that already holds every
-//! other seam a third party implements.
+//! A scheme is written by somebody else — NTLM and Negotiate need a
+//! platform's own security provider — so the two traits a third party
+//! implements live here, beside every other seam. `hclient` re-exports
+//! them under `hclient::auth`, so nothing a consumer writes names this
+//! crate.
 //!
-//! It moved out of the facade for the reason `Transport`, `Hooks` and
-//! `Capabilities` were never in it: a consumer *configures*
-//! authentication, and `hclient` re-exports these under
-//! `hclient::auth` so nothing a consumer writes moves — but an
-//! **implementor** should not have to depend on a whole HTTP client to
-//! reach a two-method trait.
-//!
-//! Measured, and the figures are the perishable half of that: on
-//! 2026-09-08, `cargo tree -e no-proc-macro,normal` counts **9** crates
-//! for `hclient-core` against **42** for `hclient` on its default
-//! features, or **21** with none. It read *32 against 16* for as long as
-//! this paragraph existed, from a measurement taken before the move and
-//! never retaken — both halves have since moved, `hclient-core`'s by this
-//! crate's own doing. **What is load-bearing is the ratio and not the
-//! numbers**: an implementor of a two-method trait pays a fraction of the
-//! facade's graph, and that stays true however either figure drifts.
-//!
-//! What stayed behind is what belongs to the client rather than to the
-//! seam: `MAX_LEGS`, which is a bound `Client::run` enforces, the
-//! `Digest` scheme, and the error a flow that never finishes produces.
+//! What belongs to the client rather than to the seam lives in `hclient`:
+//! `MAX_LEGS`, which is a bound `Client::run` enforces, the `Digest`
+//! scheme, and the error a flow that never finishes produces.
+
+// Maintainer notes (not rendered):
+//
+// **Here rather than in `hclient` because a scheme is written by
+// somebody else.** NTLM and Negotiate need a platform's own security
+// provider, and those crates have real users while no HTTP glue over any
+// of them is published — `reqwest` and `hyper` have nowhere to put one.
+// So this crate does not grow a Kerberos dependency; it grows the two
+// traits a third party needs, in the crate that already holds every
+// other seam a third party implements.
+//
+// It moved out of the facade for the reason `Transport`, `Hooks` and
+// `Capabilities` were never in it: a consumer *configures*
+// authentication, and `hclient` re-exports these under
+// `hclient::auth` so nothing a consumer writes moves — but an
+// **implementor** should not have to depend on a whole HTTP client to
+// reach a two-method trait.
+//
+// Measured, and the figures are the perishable half of that: on
+// 2026-09-08, `cargo tree -e no-proc-macro,normal` counts **9** crates
+// for `hclient-core` against **42** for `hclient` on its default
+// features, or **21** with none. It read *32 against 16* for as long as
+// this paragraph existed, from a measurement taken before the move and
+// never retaken — both halves have since moved, `hclient-core`'s by this
+// crate's own doing. **What is load-bearing is the ratio and not the
+// numbers**: an implementor of a two-method trait pays a fraction of the
+// facade's graph, and that stays true however either figure drifts.
+//
+// What stayed behind is what belongs to the client rather than to the
+// seam: `MAX_LEGS`, which is a bound `Client::run` enforces, the
+// `Digest` scheme, and the error a flow that never finishes produces.
 
 use crate::body::BodyView;
 
+// Maintainer notes (not rendered):
+//
+// **Not `#[non_exhaustive]`, because exhaustiveness is the mechanism.**
+// `Client::run` branches on this to decide whether to send the request
+// again, and a `_` arm there is where a third answer — *stop, and this
+// is an error*, say — would be silently read as one of the two that
+// exist. A flow that says something the client does not act on is the
+// *silently ignored setting* defect with the setting coming from a
+// scheme rather than a caller.
 /// What a flow says after seeing a response.
 ///
 /// **Not `#[non_exhaustive]`, because exhaustiveness is the mechanism.**
 /// `Client::run` branches on this to decide whether to send the request
 /// again, and a `_` arm there is where a third answer — *stop, and this
 /// is an error*, say — would be silently read as one of the two that
-/// exist. A flow that says something the client does not act on is the
-/// *silently ignored setting* defect with the setting coming from a
-/// scheme rather than a caller.
+/// exist.
 ///
 /// The cost is real and is the intended one: a third variant breaks every
 /// out-of-tree scheme's `match`, and it should, because a scheme that has
@@ -54,12 +73,13 @@ pub enum AuthStep {
     Again,
 }
 
+// Maintainer notes (not rendered):
+//
+// A named type rather than three parameters, because the list grew once
+// already: [`body`](Self::body) is here for schemes that sign what they
+// send, and a fourth would otherwise be a fourth breaking change to
+// every implementor.
 /// The request a flow is about to authenticate.
-///
-/// A named type rather than three parameters, because the list grew once
-/// already: [`body`](Self::body) is here for schemes that sign what they
-/// send, and a fourth would otherwise be a fourth breaking change to
-/// every implementor.
 #[derive(Debug)]
 pub struct AuthRequest<'a> {
     method: &'a http::Method,
@@ -91,6 +111,11 @@ impl<'a> AuthRequest<'a> {
         self.uri
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // factory. This was written the other way round first, and the test
+    // that fixed it is
+    // `a_rewindable_body_is_shown_as_bytes_without_a_second_factory_call`.
     /// What the body is, to a scheme that has to sign it.
     ///
     /// **Three states, because two would make "there is nothing to hash"
@@ -104,9 +129,7 @@ impl<'a> AuthRequest<'a> {
     /// more than it sounds: `Client` takes the snapshot before building
     /// the flow, so an ordinary `Rewindable` body — the shape a retryable
     /// upload has — arrives as its **bytes**, with no second call to its
-    /// factory. This was written the other way round first, and the test
-    /// that fixed it is
-    /// `a_rewindable_body_is_shown_as_bytes_without_a_second_factory_call`.
+    /// factory.
     ///
     /// [`BodyView::Opaque`] is left to a snapshot that has no bytes
     /// either: a `Streaming` body, which has none until it is pumped, and
@@ -152,21 +175,28 @@ pub trait AuthFlow {
     fn on_response(&mut self, status: http::StatusCode, headers: &http::HeaderMap) -> AuthStep;
 }
 
+// Maintainer notes (not rendered):
+//
+// **Neither trait declares an auto trait**, which is this workspace's
+// rule for a seam: the demands live where the facade *stores* the value,
+// in [`BoxFlow`] and in the `Arc` `RequestBuilder::auth` wraps a scheme
+// into — a bound on a value the caller hands over at an opt-in call,
+// rather than one every implementor must satisfy.
+//
+// The rule was reached the hard way here. A `pub trait AuthFlow: Send`
+// carries its `send-bound-exception` marker on the same line as the
+// bound, and `cargo fmt` moves a trailing comment off a `{` line; the
+// obvious repair — a trait-level `where Self: Send,` — is **worse**,
+// because `cargo fmt` deletes that comment outright rather than moving
+// it. Reproduced in isolation before it was believed. Declaring nothing
+// removes the question along with the bound.
 /// The configuration a flow is made from.
 ///
-/// **Neither trait declares an auto trait**, which is this workspace's
-/// rule for a seam: the demands live where the facade *stores* the value,
+/// **Neither trait declares an auto trait.** The demands live where the
+/// facade *stores* the value,
 /// in [`BoxFlow`] and in the `Arc` `RequestBuilder::auth` wraps a scheme
 /// into — a bound on a value the caller hands over at an opt-in call,
 /// rather than one every implementor must satisfy.
-///
-/// The rule was reached the hard way here. A `pub trait AuthFlow: Send`
-/// carries its `send-bound-exception` marker on the same line as the
-/// bound, and `cargo fmt` moves a trailing comment off a `{` line; the
-/// obvious repair — a trait-level `where Self: Send,` — is **worse**,
-/// because `cargo fmt` deletes that comment outright rather than moving
-/// it. Reproduced in isolation before it was believed. Declaring nothing
-/// removes the question along with the bound.
 pub trait Auth: std::fmt::Debug {
     /// A fresh flow for one hop.
     fn start(&self) -> BoxFlow;
@@ -178,10 +208,14 @@ impl<T: Auth + ?Sized> Auth for std::sync::Arc<T> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// `Send` because the client keeps it across an await, and
+// `Client::execute`'s future is `Send` — a property this workspace spent
+// the whole erasure effort recovering, and which a flow that was not
+// would take back from every caller.
 /// A flow, as the client holds it.
 ///
 /// `Send` because the client keeps it across an await, and
-/// `Client::execute`'s future is `Send` — a property this workspace spent
-/// the whole erasure effort recovering, and which a flow that was not
-/// would take back from every caller.
+/// `Client::execute`'s future is `Send`.
 pub type BoxFlow = Box<dyn AuthFlow + Send>; // send-bound-exception: amendment-C12

@@ -41,8 +41,8 @@
 //!
 //! # Connections are shared, and requests on one are multiplexed
 //!
-//! **This is the opposite of v0.2 W2's h2 policy, and deliberately so.**
-//! There, an h2 connection is checked out of the pool *exclusively*, one
+//! This is the opposite of the h2 policy, and deliberately so. There, an
+//! h2 connection is checked out of the pool *exclusively*, one
 //! stream at a time, because without a spawner there is nobody to drive a
 //! shared connection but the in-flight request futures — so a caller that
 //! stopped polling one request would stall its neighbours. The argument is
@@ -65,6 +65,9 @@
 //! floor is not automatically the conservative answer it is for `Native`.
 //! Each field is set to what this implementation actually does; see
 //! [`H3::new`].
+// Maintainer notes (not rendered):
+// **This is the opposite of v0.2 W2's h2 policy, and deliberately so.**
+// There, an h2 connection is checked out of the pool *exclusively*, one
 #![forbid(unsafe_code)]
 
 /// The erased QUIC arm `Native` holds, so an `Option<H3<..>>` field does
@@ -218,24 +221,31 @@ impl fmt::Debug for Shared {
     }
 }
 
+// Maintainer notes (not rendered):
+// # A spawned driver is necessary and not sufficient, which is a finding
+//
+// The research established that an unpolled
+// QUIC connection dies across an idle gap, and that a *driven* one
+// survives. Building it here turned up the other half: **the driver alone
+// is not enough.** With a driver spawned and no keep-alive configured, the
+// same 1500 ms gap under a 1000 ms idle timeout still killed the
+// connection — because driving a connection is what lets it *send* a PING,
+// not what makes it *decide* to. The decision is
+// `TransportConfig::keep_alive_interval`, and quinn leaves it unset by
+// default.
+//
+// `an_idle_connection_survives_only_because_of_the_keep_alive` in
+// `tests/live.rs` is that pair, with the driver spawned in both arms so the
+// keep-alive is the only difference.
 /// How often a pooled connection sends a PING when nothing else is
 /// travelling on it.
 ///
-/// # A spawned driver is necessary and not sufficient, which is a finding
+/// # Why a keep-alive at all
 ///
-/// The research established that an unpolled
-/// QUIC connection dies across an idle gap, and that a *driven* one
-/// survives. Building it here turned up the other half: **the driver alone
-/// is not enough.** With a driver spawned and no keep-alive configured, the
-/// same 1500 ms gap under a 1000 ms idle timeout still killed the
-/// connection — because driving a connection is what lets it *send* a PING,
-/// not what makes it *decide* to. The decision is
-/// `TransportConfig::keep_alive_interval`, and quinn leaves it unset by
-/// default.
-///
-/// `an_idle_connection_survives_only_because_of_the_keep_alive` in
-/// `tests/live.rs` is that pair, with the driver spawned in both arms so the
-/// keep-alive is the only difference.
+/// A pooled QUIC connection that sends nothing dies at the idle timeout,
+/// even though its driver is running: driving a connection lets it send a
+/// PING, and only a keep-alive interval makes it decide to. quinn leaves
+/// that interval unset by default, so this transport sets one.
 ///
 /// # Why five seconds, and what it does not promise
 ///
@@ -254,6 +264,9 @@ impl fmt::Debug for Shared {
 /// for callers who would rather pay the handshake.
 pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(5);
 
+// Maintainer notes (not rendered):
+// What this transport can and cannot say is in `crate::http3::hooks`: `tcp`
+// holds
 /// The HTTP/3 transport.
 ///
 /// # `H`, the observability hook
@@ -265,7 +278,7 @@ pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(5);
 /// caller asks; what comes back is a *different type*, which is the whole
 /// of the zero-cost claim rather than an inconvenience.
 ///
-/// What this transport can and cannot say is in `crate::http3::hooks`: `tcp`
+/// What this transport can and cannot say: `tcp`
 /// holds the QUIC attempt and `tls` is always `None`, because QUIC's
 /// handshake is TLS and `into_0rtt` hands back a usable connection before
 /// it finishes; `CloseReason::Ended` has no emitter, because nothing in
@@ -298,6 +311,24 @@ impl<R, T, D> H3<R, T, D, NoHooks>
 where
     T: QuicTlsConnect,
 {
+    // Maintainer notes (not rendered):
+    // - `streaming_request_body: true` and `full_duplex: true`. HTTP/3
+    //   supports both — the request and response halves of a stream are
+    //   independent — and as of this change **so does this
+    //   implementation**: `one_attempt` splits the
+    //   stream, writes the body from a future polled beside
+    //   `recv_response`, and hands the unfinished write to [`H3Body`].
+    //   Neither field is set from what the protocol can do; both were
+    //   `false` for as long as `execute` wrote the whole body first, and
+    //   `full_duplex` is the one whose over-claim costs a deadlock rather
+    //   than a degradation, so it is measured from outside rather than
+    //   argued: `a_response_head_arrives_while_the_request_body_is_still_
+    //   going_out` in `tests/streaming.rs` deadlocks if it is not true.
+    // - `timeouts`: `connect` is `true` and enforced in `execute` — it
+    //   bounds resolution, the QUIC handshake and h3's settings exchange
+    //   together, the same scope `hclient-native` gives the same setting.
+    //   `first_byte` and `between_bytes` stay `false`, and the comment on
+    //   `capabilities` says what each of them would cost.
     /// An HTTP/3 transport over QUIC: UDP from `rt`, the QUIC TLS session
     /// from `tls`, and names resolved by `dns`.
     ///
@@ -305,16 +336,9 @@ where
     ///
     /// - `streaming_request_body: true` and `full_duplex: true`. HTTP/3
     ///   supports both — the request and response halves of a stream are
-    ///   independent — and as of this change **so does this
-    ///   implementation**: `one_attempt` splits the
-    ///   stream, writes the body from a future polled beside
-    ///   `recv_response`, and hands the unfinished write to [`H3Body`].
-    ///   Neither field is set from what the protocol can do; both were
-    ///   `false` for as long as `execute` wrote the whole body first, and
-    ///   `full_duplex` is the one whose over-claim costs a deadlock rather
-    ///   than a degradation, so it is measured from outside rather than
-    ///   argued: `a_response_head_arrives_while_the_request_body_is_still_
-    ///   going_out` in `tests/streaming.rs` deadlocks if it is not true.
+    ///   independent — and so does this implementation: the body is
+    ///   written while the response is read, and the unfinished write is
+    ///   handed to [`H3Body`].
     /// - `response_trailers: true`. [`H3Body`] yields them as a trailers
     ///   frame; `request_trailers` stays `false` because nothing here sends
     ///   any — and now that a caller can supply a body that produces them,
@@ -337,9 +361,8 @@ where
     ///   demand this transport meets by construction.
     /// - `timeouts`: `connect` is `true` and enforced in `execute` — it
     ///   bounds resolution, the QUIC handshake and h3's settings exchange
-    ///   together, the same scope `hclient-native` gives the same setting.
-    ///   `first_byte` and `between_bytes` stay `false`, and the comment on
-    ///   `capabilities` says what each of them would cost.
+    ///   together, the same scope [`Native`](crate::Native) gives the same
+    ///   setting. `first_byte` and `between_bytes` stay `false`.
     ///
     /// # Errors
     ///
@@ -367,20 +390,33 @@ where
     }
 }
 
-/// Everything a `H3` can be configured with, whatever its hook — separated
-/// from [`H3::new`] above only because `new` is the one method that names a
-/// *particular* `H` ([`NoHooks`]), and putting it in this block would make
-/// `H3::<_, _, _, MyHook>::new` a thing a caller could write and get a
-/// hookless transport from. The same split `hclient-native` makes, for the
-/// same reason.
+// Maintainer notes (not rendered):
+// Everything a `H3` can be configured with, whatever its hook — separated
+// from [`H3::new`] above only because `new` is the one method that names a
+// *particular* `H` ([`NoHooks`]), and putting it in this block would make
+// `H3::<_, _, _, MyHook>::new` a thing a caller could write and get a
+// hookless transport from. The same split `hclient-native` makes, for the
+// same reason.
+/// Everything a `H3` can be configured with, whatever its hook.
 impl<R, T, D, H> H3<R, T, D, H>
 where
     T: QuicTlsConnect,
 {
+    // Maintainer notes (not rendered):
+    // Send this transport's events to `hooks` — see
+    // [`hclient_core::hooks::Hooks`] for what it hears and what it
+    // costs, [`Event`] for the vocabulary, and `crate::http3::hooks` for the
+    // two things QUIC cannot say in it.
+    //
+    // The hook may be `!Send`: nothing on this path declares it, so an
+    // `Rc` inside a hook makes this transport `!Send` and leaves it
+    // working (P13; `crates/hclient-core/tests/shape.rs`). What that
+    // costs here is written down in `crate::http3::hooks` — the spawned
+    // connection driver is `Send` because quinn says so, so a hook cannot
+    // be called from it, and a close is discovered rather than observed.
     /// Send this transport's events to `hooks` — see
     /// [`hclient_core::hooks::Hooks`] for what it hears and what it
-    /// costs, [`Event`] for the vocabulary, and `crate::http3::hooks` for the
-    /// two things QUIC cannot say in it.
+    /// costs, and [`Event`] for the vocabulary.
     ///
     /// **It returns a different type**, and that is the zero-cost
     /// mechanism: the hook is a type parameter, so the `NoHooks` build
@@ -390,9 +426,7 @@ where
     ///
     /// The hook may be `!Send`: nothing on this path declares it, so an
     /// `Rc` inside a hook makes this transport `!Send` and leaves it
-    /// working (P13; `crates/hclient-core/tests/shape.rs`). What that
-    /// costs here is written down in `crate::http3::hooks` — the spawned
-    /// connection driver is `Send` because quinn says so, so a hook cannot
+    /// working. The spawned connection driver is `Send`, so a hook cannot
     /// be called from it, and a close is discovered rather than observed.
     ///
     /// The pool travels across this call, because a connection's identity
@@ -417,14 +451,18 @@ where
         self
     }
 
+    // Maintainer notes (not rendered):
+    // **This does not make pooled connections cheaper, it makes them
+    // shorter-lived**, and the difference is measured rather than
+    // asserted: `tests/live.rs`'s idle pair runs both arms with the driver
+    // spawned, and the arm without a keep-alive loses its connection
+    // across a gap the other one survives. For a client that makes one
     /// Send no keep-alive at all.
     ///
     /// **This does not make pooled connections cheaper, it makes them
-    /// shorter-lived**, and the difference is measured rather than
-    /// asserted: `tests/live.rs`'s idle pair runs both arms with the driver
-    /// spawned, and the arm without a keep-alive loses its connection
-    /// across a gap the other one survives. For a client that makes one
-    /// burst of requests and then goes quiet for a long time, that is the
+    /// shorter-lived**: without a keep-alive, a pooled connection is lost
+    /// across an idle gap longer than the peer's idle timeout. For a
+    /// client that makes one burst of requests and then goes quiet for a long time, that is the
     /// right trade — the connection was going to be replaced anyway, and
     /// this way it is not being pinged in the meantime.
     #[must_use]
@@ -523,13 +561,15 @@ fn capabilities(early_data: bool, client_certs: bool) -> Capabilities {
     c
 }
 
+// Maintainer notes (not rendered):
+// them. See this crate's `quinn` module doc.
 /// The runtime capabilities this transport needs, in one place.
 ///
 /// Four bounds, three of which are `quinn`'s and not this workspace's:
 /// `Send`, `Sync` and `'static` are declared on `quinn::{Runtime,
 /// AsyncTimer, AsyncUdpSocket}` and are paid **here**, by the crate that
 /// wants QUIC, rather than on [`UdpBind`] where every implementer would pay
-/// them. See this crate's `quinn` module doc.
+/// them.
 pub trait H3Runtime:
     Timer
     + UdpBind
@@ -1216,23 +1256,26 @@ where
     // — satisfies it.
     H: Hooks + Clone + Unpin,
 {
+    // Maintainer notes (not rendered):
+    // Wrapped here rather than by `Native::bound_body`, and that is the
+    // split `report_head` already has: `H3::finish` is reached both by
+    // this `execute` and by `Native`'s erased QUIC arm, so this is the
+    // one place that covers both. `Native` passes `Counted::already` for
+    // a body that came up that way, or every octet would be counted
+    // twice.
     /// The body, under the octet counter.
-    ///
-    /// Wrapped here rather than by `Native::bound_body`, and that is the
-    /// split `report_head` already has: `H3::finish` is reached both by
-    /// this `execute` and by `Native`'s erased QUIC arm, so this is the
-    /// one place that covers both. `Native` passes `Counted::already` for
-    /// a body that came up that way, or every octet would be counted
-    /// twice.
     type Body = hclient_core::hooks::Counting<H3Body<H>, H>;
     type Error = Error;
 
-    /// `H3::stage` then `H3::finish` — the same two halves
+    // Maintainer notes (not rendered):
+    // `H3::stage` then `H3::finish` — the same two halves
+    // [`crate::http3::StagedConnect`] hands a caller separately, in one call.
+    //
+    // One sequencing with two entry points, for `Native::run`'s reason:
+    // the alternative is two orders of the same steps, and the two would
+    // drift into two transports.
+    /// Connect, then exchange — the same two halves
     /// [`crate::http3::StagedConnect`] hands a caller separately, in one call.
-    ///
-    /// One sequencing with two entry points, for `Native::run`'s reason:
-    /// the alternative is two orders of the same steps, and the two would
-    /// drift into two transports.
     async fn execute(
         &self,
         req: http::Request<RequestBody>,

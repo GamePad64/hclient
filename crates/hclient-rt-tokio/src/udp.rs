@@ -7,9 +7,8 @@
 //! `IPV6_TCLASS`, `IP_RECVTOS`/`IPV6_RECVTCLASS`, plus a Windows backend
 //! that shares none of it. `quinn-udp` has that code for six platforms and
 //! is maintained by people who run it at scale. Writing a second copy here
-//! would be the same trade v0.2 W7 rejected for HTTP/1: a second
-//! implementation of the hardest part, in a crate whose job is to adapt a
-//! runtime.
+//! would be a second implementation of the hardest part, in a crate whose
+//! job is to adapt a runtime.
 //!
 //! The seam stays clean anyway: `hclient-rt` names no QUIC crate, and the
 //! conversion between its `Datagrams`/`RecvMeta` and `quinn-udp`'s lives
@@ -26,6 +25,12 @@
 //! congestion from loss, and nothing about that failure is visible. So
 //! [`support`](hclient_rt::UdpDatagrams::support) reports what
 //! `getsockopt` reads back after the fact, rather than what was attempted.
+
+// Maintainer notes (not rendered):
+// is maintained by people who run it at scale. Writing a second copy here
+// would be the same trade v0.2 W7 rejected for HTTP/1: a second
+// implementation of the hardest part, in a crate whose job is to adapt a
+// runtime.
 
 use hclient_rt::{Datagrams, RecvMeta, UdpAdoptStd, UdpBind, UdpDatagrams, UdpSupport};
 use std::io;

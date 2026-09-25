@@ -49,9 +49,10 @@ use hickory_resolver::proto::rr::{RData as Wire, RecordType};
 use std::sync::Arc;
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
+// records about where a bound is written.
 /// The one stream shape this crate hands back, named so the marker sits
-/// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
-/// records about where a bound is written.
 type SendRecords<'a> =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 

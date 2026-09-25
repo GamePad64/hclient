@@ -6,19 +6,15 @@
 //! it — no link relation is *acted* on here, and nothing dereferences
 //! anything.
 //!
-//! # A grammar, not a cut — measured against the rule this crate already has
+//! # Why this is a grammar and not a hand-written splitter
 //!
-//! This workspace's rule is that a parser combinator library pays where
-//! there is a grammar and charges where there is a *cut* (`charset` grew,
-//! `Cache-Control` shrank, `WWW-Authenticate` shrank and lost a defect
-//! with it). `Link` is a grammar, and for `WWW-Authenticate`'s exact
-//! reason: **the comma that separates two link-values is the same comma
-//! that a quoted parameter value may contain**, and so is the semicolon
-//! that separates a link-value's own parameters. Nothing local tells them
-//! apart, so a hand-written splitter has to track quote state and then
-//! look ahead; a combinator does not need either — the parameter list
-//! stops where `link-param` fails to match, and the outer list takes the
-//! comma.
+//! `Link` is a grammar: **the comma that separates two link-values is the
+//! same comma that a quoted parameter value may contain**, and so is the
+//! semicolon that separates a link-value's own parameters. Nothing local
+//! tells them apart, so a hand-written splitter has to track quote state
+//! and then look ahead; a combinator does not need either — the parameter
+//! list stops where `link-param` fails to match, and the outer list takes
+//! the comma.
 //!
 //! The `<`…`>` around the target is the one cut in the value, and it is
 //! one `take_till`, because a URI-Reference cannot contain `>`. That it
@@ -56,6 +52,22 @@
 //! where this is the sans-io leaf whose dependency count is guarded. The
 //! parameter is handed over as written, which is what
 //! [`Link::param`] promises for every parameter.
+
+// Maintainer notes (not rendered):
+//
+// # A grammar, not a cut — measured against the rule this crate already has
+//
+// This workspace's rule is that a parser combinator library pays where
+// there is a grammar and charges where there is a *cut* (`charset` grew,
+// `Cache-Control` shrank, `WWW-Authenticate` shrank and lost a defect
+// with it). `Link` is a grammar, and for `WWW-Authenticate`'s exact
+// reason: **the comma that separates two link-values is the same comma
+// that a quoted parameter value may contain**, and so is the semicolon
+// that separates a link-value's own parameters. Nothing local tells them
+// apart, so a hand-written splitter has to track quote state and then
+// look ahead; a combinator does not need either — the parameter list
+// stops where `link-param` fails to match, and the outer list takes the
+// comma.
 
 use std::ops::Index;
 
@@ -358,6 +370,11 @@ impl Links {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// Measured rather than assumed, and the answer is worse than
+// *truncated*.
+
 /// Collects links into a set, for the caller who built one with
 /// [`Link::new`] and needs to hand it to something taking a [`Links`].
 ///
@@ -373,7 +390,7 @@ impl Links {
 /// ends the target there, RFC 3986 §2 excluding it from a URI-Reference),
 /// and neither does a parameter name outside RFC 9110 §5.6.2's `token`.
 ///
-/// Measured rather than assumed, and the answer is worse than
+/// The answer is worse than
 /// *truncated*: `</a?q=<x>>; rel=next` parses to a link whose target is
 /// `/a?q=<x` and which carries **no relation at all**, because everything
 /// after the first `>` is a malformed tail and this module discards one

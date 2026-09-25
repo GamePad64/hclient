@@ -16,6 +16,12 @@ use web_time::SystemTime;
 /// The namespace this wrapper writes under.
 const NS: &str = "cookie";
 
+// Maintainer notes (not rendered):
+//
+// A wrapper built on records would drop every
+// session cookie and report success, which is what the first outside
+// store did within five minutes of meeting this seam.
+
 /// A [`CookieStore`] over any [`KeyValueStore`], so a jar can share one
 /// backend with the client's HSTS set, response cache and `Alt-Svc`
 /// memory instead of being a fourth `Mutex<HashMap>`.
@@ -29,8 +35,7 @@ const NS: &str = "cookie";
 /// meant not to survive a restart. That is right for a *file* and wrong
 /// for a store, since this store *is* where the jar keeps its cookies
 /// while the process runs — a wrapper built on records would drop every
-/// session cookie and report success, which is what the first outside
-/// store did within five minutes of meeting this seam.
+/// session cookie and report success.
 ///
 /// It also carries one field a record has not got. `seq` is the jar's
 /// insertion counter and RFC 6265 §5.4's tiebreak among cookies of equal

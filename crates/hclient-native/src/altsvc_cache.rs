@@ -164,8 +164,10 @@ pub struct Origin {
 }
 
 impl Origin {
-    /// The host is ASCII-lowercased for the reason `hclient-native`'s pool
-    /// key and negative cache both lowercase theirs: `Example.COM` and
+    // Maintainer notes (not rendered):
+    // The host is ASCII-lowercased for the reason `hclient-native`'s pool
+    // key and negative cache both lowercase theirs: `Example.COM` and
+    /// The origin `host:port`, with the host ASCII-lowercased: `Example.COM` and
     /// `example.com` are one origin, and a key that told them apart would
     /// remember an advertisement under a name the next request does not
     /// use.
@@ -247,12 +249,12 @@ impl Default for AltSvcCache<InMemory> {
 /// a client to honour a lease longer than it intends to live.
 const MAX_LEASE: Duration = Duration::from_hours(9600);
 
+// Maintainer notes (not rendered):
+// Public because a store outside this crate has to be able to hold one
+// and hand it back, which is `hclient::cache::StoredResponse`'s argument
+// one crate over and was found there the same way.
 /// One remembered advertisement — the whole of what an
 /// [`AltSvcStore`] holds.
-///
-/// Public because a store outside this crate has to be able to hold one
-/// and hand it back, which is `hclient::cache::StoredResponse`'s argument
-/// one crate over and was found there the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
     expires_at: SystemTime,
@@ -268,12 +270,15 @@ impl Entry {
         }
     }
 
+    // Maintainer notes (not rendered):
+    // **A calendar time, where this was elapsed time on the transport's
+    // own `Timer` until the seam arrived.** The module doc has the
+    // argument and what overturning it cost.
     /// When this advertisement stops being fresh — RFC 7838 §3.1's `ma`,
     /// resolved against the `now` that stored it.
     ///
-    /// **A calendar time, where this was elapsed time on the transport's
-    /// own `Timer` until the seam arrived.** The module doc has the
-    /// argument and what overturning it cost.
+    /// A calendar time, so it means something to a store outside the
+    /// process that wrote it.
     pub fn expires_at(&self) -> SystemTime {
         self.expires_at
     }
@@ -285,15 +290,20 @@ impl Entry {
     }
 }
 
+// Maintainer notes (not rendered):
+// The third seam of this shape in the family, after
+// `hclient::cache::CacheStore` and `hclient::cookie::CookieStore`, and
+// written to their pattern deliberately: associated future types so each
+// implementor answers for its own auto traits, `&self` so a store that
+// waits is not held behind a `&mut` across the await, and one backend
+// able to serve all three — which is measured rather than hoped for,
+// because the destination is one file holding the lot.
 /// Where the advertisements live.
 ///
-/// The third seam of this shape in the family, after
-/// `hclient::cache::CacheStore` and `hclient::cookie::CookieStore`, and
-/// written to their pattern deliberately: associated future types so each
-/// implementor answers for its own auto traits, `&self` so a store that
-/// waits is not held behind a `&mut` across the await, and one backend
-/// able to serve all three — which is measured rather than hoped for,
-/// because the destination is one file holding the lot.
+/// The shape of `hclient::cache::CacheStore` and
+/// `hclient::cookie::CookieStore`: associated future types so each
+/// implementor answers for its own auto traits, and `&self` so a store
+/// that waits is not held behind a `&mut` across the await.
 ///
 /// # What is not in here
 ///

@@ -24,27 +24,9 @@
 //! server has to answer — each is a fact a server told this client, and
 //! each is why those four want a backend that can outlive the process.
 //!
-//! A cache of values the client computed from its own settings is not
-//! that, however much it looks like a map. `hclient-tls-rustls` keeps
-//! `(alpn, early_data) -> Arc<rustls::ClientConfig>`; losing an entry
-//! costs a config clone and changes no answer at all, so it needs no
-//! persistence, no expiry and no capacity — it is a memo on a pure
-//! function, and a `Mutex<HashMap>` is the whole of it. Putting one
-//! behind this seam would promise a durability it has no use for and
-//! charge a serialisation its value cannot pay: an `Arc<ClientConfig>`
-//! is not bytes.
 //!
 //! # Why bytes rather than a type parameter
 //!
-//! A `KeyValueStore<V>` would mean one store instance per use — and the
-//! dependency graph forces that anyway, so the parameter would buy
-//! nothing. `altsvc::Entry` lives in `hclient-native`; `Cookie`,
-//! `hsts::Entry` and `StoredResponse` live in `hclient`; and
-//! `hclient-native` does not depend on `hclient`. So there is no crate in
-//! which a typed store could name all four value types: not `hclient`,
-//! which cannot see altsvc's, not `hclient-native`, which cannot see the
-//! other three, and not here without moving every domain type into this
-//! crate.
 //!
 //! Bytes are what lets **one** instance serve all four. The cost is
 //! serialisation, and it lands in the wrappers — which is where the
@@ -52,37 +34,23 @@
 //!
 //! # Why associated future types rather than `async fn`
 //!
-//! The same measurement `CookieStore` records, and it is worth not
-//! re-deriving. `hclient::Client` boxes its stores `Send + Sync`, so
-//! something has to prove a generic implementor's future `Send`. With
-//! `async fn` in the trait the erasure is `E0277`, because a generic impl
-//! cannot prove a property of a future it cannot name; return type
-//! notation names it and is `E0658` on stable; and rustc's own suggestion
-//! — `+ Send` on the seam — compiles and **excludes every single-threaded
-//! store**, refusing an implementor that holds an `Rc` across an await
-//! while accepting the same one holding an `Arc`.
-//!
-//! An associated type lets each implementor answer for itself, which is
-//! amendment C15 reached from one more direction: naming is not
-//! requiring. [`MemoryStore`] answers [`Ready`], so
-//! the shape costs an in-memory store no allocation and no suspension.
+//! `hclient::Client` boxes its stores `Send + Sync`, so something has to
+//! prove a generic implementor's future `Send`, and a future nobody can
+//! name cannot be proved anything about. An associated type lets each
+//! implementor answer for itself: naming is not requiring. [`MemoryStore`]
+//! answers [`Ready`], so the shape costs an in-memory store no allocation
+//! and no suspension.
 //!
 //! # Why the clock is a type and not [`SystemTime`]
 //!
-//! This crate names no wall clock at all today, and adding one would cost
-//! every consumer of `hclient-core` the `web-time` crate — which on
-//! `wasm32-unknown-unknown` is the parent of `js-sys` and `wasm-bindgen`,
-//! measured at +6 crates for a wasm build with no transport.
-//!
-//! It is not needed, because **a store compares and never reads**. Every
+//! A wall clock is not needed, because **a store compares and never
+//! reads**. Every
 //! arithmetic on a calendar time in this family — `checked_add` for a
 //! lease, `duration_since` for an `Age` — happens in the rules *above*
 //! the store; the store only ever asks whether an expiry has passed.
 //! So [`Instant`](KeyValueStore::Instant) carries [`Timer::Instant`]'s
-//! own bounds, `Copy + PartialOrd`, and every store in this workspace
-//! binds it to `web_time::SystemTime` at its own use site — where
-//! `no-std-wall-clock-in-the-client` still covers it and where this
-//! crate's graph is not on the hook.
+//! own bounds, `Copy + PartialOrd`, and every store in this family binds
+//! it to `web_time::SystemTime` at its own use site.
 //!
 //! [`SystemTime`]: std::time::SystemTime
 //! [`Timer::Instant`]: crate::timer::Timer::Instant
@@ -127,27 +95,87 @@
 //!
 //! # Growing this seam: a new operation is a new trait
 //!
-//! [`KeyValueStore`] does not gain methods. Every operation it has is
-//! required, and a new one would be too: its future has to be an
-//! associated type so a consumer can name it and prove it `Send`, and an
-//! associated type cannot have a default on stable Rust. So one more
-//! method would break every store written outside this workspace, and
-//! because this crate's types cross every seam in the family, the major
-//! step would carry `hclient-rt`, `hclient-tls`, `hclient-dns`,
-//! `hclient-mock` and `hclient-wasi` with it.
-//!
-//! This is not hypothetical: the trait grew three operations in its first
-//! two days (`scan`, `scan_many`, `remove_prefix`), each on a real need,
-//! before it was frozen. The next ones are foreseeable too: a store-side
-//! TTL (Redis `EXPIRE`), a batch write, compare-and-swap.
-//!
-//! So a new operation arrives the way `hclient_rt::IpcConnect` arrived
-//! beside `TcpConnect`: **as a trait that extends this one**
-//! (`trait KeyValueBatch: KeyValueStore { .. }`), with its bound on the one
-//! wrapper or constructor that needs it. A store that cannot do it
-//! implements nothing and loses only that wrapper, as a compile error
-//! where it was asked for. What must not happen is the obvious edit: a
-//! method added here.
+//! [`KeyValueStore`] does not gain methods: one more required method
+//! would break every store written outside this crate. A new operation —
+//! a store-side TTL, a batch write, compare-and-swap — arrives **as a
+//! trait that extends this one** (`trait KeyValueBatch: KeyValueStore { .. }`),
+//! with its bound on the one wrapper or constructor that needs it. A
+//! store that cannot do it implements nothing and loses only that
+//! wrapper, as a compile error where it was asked for.
+
+// Maintainer notes (not rendered):
+//
+// A cache of values the client computed from its own settings is not
+// that, however much it looks like a map. `hclient-tls-rustls` keeps
+// `(alpn, early_data) -> Arc<rustls::ClientConfig>`; losing an entry
+// costs a config clone and changes no answer at all, so it needs no
+// persistence, no expiry and no capacity — it is a memo on a pure
+// function, and a `Mutex<HashMap>` is the whole of it. Putting one
+// behind this seam would promise a durability it has no use for and
+// charge a serialisation its value cannot pay: an `Arc<ClientConfig>`
+// is not bytes.
+//
+// A `KeyValueStore<V>` would mean one store instance per use — and the
+// dependency graph forces that anyway, so the parameter would buy
+// nothing. `altsvc::Entry` lives in `hclient-native`; `Cookie`,
+// `hsts::Entry` and `StoredResponse` live in `hclient`; and
+// `hclient-native` does not depend on `hclient`. So there is no crate in
+// which a typed store could name all four value types: not `hclient`,
+// which cannot see altsvc's, not `hclient-native`, which cannot see the
+// other three, and not here without moving every domain type into this
+// crate.
+//
+// The same measurement `CookieStore` records, and it is worth not
+// re-deriving. `hclient::Client` boxes its stores `Send + Sync`, so
+// something has to prove a generic implementor's future `Send`. With
+// `async fn` in the trait the erasure is `E0277`, because a generic impl
+// cannot prove a property of a future it cannot name; return type
+// notation names it and is `E0658` on stable; and rustc's own suggestion
+// — `+ Send` on the seam — compiles and **excludes every single-threaded
+// store**, refusing an implementor that holds an `Rc` across an await
+// while accepting the same one holding an `Arc`.
+//
+// An associated type lets each implementor answer for itself, which is
+// amendment C15 reached from one more direction: naming is not
+// requiring. [`MemoryStore`] answers [`Ready`], so
+// the shape costs an in-memory store no allocation and no suspension.
+//
+// This crate names no wall clock at all today, and adding one would cost
+// every consumer of `hclient-core` the `web-time` crate — which on
+// `wasm32-unknown-unknown` is the parent of `js-sys` and `wasm-bindgen`,
+// measured at +6 crates for a wasm build with no transport.
+//
+// It is not needed, because **a store compares and never reads**. Every
+// arithmetic on a calendar time in this family — `checked_add` for a
+// lease, `duration_since` for an `Age` — happens in the rules *above*
+// the store; the store only ever asks whether an expiry has passed.
+// So [`Instant`](KeyValueStore::Instant) carries [`Timer::Instant`]'s
+// own bounds, `Copy + PartialOrd`, and every store in this workspace
+// binds it to `web_time::SystemTime` at its own use site — where
+// `no-std-wall-clock-in-the-client` still covers it and where this
+// crate's graph is not on the hook.
+//
+// [`KeyValueStore`] does not gain methods. Every operation it has is
+// required, and a new one would be too: its future has to be an
+// associated type so a consumer can name it and prove it `Send`, and an
+// associated type cannot have a default on stable Rust. So one more
+// method would break every store written outside this workspace, and
+// because this crate's types cross every seam in the family, the major
+// step would carry `hclient-rt`, `hclient-tls`, `hclient-dns`,
+// `hclient-mock` and `hclient-wasi` with it.
+//
+// This is not hypothetical: the trait grew three operations in its first
+// two days (`scan`, `scan_many`, `remove_prefix`), each on a real need,
+// before it was frozen. The next ones are foreseeable too: a store-side
+// TTL (Redis `EXPIRE`), a batch write, compare-and-swap.
+//
+// So a new operation arrives the way `hclient_rt::IpcConnect` arrived
+// beside `TcpConnect`: **as a trait that extends this one**
+// (`trait KeyValueBatch: KeyValueStore { .. }`), with its bound on the one
+// wrapper or constructor that needs it. A store that cannot do it
+// implements nothing and loses only that wrapper, as a compile error
+// where it was asked for. What must not happen is the obvious edit: a
+// method added here.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -212,13 +240,21 @@ pub trait KeyValueStore {
     /// order.
     fn get<'a>(&'a self, ns: &'a str, key: &'a str, now: Self::Instant) -> Self::Get<'a>;
 
+    // Maintainer notes (not rendered):
+    //
+    // A batch rather than one call per key, and not a convenience: a
+    // cookie lookup asks about every ancestor of a host at once, so a
+    // remote store should pay one round trip for a request rather than
+    // one per label. [`touch`] one seam up is the same decision.
+    //
+    // [`touch`]: https://docs.rs/hclient/latest/hclient/cookie/trait.CookieStore.html
     /// [`get`](Self::get) for several keys at once, answering one `Vec`
     /// per key, **in the order given** and of the same length as `keys`.
     ///
     /// A batch rather than one call per key, and not a convenience: a
     /// cookie lookup asks about every ancestor of a host at once, so a
     /// remote store should pay one round trip for a request rather than
-    /// one per label. [`touch`] one seam up is the same decision.
+    /// one per label.
     ///
     /// **`keys` is owned where every other key here is borrowed**, and
     /// the asymmetry is the wrapper's rather than a slip. A single key
@@ -230,8 +266,6 @@ pub trait KeyValueStore {
     /// ownership over costs one `Vec` per lookup and lets a wrapper's
     /// future be an ordinary named type, whose `Send` is then *inferred*
     /// rather than declared.
-    ///
-    /// [`touch`]: https://docs.rs/hclient/latest/hclient/cookie/trait.CookieStore.html
     fn get_many(&self, ns: &str, keys: Vec<String>, now: Self::Instant) -> Self::GetMany<'_>;
 
     /// Add `value` under `key`, **beside** whatever is already there.
@@ -269,24 +303,35 @@ pub trait KeyValueStore {
     /// Drop everything in `ns`, leaving every other namespace alone.
     fn clear<'a>(&'a self, ns: &'a str) -> Self::Done<'a>;
 
+    // Maintainer notes (not rendered):
+    //
+    // # Why the seam has this at all
+    //
+    // It is the one operation that is **not** addressed by an exact
+    // key, and it was added only after three of the four wrappers above
+    // had each bent around its absence. A response cache holds every
+    // `Vary` variant of one request and cannot know their selectors
+    // before it reads them; a cookie jar holds many cookies under one
+    // domain and evicts by comparing them; an `Alt-Svc` memory forgets
+    // a whole class at once. Each of those is *enumerate what is under
+    // this prefix*, and without it a wrapper has to either fold the
+    // distinction into the key — which works when the classes are known
+    // in advance, as `persist` is, and not otherwise — or read and
+    // rewrite a whole list to change one member, which is neither cheap
+    // nor atomic.
     /// Every unexpired `(key, value)` in `ns` whose key begins with
     /// `prefix`, in no particular order. An empty prefix is the whole
     /// namespace.
     ///
-    /// # Why the seam has this at all
+    /// # What it is for
     ///
     /// It is the one operation that is **not** addressed by an exact
-    /// key, and it was added only after three of the four wrappers above
-    /// had each bent around its absence. A response cache holds every
+    /// key. A response cache holds every
     /// `Vary` variant of one request and cannot know their selectors
     /// before it reads them; a cookie jar holds many cookies under one
     /// domain and evicts by comparing them; an `Alt-Svc` memory forgets
     /// a whole class at once. Each of those is *enumerate what is under
-    /// this prefix*, and without it a wrapper has to either fold the
-    /// distinction into the key — which works when the classes are known
-    /// in advance, as `persist` is, and not otherwise — or read and
-    /// rewrite a whole list to change one member, which is neither cheap
-    /// nor atomic.
+    /// this prefix*.
     ///
     /// **It stays a byte operation**, which is what makes it admissible:
     /// a prefix is a string, and this seam still knows nothing of
@@ -341,13 +386,18 @@ pub trait KeyValueStore {
     fn remove_prefix(&self, ns: &str, prefix: String) -> Self::Done<'_>;
 }
 
+// Maintainer notes (not rendered):
+//
+// What a plain client uses, and the reference for what the methods
+// above mean. It answers [`Ready`], so the seam's
+// shape costs it no allocation and no suspension — which is the whole
+// of what associated future types buy over `#[async_trait]`, measured
+// at 1,000 allocations against 0 over a store that answers immediately.
 /// The store this crate ships: a `HashMap` per namespace, in memory.
 ///
 /// What a plain client uses, and the reference for what the methods
 /// above mean. It answers [`Ready`], so the seam's
-/// shape costs it no allocation and no suspension — which is the whole
-/// of what associated future types buy over `#[async_trait]`, measured
-/// at 1,000 allocations against 0 over a store that answers immediately.
+/// shape costs it no allocation and no suspension.
 ///
 /// **The `Mutex` is what `&self` on the seam costs an in-memory store.**
 /// It is the cheaper half of that trade: one uncontended lock per

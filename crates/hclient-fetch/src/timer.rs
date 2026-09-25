@@ -71,6 +71,16 @@ impl Timer for BrowserClock {
     // `js_sys::Date::now()`'s own unit.
     type Instant = f64;
 
+    // Maintainer notes (not rendered):
+    //
+    // `hclient-rt-smol` needs the same adapter for the same reason
+    // (`async_io::Timer` resolves to an `Instant`), which is why
+    // `Discard` lives in `hclient-core` rather than in either backend.
+    //
+    // Nothing in the old `async` block ran *after* the await, so moving
+    // the promise construction out of it is a pure re-association: the
+    // `setTimeout` call now happens when `sleep` is called rather than
+    // on the first poll.
     /// **The adapter is not redundant.** [`SendJsFuture`] resolves to
     /// `Result<JsValue, JsValue>`, not `()`, so a named `Timer::Sleep`
     /// has to say what happens to that value. A `let _ =` inside an
@@ -79,14 +89,7 @@ impl Timer for BrowserClock {
     /// `setTimeout` promise structurally cannot reject — is the comment
     /// on that `let _ =`, kept below on the constructor.
     ///
-    /// `hclient-rt-smol` needs the same adapter for the same reason
-    /// (`async_io::Timer` resolves to an `Instant`), which is why
-    /// `Discard` lives in `hclient-core` rather than in either backend.
-    ///
-    /// Nothing in the old `async` block ran *after* the await, so moving
-    /// the promise construction out of it is a pure re-association: the
-    /// `setTimeout` call now happens when `sleep` is called rather than
-    /// on the first poll. For a timer that is the more correct of the
+    /// For a timer that is the more correct of the
     /// two — the delay starts when the caller asked for it, not whenever
     /// somebody first polls.
     type Sleep = Elapsed;
@@ -160,29 +163,33 @@ impl Timer for BrowserClock {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// # Why this is not `Discard<SendJsFuture>` any more
+//
+// It was, and that was fewer moving parts. `SendJsFuture`'s `Send` is an
+// `unsafe impl` whose argument is that `wasm32-unknown-unknown` has one
+// thread, so it is stripped under `target_feature = "atomics"` by the
+// same `cfg` that strips wasm-bindgen's own impl for `JsValue`. A
+// `Timer::Sleep` that is `Send` only without wasm threads is enough for
+// this crate on its own — but not for `hclient::Client`, whose erased
+// timer boxes the sleep as `Send`, so the browser would have lost
+// `Client` entirely the moment anybody built with threads.
+//
+// The cost is one `spawn_local` per sleep. It is bounded by the sleep —
+// the task awaits one promise and sends one `()` — and the timer was
+// already running before it started, so nothing about *when* the delay
+// begins changed.
 /// What [`BrowserClock::sleep`] hands back: a `oneshot` the browser's
 /// timer fires, and **nothing JS-shaped**.
-///
-/// # Why this is not `Discard<SendJsFuture>` any more
-///
-/// It was, and that was fewer moving parts. `SendJsFuture`'s `Send` is an
-/// `unsafe impl` whose argument is that `wasm32-unknown-unknown` has one
-/// thread, so it is stripped under `target_feature = "atomics"` by the
-/// same `cfg` that strips wasm-bindgen's own impl for `JsValue`. A
-/// `Timer::Sleep` that is `Send` only without wasm threads is enough for
-/// this crate on its own — but not for `hclient::Client`, whose erased
-/// timer boxes the sleep as `Send`, so the browser would have lost
-/// `Client` entirely the moment anybody built with threads.
 ///
 /// `oneshot::Receiver<()>` is `Send` because `()` is, with no claim about
 /// threads anywhere in it. This is the same trade `body::pump` makes one
 /// module over and for the same reason: keep the JS on the thread that
 /// owns it and let a plain value cross.
 ///
-/// The cost is one `spawn_local` per sleep. It is bounded by the sleep —
-/// the task awaits one promise and sends one `()` — and the timer was
-/// already running before it started, so nothing about *when* the delay
-/// begins changed.
+/// The cost is one `spawn_local` per sleep, bounded by the sleep — the
+/// task awaits one promise and sends one `()`.
 #[derive(Debug)]
 pub struct Elapsed(oneshot::Receiver<()>);
 

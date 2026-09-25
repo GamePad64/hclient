@@ -9,12 +9,22 @@ use std::future::Future;
 // plain import from coming back.
 use web_time::SystemTime;
 
+// Maintainer notes (not rendered):
+//
+// Public because a store outside this crate has to be able to hold one
+// and hand it back, which is [`StoredResponse::new`]'s argument one
+// module over and was found there by writing a store rather than by
+// reading the code.
+//
+// **The domain is a field rather than the other half of a
+// `(String, Entry)` pair**, which is what [`get`](HstsStore::get)
+// used to answer. Both neighbouring seams hand back a `Vec` of one
+// type — [`CookieStore::get`](crate::cookie::CookieStore) a
+// `Vec<Cookie>`, [`CacheStore::get`](crate::cache::CacheStore) a
+// `Vec<StoredResponse>`(`crate::cache::StoredResponse`) — and this was
+// the only one asking a caller to remember which half was which.
+
 /// One known HSTS host — the whole of what a [`HstsStore`] holds.
-///
-/// Public because a store outside this crate has to be able to hold one
-/// and hand it back, which is [`StoredResponse::new`]'s argument one
-/// module over and was found there by writing a store rather than by
-/// reading the code.
 ///
 /// [`StoredResponse::new`]: crate::cache::StoredResponse::new
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,14 +36,6 @@ pub struct Entry {
 
 impl Entry {
     /// A policy `domain` asserted, which stops applying at `expires_at`.
-    ///
-    /// **The domain is a field rather than the other half of a
-    /// `(String, Entry)` pair**, which is what [`get`](HstsStore::get)
-    /// used to answer. Both neighbouring seams hand back a `Vec` of one
-    /// type — [`CookieStore::get`](crate::cookie::CookieStore) a
-    /// `Vec<Cookie>`, [`CacheStore::get`](crate::cache::CacheStore) a
-    /// `Vec<StoredResponse>`(`crate::cache::StoredResponse`) — and this was
-    /// the only one asking a caller to remember which half was which.
     ///
     /// It is also not redundant with the key it is stored under: §8.3's
     /// precedence turns on *which* candidate matched, so the reader has
@@ -108,6 +110,22 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
     out
 }
 
+// Maintainer notes (not rendered):
+//
+// Nothing this crate ships for this seam has a `with_capacity`, and
+// that absence is the decision — it is
+// also why this seam alone could give up its hand-written in-memory
+// store: [`cookie`](crate::cookie)'s and [`cache`](crate::cache)'s each
+// hold a bound and an eviction policy the byte seam deliberately has
+// not got, where this one held a map and nothing else.
+//
+// [`CookieStore`](crate::cookie::CookieStore)'s five-way measurement
+// applies here verbatim and is not repeated: `Client` boxes this
+// `Send + Sync`, an `async fn` in a trait is an RPITIT that a generic
+// impl cannot prove `Send`, and the three repairs each cost either
+// stable Rust, every single-threaded store, or an allocation per call.
+// Naming is not requiring — amendment C15.
+
 /// Where an [`Hsts`](super::Hsts) keeps its known hosts.
 ///
 /// Implement it to put the policy set on disk, in a database or in the
@@ -140,20 +158,12 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
 /// which the caller already bounded by making the requests — and evicting
 /// an HSTS policy to save memory is the one direction that ends with a
 /// request going out in clear text. Nothing this crate ships for this
-/// seam has a `with_capacity`, and that absence is the decision — it is
-/// also why this seam alone could give up its hand-written in-memory
-/// store: [`cookie`](crate::cookie)'s and [`cache`](crate::cache)'s each
-/// hold a bound and an eviction policy the byte seam deliberately has
-/// not got, where this one held a map and nothing else.
+/// seam has a `with_capacity`, and that absence is the decision.
 ///
 /// # Associated futures, not `async fn`
 ///
-/// [`CookieStore`](crate::cookie::CookieStore)'s five-way measurement
-/// applies here verbatim and is not repeated: `Client` boxes this
-/// `Send + Sync`, an `async fn` in a trait is an RPITIT that a generic
-/// impl cannot prove `Send`, and the three repairs each cost either
-/// stable Rust, every single-threaded store, or an allocation per call.
-/// Naming is not requiring — amendment C15.
+/// `Client` boxes this `Send + Sync`, and an `async fn` in a trait is an
+/// RPITIT that a generic impl cannot prove `Send`.
 pub trait HstsStore {
     /// The answer to [`get`](Self::get).
     type Get<'a>: Future<Output = Vec<Entry>> + 'a

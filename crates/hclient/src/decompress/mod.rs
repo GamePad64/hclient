@@ -107,6 +107,11 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+// Maintainer notes (not rendered):
+//
+// **A module rather than four items at the crate root**, which is the
+// front page's own rule: these are names a caller reaches for once, at
+// `build()`, and the root list is already 16 names and 12 doors.
 /// The content codings this crate ships, as values of
 /// [`ContentCoding`].
 ///
@@ -117,10 +122,6 @@ use std::task::{Context, Poll};
 /// with no standing the seam does not give it. A caller who wants the
 /// default list writes nothing at all; one who wants a subset writes the
 /// subset; one who wants their own writes their own beside these.
-///
-/// **A module rather than four items at the crate root**, which is the
-/// front page's own rule: these are names a caller reaches for once, at
-/// `build()`, and the root list is already 16 names and 12 doors.
 pub mod compression {
     // Imported under any coding feature and unused under none, which is
     // the empty build this module is an empty module in. The `#[cfg]` is
@@ -135,13 +136,17 @@ pub mod compression {
     ))]
     use super::{coding::ContentCoding, decoder::Decoder};
 
+    // Maintainer notes (not rendered):
+    //
+    // The lowest amplification of the four, measured at 1:1,028 on one
+    // GiB of zeros, and the one coding Go's `net/http` asks for on its
+    // own (`transport.go:2858` in Go 1.26.4, where a search for `zstd`,
+    // `brotli` or `"br"` finds nothing).
     /// `gzip` — RFC 1952. Also answers to RFC 9110 §8.4.1.3's deprecated
     /// `x-gzip`, which is accepted and never advertised.
     ///
     /// The lowest amplification of the four, measured at 1:1,028 on one
-    /// GiB of zeros, and the one coding Go's `net/http` asks for on its
-    /// own (`transport.go:2858` in Go 1.26.4, where a search for `zstd`,
-    /// `brotli` or `"br"` finds nothing).
+    /// GiB of zeros.
     #[cfg(feature = "gzip")]
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct Gzip;
@@ -187,13 +192,21 @@ pub mod compression {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The cap is RFC 8878 §3.1.1.1.2's recommended interoperability
+    // ceiling and Chrome's answer for this coding, against `ruzstd`'s own
+    // 100 MB default; `zstd`'s module doc has the argument and what it
+    // does *not* bound, which is the total a bomb yields one window at a
+    // time.
     /// `zstd` — RFC 8878, with the decoder's window capped at 8 MB.
     ///
     /// The cap is RFC 8878 §3.1.1.1.2's recommended interoperability
     /// ceiling and Chrome's answer for this coding, against `ruzstd`'s own
-    /// 100 MB default; `zstd`'s module doc has the argument and what it
-    /// does *not* bound, which is the total a bomb yields one window at a
-    /// time.
+    /// 100 MB default. It does *not* bound the total a bomb yields one
+    /// window at a time; that is
+    /// [`ClientBuilder::response_limit`](crate::ClientBuilder::response_limit)'s
+    /// job.
     #[cfg(feature = "zstd")]
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct Zstd;
@@ -208,13 +221,16 @@ pub mod compression {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // sniffs the first two bytes to tell them apart — see `deflate`'s
+    // module doc for why that is a decision rather than a probability.
     /// `deflate` — and **the wire has one spelling for two formats**,
     /// which is why the default list offers this one last.
     ///
     /// RFC 9110 §8.4.1.2 specifies zlib (RFC 1950) and a long tail of
     /// servers sends the raw RFC 1951 stream instead, so this coding
-    /// sniffs the first two bytes to tell them apart — see `deflate`'s
-    /// module doc for why that is a decision rather than a probability.
+    /// sniffs the first two bytes to tell them apart.
     /// A caller who knows their server is one that offers `deflate`
     /// first is free to write it first.
     #[cfg(feature = "deflate")]

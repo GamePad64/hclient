@@ -38,6 +38,28 @@ pub trait Transport {
     /// [`Self::to_error`].
     type Error: StdError + 'static;
 
+    // Maintainer notes (not rendered):
+    //
+    // **A backend that cannot honour this says so, in `Capabilities`.**
+    // [`cancel_on_drop`](crate::caps::Capabilities::cancel_on_drop) set
+    // to `false` is the one honest way out, and it is what a backend that never fills the field
+    // in already says, since it is the value
+    // [`Capabilities::default()`](crate::caps::Capabilities) returns. What is
+    // not allowed is the third option this method's documentation used to
+    // take: saying nothing at all, and leaving a caller to find out per
+    // target that a dropped future means three different things.
+    //
+    // **Why a MUST rather than a plain capability with no default duty.**
+    // The alternative — "each backend does what it does, read the field" —
+    // pushes a branch into every caller that races a request against
+    // anything, and there is no useful code to write in the `None` arm: a
+    // caller who cannot cancel cannot un-send the request either. So the
+    // duty belongs on the implementer, who can actually discharge it, and
+    // the field exists for the case where they genuinely cannot. It is
+    // also what makes connection reuse possible at all: a pool
+    // may only take back a connection whose exchange finished, and
+    // "finished" is not a property anyone can establish if a dropped
+    // future leaves an exchange running.
     /// Send the request.
     ///
     /// **On `Timeouts` in `req.extensions()`: presence isn't intent.**
@@ -85,36 +107,71 @@ pub trait Transport {
     /// [`cancel_on_drop`](crate::caps::Capabilities::cancel_on_drop) set
     /// to `false` is the one honest way out, and it is what a backend that never fills the field
     /// in already says, since it is the value
-    /// [`Capabilities::default()`](crate::caps::Capabilities) returns. What is
-    /// not allowed is the third option this method's documentation used to
-    /// take: saying nothing at all, and leaving a caller to find out per
-    /// target that a dropped future means three different things.
-    ///
-    /// **Why a MUST rather than a plain capability with no default duty.**
-    /// The alternative — "each backend does what it does, read the field" —
-    /// pushes a branch into every caller that races a request against
-    /// anything, and there is no useful code to write in the `None` arm: a
-    /// caller who cannot cancel cannot un-send the request either. So the
-    /// duty belongs on the implementer, who can actually discharge it, and
-    /// the field exists for the case where they genuinely cannot. It is
-    /// also what makes connection reuse possible at all: a pool
-    /// may only take back a connection whose exchange finished, and
-    /// "finished" is not a property anyone can establish if a dropped
-    /// future leaves an exchange running.
+    /// [`Capabilities::default()`](crate::caps::Capabilities) returns.
     fn execute(
         &self,
         req: http::Request<RequestBody>,
     ) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>;
 
+    // Maintainer notes (not rendered):
+    //
+    // The transport's capabilities, determined once — at construction —
+    // and unchanged for this object ever since. This is not a "right now"
+    // check: the signature returns `&Capabilities` rather than computing it
+    // fresh on every call (recomputing on every call doesn't compile —
+    // `E0515` — and any alternative that does compile leaks memory on every
+    // call). A backend whose capabilities can change over the process's
+    // lifetime needs to rebuild the transport from scratch.
     /// The transport's capabilities, determined once — at construction —
     /// and unchanged for this object ever since. This is not a "right now"
-    /// check: the signature returns `&Capabilities` rather than computing it
-    /// fresh on every call (recomputing on every call doesn't compile —
-    /// `E0515` — and any alternative that does compile leaks memory on every
-    /// call). A backend whose capabilities can change over the process's
+    /// check. A backend whose capabilities can change over the process's
     /// lifetime needs to rebuild the transport from scratch.
     fn capabilities(&self) -> &Capabilities;
 
+    // Maintainer notes (not rendered):
+    //
+    // The default first asks whether `Self::Error` is exactly [`Error`],
+    // and if so returns it unwrapped. So a backend whose error is already
+    // classified gets the correct behaviour from the default and cannot
+    // forget it — the earlier design wrapped unconditionally, and a
+    // backend that did not override the hook silently lost its whole
+    // taxonomy with the compiler and its own tests all green.
+    //
+    // The backends here override the hook with an explicit identity even
+    // though the default now covers them: it states intent where it is
+    // read, and survives a change to the default.
+    //
+    // Getting this wrong is expensive, which is why the hook exists. With
+    // the classification discarded one layer up, every `is_*` predicate on
+    // the facade answers `false` for any transport error and `kind()` is
+    // `Other` alike for DNS, TLS, connect-timeout and host-unreachable —
+    // forty lines of `hclient-wasi`'s `wasi_err`, sorting 39 `ErrorCode`
+    // variants into eight `ErrorKind`s, thrown away.
+    //
+    // **Why a defaulted method, and not `Transport::Error: Into<Error>` or
+    // `Error` as the seam's error type.**
+    //
+    // `Into<Error>` would cost a `!Send` backend its TYPED source: such an
+    // error can satisfy the bound, but only by stringifying itself, since
+    // `Error::source` requires `Send + Sync`. It would also force every
+    // backend with nothing to say about the category to write a
+    // conversion anyway. Making `Error` the seam's error type is worse
+    // again — it requires `Send + Sync` from every backend. The defaulted
+    // method requires neither.
+    //
+    // Amendment C1 deliberately kept a transport with a genuinely `!Send`
+    // error representable: it can't use `Client`, but it does implement
+    // `Transport` (see `non_send_transport_still_satisfies_the_trait` and
+    // `a_transport_whose_error_is_not_send_still_implements_the_trait` in
+    // `tests/shape.rs`). The default preserves this — the where-clause sits
+    // on the method, so such a transport simply can't CALL `to_error`
+    // (though it's free to define an override — verified: an override's
+    // body isn't required to call `Error::new`); and it breaks no backend
+    // that doesn't need categorization.
+    //
+    // The name is `to_error`, not `into_error`: by Rust convention `into_*`
+    // consumes `self`, and here it is `&self` — the backend is making a
+    // decision, not converting a value, and `execute` takes `&self` too.
     /// How a transport error becomes a library error.
     ///
     /// The default is wrapping with `ErrorKind::Other`: a backend that has
@@ -125,9 +182,7 @@ pub trait Transport {
     /// The default first asks whether `Self::Error` is exactly [`Error`],
     /// and if so returns it unwrapped. So a backend whose error is already
     /// classified gets the correct behaviour from the default and cannot
-    /// forget it — the earlier design wrapped unconditionally, and a
-    /// backend that did not override the hook silently lost its whole
-    /// taxonomy with the compiler and its own tests all green.
+    /// forget it.
     ///
     /// # What the default still can't do
     ///
@@ -138,46 +193,20 @@ pub trait Transport {
     /// silently — the category was never in [`Error`] — but nothing is
     /// classified either.
     ///
-    /// The backends here override the hook with an explicit identity even
-    /// though the default now covers them: it states intent where it is
-    /// read, and survives a change to the default.
-    ///
     /// Getting this wrong is expensive, which is why the hook exists. With
     /// the classification discarded one layer up, every `is_*` predicate on
     /// the facade answers `false` for any transport error and `kind()` is
-    /// `Other` alike for DNS, TLS, connect-timeout and host-unreachable —
-    /// forty lines of `hclient-wasi`'s `wasi_err`, sorting 39 `ErrorCode`
-    /// variants into eight `ErrorKind`s, thrown away.
+    /// `Other` alike for DNS, TLS, connect-timeout and host-unreachable.
     ///
-    /// **Why a defaulted method, and not `Transport::Error: Into<Error>` or
-    /// `Error` as the seam's error type.**
-    ///
-    /// `Into<Error>` would cost a `!Send` backend its TYPED source: such an
-    /// error can satisfy the bound, but only by stringifying itself, since
-    /// `Error::source` requires `Send + Sync`. It would also force every
-    /// backend with nothing to say about the category to write a
-    /// conversion anyway. Making `Error` the seam's error type is worse
-    /// again — it requires `Send + Sync` from every backend. The defaulted
-    /// method requires neither.
-    ///
-    /// Amendment C1 deliberately kept a transport with a genuinely `!Send`
-    /// error representable: it can't use `Client`, but it does implement
-    /// `Transport` (see `non_send_transport_still_satisfies_the_trait` and
-    /// `a_transport_whose_error_is_not_send_still_implements_the_trait` in
-    /// `tests/shape.rs`). The default preserves this — the where-clause sits
-    /// on the method, so such a transport simply can't CALL `to_error`
-    /// (though it's free to define an override — verified: an override's
-    /// body isn't required to call `Error::new`); and it breaks no backend
-    /// that doesn't need categorization.
+    /// A transport with a genuinely `!Send` error can still implement
+    /// `Transport` — it cannot back `hclient::Client`. The where-clause sits
+    /// on the method, so such a transport simply can't call the default
+    /// `to_error`, though it is free to define an override.
     ///
     /// The where-clause is unavoidable here: the default's body calls
     /// `Error::new`, which requires `Send + Sync + 'static` from the
     /// source, because erasure into `Arc<dyn Error>` does not let auto
     /// traits through. A default "for any `Self::Error`" cannot exist.
-    ///
-    /// The name is `to_error`, not `into_error`: by Rust convention `into_*`
-    /// consumes `self`, and here it is `&self` — the backend is making a
-    /// decision, not converting a value, and `execute` takes `&self` too.
     fn to_error(&self, e: Self::Error) -> Error
     where
         Self::Error: Send + Sync, // send-bound-exception: amendment-C1
@@ -214,15 +243,23 @@ pub trait Transport {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// An alias rather than the written-out form at each site, because the
+// long form is a line `cargo fmt` reflows — and a reflowed line carries
+// its trailing comment away with it.
 /// What [`SendTransport::execute_send`] hands back: the same exchange
 /// [`Transport::execute`] produces, in a form whose `Send` has a **name**.
-///
-/// An alias rather than the written-out form at each site, because the
-/// long form is a line `cargo fmt` reflows — and a reflowed line carries
-/// its trailing comment away with it.
 pub type BoxSendExchange<'a, B, E> =
     std::pin::Pin<Box<dyn Future<Output = Result<http::Response<B>, E>> + Send + 'a>>; // send-bound-exception: amendment-C16
 
+// Maintainer notes (not rendered):
+//
+// [`Transport::execute`] returns `impl Future`, which has no name — so a
+// consumer that must *prove* its own future `Send` cannot ask for this
+// one to be. Return type notation is the language feature for naming an
+// RPITIT; it is unstable, and across a crate boundary it makes the
+// compiler ICE (measured — see CLAUDE.md).
 /// A transport whose exchange can cross a thread, said in a way a
 /// consumer can rely on.
 ///
@@ -230,9 +267,7 @@ pub type BoxSendExchange<'a, B, E> =
 ///
 /// [`Transport::execute`] returns `impl Future`, which has no name — so a
 /// consumer that must *prove* its own future `Send` cannot ask for this
-/// one to be. Return type notation is the language feature for naming an
-/// RPITIT; it is unstable, and across a crate boundary it makes the
-/// compiler ICE (measured — see CLAUDE.md).
+/// one to be.
 ///
 /// A separate trait sidesteps all of it, because **an impl may carry
 /// bounds the trait does not**. `hclient-native` implements this for every
@@ -349,17 +384,18 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// **It was over every `Transport` and cost nothing**, which is the trade
+// C16 made: a facade whose request future is `Send` in exchange for one
+// method per backend and the exclusion of a backend that cannot promise
+// it. `hclient-dns-doh`-resolving transports are the case that pays.
 /// [`crate::transport::Transport`], with the future and the body boxed.
 ///
 /// Implemented for every [`crate::transport::SendTransport`] whose error
 /// and body error convert into [`Error`]. A backend author writes one
 /// method — `SendTransport`'s, whose body at a concrete type is
 /// `Box::pin(self.execute(req))`.
-///
-/// **It was over every `Transport` and cost nothing**, which is the trade
-/// C16 made: a facade whose request future is `Send` in exchange for one
-/// method per backend and the exclusion of a backend that cannot promise
-/// it. `hclient-dns-doh`-resolving transports are the case that pays.
 // The attribute is here as well as on `SendTransport`, and that is not a
 // duplicate: `Client::builder` bounds on THIS trait, and the blanket impl
 // below means the bound the compiler reports as unsatisfied is this one.
@@ -423,14 +459,15 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// **The bound lives on this alias rather than at the use sites, and that
+// is a rule rather than a style.** `cargo fmt` moves a trailing comment
+// off a line it reflows and deletes one from a `where` clause outright,
+// so a `send-bound-exception` marker cannot survive on a long signature.
+// A short named type is a line fmt has no reason to touch, so every use
+// site writes `Box<SharedTransport>` and carries no marker at all.
 /// A transport a facade can share between threads, erased.
-///
-/// **The bound lives on this alias rather than at the use sites, and that
-/// is a rule rather than a style.** `cargo fmt` moves a trailing comment
-/// off a line it reflows and deletes one from a `where` clause outright,
-/// so a `send-bound-exception` marker cannot survive on a long signature.
-/// A short named type is a line fmt has no reason to touch, so every use
-/// site writes `Box<SharedTransport>` and carries no marker at all.
 ///
 /// The bound is one this crate chooses so a caller's value reaches a
 /// facade by erasure rather than by a type parameter — said at the use
@@ -439,6 +476,18 @@ where
 /// seam.
 pub type SharedTransport = dyn DynTransport + Send + Sync; // send-bound-exception: amendment-C12
 
+// Maintainer notes (not rendered):
+//
+// A blanket `impl<T: Transport> SendTransport for T` cannot exist: proving
+// [`Transport::execute`]'s future `Send` for a *generic* `T` means naming
+// an RPITIT, which is return type notation — unstable, and measured in
+// this workspace as `E0658` on every nightly tried. At a **concrete**
+// type `Send` is inferred instead, and a macro is how the impl is written
+// where the type is concrete while the text lives in one place.
+//
+// over anything: the expansion fails with *future cannot be sent between
+// threads safely*, naming the `Box::pin`. Checked in that direction
+// before it was believed. So the macro does not hand out the promise —
 /// Writes the [`SendTransport`] impl a backend owes, so that forgetting it
 /// is not a thing that happens.
 ///
@@ -446,8 +495,7 @@ pub type SharedTransport = dyn DynTransport + Send + Sync; // send-bound-excepti
 ///
 /// A blanket `impl<T: Transport> SendTransport for T` cannot exist: proving
 /// [`Transport::execute`]'s future `Send` for a *generic* `T` means naming
-/// an RPITIT, which is return type notation — unstable, and measured in
-/// this workspace as `E0658` on every nightly tried. At a **concrete**
+/// an RPITIT, which is return type notation — unstable. At a **concrete**
 /// type `Send` is inferred instead, and a macro is how the impl is written
 /// where the type is concrete while the text lives in one place.
 ///
@@ -459,8 +507,7 @@ pub type SharedTransport = dyn DynTransport + Send + Sync; // send-bound-excepti
 ///
 /// Applied to a transport whose future holds an `Rc`, this does not paper
 /// over anything: the expansion fails with *future cannot be sent between
-/// threads safely*, naming the `Box::pin`. Checked in that direction
-/// before it was believed. So the macro does not hand out the promise —
+/// threads safely*, naming the `Box::pin`. So the macro does not hand out the promise —
 /// each type still answers for itself, and a backend that genuinely cannot
 /// cross a thread simply does not invoke it.
 ///

@@ -39,13 +39,13 @@ use std::task::{Context, Poll, ready};
 /// at a time.
 const SCRATCH: usize = 16 * 1024;
 
+// Maintainer notes (not rendered):
+// Auto traits follow `S`, because that is the whole reason this is a
+// concrete wrapper rather than a `Box<dyn ..>`: amendment C15's rule
+// that naming is not requiring, met one layer further out — a `!Send`
+// stream stays `!Send` here and a `Send` one stays `Send`, with nothing
+// declared either way.
 /// Wraps a stream on this workspace's seam so hyper can drive it.
-///
-/// Auto traits follow `S`, because that is the whole reason this is a
-/// concrete wrapper rather than a `Box<dyn ..>`: amendment C15's rule
-/// that naming is not requiring, met one layer further out — a `!Send`
-/// stream stays `!Send` here and a `Send` one stays `Send`, with nothing
-/// declared either way.
 #[derive(Debug)]
 pub struct HyperIo<S> {
     inner: S,

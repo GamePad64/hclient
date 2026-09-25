@@ -24,22 +24,15 @@
 //! # }
 //! ```
 //!
-//! **Smartcards were on that list and are not reachable through this
-//! backend**, measured rather than assumed: [`native_tls::Identity`] has
+//! **Smartcards are not reachable through this backend**:
+//! [`native_tls::Identity`] has
 //! two constructors, `from_pkcs12(der, password)` and `from_pkcs8(pem,
 //! key)`, and both take **bytes**. A key the OS holds and will not export
 //! is therefore as far out of reach here as it is through rustls. Reaching
 //! one needs a backend bound to the keystore itself — `rustls-cng` on
-//! Windows — which this workspace does not have.
+//! Windows.
 //!
-//! **`TlsInfo::alpn` is reported, and for two verticals this paragraph
-//! said it could not be.** It read that the negotiated answer was
-//! unreadable, so ALPN-driven protocol selection did not work over this
-//! backend — and it named the cause correctly as the wrapper's rather than
-//! the platform's, without that ever being acted on.
-//! `native_tls::TlsStream::negotiated_alpn` is public;
-//! `async_native_tls::TlsStream` simply did not re-export it. This crate
-//! owns its stream now (`stream.rs`), so `reports_alpn` is `true` and h2
+//! **`TlsInfo::alpn` is reported**, so `reports_alpn` is `true` and h2
 //! can be negotiated over the platform stack.
 //!
 //! **What else it cannot report, and why `TlsInfo`'s fields are all
@@ -48,18 +41,43 @@
 //! returned as a one-element `Vec` rather than `None`, because there IS a
 //! certificate and the chain is what is missing. `None` throughout means
 //! "this backend cannot tell you", never "there was none".
-//! `hclient-tls`'s own doc comment anticipated exactly this backend when it
-//! made every field optional.
-//! # One `unsafe`, and where it is
 //!
-//! `deny` rather than `forbid`, which is the same change
-//! `hclient-fetch` made and for a related reason: `stream.rs` carries this
-//! workspace's second `unsafe` (amendment C17), because bridging
-//! `native-tls`'s synchronous `Read`/`Write` to a poll-based world means
+//! # `unsafe`
+//!
+//! The crate contains `unsafe` code, needed to bridge
+//! `native-tls`'s synchronous `Read`/`Write` to a poll-based world by
 //! giving the synchronous side a way to reach the current task's waker.
-//! That file's own doc says why the sans-io shape
-//! `hclient-tls-rustls` uses is not available here, and what the port
-//! bought besides — this backend reports ALPN now.
+
+// Maintainer notes (not rendered):
+//
+// **Smartcards were on that list and are not reachable through this
+// backend**, measured rather than assumed: [`native_tls::Identity`] has
+// two constructors, and both take bytes (see the kept paragraph); a
+// keystore-bound backend means `rustls-cng` on
+// Windows — which this workspace does not have.
+//
+// **`TlsInfo::alpn` is reported, and for two verticals this paragraph
+// said it could not be.** It read that the negotiated answer was
+// unreadable, so ALPN-driven protocol selection did not work over this
+// backend — and it named the cause correctly as the wrapper's rather than
+// the platform's, without that ever being acted on.
+// `native_tls::TlsStream::negotiated_alpn` is public;
+// `async_native_tls::TlsStream` simply did not re-export it. This crate
+// owns its stream now (`stream.rs`), so `reports_alpn` is `true` and h2
+// can be negotiated over the platform stack.
+//
+// `hclient-tls`'s own doc comment anticipated exactly this backend when it
+// made every field optional.
+// # One `unsafe`, and where it is
+//
+// `deny` rather than `forbid`, which is the same change
+// `hclient-fetch` made and for a related reason: `stream.rs` carries this
+// workspace's second `unsafe` (amendment C17), because bridging
+// `native-tls`'s synchronous `Read`/`Write` to a poll-based world means
+// giving the synchronous side a way to reach the current task's waker.
+// That file's own doc says why the sans-io shape
+// `hclient-tls-rustls` uses is not available here, and what the port
+// bought besides — this backend reports ALPN now.
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 // docs.rs builds with every feature and passes `--cfg docsrs`, so an item
@@ -152,12 +170,16 @@ impl NativeTls {
         Self::default()
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **Named `with_client_identity` and not `identity`** because the word
+    // alone means something else next door: `hclient_tls_rustls::Rustls::
+    // with_identity(name, config)` registers a *named* identity a request
+    // selects, and this backend refuses named identities. This one is the
+    // single default.
     /// A client certificate, for mutual TLS, presented on every connection.
     ///
-    /// **Named `with_client_identity` and not `identity`** because the word
-    /// alone means something else next door: `hclient_tls_rustls::Rustls::
-    /// with_identity(name, config)` registers a *named* identity a request
-    /// selects, and this backend refuses named identities. This one is the
+    /// This backend refuses named identities. This one is the
     /// single default.
     #[must_use]
     pub fn with_client_identity(mut self, identity: native_tls::Identity) -> Self {
@@ -207,14 +229,17 @@ impl NativeTls {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // decision widened by the roots given here, never narrowed. (This doc
+    // used to say `native-tls` had no such switch; 0.2.18 has one.)
     /// An extra trust root, *in addition to* the platform store — not
     /// instead of it.
     ///
     /// `native-tls` 0.2 can replace the store —
     /// `TlsConnectorBuilder::disable_built_in_roots` — and this crate does
     /// not expose that yet; what it offers is the platform's own trust
-    /// decision widened by the roots given here, never narrowed. (This doc
-    /// used to say `native-tls` had no such switch; 0.2.18 has one.)
+    /// decision widened by the roots given here, never narrowed.
     #[must_use]
     pub fn with_root_certificate(mut self, cert: native_tls::Certificate) -> Self {
         self.roots.push(cert);
@@ -228,48 +253,66 @@ impl TlsIdentity for NativeTls {
         self.config_id
     }
 
-    /// The one thing this backend reports *more* of than
-    /// `hclient-tls-rustls` does by default. Its module doc is a list of
-    /// what it cannot say back — the protocol version and the cipher
-    /// suite, the ALPN having since been recovered — and this
-    /// is the other direction: this backend can present a client
-    /// certificate, and says so by asking whether one was configured
-    /// rather than by remembering a flag.
+    // Maintainer notes (not rendered):
+    //
+    // The one thing this backend reports *more* of than
+    // `hclient-tls-rustls` does by default. Its module doc is a list of
+    // what it cannot say back — the protocol version and the cipher
+    // suite, the ALPN having since been recovered — and this
+    // is the other direction: this backend can present a client
+    // certificate, and says so by asking whether one was configured
+    // rather than by remembering a flag.
+    //
+    // It is **not** the reason to reach for the platform's stack, which
+    // this doc claimed for four verticals: `native_tls::Identity` is
+    // built from PKCS#12 or PKCS#8 **bytes**, so an OS-held key that
+    // cannot be exported is out of reach here exactly as it is through
+    // rustls — and a key that *can* be exported is bytes either way.
+    /// Whether a client certificate was configured with
+    /// [`NativeTls::with_client_identity`].
     ///
-    /// It is **not** the reason to reach for the platform's stack, which
-    /// this doc claimed for four verticals: `native_tls::Identity` is
+    /// `native_tls::Identity` is
     /// built from PKCS#12 or PKCS#8 **bytes**, so an OS-held key that
     /// cannot be exported is out of reach here exactly as it is through
-    /// rustls — and a key that *can* be exported is bytes either way.
+    /// rustls.
     fn presents_client_certs(&self) -> bool {
         self.identity.is_some()
     }
 }
 
 impl TlsConnect for NativeTls {
-    /// **Two wrappers used to stand here and both are gone.** The seam
-    /// was typed on `hyper::rt` while `native-tls` speaks futures-io, so
-    /// every stream was converted in (`HyperIo`) and back out
-    /// (`hclient_rt::FuturesIo`) — a copy per read in each direction, and
-    /// 243 lines of adapter, to end up at the trait the seam now names.
+    // Maintainer notes (not rendered):
+    //
+    // **Two wrappers used to stand here and both are gone.** The seam
+    // was typed on `hyper::rt` while `native-tls` speaks futures-io, so
+    // every stream was converted in (`HyperIo`) and back out
+    // (`hclient_rt::FuturesIo`) — a copy per read in each direction, and
+    // 243 lines of adapter, to end up at the trait the seam now names.
+    /// The established TLS session, [`TlsStream`].
     type Stream<S>
         = crate::stream::TlsStream<S>
     where
         S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
-    /// A named type, so `Send` follows from `S` rather than being chosen —
-    /// see `stream.rs`'s module doc for why that took owning the stream,
-    /// and what it cost.
+    // Maintainer notes (not rendered):
+    //
+    // A named type, so `Send` follows from `S` rather than being chosen —
+    // see `stream.rs`'s module doc for why that took owning the stream,
+    // and what it cost.
+    /// A named type, so `Send` follows from `S` rather than being chosen.
     type Handshake<'a, S>
         = Handshaking<S>
     where
         Self: 'a,
         S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
+    // Maintainer notes (not rendered):
+    //
+    // connector — so the future has one job. `hclient-tls-rustls`'s
+    // `connect` is arranged the same way and for the same reason.
     /// Everything that can fail without touching the socket happens
     /// **here** — the ECH refusal, the ALPN strings, building the
-    /// connector — so the future has one job. `hclient-tls-rustls`'s
-    /// `connect` is arranged the same way and for the same reason.
+    /// connector — so the future has one job.
     fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
         S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a,
@@ -346,26 +389,31 @@ impl TlsConnect for NativeTls {
         ))
     }
 
-    /// **`true` since this crate owns its stream.**
-    ///
-    /// It was `false` for two verticals, and the module doc called the
-    /// limitation concrete: `async_native_tls::TlsStream` did not
-    /// re-export `negotiated_alpn` and gave no way to the stream
-    /// underneath. `native_tls::TlsStream::negotiated_alpn` is public, and
-    /// this crate holds one of those now — so the limitation was the
-    /// wrapper's rather than the platform's, and protocol selection driven
-    /// by ALPN works over this backend.
+    // Maintainer notes (not rendered):
+    //
+    // **`true` since this crate owns its stream.**
+    //
+    // It was `false` for two verticals, and the module doc called the
+    // limitation concrete: `async_native_tls::TlsStream` did not
+    // re-export `negotiated_alpn` and gave no way to the stream
+    // underneath. `native_tls::TlsStream::negotiated_alpn` is public, and
+    // this crate holds one of those now — so the limitation was the
+    // wrapper's rather than the platform's, and protocol selection driven
+    // by ALPN works over this backend.
+    /// `true`: the negotiated ALPN protocol is read back, so protocol
+    /// selection driven by ALPN works over this backend.
     fn reports_alpn(&self) -> bool {
         true
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// A newtype over `stream::Handshaking` rather than that type directly,
+// because the seam's output is `(Self::Stream<S>, TlsInfo)` and the
+// `TlsInfo` is this file's business, not the stream module's.
 /// [`NativeTls`]'s handshake, with the `TlsInfo` this backend can report
 /// assembled from the finished stream.
-///
-/// A newtype over `stream::Handshaking` rather than that type directly,
-/// because the seam's output is `(Self::Stream<S>, TlsInfo)` and the
-/// `TlsInfo` is this file's business, not the stream module's.
 #[derive(Debug)]
 pub struct Handshaking<S>(crate::stream::Handshaking<S>);
 

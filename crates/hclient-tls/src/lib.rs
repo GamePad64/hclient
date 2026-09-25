@@ -8,20 +8,6 @@
 //! that trio is the one point every `S` in this vertical is already
 //! normalized to, not one more layer stacked on top.
 //!
-//! **It was `hyper::rt::Read`/`Write` until the seam was frozen**, and the
-//! sentence above was the whole of the argument — true, and silent about
-//! *whose major version the seam promises*. A public bound naming
-//! `hyper::rt::Read` puts hyper's major in the manifest of every
-//! implementor, which for a TLS backend written outside this workspace is
-//! a dependency it never chose. `hclient-dns` paid the same cost through
-//! one `pub fn` and it is recorded as *the leak outlived the decoder it
-//! leaked*.
-//!
-//! hyper is a dependency this workspace may one day replace; `futures-io`
-//! is not. So the conversion to `hyper::rt` lives in `hclient-native`, the
-//! one crate that hands a stream to
-//! `hyper::client::conn::http1::handshake`.
-//!
 //! # Where things are
 //!
 //! Two seams, peers, each in its own module, and what they share here:
@@ -36,6 +22,22 @@
 //! - here — [`TlsIdentity`] and [`TlsConfigId`], the configuration
 //!   identity both seams require, so one connector has one identity rather
 //!   than two.
+
+// Maintainer notes (not rendered):
+//
+// **It was `hyper::rt::Read`/`Write` until the seam was frozen**, and the
+// sentence above was the whole of the argument — true, and silent about
+// *whose major version the seam promises*. A public bound naming
+// `hyper::rt::Read` puts hyper's major in the manifest of every
+// implementor, which for a TLS backend written outside this workspace is
+// a dependency it never chose. `hclient-dns` paid the same cost through
+// one `pub fn` and it is recorded as *the leak outlived the decoder it
+// leaked*.
+//
+// hyper is a dependency this workspace may one day replace; `futures-io`
+// is not. So the conversion to `hyper::rt` lives in `hclient-native`, the
+// one crate that hands a stream to
+// `hyper::client::conn::http1::handshake`.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -44,6 +46,22 @@ mod tcp;
 
 pub use hclient_core::hooks::{ClientCertAsk, ClientCertRequest};
 pub use tcp::{NoStream, NoTls, TlsConnect, TlsInfo, TlsRequest};
+
+// Maintainer notes (not rendered):
+//
+// # Why a token, and not a `TypeId` or a hash of the configuration
+//
+// `TypeId` cannot work: two `Rustls` values built from different root
+// stores are the same type, so a `TypeId` would call them
+// interchangeable, which is exactly the defect.
+//
+// A hash of the configuration's contents would work, and is not used
+// either. A collision would mean sharing a socket between two different
+// trust configurations — the same defect again, arriving quietly and at a
+// rate nobody measures — and hashing the contents correctly is work every
+// implementation would have to redo, with rustls's `ClientConfig` (a
+// verifier trait object among its fields) not offering a way to do it
+// completely.
 
 /// Which trust configuration a [`TlsConnect`] applies, as a value that can
 /// be compared.
@@ -55,20 +73,6 @@ pub use tcp::{NoStream, NoTls, TlsConnect, TlsInfo, TlsRequest};
 /// clients with different roots sharing a socket is a security defect, not
 /// a performance one, which is why this type exists at all — see
 /// `hclient_native`'s pool key.
-///
-/// # Why a token, and not a `TypeId` or a hash of the configuration
-///
-/// `TypeId` cannot work: two `Rustls` values built from different root
-/// stores are the same type, so a `TypeId` would call them
-/// interchangeable, which is exactly the defect.
-///
-/// A hash of the configuration's contents would work, and is not used
-/// either. A collision would mean sharing a socket between two different
-/// trust configurations — the same defect again, arriving quietly and at a
-/// rate nobody measures — and hashing the contents correctly is work every
-/// implementation would have to redo, with rustls's `ClientConfig` (a
-/// verifier trait object among its fields) not offering a way to do it
-/// completely.
 ///
 /// So: a token, drawn from a process-wide counter by
 /// [`TlsConfigId::new_unique`] **once, when the connector is constructed**,
@@ -112,31 +116,33 @@ impl TlsConfigId {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// # Why this is a trait of its own rather than a method on [`TlsConnect`]
+//
+// It was a method on `TlsConnect` until HTTP/3 (v0.3). QUIC needs a
+// *second* TLS trait — [`quic::QuicTlsConnect`] — because the
+// intersection of `TlsConnect`'s methods with what a QUIC stack asks of a
+// TLS session is empty: QUIC wants per-encryption-level key schedules and
+// CRYPTO-frame payloads, and `TlsConnect` can only hand back a wrapped
+// byte stream. Both traits need the identity, for the same reason and with
+// the same meaning, and `hclient-tls-rustls` implements both.
+//
+// Declaring `config_id` on each of them would give such a backend two
+// inherent methods of the same name, so every concrete-typed call site
+// becomes `E0034`. Declaring it once, here, and making both traits require
+// it costs each implementation a three-line `impl` and **costs consumers
+// nothing**: a call through a `T: TlsConnect` bound still resolves through
+// the supertrait, so no code that reads an identity moved when this was
+// extracted.
+//
+// The alternative — leaving `config_id` on `TlsConnect` alone and having
+// the QUIC side require `T: TlsConnect + QuicTlsConnect` — is cheaper
+// today and forecloses a TLS backend that speaks QUIC and not TCP.
+// `SChannel` and Security.framework both support QUIC natively, so that is
+// not a hypothetical shape, merely an absent one.
+
 /// Which trust configuration a TLS backend applies — see [`TlsConfigId`].
-///
-/// # Why this is a trait of its own rather than a method on [`TlsConnect`]
-///
-/// It was a method on `TlsConnect` until HTTP/3 (v0.3). QUIC needs a
-/// *second* TLS trait — [`quic::QuicTlsConnect`] — because the
-/// intersection of `TlsConnect`'s methods with what a QUIC stack asks of a
-/// TLS session is empty: QUIC wants per-encryption-level key schedules and
-/// CRYPTO-frame payloads, and `TlsConnect` can only hand back a wrapped
-/// byte stream. Both traits need the identity, for the same reason and with
-/// the same meaning, and `hclient-tls-rustls` implements both.
-///
-/// Declaring `config_id` on each of them would give such a backend two
-/// inherent methods of the same name, so every concrete-typed call site
-/// becomes `E0034`. Declaring it once, here, and making both traits require
-/// it costs each implementation a three-line `impl` and **costs consumers
-/// nothing**: a call through a `T: TlsConnect` bound still resolves through
-/// the supertrait, so no code that reads an identity moved when this was
-/// extracted.
-///
-/// The alternative — leaving `config_id` on `TlsConnect` alone and having
-/// the QUIC side require `T: TlsConnect + QuicTlsConnect` — is cheaper
-/// today and forecloses a TLS backend that speaks QUIC and not TCP.
-/// `SChannel` and Security.framework both support QUIC natively, so that is
-/// not a hypothetical shape, merely an absent one.
 pub trait TlsIdentity {
     /// Which trust configuration this connector applies — see
     /// [`TlsConfigId`].
@@ -182,6 +188,31 @@ pub trait TlsIdentity {
         None
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // # Why it lives on `TlsIdentity` and not on either connect trait
+    //
+    // Because it is the same fact on both paths. `TlsConnect` and
+    // [`QuicTlsConnect`](quic::QuicTlsConnect) share this
+    // trait precisely because a connector has **one** configuration
+    // identity rather than two, and for `hclient-tls-rustls` the QUIC
+    // config is a clone of the TCP one — so a method on each would be two
+    // places to answer one question, and the second place is where the
+    // answer goes stale.
+    //
+    // # This replaced a constant, and the code that held it stated the
+    // rule it broke
+    //
+    // `hclient-h3` set `Capabilities::client_certs = true` two lines
+    // under a comment reading *"Read from the TLS backend, never from a
+    // constant: the capability has to come from the component that
+    // knows"* — while `hclient-native` had no line at all, so it took
+    // `Capabilities::default()`'s `false`. Both were wrong and in opposite
+    // directions: `hclient-tls-native-tls` has an `identity` setter, and
+    // `Rustls::from_config` accepts a `rustls::ClientConfig` built with
+    // `with_client_auth_cert`, so the TCP path *can* present one; and the
+    // QUIC path claimed it whatever `T` was, including a `T` that cannot.
+
     /// Whether this connector presents a **client certificate** when a
     /// server asks for one.
     ///
@@ -190,29 +221,6 @@ pub trait TlsIdentity {
     /// for the same reason: a backend that says nothing costs a caller an
     /// opportunity, where one that over-claims costs them a handshake they
     /// were told would work.
-    ///
-    /// # Why it lives on `TlsIdentity` and not on either connect trait
-    ///
-    /// Because it is the same fact on both paths. `TlsConnect` and
-    /// [`QuicTlsConnect`](quic::QuicTlsConnect) share this
-    /// trait precisely because a connector has **one** configuration
-    /// identity rather than two, and for `hclient-tls-rustls` the QUIC
-    /// config is a clone of the TCP one — so a method on each would be two
-    /// places to answer one question, and the second place is where the
-    /// answer goes stale.
-    ///
-    /// # This replaced a constant, and the code that held it stated the
-    /// rule it broke
-    ///
-    /// `hclient-h3` set `Capabilities::client_certs = true` two lines
-    /// under a comment reading *"Read from the TLS backend, never from a
-    /// constant: the capability has to come from the component that
-    /// knows"* — while `hclient-native` had no line at all, so it took
-    /// `Capabilities::default()`'s `false`. Both were wrong and in opposite
-    /// directions: `hclient-tls-native-tls` has an `identity` setter, and
-    /// `Rustls::from_config` accepts a `rustls::ClientConfig` built with
-    /// `with_client_auth_cert`, so the TCP path *can* present one; and the
-    /// QUIC path claimed it whatever `T` was, including a `T` that cannot.
     fn presents_client_certs(&self) -> bool {
         false
     }

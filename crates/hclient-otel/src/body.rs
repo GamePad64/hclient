@@ -13,6 +13,21 @@ use http_body::{Body, Frame, SizeHint};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+// Maintainer notes (not rendered):
+//
+// long after its last byte. Both fronts carry the pair —
+// `the_span_closes_at_the_end_of_the_body_and_not_at_the_head` and
+// `a_body_dropped_before_it_ends_still_closes_the_span`, in
+// `tests/otel_front.rs` and `tests/tracing_front.rs`.
+//
+// **The first assertion is deliberately made while the body is still
+// alive**, which is the only thing that makes it fail for a `SpanBody`
+// that closes on `Drop` alone: a body read to its end and then dropped
+// looks the same either way. And the two are asymmetric in what a
+// mutation can reach: emptying `poll_frame`'s end-of-stream arm kills the
+// first on both fronts, where no mutation of this crate kills the second
+// — see `Recorder`'s `Drop`, which records the measurement and why the
+// impl is kept regardless.
 /// A response body that closes its span when it ends — or when it is
 /// dropped, whichever comes first.
 ///
@@ -21,19 +36,7 @@ use std::task::{Context, Poll};
 /// for ever when a caller reads a header and walks away; a body that
 /// closed only on `Drop` reports every duration as the caller's lifetime
 /// rather than the exchange's, since a `Response` may sit in a variable
-/// long after its last byte. Both fronts carry the pair —
-/// `the_span_closes_at_the_end_of_the_body_and_not_at_the_head` and
-/// `a_body_dropped_before_it_ends_still_closes_the_span`, in
-/// `tests/otel_front.rs` and `tests/tracing_front.rs`.
-///
-/// **The first assertion is deliberately made while the body is still
-/// alive**, which is the only thing that makes it fail for a `SpanBody`
-/// that closes on `Drop` alone: a body read to its end and then dropped
-/// looks the same either way. And the two are asymmetric in what a
-/// mutation can reach: emptying `poll_frame`'s end-of-stream arm kills the
-/// first on both fronts, where no mutation of this crate kills the second
-/// — see `Recorder`'s `Drop`, which records the measurement and why the
-/// impl is kept regardless.
+/// long after its last byte.
 ///
 /// `B: Unpin` is the same bound `hclient::Limited` and its neighbours in
 /// the `ClientBody` chain already carry, and for the same reason: it buys

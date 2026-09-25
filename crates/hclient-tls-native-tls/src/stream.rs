@@ -13,32 +13,46 @@
 //! could not be named; and driving `native_tls`'s own handshake by hand was
 //! not enough either, because the stream it yields must then be one this
 //! crate owns — `async_native_tls::TlsStream::new` is `pub(crate)` and its
-//! `StdAdapter` is private. So both are here. This crate was a wrapper over
-//! a wrapper; it is now a wrapper.
+//! `StdAdapter` is private. So both are here.
 //!
 //! **What that bought is not only the `Send`.** Owning the stream means
 //! `native_tls::TlsStream::negotiated_alpn` is reachable, and this backend
-//! reports ALPN now — a limitation its own documentation called concrete
-//! and unavoidable for two verticals, and which was a property of the
-//! wrapper rather than of the platform.
+//! reports ALPN now.
 //!
 //! # Why `native-tls` cannot be driven the way rustls is
 //!
 //! `hclient-tls-rustls` needs none of this: rustls is sans-io, so its
-//! handshake is a loop over buffers this workspace owns and there is no
+//! handshake is a loop over buffers and there is no
 //! `Context` to smuggle. `native-tls` fronts `SChannel`, Security.framework
 //! and OpenSSL through one synchronous `Read`/`Write` interface, and hands
 //! back `HandshakeError::WouldBlock` when the stream underneath is not
 //! ready. Bridging that to a poll-based world means giving the synchronous
 //! side a `Read`/`Write` that can reach the current task's waker — which
-//! is [`StdAdapter`], and which is why this file carries this workspace's
-//! second `unsafe` (amendment C17, `docs/exceptions.md`).
+//! is [`StdAdapter`], and which is why this file carries an `unsafe`.
 //!
-//! The shape is upstream's, arrived at by reading async-native-tls 0.6.0
-//! (`std_adapter.rs`, `handshake.rs`, `tls_stream.rs`) rather than by
+//! The shape is upstream's, rather than
 //! inventing a second answer to a solved problem. What is not upstream's
 //! is the handshake being a **named type** instead of an `async fn`, which
 //! is the entire reason for the port.
+
+// Maintainer notes (not rendered):
+//
+// `StdAdapter` is private. So both are here. This crate was a wrapper over
+// a wrapper; it is now a wrapper.
+//
+// reports ALPN now — a limitation its own documentation called concrete
+// and unavoidable for two verticals, and which was a property of the
+// wrapper rather than of the platform.
+//
+// handshake is a loop over buffers this workspace owns and there is no
+// `Context` to smuggle.
+//
+// is [`StdAdapter`], and which is why this file carries this workspace's
+// second `unsafe` (amendment C17, `docs/exceptions.md`).
+//
+// The shape is upstream's, arrived at by reading async-native-tls 0.6.0
+// (`std_adapter.rs`, `handshake.rs`, `tls_stream.rs`) rather than by
+// inventing a second answer to a solved problem.
 
 use futures_io::{AsyncRead, AsyncWrite};
 use native_tls::{HandshakeError, MidHandshakeTlsStream};

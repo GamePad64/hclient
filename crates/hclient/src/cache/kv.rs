@@ -15,6 +15,12 @@ use web_time::SystemTime;
 /// The namespace this wrapper writes under.
 const NS: &str = "cache";
 
+// Maintainer notes (not rendered):
+//
+// [`scan`](KeyValueStore::scan) over the request's prefix. That
+// operation is on the seam *because* of this: it was added after three
+// wrappers had each bent around its absence.
+
 /// A [`CacheStore`] over any [`KeyValueStore`], so a response cache can
 /// share one backend with the client's cookie jar, HSTS set and
 /// `Alt-Svc` memory instead of being a fourth `Mutex<HashMap>`.
@@ -36,9 +42,7 @@ const NS: &str = "cache";
 ///
 /// What that costs is that `get` no longer knows the keys it wants —
 /// the selectors are what it is trying to discover — so it is a
-/// [`scan`](KeyValueStore::scan) over the request's prefix. That
-/// operation is on the seam *because* of this: it was added after three
-/// wrappers had each bent around its absence.
+/// [`scan`](KeyValueStore::scan) over the request's prefix.
 ///
 /// **The digest is what keeps a key bounded.** A selector holds whole
 /// header values — an `Accept` line is routinely hundreds of bytes and

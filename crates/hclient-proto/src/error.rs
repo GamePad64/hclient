@@ -19,6 +19,18 @@
 //! [`crate::head`], [`crate::uri`], [`crate::sse`] — where it has always
 //! been, so no consumer's `use` line moves.
 
+// Maintainer notes (not rendered):
+//
+// **No winnow trait is implemented for this type**, and that is what
+// keeps `winnow` out of this crate's public API. A `ParserError` impl
+// sat here until the freeze audit: it is invisible in rustdoc's item
+// list and it is public surface all the same, so winnow's next major
+// version would have been this crate's. The impl moved onto
+// `head::ParseFailure`, a private newtype around this enum, at the cost
+// of one `.0` where `parse_response` unwraps it — see there. Every other
+// winnow user in this workspace already parsed with `ContextError` and
+// exposed none of it; `head` was the one that did not.
+
 /// What the bytes were not.
 ///
 /// Every variant is reachable from a real peer, which is why the parser
@@ -27,15 +39,8 @@
 /// *the proxy sent something that is not an HTTP response* is not an
 /// answer anybody can act on.
 ///
-/// **No winnow trait is implemented for this type**, and that is what
-/// keeps `winnow` out of this crate's public API. A `ParserError` impl
-/// sat here until the freeze audit: it is invisible in rustdoc's item
-/// list and it is public surface all the same, so winnow's next major
-/// version would have been this crate's. The impl moved onto
-/// `head::ParseFailure`, a private newtype around this enum, at the cost
-/// of one `.0` where `parse_response` unwraps it — see there. Every other
-/// winnow user in this workspace already parsed with `ContextError` and
-/// exposed none of it; `head` was the one that did not.
+/// No `winnow` trait is implemented for this type, which keeps `winnow`
+/// out of this crate's public API.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum HeadError {
@@ -123,17 +128,24 @@ pub enum UriError {
     },
 }
 
+// Maintainer notes (not rendered):
+//
+// One variant today, and `#[non_exhaustive]` all the same — answer 3 of
+// the three this workspace records: it is handed *back* and only read,
+// never built by a caller and never translated variant-by-variant into
+// somebody else's enum. Checked rather than assumed: the only match on
+// it outside this crate is a fuzz target's, and `hclient`'s SSE stream
+// carries it as a source rather than mapping it. So a second refusal is
+// an addition, where without the attribute it would be a major version
+// — which is the reason its two siblings above carry it and the reason
+// the odd one out was the oversight rather than the decision.
+
 /// Why an SSE stream cannot be decoded any further.
 ///
-/// One variant today, and `#[non_exhaustive]` all the same — answer 3 of
-/// the three this workspace records: it is handed *back* and only read,
-/// never built by a caller and never translated variant-by-variant into
-/// somebody else's enum. Checked rather than assumed: the only match on
-/// it outside this crate is a fuzz target's, and `hclient`'s SSE stream
-/// carries it as a source rather than mapping it. So a second refusal is
-/// an addition, where without the attribute it would be a major version
-/// — which is the reason its two siblings above carry it and the reason
-/// the odd one out was the oversight rather than the decision.
+/// The type is `#[non_exhaustive]` even with a single variant today: it
+/// is handed *back* and only read, never built by a caller and never
+/// translated variant-by-variant into somebody else's enum, so a second
+/// refusal is an addition rather than a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SseError {

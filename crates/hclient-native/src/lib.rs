@@ -10,30 +10,40 @@
 //! [`error`] for every payload [`Error::source`](std::error::Error::source)
 //! can hand back, [`staged`] for connecting ahead of a request, [`task`]
 //! for the futures a runtime is asked to spawn, [`proxy`] for proxies,
-//! and `altsvc` for a caller's own `Alt-Svc` store. The machinery is
-//! private: `body` (the request-body adapter), `connect` (resolution and
-//! Happy Eyeballs), `http1` and `http2` (the protocol drivers, the second
-//! behind the `http2` feature and **not** on hyper — see its module doc),
-//! `pool`, and `established`, the one place that knows there is more than
-//! one protocol.
-//!
-//! # `Native::execute` does not resolve DNS itself
-//!
-//! It calls `connect::connect`, and the reason is a defect that is easy to
-//! write twice. Resolving by hand — `.filter_map(|r| async { r.ok() })`
-//! over `Resolve::lookup` for each family, then synthesizing an
-//! `ErrorKind::Resolve` if both streams came out empty — discards every
-//! resolver error, `ErrorKind::Cancelled` among them. Conflating *the
-//! resolver failed* with *the runtime is shutting down* breaks a circuit
-//! breaker keyed on `Resolve`: it blacklists a live host during an
-//! ordinary shutdown.
-//!
-//! `connect::drive`/`ResolveErrors::distinguishing_error` closes that
-//! structurally — a `kind()` differing from the synthetic `Resolve` is
-//! checked BEFORE either failure branch — so there is one implementation
-//! rather than one per caller. `transport.rs`'s
-//! `resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened`
-//! checks the property survives the whole `Client::execute` path.
+//! and `altsvc` for a caller's own `Alt-Svc` store.
+
+// Maintainer notes (not rendered):
+//
+// The root holds what a caller builds and holds: [`Native`], its
+// options, its body and IO types, and the QUIC stack beside it. Five
+// modules hold the rest by what a caller does with it —
+// [`error`] for every payload [`Error::source`](std::error::Error::source)
+// can hand back, [`staged`] for connecting ahead of a request, [`task`]
+// for the futures a runtime is asked to spawn, [`proxy`] for proxies,
+// and `altsvc` for a caller's own `Alt-Svc` store. The machinery is
+// private: `body` (the request-body adapter), `connect` (resolution and
+// Happy Eyeballs), `http1` and `http2` (the protocol drivers, the second
+// behind the `http2` feature and **not** on hyper — see its module doc),
+// `pool`, and `established`, the one place that knows there is more than
+// one protocol.
+//
+// # `Native::execute` does not resolve DNS itself
+//
+// It calls `connect::connect`, and the reason is a defect that is easy to
+// write twice. Resolving by hand — `.filter_map(|r| async { r.ok() })`
+// over `Resolve::lookup` for each family, then synthesizing an
+// `ErrorKind::Resolve` if both streams came out empty — discards every
+// resolver error, `ErrorKind::Cancelled` among them. Conflating *the
+// resolver failed* with *the runtime is shutting down* breaks a circuit
+// breaker keyed on `Resolve`: it blacklists a live host during an
+// ordinary shutdown.
+//
+// `connect::drive`/`ResolveErrors::distinguishing_error` closes that
+// structurally — a `kind()` differing from the synthetic `Resolve` is
+// checked BEFORE either failure branch — so there is one implementation
+// rather than one per caller. `transport.rs`'s
+// `resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened`
+// checks the property survives the whole `Client::execute` path.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -80,26 +90,34 @@ mod http1;
 #[cfg(feature = "http3")]
 mod http3;
 mod hyperio;
+// Maintainer notes (not rendered):
+//
+// A build that wants bare QUIC and no HTTP opinion takes this and nothing
+// else from the crate; it was `hclient-quinn`'s whole public surface.
 /// Bind a QUIC endpoint on this workspace's own runtime seam — quinn
 /// driven by whichever `hclient_rt` implementation the caller already has.
 ///
 /// A build that wants bare QUIC and no HTTP opinion takes this and nothing
-/// else from the crate; it was `hclient-quinn`'s whole public surface.
+/// else from the crate.
 #[cfg(feature = "http3")]
 pub use crate::http3::runtime::endpoint;
+// Maintainer notes (not rendered):
+//
+// It was `hclient-h3`, a crate of its own, on a reason that measurement
+// disproved: `H3`'s declaration carries no where-clause, so a feature
+// here makes the module and the constructor unconditional rather than the
+// bounds, and the arm is stored erased so nothing reaches
+// `impl Transport for Native`. What a neighbour switching `http3` on
+// costs a build that never asked is dead code in the graph, not a broken
+// one — and the crate's only consumer was this one.
+//
+// A build that wants HTTP/3 **alone**, with no TCP stack beside it, still
+// has `Client::builder(H3::new(..))`: the type is a full `Transport` and
+// nothing about it changed in the move.
 /// The HTTP/3 stack this transport's QUIC arm is built from.
 ///
-/// It was `hclient-h3`, a crate of its own, on a reason that measurement
-/// disproved: `H3`'s declaration carries no where-clause, so a feature
-/// here makes the module and the constructor unconditional rather than the
-/// bounds, and the arm is stored erased so nothing reaches
-/// `impl Transport for Native`. What a neighbour switching `http3` on
-/// costs a build that never asked is dead code in the graph, not a broken
-/// one — and the crate's only consumer was this one.
-///
-/// A build that wants HTTP/3 **alone**, with no TCP stack beside it, still
-/// has `Client::builder(H3::new(..))`: the type is a full `Transport` and
-/// nothing about it changed in the move.
+/// A build that wants HTTP/3 **alone**, with no TCP stack beside it,
+/// has `Client::builder(H3::new(..))`: the type is a full `Transport`.
 #[cfg(feature = "http3")]
 pub use http3::{DEFAULT_KEEP_ALIVE, H3, H3Body, H3Runtime};
 #[cfg(feature = "http3")]
@@ -185,6 +203,14 @@ use std::time::Duration;
 #[cfg(feature = "http2")]
 type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H, R>);
 
+// Maintainer notes (not rendered):
+//
+// **The future is boxed and declares `Send`**, which is the half the old
+// objection to this shape missed. It said a stored pointer returning a
+// boxed future drops the future's auto traits (amendment C1); it does if
+// the box declares none, and a box that declares `Send` has its proof
+// owed where the runtime is concrete — the bound on `unix_socket`, which
+// is `Native::http3`'s arrangement (amendment C15).
 /// Where [`Native::unix_socket`] sends every request, and how it gets there.
 ///
 /// **A pointer, for [`SpawnH2`]'s reason**: `dial` is monomorphised in
@@ -192,13 +218,6 @@ type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H, R>);
 /// connector, where it is not — so no signature a runtime without
 /// same-machine endpoints meets names [`hclient_rt::IpcConnect`], and
 /// `hclient-rt-embassy` or a NAL stack implements nothing for it.
-///
-/// **The future is boxed and declares `Send`**, which is the half the old
-/// objection to this shape missed. It said a stored pointer returning a
-/// boxed future drops the future's auto traits (amendment C1); it does if
-/// the box declares none, and a box that declares `Send` has its proof
-/// owed where the runtime is concrete — the bound on `unix_socket`, which
-/// is `Native::http3`'s arrangement (amendment C15).
 pub(crate) struct IpcRoute<R: TcpConnect> {
     pub(crate) addr: Arc<hclient_rt::IpcAddr>,
     pub(crate) dial: DialIpc<R>,
@@ -350,12 +369,16 @@ impl<'a> Counted<'a> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// A public alias for [`NativeIo`]'s reason — a caller who has to name
+// the body should not have to spell out three nested generics — and
+// because with the hook parameter added there are now two places that
+// have to spell it identically, which is one more than is safe.
 /// What [`Native`]'s `Transport::Body` is, named once.
 ///
 /// A public alias for [`NativeIo`]'s reason — a caller who has to name
-/// the body should not have to spell out three nested generics — and
-/// because with the hook parameter added there are now two places that
-/// have to spell it identically, which is one more than is safe.
+/// the body should not have to spell out three nested generics.
 ///
 /// The order is load bearing: the `between_bytes` bound is the
 /// **innermost** wrapper, next to the socket, so it measures the gap
@@ -430,18 +453,86 @@ impl Default for Versions {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// Connections are reused: see [`PoolConfig`], [`Native::pool`]
+// and [`Native::without_pool`], and read `crate::pool`'s module doc for
+// what "reused" costs when there is no `Spawn` to drive an idle
+// connection.
+//
+// HTTP/1.1 always; **HTTP/2 with the `http2` feature**, on `https://`
+// origins whose TLS backend both negotiated `h2` and can say so — see
+// `TlsConnect::reports_alpn` and `crate::http2`'s module doc. There is
+// no h2c: cleartext stays HTTP/1.1.
+//
+// `H` is deliberately last, after the three seams: it is the only one of
+// the four that is not a seam a backend author has to fill in.
+//
+// # `execute`'s future **is** `Send`, and what that rests on
+//
+// The transport is `Send + Sync` and so is its body — both asserted in
+// `tests/shape.rs`. So is the future, on the shipped stacks, so a caller
+// **can** `tokio::spawn` a request; `tests/send_future.rs` pins it twice,
+// once as a type and once by actually spawning one.
+//
+// **Two different properties, and they are proved differently.** At a
+// concrete stack — `Native<Tokio, Rustls, SystemDns<Tokio>>` — `Send` is
+// *inferred*, and nothing has to be declared: a `Resolve` handing back a
+// `!Send` stream still works and still yields a `!Send` future. That is
+// what `tests/send_future.rs` pins. Generic code cannot infer, so
+// `hclient_core::transport::SendTransport` is *declared* for this
+// transport, under a where-clause naming what its runtime, TLS backend
+// and resolver promise — which is what `hclient::Client`'s own request
+// future being `Send` rests on.
+//
+// **What used to remove the first was one box.** `connect.rs`'s `Answers`
+// held the resolver's stream as `Pin<Box<dyn Stream<..> + 'a>>`. The
+// shipped resolvers all *produce* `Send` streams, and the `dyn` threw the
+// fact away on the way past: a trait object that declares no auto traits
+// is not neutral about them, it **removes** them from everything behind
+// it. It is `Pin<Box<S>>` now — same allocation, same absence of
+// `unsafe`, the type simply not discarded.
+//
+// **What blocked the second was that nothing could be named**, and the
+// repair was not to declare `Send` in the seams. `Resolve`,
+// `TcpConnect`, `TlsConnect` and `Blocking` carry **associated futures**,
+// so a consumer can name them and each implementor still answers for
+// itself. Naming is not requiring, and this workspace has three proofs of
+// it in-tree: `hclient-rt-embassy` boxes its `Connecting` plain because
+// `embassy_net::Stack` is `&RefCell<Inner>`; `hclient-dns-doh` boxes its
+// streams plain because it resolves through a generic `C: Transport`; and
+// `connect.rs`'s own `FakeRuntime` does the same because it keeps an
+// `Rc`. All three are still what their seams say they are.
+//
+// The shape that was measured and rejected is the other one: a fixed
+// `BoxStream` in `Resolve` *requires* `Send` and cost `hclient-dns-doh`
+// its impl outright. `scripts/no-send-or-sync-in-the-core-surface.sh`'s
+// own sentence is about exactly that — *declaring the bound in the seam
+// forces it on backends that cannot satisfy it* — and neither removing a
+// `dyn` nor naming a future does.
+//
+// **The `http3` arm is `Send` too**, which took the same treatment one
+// level down: `StagedConnect` carries associated futures, so
+// `http3::arm`'s blanket impl can name them and its three boxes declare
+// `Send`. `H3` was always clean underneath — `H3::resolve` boxes the
+// concrete stream, and `UdpBind::bind` and
+// `QuicTlsConnect::quic_client_config` are synchronous.
+//
+// **The positive half is a fence again**, and the sentence it replaces is
+// worth keeping: it read that a fence could not assert this, because a
+// doctest cannot be gated on `not(feature = "http3")` and the claim was
+// false with that feature on. The claim is true in every configuration
+// now, so the reason has no subject and the fence is back.
 /// The hclient transport over real TCP/TLS/HTTP1: wires together the
 /// runtime `R` ([`hclient_rt::TcpConnect`] + [`hclient_rt::Timer`]), TLS `T`
 /// ([`hclient_tls::TlsConnect`]) and resolver `D` ([`hclient_dns::Resolve`]).
 ///
-/// Connections are reused: see [`PoolConfig`], [`Native::pool`]
-/// and [`Native::without_pool`], and read `crate::pool`'s module doc for
-/// what "reused" costs when there is no `Spawn` to drive an idle
-/// connection.
+/// Connections are reused: see [`PoolConfig`], [`Native::pool`],
+/// [`Native::with_reaper`] and [`Native::without_pool`].
 ///
 /// HTTP/1.1 always; **HTTP/2 with the `http2` feature**, on `https://`
-/// origins whose TLS backend both negotiated `h2` and can say so — see
-/// `TlsConnect::reports_alpn` and `crate::http2`'s module doc. There is
+/// origins whose TLS backend both negotiated `h2` and can say so (see
+/// `TlsConnect::reports_alpn`). There is
 /// no h2c: cleartext stays HTTP/1.1. What was negotiated is readable after
 /// the fact from `Response::version()`; it is deliberately not readable
 /// from [`Capabilities`], which report the floor (see [`Native::new`]).
@@ -459,64 +550,18 @@ impl Default for Versions {
 /// parameter rather than a `Box<dyn Hooks>`, which is the whole of the
 /// zero-cost claim.
 ///
-/// `H` is deliberately last, after the three seams: it is the only one of
-/// the four that is not a seam a backend author has to fill in.
+/// # `execute`'s future **is** `Send`
 ///
-/// # `execute`'s future **is** `Send`, and what that rests on
+/// The transport is `Send + Sync` and so is its body. So is the future,
+/// on the shipped stacks, so a caller **can** `tokio::spawn` a request.
 ///
-/// The transport is `Send + Sync` and so is its body — both asserted in
-/// `tests/shape.rs`. So is the future, on the shipped stacks, so a caller
-/// **can** `tokio::spawn` a request; `tests/send_future.rs` pins it twice,
-/// once as a type and once by actually spawning one.
-///
-/// **Two different properties, and they are proved differently.** At a
-/// concrete stack — `Native<Tokio, Rustls, SystemDns<Tokio>>` — `Send` is
+/// At a concrete stack — `Native<Tokio, Rustls, SystemDns<Tokio>>` — `Send` is
 /// *inferred*, and nothing has to be declared: a `Resolve` handing back a
-/// `!Send` stream still works and still yields a `!Send` future. That is
-/// what `tests/send_future.rs` pins. Generic code cannot infer, so
+/// `!Send` stream still works and still yields a `!Send` future. Generic code cannot infer, so
 /// `hclient_core::transport::SendTransport` is *declared* for this
 /// transport, under a where-clause naming what its runtime, TLS backend
 /// and resolver promise — which is what `hclient::Client`'s own request
-/// future being `Send` rests on.
-///
-/// **What used to remove the first was one box.** `connect.rs`'s `Answers`
-/// held the resolver's stream as `Pin<Box<dyn Stream<..> + 'a>>`. The
-/// shipped resolvers all *produce* `Send` streams, and the `dyn` threw the
-/// fact away on the way past: a trait object that declares no auto traits
-/// is not neutral about them, it **removes** them from everything behind
-/// it. It is `Pin<Box<S>>` now — same allocation, same absence of
-/// `unsafe`, the type simply not discarded.
-///
-/// **What blocked the second was that nothing could be named**, and the
-/// repair was not to declare `Send` in the seams. `Resolve`,
-/// `TcpConnect`, `TlsConnect` and `Blocking` carry **associated futures**,
-/// so a consumer can name them and each implementor still answers for
-/// itself. Naming is not requiring, and this workspace has three proofs of
-/// it in-tree: `hclient-rt-embassy` boxes its `Connecting` plain because
-/// `embassy_net::Stack` is `&RefCell<Inner>`; `hclient-dns-doh` boxes its
-/// streams plain because it resolves through a generic `C: Transport`; and
-/// `connect.rs`'s own `FakeRuntime` does the same because it keeps an
-/// `Rc`. All three are still what their seams say they are.
-///
-/// The shape that was measured and rejected is the other one: a fixed
-/// `BoxStream` in `Resolve` *requires* `Send` and cost `hclient-dns-doh`
-/// its impl outright. `scripts/no-send-or-sync-in-the-core-surface.sh`'s
-/// own sentence is about exactly that — *declaring the bound in the seam
-/// forces it on backends that cannot satisfy it* — and neither removing a
-/// `dyn` nor naming a future does.
-///
-/// **The `http3` arm is `Send` too**, which took the same treatment one
-/// level down: `StagedConnect` carries associated futures, so
-/// `http3::arm`'s blanket impl can name them and its three boxes declare
-/// `Send`. `H3` was always clean underneath — `H3::resolve` boxes the
-/// concrete stream, and `UdpBind::bind` and
-/// `QuicTlsConnect::quic_client_config` are synchronous.
-///
-/// **The positive half is a fence again**, and the sentence it replaces is
-/// worth keeping: it read that a fence could not assert this, because a
-/// doctest cannot be gated on `not(feature = "http3")` and the claim was
-/// false with that feature on. The claim is true in every configuration
-/// now, so the reason has no subject and the fence is back.
+/// future being `Send` rests on. The `http3` arm is `Send` too.
 ///
 /// ```no_run
 /// # use hclient_core::transport::Transport;
@@ -706,14 +751,16 @@ where
     h2_keep_alive: Option<http2::H2KeepAlive>,
 }
 
-/// `T: TlsConnect` and `R: TcpConnect + Timer` are on the struct as of
-/// v0.2 W2, where before only the constructor carried `T: TlsConnect`.
-/// The rule has not changed — the bound is still paid where the answer is
-/// needed — what changed is where the answer is needed: `Native` now
-/// *stores connections*, and the type of a connection is
-/// `NativeIo<R, T>`, which cannot be named without them. Before the pool,
-/// the only question needing `T: TlsConnect` was `new`'s "what should I
-/// advertise", and the bound sat on `new` alone for exactly that reason.
+// Maintainer notes (not rendered):
+//
+// `T: TlsConnect` and `R: TcpConnect + Timer` are on the struct as of
+// v0.2 W2, where before only the constructor carried `T: TlsConnect`.
+// The rule has not changed — the bound is still paid where the answer is
+// needed — what changed is where the answer is needed: `Native` now
+// *stores connections*, and the type of a connection is
+// `NativeIo<R, T>`, which cannot be named without them. Before the pool,
+// the only question needing `T: TlsConnect` was `new`'s "what should I
+// advertise", and the bound sat on `new` alone for exactly that reason.
 impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
     /// A transport over `rt`, `tls` and `dns`, with what a caller who asks
     /// for nothing should get.
@@ -729,7 +776,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
     ///   the head of every TLS exchange about 41 ms where it can.
     /// - **HTTP/1.1 is on, HTTP/2 is on when the `http2` feature compiled
     ///   it in** and the TLS backend reports ALPN, and there is no QUIC
-    ///   arm until [`http3`](Self::http3).
+    ///   arm until `http3` (behind the `http3` feature).
     /// - **No proxy, no hooks, no `1xx` reporting, no `100-continue`
     ///   gate** — each is a setter below that changes what goes on the
     ///   wire, and none of them is a default a caller did not ask for.
@@ -1204,6 +1251,14 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Reading the environment is policy — *which* variables, and whether
+    // a library may look at all — and this workspace's rule is that
+    // policy belongs to whoever builds the transport. This method is
+    // that person saying yes. `Native::new` reads nothing, and a build
+    // that does not name the `system-proxy` feature does not link a
+    // reader at all.
     /// Reach every origin through the proxies **the machine itself is
     /// configured with**.
     ///
@@ -1233,11 +1288,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # Why it is a call rather than a default
     ///
     /// Reading the environment is policy — *which* variables, and whether
-    /// a library may look at all — and this workspace's rule is that
-    /// policy belongs to whoever builds the transport. This method is
-    /// that person saying yes. `Native::new` reads nothing, and a build
-    /// that does not name the `system-proxy` feature does not link a
-    /// reader at all.
+    /// a library may look at all — and that belongs to whoever builds the
+    /// transport. This method is that person saying yes. `Native::new` reads
+    /// nothing, and a build that does not name the `system-proxy` feature
+    /// does not link a reader at all.
     ///
     /// # Errors
     ///
@@ -1294,14 +1348,22 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         (self.with_proxies(proxies), dropped)
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Separate so that every rule in the translation is testable without
+    // a machine that has such settings — which is every machine this
+    // workspace is developed on — and so that a caller who reads
+    // [`SystemProxies`](crate::proxy::system::SystemProxies) once can
+    // hand it to several transports rather than asking the OS again for
+    // each.
+    // # Errors
     /// [`system_proxy`](Self::system_proxy) over settings already read.
     ///
-    /// Separate so that every rule in the translation is testable without
-    /// a machine that has such settings — which is every machine this
-    /// workspace is developed on — and so that a caller who reads
+    /// Separate so that a caller who reads
     /// [`SystemProxies`](crate::proxy::system::SystemProxies) once can
     /// hand it to several transports rather than asking the OS again for
     /// each.
+    ///
     /// # Errors
     ///
     /// Whatever [`crate::proxy::system::http_proxies`] refuses: a
@@ -1408,6 +1470,27 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Not cost: hyper's own callback fires only when a `1xx` arrives.
+    // **The bound.** `hyper::ext::on_informational` takes
+    // `F: Fn(..) + Send + Sync + 'static`, so a hook that reaches it must
+    // be `Send + Sync + 'static` too — and this crate documents the
+    // opposite as supported: a hook may hold an `Rc`
+    // (`hclient-core/tests/shape.rs`, P13), which is the whole reason the
+    // seam declares no auto traits. Putting the bound here rather than on
+    // `H` is `Native::multiplexed`'s shape: the field is a `fn`
+    // pointer, so **no signature a single-threaded hook meets changes**,
+    // and a runtime that never calls this constructor is untouched. A
+    // hook holding an `Rc` gets `E0277` on the line where it asked.
+    //
+    // HTTP/1 goes through hyper's callback, hence the bound. HTTP/2 needs
+    // no bound at all — `h2::client::ResponseFuture::poll_informational`
+    // is a poll, driven by the same future that awaits the response — and
+    // it is switched on by the same call anyway. The capability reports
+    // the **floor**, the rule v0.2 W3 set for `full_duplex`: one switch
+    // for both, because a `true` that held on h2 alone would be a claim
+    // an HTTP/1 connection could not keep.
     /// Report `1xx` responses (`100 Continue`, `103 Early Hints`) to this
     /// transport's hooks, and say so in
     /// [`Capabilities::informational_1xx`].
@@ -1417,14 +1500,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// Not cost: hyper's own callback fires only when a `1xx` arrives.
     /// **The bound.** `hyper::ext::on_informational` takes
     /// `F: Fn(..) + Send + Sync + 'static`, so a hook that reaches it must
-    /// be `Send + Sync + 'static` too — and this crate documents the
-    /// opposite as supported: a hook may hold an `Rc`
-    /// (`hclient-core/tests/shape.rs`, P13), which is the whole reason the
-    /// seam declares no auto traits. Putting the bound here rather than on
-    /// `H` is `Native::multiplexed`'s shape: the field is a `fn`
-    /// pointer, so **no signature a single-threaded hook meets changes**,
-    /// and a runtime that never calls this constructor is untouched. A
-    /// hook holding an `Rc` gets `E0277` on the line where it asked.
+    /// be `Send + Sync + 'static` too — and a hook may otherwise hold an
+    /// `Rc`. Putting the bound here rather than on `H` means **no signature
+    /// a single-threaded hook meets changes**, and a runtime that never calls
+    /// this constructor is untouched. A hook holding an `Rc` gets `E0277` on
+    /// the line where it asked.
     ///
     /// # What the two protocols cost, which is not the same thing
     ///
@@ -1432,9 +1512,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// no bound at all — `h2::client::ResponseFuture::poll_informational`
     /// is a poll, driven by the same future that awaits the response — and
     /// it is switched on by the same call anyway. The capability reports
-    /// the **floor**, the rule v0.2 W3 set for `full_duplex`: one switch
-    /// for both, because a `true` that held on h2 alone would be a claim
-    /// an HTTP/1 connection could not keep.
+    /// the **floor**: one switch for both, because a `true` that held on h2
+    /// alone would be a claim an HTTP/1 connection could not keep.
     ///
     /// # Ordering
     ///
@@ -1451,6 +1530,21 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The hook may be `!Send`: nothing on this path declares it, so an
+    // `Rc` inside a hook makes this transport `!Send` and leaves it
+    // working (P13; `crates/hclient-core/tests/shape.rs`).
+    //
+    // The spawner `multiplexed()` captures is a
+    // `fn(&R, H2Driver<_, H>)` — it **names the hook**, because the
+    // driver carries it — so a method whose whole purpose is to change
+    // `H` cannot carry that pointer across. Write `.hooks(..)` first and
+    // `.multiplexed()` last; the other order compiles and shares no
+    // connections, which is the same cost, stated the same way, as
+    // [`Native::tcp_opts`] replacing the whole option set. Pinned by
+    // `tests/http2_multiplex.rs`'s pair of orders, so the rule is
+    // measured rather than only written here.
     /// Send this transport's events to `hooks` — see
     /// [`hclient_core::hooks::Hooks`] for what it hears and what it
     /// costs, and [`Event`] for the vocabulary.
@@ -1466,7 +1560,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// The hook may be `!Send`: nothing on this path declares it, so an
     /// `Rc` inside a hook makes this transport `!Send` and leaves it
-    /// working (P13; `crates/hclient-core/tests/shape.rs`).
+    /// working.
     ///
     /// # It turns `Native::multiplexed` back off, and the type is why
     ///
@@ -1476,9 +1570,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `H` cannot carry that pointer across. Write `.hooks(..)` first and
     /// `.multiplexed()` last; the other order compiles and shares no
     /// connections, which is the same cost, stated the same way, as
-    /// [`Native::tcp_opts`] replacing the whole option set. Pinned by
-    /// `tests/http2_multiplex.rs`'s pair of orders, so the rule is
-    /// measured rather than only written here.
+    /// [`Native::tcp_opts`] replacing the whole option set.
     pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2, P> {
         // The capability must go with the pointer. Dropping one and
         // carrying the other left this transport saying it reports `1xx`
@@ -1540,8 +1632,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // How this transport reuses connections — see [`PoolConfig`], and
+    // `crate::pool`'s module doc for what reuse can and cannot promise
+    // without a `Spawn` to drive an idle connection.
     /// How this transport reuses connections — see [`PoolConfig`], and
-    /// `crate::pool`'s module doc for what reuse can and cannot promise
+    /// [`Native::with_reaper`] for what reuse can and cannot promise
     /// without a `Spawn` to drive an idle connection.
     ///
     /// Reuse is **on by default**, with [`PoolConfig::default`]; this
@@ -1554,8 +1651,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
-    /// One connection per request, closed when the response body ends —
-    /// what this transport did before v0.2 W2.
+    // Maintainer notes (not rendered):
+    //
+    // One connection per request, closed when the response body ends —
+    // what this transport did before v0.2 W2.
+    /// One connection per request, closed when the response body ends.
     ///
     /// `Capabilities::connection_reuse` becomes `false` to
     /// match, because it is derived from the same value rather than set
@@ -1567,36 +1667,47 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Sets the pool exactly as [`Native::pool`] does and additionally
+    // spawns a [`Reaper`] on `R`. Read `crate::pool`'s module doc first:
+    // without one, [`PoolConfig::idle_timeout`] is a filter applied at
+    // checkout, so a client that goes quiet holds its sockets until its
+    // next request or until `Drop`. Measured with the server watching its
+    // own end of the socket, under a 300 ms idle timeout: closed **299.7
+    // ms** after the response on the shipped `Tokio` and **300.6 ms** on
+    // the shipped `Smol`, where the same client with `pool` in place of
+    // this call still held the connection 1200 ms later
+    // (`tests/reaper.rs`).
+    //
+    // Because `Native` is generic over `R`, and **not every `R` has a
+    // `Spawn` impl at all** — `connect.rs`'s own `FakeRt` has none, and
+    // W7's embassy backend expects none. A reaper started by `new` would
+    // assume a capability the type parameter does not promise: a default
+    // stronger than the truth, which is the one thing this crate refuses
+    // everywhere else.
+    //
+    // It is *not* "a pool driven by a spawned task does not compile on
+    // this seam, because `Spawn<F>` requires `F: Send + 'static` and this
+    // crate's IO is not `Send`". Measured: `Spawn<F>` declares no bounds
+    // whatsoever, and the pool is an `Arc<..<Mutex<..>>>`, so a reaper
+    // over it is `Send` whenever the connection is. See `pool.rs`'s module
+    // doc for how that mistake is made, which is the reusable part of it.
     /// Connection reuse **with a background task that actually closes idle
     /// connections** when their deadline passes, instead of only refusing
     /// to hand them out.
     ///
     /// Sets the pool exactly as [`Native::pool`] does and additionally
-    /// spawns a [`Reaper`] on `R`. Read `crate::pool`'s module doc first:
-    /// without one, [`PoolConfig::idle_timeout`] is a filter applied at
-    /// checkout, so a client that goes quiet holds its sockets until its
-    /// next request or until `Drop`. Measured with the server watching its
-    /// own end of the socket, under a 300 ms idle timeout: closed **299.7
-    /// ms** after the response on the shipped `Tokio` and **300.6 ms** on
-    /// the shipped `Smol`, where the same client with `pool` in place of
-    /// this call still held the connection 1200 ms later
-    /// (`tests/reaper.rs`).
+    /// spawns a [`Reaper`] on `R`. Without one, [`PoolConfig::idle_timeout`]
+    /// is a filter applied at checkout, so a client that goes quiet holds its
+    /// sockets until its next request or until `Drop`.
     ///
     /// # Why this is not what [`Native::new`] does
     ///
     /// Because `Native` is generic over `R`, and **not every `R` has a
-    /// `Spawn` impl at all** — `connect.rs`'s own `FakeRt` has none, and
-    /// W7's embassy backend expects none. A reaper started by `new` would
+    /// `Spawn` impl at all**. A reaper started by `new` would
     /// assume a capability the type parameter does not promise: a default
-    /// stronger than the truth, which is the one thing this crate refuses
-    /// everywhere else.
-    ///
-    /// It is *not* "a pool driven by a spawned task does not compile on
-    /// this seam, because `Spawn<F>` requires `F: Send + 'static` and this
-    /// crate's IO is not `Send`". Measured: `Spawn<F>` declares no bounds
-    /// whatsoever, and the pool is an `Arc<..<Mutex<..>>>`, so a reaper
-    /// over it is `Send` whenever the connection is. See `pool.rs`'s module
-    /// doc for how that mistake is made, which is the reusable part of it.
+    /// stronger than the truth.
     ///
     /// # The bound is on this constructor, and that is the point
     ///
@@ -1659,6 +1770,17 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self.rt.elapsed_since(self.epoch)
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **The store is erased here rather than becoming a sixth type
+    // parameter**, which is `hclient::Client`'s argument one crate up:
+    // a parameter would reach every signature in this crate to serve one
+    // opt-in call. The `Send + Sync` that costs is on this method and
+    // nowhere else — amendment C12's shape.
+    //
+    // Nothing in this workspace persists these; what the seam is for is
+    // a store that does, and `altsvc`'s module doc says what an entry
+    // has to carry for that to be possible at all.
     /// Keep the `Alt-Svc` advertisements somewhere of your own.
     ///
     /// The slow discovery tier's storage, and only its storage: every RFC
@@ -1669,13 +1791,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// [`AltSvcStore`](altsvc::AltSvcStore).
     ///
     /// **The store is erased here rather than becoming a sixth type
-    /// parameter**, which is `hclient::Client`'s argument one crate up:
-    /// a parameter would reach every signature in this crate to serve one
-    /// opt-in call. The `Send + Sync` that costs is on this method and
-    /// nowhere else — amendment C12's shape.
+    /// parameter**: a parameter would reach every signature in this crate to
+    /// serve one opt-in call. The `Send + Sync` that costs is on this method
+    /// and nowhere else.
     ///
-    /// Nothing in this workspace persists these; what the seam is for is
-    /// a store that does, and `altsvc`'s module doc says what an entry
+    /// Nothing in this crate persists these; what the seam is for is
+    /// a store that does, and [`altsvc`]'s module doc says what an entry
     /// has to carry for that to be possible at all.
     #[cfg(feature = "http3")]
     #[must_use]
@@ -1690,6 +1811,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **`async` since the alt-svc memory took a store**, which is the
+    // one thing about this method a caller has to change: the store may
+    // be on the far side of a file or a socket, and forgetting an
+    // advertisement there is not a lock and a `retain`. The half that
+    // clears failed QUIC connects is still ours and still immediate.
     /// The caller has seen a network configuration change: forget every
     /// `Alt-Svc` advertisement that did not carry `persist=1`.
     ///
@@ -1718,12 +1846,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// about the network alone, no peer ever asked us to carry it, and it
     /// is exactly the entry a network change makes certainly wrong.
     ///
-    /// **`async` since the alt-svc memory took a store**, which is the
-    /// one thing about this method a caller has to change: the store may
-    /// be on the far side of a file or a socket, and forgetting an
-    /// advertisement there is not a lock and a `retain`. The half that
-    /// clears failed QUIC connects is still ours and still immediate.
-    ///
+    /// **It is `async`** because the store may be on the far side of a file
+    /// or a socket, and forgetting an advertisement there is not a lock and a
+    /// `retain`. The half that clears failed QUIC connects is immediate.
     // The gate is repeated rather than inherited: inserting
     // `alt_svc_store` above took the `#[cfg]` that used to sit here with
     // it, and a `--no-default-features` build stopped compiling. That is
@@ -1739,6 +1864,16 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self.h3_failures.network_changed();
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // [`DEFAULT_HEAD_START`] where there is no reason to pass anything
+    // else: 250 ms, RFC 8305 §5's Connection Attempt Delay, which is
+    // already this workspace's answer to the same question one layer
+    // down. the hedge has what the staged connect changed about that
+    // number's justification — and about its floor, which is now
+    // [`Duration::ZERO`]: with no head start both stacks connect at once,
+    // **and the losing arm still sends nothing**, which is the property
+    // that made this worth building.
     /// Hedge every request this transport sends to QUIC with a TCP connect
     /// started `head_start` later — the race, and it is off until this is
     /// called.
@@ -1755,13 +1890,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # What the head start is, and what to pass
     ///
     /// [`DEFAULT_HEAD_START`] where there is no reason to pass anything
-    /// else: 250 ms, RFC 8305 §5's Connection Attempt Delay, which is
-    /// already this workspace's answer to the same question one layer
-    /// down. the hedge has what the staged connect changed about that
-    /// number's justification — and about its floor, which is now
+    /// else: 250 ms, RFC 8305 §5's Connection Attempt Delay. Its floor is
     /// [`Duration::ZERO`]: with no head start both stacks connect at once,
-    /// **and the losing arm still sends nothing**, which is the property
-    /// that made this worth building.
+    /// **and the losing arm still sends nothing**.
     ///
     /// Bigger is not free and smaller is not unsafe. A head start below
     /// one QUIC handshake costs a TCP connect and TLS handshake the
@@ -1786,6 +1917,17 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // `H3` needs `R: UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Send +
+    // Sync + 'static` and `T: QuicTlsConnect`. None of that reaches
+    // [`Native`]'s own declaration or its `impl Transport`, because the
+    // arm is stored erased — so a runtime that has no UDP and a TLS
+    // backend that has no QUIC are unaffected by the `http3` feature
+    // being switched on somewhere else in the graph. They simply never
+    // write this call. `Native::new(Embassy, NoTls, IpLiteralOnly)`
+    // compiles with the feature on, which is asserted by the workspace
+    // building `--all-features --all-targets`.
     /// Give this transport a QUIC arm, and let it serve HTTP/3.
     ///
     /// # Every bound in this crate's QUIC story is on this one signature
@@ -1797,8 +1939,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// backend that has no QUIC are unaffected by the `http3` feature
     /// being switched on somewhere else in the graph. They simply never
     /// write this call. `Native::new(Embassy, NoTls, IpLiteralOnly)`
-    /// compiles with the feature on, which is asserted by the workspace
-    /// building `--all-features --all-targets`.
+    /// compiles with the feature on.
     ///
     /// The shape is `Native::multiplexed`'s: a bound that belongs to one
     /// opt-in lives on the opt-in.
@@ -1905,19 +2046,28 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         Ok(self)
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Off, the ALPN offer loses `h2` and the pool stops holding h2
+    // buckets — `may_speak_h2` is the one predicate both read, so they
+    // cannot drift into a client that offers a protocol it will not pool
+    // or pools one it will not offer.
+    //
+    // The default follows the feature rather than being `false`, because
+    // that is what the transport did before this setting existed: a build
+    // with `http2` on offered h2 wherever ALPN could carry it, and a
+    // default of `false` would make the feature a silent no-op until a
+    // second call.
     /// Whether this transport may speak HTTP/2. Defaults to whether the
     /// `http2` feature compiled it in.
     ///
     /// Off, the ALPN offer loses `h2` and the pool stops holding h2
-    /// buckets — `may_speak_h2` is the one predicate both read, so they
-    /// cannot drift into a client that offers a protocol it will not pool
-    /// or pools one it will not offer.
+    /// buckets — both read the same setting, so the client never offers a
+    /// protocol it will not pool or pools one it will not offer.
     ///
-    /// The default follows the feature rather than being `false`, because
-    /// that is what the transport did before this setting existed: a build
-    /// with `http2` on offered h2 wherever ALPN could carry it, and a
-    /// default of `false` would make the feature a silent no-op until a
-    /// second call.
+    /// The default follows the feature rather than being `false`: a default
+    /// of `false` would make the feature a silent no-op until a second
+    /// call.
     ///
     /// # Errors
     ///
@@ -1974,15 +2124,101 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **Share one HTTP/2 connection between concurrent requests**, by
+    // spawning its driver on `R` (v0.4).
+    //
+    // Without this, an h2 connection is checked out of the pool
+    // exclusively and two concurrent requests to one origin cost two
+    // connections and two handshakes — measured at 8× the sockets and 8×
+    // the TLS handshakes for a concurrency of 8, and the largest
+    // remaining gap between this client and a gRPC one. With it, they
+    // cost one.
+    //
+    // [`Native::with_reaper`]'s reason exactly, and it is the rule this
+    // crate is built on: `Native` is generic over `R`, and **not every
+    // `R` has a `Spawn` impl at all** — `connect.rs`'s own `FakeRt` has
+    // none, W7's embassy backend expects none, and
+    // `hclient/tests/two_runtimes.rs` runs this transport on a bare
+    // `futures_executor::block_on`. A default that spawned would be a
+    // default stronger than the truth.
+    //
+    // The bound is therefore on this method and on nothing else. What
+    // makes that possible is that [`hclient_rt::Spawn`] declares **no
+    // bounds**, so `<R as Spawn<F>>::spawn` coerces to `fn(&R, F)` and
+    // can be stored in a field that demands nothing of `R` — see
+    // [`Native`]'s `share_h2`. `Transport::execute` is a trait method and
+    // cannot carry an extra bound; it does not need one.
+    //
+    // **1. A spawner nobody drives hangs requests, where a reaper's would
+    // only leak sockets.** `Spawn::spawn` returns `()`: an executor that
+    // is never run accepts the driver, drops it, and has no way to say
+    // so. `pool.rs`'s module doc already names this as the thing no bound
+    // can catch — and here it is worse than there. Measured: a driver
+    // **dropped** fails its requests with a broken pipe, a driver **held and never polled**
+    // leaves them with no verdict at all. `Timeouts::first_byte` is the
+    // only bound that cuts it and it is not a default. **A shared
+    // connection is at most as good as the executor under it.**
+    //
+    // **2. Beyond the peer's `MAX_CONCURRENT_STREAMS`, requests queue.**
+    // h2 accepts them and opens the streams as capacity frees up:
+    // measured at a server limit of 2, six concurrent calls finished at
+    // 203/203/405/405/607/607 ms on one connection, where today the fifth
+    // and sixth would open sockets of their own and finish in ~200 ms. No
+    // second connection is opened at any concurrency, and that is a
+    // decision rather than an omission — see "When a shared connection is
+    // full" below.
+    //
+    // **3. A hook holding an `Rc` cannot multiplex.** The driver carries
+    // `H` so that a shared connection's `Closed` has an emitter at all,
+    // and `Tokio`'s `Spawn` impl wants `Send + 'static`; the seam's
+    // `!Send` allowance therefore meets `Spawn`'s bound here. It is a
+    // **compile error at this call**, naming the missing bound, and it
+    // costs such a build nothing but the multiplexing: the transport it
+    // had goes on working. `hclient-h3` met the same collision from the
+    // other side and could not close it — `CloseReason::Ended` has no
+    // emitter there — because its bound is on the transport rather than
+    // on an opt-in.
+    //
+    // **Nothing: it queues, and no second connection is opened.** The
+    // alternative needs a number nobody here can choose honestly.
+    // `SendRequest::poll_ready` is a **liveness** check and not a
+    // capacity one — it answers from a connection error, the next stream
+    // id and this clone's own pending stream, never from the peer's
+    // `MAX_CONCURRENT_STREAMS` — so a second-connection policy would have
+    // to count live streams in our own code, and the threshold depends on
+    // the peer's limit (which h2 will not report to us) and on the
+    // handshake cost, which is a network property and not a loopback one.
+    // A number measured on loopback would be a number about this
+    // machine. `tests/http2_multiplex.rs` measures what queueing costs so
+    // that the decision is a reading rather than a hope.
+    //
+    // A `compile_fail` doctest passes for **any** compile error, including
+    // a typo, so the pairing below is the discipline: each refusal sits
+    // next to a version of itself that differs in one thing and compiles.
+    // The messages were also read once, by building the same two calls as
+    // an ordinary test — `` `the trait bound `NoSpawn:
+    // Spawn<H2Driver<Conn<TokioIo, NoStream>, NoHooks>>` is not
+    // satisfied` `` and `` `Rc<Cell<usize>>` cannot be sent between
+    // threads safely `` — both
+    // pointing at the `multiplexed()` call and at this method's bound.
+    // (`compile_fail,E0277` would say so in the fence, but rustdoc's
+    // error-code annotation is unstable and is **not** enforced on
+    // stable — measured: the same block passes annotated `E0432`.)
+    //
+    // **A runtime with no `Spawn` impl at all** builds this transport and
+    // runs requests on it — that is the property
+    // `hclient/tests/two_runtimes.rs` and `tests/h1.rs`'s
+    // `works_on_a_bare_futures_executor_with_no_spawn` exist to hold — and
+    // is refused **here**, at the line where the caller asked for
+    // something it cannot do:
     /// **Share one HTTP/2 connection between concurrent requests**, by
-    /// spawning its driver on `R` (v0.4).
+    /// spawning its driver on `R`.
     ///
     /// Without this, an h2 connection is checked out of the pool
     /// exclusively and two concurrent requests to one origin cost two
-    /// connections and two handshakes — measured at 8× the sockets and 8×
-    /// the TLS handshakes for a concurrency of 8, and the largest
-    /// remaining gap between this client and a gRPC one. With it, they
-    /// cost one.
+    /// connections and two handshakes. With it, they cost one.
     ///
     /// ```
     /// # use hclient_native::Native;
@@ -1993,41 +2229,32 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// # Why this is not what [`Native::new`] does
     ///
-    /// [`Native::with_reaper`]'s reason exactly, and it is the rule this
-    /// crate is built on: `Native` is generic over `R`, and **not every
-    /// `R` has a `Spawn` impl at all** — `connect.rs`'s own `FakeRt` has
-    /// none, W7's embassy backend expects none, and
-    /// `hclient/tests/two_runtimes.rs` runs this transport on a bare
-    /// `futures_executor::block_on`. A default that spawned would be a
-    /// default stronger than the truth.
+    /// [`Native::with_reaper`]'s reason exactly: `Native` is generic over
+    /// `R`, and **not every `R` has a `Spawn` impl at all**. A default that
+    /// spawned would be a default stronger than the truth.
     ///
     /// The bound is therefore on this method and on nothing else. What
     /// makes that possible is that [`hclient_rt::Spawn`] declares **no
-    /// bounds**, so `<R as Spawn<F>>::spawn` coerces to `fn(&R, F)` and
-    /// can be stored in a field that demands nothing of `R` — see
-    /// [`Native`]'s `share_h2`. `Transport::execute` is a trait method and
-    /// cannot carry an extra bound; it does not need one.
+    /// bounds**, so the spawner can be stored without demanding anything of
+    /// `R`. `Transport::execute` is a trait method and cannot carry an extra
+    /// bound; it does not need one.
     ///
     /// # Three prices, none of them hidden
     ///
     /// **1. A spawner nobody drives hangs requests, where a reaper's would
     /// only leak sockets.** `Spawn::spawn` returns `()`: an executor that
     /// is never run accepts the driver, drops it, and has no way to say
-    /// so. `pool.rs`'s module doc already names this as the thing no bound
-    /// can catch — and here it is worse than there. Measured: a driver
-    /// **dropped** fails its requests with a broken pipe, a driver **held and never polled**
-    /// leaves them with no verdict at all. `Timeouts::first_byte` is the
-    /// only bound that cuts it and it is not a default. **A shared
-    /// connection is at most as good as the executor under it.**
+    /// so. A driver **dropped** fails its requests with a broken pipe, a
+    /// driver **held and never polled** leaves them with no verdict at all.
+    /// `Timeouts::first_byte` is the only bound that cuts it and it is not a
+    /// default. **A shared connection is at most as good as the executor
+    /// under it.**
     ///
     /// **2. Beyond the peer's `MAX_CONCURRENT_STREAMS`, requests queue.**
-    /// h2 accepts them and opens the streams as capacity frees up:
-    /// measured at a server limit of 2, six concurrent calls finished at
-    /// 203/203/405/405/607/607 ms on one connection, where today the fifth
-    /// and sixth would open sockets of their own and finish in ~200 ms. No
-    /// second connection is opened at any concurrency, and that is a
-    /// decision rather than an omission — see "When a shared connection is
-    /// full" below.
+    /// h2 accepts them and opens the streams as capacity frees up, on one
+    /// connection. No second connection is opened at any concurrency, and
+    /// that is a decision rather than an omission — see "When a shared
+    /// connection is full" below.
     ///
     /// **3. A hook holding an `Rc` cannot multiplex.** The driver carries
     /// `H` so that a shared connection's `Closed` has an emitter at all,
@@ -2035,10 +2262,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `!Send` allowance therefore meets `Spawn`'s bound here. It is a
     /// **compile error at this call**, naming the missing bound, and it
     /// costs such a build nothing but the multiplexing: the transport it
-    /// had goes on working. `hclient-h3` met the same collision from the
-    /// other side and could not close it — `CloseReason::Ended` has no
-    /// emitter there — because its bound is on the transport rather than
-    /// on an opt-in.
+    /// had goes on working.
     ///
     /// # Reuse has to be on
     ///
@@ -2058,34 +2282,18 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// capacity one — it answers from a connection error, the next stream
     /// id and this clone's own pending stream, never from the peer's
     /// `MAX_CONCURRENT_STREAMS` — so a second-connection policy would have
-    /// to count live streams in our own code, and the threshold depends on
-    /// the peer's limit (which h2 will not report to us) and on the
-    /// handshake cost, which is a network property and not a loopback one.
-    /// A number measured on loopback would be a number about this
-    /// machine. `tests/http2_multiplex.rs` measures what queueing costs so
-    /// that the decision is a reading rather than a hope.
+    /// to count live streams, and the threshold depends on the peer's limit
+    /// (which h2 will not report) and on the handshake cost, which is a
+    /// network property.
     ///
     /// # The two refusals, each beside the control that differs in one token
     ///
-    /// A `compile_fail` doctest passes for **any** compile error, including
-    /// a typo, so the pairing below is the discipline: each refusal sits
-    /// next to a version of itself that differs in one thing and compiles.
-    /// The messages were also read once, by building the same two calls as
-    /// an ordinary test — `` `the trait bound `NoSpawn:
-    /// Spawn<H2Driver<Conn<TokioIo, NoStream>, NoHooks>>` is not
-    /// satisfied` `` and `` `Rc<Cell<usize>>` cannot be sent between
-    /// threads safely `` — both
-    /// pointing at the `multiplexed()` call and at this method's bound.
-    /// (`compile_fail,E0277` would say so in the fence, but rustdoc's
-    /// error-code annotation is unstable and is **not** enforced on
-    /// stable — measured: the same block passes annotated `E0432`.)
+    /// Each refusal below sits next to a version of itself that differs in
+    /// one thing and compiles.
     ///
     /// **A runtime with no `Spawn` impl at all** builds this transport and
-    /// runs requests on it — that is the property
-    /// `hclient/tests/two_runtimes.rs` and `tests/h1.rs`'s
-    /// `works_on_a_bare_futures_executor_with_no_spawn` exist to hold — and
-    /// is refused **here**, at the line where the caller asked for
-    /// something it cannot do:
+    /// runs requests on it, and is refused **here**, at the line where the
+    /// caller asked for something it cannot do:
     ///
     /// ```compile_fail
     /// use hclient_native::Native;
@@ -2215,21 +2423,55 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // `Result`, not `Self`, and that is the whole point of the method.
+    // W7 gave [`hclient_rt::TcpConnect`] an `TCP_SUPPORT` constant and
+    // [`TcpOpts::reject_unsupported`], so a runtime that cannot apply an
+    // option the caller set fails the connect rather than dropping it —
+    // honest, but it fails once per `connect`, on a request that had
+    // nothing to do with the mistake, and only if a request is ever made.
+    // The set of options and the runtime's answer are both known at
+    // construction, so the answer is given at construction: the same move
+    // `ClientBuilder::build()` makes for an unsupported capability, for
+    // the same reason — a configuration that can never work should not
+    // need traffic to say so.
+    //
+    // This does not replace the per-`connect` refusal, and must not: the
+    // `TCP_SUPPORT` contract belongs to the runtime, `connect` is reachable
+    // without ever going through this method (`connect::connect` takes a
+    // `&TcpOpts`), and a check here would be a second place deciding a
+    // question the trait already decides. What it does is move the moment
+    // of the answer for the one caller that always goes through it.
+    //
+    // **This replaces the whole set, including the `nodelay` this
+    // transport asked for itself.** [`Native::new`] sets `nodelay` to
+    // whatever the runtime's [`TcpConnect::TCP_SUPPORT`] says it can apply —
+    // Nagle's algorithm costs the head of a TLS exchange 41 ms, measured
+    // there — and a caller passing
+    // `TcpOpts::default().keepalive(Some(..))` here turns it back off
+    // along with everything else, because `TcpOpts::default()` is
+    // all-off. That is
+    // deliberate rather than a trap left open: these are *the* socket
+    // parameters for every attempt this transport makes, and a method
+    // that silently kept one field of its own would be a worse surprise
+    // than one that takes the caller at their word. `..transport
+    // .tcp_opts_now()` does not exist for the same reason a getter for a
+    // setting nobody set does not: the value to start from is
+    // `TcpOpts::default().nodelay(true)`, which is what
+    // `tcp_opts_replace_the_whole_set_including_the_nodelay_new_asked_for`
+    // says on the record.
     /// Socket parameters for EVERY TCP attempt this transport makes (see
     /// [`hclient_rt::TcpOpts`]) — **refused here, once, if the runtime
     /// cannot apply them.**
     ///
     /// `Result`, not `Self`, and that is the whole point of the method.
-    /// W7 gave [`hclient_rt::TcpConnect`] an `TCP_SUPPORT` constant and
-    /// [`TcpOpts::reject_unsupported`], so a runtime that cannot apply an
-    /// option the caller set fails the connect rather than dropping it —
-    /// honest, but it fails once per `connect`, on a request that had
-    /// nothing to do with the mistake, and only if a request is ever made.
-    /// The set of options and the runtime's answer are both known at
-    /// construction, so the answer is given at construction: the same move
-    /// `ClientBuilder::build()` makes for an unsupported capability, for
-    /// the same reason — a configuration that can never work should not
-    /// need traffic to say so.
+    /// A runtime that cannot apply an option the caller set fails the
+    /// connect rather than dropping it — but that fails once per `connect`,
+    /// on a request that had nothing to do with the mistake. The set of
+    /// options and the runtime's answer are both known at construction, so
+    /// the answer is given at construction: a configuration that can never
+    /// work should not need traffic to say so.
     ///
     /// # Errors
     ///
@@ -2241,30 +2483,19 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// fixed the one option a message mentioned would otherwise meet a
     /// second, identical-looking failure.
     ///
-    /// This does not replace the per-`connect` refusal, and must not: the
-    /// `TCP_SUPPORT` contract belongs to the runtime, `connect` is reachable
-    /// without ever going through this method (`connect::connect` takes a
-    /// `&TcpOpts`), and a check here would be a second place deciding a
-    /// question the trait already decides. What it does is move the moment
-    /// of the answer for the one caller that always goes through it.
+    /// This does not replace the per-`connect` refusal: the `TCP_SUPPORT`
+    /// contract belongs to the runtime. What this does is move the moment of
+    /// the answer for the one caller that always goes through it.
     ///
     /// **This replaces the whole set, including the `nodelay` this
     /// transport asked for itself.** [`Native::new`] sets `nodelay` to
     /// whatever the runtime's [`TcpConnect::TCP_SUPPORT`] says it can apply —
-    /// Nagle's algorithm costs the head of a TLS exchange 41 ms, measured
-    /// there — and a caller passing
-    /// `TcpOpts::default().keepalive(Some(..))` here turns it back off
-    /// along with everything else, because `TcpOpts::default()` is
-    /// all-off. That is
-    /// deliberate rather than a trap left open: these are *the* socket
-    /// parameters for every attempt this transport makes, and a method
-    /// that silently kept one field of its own would be a worse surprise
-    /// than one that takes the caller at their word. `..transport
-    /// .tcp_opts_now()` does not exist for the same reason a getter for a
-    /// setting nobody set does not: the value to start from is
-    /// `TcpOpts::default().nodelay(true)`, which is what
-    /// `tcp_opts_replace_the_whole_set_including_the_nodelay_new_asked_for`
-    /// says on the record.
+    /// Nagle's algorithm costs the head of a TLS exchange about 41 ms — and a
+    /// caller passing `TcpOpts::default().keepalive(Some(..))` here turns it
+    /// back off along with everything else, because `TcpOpts::default()` is
+    /// all-off. That is deliberate: these are *the* socket parameters for
+    /// every attempt this transport makes. The value to start from is
+    /// `TcpOpts::default().nodelay(true)`.
     ///
     /// [`TcpOpts::default`] is all-off, so a runtime that applies nothing
     /// still takes it — which is what makes `Native::new`'s conditional
@@ -2580,9 +2811,14 @@ where
         self.versions.h2 && matches!(parts.security, Security::Tls(_)) && self.tls.reports_alpn()
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Without the feature there is no h2 code to reach at all — the
+    // module is not compiled — so this is a constant and the ALPN list
+    // stays what it was before v0.2 W3.
     /// Without the feature there is no h2 code to reach at all — the
     /// module is not compiled — so this is a constant and the ALPN list
-    /// stays what it was before v0.2 W3.
+    /// stays what it was.
     // `&self` matches the half with the feature on — see `borrowed`.
     #[allow(
         clippy::unused_self,
@@ -3050,11 +3286,15 @@ impl KeyParts {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// `None` means **neither of the two this transport speaks**, and the
+// caller's answer to that has not changed since v0.2 W2: fall back to
 /// Which protocol a connection speaks, given what the TLS backend reported
 /// as negotiated.
 ///
 /// `None` means **neither of the two this transport speaks**, and the
-/// caller's answer to that has not changed since v0.2 W2: fall back to
+/// caller's answer to that is: fall back to
 /// HTTP/1.1 on this one connection and keep it out of the pool, so that a
 /// socket running some protocol nobody here understands can never be
 /// handed to a later request.
@@ -3718,14 +3958,19 @@ where
     }
 }
 
-/// `R: Clone` is new as of the `first_byte`/`between_bytes` work, and it
-/// is the one bound this impl gained for it. `between_bytes` is enforced
-/// by a sleep held **inside the response body**, which outlives `execute`
-/// and therefore cannot borrow this transport's clock — it needs one of
-/// its own. Every runtime in this workspace was already `Clone` (both
-/// shipped ones are ZSTs, `TokioHandle` is a handle, `Embassy` is two
-/// pointers and says in its own doc that `Native` wants to clone it), so
-/// this pins down a fact rather than adding a restriction.
+// Maintainer notes (not rendered):
+//
+// `R: Clone` is new as of the `first_byte`/`between_bytes` work, and it
+// is the one bound this impl gained for it. `between_bytes` is enforced
+// by a sleep held **inside the response body**, which outlives `execute`
+// and therefore cannot borrow this transport's clock — it needs one of
+// its own. Every runtime in this workspace was already `Clone` (both
+// shipped ones are ZSTs, `TokioHandle` is a handle, `Embassy` is two
+// pointers and says in its own doc that `Native` wants to clone it), so
+// this pins down a fact rather than adding a restriction.
+/// `R: Clone` because `between_bytes` is enforced by a sleep held
+/// **inside the response body**, which outlives `execute` and therefore
+/// needs a clock of its own.
 impl<R, T, D, H, P> Transport for Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
@@ -3751,11 +3996,16 @@ where
     type Body = NativeBody<R, T, H>;
     type Error = Error;
 
-    /// `Native::run` with nothing looked up — which is what every
-    /// request through this seam is, because the seam has no way to carry
-    /// an answer and deliberately does not gain one: the looked-up path is
-    /// this crate's own, through `Native::prepare` and the staged connect.
-    /// The record is fetched inside, when and if a connection is opened.
+    // Maintainer notes (not rendered):
+    //
+    // `Native::run` with nothing looked up — which is what every
+    // request through this seam is, because the seam has no way to carry
+    // an answer and deliberately does not gain one: the looked-up path is
+    // this crate's own, through `Native::prepare` and the staged connect.
+    // The record is fetched inside, when and if a connection is opened.
+    /// Resolves the origin (or reuses a pooled connection), connects and
+    /// exchanges. The origin's HTTPS record is fetched inside, when and if a
+    /// connection is opened.
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
@@ -3766,15 +4016,19 @@ where
         self.run(Prepared::new(req)).await
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Identity: `Self::Error` is already `hclient_core::error::Error`, and its
+    // category is set wherever the failure happened (`Resolve`/`Connect`/
+    // `Unsupported` in `connect::connect`, `Tls` in `TlsConnect::connect`,
+    // `Body`/`Connect` in `http1::exchange`). The hook's default would do
+    // exactly the same thing (it recognizes our `Error` and passes it
+    // through unchanged) — the line is behaviorally redundant and
+    // semantically needed: it names the intent where it's read, and it
+    // will survive the default changing later. See the doc comment on
+    // `Transport::to_error` in `hclient-core`.
     /// Identity: `Self::Error` is already `hclient_core::error::Error`, and its
-    /// category is set wherever the failure happened (`Resolve`/`Connect`/
-    /// `Unsupported` in `connect::connect`, `Tls` in `TlsConnect::connect`,
-    /// `Body`/`Connect` in `http1::exchange`). The hook's default would do
-    /// exactly the same thing (it recognizes our `Error` and passes it
-    /// through unchanged) — the line is behaviorally redundant and
-    /// semantically needed: it names the intent where it's read, and it
-    /// will survive the default changing later. See the doc comment on
-    /// `Transport::to_error` in `hclient-core`.
+    /// category is set wherever the failure happened.
     fn to_error(&self, e: Self::Error) -> Error {
         e
     }
@@ -3857,6 +4111,11 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// `None` is "no bound", handled here rather than by a second arm at the
+// call site — [`Native::within_first_byte`] has taken `Option` for the
+// same reason since v0.2 W4, and this half had simply not caught up.
 /// Races `fut` against `rt.sleep(d)`: `fut` if it finished first,
 /// otherwise `Err(ErrorKind::Timeout(Phase::Connect))`.
 ///
@@ -3878,8 +4137,7 @@ where
 /// # `Option<Duration>`, and one `await` at the call site
 ///
 /// `None` is "no bound", handled here rather than by a second arm at the
-/// call site — [`Native::within_first_byte`] has taken `Option` for the
-/// same reason since v0.2 W4, and this half had simply not caught up.
+/// call site.
 /// It is not tidying: a `match` with `fut.await` in one arm and
 /// `with_connect_timeout(.., fut).await` in the other is **two** await
 /// points holding the same future, and a debug build lays out both — the

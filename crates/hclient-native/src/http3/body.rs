@@ -16,6 +16,11 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
     Bytes,
 >;
 
+// Maintainer notes (not rendered):
+// `Option<Box<..>>`, so a body nobody is watching carries eight bytes,
+// and so that this type is `Unpin` for every `H` — `hclient-select`
+// requires that of `<H3<..> as Transport>::Body`, and a `Box` is `Unpin`
+// whatever it holds.
 /// An HTTP/3 response body.
 ///
 /// # It also carries the rest of the request
@@ -64,10 +69,7 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
 /// on a transport whose whole point is that neighbours survive would be
 /// the loudest possible lie.
 ///
-/// `Option<Box<..>>`, so a body nobody is watching carries eight bytes,
-/// and so that this type is `Unpin` for every `H` — `hclient-select`
-/// requires that of `<H3<..> as Transport>::Body`, and a `Box` is `Unpin`
-/// whatever it holds.
+/// This type is `Unpin` for every `H`.
 pub struct H3Body<H = hclient_core::hooks::NoHooks> {
     stream: RecvHalf,
     /// `None` once the request body has been written in full — which for

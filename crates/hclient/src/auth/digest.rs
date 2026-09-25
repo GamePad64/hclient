@@ -2,17 +2,8 @@
 //!
 //! # Why this is here at all
 //!
-//! Nobody in pure Rust ships it. `reqwest` has Basic and Bearer and no
-//! more; `xh`, built on `reqwest`, wrote its own rather than go without,
-//! which is the evidence that the absence is felt rather than theoretical.
-//! A caller who has to reach a corporate intranet otherwise reaches for
-//! `libcurl`.
-//!
-//! And this client is unusually placed to have it: digest is a
-//! challenge/response over a `401`, and `Client::run` already owns exactly
-//! that shape for `425 Too Early` — a status-code branch that resends
-//! inside the same `total` budget, gated on `RequestBody::retry_kind()`.
-//! Nothing here needs a spawn, a clock, or a `Send` bound.
+//! Digest is a challenge/response over a `401`. Nothing here needs a
+//! spawn, a clock, or a `Send` bound.
 //!
 //! # What is deliberately not here, each with its reason
 //!
@@ -45,6 +36,19 @@
 //! digest at all. What this code does instead is **prefer** the strongest
 //! algorithm a server offers, and it never chooses the algorithm — the
 //! server does, in the challenge.
+
+// Maintainer notes (not rendered):
+// Nobody in pure Rust ships it. `reqwest` has Basic and Bearer and no
+// more; `xh`, built on `reqwest`, wrote its own rather than go without,
+// which is the evidence that the absence is felt rather than theoretical.
+// A caller who has to reach a corporate intranet otherwise reaches for
+// `libcurl`.
+//
+// And this client is unusually placed to have it: digest is a
+// challenge/response over a `401`, and `Client::run` already owns exactly
+// that shape for `425 Too Early` — a status-code branch that resends
+// inside the same `total` budget, gated on `RequestBody::retry_kind()`.
+// Nothing here needs a spawn, a clock, or a `Send` bound.
 
 pub use crate::auth::error::DigestError;
 use std::fmt::Write as _;

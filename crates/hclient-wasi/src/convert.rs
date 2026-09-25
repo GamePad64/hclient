@@ -308,10 +308,14 @@ pub(crate) struct TrailerWatch<B> {
 }
 
 impl<B> TrailerWatch<B> {
+    // Maintainer notes (not rendered):
+    // `Payload::Streaming` already carries `+ Send`
+    // (amendment-C2), and the wrapper shouldn't narrow that bond for a
+    // future `Transport::execute`.
     /// Wraps `inner` and returns the list of field names seen in trailer
     /// frames — grows as it's polled. `Arc<Mutex<_>>`, not
-    /// `Rc<RefCell<_>>`: `Payload::Streaming` already carries `+ Send`
-    /// (amendment-C2), and the wrapper shouldn't narrow that bond for a
+    /// `Rc<RefCell<_>>`: `Payload::Streaming` already carries `+ Send`,
+    /// and the wrapper shouldn't narrow that bond for a
     /// future `Transport::execute` (`tests/shape.rs` checks this property
     /// from outside the crate). `Mutex`, not something more exotic — the
     /// guest is single-threaded, there's never any contention for the
@@ -369,11 +373,14 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+// The `+ Send` on `Streaming` is the same amendment-C2, as on
+// `RequestBody::Streaming`.
 /// What actually needs writing to the request body, after unwrapping
 /// `RequestBody`. `Bytes` is a whole buffer (`RequestBody::Full`, already
 /// non-empty); `Streaming` is the frame stream as-is, unbuffered.
 ///
-/// The `+ Send` on `Streaming` is the same amendment-C2, as on
+/// The `+ Send` on `Streaming` is the same bound as on
 /// `RequestBody::Streaming` (`hclient-core/src/body.rs`), which is
 /// unwrapped into this (see `resolve_payload`): `Box<T>: Send` only
 /// requires `T: Send`, `Sync` isn't needed. Not a new bond, just carrying

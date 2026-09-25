@@ -11,9 +11,8 @@
 //! # Reading and applying are different jobs
 //!
 //! What comes out of here is a list of hosts and a bypass list — no
-//! socket, no connector, nothing from any transport — so a transport this
-//! workspace never wrote can read the same settings the one it did wrote
-//! reads. [`http_proxies`] is the translation into this crate's own
+//! socket, no connector, nothing from any transport — so any transport
+//! can read the same settings. [`http_proxies`] is the translation into this crate's own
 //! [`Proxy`](crate::Proxy) values, and it is the only part that knows
 //! what a proxy protocol is.
 //!
@@ -37,6 +36,13 @@
 //! the line [`Proxy::bypass`](crate::Proxy::bypass) draws when it refuses
 //! to read `NO_PROXY` on its own.
 
+// Maintainer notes (not rendered):
+//
+// What comes out of here is a list of hosts and a bypass list — no
+// socket, no connector, nothing from any transport — so a transport this
+// workspace never wrote can read the same settings the one it did wrote
+// reads.
+
 use std::fmt;
 
 #[cfg(target_os = "android")]
@@ -48,19 +54,20 @@ mod translate;
 pub use crate::error::{ParseError, SystemProxyRefused};
 pub use translate::{http_proxies, http_proxies_lossy};
 
+// Maintainer notes (not rendered):
+//
+// **Deliberately not `#[non_exhaustive]`**, unlike every error type in
+// this crate, and the discriminator is who stands on the other side:
+// this enum crosses a seam into a **translator** — `hclient-native`
+// matches it to pick a `ProxyProtocol` — where a `_` arm would be a
+// *mapping* rather than an *unknown*, and a variant added later would
+// quietly acquire whichever protocol the wildcard happened to name.
+// A compile error in every translator is the point. Same rule, same
+// reason as `SvcbRecordError` in `hclient-dns`.
 /// Which protocol a proxy speaks.
 ///
 /// Not the scheme of the *request* — see [`Scheme`] for that. A SOCKS5
 /// proxy carries `https://` requests perfectly well.
-///
-/// **Deliberately not `#[non_exhaustive]`**, unlike every error type in
-/// this crate, and the discriminator is who stands on the other side:
-/// this enum crosses a seam into a **translator** — `hclient-native`
-/// matches it to pick a `ProxyProtocol` — where a `_` arm would be a
-/// *mapping* rather than an *unknown*, and a variant added later would
-/// quietly acquire whichever protocol the wildcard happened to name.
-/// A compile error in every translator is the point. Same rule, same
-/// reason as `SvcbRecordError` in `hclient-dns`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProxyKind {
     /// An HTTP proxy: `CONNECT` for a tunnel, absolute-form for plain
@@ -79,14 +86,15 @@ pub enum ProxyKind {
     Socks4,
 }
 
+// Maintainer notes (not rendered):
+//
+// Not `#[non_exhaustive]`, for [`ProxyKind`]'s reason: it is translated
+// rather than merely read.
 /// Which request scheme an entry serves.
 ///
 /// `None` — the field's own `Option` rather than a variant here — is an
 /// entry that serves both, which is what an unqualified `ProxyServer` on
 /// Windows and an `ALL_PROXY` in the environment both mean.
-///
-/// Not `#[non_exhaustive]`, for [`ProxyKind`]'s reason: it is translated
-/// rather than merely read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scheme {
     /// Plain `http://` requests.
@@ -117,10 +125,13 @@ impl Credentials {
     }
 }
 
-/// Never prints the password. A proxy password reaching a log through a
-/// `{:?}` is the same defect `hclient`'s `basic_auth` marks its header
-/// sensitive against, and a derived `Debug` here would be the hole that
-/// marking closes one layer up.
+// Maintainer notes (not rendered):
+//
+// A proxy password reaching a log through a
+// `{:?}` is the same defect `hclient`'s `basic_auth` marks its header
+// sensitive against, and a derived `Debug` here would be the hole that
+// marking closes one layer up.
+/// Never prints the password.
 impl fmt::Debug for Credentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Credentials")
@@ -167,7 +178,11 @@ impl ProxyEntry {
     }
 }
 
-/// A bypass pattern the system named that this workspace's matcher cannot
+// Maintainer notes (not rendered):
+//
+// A bypass pattern the system named that this workspace's matcher cannot
+// express.
+/// A bypass pattern the system named that this crate's matcher cannot
 /// express.
 ///
 /// It exists so that such a pattern is **visible rather than dropped**.
@@ -199,11 +214,12 @@ impl fmt::Display for UnsupportedBypass {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// One variant, and it stays an enum rather than becoming a unit struct:
+// `Cidr` was the second until subnets became statable, and the shape
+// that admitted a second reason is the shape that will admit the next.
 /// Why a bypass pattern could not be translated.
-///
-/// One variant, and it stays an enum rather than becoming a unit struct:
-/// `Cidr` was the second until subnets became statable, and the shape
-/// that admitted a second reason is the shape that will admit the next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BypassReason {
@@ -265,6 +281,16 @@ impl SystemProxies {
         Self::from_raw(read::read())
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // `hclient-urlsession` is that caller. `URLSession` takes its
+    // proxies from the system configuration; nothing in Apple's
+    // documentation or in this workspace's reading says it consults
+    // `HTTP_PROXY`, and a `Capabilities::proxy` computed from
+    // [`detect`](Self::detect) would therefore report `true` on a
+    // machine whose only proxy is an environment variable that transport
+    // ignores. That is a capability that lies, which is the one failure
+    // this workspace treats as worse than a missing feature.
     /// The **platform's own** settings, with the environment left out.
     ///
     /// [`detect`](Self::detect) reads the environment first and falls
@@ -274,15 +300,7 @@ impl SystemProxies {
     /// one kind of caller: a transport that **is** the operating system's
     /// own stack, and therefore honours the operating system's own
     /// settings and not a variable in this process's environment.
-    ///
-    /// `hclient-urlsession` is that caller. `URLSession` takes its
-    /// proxies from the system configuration; nothing in Apple's
-    /// documentation or in this workspace's reading says it consults
-    /// `HTTP_PROXY`, and a `Capabilities::proxy` computed from
-    /// [`detect`](Self::detect) would therefore report `true` on a
-    /// machine whose only proxy is an environment variable that transport
-    /// ignores. That is a capability that lies, which is the one failure
-    /// this workspace treats as worse than a missing feature.
+    /// `hclient-urlsession`, over Apple's `URLSession`, is that caller.
     ///
     /// **It is the understating answer of the two, in both readings.** If
     /// `URLSession` honours only the system configuration this is exact;
@@ -389,6 +407,12 @@ impl SystemProxies {
         self.entries.is_empty() || self.bypass_everything
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // It is stated rather than fixed
+    // because a discovered script has no URL to report, so honouring it
+    // needs an answer this type does not have a shape for; it is the
+    // under-claiming direction, which is the one to be wrong in.
     /// Whether these settings put a proxy in front of anything at all.
     ///
     /// This is the question a **capability report** asks, and it is not
@@ -428,10 +452,7 @@ impl SystemProxies {
     /// `DefaultConnectionSettings`; neither is read by this module, which
     /// reads `ProxyAutoConfigURLString` and `AutoConfigURL` — a script the
     /// machine *names*. A machine that discovers its script instead is
-    /// proxied and answers `false` here. It is stated rather than fixed
-    /// because a discovered script has no URL to report, so honouring it
-    /// needs an answer this type does not have a shape for; it is the
-    /// under-claiming direction, which is the one to be wrong in.
+    /// proxied and answers `false` here.
     pub fn names_a_proxy(&self) -> bool {
         if self.bypass_everything {
             return false;

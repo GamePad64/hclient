@@ -73,18 +73,12 @@
 //! transport protocol carries it. That is `hclient-native`'s decision
 //! about its own QUIC arm, made here for the same reason.
 //!
-//! **This section replaces one that said the feature was one call away
-//! and named the wrong second call.** It read that enabling HTTP/2 would
-//! oblige reading `WINHTTP_QUERY_VERSION` back on every response to keep
 //! [`Capabilities::version_reported`](hclient_core::caps::Capabilities::version_reported)
-//! honest. It would not: `WINHTTP_QUERY_VERSION` reads the **status
-//! line**, an HTTP/2 or HTTP/3 response has none, and `WinHTTP` synthesises
-//! `HTTP/1.1` into the raw header block this crate already parses. A
-//! client following that instruction reports every h2 and h3 response as
-//! HTTP/1.1 — which is the capability that lies the paragraph was written
-//! to prevent, arriving through the repair. The option that answers is
-//! `WINHTTP_OPTION_HTTP_PROTOCOL_USED`, and .NET's `WinHttpResponseParser`
-//! bypasses the status line entirely once it reads non-zero.
+//! is kept honest by `WINHTTP_OPTION_HTTP_PROTOCOL_USED` rather than by
+//! reading back the status line: an HTTP/2 or HTTP/3 response has none,
+//! and `WinHTTP` synthesises `HTTP/1.1` into the raw header block this
+//! crate already parses, so a client that reported the protocol off the
+//! status line would report every h2 and h3 response as HTTP/1.1.
 //!
 //! It is queried on **every** response, including where nothing was
 //! enabled, so the claim rests on what `WinHTTP` reports rather than on the
@@ -100,12 +94,6 @@
 //! is `true`. Without that option a demand could only be *noticed* after
 //! the head, which is `check_version`'s own definition of a check placed
 //! too late.
-//!
-//! **`version_select` was `false` before any of this and should not have
-//! been.** `Client` refused every demand, `RequireVersion(HTTP_11)`
-//! included — the one demand this backend has satisfied trivially since
-//! it existed, and exactly the failure `Capabilities::version_select`'s
-//! own doc names.
 //!
 //! [`WinHttp::keep_alive`] is the third of the group:
 //! `WINHTTP_OPTION_HTTP2_KEEPALIVE` and `WINHTTP_OPTION_HTTP3_KEEPALIVE`
@@ -141,15 +129,15 @@
 //!
 //! [`WinHttpWebSocket`] implements
 //! [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect), and
-//! it is **in this crate** rather than one of its own. The list above used
-//! to say the opposite, citing the rule that put the framing in
-//! `hclient-tungstenite` — and that rule is about a *dependency*: a
+//! it is **in this crate** rather than one of its own: the rule that put
+//! the framing in `hclient-tungstenite` is about a *dependency* — a
 //! `websocket` feature on `hclient-native` would have put `tungstenite`
-//! into every build in any graph that switched it on. Measured here, the
-//! whole feature costs **zero crates**: `WinHttpWebSocketSend` and its
-//! five neighbours are in the `Win32_Networking_WinHttp` feature this
-//! crate already names. `hclient-fetch` is the precedent that fits, and
-//! it keeps its seam impl at home for the same reason.
+//! into every build in any graph that switched it on — and that cost does
+//! not apply here. `WinHttpWebSocketSend` and its five neighbours are in
+//! the `Win32_Networking_WinHttp` feature this crate already names, so
+//! the whole feature costs **zero crates**. `hclient-fetch` is the
+//! precedent that fits, and it keeps its seam impl at home for the same
+//! reason.
 //!
 //! **Almost none of RFC 6455 is here.** `WinHTTP` writes the handshake,
 //! checks the `Sec-WebSocket-Accept`, masks, frames, and answers pings.
@@ -173,6 +161,37 @@
 //! `READ_COMPLETE`, and that `HANDLE_CLOSING` is the last callback a
 //! handle ever gets — is stated in `sys.rs` where the code depends on it,
 //! so the next person with a Windows box knows exactly what to check.
+//
+// Maintainer notes (not rendered):
+//
+// **This section replaces one that said the feature was one call away
+// and named the wrong second call.** It read that enabling HTTP/2 would
+// oblige reading `WINHTTP_QUERY_VERSION` back on every response to keep
+// [`Capabilities::version_reported`](hclient_core::caps::Capabilities::version_reported)
+// honest. It would not: `WINHTTP_QUERY_VERSION` reads the **status
+// line**, an HTTP/2 or HTTP/3 response has none, and `WinHTTP` synthesises
+// `HTTP/1.1` into the raw header block this crate already parses. A
+// client following that instruction reports every h2 and h3 response as
+// HTTP/1.1 — which is the capability that lies the paragraph was written
+// to prevent, arriving through the repair. The option that answers is
+// `WINHTTP_OPTION_HTTP_PROTOCOL_USED`, and .NET's `WinHttpResponseParser`
+// bypasses the status line entirely once it reads non-zero.
+//
+// **`version_select` was `false` before any of this and should not have
+// been.** `Client` refused every demand, `RequireVersion(HTTP_11)`
+// included — the one demand this backend has satisfied trivially since
+// it existed, and exactly the failure `Capabilities::version_select`'s
+// own doc names.
+//
+// it is **in this crate** rather than one of its own. The list above used
+// to say the opposite, citing the rule that put the framing in
+// `hclient-tungstenite` — and that rule is about a *dependency*: a
+// `websocket` feature on `hclient-native` would have put `tungstenite`
+// into every build in any graph that switched it on. Measured here, the
+// whole feature costs **zero crates**: `WinHttpWebSocketSend` and its
+// five neighbours are in the `Win32_Networking_WinHttp` feature this
+// crate already names. `hclient-fetch` is the precedent that fits, and
+// it keeps its seam impl at home for the same reason.
 #![cfg(windows)]
 #![warn(missing_docs)]
 

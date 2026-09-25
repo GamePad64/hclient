@@ -5,6 +5,17 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 
+// Maintainer notes (not rendered):
+//
+// (commits `a7e0c944`, 2025-10-30, and `0c0a8a8e`, 2025-10-31 — fetched
+// and read directly, not taken on faith), which adds exactly:
+//
+// `SendJsFuture: Send` on its own (verified:
+// `RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo
+// +nightly check -p hclient-fetch --target wasm32-unknown-unknown
+// -Zbuild-std=std,panic_abort --tests` fails — `--tests` is required to
+// see it at all, since the lib target alone never demands `Send`; see
+// spec amendment-C7 for the exact diagnostic and the full argument).
 /// The underlying REASONING mirrors what wasm-bindgen does for `JsValue`
 /// itself — but not the same SCOPE, and that distinction is load-bearing
 /// for an `unsafe impl`, so it's spelled out precisely rather than
@@ -28,9 +39,7 @@ use wasm_bindgen::prelude::*;
 /// inherited from a review comment.** No released `wasm-bindgen` gives
 /// `Closure<T>` or `JsFuture` a `Send`/`Sync` impl under any `cfg`. The
 /// only place upstream does this at all is an UNMERGED branch,
-/// `unsafe-send-sync` on `wasm-bindgen/wasm-bindgen`
-/// (commits `a7e0c944`, 2025-10-30, and `0c0a8a8e`, 2025-10-31 — fetched
-/// and read directly, not taken on faith), which adds exactly:
+/// `unsafe-send-sync` on `wasm-bindgen/wasm-bindgen`, which adds exactly:
 ///
 /// ```text
 /// #[cfg(unsafe_single_threaded_traits)]
@@ -60,17 +69,17 @@ use wasm_bindgen::prelude::*;
 /// `Closure`/`JsFuture` too (under a stricter opt-in) — not something
 /// copied from a released, audited surface. The compiler is still the
 /// backstop: with `+atomics`, the `cfg` strips the impl and rejects
-/// `SendJsFuture: Send` on its own (verified:
-/// `RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo +nightly
-/// check -p hclient-fetch --target wasm32-unknown-unknown
-/// -Zbuild-std=std,panic_abort --tests` fails — `--tests` is required to
-/// see it at all, since the lib target alone never demands `Send`; see
-/// spec amendment-C7 for the exact diagnostic and the full argument).
+/// `SendJsFuture: Send` on its own.
 #[repr(transparent)]
 pub(crate) struct SingleThreaded<T>(pub(crate) T);
 
-/// The one exception to this project's `#![forbid(unsafe_code)]` default —
-/// see `docs/exceptions.md`, amendment C7, for the full argument. Both lines the CI `no-unsafe-code` job would
+// Maintainer notes (not rendered):
+//
+// The one exception to this project's `#![forbid(unsafe_code)]` default —
+// see `docs/exceptions.md`, amendment C7, for the full argument. Both lines the CI `no-unsafe-code` job would
+// otherwise flag carry their own `unsafe-code-exception` marker.
+/// The one exception to this project's `#![forbid(unsafe_code)]` default.
+/// Both lines the CI `no-unsafe-code` job would
 /// otherwise flag carry their own `unsafe-code-exception` marker, per-line
 /// AND scoped to this one file — the same convention `no-declared-send`
 /// uses for `send-bound-exception`, narrowed further because, unlike that
@@ -126,26 +135,30 @@ pub(crate) struct State {
     callbacks: Option<SingleThreaded<ClosurePair>>,
 }
 
+// Maintainer notes (not rendered):
+//
+// (`js-sys-0.3.103/src/futures/mod.rs:118-119` — as of `wasm-bindgen-futures`
+// 0.4.76 that crate is a thin re-export shim over `js_sys::futures`, so
+// `JsFuture` itself now lives in `js-sys`, which is already this crate's
+// dependency) and is therefore `!Send` — but that's an implementation
+// choice, not a platform property.
+//
+// `pub`, not `pub(crate)`: the module `promise` stays private (see
+// `lib.rs`), and the only path to this type from outside the crate is the
+// explicit re-export at `testing::SendJsFutureAlias` — `pub(crate)` here
+// would make that re-export `E0365` (private type re-exported through a
+// public module), since `tests/promise.rs` is compiled as a separate,
+// external crate and can only see items that are actually `pub` all the
+// way through. The type is still not part of the advertised public API:
+// nothing outside `testing` names it, and `testing` itself is
+// `#[doc(hidden)]`.
 /// A `Send`-compatible replacement for `wasm_bindgen_futures::JsFuture`.
 ///
 /// `JsFuture` holds an `Rc<RefCell<Inner<T>>>` inside
-/// (`js-sys-0.3.103/src/futures/mod.rs:118-119` — as of `wasm-bindgen-futures`
-/// 0.4.76 that crate is a thin re-export shim over `js_sys::futures`, so
-/// `JsFuture` itself now lives in `js-sys`, which is already this crate's
-/// dependency) and is therefore `!Send` — but that's an implementation
+/// and is therefore `!Send` — but that's an implementation
 /// choice, not a platform property: `JsValue` itself, `js_sys::Promise`, and
 /// `web_sys::{Request, Response, ReadableStream}` **are** `Send` on the
 /// default target.
-///
-/// `pub`, not `pub(crate)`: the module `promise` stays private (see
-/// `lib.rs`), and the only path to this type from outside the crate is the
-/// explicit re-export at `testing::SendJsFutureAlias` — `pub(crate)` here
-/// would make that re-export `E0365` (private type re-exported through a
-/// public module), since `tests/promise.rs` is compiled as a separate,
-/// external crate and can only see items that are actually `pub` all the
-/// way through. The type is still not part of the advertised public API:
-/// nothing outside `testing` names it, and `testing` itself is
-/// `#[doc(hidden)]`.
 pub struct SendJsFuture {
     state: Arc<Mutex<State>>,
     /// `Future::poll` must never be called again after it has returned

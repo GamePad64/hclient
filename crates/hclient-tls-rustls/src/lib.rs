@@ -1097,15 +1097,21 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// ACT, the first consumer to port onto this workspace, reported that
+// calling the constructor without the feature produced an error whose
+// *suggestion* pointed at `Rustls::from_config` — a correct name, and a
+// far bigger detour than "turn the feature on".
 /// The stand-in for [`Rustls::with_webpki_roots`] in a build without the
 /// `webpki-roots` feature.
 ///
-/// ACT, the first consumer to port onto this workspace, reported that
-/// calling the constructor without the feature produced an error whose
-/// *suggestion* pointed at `Rustls::from_config` — a correct name, and a
-/// far bigger detour than "turn the feature on". A missing method has no
-/// way to say why it is missing, so rustc offers the nearest name it can
-/// see, and the nearest name here is the general-purpose escape hatch.
+/// Calling the constructor without the feature would otherwise produce
+/// an error whose *suggestion* points at `Rustls::from_config` — a
+/// correct name, and a far bigger detour than "turn the feature on". A
+/// missing method has no way to say why it is missing, so rustc offers
+/// the nearest name it can see, and the nearest name here is the
+/// general-purpose escape hatch.
 ///
 /// This is [`crate::Rustls::with_webpki_roots`] existing anyway, with an
 /// unsatisfiable bound carrying the message. Same shape as `hclient`'s

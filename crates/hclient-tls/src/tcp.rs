@@ -9,6 +9,69 @@ use hclient_core::caps::TlsSupport;
 use hclient_core::error::{Error, ErrorKind};
 use std::future::Future;
 
+// Maintainer notes (not rendered):
+//
+// # Built with [`new`](Self::new), read by field
+//
+// `#[non_exhaustive]` by this workspace's three-answer rule: the transport
+// builds one and a backend only reads it, so a field added later must not
+// be a breaking change for every `TlsConnect` written against this. It
+// used to carry **reserved slots** for exactly that reason — `ech` and
+// `early_data` went in before anything filled them — and the attribute is
+// what replaces the practice: the next field arrives when it is designed,
+// in the shape the design gives it, rather than in a shape guessed ahead.
+// [`QuicTlsRequest`](crate::quic::QuicTlsRequest) has had this form from
+// the start.
+//
+// # 0-RTT over TCP is not a field yet, deliberately
+//
+// `early_data: Option<usize>` sat here, documented as reserved and read by
+// no backend, and it left before this type was frozen: a stable field is a
+// promise about a shape, and nobody had designed this one. Its answer,
+// `TlsInfo::early_data_accepted: Option<bool>`, left with it.
+//
+// Two things the pair had established and are worth keeping. The verdict
+// needs **three** states — accepted, rejected and to be resent, *this
+// backend cannot tell* — because a caller reading "cannot tell" as
+// "rejected" resends needlessly and one reading it as "accepted" drops a
+// request. And a field on a handshake result is the right shape only for
+// TLS over TCP, where the verdict is known when the handshake completes:
+// in QUIC it resolves *after* the response (measured, 8.63 ms against
+// 8.58 ms), which is why `hclient-native`'s HTTP/3 arm holds a future.
+// Three things whoever implements it needs, written down here so
+// they are not rediscovered:
+//
+// 1. **0-RTT is replayable, and that makes it a client policy
+//    question before it is a crypto one.** An attacker can replay
+//    early data; which requests may go into it is therefore a
+//    decision about the request, not about the connection. The
+//    vocabulary for that decision already exists —
+//    `hclient_core::body::RequestBody::retry_kind()`, and the reasoning
+//    around it that v0.2 W2's retry is built on. Start there.
+// 2. **The floor rule applies here with unusual force.** Over-claiming
+//    a capability normally costs a buffered copy or a lost
+//    optimisation; over-claiming this one costs exposure to replay.
+//    So whatever `Capabilities` end up saying about it must be the
+//    value that holds on the worst case, exactly as
+//    `full_duplex` is (see `hclient-native`'s `Native::new`).
+// 3. **`native-tls` will not be able to do it**, for the same reason
+//    it cannot report ALPN — so the answer must come from the backend
+//    ([`TlsConnect::reports_alpn`] is the shape), with the
+//    conservative value as the default.
+//
+// One thing that is already half in place, and is not obvious:
+// rustls keeps session resumption in `ClientConfig`
+// (`ClientSessionStore`), and `hclient_tls_rustls::Rustls::
+// from_config` stores exactly one `Arc<ClientConfig>` — so the
+// session cache is already scoped to one `Rustls` value, which is
+// the same thing [`TlsConfigId`] identifies and which v0.2 W2 already
+// put in the connection pool's key. **Half, not ready**: rustls keys
+// its ticket store by `ServerName` alone, while a TLS 1.3 ticket also
+// carries transport parameters, and `enable_early_data` sits on the
+// config rather than on a per-connection request. The part that
+// assembled itself is "which client may resume whose sessions"; the
+// rest has not been designed.
+
 /// Parameters for a single TLS connection.
 ///
 /// ALPN lives on the **connect call**, not on the config: version pinning
@@ -19,69 +82,20 @@ use std::future::Future;
 /// its TLS config per concrete ALPN set internally — that's its own
 /// business, not this trait's.
 ///
-/// # Built with [`new`](Self::new), read by field
-///
-/// `#[non_exhaustive]` by this workspace's three-answer rule: the transport
-/// builds one and a backend only reads it, so a field added later must not
-/// be a breaking change for every `TlsConnect` written against this. It
-/// used to carry **reserved slots** for exactly that reason — `ech` and
-/// `early_data` went in before anything filled them — and the attribute is
-/// what replaces the practice: the next field arrives when it is designed,
-/// in the shape the design gives it, rather than in a shape guessed ahead.
-/// [`QuicTlsRequest`](crate::quic::QuicTlsRequest) has had this form from
-/// the start.
-///
-/// # 0-RTT over TCP is not a field yet, deliberately
-///
-/// `early_data: Option<usize>` sat here, documented as reserved and read by
-/// no backend, and it left before this type was frozen: a stable field is a
-/// promise about a shape, and nobody had designed this one. Its answer,
-/// `TlsInfo::early_data_accepted: Option<bool>`, left with it.
-///
-/// Two things the pair had established and are worth keeping. The verdict
-/// needs **three** states — accepted, rejected and to be resent, *this
-/// backend cannot tell* — because a caller reading "cannot tell" as
-/// "rejected" resends needlessly and one reading it as "accepted" drops a
-/// request. And a field on a handshake result is the right shape only for
-/// TLS over TCP, where the verdict is known when the handshake completes:
-/// in QUIC it resolves *after* the response (measured, 8.63 ms against
-/// 8.58 ms), which is why `hclient-native`'s HTTP/3 arm holds a future.
-/// Three things whoever implements it needs, written down here so
-/// they are not rediscovered:
-///
-/// 1. **0-RTT is replayable, and that makes it a client policy
-///    question before it is a crypto one.** An attacker can replay
-///    early data; which requests may go into it is therefore a
-///    decision about the request, not about the connection. The
-///    vocabulary for that decision already exists —
-///    `hclient_core::body::RequestBody::retry_kind()`, and the reasoning
-///    around it that v0.2 W2's retry is built on. Start there.
-/// 2. **The floor rule applies here with unusual force.** Over-claiming
-///    a capability normally costs a buffered copy or a lost
-///    optimisation; over-claiming this one costs exposure to replay.
-///    So whatever `Capabilities` end up saying about it must be the
-///    value that holds on the worst case, exactly as
-///    `full_duplex` is (see `hclient-native`'s `Native::new`).
-/// 3. **`native-tls` will not be able to do it**, for the same reason
-///    it cannot report ALPN — so the answer must come from the backend
-///    ([`TlsConnect::reports_alpn`] is the shape), with the
-///    conservative value as the default.
-///
-/// One thing that is already half in place, and is not obvious:
-/// rustls keeps session resumption in `ClientConfig`
-/// (`ClientSessionStore`), and `hclient_tls_rustls::Rustls::
-/// from_config` stores exactly one `Arc<ClientConfig>` — so the
-/// session cache is already scoped to one `Rustls` value, which is
-/// the same thing [`TlsConfigId`] identifies and which v0.2 W2 already
-/// put in the connection pool's key. **Half, not ready**: rustls keys
-/// its ticket store by `ServerName` alone, while a TLS 1.3 ticket also
-/// carries transport parameters, and `enable_early_data` sits on the
-/// config rather than on a per-connection request. The part that
-/// assembled itself is "which client may resume whose sessions"; the
-/// rest has not been designed.
+/// This type is `#[non_exhaustive]`: the transport builds one and a
+/// backend only reads it, so a field added later must not be a breaking
+/// change for every `TlsConnect` written against this.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct TlsRequest<'a> {
+    // Maintainer notes (not rendered):
+    //
+    // This was not written down when the field was added, and the gap
+    // cost three live defects: `hclient-native`'s connector, and both of
+    // `hclient-h3`'s two uses of the same string. Their tests are
+    // `hclient-native`'s `tests/tls_server_name.rs` and `hclient-h3`'s
+    // `tests/quic_server_name.rs`, each asserting a completed handshake
+    // against a certificate with an IP SAN.
     /// The name to present in SNI and to verify the certificate against —
     /// a DNS name or an IP address, **never a URI authority**.
     ///
@@ -112,13 +126,6 @@ pub struct TlsRequest<'a> {
     /// authority-shaped consumers — the `Host` header, HTTP/2's
     /// `:authority` — need them left on. Only the step *out* of URI-land
     /// strips.
-    ///
-    /// This was not written down when the field was added, and the gap
-    /// cost three live defects: `hclient-native`'s connector, and both of
-    /// `hclient-h3`'s two uses of the same string. Their tests are
-    /// `hclient-native`'s `tests/tls_server_name.rs` and `hclient-h3`'s
-    /// `tests/quic_server_name.rs`, each asserting a completed handshake
-    /// against a certificate with an IP SAN.
     pub server_name: &'a str,
     /// The ALPN protocols to offer, most preferred first — see the type's
     /// own documentation for why this is per connection.
@@ -306,13 +313,21 @@ impl TlsInfo {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// One method, `connect`, not separate "handshake" and "wrap" steps:
+// there's nothing to gain from splitting them — no caller anywhere in
+// this vertical wants a bare handshake without a wrapped stream, or the
+// reverse.
+
 /// A pluggable TLS handshake over an arbitrary transport.
-///
-/// One method, `connect`, not separate "handshake" and "wrap" steps:
-/// there's nothing to gain from splitting them — no caller anywhere in
-/// this vertical wants a bare handshake without a wrapped stream, or the
-/// reverse.
 pub trait TlsConnect: TlsIdentity {
+    // Maintainer notes (not rendered):
+    //
+    // runtime stream's `poll_close` to be. Checked by writing exactly
+    // that backend over `futures-rustls`, from a crate outside this
+    // workspace, and running it under `hclient::Client`.
+
     /// The wrapped stream after the handshake.
     ///
     /// **A backend over somebody else's TLS library needs a newtype here**,
@@ -322,9 +337,7 @@ pub trait TlsConnect: TlsIdentity {
     /// right when that `poll_close` sends `close_notify` and then closes
     /// the transport beneath with *its* `poll_close` — which is the
     /// half-close [`hclient_rt::Shutdown`]'s documentation asks every
-    /// runtime stream's `poll_close` to be. Checked by writing exactly
-    /// that backend over `futures-rustls`, from a crate outside this
-    /// workspace, and running it under `hclient::Client`.
+    /// runtime stream's `poll_close` to be.
     ///
     /// The `S` bound appears in both places (on the
     /// type itself and in its where clause) — an implementation can't

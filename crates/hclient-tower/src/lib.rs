@@ -16,27 +16,10 @@
 //! executor — and the `tower-http` middleware stack, which never required
 //! `Send` of its own accord, composes as it always did.
 //!
-//! **This module said the opposite for two verticals, and the record of
-//! why is worth more than the fix.** It read that declaring `Send` on the
-//! box meant proving `Transport::execute`'s RPITIT `Send`, which needs
-//! return type notation — still unstable, rust-lang/rust#109417 — and
-//! concluded with *when #109417 lands, the fix is one bound in this file*.
-//!
-//! Two things were wrong with that, and neither was the unstable feature.
-//!
-//! **A bound is only worth having if something satisfies it.**
-//! `hclient-native`'s own future was `!Send` at the time, from a single
-//! `Box<dyn Stream<..>>` in its connector that discarded every shipped
-//! resolver's `Send`. The promised one-line fix would have compiled and
-//! then excluded the one transport anybody reaches for.
-//!
-//! **And RTN was never the only way to name a bound.** The seams a
-//! transport awaits carry associated futures now, and
 //! `hclient_core::transport::SendTransport` is a separate trait whose
 //! impl may carry bounds `Transport` does not — so `T: SendTransport` says
 //! what `T: Transport<execute(..): Send>` would have said, on stable, and
-//! excludes nobody from the seam. RTN was measured on nightly before that
-//! route was taken: it works, and across a crate boundary it ICEs.
+//! excludes nobody from the seam.
 //!
 //! What it costs is that a transport which cannot promise `Send` cannot be
 //! adapted here. `hclient-dns-doh`-resolving transports are that case, and
@@ -54,25 +37,61 @@
 //! ServiceTransport::new(ConcurrencyLimit::new(TransportService::new(t), 8), caps)
 //! ```
 //!
-//! That it actually limits is not assumed: `tests/concurrency.rs` drives
-//! three requests through a limit of two and checks the third never
-//! reaches the transport until a permit frees. It works because
-//! `ServiceTransport::execute` drives `poll_ready` to completion on the
-//! clone it is about to call, which is where `ConcurrencyLimit` reserves
-//! its permit — remove that drive and the layer panics rather than
-//! silently overshooting.
+//! It works because `ServiceTransport::execute` drives `poll_ready` to
+//! completion on the clone it is about to call, which is where
+//! `ConcurrencyLimit` reserves its permit — remove that drive and the
+//! layer panics rather than silently overshooting.
 //!
 //! **What it does not bound: sockets.** The permit lives in
 //! `ConcurrencyLimit`'s response future and is dropped when that future
 //! completes — at the response HEAD. The body streams on afterwards,
 //! holding its connection, outside the limit, so with a limit of N there
-//! can be more than N connections open. Measured, in
-//! `the_permit_is_released_at_the_response_head_so_bodies_are_not_bounded`.
-//! A limit that covered bodies too would have to carry its permit into the
-//! response body — the shape `hclient-wasi`'s `Body` and `hclient::
-//! Deadline` both use — and that is a layer this crate would have to own
-//! rather than borrow; it is not written yet, and the design document
-//! records the gap rather than implying it away.
+//! can be more than N connections open. A limit that covered bodies too
+//! would have to carry its permit into the response body — the shape
+//! `hclient-wasi`'s `Body` and `hclient::Deadline` both use — and that is
+//! a layer this crate does not implement.
+
+// Maintainer notes (not rendered):
+//
+// **This module said the opposite for two verticals, and the record of
+// why is worth more than the fix.** It read that declaring `Send` on the
+// box meant proving `Transport::execute`'s RPITIT `Send`, which needs
+// return type notation — still unstable, rust-lang/rust#109417 — and
+// concluded with *when #109417 lands, the fix is one bound in this file*.
+//
+// Two things were wrong with that, and neither was the unstable feature.
+//
+// **A bound is only worth having if something satisfies it.**
+// `hclient-native`'s own future was `!Send` at the time, from a single
+// `Box<dyn Stream<..>>` in its connector that discarded every shipped
+// resolver's `Send`. The promised one-line fix would have compiled and
+// then excluded the one transport anybody reaches for.
+//
+// **And RTN was never the only way to name a bound.** The seams a
+// transport awaits carry associated futures now, and
+// `hclient_core::transport::SendTransport` is a separate trait whose
+// impl may carry bounds `Transport` does not — so `T: SendTransport` says
+// what `T: Transport<execute(..): Send>` would have said, on stable, and
+// excludes nobody from the seam. RTN was measured on nightly before that
+// route was taken: it works, and across a crate boundary it ICEs.
+//
+// That it actually limits is not assumed: `tests/concurrency.rs` drives
+// three requests through a limit of two and checks the third never
+// reaches the transport until a permit frees. It works because
+// `ServiceTransport::execute` drives `poll_ready` to completion on the
+// clone it is about to call, which is where `ConcurrencyLimit` reserves
+// its permit — remove that drive and the layer panics rather than
+// silently overshooting.
+//
+// The body streams on afterwards,
+// holding its connection, outside the limit, so with a limit of N there
+// can be more than N connections open. Measured, in
+// `the_permit_is_released_at_the_response_head_so_bodies_are_not_bounded`.
+// A limit that covered bodies too would have to carry its permit into the
+// response body — the shape `hclient-wasi`'s `Body` and `hclient::
+// Deadline` both use — and that is a layer this crate would have to own
+// rather than borrow; it is not written yet, and the design document
+// records the gap rather than implying it away.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -167,13 +186,16 @@ where
     type Error = Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Error>> + Send>>; // send-bound-exception: amendment-C16
 
+    // Maintainer notes (not rendered):
+    // produce. `hclient-native` has had a connection pool since v0.2 W2, and
+    // it does not change this: it never makes a caller wait for a
     /// Always ready.
     ///
     /// `Transport` has no notion of backpressure — no permit to acquire, and
     /// nothing to wait for — so there is nothing to be not-ready about, and
     /// reporting `Pending` here would invent a signal the layer below cannot
-    /// produce. `hclient-native` has had a connection pool since v0.2 W2, and
-    /// it does not change this: it never makes a caller wait for a
+    /// produce. A connection pool underneath does not change this:
+    /// it never makes a caller wait for a
     /// connection — a checkout that finds nothing dials — so there is still
     /// no state in which this service could honestly say "not yet".
     /// A tower user accustomed to `poll_ready` gating a bounded resource
@@ -198,6 +220,14 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// **The client's type does not change shape**, and it is now the strongest
+// version of that claim: `Client` names no transport type at all, so a
+// tower stack behind it is not even a different type parameter. Nothing in
+// the facade moves. When this line was written `Client<T>` was generic and
+// the claim was *this is a different `T`* — erasure made it *there is no
+// `T`*.
 /// A [`tower_service::Service`] wearing the seam's clothes — the return
 /// journey, so a tower stack can sit *underneath* `hclient::Client`
 /// rather than replacing it.
@@ -211,12 +241,10 @@ where
 /// Native -> TransportService -> [tower layers] -> ServiceTransport -> Client
 /// ```
 ///
-/// **The client's type does not change shape**, and it is now the strongest
-/// version of that claim: `Client` names no transport type at all, so a
+/// **The client's type does not change shape:**
+/// `Client` names no transport type at all, so a
 /// tower stack behind it is not even a different type parameter. Nothing in
-/// the facade moves. When this line was written `Client<T>` was generic and
-/// the claim was *this is a different `T`* — erasure made it *there is no
-/// `T`*.
+/// the facade moves.
 ///
 /// # Readiness, and what cloning costs
 ///
@@ -250,9 +278,10 @@ impl<S> ServiceTransport<S> {
     /// tells `Client::build` to reject configurations the stack supports
     /// perfectly well.
     ///
+    // Maintainer notes (not rendered):
+    // exactly the defect this project has caught in four backends — a
     /// A layer that changes behaviour and leaves these untouched produces
-    /// exactly the defect this project has caught in four backends — a
-    /// capability describing something other than what the code does.
+    /// a capability describing something other than what the code does.
     ///
     /// **`cancel_on_drop` is the field a tower stack is most likely to
     /// invalidate, and the easiest to carry over by accident.**
@@ -312,6 +341,10 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+// The three auto-trait bounds this crate asks of a tower service,
+// behind one short name so the marker sits on a line `cargo fmt` has no
+// reason to reflow — the rule amendment C12 records.
 /// The `Send` half of the seam, forwarded from the tower service beneath.
 ///
 /// The bounds are the service's own: a `tower::Service` whose `Future` and
@@ -320,9 +353,6 @@ where
 /// difference between this and naming an RPITIT — a consumer returning
 /// `impl Transport` can add `+ SendTransport` to say so, and that is a
 /// thing the language has always been able to write.
-/// The three auto-trait bounds this crate asks of a tower service,
-/// behind one short name so the marker sits on a line `cargo fmt` has no
-/// reason to reflow — the rule amendment C12 records.
 trait SendSyncStatic: Send + Sync + 'static {} // send-bound-exception: amendment-C16
 impl<T: Send + Sync + 'static> SendSyncStatic for T {} // send-bound-exception: amendment-C16
 

@@ -1661,7 +1661,7 @@ fuzz-smoke:
 # ── invariants no build can express ─────────────────────────────────────
 
 # the text scans, together
-invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs no-crate-for-what-std-does allows-name-their-reason libraries-require-docs versions-agree ci-mirrors-just
+invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs no-crate-for-what-std-does allows-name-their-reason libraries-require-docs doc-comments-speak-to-readers versions-agree ci-mirrors-just
 
 # the ast-grep rules, their own corpus tests, and a fail-closed glob check
 ast-grep:
@@ -1697,6 +1697,11 @@ allows-name-their-reason:
 # public item whose doc was left on a neighbour
 libraries-require-docs:
     ./scripts/every-library-requires-docs.sh
+
+# a doc comment never points a docs.rs reader at something they cannot
+# follow — `.notes/`, AGENTS.md, an amendment, a commit hash, a work item
+doc-comments-speak-to-readers:
+    ./scripts/doc-comments-speak-to-readers.sh
 
 # every in-workspace requirement names the workspace version
 versions-agree:

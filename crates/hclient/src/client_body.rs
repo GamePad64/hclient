@@ -52,11 +52,16 @@ use crate::limit::Limited;
 /// The four wrappers, in the order [`crate::Client`] applies them.
 type Chain = Limited<Decompressed<Deadline<Cached<BoxBody>>>>;
 
+// Maintainer notes (not rendered):
+//
+// "An [`http_body::Body`] of `Bytes`, with this crate's bounds and
+// decoding already applied — see the module doc for what is inside and
+// why the order matters." The module doc is not rendered, the module
+// being private.
 /// The body of a response from [`crate::Client`].
 ///
-/// An [`http_body::Body`] of `Bytes`, with this crate's bounds and
-/// decoding already applied — see the module doc for what is inside and
-/// why the order matters.
+/// An [`http_body::Body`] of `Bytes`, with this crate's bounds, deadline
+/// and decoding already applied.
 #[derive(Debug)]
 pub struct ClientBody(Chain);
 
@@ -65,6 +70,24 @@ impl ClientBody {
         Self(chain)
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The `Cow` section of the doc below, in full:
+    //
+    // # `Cow`, since the set of codings became open
+    //
+    // This was `Option<&'static str>`, which was honest while every
+    // coding was a literal in `decompress`. It is not any more: a body
+    // holds its decoder and **not** the
+    // [`ContentCoding`](crate::ContentCoding) that built it, so a coding
+    // somebody else wrote has nothing here for a `'static` borrow to
+    // point at — and borrowing from `&self` instead would tie the answer
+    // to the body, which is the thing a caller stops holding first.
+    //
+    // The four this crate ships are [`Cow::Borrowed`](std::borrow::Cow),
+    // so nothing allocates on the ordinary path, and
+    // `body.coding().as_deref() == Some("gzip")` is the comparison that
+    // used to be `==`.
     /// The content coding that was reversed, as it appeared on the wire,
     /// or `None` when the body is handed through untouched.
     ///
@@ -73,11 +96,9 @@ impl ClientBody {
     /// this is the only place that fact survives. It answers `None` once
     /// the stream has ended.
     ///
-    /// # `Cow`, since the set of codings became open
+    /// # Why a `Cow`
     ///
-    /// This was `Option<&'static str>`, which was honest while every
-    /// coding was a literal in `decompress`. It is not any more: a body
-    /// holds its decoder and **not** the
+    /// A body holds its decoder and **not** the
     /// [`ContentCoding`](crate::ContentCoding) that built it, so a coding
     /// somebody else wrote has nothing here for a `'static` borrow to
     /// point at — and borrowing from `&self` instead would tie the answer
@@ -85,8 +106,7 @@ impl ClientBody {
     ///
     /// The four this crate ships are [`Cow::Borrowed`](std::borrow::Cow),
     /// so nothing allocates on the ordinary path, and
-    /// `body.coding().as_deref() == Some("gzip")` is the comparison that
-    /// used to be `==`.
+    /// `body.coding().as_deref() == Some("gzip")` is the comparison.
     #[must_use]
     pub fn coding(&self) -> Option<std::borrow::Cow<'static, str>> {
         self.0.get_ref()?.coding()

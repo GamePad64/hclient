@@ -2,6 +2,11 @@ use crate::error::Cancelled;
 use futures_core::future::BoxFuture;
 use std::future::Future;
 
+// Maintainer notes (not rendered):
+// **Carrying a handle is not the same as carrying what it needs**, and
+// `TokioHandle` is the example: this paragraph named it as the total one
+// until an audit dropped the runtime under it and watched a spawned
+// future vanish.
 /// Run `f` to completion in the background.
 ///
 /// The shape is deliberately copied from `hyper::rt::Executor`: generic
@@ -38,9 +43,7 @@ use std::future::Future;
 /// `hclient-rt-smol`'s `Smol` does — its executor is process-wide and never
 /// shuts down), or state the precondition where a caller reads it, as both
 /// of `hclient-rt-tokio`'s runtimes do. **Carrying a handle is not the same
-/// as carrying what it needs**, and `TokioHandle` is the example: this
-/// paragraph named it as the total one until an audit dropped the runtime
-/// under it and watched a spawned future vanish.
+/// as carrying what it needs**, and `TokioHandle` is the example.
 /// What it must not do is accept the future and drop it: the caller cannot
 /// tell, and a driver that never runs is a connection that hangs.
 ///
@@ -61,6 +64,24 @@ pub trait Spawn<F: Future<Output = ()>> {
     fn spawn(&self, f: F);
 }
 
+// Maintainer notes (not rendered):
+// ... there's nothing for it to infect. The justification is `amendment-C5` (`docs/exceptions.md`), an
+// amendment separate from C1/C2: those two are about erasing auto-traits
+// in `dyn Trait` on the `Client -> Transport` path, whereas here the bound
+// is declared directly in the signature of a capability trait that simply
+// doesn't exist on wasm.
+//
+// The bounds live in `where`, not in the generic parameter list `fn
+// run<T: Send + …>`, so each one can carry its own `send-bound-exception`
+// marker on its own line: the CI `no-declared-send` job matches bound
+// declarations line by line, and a single shared comment after the
+// generic list wouldn't cover it.
+//
+// The implementation must return [`Cancelled`], not panic: a library
+// panicking on a normal (if rare) runtime-shutdown scenario would
+// contradict the rest of the project ("no silent no-ops... typed error,
+// never a discarded value" — the same principle applied here, just to
+// failure instead of success).
 /// A separate trait, not a method: `getaddrinfo` blocks, and wasm and
 /// embedded have no blocking pool at all. The absence of the capability
 /// must be a compile error, not an `unimplemented!()` in the runtime.
@@ -69,17 +90,7 @@ pub trait Spawn<F: Future<Output = ()>> {
 /// and here it's honest: both `tokio::task::spawn_blocking` and
 /// `blocking::unblock` require `Send + 'static`, and the `Blocking`
 /// capability doesn't exist on wasm at all — there's nothing for it to
-/// infect. The justification is `amendment-C5` (`docs/exceptions.md`), an
-/// amendment separate from C1/C2: those two are about erasing auto-traits in `dyn
-/// Trait` on the `Client -> Transport` path, whereas here the bound is
-/// declared directly in the signature of a capability trait that simply
-/// doesn't exist on wasm.
-///
-/// The bounds live in `where`, not in the generic parameter list `fn
-/// run<T: Send + …>`, so each one can carry its own `send-bound-exception`
-/// marker on its own line: the CI `no-declared-send` job matches bound
-/// declarations line by line, and a single shared comment after the
-/// generic list wouldn't cover it.
+/// infect.
 ///
 /// Two distinct failure modes of `f` are not conflated into one channel:
 ///
@@ -91,11 +102,16 @@ pub trait Spawn<F: Future<Output = ()>> {
 ///   shutting down while a task is still queued and hasn't started
 ///   running) is not a bug in the calling code, but an ordinary runtime
 ///   lifecycle event. The implementation must return [`Cancelled`], not
-///   panic: a library panicking on a normal (if rare) runtime-shutdown
-///   scenario would contradict the rest of the project ("no silent
-///   no-ops... typed error, never a discarded value" — the same principle
-///   applied here, just to failure instead of success).
+///   panic.
 pub trait Blocking {
+    // Maintainer notes (not rendered):
+    // A boxed `Send` future is the honest form here rather than an
+    // associated type per implementor, because this trait already requires
+    // `T: Send` and `F: Send`: a pool that cannot be handed work from
+    // another thread is not one, which is amendment C5's whole argument.
+    /// Run `f` on the runtime's blocking pool, resolving to its result, or
+    /// to [`Cancelled`] if the pool went away before `f` started.
+    ///
     /// **A named future, not an RPITIT, and the `Send` costs nobody
     /// anything.** A consumer that has to *prove* its own future `Send` —
     /// `hclient-native`, so that `hclient::Client`'s can be — must be able
@@ -103,7 +119,7 @@ pub trait Blocking {
     /// `Send` future is the honest form here rather than an associated
     /// type per implementor, because this trait already requires
     /// `T: Send` and `F: Send`: a pool that cannot be handed work from
-    /// another thread is not one, which is amendment C5's whole argument.
+    /// another thread is not one.
     /// So there is no implementor for whom the weaker form would be true,
     /// and nothing is excluded that was not already.
     ///

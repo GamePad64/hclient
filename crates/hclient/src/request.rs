@@ -7,10 +7,17 @@ use hclient_core::body::RequestBody;
 use hclient_core::error::{Error, ErrorKind};
 use hclient_proto::redirect::RedirectPolicy;
 
-/// `Tm` is the CLIENT's clock, carried along so that `send`'s response
-/// body can hold the operation's deadline. It has the
-/// same default as `Client`'s own parameter, so `RequestBuilder<'_, T>`
-/// keeps naming what it always named.
+// Maintainer notes (not rendered):
+//
+// `Tm` is the CLIENT's clock, carried along so that `send`'s response
+// body can hold the operation's deadline. It has the
+// same default as `Client`'s own parameter, so `RequestBuilder<'_, T>`
+// keeps naming what it always named.
+/// A request being built, obtained from [`Client::get`] and its
+/// siblings and sent with [`send`](Self::send).
+///
+/// Every setter takes and returns the builder by value. An invalid value
+/// is not a panic: the first one is kept and returned by `send`.
 #[derive(Debug)]
 pub struct RequestBuilder<'a> {
     client: &'a Client,
@@ -69,6 +76,8 @@ impl<'a> RequestBuilder<'a> {
         }
     }
 
+    /// Sets one header, replacing any earlier value of that name.
+    ///
     /// The first build error wins and survives further calls — it isn't
     /// overwritten by a second invalid pair, and isn't lost if a valid
     /// `header()` call follows it.
@@ -90,37 +99,42 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // `self.headers = headers` (as it was before m4 of the branch's final
+    // review) threw away everything `header()` had managed to set, with no
+    // diagnostic at all — the same class of defect as a silently
+    // dropped `header()`, and covered by a test for the same reason.
+    // `HeaderMap::extend` overrides a same-named value rather than
+    // accumulating a duplicate (verified against `http`'s contract: the
+    // first value for a key from the extending map goes through `insert`,
+    // later ones through `append`), so "adds to" doesn't turn into two
+    // `accept`s on the wire.
+    //
+    // **The error slot is NOT consulted here, unlike in `header()`, and
+    // that's not a forgotten symmetry.** In `header()` the guard
+    // `if self.error.is_some() { return self; }` carries weight: that
+    // method can set an error itself, and without the guard a second
+    // invalid pair would overwrite the first — verified by mutation, it
+    // kills `header_first_error_wins_name_over_later_value_error`. In
+    // `headers()` there's nothing to set an error from: the `HeaderMap` is
+    // already valid by construction. The same guard here wouldn't change
+    // anything observable — `send()` returns the stored error before it
+    // ever looks at headers — and it really was here for one round, along
+    // with a test that could never fail: removing the guard left the
+    // ENTIRE `hclient` suite green (re-verified independently). Dead code
+    // and a test that can't go red are worse than nothing, so both were
+    // removed.
+    //
+    // Trigger to bring the guard back: the moment `headers()` learns to
+    // reject something — say, the `Capabilities::forbidden_request_headers`
+    // filter planned for v0.2 — it becomes observable again, and it must
+    // come back TOGETHER with a test that goes red without it.
     /// Adds to the headers already set, rather than replacing them.
     ///
-    /// `self.headers = headers` (as it was before m4 of the branch's final
-    /// review) threw away everything `header()` had managed to set, with no
-    /// diagnostic at all — the same class of defect as a silently
-    /// dropped `header()`, and covered by a test for the same reason.
     /// `HeaderMap::extend` overrides a same-named value rather than
-    /// accumulating a duplicate (verified against `http`'s contract: the
-    /// first value for a key from the extending map goes through `insert`,
-    /// later ones through `append`), so "adds to" doesn't turn into two
+    /// accumulating a duplicate, so "adds to" doesn't turn into two
     /// `accept`s on the wire.
-    ///
-    /// **The error slot is NOT consulted here, unlike in `header()`, and
-    /// that's not a forgotten symmetry.** In `header()` the guard
-    /// `if self.error.is_some() { return self; }` carries weight: that
-    /// method can set an error itself, and without the guard a second
-    /// invalid pair would overwrite the first — verified by mutation, it
-    /// kills `header_first_error_wins_name_over_later_value_error`. In
-    /// `headers()` there's nothing to set an error from: the `HeaderMap` is
-    /// already valid by construction. The same guard here wouldn't change
-    /// anything observable — `send()` returns the stored error before it
-    /// ever looks at headers — and it really was here for one round, along
-    /// with a test that could never fail: removing the guard left the
-    /// ENTIRE `hclient` suite green (re-verified independently). Dead code
-    /// and a test that can't go red are worse than nothing, so both were
-    /// removed.
-    ///
-    /// Trigger to bring the guard back: the moment `headers()` learns to
-    /// reject something — say, the `Capabilities::forbidden_request_headers`
-    /// filter planned for v0.2 — it becomes observable again, and it must
-    /// come back TOGETHER with a test that goes red without it.
     #[must_use]
     pub fn headers(mut self, headers: http::HeaderMap) -> Self {
         self.headers.extend(headers);
@@ -300,12 +314,16 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The value is marked sensitive, so a `Debug` of the request does not
+    // print the password — the same thing `hclient-native`'s proxy
+    // credential does, and the reason both go through one encoder in
+    // `hclient-proto`.
     /// `Authorization: Basic`, RFC 7617.
     ///
     /// The value is marked sensitive, so a `Debug` of the request does not
-    /// print the password — the same thing `hclient-native`'s proxy
-    /// credential does, and the reason both go through one encoder in
-    /// `hclient-proto`.
+    /// print the password.
     ///
     /// A username containing `:` is refused rather than encoded: RFC 7617
     /// §2 makes the colon the separator, so `a:b` and `a` with password
@@ -346,14 +364,26 @@ impl<'a> RequestBuilder<'a> {
         self.auth(crate::auth::Digest::new(user, password))
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // `digest_auth` is this with the one scheme
+    // this crate implements. What the seam is *for* is the ones it does
+    // not: NTLM and Negotiate need a platform security provider, and the
+    // crates that have one — `sspi`, `libgssapi`, `cross-krb5` — are at
+    // half a million downloads a month each with no HTTP client in this
+    // ecosystem able to take them.
+    //
+    // Measured rather than reasoned about, and pinned by
+    // `a_scheme_replaces_a_preset_header_rather_than_deferring_to_it`
+    // — which needs a **pre-emptive** scheme to mean anything, since one
+    // that stays quiet on the first request leaves the header standing
+    // under either rule.
     /// Authenticate this request with a scheme of your own.
     ///
     /// `digest_auth` is this with the one scheme
     /// this crate implements. What the seam is *for* is the ones it does
-    /// not: NTLM and Negotiate need a platform security provider, and the
-    /// crates that have one — `sspi`, `libgssapi`, `cross-krb5` — are at
-    /// half a million downloads a month each with no HTTP client in this
-    /// ecosystem able to take them.
+    /// not: NTLM and Negotiate need a platform security provider, such as
+    /// the ones `sspi`, `libgssapi` and `cross-krb5` reach.
     ///
     /// See [`crate::auth`] for the three rules a flow cannot override:
     /// a body that cannot be replayed ends it, credentials do not cross
@@ -380,12 +410,6 @@ impl<'a> RequestBuilder<'a> {
     /// `basic_auth(..).digest_auth(..)` send `Basic` for ever against a
     /// server asking for digest. The order the two setters are called in
     /// does not matter.
-    ///
-    /// Measured rather than reasoned about, and pinned by
-    /// `a_scheme_replaces_a_preset_header_rather_than_deferring_to_it`
-    /// — which needs a **pre-emptive** scheme to mean anything, since one
-    /// that stays quiet on the first request leaves the header standing
-    /// under either rule.
     #[must_use]
     pub fn auth<A>(mut self, scheme: A) -> Self
     where
@@ -425,6 +449,11 @@ impl<'a> RequestBuilder<'a> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // reqwest can't do this at all (issue #2641), which forces `act-cli`
+    // to build a separate `reqwest::Client` for every component call —
+    // with its own connection pool.
     /// Timeouts for this request only. Stored in `Extensions`, where the
     /// transport reads them from; unset fields fall back to the client's
     /// configuration — the merge is done by `Client::execute` via
@@ -432,41 +461,45 @@ impl<'a> RequestBuilder<'a> {
     /// result against the transport's `Capabilities`, so a phase the
     /// backend can't do becomes `ErrorKind::Unsupported` out of `send()`,
     /// not a value silently dropped.
-    ///
-    /// reqwest can't do this at all (issue #2641), which forces `act-cli`
-    /// to build a separate `reqwest::Client` for every component call —
-    /// with its own connection pool.
     #[must_use]
     pub fn timeouts(mut self, t: hclient_core::req::Timeouts) -> Self {
         self.extensions.insert(t);
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The reason this exists is a real shape, not a symmetry: `act`'s
+    // `http-client` component computes its limit per call, as
+    // `if args.follow_redirects { 10 } else { 0 }`, from a per-request
+    // argument. Before this method the only way to express that through
+    // `hclient` was a fresh `Client` per request — the very cost
+    // `RequestBuilder::timeouts` already exists to avoid (reqwest #2641).
+    //
+    // **The consumer's other branch is [`Forbid`](hclient_proto::redirect::Forbid), not
+    // `Limited(0)`.** `Limited(0)` means "follow up to zero hops", so the
+    // first 301/302/303/307/308 carrying a `Location` becomes
+    // `ErrorKind::Redirect`. `None` returns that response to the caller
+    // untouched — which is what `wasi-fetch`, the library that component
+    // migrates from, did for `redirect_limit(0)`
+    // (`wasi-fetch/src/request.rs`: `if redirect_limit > 0 &&
+    // status.is_redirection()`), and the component forwards its status
+    // and `Location` upward. `reqwest` keeps the two intents apart the same
+    // way, as `Policy::none()` and `Policy::limited(0)` — and so does this
+    // type, since the acceptance that ported that component found a
+    // `limit: u8` field could express only the second.
     /// The redirect policy for this request only, overriding
     /// [`ClientBuilder::redirect`] wholesale — not field by field like
     /// `timeouts` above: `RedirectPolicy` is a plain value, not an `Option`,
     /// not an `Option`, so there is nothing to fall through (see
     /// `config::effective_redirect`, which does the merge).
     ///
-    /// The reason this exists is a real shape, not a symmetry: `act`'s
-    /// `http-client` component computes its limit per call, as
-    /// `if args.follow_redirects { 10 } else { 0 }`, from a per-request
-    /// argument. Before this method the only way to express that through
-    /// `hclient` was a fresh `Client` per request — the very cost
-    /// `RequestBuilder::timeouts` already exists to avoid (reqwest #2641).
-    ///
-    /// **The consumer's other branch is [`Forbid`](hclient_proto::redirect::Forbid), not
-    /// `Limited(0)`.** `Limited(0)` means "follow up to zero hops", so the
-    /// first 301/302/303/307/308 carrying a `Location` becomes
-    /// `ErrorKind::Redirect`. `None` returns that response to the caller
-    /// untouched — which is what `wasi-fetch`, the library that component
-    /// migrates from, did for `redirect_limit(0)`
-    /// (`wasi-fetch/src/request.rs`: `if redirect_limit > 0 &&
-    /// status.is_redirection()`), and the component forwards its status
-    /// and `Location` upward. `reqwest` keeps the two intents apart the same
-    /// way, as `Policy::none()` and `Policy::limited(0)` — and so does this
-    /// type, since the acceptance that ported that component found a
-    /// `limit: u8` field could express only the second.
+    /// To be handed a 3xx itself, pass
+    /// [`Forbid`](hclient_proto::redirect::Forbid). `Limit::new(0)` means
+    /// "follow up to zero hops", so the first 301/302/303/307/308 carrying
+    /// a `Location` becomes `ErrorKind::Redirect`. `reqwest` keeps the two
+    /// intents apart the same way, as `Policy::none()` and
+    /// `Policy::limited(0)`.
     ///
     /// A policy of any kind is what a backend which follows redirects
     /// internally can never honour: against `RedirectSupport::Internal`
@@ -498,17 +531,24 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // This is the route this crate's own documentation names as the
+    // honest one — `Capabilities` report the **floor**, the value that
+    // holds on the worst protocol the transport might negotiate, so
+    // asking a capability whether HTTP/2 will be used gives the wrong
+    // answer by design. The pair that answers it is a demand before the
+    // head and [`crate::Response::version`] after it. Until now the first
+    // half was unreachable through this builder: `RequireVersion` lives
+    // in `Extensions`, and `timeouts` and `redirect` were the only two
+    // keys with a setter.
     /// Demand a protocol version, and fail rather than fall back.
     ///
-    /// This is the route this crate's own documentation names as the
-    /// honest one — `Capabilities` report the **floor**, the value that
+    /// `Capabilities` report the **floor**, the value that
     /// holds on the worst protocol the transport might negotiate, so
     /// asking a capability whether HTTP/2 will be used gives the wrong
     /// answer by design. The pair that answers it is a demand before the
-    /// head and [`crate::Response::version`] after it. Until now the first
-    /// half was unreachable through this builder: `RequireVersion` lives
-    /// in `Extensions`, and `timeouts` and `redirect` were the only two
-    /// keys with a setter.
+    /// head and [`crate::Response::version`] after it.
     ///
     /// A transport that cannot select a version refuses the demand rather
     /// than ignoring it — `Capabilities::version_select` is the gate, and
@@ -524,6 +564,14 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **This setter is why the feature has a caller.** It shipped without
+    // one: `ClientIdentity` reached `Transport` through the extensions and
+    // `RequestBuilder` had no route to them, so the only way to select an
+    // identity was to build an `http::Request` by hand and call
+    // `Transport::execute` directly — which is to say, without redirects,
+    // cookies, the cache or anything else `Client` is for.
     /// Which client certificate this request presents, by the label a
     /// backend was configured with.
     ///
@@ -534,13 +582,6 @@ impl<'a> RequestBuilder<'a> {
     /// not know the label **refuses before it opens a socket** rather than
     /// connecting with its default, and two labels to one origin cannot
     /// share a connection, because the label resolves into the pool key.
-    ///
-    /// **This setter is why the feature has a caller.** It shipped without
-    /// one: `ClientIdentity` reached `Transport` through the extensions and
-    /// `RequestBuilder` had no route to them, so the only way to select an
-    /// identity was to build an `http::Request` by hand and call
-    /// `Transport::execute` directly — which is to say, without redirects,
-    /// cookies, the cache or anything else `Client` is for.
     #[must_use]
     pub fn client_identity(mut self, name: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         self.extensions
@@ -570,18 +611,24 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **For a type this crate has never heard of**, which is the case the
+    // two setters above cannot serve: a tracing decorator's context
+    // belongs to the decorator's crate, and `hclient` must not depend on
+    // it to let a caller set one. `docs/otel-design.md` §3 is the
+    // motivating reader.
+    //
+    // It adds no capability that did not exist one layer down —
+    // `http::request::Builder::extension` has always been there, and
+    // going around this builder to reach it was the workaround this
+    // replaces. What it removes is the reason to bypass `Client`.
     /// Puts an arbitrary value in the request's [`http::Extensions`].
     ///
     /// **For a type this crate has never heard of**, which is the case the
     /// two setters above cannot serve: a tracing decorator's context
     /// belongs to the decorator's crate, and `hclient` must not depend on
-    /// it to let a caller set one. `docs/otel-design.md` §3 is the
-    /// motivating reader.
-    ///
-    /// It adds no capability that did not exist one layer down —
-    /// `http::request::Builder::extension` has always been there, and
-    /// going around this builder to reach it was the workaround this
-    /// replaces. What it removes is the reason to bypass `Client`.
+    /// it to let a caller set one.
     ///
     /// **Prefer a named setter where one exists.** `timeouts`,
     /// `redirect`, `require_version`, `client_identity` and
@@ -618,16 +665,18 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The `where` clause this used to carry is gone with the type
+    // parameters: the transport's error is converted into
+    // [`hclient_core::error::Error`] at the erased seam, so nothing here has to
+    // repeat a bound about it.
     /// Sends the request.
     ///
     /// The body comes back as [`crate::body::ClientBody`], which carries the
     /// client's whole-operation bound past the response head — inert, and
     /// costing one `Option` test per frame, for a client that never set
     /// one.
-    /// The `where` clause this used to carry is gone with the type
-    /// parameters: the transport's error is converted into
-    /// [`hclient_core::error::Error`] at the erased seam, so nothing here has to
-    /// repeat a bound about it.
     ///
     /// # Errors
     ///

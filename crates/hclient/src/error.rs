@@ -1,56 +1,75 @@
 //! The failures, and the payloads [`crate::Error::source`] hands back.
 //!
-//! **This module was a door before it was a room, and that is what
-//! decides its contents.** It existed as a re-export list, because
-//! `hclient`'s rendered index had listed seventy-three items of which
-//! about twelve were what a caller reaches for; the rest divided into
-//! groups that each wanted one. The types are now *defined* here rather
-//! than named here, and every path a consumer could already type is the
-//! path it still is.
-//!
 //! What unites them is the layer rather than the subject: these are the
 //! refusals **`Client` itself** makes, from the builder that will not
 //! resolve a base URL to the body wrapper that stops a response past its
-//! limit. That is why four of them are private — `BadLocation`,
-//! `BodyVanishedBeforeRetry`, `SseRejected` and `ReconnectExhausted`
-//! reach a caller only through `Error::source`, named here without links
-//! because a link from public prose to a private item is what `just docs`
-//! refuses, and a `pub` on any of them would promise a distinction nobody
-//! can act on.
+//! limit.
 //!
 //! # What is deliberately not here
 //!
-//! `cookie` and `cache` keep their own, and the reason
-//! is measured rather than aesthetic: both were **crates** until this
-//! year, so by this workspace's own convention each already had an error
-//! module of its own, and the fold that made them modules was argued as
-//! costing exactly one sentence in `docs/competitive-gaps.md` and nothing
-//! else. Both module docs still say they are sans-io, clockless, and
-//! reach for neither `Client` nor `hclient-core` — an error type shared
-//! with this file's would end the last of those. [`crate::auth`] is the
-//! third, for a different reason of the same shape: it is a **seam**,
-//! whose whole point is a scheme written in somebody else's crate, and a
-//! third party implementing [`crate::auth::AuthFlow`] meets its errors
-//! there rather than here.
+//! `cookie` and `cache` keep their own error types, and
+//! so does [`crate::auth`]: it is a **seam**, whose whole point is a scheme
+//! written in somebody else's crate, and a third party implementing
+//! [`crate::auth::AuthFlow`] meets its errors there rather than here.
 //!
-//! # Two things did change, and neither is a path
-//!
-//! [`MultipartError`] and [`TrailersInAPart`] were reachable only as
-//! `multipart::`, and are reachable as `error::` as well now — because a
-//! `pub` item in this module is at this path whether or not it is named
-//! in a list. That is the door becoming honest rather than a decision: it
-//! calls itself *the failures*, and two of them were missing from it.
-//! [`crate::multipart`] re-exports both under the names they had.
-//!
-//! And where the other module is **public**, rustdoc renders the arrow
-//! rather than the item: `multipart::MultipartError` and
-//! `lines::LineTooLong` are now a link to the page here, where before
-//! this module carried a link to the page there. The pair flipped, which
-//! is the change stating itself — the definition is here, so the page is
-//! here. Nothing of the sort happens for `cookie`,
-//! `cache` or `auth`, whose own `error` modules are
-//! private, so rustdoc inlines each type into the module a caller
-//! names.
+//! [`MultipartError`] and [`TrailersInAPart`] are defined here and
+//! re-exported by [`crate::multipart`] under the same names.
+
+// Maintainer notes (not rendered):
+//
+// The module doc above was trimmed from this, in full:
+//
+// **This module was a door before it was a room, and that is what
+// decides its contents.** It existed as a re-export list, because
+// `hclient`'s rendered index had listed seventy-three items of which
+// about twelve were what a caller reaches for; the rest divided into
+// groups that each wanted one. The types are now *defined* here rather
+// than named here, and every path a consumer could already type is the
+// path it still is.
+//
+// What unites them is the layer rather than the subject: these are the
+// refusals **`Client` itself** makes, from the builder that will not
+// resolve a base URL to the body wrapper that stops a response past its
+// limit. That is why four of them are private — `BadLocation`,
+// `BodyVanishedBeforeRetry`, `SseRejected` and `ReconnectExhausted`
+// reach a caller only through `Error::source`, named here without links
+// because a link from public prose to a private item is what `just docs`
+// refuses, and a `pub` on any of them would promise a distinction nobody
+// can act on.
+//
+// # What is deliberately not here
+//
+// `cookie` and `cache` keep their own, and the reason
+// is measured rather than aesthetic: both were **crates** until this
+// year, so by this workspace's own convention each already had an error
+// module of its own, and the fold that made them modules was argued as
+// costing exactly one sentence in `docs/competitive-gaps.md` and nothing
+// else. Both module docs still say they are sans-io, clockless, and
+// reach for neither `Client` nor `hclient-core` — an error type shared
+// with this file's would end the last of those. [`crate::auth`] is the
+// third, for a different reason of the same shape: it is a **seam**,
+// whose whole point is a scheme written in somebody else's crate, and a
+// third party implementing [`crate::auth::AuthFlow`] meets its errors
+// there rather than here.
+//
+// # Two things did change, and neither is a path
+//
+// [`MultipartError`] and [`TrailersInAPart`] were reachable only as
+// `multipart::`, and are reachable as `error::` as well now — because a
+// `pub` item in this module is at this path whether or not it is named
+// in a list. That is the door becoming honest rather than a decision: it
+// calls itself *the failures*, and two of them were missing from it.
+// [`crate::multipart`] re-exports both under the names they had.
+//
+// And where the other module is **public**, rustdoc renders the arrow
+// rather than the item: `multipart::MultipartError` and
+// `lines::LineTooLong` are now a link to the page here, where before
+// this module carried a link to the page there. The pair flipped, which
+// is the change stating itself — the definition is here, so the page is
+// here. Nothing of the sort happens for `cookie`,
+// `cache` or `auth`, whose own `error` modules are
+// private, so rustdoc inlines each type into the module a caller
+// names.
 
 use crate::multipart::MAX_REWIND_DEPTH;
 use std::time::Duration;
@@ -64,6 +83,11 @@ pub use hclient_core::error::{Phase, UnsupportedCapability, VersionNotAvailable}
 /// does the parsing.
 pub use hclient_proto::uri::UriError;
 
+// Maintainer notes (not rendered):
+//
+// "`requested` is a `String`, not an `http::Uri`: resolution works on the
+// STRING before parsing (see `effective_uri`), and exactly the references
+// the base exists for aren't expressible as `http::Uri` at all."
 /// The base URL is unfit to resolve this request against.
 ///
 /// `pub`, not for looks: the caller must be
@@ -73,8 +97,8 @@ pub use hclient_proto::uri::UriError;
 /// the specific pair, not just the fact.
 ///
 /// `requested` is a `String`, not an `http::Uri`: resolution works on the
-/// STRING before parsing (see `effective_uri`), and exactly the references
-/// the base exists for aren't expressible as `http::Uri` at all.
+/// string before parsing, and exactly the references the base exists for
+/// aren't expressible as `http::Uri` at all.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("cannot resolve `{requested}` against base URL `{base}` (a base URL must be absolute)")]
 #[non_exhaustive]
@@ -85,12 +109,13 @@ pub struct InvalidBaseUrl {
     pub requested: String,
 }
 
+// Maintainer notes (not rendered):
+//
+// Raised beside the unresolvable-`Location` error, because both are
+// `decide`'s answers
+// turned into errors at the same place. It replaced `TooMany(u8)`, which
+// could say only one of the things a policy can now refuse for.
 /// A redirect policy refused a hop.
-///
-/// Raised beside the unresolvable-`Location` error, because both are
-/// `decide`'s answers
-/// turned into errors at the same place. It replaced `TooMany(u8)`, which
-/// could say only one of the things a policy can now refuse for.
 #[derive(Debug, thiserror::Error)]
 #[error("the redirect policy refused a {status} to {to} after {after_hops} hops: {why}")]
 #[non_exhaustive]
@@ -178,56 +203,77 @@ pub struct LineTooLong {
 #[error("the response body is not valid `{coding}` data")]
 #[non_exhaustive]
 pub struct DecodeFailed {
+    // Maintainer notes (not rendered):
+    //
+    // The paragraph the doc below was trimmed from, in full:
+    //
+    // **A [`Cow`](std::borrow::Cow) since the coding list became a
+    // caller's**, for the reason
+    // [`ClientBody::coding`](crate::body::ClientBody::coding) is one: a
+    // body holds its decoder rather than the
+    // [`ContentCoding`](crate::ContentCoding) that built it, so a coding
+    // somebody else wrote has no `'static` string here to be named by.
+    // The four this crate ships are still `Cow::Borrowed`, and a
+    // `d.coding == "gzip"` comparison reads exactly as it did.
     /// The coding that was attempted, as it appeared on the wire.
     ///
-    /// **A [`Cow`](std::borrow::Cow) since the coding list became a
-    /// caller's**, for the reason
+    /// **A [`Cow`](std::borrow::Cow)**, for the reason
     /// [`ClientBody::coding`](crate::body::ClientBody::coding) is one: a
     /// body holds its decoder rather than the
     /// [`ContentCoding`](crate::ContentCoding) that built it, so a coding
     /// somebody else wrote has no `'static` string here to be named by.
-    /// The four this crate ships are still `Cow::Borrowed`, and a
-    /// `d.coding == "gzip"` comparison reads exactly as it did.
+    /// The four this crate ships are `Cow::Borrowed`, and a
+    /// `d.coding == "gzip"` comparison works as written.
     pub coding: std::borrow::Cow<'static, str>,
     #[source]
     pub(crate) source: std::io::Error,
 }
 
+// Maintainer notes (not rendered):
+//
+// # Why `build()` stopped returning [`UnsupportedCapability`] directly
+//
+// It returned that type alone while every refusal at `build()` was one
+// answer to one question — *can the transport honour this setting* — and
+// [`InvalidCodingToken`] is not that question: nothing about a backend
+// decides whether a [`ContentCoding`](crate::ContentCoding)'s own token
+// is a token, and `UnsupportedCapability`'s two fields are
+// `&'static str`, so it could not carry a caller's spelling even if the
+// message *`backend X does not support Y`* had been the right sentence.
+//
+// **The shape is `Client::new`'s, one layer down.** That constructor
+// faced the same fork — a narrow typed refusal beside a second cause of a
+// different kind — and this file records what it settled on: keep the
+// wider type, because the discriminant already draws the line the two
+// types were drawing, and a `try_` twin that also returned `Result` was
+// marking the one fallible about *more things* rather than the one
+// fallible at all. An enum is that answer where there is no `ErrorKind`
+// to lean on, and the variant is the discriminant.
+//
+// The two paragraphs the doc below was trimmed from, in full:
+//
+// Both variants keep their payload public and reachable, so the
+// downcast-free question — *which refusal was it* — is a `match`, and
+// nothing that used to be typed became a string.
+//
+// `Client::new()` folds this into an `ErrorKind::Unsupported`
+// [`Error`](hclient_core::error::Error) exactly as it folded the narrow
+// type, so a caller of the convenience constructor sees no change at all.
 /// What [`ClientBuilder::build`](crate::ClientBuilder::build) refuses.
 ///
-/// # Why `build()` stopped returning [`UnsupportedCapability`] directly
-///
-/// It returned that type alone while every refusal at `build()` was one
-/// answer to one question — *can the transport honour this setting* — and
-/// [`InvalidCodingToken`] is not that question: nothing about a backend
-/// decides whether a [`ContentCoding`](crate::ContentCoding)'s own token
-/// is a token, and `UnsupportedCapability`'s two fields are
-/// `&'static str`, so it could not carry a caller's spelling even if the
-/// message *`backend X does not support Y`* had been the right sentence.
-///
-/// **The shape is `Client::new`'s, one layer down.** That constructor
-/// faced the same fork — a narrow typed refusal beside a second cause of a
-/// different kind — and this file records what it settled on: keep the
-/// wider type, because the discriminant already draws the line the two
-/// types were drawing, and a `try_` twin that also returned `Result` was
-/// marking the one fallible about *more things* rather than the one
-/// fallible at all. An enum is that answer where there is no `ErrorKind`
-/// to lean on, and the variant is the discriminant.
-///
 /// Both variants keep their payload public and reachable, so the
-/// downcast-free question — *which refusal was it* — is a `match`, and
-/// nothing that used to be typed became a string.
+/// downcast-free question — *which refusal was it* — is a `match`.
 ///
 /// `Client::new()` folds this into an `ErrorKind::Unsupported`
-/// [`Error`](hclient_core::error::Error) exactly as it folded the narrow
-/// type, so a caller of the convenience constructor sees no change at all.
+/// [`Error`](hclient_core::error::Error).
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum BuildError {
+    // Maintainer notes (not rendered):
+    //
+    // Every refusal `build()` made before the coding list became a
+    // caller's, and the whole of what `check_supported` answers.
     /// A setting the chosen transport cannot honour.
-    ///
-    /// Every refusal `build()` made before the coding list became a
-    /// caller's, and the whole of what `check_supported` answers.
     #[error(transparent)]
     Unsupported(#[from] UnsupportedCapability),
     /// A configured content coding whose token will not go in a header.
@@ -236,17 +282,24 @@ pub enum BuildError {
 }
 
 impl BuildError {
+    // Maintainer notes (not rendered):
+    //
+    // The paragraph the doc below was trimmed from, in full:
+    //
+    // **An accessor rather than a `match` at nine call sites**, and the
+    // nine are what argued for it: every one of them asserts *which
+    // setting was refused* — `err.what == "cookie_jar"`,
+    // `err.backend.contains("MockTransport")` — which is the question
+    // this error exists to answer and which a `match` with an
+    // `unreachable!()` arm buries. It is [`Option`] rather than a panic
+    // for the ordinary reason: the other variant is reachable, and a
+    // caller who asks the wrong question should get `None` rather than an
+    // abort.
     /// The capability refusal, where that is what this is.
     ///
-    /// **An accessor rather than a `match` at nine call sites**, and the
-    /// nine are what argued for it: every one of them asserts *which
-    /// setting was refused* — `err.what == "cookie_jar"`,
-    /// `err.backend.contains("MockTransport")` — which is the question
-    /// this error exists to answer and which a `match` with an
-    /// `unreachable!()` arm buries. It is [`Option`] rather than a panic
-    /// for the ordinary reason: the other variant is reachable, and a
-    /// caller who asks the wrong question should get `None` rather than an
-    /// abort.
+    /// It is [`Option`] rather than a panic for the ordinary reason: the
+    /// other variant is reachable, and a caller who asks the wrong
+    /// question should get `None` rather than an abort.
     ///
     /// The variant is still there for a caller who wants to branch on
     /// both, and both payloads are public. This is the shortcut for the
@@ -273,25 +326,32 @@ impl BuildError {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// The paragraph the doc below was trimmed from, in full:
+//
+// Raised by [`ClientBuilder::build`](crate::ClientBuilder::build), never
+// per request, because that is where a configuration this client cannot
+// honour is refused — `check_supported`'s own shape one field over, where
+// what cannot be honoured is a setting the transport will not keep and
+// here it is a token `Accept-Encoding` will not carry.
+//
+// **The alternative was a panic and the other alternative was silence**,
+// which is why this type exists rather than either. `accept_encoding`
+// assembled its value with an `expect` justified by *"every token is a
+// compile-time ASCII constant… nothing here comes from the network or the
+// caller"* — true of a closed set of codings and false the moment the
+// seam opened, so a coding answering `"my coding"` would have panicked
+// once per request. Skipping it instead would have been a client that
+// never asks for a coding the caller configured and never says so, which
+// is the *silently ignored setting* defect this workspace has closed four
+// times.
 /// A [`ContentCoding`](crate::ContentCoding) whose own name will not go in
 /// a header.
 ///
 /// Raised by [`ClientBuilder::build`](crate::ClientBuilder::build), never
 /// per request, because that is where a configuration this client cannot
-/// honour is refused — `check_supported`'s own shape one field over, where
-/// what cannot be honoured is a setting the transport will not keep and
-/// here it is a token `Accept-Encoding` will not carry.
-///
-/// **The alternative was a panic and the other alternative was silence**,
-/// which is why this type exists rather than either. `accept_encoding`
-/// assembled its value with an `expect` justified by *"every token is a
-/// compile-time ASCII constant… nothing here comes from the network or the
-/// caller"* — true of a closed set of codings and false the moment the
-/// seam opened, so a coding answering `"my coding"` would have panicked
-/// once per request. Skipping it instead would have been a client that
-/// never asks for a coding the caller configured and never says so, which
-/// is the *silently ignored setting* defect this workspace has closed four
-/// times.
+/// honour is refused.
 ///
 /// A `token` is RFC 9110 §5.6.2's production: one or more of the ASCII
 /// alphanumerics and ``!#$%&'*+-.^_`|~``. The two characters worth naming
@@ -381,18 +441,29 @@ pub struct ColonInUsername;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum MultipartError {
+    // Maintainer notes (not rendered):
+    //
+    // The doc below was trimmed from this, in full:
+    //
+    // There is deliberately no fallback — see this module's
+    // documentation on why a fixed boundary is the one value that must
+    // never be emitted.
+    // The cause is boxed rather than typed, and that is a stability
+    // decision rather than a style one: it was `getrandom::Error`, so a
+    // major release of a crate this one uses for sixteen bytes would have
+    // been a breaking change here, and a caller matching this variant had
+    // to depend on `getrandom` to name what they caught. The chain is
+    // unchanged — `source()` still reaches the OS's reason — and so is
+    // the message.
     /// The operating system would not supply randomness for a boundary.
     ///
-    /// There is deliberately no fallback — see this module's
+    /// There is deliberately no fallback — see [`crate::multipart`]'s
     /// documentation on why a fixed boundary is the one value that must
     /// never be emitted.
-    /// The cause is boxed rather than typed, and that is a stability
-    /// decision rather than a style one: it was `getrandom::Error`, so a
-    /// major release of a crate this one uses for sixteen bytes would have
-    /// been a breaking change here, and a caller matching this variant had
-    /// to depend on `getrandom` to name what they caught. The chain is
-    /// unchanged — `source()` still reaches the OS's reason — and so is
-    /// the message.
+    ///
+    /// The cause is boxed rather than typed, so that it does not tie this
+    /// crate's API to a crate used for sixteen bytes; `source()` reaches
+    /// the OS's reason.
     #[error("no entropy available for a multipart boundary: {0}")]
     NoEntropy(#[source] Box<dyn std::error::Error + Send + Sync>), // send-bound-exception: amendment-C1
 
@@ -433,13 +504,17 @@ pub enum MultipartError {
     RewindTooDeep,
 }
 
+// Maintainer notes (not rendered):
+//
+// "... so the
+// body fails instead — the same call this workspace makes for undeclared
+// HTTP/1 request trailers one crate over."
 /// A part's body yielded a trailers frame.
 ///
 /// `multipart/form-data` has nowhere to put one: a part ends at the next
 /// delimiter and carries no trailer section. Dropping the frame would
 /// send a well-formed request missing data the caller supplied, so the
-/// body fails instead — the same call this workspace makes for undeclared
-/// HTTP/1 request trailers one crate over.
+/// body fails instead.
 #[derive(Debug, thiserror::Error)]
 #[error("a multipart part's body emitted trailers, which multipart/form-data cannot carry")]
 #[non_exhaustive]

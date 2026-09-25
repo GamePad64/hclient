@@ -25,7 +25,10 @@ pub struct RequestTrailersNotSent;
 #[error("the request body yielded a frame that is neither data nor trailers")]
 pub struct UnknownRequestBodyFrame;
 
-/// The failure `within_connect` ends in when the timer wins.
+// Maintainer notes (not rendered):
+// The failure `within_connect` ends in when the timer wins.
+/// The failure the QUIC connect bound ends in when the timer wins the
+/// race against the handshake.
 ///
 /// A named type rather than a string, for the reason
 /// `hclient_native::error::FirstByteTimedOut` gives: a caller must be able to tell

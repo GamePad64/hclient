@@ -1,21 +1,57 @@
 //! What a caller asks of **one request**, carried in its
 //! [`http::Extensions`].
 //!
-//! **Separate from [`crate::caps`], and the line between them is
-//! measured rather than felt.** A `*Support` value is what a transport
-//! *can* do, reported once at construction and read by the layer above to
-//! decide whether to ask; these are what a caller *asked for*, read back
-//! out of the request by whichever transport serves it. Counted across
-//! this workspace, the two sets do not overlap at a single site: these
-//! three appear only where extensions are read, and `Capabilities` and its
-//! enums only where `capabilities()` is called.
+//! **Separate from [`crate::caps`].** A `*Support` value is what a
+//! transport *can* do, reported once at construction and read by the
+//! layer above to decide whether to ask; these are what a caller *asked
+//! for*, read back out of the request by whichever transport serves it.
 //!
-//! **An extension is readable by any transport in the graph**, including
-//! one this workspace did not write — which is why a credential is not
-//! among them and digest's password travels as an argument instead.
+//! **An extension is readable by any transport in the graph**, which is
+//! why a credential is never among them.
+
+// Maintainer notes (not rendered):
+//
+// **Separate from [`crate::caps`], and the line between them is
+// measured rather than felt.** A `*Support` value is what a transport
+// *can* do, reported once at construction and read by the layer above to
+// decide whether to ask; these are what a caller *asked for*, read back
+// out of the request by whichever transport serves it. Counted across
+// this workspace, the two sets do not overlap at a single site: these
+// three appear only where extensions are read, and `Capabilities` and its
+// enums only where `capabilities()` is called.
+//
+// **An extension is readable by any transport in the graph**, including
+// one this workspace did not write — which is why a credential is not
+// among them and digest's password travels as an argument instead.
 
 use crate::error::VersionNotAvailable;
 
+// Maintainer notes (not rendered):
+//
+// # `#[non_exhaustive]`, and what it does and does not close
+//
+// A fifth bound is a real prospect — `resolve` joined three in v0.4 —
+// and an out-of-tree caller should not need a major version for one.
+// The attribute is what buys that, and the objection to it was that its
+// whole use is `Timeouts { connect: Some(d), ..Default::default() }`,
+// which the attribute closes from outside this crate along with the
+// plain literal: `E0639` for both, measured on a two-crate probe.
+//
+// **What it does not close is field assignment**, and that is the fact
+// the objection missed. `let mut t = Timeouts::new(); t.connect =
+// Some(d);` compiles from another crate and inside a `const`, so the
+// whole of what was needed is a `const fn` constructor —
+// [`Self::new`] — because `Default::default()` is not one and
+// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is a `const`. The `with_*`
+// setters chain on top of it so a call site reads as it did before.
+//
+// This was a generated `bon` builder for one release and is not any
+// more. What that cost was a public typestate — every setter's signature
+// named `SetConnect<S>` and `S::Connect: IsUnset`, from a module `bon`
+// marks `#[doc(hidden)]`, so a caller could meet those names in a
+// signature and in a compiler error and could not write them. Five
+// crates in the graph and a hole in the public API, to reach a
+// constructor that is nine lines.
 /// The timeout triple — `wasi:http`'s shape, the richest of the ambient
 /// models.
 ///
@@ -26,30 +62,13 @@ use crate::error::VersionNotAvailable;
 /// Lives in `hclient-core` because transports read it from the request's
 /// `http::Extensions`, and they don't depend on `hclient`.
 ///
-/// # `#[non_exhaustive]`, and what it does and does not close
+/// # `#[non_exhaustive]`, and how to build one
 ///
-/// A fifth bound is a real prospect — `resolve` joined three in v0.4 —
-/// and an out-of-tree caller should not need a major version for one.
-/// The attribute is what buys that, and the objection to it was that its
-/// whole use is `Timeouts { connect: Some(d), ..Default::default() }`,
-/// which the attribute closes from outside this crate along with the
-/// plain literal: `E0639` for both, measured on a two-crate probe.
-///
-/// **What it does not close is field assignment**, and that is the fact
-/// the objection missed. `let mut t = Timeouts::new(); t.connect =
-/// Some(d);` compiles from another crate and inside a `const`, so the
-/// whole of what was needed is a `const fn` constructor —
-/// [`Self::new`] — because `Default::default()` is not one and
-/// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is a `const`. The `with_*`
-/// setters chain on top of it so a call site reads as it did before.
-///
-/// This was a generated `bon` builder for one release and is not any
-/// more. What that cost was a public typestate — every setter's signature
-/// named `SetConnect<S>` and `S::Connect: IsUnset`, from a module `bon`
-/// marks `#[doc(hidden)]`, so a caller could meet those names in a
-/// signature and in a compiler error and could not write them. Five
-/// crates in the graph and a hole in the public API, to reach a
-/// constructor that is nine lines.
+/// A new bound is not a breaking change. The attribute closes the struct
+/// literal and `..Default::default()` from outside this crate, but not
+/// field assignment: `let mut t = Timeouts::new(); t.connect = Some(d);`
+/// compiles from another crate and inside a `const`. [`Self::new`] is a
+/// `const fn`, and the `with_*` setters chain on top of it.
 ///
 /// **The mirror is [`crate::caps::TimeoutSupport`], and it takes the same
 /// shape for the reason the two look opposite.** A bound left unset here
@@ -102,21 +121,22 @@ pub struct Timeouts {
     pub between_bytes: Option<core::time::Duration>,
 }
 
+// Maintainer notes (not rendered):
+//
+// # Why [`Timeouts::support_checks`] hands back these rather than an array
+//
+// The whole reason [`Timeouts`] is `#[non_exhaustive]` is that a fifth
+// bound must not be a breaking change, and a `[_; 4]` return type would
+// have made it one — the count is exactly the thing not to promise. So
+// the method returns an iterator, the arity stays private, and a caller
+// writes the same loop before and after a bound is added.
+//
+// Named fields rather than a tuple for the same reason one layer down:
+// `(bool, bool, &str)` puts two booleans side by side with nothing but
+// position to tell *the caller asked for this* from *the transport
+// enforces it*, and swapping them type-checks.
 /// One bound of a [`Timeouts`], beside whether the transport enforces it
 /// and the name a refusal carries.
-///
-/// # Why [`Timeouts::support_checks`] hands back these rather than an array
-///
-/// The whole reason [`Timeouts`] is `#[non_exhaustive]` is that a fifth
-/// bound must not be a breaking change, and a `[_; 4]` return type would
-/// have made it one — the count is exactly the thing not to promise. So
-/// the method returns an iterator, the arity stays private, and a caller
-/// writes the same loop before and after a bound is added.
-///
-/// Named fields rather than a tuple for the same reason one layer down:
-/// `(bool, bool, &str)` puts two booleans side by side with nothing but
-/// position to tell *the caller asked for this* from *the transport
-/// enforces it*, and swapping them type-checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BoundSupport {
@@ -129,14 +149,20 @@ pub struct BoundSupport {
 }
 
 impl Timeouts {
+    // Maintainer notes (not rendered):
+    //
+    // `const`, and that is what the type needs rather than a nicety:
+    // [`Self`] is `#[non_exhaustive]`, which closes the struct literal
+    // *and* `..Default::default()` to a caller outside this crate
+    // (`E0639` for both), and `Default::default()` is not a `const fn`.
+    // `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is a `const`, so without
+    // this there is no expression that builds one there.
     /// No bound at all — every phase waits as long as it waits.
     ///
     /// `const`, and that is what the type needs rather than a nicety:
     /// [`Self`] is `#[non_exhaustive]`, which closes the struct literal
     /// *and* `..Default::default()` to a caller outside this crate
     /// (`E0639` for both), and `Default::default()` is not a `const fn`.
-    /// `hclient-dns-doh`'s `DEFAULT_TIMEOUTS` is a `const`, so without
-    /// this there is no expression that builds one there.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -183,14 +209,19 @@ impl Timeouts {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The `with_*` setters take a `Duration` because a caller writing one
+    // down knows it is setting a bound; a caller **forwarding** one
+    // already has an `Option` and would otherwise write a `match`. Every
+    // bound has this form because every bound is forwarded somewhere —
+    // `hclient`'s own timeout tests forward all four.
     /// Set the connect bound to whatever this `Option` holds, `None`
     /// included.
     ///
     /// The `with_*` setters take a `Duration` because a caller writing one
     /// down knows it is setting a bound; a caller **forwarding** one
-    /// already has an `Option` and would otherwise write a `match`. Every
-    /// bound has this form because every bound is forwarded somewhere —
-    /// `hclient`'s own timeout tests forward all four.
+    /// already has an `Option` and would otherwise write a `match`.
     #[must_use]
     pub const fn maybe_connect(mut self, d: Option<core::time::Duration>) -> Self {
         self.connect = d;
@@ -213,15 +244,16 @@ impl Timeouts {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **In this crate for [`Self::support_checks`]' reason.** A merge
+    // that forgot a bound would drop the caller's setting silently, and
+    // written in `hclient` under `#[non_exhaustive]` it would have to
+    // carry a `..` — which a fifth bound joins without a word. Here the
+    // destructure has no rest pattern, so a new bound is `E0027` on this
+    // line, in the crate that grew it.
     /// This value's bounds, falling back to `base` wherever this one is
     /// unset — the per-request-over-client merge, field by field.
-    ///
-    /// **In this crate for [`Self::support_checks`]' reason.** A merge
-    /// that forgot a bound would drop the caller's setting silently, and
-    /// written in `hclient` under `#[non_exhaustive]` it would have to
-    /// carry a `..` — which a fifth bound joins without a word. Here the
-    /// destructure has no rest pattern, so a new bound is `E0027` on this
-    /// line, in the crate that grew it.
     #[must_use]
     pub fn or(&self, base: &Self) -> Self {
         // No `..`: a bound added to this struct must fail this line.
@@ -239,30 +271,35 @@ impl Timeouts {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // # Why this is a method and not a builder call
+    //
+    // The two call sites in `hclient-native` **narrow** a caller's
+    // `Timeouts`: the resolve already happened, before the race, and each
+    // arm gets what is left of the connect budget. Everything else the
+    // caller set has to travel through untouched.
+    //
+    // A builder cannot express that, `bon`'s included, because a builder
+    // starts from nothing: the site would have to re-list the bounds it
+    // means to preserve —
+    // `builder().maybe_first_byte(t.first_byte).maybe_between_bytes(..)`
+    // — and a fifth bound would then be **dropped silently, still
+    // compiling**. Measured on a two-crate probe before this method was
+    // written, in both shapes: the re-listing form loses the new bound
+    // and this one carries it with no edit at all.
+    //
+    // So it is the same rule as [`Self::support_checks`] a second time.
+    // A builder answers for whoever *creates* a value; every place that
+    // **transforms** one needs the transformation to live in the crate
+    // that owns the fields, or a new field arrives somewhere nobody
+    // looks.
     /// This value with the connect budget replaced and the resolve bound
     /// dropped — what a transport hands to one arm of a connection race.
     ///
-    /// # Why this is a method and not a builder call
-    ///
-    /// The two call sites in `hclient-native` **narrow** a caller's
-    /// `Timeouts`: the resolve already happened, before the race, and each
-    /// arm gets what is left of the connect budget. Everything else the
-    /// caller set has to travel through untouched.
-    ///
-    /// A builder cannot express that, `bon`'s included, because a builder
-    /// starts from nothing: the site would have to re-list the bounds it
-    /// means to preserve —
-    /// `builder().maybe_first_byte(t.first_byte).maybe_between_bytes(..)`
-    /// — and a fifth bound would then be **dropped silently, still
-    /// compiling**. Measured on a two-crate probe before this method was
-    /// written, in both shapes: the re-listing form loses the new bound
-    /// and this one carries it with no edit at all.
-    ///
-    /// So it is the same rule as [`Self::support_checks`] a second time.
-    /// A builder answers for whoever *creates* a value; every place that
-    /// **transforms** one needs the transformation to live in the crate
-    /// that owns the fields, or a new field arrives somewhere nobody
-    /// looks.
+    /// The resolve already happened, before the race, and each arm gets what
+    /// is left of the connect budget. Everything else the caller set travels
+    /// through untouched, including any bound added later.
     #[must_use]
     pub fn narrowed_to_connect(mut self, connect: core::time::Duration) -> Self {
         // Field-wise rather than a literal, so a bound added to this
@@ -273,25 +310,26 @@ impl Timeouts {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // # This method is why the struct can be `#[non_exhaustive]`
+    //
+    // It holds the destructure that `hclient`'s
+    // `check_timeouts_supported` used to hold, moved into the crate
+    // where the attribute does not apply — see the type's own doc for
+    // what the move buys. The pattern below has no `..`, so a fifth
+    // bound is a compile error here rather than a bound nothing checks.
+    //
+    // # What it does not promise
+    //
+    // That the pairing is right. The compiler forces a new bound to be
+    // *named*; whether it is given its own capability field is this
+    // function's own correctness, pinned by
+    // `every_bound_names_its_own_support_field` below rather than
+    // asserted.
     /// Every bound this value sets, paired with the
     /// [`crate::caps::TimeoutSupport`] field that says whether a transport
     /// enforces it, and with the name a refusal carries.
-    ///
-    /// # This method is why the struct can be `#[non_exhaustive]`
-    ///
-    /// It holds the destructure that `hclient`'s
-    /// `check_timeouts_supported` used to hold, moved into the crate
-    /// where the attribute does not apply — see the type's own doc for
-    /// what the move buys. The pattern below has no `..`, so a fifth
-    /// bound is a compile error here rather than a bound nothing checks.
-    ///
-    /// # What it does not promise
-    ///
-    /// That the pairing is right. The compiler forces a new bound to be
-    /// *named*; whether it is given its own capability field is this
-    /// function's own correctness, pinned by
-    /// `every_bound_names_its_own_support_field` below rather than
-    /// asserted.
     pub fn support_checks(
         &self,
         support: &crate::caps::TimeoutSupport,
@@ -329,6 +367,14 @@ impl Timeouts {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// The notion that would answer the safety question — method safety and
+// idempotency — deliberately does not exist in this codebase, and its
+// absence is written down where the one v0.2 retry lives. RFC 8470 §2 puts
+//
+// go out in early data again, to the server that just refused to risk it.
+// See `hclient_h3::early`.
 /// The caller's per-request statement that this request may go into TLS 1.3
 /// early data (0-RTT).
 ///
@@ -363,8 +409,7 @@ impl Timeouts {
 /// attacks, and should therefore never invoke non-idempotent operations"*.
 ///
 /// The notion that would answer the safety question — method safety and
-/// idempotency — deliberately does not exist in this codebase, and its
-/// absence is written down where the one v0.2 retry lives. RFC 8470 §2 puts
+/// idempotency — deliberately does not exist in this codebase. RFC 8470 §2 puts
 /// the default on the conservative side (*"clients MAY send requests with
 /// safe HTTP methods … and MUST NOT send unsafe methods (or methods whose
 /// safety is not known) in early data"*) and, in the same sentence, says
@@ -390,7 +435,6 @@ impl Timeouts {
 /// replay that kept it would ask for the early-data connection and — if
 /// that one has been evicted or closed since — would open a fresh one and
 /// go out in early data again, to the server that just refused to risk it.
-/// See `hclient_h3::early`.
 ///
 /// # The other boundary: an origin
 ///
@@ -502,6 +546,18 @@ pub struct AllowEarlyData;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequireVersion(pub http::Version);
 
+// Maintainer notes (not rendered):
+//
+// A function here rather than a `==` at each call site so that the rule —
+// exact match, absence means no demand — has one definition. Two
+// transports enforce it today and they must not drift.
+//
+// **What it does not do is decide *when* to call it.** That is the whole
+// content of the guarantee: `check_version` at the wrong point is a check
+// that reports a violation after the bytes are already gone. Each caller
+// places it where the protocol is first known and no head has been
+// written, and pins that placement with a test that asserts the server
+// saw nothing.
 /// The one comparison, shared by every transport that honours a demand.
 ///
 /// `Ok(())` when there is no demand or `negotiated` satisfies it; a typed
@@ -509,15 +565,12 @@ pub struct RequireVersion(pub http::Version);
 /// [`ErrorKind::Unsupported`](crate::error::ErrorKind::Unsupported) otherwise.
 ///
 /// A function here rather than a `==` at each call site so that the rule —
-/// exact match, absence means no demand — has one definition. Two
-/// transports enforce it today and they must not drift.
+/// exact match, absence means no demand — has one definition.
 ///
 /// **What it does not do is decide *when* to call it.** That is the whole
 /// content of the guarantee: `check_version` at the wrong point is a check
-/// that reports a violation after the bytes are already gone. Each caller
-/// places it where the protocol is first known and no head has been
-/// written, and pins that placement with a test that asserts the server
-/// saw nothing.
+/// that reports a violation after the bytes are already gone. Call it
+/// where the protocol is first known and no head has been written.
 ///
 /// # Errors
 ///

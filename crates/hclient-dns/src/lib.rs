@@ -15,22 +15,6 @@
 //! them out in DNS-response order, cache order, or any other order.
 //!
 //! **RFC 6724 §6 sorting is nobody's job today, not "the caller's job."**
-//! The tempting answer is the connector — `hclient-native::connect`, the
-//! place where results actually reach `Scheduler::offer_v4`/`offer_v6`,
-//! and `Scheduler` says the same thing from its own side of the seam:
-//! "sorting is the caller's concern, before `offer_*`; it isn't done
-//! here". That promise cannot be kept in the form stated: the full rule
-//! requires
-//! Source Address Selection (RFC 6724 Rule 1 onward) — knowledge of which
-//! local address the OS would actually use to connect to a given
-//! destination, i.e. access to the routing table, which NONE of this
-//! vertical's traits (`Resolve`, `TcpConnect`, `Timer`) provide. A partial
-//! implementation (only the rules that don't need Source Address
-//! Selection) would be worse than none at all: it would look like RFC
-//! 6724 compliance without being one — the same principle that split
-//! `RedirectSupport::None`/`Transparent` in `hclient-core` and
-//! [`Resolve::supports`]/the empty stream below: a capability that lies
-//! about its own state is worse than a capability that's simply absent.
 //!
 //! So, as things stand today: each family's addresses go into
 //! `Scheduler::offer_v4`/`offer_v6` in the SAME order the resolver handed
@@ -46,10 +30,7 @@
 //! hands back an empty stream rather than failing to compile. But an empty
 //! stream is ambiguous on its own: it could mean *this resolver
 //! cannot ask* or *it asked and got nothing back* — two different things
-//! a caller is not obliged to conflate (the same principle that split
-//! `RedirectSupport::None` and `Transparent` in `hclient-core`: a
-//! capability that lies about its own absence or its own presence is worse
-//! than a capability that is simply absent).
+//! a caller is not obliged to conflate.
 //!
 //! [`Resolve::supports`] is where that distinction lives, and it is the
 //! one place it can: a resolver that cannot answer a type leaves it at the
@@ -60,10 +41,39 @@
 //!
 //! **One method, and that is what makes the seam additive.** A record type
 //! this client learns to act on — TLSA for DANE, CAA before issuing —
-//! arrives as an [`RData`] variant and changes this trait not at all;
-//! under the shape this replaced it would have been a fourth associated
-//! type, a fourth method and a fourth capability constant, which every
-//! implementor outside this workspace would have had to grow.
+//! arrives as an [`RData`] variant and changes this trait not at all.
+
+// Maintainer notes (not rendered):
+// On RFC 6724 §6 sorting:
+// The tempting answer is the connector — `hclient-native::connect`, the
+// place where results actually reach `Scheduler::offer_v4`/`offer_v6`,
+// and `Scheduler` says the same thing from its own side of the seam:
+// "sorting is the caller's concern, before `offer_*`; it isn't done
+// here". That promise cannot be kept in the form stated: the full rule
+// requires
+// Source Address Selection (RFC 6724 Rule 1 onward) — knowledge of which
+// local address the OS would actually use to connect to a given
+// destination, i.e. access to the routing table, which NONE of this
+// vertical's traits (`Resolve`, `TcpConnect`, `Timer`) provide. A partial
+// implementation (only the rules that don't need Source Address
+// Selection) would be worse than none at all: it would look like RFC
+// 6724 compliance without being one — the same principle that split
+// `RedirectSupport::None`/`Transparent` in `hclient-core` and
+// [`Resolve::supports`]/the empty stream below: a capability that lies
+// about its own state is worse than a capability that's simply absent.
+//
+// On the empty stream: two different things
+// a caller is not obliged to conflate (the same principle that split
+// `RedirectSupport::None` and `Transparent` in `hclient-core`: a
+// capability that lies about its own absence or its own presence is worse
+// than a capability that is simply absent).
+//
+// On the one method: A record type
+// this client learns to act on — TLSA for DANE, CAA before issuing —
+// arrives as an [`RData`] variant and changes this trait not at all;
+// under the shape this replaced it would have been a fourth associated
+// type, a fourth method and a fourth capability constant, which every
+// implementor outside this workspace would have had to grow.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -81,9 +91,12 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// The two stream shapes this crate hands back, named so the marker sits
+// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
+// records about where a bound is written.
 /// The two stream shapes this crate hands back, named so the marker sits
-/// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
-/// records about where a bound is written.
+/// on a line `cargo fmt` has no reason to reflow.
 type SendRecords<'a> =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 
@@ -103,16 +116,30 @@ pub mod rtype {
     pub const HTTPS: u16 = 65;
 }
 
+// Maintainer notes (not rendered):
+// **`#[non_exhaustive]`, so it is built through [`Record::new`]** — the
+// same shape [`SvcbEndpoint`] has, and for the reason that governs every
+// such decision here: this type is handed *back* and only read, so
+// exhaustiveness is not the mechanism and a field added later must not
+// be a breaking change.
 /// One record a resolver reported.
 ///
-/// **`#[non_exhaustive]`, so it is built through [`Record::new`]** — the
-/// same shape [`SvcbEndpoint`] has, and for the reason that governs every
-/// such decision here: this type is handed *back* and only read, so
-/// exhaustiveness is not the mechanism and a field added later must not
-/// be a breaking change.
+/// It is `#[non_exhaustive]`, so it is built through [`Record::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Record {
+    // Maintainer notes (not rendered):
+    // **It lives here and not on the rdata**, which is where an HTTPS
+    // record's used to be. A TTL belongs to the record rather than to
+    // what the record says — that is where DNS puts it, and where hickory
+    // keeps it — so one field answers for every type this seam learns,
+    // and no backend can fill one copy and forget the other.
+    //
+    // This is what makes a cache of HTTPS records honest, and it is why
+    // there was none: `hclient-native`'s discovery has no cache because
+    // inventing a lifetime for somebody else's answer is how a resolver's
+    // cache and ours drift apart — and the lifetime was always on the
+    // wire, simply not carried up here.
     /// The record's TTL as the resolver reported it.
     ///
     /// **`Option`, and the two absences are different instructions.**
@@ -120,18 +147,6 @@ pub struct Record {
     /// neither does `fetch` — where `Some(ZERO)` is RFC 2181 §8's *do not
     /// cache this*. Collapsing them would invent a lifetime for an answer
     /// nobody gave.
-    ///
-    /// **It lives here and not on the rdata**, which is where an HTTPS
-    /// record's used to be. A TTL belongs to the record rather than to
-    /// what the record says — that is where DNS puts it, and where hickory
-    /// keeps it — so one field answers for every type this seam learns,
-    /// and no backend can fill one copy and forget the other.
-    ///
-    /// This is what makes a cache of HTTPS records honest, and it is why
-    /// there was none: `hclient-native`'s discovery has no cache because
-    /// inventing a lifetime for somebody else's answer is how a resolver's
-    /// cache and ours drift apart — and the lifetime was always on the
-    /// wire, simply not carried up here.
     pub ttl: Option<Duration>,
     /// What the record says.
     pub rdata: RData,

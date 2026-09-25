@@ -1,49 +1,55 @@
 //! RFC 9460 client semantics, over a record some backend has already
 //! decoded.
 //!
-//! **Why this is in the trait crate and not in a backend.** It arrived in
-//! `hclient-dns-system`, where its own doc comment gave the reason it
-//! could not stay there: the rules that decide whether a record is usable
-//! at all — `AliasMode` versus `ServiceMode` (§2.4), a root `TargetName` meaning
-//! the owner name (§2.5), `mandatory` semantics (§8) — "are the part of
-//! this crate most likely to be got subtly wrong, and they are identical
-//! on every platform." That argument was made about two backends inside
-//! one crate (`res_query` and `DnsQuery_UTF8`). `hclient-dns-doh` is a
-//! third, in a different crate, and it decodes the same wire format the
-//! `res_query` path does — so either the rules move to where every backend
-//! can reach them, or the `DoH` backend gets a second copy of them and the
-//! copies drift. They moved.
-//!
-//! **What did not move: any wire parsing, and no decoder is named here at
-//! all.** Nothing in this module reads bytes. [`RawBinding`] holds no
+//! **No wire parsing, and no decoder is named here at all.** Nothing in this module reads bytes. [`RawBinding`] holds no
 //! borrowed memory and no platform detail, and each backend fills it in
 //! from whatever its decoder produced — a `domain`-decoded `Https` record
 //! on the `res_query` and `DoH` paths, an OS-parsed `DNS_SVCB_DATA` on
 //! Windows. That is what keeps this crate free of a DNS codec: a consumer
 //! who only ever uses `IpLiteralOnly` does not link one.
 //!
-//! **That was true of the dependency and false of the signature, for two
-//! decoders in a row.** A `binding_from_decoded` lived here, behind a
-//! `codec` feature, taking a decoded record and naming its decoder in
-//! four places — the parameter, the error type and two bounds — while
-//! this crate re-exported no such crate, so an outside caller could not
-//! name the types it demanded without adding that crate to their own
-//! manifest at a matching version. It read
-//! `&dns_message_parser::rr::ServiceBinding` before it read
-//! `&domain::rdata::svcb::Https<..>`, which is the point: the leak
-//! outlived the decoder it leaked. It is `hclient-dns-doh`'s now — its
-//! only caller throughout — and this crate's public surface names no
-//! foreign crate but `bytes`, `futures-core` and `hclient-core`, all of
-//! which it re-exports or shares through its own seam. `ca5ab5e4` did the
-//! same for `winnow` in `hclient-proto`, and for the same reason: a
-//! pre-release is where a leaked foreign type is cheap to withdraw.
-//!
 //! So what a backend shares with every other backend is [`RawBinding`],
 //! [`RawParam`] and [`endpoint_from_binding`] — the RFC's rules and the
-//! vocabulary they read, which is the part identical on every platform and
-//! the whole of the argument at the top of this file. Reaching a decoded
+//! vocabulary they read, which is the part identical on every platform.
+//! Reaching a decoded
 //! record into that vocabulary is each backend's own, because the decoder
 //! is each backend's own.
+
+// Maintainer notes (not rendered):
+//
+// The reference above opened "**What did not move: any wire parsing, and
+// no decoder is named here at all.**" and closed its last paragraph with
+// "the whole of the argument at the top of this file"; both referred to
+// the paragraph below.
+//
+// **Why this is in the trait crate and not in a backend.** It arrived in
+// `hclient-dns-system`, where its own doc comment gave the reason it
+// could not stay there: the rules that decide whether a record is usable
+// at all — `AliasMode` versus `ServiceMode` (§2.4), a root `TargetName` meaning
+// the owner name (§2.5), `mandatory` semantics (§8) — "are the part of
+// this crate most likely to be got subtly wrong, and they are identical
+// on every platform." That argument was made about two backends inside
+// one crate (`res_query` and `DnsQuery_UTF8`). `hclient-dns-doh` is a
+// third, in a different crate, and it decodes the same wire format the
+// `res_query` path does — so either the rules move to where every backend
+// can reach them, or the `DoH` backend gets a second copy of them and the
+// copies drift. They moved.
+//
+// **That was true of the dependency and false of the signature, for two
+// decoders in a row.** A `binding_from_decoded` lived here, behind a
+// `codec` feature, taking a decoded record and naming its decoder in
+// four places — the parameter, the error type and two bounds — while
+// this crate re-exported no such crate, so an outside caller could not
+// name the types it demanded without adding that crate to their own
+// manifest at a matching version. It read
+// `&dns_message_parser::rr::ServiceBinding` before it read
+// `&domain::rdata::svcb::Https<..>`, which is the point: the leak
+// outlived the decoder it leaked. It is `hclient-dns-doh`'s now — its
+// only caller throughout — and this crate's public surface names no
+// foreign crate but `bytes`, `futures-core` and `hclient-core`, all of
+// which it re-exports or shares through its own seam. `ca5ab5e4` did the
+// same for `winnow` in `hclient-proto`, and for the same reason: a
+// pre-release is where a leaked foreign type is cheap to withdraw.
 
 pub use crate::error::SvcbRecordError;
 

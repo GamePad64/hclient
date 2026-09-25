@@ -37,10 +37,7 @@
 //! FIN and go on reading the response**, which is what
 //! `hyper::rt::Write::poll_shutdown` meant and what `TcpStream::shutdown`
 //! does. Folding the two would lose a distinction this workspace treats as
-//! load-bearing — `CLAUDE.md` records a half-close as *blocker two* against
-//! an `embedded-nal-async` adapter, and records the W7 spike forwarding
-//! `poll_shutdown` to `flush` as *"a half-close hyper believes it performed
-//! and did not"*. `hclient-rt-embassy` owns its socket rather than a NAL
+//! load-bearing. `hclient-rt-embassy` owns its socket rather than a NAL
 //! `Connection` precisely so that it can send a real one.
 //!
 //! So the seam is `AsyncRead + AsyncWrite + Shutdown`: two traits that
@@ -61,10 +58,29 @@
 //! copy per request. Every adapter says `false`, by the default of
 //! whichever trait asks.
 
+// Maintainer notes (not rendered):
+// Folding the two would lose a distinction this workspace treats as
+// load-bearing — `CLAUDE.md` records a half-close as *blocker two*
+// against an `embedded-nal-async` adapter, and records the W7 spike
+// forwarding `poll_shutdown` to `flush` as *"a half-close hyper believes
+// it performed and did not"*. `hclient-rt-embassy` owns its socket rather
+// than a NAL `Connection` precisely so that it can send a real one.
+
 use std::io::Result;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+// Maintainer notes (not rendered):
+// ...forwarding it to [`poll_shutdown`](Self::poll_shutdown) keeps the
+// stricter promise for them too. This was written down after a runtime was
+// implemented from outside the workspace and its author had to guess: the contrast above reads as
+// though the two must differ, and they need not.
+//
+// **A runtime that cannot half-close should say so rather than pretend**,
+// which is what the `embedded-nal-async` note in this module's
+// documentation is about: `embedded_io_async::Write` is `write` and
+// `flush` and nothing else, so an adapter over it has no honest body for
+// this method.
 /// Send FIN while remaining able to read.
 ///
 /// This is not [`futures_io::AsyncWrite::poll_close`], and the difference
@@ -85,13 +101,11 @@ use std::task::{Context, Poll};
 /// go through this trait — so it is there for a caller who holds the
 /// stream as plain `futures-io`, and forwarding it to
 /// [`poll_shutdown`](Self::poll_shutdown) keeps the stricter promise for
-/// them too. This was written down after a runtime was implemented from
-/// outside the workspace and its author had to guess: the contrast
-/// above reads as though the two must differ, and they need not.
+/// them too. The contrast above reads as though the two must differ, and
+/// they need not.
 ///
-/// **A runtime that cannot half-close should say so rather than pretend**,
-/// which is what the `embedded-nal-async` note in this module's
-/// documentation is about: `embedded_io_async::Write` is `write` and
+/// **A runtime that cannot half-close should say so rather than pretend**:
+/// `embedded_io_async::Write` is `write` and
 /// `flush` and nothing else, so an adapter over it has no honest body for
 /// this method.
 pub trait Shutdown {

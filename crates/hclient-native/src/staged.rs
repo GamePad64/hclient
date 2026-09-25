@@ -4,43 +4,14 @@
 //! The TCP stack's trio is here; the QUIC stack's is in `h3`, under the
 //! same three names, behind the `http3` feature.
 //!
-//! # It is not a method on `Transport`, and that is the third refusal of
-//! the same shape
+//! It is a trait of this crate rather than a method on `Transport`,
+//! because only a backend with a connector of its own has a connect to
+//! stage.
 //!
-//! `Transport` is the seam **every** backend fills in. `wasi:http` 0.3's
-//! client interface is one function — `send: async func(request) ->
-//! result<response, error-code>` — with no connection resource anywhere in
-//! the WIT, so `hclient-wasi` could answer nothing at all; and the
-//! browser's one connect-shaped API is a `<link rel="preconnect">` hint,
-//! which yields no handle, no readiness signal and no way to bind a later
-//! `fetch()` to whatever it opened, so `hclient-fetch` would be
-//! implementing *"ask the browser nicely, then return `Ok(())`"*. A
-//! `Transport::connect` would be `Unsupported` for two of four backends and
-//! dishonest rather than merely unimplemented for one of them.
+//! # A handle, not a warm pool
 //!
-//! The nearer precedent is in this crate: `Prefetch`, public until the
-//! routing it served moved inside, staged the phase one step earlier — name resolution — and refused the seam with the
-//! sentence that decides this one too, about a phase that had not come up
-//! yet: *"a `fetch`-shaped transport has no DNS of its own to save, and a
-//! `wasi:http` one has no connector at all."*
-//!
-//! A trait rather than two inherent methods, for a mechanical reason: a caller generic over `Native<R, T, D>` reaches it
-//! through a `where` bound, and an inherent method would make that caller
-//! repeat every structural bound [`crate::Native`]'s exchange impl declares
-//! — and then still not be able to name the response body, because
-//! `<Native<..> as Transport>::Body` behind a `where` clause is an opaque
-//! projection.
-//!
-//! # A handle, not a warm pool, and `Timeouts::connect` is why
-//!
-//! The weaker shape a reader will reach for is *"dial and leave it in the
-//! pool; the ordinary `execute` will find it"*. It fixes the same
-//! duplicate-request problem and is refused for a different one: under it
-//! the second call **may still connect**, so it reads `Timeouts::connect`
-//! off the same request and applies it again, and a caller who set
-//! `connect: Some(C)` can be made to wait `2C`. That is the defect
-//! `hclient::Client`'s `425` replay had to be built around — *"a bound a
-//! server can double by answering `425` is not a bound"*.
+//! [`StagedConnect::connect`] spends `Timeouts::connect`; the exchange
+//! cannot spend it again.
 //!
 //! Here [`StagedConnect::exchange`] is handed a connection. There is no
 //! connect for a bound to bound — not *ignored*, which would need a comment
@@ -48,24 +19,11 @@
 //! `TimeoutSupport::connect` is untouched: it is a claim about
 //! `Transport::execute`, and `execute` is unchanged.
 //!
-//! # What the pool says about a connection held outside it
+//! # A connection held outside the pool
 //!
-//! `Pool`, `PoolKey`, `CheckIn` and `Established` are all `pub(crate)`, so
-//! *"a connection produced outside this crate and handed to `execute`"* is
-//! not expressible — and [`Staged`] keeps it that way: it is produced by
-//! [`StagedConnect::connect`] and consumed by [`StagedConnect::exchange`],
-//! and the fact that a caller holds it in between changes nothing about who
-//! made it. It carries **its own check-in**, minted from the key the
-//! connect computed, rather than having `exchange` recompute one: the
-//! protocol is known only at the end of the connect, and two places holding
-//! one fact is the class of invariant this crate tries not to have.
-//!
-//! `pool.rs`'s *"nobody polls an idle connection, and that is the design"*
-//! is what makes holding one across a caller's decision cost nothing new:
-//! a [`Staged`] is in exactly the state a pooled connection is in, and the
-//! residual window that module records — *"a server may close between our
-//! check and our write"* — widens by however long the handle is held and is
-//! otherwise the same window.
+//! A [`Staged`] is in exactly the state a pooled connection is in: a
+//! server may close it between the connect and the exchange, and that
+//! window widens by however long the handle is held.
 //!
 //! # A dropped handle goes back to the pool
 //!
@@ -87,14 +45,74 @@
 //! — a pooled connection the server had closed. `exchange` does not: a
 //! retry means either another pooled candidate or a fresh dial, and the
 //! fresh dial is precisely the code path the section above requires to be
-//! absent. Half a retry — pool-only, never dialling — would be the rule
-//! with an exception, and an exception here is worse than the absence.
+//! absent.
 //!
 //! So a [`Staged`] whose connection died in the caller's window costs this
 //! request, where `execute` would have opened another. That is the price of
 //! the bound being unspendable twice, it is paid only on the staged path,
 //! and it is the reason `connect` is worth calling as late as the caller
 //! can manage.
+
+// Maintainer notes (not rendered):
+// # It is not a method on `Transport`, and that is the third refusal of
+// the same shape
+//
+// `Transport` is the seam **every** backend fills in. `wasi:http` 0.3's
+// client interface is one function — `send: async func(request) ->
+// result<response, error-code>` — with no connection resource anywhere in
+// the WIT, so `hclient-wasi` could answer nothing at all; and the
+// browser's one connect-shaped API is a `<link rel="preconnect">` hint,
+// which yields no handle, no readiness signal and no way to bind a later
+// `fetch()` to whatever it opened, so `hclient-fetch` would be
+// implementing *"ask the browser nicely, then return `Ok(())`"*. A
+// `Transport::connect` would be `Unsupported` for two of four backends and
+// dishonest rather than merely unimplemented for one of them.
+//
+// The nearer precedent is in this crate: `Prefetch`, public until the
+// routing it served moved inside, staged the phase one step earlier — name resolution — and refused the seam with the
+// sentence that decides this one too, about a phase that had not come up
+// yet: *"a `fetch`-shaped transport has no DNS of its own to save, and a
+// `wasi:http` one has no connector at all."*
+//
+// A trait rather than two inherent methods, for a mechanical reason: a caller generic over `Native<R, T, D>` reaches it
+// through a `where` bound, and an inherent method would make that caller
+// repeat every structural bound [`crate::Native`]'s exchange impl declares
+// — and then still not be able to name the response body, because
+// `<Native<..> as Transport>::Body` behind a `where` clause is an opaque
+// projection.
+//
+// # A handle, not a warm pool, and `Timeouts::connect` is why
+//
+// The weaker shape a reader will reach for is *"dial and leave it in the
+// pool; the ordinary `execute` will find it"*. It fixes the same
+// duplicate-request problem and is refused for a different one: under it
+// the second call **may still connect**, so it reads `Timeouts::connect`
+// off the same request and applies it again, and a caller who set
+// `connect: Some(C)` can be made to wait `2C`. That is the defect
+// `hclient::Client`'s `425` replay had to be built around — *"a bound a
+// server can double by answering `425` is not a bound"*.
+//
+// # What the pool says about a connection held outside it
+//
+// `Pool`, `PoolKey`, `CheckIn` and `Established` are all `pub(crate)`, so
+// *"a connection produced outside this crate and handed to `execute`"* is
+// not expressible — and [`Staged`] keeps it that way: it is produced by
+// [`StagedConnect::connect`] and consumed by [`StagedConnect::exchange`],
+// and the fact that a caller holds it in between changes nothing about who
+// made it. It carries **its own check-in**, minted from the key the
+// connect computed, rather than having `exchange` recompute one: the
+// protocol is known only at the end of the connect, and two places holding
+// one fact is the class of invariant this crate tries not to have.
+//
+// `pool.rs`'s *"nobody polls an idle connection, and that is the design"*
+// is what makes holding one across a caller's decision cost nothing new:
+// a [`Staged`] is in exactly the state a pooled connection is in, and the
+// residual window that module records — *"a server may close between our
+// check and our write"* — widens by however long the handle is held and is
+// otherwise the same window.
+//
+// absent. Half a retry — pool-only, never dialling — would be the rule
+// with an exception, and an exception here is worse than the absence.
 
 use crate::established::{self, Established};
 use crate::pool::CheckIn;
@@ -114,13 +132,17 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// It is a separate trait rather than a second impl of
+// [`StagedConnect`], and the merge of the two stacks into one crate did
+// not change that. Nothing needs polymorphism between them — the routing
+// owns both concretely — and the handle differs, which is a finding
+// rather than a choice:
+// [`Staged`] *owns*
 /// The QUIC stack's staged trio.
 ///
 /// It is a separate trait rather than a second impl of
-/// [`StagedConnect`], and the merge of the two stacks into one crate did
-/// not change that. Nothing needs polymorphism between them — the routing
-/// owns both concretely — and the handle differs, which is a finding
-/// rather than a choice:
+/// [`StagedConnect`], because the handle differs:
 /// [`Staged`] *owns* the connection it took out of the pool and checks it
 /// back in on drop, where [`h3::Staged`] is a claim on a connection the
 /// pool already holds and needs no `Drop` at all.
@@ -129,6 +151,15 @@ pub mod h3 {
     pub use crate::http3::{Refused, Staged, StagedConnect};
 }
 
+// Maintainer notes (not rendered):
+// A caller that owns more than one protocol stack and has to find out
+// whether one of them can reach an origin *before* it decides which one a
+// request goes to. `hclient-select` is the one in this workspace: it asks
+// the QUIC stack to connect, and where that fails it routes the request —
+// **untouched, unsent, never handed to a transport** — over TCP. Nothing
+// is retried, because nothing was sent, and this crate's own sentence is
+// true of it verbatim: *this is not a second request, it is the first one,
+// which never left.*
 /// A transport whose connect can be asked for on its own, and whose answer
 /// can then be spent on exactly one request.
 ///
@@ -136,12 +167,9 @@ pub mod h3 {
 ///
 /// A caller that owns more than one protocol stack and has to find out
 /// whether one of them can reach an origin *before* it decides which one a
-/// request goes to. `hclient-select` is the one in this workspace: it asks
-/// the QUIC stack to connect, and where that fails it routes the request —
-/// **untouched, unsent, never handed to a transport** — over TCP. Nothing
-/// is retried, because nothing was sent, and this crate's own sentence is
-/// true of it verbatim: *this is not a second request, it is the first one,
-/// which never left.*
+/// request goes to. Where the connect fails, the request comes back
+/// **untouched, unsent, never handed to a transport**, and can be routed
+/// elsewhere; nothing is retried, because nothing was sent.
 ///
 /// # Two calls, one budget
 ///
@@ -159,16 +187,17 @@ pub trait StagedConnect: Transport {
     /// question is not answered here, it cannot be asked.
     type Staged;
 
+    // Maintainer notes (not rendered):
+    //
+    // Written as `-> impl Future` rather than `async fn` for
+    // `Transport::execute`'s reason: no `Send` bound is added anywhere in
+    // this workspace's seams, and this one is on the same footing.
     /// Everything `Transport::execute` does up to and including *"a
     /// connection that can carry this request"*, and not one byte more.
     ///
     /// On failure the request comes back untouched, in [`Refused`], because
     /// the caller asked this question in order to decide something and the
     /// failure is half the answer.
-    ///
-    /// Written as `-> impl Future` rather than `async fn` for
-    /// `Transport::execute`'s reason: no `Send` bound is added anywhere in
-    /// this workspace's seams, and this one is on the same footing.
     fn connect(
         &self,
         req: http::Request<RequestBody>,
@@ -182,11 +211,14 @@ pub trait StagedConnect: Transport {
     ) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>;
 }
 
+// Maintainer notes (not rendered):
+// The pair rather than an error alone, and it is the shape
+// `established::Failed::NotSent` already has for the same purpose: a
+// caller that is going to send this request somewhere else needs the
+// request, and a caller that is not can take the error and drop the rest.
 /// A connect that did not produce a connection, with the request back.
 ///
-/// The pair rather than an error alone, and it is the shape
-/// `established::Failed::NotSent` already has for the same purpose: a
-/// caller that is going to send this request somewhere else needs the
+/// A caller that is going to send this request somewhere else needs the
 /// request, and a caller that is not can take the error and drop the rest.
 #[derive(Debug)]
 pub struct Refused {
@@ -212,12 +244,16 @@ impl From<Refused> for Error {
     }
 }
 
+// Maintainer notes (not rendered):
+// Named `Staged` rather than `Connected`, for a dull reason: `Connected`
+// is already the name of the hook event this module emits three lines
+// after making one, and two meanings of the word in one file is how the
+// wrong one gets read.
 /// A connection with a request to spend it on.
 ///
-/// Named `Staged` rather than `Connected`, for a dull reason: `Connected`
-/// is already the name of the hook event this module emits three lines
-/// after making one, and two meanings of the word in one file is how the
-/// wrong one gets read.
+/// Produced by [`StagedConnect::connect`] and spent by
+/// [`StagedConnect::exchange`]; dropped unspent, it hands its connection
+/// back to the pool.
 pub struct Staged<R, T, H>
 where
     R: TcpConnect + Timer,
@@ -277,21 +313,22 @@ where
     R: TcpConnect + Timer,
     T: TlsConnect,
 {
+    // Maintainer notes (not rendered):
+    //
+    // **A shared connection is dropped rather than checked in**, and the
+    // two are opposites here rather than variations: a
+    // `crate::established::Established::H2Shared` was *borrowed* from
+    // the pool and never left it, so putting it back would leave two
+    // entries naming one connection — and the pool would then be holding
+    // a connection open one entry longer than the origin's traffic
+    // justifies. Dropping the clone is exactly right: the pool's own copy
+    // is what keeps the connection alive.
     /// A handle nobody spent hands its connection back to the pool.
     ///
     /// See the module doc: nothing was spoken on it, so it is exactly the
     /// connection the pool would have held if this request had never been
     /// staged. With reuse off there is no check-in and the drop closes the
     /// socket, which is what `without_pool()` means.
-    ///
-    /// **A shared connection is dropped rather than checked in**, and the
-    /// two are opposites here rather than variations: a
-    /// `crate::established::Established::H2Shared` was *borrowed* from
-    /// the pool and never left it, so putting it back would leave two
-    /// entries naming one connection — and the pool would then be holding
-    /// a connection open one entry longer than the origin's traffic
-    /// justifies. Dropping the clone is exactly right: the pool's own copy
-    /// is what keeps the connection alive.
     fn drop(&mut self) {
         if let Some(held) = self.held.take()
             && held.est.borrowed().is_none()
@@ -302,10 +339,12 @@ where
     }
 }
 
-/// The one implementation, and the contract is on the trait. There is
-/// deliberately no inherent method of the same name: one would win method
-/// resolution over the trait's, so a caller with the trait in scope would
-/// silently get the other function.
+// Maintainer notes (not rendered):
+// The one implementation, and the contract is on the trait. There is
+// deliberately no inherent method of the same name: one would win method
+// resolution over the trait's, so a caller with the trait in scope would
+// silently get the other function.
+/// The one implementation, and the contract is on the trait.
 impl<R, T, D, H, P> StagedConnect for Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
@@ -318,37 +357,46 @@ where
 {
     type Staged = Staged<R, T, H>;
 
-    /// `Native::run`'s steps 1 and 2 — the pool, then a fresh connection —
-    /// and then nothing.
+    // Maintainer notes (not rendered):
+    //
+    // # It takes the request, and the record lookup stays inside
+    //
+    // This took a `Prepared` — a request paired with an HTTPS record the
+    // transport had fetched ahead — and read only the request out of it:
+    // every caller built one with `Prepared::new`, which carries no
+    // record, and the connector does its own discovery here exactly as
+    // `run` does. A parameter whose other half nothing ever read was a
+    // type in the public API with no job, so it went.
+    //
+    // # Where this and `run` are kept in step
+    //
+    // Every step that **decides** anything is a private function shared
+    // with `run`: `key_parts` (which is also where an unsupported scheme
+    // and a missing host become typed errors), `protocol_admissible`,
+    // `pooled_candidates`, `checkout`, `may_speak_h2` through the ALPN
+    // narrowing, `negotiated_protocol`, `check_version` and `checkin_for`.
+    // What is written twice is the *order*, and the two orders differ in
+    // exactly one place: `run` retries across candidates and this cannot,
+    // because it returns one connection.
+    //
+    // `Native::run`'s steps 1 and 2 — the pool, then a fresh connection —
+    // and then nothing.
+    //
+    // # It is allowed to answer "I already had one"
+    //
+    // `run` looks in the pool before it dials, and a staged connect that
+    // always dialled would cost a connection at every origin the pool was
+    // already serving. [`Native::upgrade`] is the counter-example that
+    // shows this is a choice rather than an omission: it *does* refuse the
+    // pool, because a socket that stops speaking HTTP is not a connection
+    // any later request could use. A staged one is.
+    /// The pool, then a fresh connection — and then nothing.
     ///
     /// # It is allowed to answer "I already had one"
     ///
-    /// `run` looks in the pool before it dials, and a staged connect that
-    /// always dialled would cost a connection at every origin the pool was
-    /// already serving. [`Native::upgrade`] is the counter-example that
-    /// shows this is a choice rather than an omission: it *does* refuse the
-    /// pool, because a socket that stops speaking HTTP is not a connection
-    /// any later request could use. A staged one is.
-    ///
-    /// # It takes the request, and the record lookup stays inside
-    ///
-    /// This took a `Prepared` — a request paired with an HTTPS record the
-    /// transport had fetched ahead — and read only the request out of it:
-    /// every caller built one with `Prepared::new`, which carries no
-    /// record, and the connector does its own discovery here exactly as
-    /// `run` does. A parameter whose other half nothing ever read was a
-    /// type in the public API with no job, so it went.
-    ///
-    /// # Where this and `run` are kept in step
-    ///
-    /// Every step that **decides** anything is a private function shared
-    /// with `run`: `key_parts` (which is also where an unsupported scheme
-    /// and a missing host become typed errors), `protocol_admissible`,
-    /// `pooled_candidates`, `checkout`, `may_speak_h2` through the ALPN
-    /// narrowing, `negotiated_protocol`, `check_version` and `checkin_for`.
-    /// What is written twice is the *order*, and the two orders differ in
-    /// exactly one place: `run` retries across candidates and this cannot,
-    /// because it returns one connection.
+    /// A live pooled connection to the origin is handed back rather than
+    /// dialling a fresh one; a staged connection is one any later request
+    /// could use.
     async fn connect(&self, req: http::Request<RequestBody>) -> Result<Self::Staged, Refused> {
         match self.stage(req).await {
             Ok(staged) => Ok(staged),
@@ -356,12 +404,16 @@ where
         }
     }
 
+    // Maintainer notes (not rendered):
+    // The same `established::exchange` `run` calls, under the same
+    // `first_byte` bound, reporting the same `Head` event and wrapped in
+    // the same `between_bytes` body — what differs is upstream of here and
+    // not in here.
     /// The exchange, on the connection already in hand.
     ///
-    /// The same `established::exchange` `run` calls, under the same
-    /// `first_byte` bound, reporting the same `Head` event and wrapped in
-    /// the same `between_bytes` body — what differs is upstream of here and
-    /// not in here.
+    /// It runs under the same `first_byte` bound as `Transport::execute`,
+    /// reports the same `Head` event and is wrapped in the same
+    /// `between_bytes` body.
     async fn exchange(
         &self,
         mut staged: Self::Staged,

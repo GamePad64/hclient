@@ -9,11 +9,13 @@ use crate::{Approach, Handshake, Step};
 use bytes::{Bytes, BytesMut};
 use hclient_core::error::Error;
 
+// Maintainer notes (not rendered):
+// A unit struct with `unreachable!()` bodies
+// would be a value that exists only to be absent, which is the shape
+// this workspace deleted `UpgradeSupport`'s spare variants for.
 /// No proxy — and it is an **empty enum**, so `Proxy<NoProxy>` cannot be
 /// constructed and the `Option` holding one is `None` by construction
-/// rather than by discipline. A unit struct with `unreachable!()` bodies
-/// would be a value that exists only to be absent, which is the shape
-/// this workspace deleted `UpgradeSupport`'s spare variants for.
+/// rather than by discipline.
 #[derive(Debug, Clone, Copy)]
 pub enum NoProxy {}
 
@@ -31,16 +33,18 @@ impl Handshake for NoProxy {
     }
 }
 
+// Maintainer notes (not rendered):
+// That is a real limit and it is
+// stated rather than worked around, because erasing `P` to lift it would
+// erase the IO with it, which is the objection this crate's own root doc
+// records against `Box<dyn Handshake>`.
 /// Which request scheme a proxy serves, for a caller who has more than
 /// one.
 ///
 /// The distinction that motivates it is the ordinary corporate one — an
 /// `HTTP_PROXY` and an `HTTPS_PROXY` pointing at different hosts — not two
 /// different proxy *protocols*: a transport has one `P`, so every proxy on
-/// one transport speaks the same one. That is a real limit and it is
-/// stated rather than worked around, because erasing `P` to lift it would
-/// erase the IO with it, which is the objection this crate's own root doc
-/// records against `Box<dyn Handshake>`.
+/// one transport speaks the same one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyScheme {
     /// Plain `http://` requests.
@@ -78,6 +82,11 @@ impl<P> Proxy<P> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    // That is still the rule, and `system` is not an exception
+    // to it: it reads the environment and the platform's own settings
+    // *because a caller called it*, which is the transport's builder
+    // exercising exactly the policy this paragraph reserves for them.
     /// Origins this proxy does **not** serve, which go direct instead.
     ///
     /// # Why there is no default, and why nothing is read from the
@@ -95,11 +104,6 @@ impl<P> Proxy<P> {
     /// whether a library may read the environment at all are policy, and
     /// policy belongs to whoever builds the transport. **This** list is
     /// not policy — the caller wrote it down.
-    ///
-    /// That is still the rule, and `system` is not an exception
-    /// to it: it reads the environment and the platform's own settings
-    /// *because a caller called it*, which is the transport's builder
-    /// exercising exactly the policy this paragraph reserves for them.
     ///
     /// # The rules, which are small on purpose
     ///
@@ -152,6 +156,10 @@ impl<P> Proxy<P> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    // Widening the dialect to fit
+    // would have made every other pattern harder to read, for one rule
+    // that is a boolean everywhere it comes from.
     /// Also send a host with **no dot in it** direct — `intranet`,
     /// `localhost`, `build-server`.
     ///
@@ -165,9 +173,7 @@ impl<P> Proxy<P> {
     /// `ProxyOverride` and macOS spells it *Exclude simple hostnames*;
     /// both are a rule about the **shape** of a name rather than a name,
     /// and the dialect above is deliberately small enough that no pattern
-    /// in it can say "any host with no dot". Widening the dialect to fit
-    /// would have made every other pattern harder to read, for one rule
-    /// that is a boolean everywhere it comes from.
+    /// in it can say "any host with no dot".
     ///
     /// It is here because `system` meets it constantly rather
     /// than in a corner: macOS ships with it **on**, so a translation that

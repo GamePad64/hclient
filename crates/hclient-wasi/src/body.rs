@@ -143,37 +143,42 @@ impl HttpBody for Body {
         }
     }
 
-    /// Delegates to the inner body instead of re-deriving its own state.
-    /// `IncomingResponseBody` knows the stream has ended from its own state
-    /// earlier than we do — only after WE ourselves have polled
-    /// `poll_frame` once and seen `Ready(None)`. The weaker version
-    /// (`matches!(self.inner, Inner::Done)`) is exactly the defect on the
-    /// host side, `act` (`http_body_util::StreamBody` always returns
-    /// `false`), that made guests trap mid-read on HTTP/2 responses;
-    /// reproducing it here would be pointless — it's the entire motivation
-    /// here.
-    ///
-    /// **Branch not covered by unit tests, guarded by an integration
-    /// test.** `Inner::Incoming(i) => i.is_end_stream()` — the central
-    /// line of the whole task — is not covered by the unit tests below:
-    /// `IncomingResponseBody` has no constructor without a real
-    /// `wasi:http` host (`wasip3::http::types::Response` is an opaque WIT
-    /// resource). The review's mutation run confirmed the gap: replacing
-    /// this branch with a hard `false` (the very `act` bug) doesn't fail a
-    /// single test in the `#[cfg(test)] mod tests` below.
-    ///
-    /// `crates/hclient-wasi/tests/live_roundtrip.rs` +
-    /// `examples/live_roundtrip_guest.rs` close it: a real request through
-    /// `WasiHttp::execute` under `wasmtime` (`.cargo/config.toml`, `runner
-    /// = "wasmtime run -S http --"`) against a mock server that responds
-    /// `chunked` with a trailer — the trailer is exactly what opens the
-    /// window where `i.is_end_stream()` is already `true` while
-    /// `self.inner` on this object is still `Inner::Incoming` (see the
-    /// module doc comment on `live_roundtrip_guest.rs` for why that
-    /// window doesn't exist at all without a trailer — with a plain
-    /// `Content-Length` this branch and a hardcoded `false` are
-    /// indistinguishable even live). The same mutation run, applied to
-    /// this test, is red.
+    // Maintainer notes (not rendered):
+    // Delegates to the inner body instead of re-deriving its own state.
+    // `IncomingResponseBody` knows the stream has ended from its own state
+    // earlier than we do — only after WE ourselves have polled
+    // `poll_frame` once and seen `Ready(None)`. The weaker version
+    // (`matches!(self.inner, Inner::Done)`) is exactly the defect on the
+    // host side, `act` (`http_body_util::StreamBody` always returns
+    // `false`), that made guests trap mid-read on HTTP/2 responses;
+    // reproducing it here would be pointless — it's the entire motivation
+    // here.
+    //
+    // **Branch not covered by unit tests, guarded by an integration
+    // test.** `Inner::Incoming(i) => i.is_end_stream()` — the central
+    // line of the whole task — is not covered by the unit tests below:
+    // `IncomingResponseBody` has no constructor without a real
+    // `wasi:http` host (`wasip3::http::types::Response` is an opaque WIT
+    // resource). The review's mutation run confirmed the gap: replacing
+    // this branch with a hard `false` (the very `act` bug) doesn't fail a
+    // single test in the `#[cfg(test)] mod tests` below.
+    //
+    // `crates/hclient-wasi/tests/live_roundtrip.rs` +
+    // `examples/live_roundtrip_guest.rs` close it: a real request through
+    // `WasiHttp::execute` under `wasmtime` (`.cargo/config.toml`, `runner
+    // = "wasmtime run -S http --"`) against a mock server that responds
+    // `chunked` with a trailer — the trailer is exactly what opens the
+    // window where `i.is_end_stream()` is already `true` while
+    // `self.inner` on this object is still `Inner::Incoming` (see the
+    // module doc comment on `live_roundtrip_guest.rs` for why that
+    // window doesn't exist at all without a trailer — with a plain
+    // `Content-Length` this branch and a hardcoded `false` are
+    // indistinguishable even live). The same mutation run, applied to
+    // this test, is red.
+    /// Delegates to the inner body instead of re-deriving its own state:
+    /// `IncomingResponseBody` knows the stream has ended from its own
+    /// state earlier than this wrapper does — only after this wrapper has
+    /// itself polled `poll_frame` once and seen `Ready(None)`.
     fn is_end_stream(&self) -> bool {
         match &self.inner {
             Inner::Done => true,

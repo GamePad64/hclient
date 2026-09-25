@@ -76,6 +76,10 @@ impl Timer for Smol {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// It also does the job `hclient_rt::Discard` did: `async_io::Timer`
+// resolves to the `Instant` it fired at, and the seam asks for `()`.
 /// The future [`Smol`]'s [`Timer::sleep`] hands back: ready once the
 /// duration has passed, with `()` as its output.
 ///
@@ -84,9 +88,6 @@ impl Timer for Smol {
 /// `async_io::Timer` there would make every `async-io` major step a major
 /// step here too, for a type a caller only ever awaits. The newtype leaves
 /// that choice to this crate.
-///
-/// It also does the job `hclient_rt::Discard` did: `async_io::Timer`
-/// resolves to the `Instant` it fired at, and the seam asks for `()`.
 ///
 /// `Unpin`, `Send` and `Sync`, as `async_io::Timer` is, so it can be
 /// polled through `&mut` without being pinned first.
@@ -146,28 +147,36 @@ fn smol_spawn<F: Future<Output = ()> + Send + 'static>(f: F) {
 }
 
 impl Blocking for Smol {
-    /// `blocking::unblock`'s `Task<T>` is a `Future<Output = T>`: there's
-    /// no `Result`, no `JoinError` analogue at all, because `blocking`'s
-    /// background thread pool (`blocking::unblock`) is a lazily
-    /// initialized process-global `static`, with no shutdown lifecycle
-    /// tied to any particular executor or any particular `Smol` value.
-    /// This pool has no "went away while the task was still queued" event
-    /// — unlike `tokio::task::spawn_blocking`, which can race a whole
-    /// runtime's `Runtime::shutdown_timeout`. `Cancelled` is structurally
-    /// unreachable for this backend, not merely untested: there's really
-    /// nowhere for a failure of that shape to come from. Always returning
-    /// `Ok(..)` here is an honest reflection of that fact, not a fudge:
-    /// the trait promises "IF a failure of exactly this shape occurs, it
-    /// is typed", not "every backend must be capable of producing one".
+    // Maintainer notes (not rendered):
+    //
+    // `blocking::unblock`'s `Task<T>` is a `Future<Output = T>`: there's
+    // no `Result`, no `JoinError` analogue at all, because `blocking`'s
+    // background thread pool (`blocking::unblock`) is a lazily
+    // initialized process-global `static`, with no shutdown lifecycle
+    // tied to any particular executor or any particular `Smol` value.
+    // This pool has no "went away while the task was still queued" event
+    // — unlike `tokio::task::spawn_blocking`, which can race a whole
+    // runtime's `Runtime::shutdown_timeout`. `Cancelled` is structurally
+    // unreachable for this backend, not merely untested: there's really
+    // nowhere for a failure of that shape to come from. Always returning
+    // `Ok(..)` here is an honest reflection of that fact, not a fudge:
+    // the trait promises "IF a failure of exactly this shape occurs, it
+    // is typed", not "every backend must be capable of producing one".
+    //
+    // A panic in `f` also needs no special handling in this impl:
+    // `blocking::unblock` builds its task through
+    // `async_task::Builder::new().propagate_panic(true)`, and
+    // `async-task`'s own `Task::poll` re-raises the propagated panic via
+    // `std::panic::resume_unwind` with the original payload — the same
+    // mechanism, and the same "original payload, no stringifying"
+    // guarantee, that `hclient-rt-tokio`'s `classify()` assembles by
+    // hand. A plain `.await` on `Task<T>` already does what's needed.
+    /// Runs `f` on `blocking`'s process-global thread pool.
     ///
-    /// A panic in `f` also needs no special handling in this impl:
-    /// `blocking::unblock` builds its task through
-    /// `async_task::Builder::new().propagate_panic(true)`, and
-    /// `async-task`'s own `Task::poll` re-raises the propagated panic via
-    /// `std::panic::resume_unwind` with the original payload — the same
-    /// mechanism, and the same "original payload, no stringifying"
-    /// guarantee, that `hclient-rt-tokio`'s `classify()` assembles by
-    /// hand. A plain `.await` on `Task<T>` already does what's needed.
+    /// Never answers `Err(Cancelled)`: the pool has no shutdown lifecycle
+    /// tied to any executor or `Smol` value, so there is nothing that could
+    /// cancel a queued task. A panic in `f` is re-raised on `.await` with
+    /// the original payload.
     fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
         f: F,
@@ -176,16 +185,23 @@ impl Blocking for Smol {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// in this crate's public API.** It was a public enum with a variant per
+// socket kind, each carrying an `async_net` stream, plus a `tcp()` accessor
+// returning one. That made `async-net`'s major version part of this
+// crate's promise, and the variants let anyone build one from any stream.
+//
+// An enum inside rather than a type parameter, because `TcpConnect::Stream`
+// is one associated type and both connects must produce it; `IpcConnect`
+// extends `TcpConnect` for exactly that.
 /// A [`Smol`] connection: what [`TcpConnect::connect`],
 /// [`TcpAdoptStd::adopt`] and
 /// [`IpcConnect::connect_ipc`](hclient_rt::IpcConnect::connect_ipc) hand
 /// back.
 ///
 /// **Opaque, like `hclient-rt-tokio`'s `TokioIo`, so that `async-net` is not
-/// in this crate's public API.** It was a public enum with a variant per
-/// socket kind, each carrying an `async_net` stream, plus a `tcp()` accessor
-/// returning one. That made `async-net`'s major version part of this
-/// crate's promise, and the variants let anyone build one from any stream.
+/// in this crate's public API.**
 ///
 /// What a caller legitimately wants from it is the socket itself, to read
 /// options back or to hand it to `socket2`. `std::os::fd::AsFd` (on
@@ -193,10 +209,6 @@ impl Blocking for Smol {
 /// that through the standard library: `socket2::SockRef::from(&io)` reaches
 /// every option this runtime sets. On Windows only TCP exists, so it is the
 /// only socket the handle can name.
-///
-/// An enum inside rather than a type parameter, because `TcpConnect::Stream`
-/// is one associated type and both connects must produce it; `IpcConnect`
-/// extends `TcpConnect` for exactly that.
 #[derive(Debug)]
 pub struct SmolIo {
     inner: Socket,
@@ -292,6 +304,12 @@ fn shutdown_is_done(r: std::io::Result<()>) -> std::io::Result<()> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// That coincidence is why `FuturesIo` could go: it existed to bridge
+// `futures-io` to `hyper::rt` and, on the way, to map `poll_shutdown`
+// onto `poll_close`. With the seam typed on `futures-io` the socket is
+// the stream, and the mapping is this impl.
 /// **A half-close, and `poll_close` below already is one.**
 ///
 /// `futures_io::AsyncWrite::poll_close` means *close the writer*, and for
@@ -300,11 +318,6 @@ fn shutdown_is_done(r: std::io::Result<()>) -> std::io::Result<()> {
 /// the read half open — which is what an HTTP/1 exchange needs and what
 /// [`hclient_rt::Shutdown`] asks for. So the two coincide here, and this
 /// impl forwards rather than inventing a second spelling.
-///
-/// That coincidence is why `FuturesIo` could go: it existed to bridge
-/// `futures-io` to `hyper::rt` and, on the way, to map `poll_shutdown`
-/// onto `poll_close`. With the seam typed on `futures-io` the socket is
-/// the stream, and the mapping is this impl.
 impl hclient_rt::Shutdown for SmolIo {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         futures_lite::io::AsyncWrite::poll_close(self, cx)
@@ -338,6 +351,11 @@ impl futures_lite::io::AsyncWrite for SmolIo {
 impl TcpConnect for Smol {
     type Stream = SmolIo;
 
+    // Maintainer notes (not rendered):
+    //
+    // moment or not at all. There is no `ALL` to start from any more:
+    // a constant meaning *every field* would silently claim the next field
+    // too, the day `hclient-rt` adds one.
     /// What `build_socket` below applies on this target — stated rather
     /// than left to the trait's `NONE` default, which would understate
     /// this runtime (see `TcpConnect::TCP_SUPPORT`).
@@ -347,9 +365,7 @@ impl TcpConnect for Smol {
     /// `SO_BINDTODEVICE` on Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` on
     /// those plus Cygwin — and a constant claiming them on macOS or
     /// Windows would be a capability that lies, refused at the wrong
-    /// moment or not at all. There is no `ALL` to start from any more:
-    /// a constant meaning *every field* would silently claim the next field
-    /// too, the day `hclient-rt` adds one.
+    /// moment or not at all.
     ///
     /// The direction of the `cfg` matters: an understated `TCP_SUPPORT` costs
     /// a caller a named `Unsupported` error, an overstated one costs them

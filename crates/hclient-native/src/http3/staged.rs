@@ -78,30 +78,33 @@ use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 
+// Maintainer notes (not rendered):
+// **Named `StagedConnect`, like the TCP stack's, and told apart by its
+// module.** It spent a while as `H3StagedConnect`, because both traits
+// were exported from the crate root and the root could hold only one of
+// the name; the definition took the exported name so that `grep` would
+// not lie about it. The pairs live under [`crate::staged`] and
+// [`crate::staged::h3`] now, so each trait, handle and refusal has one
+// path and its own name, and no rename sits between a definition and
+// where a reader meets it.
+//
+// The same shape [`crate::staged::StagedConnect`] has, declared separately
+// rather than shared: a trait is declared by the module that implements
+// it, the routing in this crate owns both members concretely and needs no
+// polymorphism between them, and the handles differ — see
+// [`crate::staged::h3`]. Both take the request alone: the TCP one took a
+// record-carrying `Prepared` for a while and never read the record.
+//
+// It is emphatically **not** a method on `Transport`. `wasi:http` 0.3's
+// client interface is one function with no connection resource in the WIT,
+// and `hclient-fetch` declares `timeouts.connect = false` because
+// `AbortSignal` is one deadline for the whole exchange; a
+// `Transport::connect` would be `Unsupported` for two of four backends.
 /// A transport whose connect can be asked for on its own, and whose answer
 /// can then be spent on exactly one request.
 ///
-/// **Named `StagedConnect`, like the TCP stack's, and told apart by its
-/// module.** It spent a while as `H3StagedConnect`, because both traits
-/// were exported from the crate root and the root could hold only one of
-/// the name; the definition took the exported name so that `grep` would
-/// not lie about it. The pairs live under [`crate::staged`] and
-/// [`crate::staged::h3`] now, so each trait, handle and refusal has one
-/// path and its own name, and no rename sits between a definition and
-/// where a reader meets it.
-///
-/// The same shape [`crate::staged::StagedConnect`] has, declared separately
-/// rather than shared: a trait is declared by the module that implements
-/// it, the routing in this crate owns both members concretely and needs no
-/// polymorphism between them, and the handles differ — see
-/// [`crate::staged::h3`]. Both take the request alone: the TCP one took a
-/// record-carrying `Prepared` for a while and never read the record.
-///
-/// It is emphatically **not** a method on `Transport`. `wasi:http` 0.3's
-/// client interface is one function with no connection resource in the WIT,
-/// and `hclient-fetch` declares `timeouts.connect = false` because
-/// `AbortSignal` is one deadline for the whole exchange; a
-/// `Transport::connect` would be `Unsupported` for two of four backends.
+/// The QUIC stack's counterpart of [`crate::staged::StagedConnect`]; the
+/// handles differ — see [`crate::staged::h3`].
 pub trait StagedConnect: Transport {
     /// A connection this transport made or found, together with the
     /// request it was made for.
@@ -111,9 +114,11 @@ pub trait StagedConnect: Transport {
     /// by a check.
     type Staged;
 
-    /// Associated types rather than RPITITs, so that `http3::arm`'s
-    /// erasure can *name* these when it declares its own boxes `Send` —
-    /// the same reason `hclient_rt::TcpConnect::Connecting` is one.
+    // Maintainer notes (not rendered):
+    // Associated types rather than RPITITs, so that `http3::arm`'s
+    // erasure can *name* these when it declares its own boxes `Send` —
+    // the same reason `hclient_rt::TcpConnect::Connecting` is one.
+    /// The future [`Self::connect`] returns.
     type Connecting<'a>: Future<Output = Result<Self::Staged, Refused>>
     where
         Self: 'a;
@@ -170,10 +175,14 @@ impl From<Refused> for Error {
     }
 }
 
+// Maintainer notes (not rendered):
+// See the module doc for why "claim" rather than "connection": the pool
+// holds this connection too, and its driver is already spawned.
 /// A claim on a connection, with a request to spend it on.
 ///
-/// See the module doc for why "claim" rather than "connection": the pool
-/// holds this connection too, and its driver is already spawned.
+/// The pool holds this connection too, and its driver is already spawned,
+/// so dropping a `Staged` unspent needs no check-in: the connection stays
+/// pooled (and keeps its keep-alive pings going).
 pub struct Staged<R, H>
 where
     R: hclient_rt::Timer,
@@ -204,11 +213,12 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+// Short and named, so the marker sits where `cargo fmt` leaves it — the
+// rule amendment C12 records about where a bound is written.
 /// The one implementation, and the contract is on the trait — for the TCP
 /// stack's reason: an inherent method of the same name wins method
 /// resolution over a trait one.
-/// Short and named, so the marker sits where `cargo fmt` leaves it — the
-/// rule amendment C12 records about where a bound is written.
 type SendStaging<'a, S> = std::pin::Pin<Box<dyn Future<Output = Result<S, Refused>> + Send + 'a>>; // send-bound-exception: amendment-C15
 
 type SendExchange<'a, B> =

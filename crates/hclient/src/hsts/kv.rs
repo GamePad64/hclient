@@ -20,6 +20,35 @@ use web_time::SystemTime;
 /// entry.
 const NS: &str = "hsts";
 
+// Maintainer notes (not rendered):
+//
+// # This is the only `HstsStore` this crate ships
+//
+// There was a second — a `MemoryStore` of 43 lines holding a
+// `Mutex<HashMap<String, Entry>>` — and it went when this arrived,
+// because it had become a name whose only purpose was a distinction the
+// code no longer draws. Unlike [`cookie`](crate::cookie) and
+// [`cache`](crate::cache), whose own memory stores carry a capacity and
+// an eviction policy the byte seam deliberately has not got, this seam
+// has neither: RFC 6797 entries are bounded by the origins a caller
+// chose to visit, and evicting one ends with a request in clear text.
+// So the old store held a map and nothing else, which is exactly what
+// [`InMemory`](super::InMemory) is.
+//
+// What it costs is real and is why this was a decision rather than a
+// tidy-up: an encode and a decode per operation, where a map held the
+// [`Entry`] itself. Against that, two in-memory `HstsStore`s are two
+// readings of §8.2 that can drift — a defect this workspace has met
+// before — and the encoding sits on a path that is about to touch the
+// network.
+//
+// Handing the expiry to the byte
+// store as well would make that eviction **unobservable**: the entry
+// would stop being answered whether or not the rule above ran, so the
+// test that pins §8.1.1 — *the store no longer holds it* — would pass
+// over an `Hsts` that had stopped evicting anything. A check that
+// cannot fail is not a check.
+
 /// An [`HstsStore`] over any [`KeyValueStore`].
 /// [`KvStore`] is an [`HstsStore`] built on any byte store, so putting
 /// the policy set on disk or in Redis is a matter of implementing
@@ -57,35 +86,23 @@ const NS: &str = "hsts";
 /// [`Entry::expires_at`], ignores what has passed and calls
 /// [`remove`](HstsStore::remove) on it. Handing the expiry to the byte
 /// store as well would make that eviction **unobservable**: the entry
-/// would stop being answered whether or not the rule above ran, so the
-/// test that pins §8.1.1 — *the store no longer holds it* — would pass
-/// over an `Hsts` that had stopped evicting anything. A check that
-/// cannot fail is not a check.
+/// would stop being answered whether or not the rule above ran.
 ///
 /// So the expiry is stated in exactly one place, which is inside the
 /// encoded [`Entry`], and one layer enforces it. A store that outlives
 /// the process therefore keeps expired entries until the next read
 /// sweeps them, which is what `MemoryStore` next door does today.
 ///
-/// # This is the only `HstsStore` this crate ships
+/// # No capacity bound
 ///
-/// There was a second — a `MemoryStore` of 43 lines holding a
-/// `Mutex<HashMap<String, Entry>>` — and it went when this arrived,
-/// because it had become a name whose only purpose was a distinction the
-/// code no longer draws. Unlike [`cookie`](crate::cookie) and
-/// [`cache`](crate::cache), whose own memory stores carry a capacity and
-/// an eviction policy the byte seam deliberately has not got, this seam
-/// has neither: RFC 6797 entries are bounded by the origins a caller
-/// chose to visit, and evicting one ends with a request in clear text.
-/// So the old store held a map and nothing else, which is exactly what
-/// [`InMemory`](super::InMemory) is.
+/// Unlike [`cookie`](crate::cookie) and [`cache`](crate::cache), whose
+/// own memory stores carry a capacity and an eviction policy the byte
+/// seam deliberately has not got, this seam has neither: RFC 6797
+/// entries are bounded by the origins a caller chose to visit, and
+/// evicting one ends with a request in clear text.
 ///
-/// What it costs is real and is why this was a decision rather than a
-/// tidy-up: an encode and a decode per operation, where a map held the
-/// [`Entry`] itself. Against that, two in-memory `HstsStore`s are two
-/// readings of §8.2 that can drift — a defect this workspace has met
-/// before — and the encoding sits on a path that is about to touch the
-/// network.
+/// Encoding costs one encode and one decode per operation, where a plain
+/// map would hold the [`Entry`] itself.
 #[derive(Debug, Clone, Default)]
 pub struct KvStore<K> {
     kv: K,
@@ -227,27 +244,35 @@ fn decode(bytes: &[u8]) -> Option<Entry> {
     Some(Entry::new(domain, at_epoch_plus(secs)?, include_subdomains))
 }
 
+// Maintainer notes (not rendered):
+//
+// **A named type rather than a boxed one, and that is the finding
+// rather than a style.** `Pin<Box<dyn Future<Output = _>>>` was the
+// first shape here, with a doc comment claiming `Send` would be
+// *inferred from `K`*. It is not: a `dyn` that declares no auto
+// traits does not hide `Send`, it **removes** it — so
+// [`ClientBuilder::hsts`](crate::ClientBuilder::hsts), which asks
+// `for<'a> S::Get<'a>: Send`, refused a store whose futures were
+// `Send` the whole time, and `Hsts::new()` stopped being usable with
+// a `Client` at all. This workspace has now met that shape five
+// times.
+//
+// Naming it makes the property real: a byte store answering
+// [`Ready`](std::future::Ready) yields a `Send` future here with
+// nothing declared, and one holding an `Rc` yields a `!Send` one and
+// stays usable outside a `Client`. Amendment C15 from one more
+// direction — and it allocates nothing, where the box allocated per
+// call.
+
 pin_project_lite::pin_project! {
     /// [`KvStore`]'s answer to [`HstsStore::get`]: the byte store's own
     /// future with this module's decoding applied to what it yields.
     ///
-    /// **A named type rather than a boxed one, and that is the finding
-    /// rather than a style.** `Pin<Box<dyn Future<Output = _>>>` was the
-    /// first shape here, with a doc comment claiming `Send` would be
-    /// *inferred from `K`*. It is not: a `dyn` that declares no auto
-    /// traits does not hide `Send`, it **removes** it — so
-    /// [`ClientBuilder::hsts`](crate::ClientBuilder::hsts), which asks
-    /// `for<'a> S::Get<'a>: Send`, refused a store whose futures were
-    /// `Send` the whole time, and `Hsts::new()` stopped being usable with
-    /// a `Client` at all. This workspace has now met that shape five
-    /// times.
-    ///
-    /// Naming it makes the property real: a byte store answering
+    /// A named type rather than a boxed one: a byte store answering
     /// [`Ready`](std::future::Ready) yields a `Send` future here with
     /// nothing declared, and one holding an `Rc` yields a `!Send` one and
-    /// stays usable outside a `Client`. Amendment C15 from one more
-    /// direction — and it allocates nothing, where the box allocated per
-    /// call.
+    /// stays usable outside a `Client`. It allocates nothing, where a
+    /// boxed future would allocate per call.
     #[derive(Debug)]
     pub struct Get<F> {
         #[pin]

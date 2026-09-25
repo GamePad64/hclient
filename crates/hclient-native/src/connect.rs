@@ -85,10 +85,6 @@
 //!
 //! # RFC 9460 SVCB/HTTPS is wired up here now
 //!
-//! This section read "isn't wired up here either" until v0.3 W2, and it
-//! was honest: `TlsRequest::ech` and `Resolve::lookup`/
-//! `SvcbEndpoint` both existed, `connect` consumed neither, and
-//! it passed `ech: None` rather than pretending it had asked. It asks now.
 //! [`crate::discovery`] holds the record-shaped half — which record is
 //! chosen, what an `alpn` set means, and the negative cache — and this
 //! file holds the connection-shaped half: the port every attempt uses, the
@@ -118,6 +114,12 @@
 //! (`connect`, `Conn`, `host`, `port`, `wants_tls`) that is only alive in
 //! test builds (the same conclusion `body.rs`'s doc comment reached for
 //! `Inner`/`OutgoingBody` a year earlier in the same vertical).
+
+// Maintainer notes (not rendered):
+// This section read "isn't wired up here either" until v0.3 W2, and it
+// was honest: `TlsRequest::ech` and `Resolve::lookup`/
+// `SvcbEndpoint` both existed, `connect` consumed neither, and
+// it passed `ech: None` rather than pretending it had asked. It asks now.
 #![allow(
     clippy::too_many_arguments,
     reason = "Connector: Happy Eyeballs (RFC 8305) over TCP, then optional TLS with ALPN. # Where 'Resolution Delay' lives here `hclient_dns::Resolve` deliberately returns a `Stream`, not a `Future<Output = Vec<_>>` — the only reason is that RFC 8305 §3 requires starting IPv6 attempts without waiting for the I..."
@@ -145,6 +147,16 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// It was `pub enum Conn { Plain, Tls }`, which made both variants — and
+// so the choice between them — part of the API, and let a caller build
+// one out of any two streams. That is the move `TokioIo` and `SmolIo`
+// made one layer down: a struct over a private enum, so the
+// representation is a thing this crate may change. It stays generic
+// over the two **streams** rather than over the runtime and the backend
+// that produce them, because a struct over `R` and `T` would ask
+// `R: 'static` wherever a connection is pooled, where only the stream
+// has to be.
 /// A connection: a plain socket from the runtime, or that same socket
 /// wrapped by the TLS backend. What [`NativeIo`](crate::NativeIo) names.
 ///
@@ -154,16 +166,6 @@ use std::time::Duration;
 /// does, to borrow a connection after a `101`. What a caller does with
 /// one is the byte-stream seam: `futures_io::{AsyncRead, AsyncWrite}` and
 /// `hclient_rt::Shutdown`, forwarded to whichever stream it holds.
-///
-/// It was `pub enum Conn { Plain, Tls }`, which made both variants — and
-/// so the choice between them — part of the API, and let a caller build
-/// one out of any two streams. That is the move `TokioIo` and `SmolIo`
-/// made one layer down: a struct over a private enum, so the
-/// representation is a thing this crate may change. It stays generic
-/// over the two **streams** rather than over the runtime and the backend
-/// that produce them, because a struct over `R` and `T` would ask
-/// `R: 'static` wherever a connection is pooled, where only the stream
-/// has to be.
 #[derive(Debug)]
 pub struct Conn<P, T>(pub(crate) Side<P, T>);
 
@@ -1327,6 +1329,11 @@ where
     .await
 }
 
+// Maintainer notes (not rendered):
+// `endpoint: None` is what this function did before v0.3 W2, and it is
+// the shape the retry above uses — the "without the record" path is the
+// same code with the record absent, not a second implementation of
+// connecting.
 /// One connection attempt: Happy Eyeballs over `endpoint`'s hints followed
 /// by the origin's own addresses, then TLS if the scheme asks for it.
 ///
@@ -1337,11 +1344,6 @@ where
 /// concurrent this function called the two family lookups itself,
 /// which is exactly why nothing could resolve until the HTTPS query had
 /// finished.
-///
-/// `endpoint: None` is what this function did before v0.3 W2, and it is
-/// the shape the retry above uses — the "without the record" path is the
-/// same code with the record absent, not a second implementation of
-/// connecting.
 ///
 /// **The hints come first and the resolver's answers follow**, rather than
 /// replacing them: RFC 9460 §10.3 has the hints as a way to start

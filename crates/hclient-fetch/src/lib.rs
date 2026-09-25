@@ -1,12 +1,21 @@
 //! hclient transport over the browser's `fetch`.
 //!
-//! Depends **only** on Tier A: neither hyper, tokio, nor `hclient-rt` in the
-//! graph (`cargo tree -p hclient-fetch -e normal` is the check).
+//! Its dependency graph holds neither hyper, tokio, nor `hclient-rt`.
 //!
-//! `deny`, not `forbid` (see `Cargo.toml`'s `[lints.rust]`): this crate
-//! carries the project's one `unsafe impl`, in `promise.rs`, and `forbid`
-//! cannot be locally relaxed for it. Every other crate in the workspace
-//! keeps `forbid`; see `docs/exceptions.md`, amendment C7.
+//! [`Fetch`] is the transport, [`BrowserClock`] the matching timer, and
+//! [`FetchWebSocket`] the WebSocket it connects through the browser's own
+//! `WebSocket` global. [`opts::FetchOpts`] sets the `RequestInit` members a
+//! browser caller may need beyond the request itself.
+
+// Maintainer notes (not rendered):
+//
+// Depends **only** on Tier A: neither hyper, tokio, nor `hclient-rt` in the
+// graph (`cargo tree -p hclient-fetch -e normal` is the check).
+//
+// `deny`, not `forbid` (see `Cargo.toml`'s `[lints.rust]`): this crate
+// carries the project's one `unsafe impl`, in `promise.rs`, and `forbid`
+// cannot be locally relaxed for it. Every other crate in the workspace
+// keeps `forbid`; see `docs/exceptions.md`, amendment C7.
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -76,12 +85,27 @@ use hclient_core::hooks::{ConnectionId, Direction, Event, Head, Hooks, Meter, No
 use hclient_core::transport::Transport;
 use wasm_bindgen::JsCast;
 
+// Maintainer notes (not rendered):
+//
+// Holds one `Capabilities` snapshot, computed once at construction (see
+// `caps::probe`'s doc comment for why that's safe: capability probing
+// never depends on anything that changes over the process's lifetime —
+// the running browser is the running browser).
+//
+// **This backend emits two of the six events, and the four it does not
+// are the finding rather than an omission**: see `crate::hooks`'s module
+// doc for why a transport that owns no connection has nothing to put in
+// `Connected`, `Reused` or `Closed`, and which two fields of `Head` itself
+// it cannot fill either. `Informational` is the fourth and is absent for
+// its own reason — a `1xx` is a fact about an HTTP/1 or h2 exchange this
+// backend does not conduct. The second event is `Progress` — octets are a
+// fact about a body rather than about a connection, so this backend can
+// count them exactly as any other can.
 /// The browser `fetch` transport.
 ///
-/// Holds one `Capabilities` snapshot, computed once at construction (see
-/// `caps::probe`'s doc comment for why that's safe: capability probing
-/// never depends on anything that changes over the process's lifetime —
-/// the running browser is the running browser).
+/// Holds one [`Capabilities`] snapshot, computed once at construction:
+/// capability probing never depends on anything that changes over the
+/// process's lifetime — the running browser is the running browser.
 ///
 /// # `H`, the observability hook
 ///
@@ -92,15 +116,9 @@ use wasm_bindgen::JsCast;
 /// type*, because the hook is a type parameter rather than a
 /// `Box<dyn Hooks>`, which is the whole of the zero-cost claim.
 ///
-/// **This backend emits two of the six events, and the four it does not
-/// are the finding rather than an omission**: see `crate::hooks`'s module
-/// doc for why a transport that owns no connection has nothing to put in
-/// `Connected`, `Reused` or `Closed`, and which two fields of `Head` itself
-/// it cannot fill either. `Informational` is the fourth and is absent for
-/// its own reason — a `1xx` is a fact about an HTTP/1 or h2 exchange this
-/// backend does not conduct. The second event is `Progress` — octets are a
-/// fact about a body rather than about a connection, so this backend can
-/// count them exactly as any other can.
+/// This backend emits two of the six events, `Head` and `Progress`. It
+/// owns no connection, so `Connected`, `Reused` and `Closed` never fire,
+/// and a `1xx` never reaches a page, so neither does `Informational`.
 #[derive(Debug)]
 pub struct Fetch<H = NoHooks> {
     caps: Capabilities,
@@ -126,10 +144,23 @@ impl Fetch {
 }
 
 impl<H> Fetch<H> {
+    // Maintainer notes (not rendered):
+    //
+    // Send this transport's events to `hooks` — see
+    // [`hclient_core::hooks::Hooks`] for what it hears and what it
+    // costs, and `crate::hooks` for the three quarters of the
+    // vocabulary a browser cannot speak.
+    //
+    // The hook may be `!Send`, and here that costs something a caller can
+    // see: nothing on this path declares `Send`, so an `Rc` inside a hook
+    // makes this transport `!Send` — and with it the future
+    // [`Transport::execute`] returns, which `crate::promise::SendJsFuture`
+    // otherwise keeps `Send`. Both halves compile and both halves work
+    // (P13; `crates/hclient-core/tests/shape.rs`, and `tests/hooks.rs`
+    // here).
     /// Send this transport's events to `hooks` — see
     /// [`hclient_core::hooks::Hooks`] for what it hears and what it
-    /// costs, and `crate::hooks` for the three quarters of the
-    /// vocabulary a browser cannot speak.
+    /// costs.
     ///
     /// **It returns a different type**, and that is the zero-cost
     /// mechanism rather than an inconvenience: the hook is a type
@@ -141,10 +172,8 @@ impl<H> Fetch<H> {
     /// The hook may be `!Send`, and here that costs something a caller can
     /// see: nothing on this path declares `Send`, so an `Rc` inside a hook
     /// makes this transport `!Send` — and with it the future
-    /// [`Transport::execute`] returns, which `crate::promise::SendJsFuture`
-    /// otherwise keeps `Send`. Both halves compile and both halves work
-    /// (P13; `crates/hclient-core/tests/shape.rs`, and `tests/hooks.rs`
-    /// here).
+    /// [`Transport::execute`] returns, which is otherwise `Send`. Both
+    /// halves compile and both halves work.
     pub fn hooks<H2>(self, hooks: H2) -> Fetch<H2> {
         Fetch {
             caps: self.caps,
@@ -245,10 +274,15 @@ impl Drop for AbortOnDrop {
 }
 
 impl<H: Hooks + Clone + Unpin> Transport for Fetch<H> {
+    // Maintainer notes (not rendered):
+    //
+    // `H: Clone + Unpin` is what that costs, and it is the bound
+    // `hclient-native` has carried since hooks existed: a body that
+    // reports events outlives `execute`, so it **holds** the hook rather
+    // than borrowing it.
     /// The body, wrapped in the octet counter.
     ///
-    /// `H: Clone + Unpin` is what that costs, and it is the bound
-    /// `hclient-native` has carried since hooks existed: a body that
+    /// `H: Clone + Unpin` is what that costs: a body that
     /// reports events outlives `execute`, so it **holds** the hook rather
     /// than borrowing it. `NoHooks` is a ZST and a real hook arrives
     /// behind an `Arc` or an `Rc`, both of which are `Clone`.
@@ -268,16 +302,21 @@ impl<H: Hooks + Clone + Unpin> Transport for Fetch<H> {
         self.counted(out, watched.as_ref())
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Identity, not the default wrapping: `Self::Error` is already
+    // `hclient_core::error::Error`, and every fallible step in `execute`
+    // (`convert::to_web_request`, the fetch call, response-building,
+    // `Body::from_response`) has already set its own category. Without
+    // this override `Client::execute` would still behave identically
+    // (the default recognizes an already-`Error` and passes it through
+    // unchanged) — the line is behaviorally redundant and semantically
+    // needed anyway: it names the intent where it's read, and it survives
+    // a future change to the default. Same reasoning, same wording, as
+    // `hclient-native`'s and `hclient-wasi`'s identical overrides.
     /// Identity, not the default wrapping: `Self::Error` is already
     /// `hclient_core::error::Error`, and every fallible step in `execute`
-    /// (`convert::to_web_request`, the fetch call, response-building,
-    /// `Body::from_response`) has already set its own category. Without
-    /// this override `Client::execute` would still behave identically
-    /// (the default recognizes an already-`Error` and passes it through
-    /// unchanged) — the line is behaviorally redundant and semantically
-    /// needed anyway: it names the intent where it's read, and it survives
-    /// a future change to the default. Same reasoning, same wording, as
-    /// `hclient-native`'s and `hclient-wasi`'s identical overrides.
+    /// has already set its own category.
     fn to_error(&self, e: Self::Error) -> Error {
         e
     }
@@ -287,6 +326,12 @@ impl<H: Hooks + Clone + Unpin> Transport for Fetch<H> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// The response body is `Send` for a different and
+// stronger reason: `body::pump` keeps every JS handle on the thread
+// that made it and hands `Bytes` across a channel, so nothing about
+// that half depends on how many threads there are.
 /// The `Send` half of the seam, which this backend satisfies with no
 /// bound of its own.
 ///
@@ -295,7 +340,7 @@ impl<H: Hooks + Clone + Unpin> Transport for Fetch<H> {
 /// Promise` and `web_sys::Response` are all `Send` there — so
 /// `execute`'s future is `Send` by ordinary inference and this is one
 /// line of forwarding. The response body is `Send` for a different and
-/// stronger reason: `body::pump` keeps every JS handle on the thread
+/// stronger reason: a task keeps every JS handle on the thread
 /// that made it and hands `Bytes` across a channel, so nothing about
 /// that half depends on how many threads there are.
 ///
@@ -376,12 +421,16 @@ pub mod testing {
     use std::future::poll_fn;
     use std::pin::Pin;
 
+    // Maintainer notes (not rendered):
+    //
+    // `caps::supports_duplex` is `pub(crate)` and drives no field of
+    // `Capabilities` (v0.2 W6 gave that job to
+    // `caps::supports_streaming_request_body`, which is behavioural), so
     /// The cheap `'duplex' in Request.prototype` check — an observation,
     /// not the probe anything decides by.
     ///
     /// `caps::supports_duplex` is `pub(crate)` and drives no field of
-    /// `Capabilities` (v0.2 W6 gave that job to
-    /// `caps::supports_streaming_request_body`, which is behavioural), so
+    /// `Capabilities`, so
     /// without this accessor `rustc` would flag it `dead_code`. It is kept
     /// because `tests/caps.rs` pins the two probes against each other: they
     /// agree in Chrome 151 and Firefox 153 today, and the day they diverge
@@ -440,10 +489,14 @@ pub mod testing {
             .map(|c| (c.request, c.abort))
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Since v0.2 W6 the value of `caps.streaming_request_body` genuinely
+    // changes what this does
     /// Same conversion, against a caller-supplied `Capabilities` rather than
     /// a real `Fetch`'s probed one.
     ///
-    /// Since v0.2 W6 the value of `caps.streaming_request_body` genuinely
+    /// The value of `caps.streaming_request_body` genuinely
     /// changes what this does — it is the branch `convert::to_web_request`
     /// takes — so this is how `tests/convert.rs` exercises BOTH arms in a
     /// single browser, rather than testing only the one the local probe

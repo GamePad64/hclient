@@ -52,15 +52,15 @@ pub(crate) type SendHalf = h3::client::RequestStream<
     Bytes,
 >;
 
+// Maintainer notes (not rendered):
+// `Send` is not decoration here: this `dyn` sits on the `Client ->
+// Transport` path inside [`crate::http3::H3Body`], and amendment C2's rule is
+// that erasing a type there cuts the auto-traits off everything above it.
+// `H3Body` was `Send` before this type existed and has to stay `Send`, or
+// a caller who spawns a request stops compiling for a reason nothing
+// announces. `an_h3_body_is_still_send` in `tests/streaming.rs` is the
+// compile-time check amendment C2 asks for, in `tests/` as C3 requires.
 /// The request-body write, in flight.
-///
-/// `Send` is not decoration here: this `dyn` sits on the `Client ->
-/// Transport` path inside [`crate::http3::H3Body`], and amendment C2's rule is
-/// that erasing a type there cuts the auto-traits off everything above it.
-/// `H3Body` was `Send` before this type existed and has to stay `Send`, or
-/// a caller who spawns a request stops compiling for a reason nothing
-/// announces. `an_h3_body_is_still_send` in `tests/streaming.rs` is the
-/// compile-time check amendment C2 asks for, in `tests/` as C3 requires.
 pub(crate) type Pump = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>; // send-bound-exception: amendment-C2
 
 /// What is left of a [`RequestBody`] once the variants that are really the
@@ -68,8 +68,10 @@ pub(crate) type Pump = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>; 
 enum Outgoing {
     /// One buffered chunk, or nothing at all.
     Buffered(Option<Bytes>),
-    /// `Unpin + Send` — the bounds `RequestBody::Streaming` already
-    /// carries (amendment C2, same place), forwarded rather than restated.
+    // Maintainer notes (not rendered):
+    // `Unpin + Send` — the bounds `RequestBody::Streaming` already
+    // carries (amendment C2, same place), forwarded rather than restated.
+    /// A streaming body, with the bounds `RequestBody::Streaming` carries.
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 

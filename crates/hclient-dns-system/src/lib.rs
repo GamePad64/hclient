@@ -7,28 +7,21 @@
 //! **`getaddrinfo` still cannot return an HTTPS/SVCB record, and never
 //! will** — its result type is a list of `sockaddr`s. So SVCB does not
 //! come from `getaddrinfo` here; it comes from a second system call
-//! alongside it, and **that call is `system-resolver`'s now**:
+//! alongside it, made by `system-resolver`:
 //! `res_query(3)`, `android_res_nquery`, `DnsQueryRaw` and
 //! `DnsQuery_UTF8`, one seam over five platforms, `Vec<Record>` out.
-//!
-//! **What is left in this crate is the half that is about HTTPS records
-//! rather than about DNS**, and the split is why this crate has no
-//! `unsafe` in it at all any more. Its own boundary used to be the
-//! project's only `unsafe` outside `hclient-fetch` (spec amendment C8);
-//! that moved with the code.
+//! This crate itself contains no `unsafe` code.
 //!
 //! The RDATA a resolver reports is decoded by `domain`, not by hand, and
 //! it is decoded **as RDATA**: `Https::parse` reads one record's octets,
-//! which is the only shape all five platforms below have. The decoder
-//! this replaced read whole messages and nothing smaller, so this crate
-//! used to assemble a synthetic DNS response around every record it
-//! wanted read. `svcb` is left with the part
+//! which is the only shape all five platforms below have. What this crate
+//! adds is the part
 //! a DNS decoder correctly declines to do: deciding, per RFC 9460, which
 //! decoded records a *client* may act on (§2.4/§2.5 modes and root
 //! targets, §8 `mandatory` semantics), and classifying what "no records"
 //! means.
 //!
-//! # glibc: what this crate needs, measured rather than assumed
+//! # glibc: what this crate needs
 //!
 //! **The supported minimum is glibc 2.34**, and the honest shape of that
 //! claim is a policy rather than a hard wall: `res_query` has been in
@@ -75,13 +68,11 @@
 //! `Resolve::supports` doc comment in `hclient-dns` exists to
 //! prevent.
 //!
-//! **Windows resolves a symbol at run time again, and it does not change
+//! **Windows chooses its system call at run time, and it does not change
 //! this answer.** `system-resolver` uses `DnsQueryRaw` where the machine
-//! has it and `DnsQuery_UTF8` where it does not, which is a genuine
-//! run-time choice — but type 65 is answerable through *both*, so what
-//! this method reports is still decided by the build. That is a fact about
-//! HTTPS records rather than about the platform, and it is why the test
-//! guarding this can still compare against a `cfg!`.
+//! has it and `DnsQuery_UTF8` where it does not, but type 65 is
+//! answerable through both, so what `supports` reports is still decided
+//! by the build.
 //!
 //! **Both SVCB backends block too**, so `lookup` goes through the
 //! same `Blocking` capability as the address lookups and has the
@@ -89,33 +80,68 @@
 //! to it: a name with no HTTPS records yields an EMPTY stream, not an
 //! error. That case is the common one, and `res_query` reports it as a
 //! failure; turning that report into an `Error` would tell every caller
-//! its DNS was broken for every host that simply has no HTTPS record. See
-//! `svcb::endpoints_from_answer` for where that line is drawn.
+//! its DNS was broken for every host that simply has no HTTPS record.
 //!
-//! **A known limitation — and it's worse than it sounds: TODAY, two
-//! `getaddrinfo` calls for one name, and neither gives an early result.**
-//! the A lookup and the AAAA lookup don't share one resolution attempt
-//! — each calls `self.addresses` independently, and `std::net::ToSocketAddrs`
-//! for a `(host, port)` pair resolves BOTH families at once via a single
-//! system `getaddrinfo`. That means any Happy Eyeballs consumer that
-//! calls both methods for one name (which `Scheduler` is required to do)
-//! actually triggers TWO full dual-family `getaddrinfo` calls — measured
-//! with a counter wrapped around `Blocking::run`: `2` calls for one name
-//! via
-//! one `lookup` per family. Each call gets both families back and
-//! throws away half of it with the `is_ipv6() == want_v6` filter — i.e.
-//! the A records from the v6 call and the AAAA records from the v4 call
-//! are both discarded for nothing. Neither of the two calls returns an
-//! early partial result — curl 8.20 makes **two** calls ON PURPOSE, on
-//! separate threads, each for ONE family, which is exactly what gives it
-//! its win (v6 can answer before v4, so Happy Eyeballs starts sooner);
-//! here both calls wait on the same full dual-family answer, so there is
-//! no time advantage at all — only the doubled cost of the system call. A
-//! single resolution feeding both streams (or, like curl, two
-//! single-family calls) is v0.2 work, not current behavior; the shape of
-//! the `Resolve` trait already allows for it today (separate
-//! one `lookup` per family, not one call returning both families at
-//! once), but `SystemDns` doesn't use that possibility yet.
+//! **A known limitation: two `getaddrinfo` calls for one name, and
+//! neither gives an early result.** The A lookup and the AAAA lookup each
+//! call `getaddrinfo` independently, and each call resolves both families
+//! and discards the half it was not asked for. A Happy Eyeballs consumer
+//! that asks for both families of one name therefore pays for two full
+//! dual-family resolutions, and neither answers sooner than the other.
+
+// Maintainer notes (not rendered):
+//
+// alongside it, and **that call is `system-resolver`'s now**:
+//
+// **What is left in this crate is the half that is about HTTPS records
+// rather than about DNS**, and the split is why this crate has no
+// `unsafe` in it at all any more. Its own boundary used to be the
+// project's only `unsafe` outside `hclient-fetch` (spec amendment C8);
+// that moved with the code.
+//
+// which is the only shape all five platforms below have. The decoder
+// this replaced read whole messages and nothing smaller, so this crate
+// used to assemble a synthetic DNS response around every record it
+// wanted read. `svcb` is left with the part
+//
+// # glibc: what this crate needs, measured rather than assumed
+//
+// **Windows resolves a symbol at run time again, and it does not change
+// this answer.** `system-resolver` uses `DnsQueryRaw` where the machine
+// has it and `DnsQuery_UTF8` where it does not, which is a genuine
+// run-time choice — but type 65 is answerable through *both*, so what
+// this method reports is still decided by the build. That is a fact about
+// HTTPS records rather than about the platform, and it is why the test
+// guarding this can still compare against a `cfg!`.
+//
+// its DNS was broken for every host that simply has no HTTPS record. See
+// `svcb::endpoints_from_answer` for where that line is drawn.
+//
+// **A known limitation — and it's worse than it sounds: TODAY, two
+// `getaddrinfo` calls for one name, and neither gives an early result.**
+// the A lookup and the AAAA lookup don't share one resolution attempt
+// — each calls `self.addresses` independently, and `std::net::ToSocketAddrs`
+// for a `(host, port)` pair resolves BOTH families at once via a single
+// system `getaddrinfo`. That means any Happy Eyeballs consumer that
+// calls both methods for one name (which `Scheduler` is required to do)
+// actually triggers TWO full dual-family `getaddrinfo` calls — measured
+// with a counter wrapped around `Blocking::run`: `2` calls for one name
+// via
+// one `lookup` per family. Each call gets both families back and
+// throws away half of it with the `is_ipv6() == want_v6` filter — i.e.
+// the A records from the v6 call and the AAAA records from the v4 call
+// are both discarded for nothing. Neither of the two calls returns an
+// early partial result — curl 8.20 makes **two** calls ON PURPOSE, on
+// separate threads, each for ONE family, which is exactly what gives it
+// its win (v6 can answer before v4, so Happy Eyeballs starts sooner);
+// here both calls wait on the same full dual-family answer, so there is
+// no time advantage at all — only the doubled cost of the system call. A
+// single resolution feeding both streams (or, like curl, two
+// single-family calls) is v0.2 work, not current behavior; the shape of
+// the `Resolve` trait already allows for it today (separate
+// one `lookup` per family, not one call returning both families at
+// once), but `SystemDns` doesn't use that possibility yet.
+//
 // **`forbid` again, and the relaxation left with the code that needed
 // it.** This crate carried `deny` under spec amendment C8 because
 // `sys/res_query.rs` and `sys/windows.rs` each needed a scoped `#[allow]`
@@ -132,9 +158,12 @@ mod svcb;
 
 use futures_core::Stream;
 
+// Maintainer notes (not rendered):
+//
+// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
+// records about where a bound is written.
 /// The two stream shapes this crate hands back, named so the marker sits
-/// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
-/// records about where a bound is written.
+/// on a line `cargo fmt` has no reason to reflow.
 type SendRecords<'a> =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 use crate::error::ResolveFailed;
@@ -234,15 +263,21 @@ impl<B: Blocking> Resolve for SystemDns<B> {
     where
         Self: 'a;
 
-    /// **`system_resolver`'s answer, asked per type.** This used to be
-    /// `supports_svcb`, and its body was
-    /// `system_resolver::support().allows(TYPE_HTTPS)` — the same
-    /// function with the argument written in. The seam takes a type
-    /// number now, so the question can be asked about any type — and the
-    /// answer is still `false` for every type this crate has no `RData`
-    /// variant for, because `lookup` does not ask for those. The
-    /// generality reaches the seam; it reaches a caller the day a variant
-    /// arrives, which is the day `lookup` gains an arm.
+    // Maintainer notes (not rendered):
+    //
+    // **`system_resolver`'s answer, asked per type.** This used to be
+    // `supports_svcb`, and its body was
+    // `system_resolver::support().allows(TYPE_HTTPS)` — the same
+    // function with the argument written in. The seam takes a type
+    // number now, so the question can be asked about any type — and the
+    // answer is still `false` for every type this crate has no `RData`
+    // variant for, because `lookup` does not ask for those. The
+    // generality reaches the seam; it reaches a caller the day a variant
+    // arrives, which is the day `lookup` gains an arm.
+    /// **`system_resolver`'s answer, asked per type.**
+    ///
+    /// The answer is `false` for every type this crate has no `RData`
+    /// variant for, because `lookup` does not ask for those.
     ///
     /// `A` and `AAAA` are answered by `getaddrinfo`, which every target
     /// has, so they are `true` unconditionally rather than routed through

@@ -192,14 +192,20 @@ fn match_time(t: &mut &[u8]) -> ModalResult<(u32, u32, u32)> {
     Ok((hour, minute, second))
 }
 
+// Maintainer notes (not rendered):
+// digits, then either the end of the token or a non-digit. The trailing
+// non-digit is *allowed*, not required — `06` and `06th` are both a
+// day-of-month 6, and `1234567` is neither a day nor a year.
+//
+// `not` is what states that second half. Without it `take_while(..=2)`
+// would read `123` as `12`, and a seven-digit run would become a
+// plausible year.
 /// The `day-of-month` (`min`/`max` = 1/2) and `year` (2/4) productions:
-/// digits, then either the end of the token or a non-digit. The trailing
-/// non-digit is *allowed*, not required — `06` and `06th` are both a
-/// day-of-month 6, and `1234567` is neither a day nor a year.
+/// digits, then either the end of the token or a non-digit.
 ///
-/// `not` is what states that second half. Without it `take_while(..=2)`
-/// would read `123` as `12`, and a seven-digit run would become a
-/// plausible year.
+/// `not` is what states the second half of that rule. Without it
+/// `take_while(..=2)` would read `123` as `12`, and a seven-digit run
+/// would become a plausible year.
 fn number(min: usize, max: usize) -> impl FnMut(&mut &[u8]) -> ModalResult<u32> {
     move |t: &mut &[u8]| {
         terminated(

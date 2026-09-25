@@ -2,8 +2,7 @@
 //!
 //! # Why this is not a method on [`Transport`](crate::transport::Transport)
 //!
-//! The same reasoning `hclient_tls::quic::QuicTlsConnect` rests on, and
-//! `hclient_rt::TcpAdoptStd` before it: the intersection between "send a
+//! The intersection between "send a
 //! request, read a response" and "exchange messages until somebody closes"
 //! is empty, and an adapter between them would type-check *with an empty
 //! body*. A `Transport::websocket` returning `Err(Unsupported)` would push
@@ -30,28 +29,48 @@
 //!
 //! - **`Ping` and `Pong` are not [`Message`] variants.** RFC 6455 §5.5.2
 //!   makes answering a ping the *endpoint's* duty, not the caller's, and
-//!   `hclient-tungstenite` discharges it without telling anybody
-//!   (`crates/hclient-tungstenite/tests/websocket.rs` watches the pong
-//!   leave from the server's side of the wire). A caller-visible `Ping`
-//!   would be
-//!   a variant the browser can neither send nor ever receive, which is the
-//!   capability lie this workspace has caught four times. If a caller
+//!   the backend discharges it without telling anybody. A caller-visible
+//!   `Ping` would be a variant the browser can neither send nor ever
+//!   receive. If a caller
 //!   decision ever turns on one, adding the variant is a compile error at
 //!   every backend — which is the right way round, and why this enum is
 //!   not `#[non_exhaustive]`.
 //! - **Permessage-deflate and subprotocol negotiation** are not
 //!   supported. A subprotocol *can* be asked for, because the request
 //!   carries headers; nothing here checks what came back.
+
+// Maintainer notes (not rendered):
+//
+// The same reasoning `hclient_tls::quic::QuicTlsConnect` rests on, and
+// `hclient_rt::TcpAdoptStd` before it: the intersection between "send a
+// request, read a response"
+//
+// - **`Ping` and `Pong` are not [`Message`] variants.** RFC 6455 §5.5.2
+//   makes answering a ping the *endpoint's* duty, not the caller's, and
+//   `hclient-tungstenite` discharges it without telling anybody
+//   (`crates/hclient-tungstenite/tests/websocket.rs` watches the pong
+//   leave from the server's side of the wire). A caller-visible `Ping`
+//   would be
+//   a variant the browser can neither send nor ever receive, which is the
+//   capability lie this workspace has caught four times. If a caller
+//   decision ever turns on one, adding the variant is a compile error at
+//   every backend — which is the right way round, and why this enum is
+//   not `#[non_exhaustive]`.
 use crate::error::Error;
 use futures_core::Stream;
 use futures_sink::Sink;
 use std::future::Future;
 
+// Maintainer notes (not rendered):
+//
+// Not `#[non_exhaustive]`: see the module doc. Nothing here is published,
+// so a new variant costs a rebase inside this workspace and a compile
+// error is what a backend author should get.
 /// One WebSocket message, in the vocabulary every backend can speak.
 ///
-/// Not `#[non_exhaustive]`: see the module doc. Nothing here is published,
-/// so a new variant costs a rebase inside this workspace and a compile
-/// error is what a backend author should get.
+/// Not `#[non_exhaustive]`: see the module doc. A new variant is a
+/// compile error at every backend, which is what a backend author should
+/// get.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
     /// A text message. RFC 6455 §5.6 requires it to be valid UTF-8, which
@@ -68,6 +87,16 @@ pub enum Message {
     Close(Option<CloseFrame>),
 }
 
+// Maintainer notes (not rendered):
+//
+// Not `#[non_exhaustive]`, and the reason is who writes one. A caller
+// closing a session writes `Message::Close(Some(CloseFrame { code,
+// reason }))` — `hclient-cli` does it six times — so the attribute would
+// close the literal to exactly the audience the type exists for, and buy
+// room for a third field RFC 6455 does not have: a close frame is a code
+// and a reason, and the wire format is fixed. That is the `TcpOpts`
+// answer rather than the `Head` one, and the two are told apart by
+// whether the value is *written* by a caller or only handed to them.
 /// The close code and reason of a [`Message::Close`].
 ///
 /// `u16` rather than an enum of the RFC 6455 §7.4 codes: this seam does
@@ -76,12 +105,9 @@ pub enum Message {
 ///
 /// Not `#[non_exhaustive]`, and the reason is who writes one. A caller
 /// closing a session writes `Message::Close(Some(CloseFrame { code,
-/// reason }))` — `hclient-cli` does it six times — so the attribute would
-/// close the literal to exactly the audience the type exists for, and buy
-/// room for a third field RFC 6455 does not have: a close frame is a code
-/// and a reason, and the wire format is fixed. That is the `TcpOpts`
-/// answer rather than the `Head` one, and the two are told apart by
-/// whether the value is *written* by a caller or only handed to them.
+/// reason }))`, so the attribute would close the literal to exactly the
+/// audience the type exists for: a close frame is a code and a reason,
+/// and the wire format is fixed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseFrame {
     /// RFC 6455 §7.4 status code.
@@ -130,6 +156,16 @@ pub trait WebSocketConnect {
     /// The open connection.
     type WebSocket: WebSocket;
 
+    // Maintainer notes (not rendered):
+    //
+    // particular — is a request to the implementer, and
+    // **a backend that cannot send a header the request carries must
+    // fail rather than drop it.** That is the rule `hclient-wasi` already
+    // follows for `wasi:http`'s request options, and it is what keeps
+    // this seam from becoming the place where an `Authorization` header
+    // silently does not go out. It is also the whole of the answer for a
+    // browser backend, which can send no headers at all beyond the
+    // subprotocol list.
     /// Open one.
     ///
     /// # What `req` is for, and the duty it puts on the implementer
@@ -140,12 +176,9 @@ pub trait WebSocketConnect {
     /// scheme. Everything else the request carries — headers in
     /// particular — is a request to the implementer, and
     /// **a backend that cannot send a header the request carries must
-    /// fail rather than drop it.** That is the rule `hclient-wasi` already
-    /// follows for `wasi:http`'s request options, and it is what keeps
-    /// this seam from becoming the place where an `Authorization` header
-    /// silently does not go out. It is also the whole of the answer for a
-    /// browser backend, which can send no headers at all beyond the
-    /// subprotocol list.
+    /// fail rather than drop it.** It is what keeps an `Authorization`
+    /// header from silently not going out. A browser backend can send no
+    /// headers at all beyond the subprotocol list.
     ///
     /// The method and version are ignored: RFC 6455 §4.1 fixes both, and
     /// a backend is free to build the handshake it must build.

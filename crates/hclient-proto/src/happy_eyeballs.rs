@@ -7,7 +7,7 @@ use std::net::IpAddr;
 
 /// RFC 8305's three tunables.
 ///
-/// **Deliberately not `#[non_exhaustive]`, answer 1**: its whole use is
+/// **Deliberately not `#[non_exhaustive]`**: its whole use is
 /// `HeConfig { attempt_delay: .., ..Default::default() }` — which is how
 /// `hclient-native` builds one — and the attribute forbids exactly that
 /// from outside this crate. [`Default`] is the RFC's own recommended
@@ -64,7 +64,7 @@ const ATTEMPT_MAX: Duration = Duration::from_secs(2);
 
 /// What [`Scheduler::poll`] wants the caller to do next.
 ///
-/// **Deliberately not `#[non_exhaustive]`, answer 2**: exhaustiveness is
+/// **Deliberately not `#[non_exhaustive]`**: exhaustiveness is
 /// the mechanism. `hclient-native`'s connect loop branches on all three
 /// with no `_` and does something structurally different in each — open
 /// a socket, sleep, or give up — so a fourth instruction has to stop that

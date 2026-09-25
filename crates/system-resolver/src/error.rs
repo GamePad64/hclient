@@ -8,14 +8,20 @@
 //! read — because that is the order somebody debugging a failure arrives
 //! in. Alphabetical order is the order of a type nobody is looking for.
 
+// Maintainer notes (not rendered):
+//
+// [`MalformedAnswer`] below**, and the split is this workspace's rule
+// about who stands on the other side: this enum is what a caller
+// *branches on*.
+//
+// behind — no records. Measured on macOS 27.
 /// Why a [`lookup`](crate::lookup) produced no records.
 ///
 /// **Not `#[non_exhaustive]` here and `#[non_exhaustive]` on
-/// [`MalformedAnswer`] below**, and the split is this workspace's rule
-/// about who stands on the other side: this enum is what a caller
-/// *branches on* — an absent name and a truncated answer send a client in
-/// different directions — so a new variant should be a compile error where
-/// that decision is made. `MalformedAnswer` is handed back and read, never
+/// [`MalformedAnswer`] below**: this enum is what a caller *branches on*
+/// — an absent name and a truncated answer send a client in different
+/// directions — so a new variant should be a compile error where that
+/// decision is made. `MalformedAnswer` is handed back and read, never
 /// dispatched on, and a `_` arm there says *the answer was malformed some
 /// other way*, which is true.
 ///
@@ -69,7 +75,7 @@ pub enum Error {
     /// limit rather than a gap here: `DNSServiceQueryRecord` reports both
     /// cases as `kDNSServiceErr_NoSuchRecord` and carries no header to
     /// read an rcode out of, so this crate answers the one it can stand
-    /// behind — no records. Measured on macOS 27.
+    /// behind — no records.
     #[error("the name does not exist")]
     NameDoesNotExist,
 

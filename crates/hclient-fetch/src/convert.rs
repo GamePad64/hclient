@@ -27,22 +27,18 @@
 //!    only understands `Full` and drops everything else — the defect where
 //!    a `Rewindable` wrapping anything but a non-empty `Full` collapses to
 //!    nothing sent.
-//!    Since v0.2 W6 `Streaming` is forwarded rather than refused, where the
+//!    `Streaming` is forwarded rather than refused, where the
 //!    browser will genuinely send it; where it will not, it is still a
 //!    typed [`ErrorKind::Unsupported`], never a silent empty body and never
 //!    a silently REPLACED one.
 //!
 //! 3. **The capability this file acts on is the one the browser was
-//!    measured on.** Until v0.2 W6 `RequestBody::Streaming` was rejected
-//!    unconditionally here, deliberately ignoring
-//!    `caps.streaming_request_body`, because that field was fed by
-//!    `caps::supports_duplex` — `'duplex' in Request.prototype`, a presence
-//!    check whatwg/fetch#1470 records as insufficient. W6 replaced the
-//!    deciding probe with #1470's behavioural one
-//!    (`caps::supports_streaming_request_body`), measured against real
-//!    servers in `docs/measurements/w6-request-streams/`, so this file now
-//!    branches on `caps.streaming_request_body` instead of second-guessing
-//!    it. That is not "trusting a capability blindly": it is the same
+//!    measured on.** The deciding probe is whatwg/fetch#1470's behavioural
+//!    one (`caps::supports_streaming_request_body`), not the cheaper
+//!    presence check `caps::supports_duplex` — `'duplex' in
+//!    Request.prototype` — which #1470 records as insufficient, so this
+//!    file branches on `caps.streaming_request_body` instead of
+//!    second-guessing it. That is not "trusting a capability blindly": it is the same
 //!    stored answer, probed once in `Fetch::new()`, that
 //!    `Transport::capabilities()` hands the caller — one fact with two
 //!    readers rather than two claims that have to be kept in agreement.
@@ -68,6 +64,21 @@
 //!    message survives where a human can read it (`DevTools`), and
 //!    `tests/convert.rs` drains the built `Request`'s own stream to pin the
 //!    policy at the layer that still has it.
+
+// Maintainer notes (not rendered):
+//
+// Since v0.2 W6 `Streaming` is forwarded rather than refused, where the
+// browser will genuinely send it.
+//
+// measured on.** Until v0.2 W6 `RequestBody::Streaming` was rejected
+// unconditionally here, deliberately ignoring `caps.streaming_request_body`,
+// because that field was fed by `caps::supports_duplex` — `'duplex' in
+// Request.prototype`, a presence check whatwg/fetch#1470 records as
+// insufficient. W6 replaced the deciding probe with #1470's behavioural
+// one (`caps::supports_streaming_request_body`), measured against real
+// servers in `docs/measurements/w6-request-streams/`, so this file now
+// branches on `caps.streaming_request_body` instead of second-guessing it.
+
 use crate::error::{
     BadUrl, BodyNotAllowedForMethod, ForbiddenHeader, HeaderSilentlyDropped, JsError,
     NonAsciiHeaderValue, RequestTrailersUnsupported,
@@ -193,9 +204,12 @@ fn build_headers(h: &http::HeaderMap) -> Result<web_sys::Headers, Error> {
 /// nothing, a byte buffer, or a single-pass body still to be wrapped in a
 /// `ReadableStream` — see the module doc comment, points 2 and 3.
 ///
-/// The `Streaming` arm carries the body rather than discarding it (which is
-/// what it did before v0.2 W6, when the only thing left to do with it was
-/// name it in an error). It is deliberately NOT converted to a
+// Maintainer notes (not rendered):
+//
+// The `Streaming` arm carries the body rather than discarding it (which is
+// what it did before v0.2 W6, when the only thing left to do with it was
+// name it in an error). It is deliberately NOT converted to a
+/// The `Streaming` arm carries the body rather than discarding it. It is deliberately NOT converted to a
 /// `ReadableStream` inside [`resolve_body`]: whether that conversion may
 /// happen at all is `caps.streaming_request_body`'s decision, and
 /// [`resolve_body`] has no `Capabilities`. Building the stream here would

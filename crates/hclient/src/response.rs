@@ -26,6 +26,11 @@ impl<B> Debug for Response<B> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// The first consumer to port onto this crate worked around the absence
+// before finding the mock, and reported that the missing thing was a
+// pointer rather than a constructor. This is it.
 /// A response with its URL preserved. `into_parts` gives full fidelity;
 /// `chunk`/`collect` are convenience on top of it.
 ///
@@ -45,10 +50,6 @@ impl<B> Debug for Response<B> {
 /// redirect, cookie, decompression and retry code a live request goes
 /// through, where a hand-built `Response` would exercise a path
 /// production never takes.
-///
-/// The first consumer to port onto this crate worked around the absence
-/// before finding the mock, and reported that the missing thing was a
-/// pointer rather than a constructor. This is it.
 pub struct Response<B = crate::body::ClientBody> {
     parts: http::response::Parts,
     body: B,
@@ -134,6 +135,11 @@ impl<B> Response<B> {
     pub fn headers(&self) -> &http::HeaderMap {
         &self.parts.headers
     }
+    // Maintainer notes (not rendered):
+    //
+    // Nine tests across `hclient-native` assert this value against what
+    // an `h2` or `quinn` server decoded, which is what makes it a fact
+    // about the connection rather than an echo of a request.
     /// The protocol this response was actually spoken over.
     ///
     /// **This is the honest route to knowing which protocol was used**,
@@ -145,10 +151,6 @@ impl<B> Response<B> {
     /// graph switched on. So a caller who needs to know asks
     /// [`RequireVersion`] before the head, or this after it.
     ///
-    /// Nine tests across `hclient-native` assert this value against what
-    /// an `h2` or `quinn` server decoded, which is what makes it a fact
-    /// about the connection rather than an echo of a request.
-    ///
     /// It is on [`Collected`] too, for [`Self::links`]'s reason.
     ///
     /// [`Capabilities`]: hclient_core::caps::Capabilities
@@ -156,16 +158,17 @@ impl<B> Response<B> {
     pub fn version(&self) -> http::Version {
         self.parts.version
     }
+    // Maintainer notes (not rendered):
+    //
+    // The requested URL would answer *"where did you send this"* under a
+    // name that reads *"where did this come from"*, and the two differ
+    // exactly when a redirect was followed. Found by writing
+    // [`Self::error_for_status`], whose error
+    // carries this value and is useless carrying the wrong one.
     /// **The URL this answer came from**, which is the last hop of a
     /// redirect chain rather than the one the caller asked for. The two
     /// differ exactly when a redirect was followed, and then the caller
     /// already has the first — they typed it.
-    ///
-    /// The requested URL would answer *"where did you send this"* under a
-    /// name that reads *"where did this come from"*, and the two differ
-    /// exactly when a redirect was followed. Found by writing
-    /// [`Self::error_for_status`], whose error
-    /// carries this value and is useless carrying the wrong one.
     pub fn url(&self) -> &http::Uri {
         &self.url
     }
@@ -300,6 +303,9 @@ where
         crate::lines::LineStream::new(self, crate::lines::DEFAULT_MAX_LINE)
     }
 
+    /// Reads the whole body into memory, keeping the status, the headers
+    /// and the URL beside it.
+    ///
     /// # Errors
     ///
     /// Whatever reading the body fails with: the backend's own
@@ -433,17 +439,24 @@ impl Collected {
     pub fn url(&self) -> &http::Uri {
         &self.url
     }
+    // Maintainer notes (not rendered):
+    //
+    // [`Response::version`] has what the value is for and why nothing in
+    // [`Capabilities`](hclient_core::caps::Capabilities) can answer the same
+    // question. Why it is here as well is [`Self::links`]'s reason,
+    // with more force than either of the other two: `.collect().await?`
+    // appears in every example this crate leads with, so `Collected` is
+    // the type a caller most often ends up holding — and the value was
+    // sitting in the `Parts` this type already keeps, reachable by no
+    // accessor. A fact this workspace calls the honest route to knowing
+    // which protocol spoke should not be lost by reading the body.
     /// The protocol this response was actually spoken over.
     ///
     /// [`Response::version`] has what the value is for and why nothing in
     /// [`Capabilities`](hclient_core::caps::Capabilities) can answer the same
-    /// question. Why it is here as well is [`Self::links`]'s reason,
-    /// with more force than either of the other two: `.collect().await?`
-    /// appears in every example this crate leads with, so `Collected` is
-    /// the type a caller most often ends up holding — and the value was
-    /// sitting in the `Parts` this type already keeps, reachable by no
-    /// accessor. A fact this workspace calls the honest route to knowing
-    /// which protocol spoke should not be lost by reading the body.
+    /// question. Why it is here as well is [`Self::links`]'s reason:
+    /// `.collect().await?` is the usual way to read a body, so `Collected`
+    /// is the type a caller most often ends up holding.
     pub fn version(&self) -> http::Version {
         self.parts.version
     }
@@ -574,6 +587,12 @@ impl Collected {
         }
         Ok(text.into_owned())
     }
+    // Maintainer notes (not rendered):
+    //
+    // Behind the `json` feature, off by default: `serde`/`serde_json`
+    // aren't needed by a consumer who only streams the body or reads it
+    // as bytes — see the comment on the feature in Cargo.toml about the
+    // cost on wasm.
     /// Deserializes the body as JSON.
     ///
     /// ```no_run
@@ -604,8 +623,7 @@ impl Collected {
     ///
     /// Behind the `json` feature, off by default: `serde`/`serde_json`
     /// aren't needed by a consumer who only streams the body or reads it
-    /// as bytes — see the comment on the feature in Cargo.toml about the
-    /// cost on wasm.
+    /// as bytes, and on wasm they cost download size.
     ///
     /// # Errors
     ///

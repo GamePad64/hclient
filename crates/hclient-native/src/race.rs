@@ -186,16 +186,19 @@ use std::pin::pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// 250 ms, and it is not a new constant: it is
+// `hclient_proto::happy_eyeballs::HeConfig::default()`'s `attempt_delay`,
+// which is RFC 8305 §5's Connection Attempt Delay, and which is already
+// this codebase's answer to *"how long do I give the preferred option
+// before trying the other"* one layer down. The module doc says what the
+// staged connect changed about why this number is right, and what it did
+// not change.
 /// How long the QUIC arm runs alone before the hedge is started, when a
 /// caller has no reason to name a different number.
 ///
-/// 250 ms, and it is not a new constant: it is
-/// `hclient_proto::happy_eyeballs::HeConfig::default()`'s `attempt_delay`,
-/// which is RFC 8305 §5's Connection Attempt Delay, and which is already
-/// this codebase's answer to *"how long do I give the preferred option
-/// before trying the other"* one layer down. The module doc says what the
-/// staged connect changed about why this number is right, and what it did
-/// not change.
+/// 250 ms: RFC 8305 §5's Connection Attempt Delay, the same value
+/// Happy Eyeballs uses between address families.
 ///
 /// It is not applied by default anywhere. A [`Native`] does not race
 /// until [`Native::hedging`] is called, and that call names the number.

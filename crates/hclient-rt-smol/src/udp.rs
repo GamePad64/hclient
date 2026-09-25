@@ -2,24 +2,17 @@
 //!
 //! The second implementation of the UDP seam, and the reason it exists is
 //! not that anyone needed UDP on smol: it is that a seam with one
-//! implementation is a design. `crates/hclient/tests/two_runtimes.rs` is
-//! what makes "the runtime seam is real" a measurement rather than a claim
-//! for TCP; `crates/hclient-rt-pair-check/tests/udp_pair_property.rs` and
-//! `crates/hclient-native/tests/h3_two_runtimes.rs` are what make it one for
-//! UDP and for HTTP/3.
+//! implementation is a design.
 //!
-//! # What was in doubt before this file, and what it answered
+//! # Why `try_send` and `poll_writable` are split
 //!
 //! [`UdpDatagrams`] splits `try_send` from
 //! [`poll_writable`](UdpDatagrams::poll_writable) — waiting for writability
 //! has to be expressible **without a datagram in hand**, because a QUIC
-//! endpoint has several tasks that may all be waiting to write. That split
-//! was justified entirely by what `quinn` needs and never by what a second
-//! runtime can express, so it was the one place this backend could have
-//! turned into a seam change.
+//! endpoint has several tasks that may all be waiting to write.
 //!
-//! It did not. `async_io::Async::poll_writable(&self, cx) -> Poll<io::
-//! Result<()>>` (`async-io-2.6.0/src/lib.rs:1001`) is the signature the
+//! `async_io::Async::poll_writable(&self, cx) -> Poll<io::
+//! Result<()>>` is the signature the
 //! seam asks for, argument for argument, and it registers a waker with no
 //! datagram anywhere in sight. The seam is untouched.
 //!
@@ -32,7 +25,7 @@
 //! `Ready` for ever.
 //!
 //! `async-io` caches nothing to clear. `Source::poll_ready`
-//! (`async-io-2.6.0/src/reactor.rs:440`) answers `Ready` only when the
+//! answers `Ready` only when the
 //! reactor's tick has moved past the one recorded at the *caller's* last
 //! `Pending`, and re-arms interest on every registration; a first call
 //! always registers and returns `Pending`. So a bare `try_send` here is not
@@ -40,18 +33,69 @@
 //! and adding a `try_io`-shaped dance would be inventing state this runtime
 //! deliberately does not keep.
 //!
-//! It has a **visible consequence**, measured rather than reasoned about,
-//! by replacing the `WouldBlock` retry in
-//! `crates/hclient-rt-pair-check/tests/udp_pair_property.rs` with a
-//! `panic!` and running both arms: **the tokio backend takes that path on
+//! **The tokio backend takes the `WouldBlock` path on
 //! its very first send and this one never does.** tokio's `try_io` refuses
 //! *before the syscall* when it holds no cached WRITABLE readiness, which
 //! is the state a freshly bound socket is in; here the `sendmsg` happens
 //! and a loopback socket with an empty send buffer accepts it. Both are
 //! within the seam's contract — `WouldBlock` is a permission to return it,
-//! not an obligation — and the asymmetry is written down in that test,
-//! because a caller written against this backend alone would have a bug
-//! only the other one finds.
+//! not an obligation — and a caller written against this backend alone
+//! would have a bug only the other one finds.
+
+// Maintainer notes (not rendered):
+//
+// The second implementation of the UDP seam, and the reason it exists is
+// not that anyone needed UDP on smol: it is that a seam with one
+// implementation is a design. `crates/hclient/tests/two_runtimes.rs` is
+// what makes "the runtime seam is real" a measurement rather than a claim
+// for TCP; `crates/hclient-rt-pair-check/tests/udp_pair_property.rs` and
+// `crates/hclient-native/tests/h3_two_runtimes.rs` are what make it one for
+// UDP and for HTTP/3.
+//
+// # What was in doubt before this file, and what it answered
+//
+// [`UdpDatagrams`] splits `try_send` from
+// [`poll_writable`](UdpDatagrams::poll_writable) — waiting for writability
+// has to be expressible **without a datagram in hand**, because a QUIC
+// endpoint has several tasks that may all be waiting to write. That split
+// was justified entirely by what `quinn` needs and never by what a second
+// runtime can express, so it was the one place this backend could have
+// turned into a seam change.
+//
+// It did not. `async_io::Async::poll_writable(&self, cx) -> Poll<io::
+// Result<()>>` (`async-io-2.6.0/src/lib.rs:1001`) is the signature the
+// seam asks for, argument for argument, and it registers a waker with no
+// datagram anywhere in sight. The seam is untouched.
+//
+// # One real difference from the tokio backend, and why it needs no code
+//
+// `hclient-rt-tokio` sends through `tokio::net::UdpSocket::try_io(Interest::
+// WRITABLE, ..)`, which performs the syscall *and* clears tokio's cached
+// readiness when it comes back `WouldBlock` — without that, tokio would go
+// on believing the socket is writable and `poll_send_ready` would return
+// `Ready` for ever.
+//
+// `async-io` caches nothing to clear. `Source::poll_ready`
+// (`async-io-2.6.0/src/reactor.rs:440`) answers `Ready` only when the
+// reactor's tick has moved past the one recorded at the *caller's* last
+// `Pending`, and re-arms interest on every registration; a first call
+// always registers and returns `Pending`. So a bare `try_send` here is not
+// the tokio version with a safety step dropped — there is no step to drop,
+// and adding a `try_io`-shaped dance would be inventing state this runtime
+// deliberately does not keep.
+//
+// It has a **visible consequence**, measured rather than reasoned about,
+// by replacing the `WouldBlock` retry in
+// `crates/hclient-rt-pair-check/tests/udp_pair_property.rs` with a
+// `panic!` and running both arms: **the tokio backend takes that path on
+// its very first send and this one never does.** tokio's `try_io` refuses
+// *before the syscall* when it holds no cached WRITABLE readiness, which
+// is the state a freshly bound socket is in; here the `sendmsg` happens
+// and a loopback socket with an empty send buffer accepts it. Both are
+// within the seam's contract — `WouldBlock` is a permission to return it,
+// not an obligation — and the asymmetry is written down in that test,
+// because a caller written against this backend alone would have a bug
+// only the other one finds.
 
 use hclient_rt::{Datagrams, RecvMeta, UdpAdoptStd, UdpBind, UdpDatagrams, UdpSupport};
 use std::io;

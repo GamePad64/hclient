@@ -26,10 +26,10 @@
 //! composes with `Default` — and inside `#[tokio::main]`, which is where
 //! almost all of this code runs, its precondition always holds.
 //!
-//! # Exactly what carrying the handle buys, measured
+//! # Exactly what carrying the handle buys
 //!
-//! Not "everything". Each capability was probed on tokio 1.53.1, from a
-//! plain `std::thread` with no runtime entered, and the answers differ:
+//! Not "everything". From a plain `std::thread` with no runtime entered,
+//! the answers differ by capability:
 //!
 //! | capability | off-runtime, via `Tokio` | off-runtime, via `TokioHandle` |
 //! |---|---|---|
@@ -47,10 +47,7 @@
 //! `Handle::enter()` guard cannot cover that — a guard held across an
 //! `.await` would be setting a thread-local on whichever thread happened to
 //! poll next, which is wrong whenever that is a different thread, and
-//! `EnterGuard` is `!Send` precisely so that the compiler says so. Measured:
-//! an unconnected `tokio::net::TcpSocket` built *under* an `enter()` guard,
-//! then `connect`ed on `futures_executor::block_on` off the runtime, panics
-//! with the message above from `tokio-1.53.1/src/net/tcp/stream.rs`.
+//! `EnterGuard` is `!Send` precisely so that the compiler says so.
 //!
 //! Making it work would mean `Handle::spawn`ing the connect and awaiting a
 //! `JoinHandle`, which drops cancellation on the floor: `Native`'s Happy
@@ -61,9 +58,24 @@
 //! So the rule for `TokioHandle` is: **entry points become callable from
 //! anywhere; futures still have to be driven where they always were.**
 //! [`Timer::sleep`] is the one place where those coincide, because tokio
-//! captures the timer context when the `Sleep` is *built* — measured, a
-//! 120 ms sleep built off-runtime under a guard and awaited on
-//! `futures_executor::block_on` completed in 120.96 ms.
+//! captures the timer context when the `Sleep` is *built*, not when it is
+//! polled.
+
+// Maintainer notes (not rendered):
+//
+// # Exactly what carrying the handle buys, measured
+//
+// Not "everything". Each capability was probed on tokio 1.53.1, from a
+// plain `std::thread` with no runtime entered, and the answers differ:
+//
+// `EnterGuard` is `!Send` precisely so that the compiler says so. Measured:
+// an unconnected `tokio::net::TcpSocket` built *under* an `enter()` guard,
+// then `connect`ed on `futures_executor::block_on` off the runtime, panics
+// with the message above from `tokio-1.53.1/src/net/tcp/stream.rs`.
+//
+// captures the timer context when the `Sleep` is *built* — measured, a
+// 120 ms sleep built off-runtime under a guard and awaited on
+// `futures_executor::block_on` completed in 120.96 ms.
 
 use super::{Tokio, TokioIo, classify};
 use futures_core::future::BoxFuture;
@@ -72,19 +84,35 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// of its auto traits. See the module doc for what it buys and what it
+// does not.
+//
+// any thread (the module doc's table says which futures must still be
+// polled on a runtime thread). **Once that `Runtime` has been dropped or shut down**, tokio
+//
+// Pinned by `spawn_after_the_runtime_is_dropped_runs_nothing_and_says_nothing`,
+// so this paragraph fails a test rather than going stale if tokio changes
+// the first answer.
 /// [`Tokio`] with the runtime handle carried rather than looked up.
 ///
 /// `Send + Sync + Clone`, because `tokio::runtime::Handle` is: unlike a
 /// `!Send` local-executor type, this costs `Native<TokioHandle, _, _>` none
-/// of its auto traits. See the module doc for what it buys and what it
-/// does not.
+/// of its auto traits.
+///
+/// Carrying the handle makes the entry points callable from any thread:
+/// [`Spawn::spawn`], [`Blocking::run`], [`Timer::sleep`] and
+/// [`TcpAdoptStd::adopt`] work off a runtime thread, and the `Sleep` that
+/// `sleep` returns can then be polled by any executor. The futures returned
+/// by [`TcpConnect::connect`] and `connect_ipc` register with the reactor
+/// when first polled, so they must still be polled on a runtime thread, as
+/// [`Tokio`]'s must.
 ///
 /// # Precondition: the runtime is still alive
 ///
 /// A `Handle` does not keep its `Runtime` alive. While the runtime this
 /// handle came from is running, every entry point here is callable from
-/// any thread (the module doc's table says which futures must still be
-/// polled on a runtime thread). **Once that `Runtime` has been dropped or shut down**, tokio
+/// any thread. **Once that `Runtime` has been dropped or shut down**, tokio
 /// behaves differently per call, and none of it is this crate's choice:
 ///
 /// - [`Spawn::spawn`] accepts the future and tokio discards it unpolled —
@@ -94,10 +122,6 @@ use std::time::Duration;
 ///   the contract.
 /// - [`Blocking::run`] answers [`Cancelled`], as the seam asks.
 /// - [`Timer::sleep`] and the connects panic inside tokio.
-///
-/// Pinned by `spawn_after_the_runtime_is_dropped_runs_nothing_and_says_nothing`,
-/// so this paragraph fails a test rather than going stale if tokio changes
-/// the first answer.
 #[derive(Debug, Clone)]
 pub struct TokioHandle(tokio::runtime::Handle);
 
@@ -149,12 +173,14 @@ impl Timer for TokioHandle {
     type Instant = <Tokio as Timer>::Instant;
     type Sleep = <Tokio as Timer>::Sleep;
 
+    // Maintainer notes (not rendered):
+    // pollable by any executor. Measured in
+    // `sleep_built_off_runtime_is_polled_by_a_foreign_executor`.
     /// The one capability where the handle changes what the *returned
     /// value* can do, not just where the call may happen: `tokio::time::
     /// sleep` reads the timer context when it builds the `Sleep`, so under
     /// the guard the context is captured and the future is afterwards
-    /// pollable by any executor. Measured in
-    /// `sleep_built_off_runtime_is_polled_by_a_foreign_executor`.
+    /// pollable by any executor.
     fn sleep(&self, d: Duration) -> Self::Sleep {
         // A named binding, not `let _ =`: `let _ = self.0.enter()` drops
         // the guard at the end of the statement and the next line is once
@@ -201,25 +227,28 @@ impl Blocking for TokioHandle {
 impl TcpConnect for TokioHandle {
     type Stream = TokioIo;
 
-    /// **Exactly what [`Tokio`] declares, and both other answers were
-    /// bugs.**
-    /// `connect` below delegates to `Tokio::connect`, which applies every
-    /// option on the `socket2::Socket` — so the options really are applied
-    /// here. Without this line the trait's `NONE` default stood, and
-    /// `TcpOpts::reject_unsupported` turned a `nodelay: true` a caller had
-    /// asked for into a refused connect: a capability understating its own
-    /// code, which is the shape this workspace has caught repeatedly.
-    ///
-    /// It mattered more than a stray default because `TokioHandle` is the
-    /// runtime the HTTP/3 race was measured on, and v0.4's race measurement
-    /// found Nagle costing 41 ms on the head of every connection made
-    /// without it.
-    ///
-    /// The second was the line that fixed the first: it declared
-    /// `TcpSupport::ALL` while `Tokio` declared a per-target set, so on
-    /// macOS and Windows this claimed `bind_device` and `user_timeout`,
-    /// `reject_unsupported` let them through, and `Tokio::connect` did
-    /// not apply them. A delegate's claim is its delegate's.
+    // Maintainer notes (not rendered):
+    // **Exactly what [`Tokio`] declares, and both other answers were
+    // bugs.**
+    // `connect` below delegates to `Tokio::connect`, which applies every
+    // option on the `socket2::Socket` — so the options really are applied
+    // here. Without this line the trait's `NONE` default stood, and
+    // `TcpOpts::reject_unsupported` turned a `nodelay: true` a caller had
+    // asked for into a refused connect: a capability understating its own
+    // code, which is the shape this workspace has caught repeatedly.
+    //
+    // It mattered more than a stray default because `TokioHandle` is the
+    // runtime the HTTP/3 race was measured on, and v0.4's race measurement
+    // found Nagle costing 41 ms on the head of every connection made
+    // without it.
+    //
+    // The second was the line that fixed the first: it declared
+    // `TcpSupport::ALL` while `Tokio` declared a per-target set, so on
+    // macOS and Windows this claimed `bind_device` and `user_timeout`,
+    // `reject_unsupported` let them through, and `Tokio::connect` did
+    // not apply them. A delegate's claim is its delegate's.
+    /// Exactly what [`Tokio`] declares: `connect` delegates to it, so the
+    /// same options are applied.
     const TCP_SUPPORT: TcpSupport = <Tokio as TcpConnect>::TCP_SUPPORT;
 
     /// [`Tokio`]'s, forwarded — including the `Send`, which is what lets
@@ -227,13 +256,16 @@ impl TcpConnect for TokioHandle {
     type Connecting<'a> =
         std::pin::Pin<Box<dyn Future<Output = std::io::Result<TokioIo>> + Send + 'a>>;
 
-    /// **Delegated to [`Tokio`]'s, with no `EnterGuard`.** See the module
-    /// doc's last table row: the registration a guard would have to cover
-    /// happens at first poll, inside the async body, where no guard can
-    /// reach it — so this future must be polled on a runtime thread, as
-    /// `Tokio`'s must. Delegating rather than copying keeps the option
-    /// check and `build_socket`'s "all options, once, on the
-    /// `socket2::Socket`" stated in exactly one place.
+    // Maintainer notes (not rendered):
+    // **Delegated to [`Tokio`]'s, with no `EnterGuard`.** See the module
+    // doc's last table row: the registration a guard would have to cover
+    // `Tokio`'s must. Delegating rather than copying keeps the option
+    // check and `build_socket`'s "all options, once, on the
+    // `socket2::Socket`" stated in exactly one place.
+    /// **Delegated to [`Tokio`]'s, with no `EnterGuard`.** The registration
+    /// a guard would have to cover happens at first poll, inside the async
+    /// body, where no guard can reach it — so this future must be polled on
+    /// a runtime thread, as `Tokio`'s must.
     fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
         let opts = opts.clone();
         Box::pin(async move { Tokio.connect(addr, &opts).await })
@@ -262,10 +294,13 @@ impl hclient_rt::IpcConnect for TokioHandle {
 }
 
 impl TcpAdoptStd for TokioHandle {
+    // Maintainer notes (not rendered):
+    // returns, so a guard covers all of it. Measured: `Tokio::adopt` off
+    // a runtime panics, this does not.
     /// Unlike `connect`, this one is a plain `fn`: all of it — including
     /// `TcpStream::from_std`'s reactor registration — happens before it
-    /// returns, so a guard covers all of it. Measured: `Tokio::adopt` off
-    /// a runtime panics, this does not.
+    /// returns, so a guard covers all of it, and it works off a runtime
+    /// thread where `Tokio::adopt` panics.
     fn adopt(&self, std: std::net::TcpStream) -> std::io::Result<TokioIo> {
         let _guard = self.0.enter();
         Tokio.adopt(std)

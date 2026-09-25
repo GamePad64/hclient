@@ -18,6 +18,10 @@ use web_time::SystemTime;
 const VOLATILE: &str = "altsvc";
 const PERSISTENT: &str = "altsvc-persist";
 
+// Maintainer notes (not rendered):
+// It also reads as what the RFC says. *"Forget the ones that did not ask
+// to survive"* is a statement about a **set**, and this makes the set a
+// thing that exists rather than a filter applied to a bigger one.
 /// An [`AltSvcStore`] over any [`KeyValueStore`], so an `Alt-Svc` memory
 /// can share one backend with the client's cookie jar, HSTS set and
 /// response cache instead of being a fifth `Mutex<HashMap>`.
@@ -37,10 +41,6 @@ const PERSISTENT: &str = "altsvc-persist";
 /// [`clear`](KeyValueStore::clear) of the first — one operation, exact,
 /// and cheap on a remote store where a `retain` would have meant reading
 /// every entry back.
-///
-/// It also reads as what the RFC says. *"Forget the ones that did not ask
-/// to survive"* is a statement about a **set**, and this makes the set a
-/// thing that exists rather than a filter applied to a bigger one.
 ///
 /// What it costs is that an origin can be written under either name, so
 /// every read asks both and every write removes from both. Two operations

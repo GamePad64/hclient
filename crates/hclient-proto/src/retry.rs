@@ -153,7 +153,7 @@ impl Outcome {
 
 /// Why [`Standard::decide`] is not retrying.
 ///
-/// **`#[non_exhaustive]`, answer 3**: it is handed back and only read,
+/// **`#[non_exhaustive]`**: it is handed back and only read,
 /// and [`Standard`] gaining a rule means gaining a reason to refuse. The
 /// one consumer that would translate it — `hclient`'s [`RetryPolicy`]
 /// impl — collapses every arm onto [`RetryVerdict::Stop`] rather than
@@ -182,20 +182,22 @@ pub enum StopReason {
     RetryAfterTooLong,
 }
 
+// Maintainer notes (not rendered):
+//
+// **This was called `Verdict` until the freeze audit, and the rename is
+// the whole point of it.** [`RetryVerdict`] below is the *other* answer
+// type in this same module — the trait's lattice value, the one
+// `hclient` actually takes — and a published module with `Verdict` and
+// `RetryVerdict` side by side is a name a reader has to keep straight
+// for ever. `hclient`'s facade had already noticed, and works around it
+// by withholding this type, `StopReason` and nothing else from its
+// `retry` door with a comment saying *two types called a verdict in one
+// module is the kind of thing a published crate cannot take back*. The
+// workaround protects that crate's callers and not this one's, which is
+// why the name is fixed here instead. Nothing outside this crate named
+// it, so the rename cost 23 sites and no consumer.
+
 /// What [`Standard::decide`] concluded, and why if it refused.
-///
-/// **This was called `Verdict` until the freeze audit, and the rename is
-/// the whole point of it.** [`RetryVerdict`] below is the *other* answer
-/// type in this same module — the trait's lattice value, the one
-/// `hclient` actually takes — and a published module with `Verdict` and
-/// `RetryVerdict` side by side is a name a reader has to keep straight
-/// for ever. `hclient`'s facade had already noticed, and works around it
-/// by withholding this type, `StopReason` and nothing else from its
-/// `retry` door with a comment saying *two types called a verdict in one
-/// module is the kind of thing a published crate cannot take back*. The
-/// workaround protects that crate's callers and not this one's, which is
-/// why the name is fixed here instead. Nothing outside this crate named
-/// it, so the rename cost 23 sites and no consumer.
 ///
 /// `Decision` rather than `RetryDecision`: it is `retry::Decision` at
 /// every call site, and a module already named after the operation does
@@ -622,6 +624,16 @@ where
 /// and take the marker with it.
 pub type BoxRetryPolicy = Box<dyn RetryPolicy + Send + Sync>; // send-bound-exception: amendment-C12
 
+// Maintainer notes (not rendered):
+//
+// # The field is private, and that is a decision about the freeze
+//
+// It was `pub Vec<Box<dyn ..>>`, which made **both** the `Vec` and the
+// `Box` part of the promise — see
+// [`redirect::All`](crate::redirect::All) for the argument, which is
+// this type's verbatim. Nothing outside this crate constructed one,
+// measured before the change, so closing the field cost no consumer.
+
 /// Every policy in a list must permit, for a chain built at run time.
 ///
 /// An empty list **stops**, which is the opposite of
@@ -629,13 +641,10 @@ pub type BoxRetryPolicy = Box<dyn RetryPolicy + Send + Sync>; // send-bound-exce
 /// more: a meet over nothing is the identity, and the identity for a
 /// default-no operation is *no*.
 ///
-/// # The field is private, and that is a decision about the freeze
-///
-/// It was `pub Vec<Box<dyn ..>>`, which made **both** the `Vec` and the
-/// `Box` part of the promise — see
+/// The field is private: making it public would put both the `Vec` and
+/// the `Box` into the promise — see
 /// [`redirect::All`](crate::redirect::All) for the argument, which is
-/// this type's verbatim. Nothing outside this crate constructed one,
-/// measured before the change, so closing the field cost no consumer.
+/// this type's verbatim.
 #[derive(Debug, Default)]
 pub struct RetryAll(Vec<BoxRetryPolicy>);
 

@@ -4,18 +4,7 @@
 //! # On `Send`, and why `type Error` is `hclient_core::error::Error`, not `BoxError`
 //!
 //! `handshake` requires `B::Error: Into<Box<dyn StdError + Send + Sync>>`
-//! and `B::Data: Send`. The first version of this file read that as "our
-//! `Error` doesn't fit — the crate itself needs a `Box<dyn Error + Send +
-//! Sync>`." That was already wrong at the time it was written:
-//! `hclient_core::error::Error` holds an `Arc<dyn std::error::Error + Send +
-//! Sync + 'static>` (the core's amendment-C1, not a bare `Arc<dyn
-//! Error>`) and itself implements `Error + Send + Sync + 'static`. The
-//! standard library's blanket impl (`impl<E: Error + Send + Sync + 'a>
-//! From<E> for Box<dyn Error + Send + Sync + 'a>`) closes the required
-//! bound without a single line of our own code — `assert_bound` in the
-//! tests below checks this directly on `OutgoingBody`, not on a bare
-//! `hclient_core::error::Error`, because `<OutgoingBody as Body>::Error` is
-//! exactly what gets substituted into `handshake`.
+//! and `B::Data: Send`.
 //!
 //! Which means `BoxError` isn't needed in this file at all: wrapping
 //! `Error` in `Box<dyn StdError + Send + Sync>` here would mean losing
@@ -122,6 +111,19 @@
 //! because the host owns the encoder there and the send is raced against
 //! the body write. Here the encoder is downstream of a body we own, so
 //! the refusal comes before the terminator rather than after the `200`.
+// Maintainer notes (not rendered):
+// The first version of this file read that as "our
+// `Error` doesn't fit — the crate itself needs a `Box<dyn Error + Send +
+// Sync>`." That was already wrong at the time it was written:
+// `hclient_core::error::Error` holds an `Arc<dyn std::error::Error + Send +
+// Sync + 'static>` (the core's amendment-C1, not a bare `Arc<dyn
+// Error>`) and itself implements `Error + Send + Sync + 'static`. The
+// standard library's blanket impl (`impl<E: Error + Send + Sync + 'a>
+// From<E> for Box<dyn Error + Send + Sync + 'a>`) closes the required
+// bound without a single line of our own code — `assert_bound` in the
+// tests below checks this directly on `OutgoingBody`, not on a bare
+// `hclient_core::error::Error`, because `<OutgoingBody as Body>::Error` is
+// exactly what gets substituted into `handshake`.
 use crate::error::UndeclaredRequestTrailers;
 use bytes::Bytes;
 use hclient_core::body::{Reduced, RequestBody};
@@ -143,8 +145,10 @@ enum Inner {
     /// an empty `Full`, or a `Rewindable`/factory result that collapsed to
     /// the same).
     Buffered(Option<Bytes>),
+    // Maintainer notes (not rendered):
+    // (amendment-C2, same place)
     /// `Unpin + Send` — the same bounds the core's `RequestBody::
-    /// Streaming` carries (amendment-C2, same place), just carried across
+    /// Streaming` carries, just carried across
     /// the crate boundary: the adapter wraps a foreign stream rather than
     /// producing its own `!Unpin`/`!Send` type, so keeping the bounds
     /// costs nothing.
@@ -199,6 +203,9 @@ pub struct OutgoingBody {
     /// survives a `Failed::NotSent` and may be tried again on a
     /// connection that negotiated the other protocol.
     declared_trailers: Option<HashSet<HeaderName>>,
+    // Maintainer notes (not rendered):
+    // — amendment C1, the
+    // reason `hyper::upgrade::Upgraded` is unusable here.
     /// Set when this request carried `Expect: 100-continue` **and** the
     /// transport was configured to honour it — see
     /// [`Native::expect_continue`](crate::Native::expect_continue).
@@ -206,8 +213,7 @@ pub struct OutgoingBody {
     /// **A flag and a waker, and deliberately no future.** A deadline
     /// here would have to be a concrete `Pin<Box<Tm::Sleep>>`, which gives
     /// this type a parameter that a dozen signatures would have to carry,
-    /// or a `Box<dyn Future>`, which drops auto traits — amendment C1, the
-    /// reason `hyper::upgrade::Upgraded` is unusable here. So the clock
+    /// or a `Box<dyn Future>`, which drops auto traits. So the clock
     /// stays in `Native::execute`, which has one already, and this body
     /// knows only whether it may speak yet.
     gate: Option<Arc<ContinueGate>>,

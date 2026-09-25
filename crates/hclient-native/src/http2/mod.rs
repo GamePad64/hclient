@@ -269,6 +269,33 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+// — and measured against a
+// fingerprinting service, that is `|00|0|m,s,a,p` where Chrome 152 is
+// `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`.
+//
+// This is **not** an argument for impersonating a browser, and
+// `docs/tls-fingerprint.md` measures why the near-miss is worse than the
+// miss: the half of Chrome's HTTP/2 fingerprint reachable without a fork
+// is exactly the contradictory pair Akamai's patent describes as a
+// detector. What it is an argument for is that a caller whose traffic a
+// WAF is cutting has no lever at all, because two of the four settings
+// `h2` exposes were not reachable from here. Now all four are, and what a
+// caller does with them is theirs.
+//
+// Keepalive pings: It is a
+// feature of the driver rather than of the settings frame, and it
+// belongs on that constructor if it arrives.
+//
+// Not `#[non_exhaustive]`, unlike most public structs added here late —
+// deliberately, and [`TcpOpts`](hclient_rt::TcpOpts) is the precedent it
+// is copied from. The whole use of this type is
+// `H2Opts { one_field: Some(n), ..Default::default() }`, which
+// `#[non_exhaustive]` forbids from outside the crate; a caller would be
+// left with per-field setters that exist only to work around the
+// attribute. What the attribute buys — a new field not breaking a literal
+// nobody should have written — is bought instead by every field being an
+// `Option` and by nothing here being published yet.
 /// What this client puts in its `SETTINGS` frame, where it does not want
 /// h2's default.
 ///
@@ -296,20 +323,13 @@ where
 /// # The empty frame, which is itself a fingerprint
 ///
 /// **Every field here is `None` by default, so a plain `hclient` sends a
-/// `SETTINGS` frame with no entries in it** — and measured against a
-/// fingerprinting service, that is `|00|0|m,s,a,p` where Chrome 152 is
-/// `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`. No client anyone
+/// `SETTINGS` frame with no entries in it.** No client anyone
 /// fingerprints looks like that, so the good default — announce nothing
 /// you were not asked to — is itself distinctive.
 ///
-/// This is **not** an argument for impersonating a browser, and
-/// `docs/tls-fingerprint.md` measures why the near-miss is worse than the
-/// miss: the half of Chrome's HTTP/2 fingerprint reachable without a fork
-/// is exactly the contradictory pair Akamai's patent describes as a
-/// detector. What it is an argument for is that a caller whose traffic a
-/// WAF is cutting has no lever at all, because two of the four settings
-/// `h2` exposes were not reachable from here. Now all four are, and what a
-/// caller does with them is theirs.
+/// This is **not** an argument for impersonating a browser. All four
+/// settings `h2` exposes are reachable here, and what a caller does with
+/// them is theirs.
 ///
 /// # What is deliberately not here
 ///
@@ -319,9 +339,8 @@ where
 /// - **Keepalive pings.** Sending one needs somebody polling an idle
 ///   connection, which here means
 ///   [`Native::multiplexed`](crate::Native::multiplexed) and the `Spawn`
-///   bound that comes with it. It is a
-///   feature of the driver rather than of the settings frame, and it
-///   belongs on that constructor if it arrives.
+///   bound that comes with it. They are set with
+///   [`Native::h2_keep_alive`](crate::Native::h2_keep_alive).
 /// - **`max_concurrent_streams`.** A client's own limit governs streams
 ///   the *server* opens, i.e. server push, which `h2` does not enable and
 ///   RFC 9113 §8.4 deprecates. Announcing a number for something that
@@ -329,15 +348,9 @@ where
 ///
 /// # Not `#[non_exhaustive]`, and that is deliberate
 ///
-/// Not `#[non_exhaustive]`, unlike most public structs added here late —
-/// deliberately, and [`TcpOpts`](hclient_rt::TcpOpts) is the precedent it
-/// is copied from. The whole use of this type is
+/// The whole use of this type is
 /// `H2Opts { one_field: Some(n), ..Default::default() }`, which
-/// `#[non_exhaustive]` forbids from outside the crate; a caller would be
-/// left with per-field setters that exist only to work around the
-/// attribute. What the attribute buys — a new field not breaking a literal
-/// nobody should have written — is bought instead by every field being an
-/// `Option` and by nothing here being published yet.
+/// `#[non_exhaustive]` forbids from outside the crate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct H2Opts {
     /// `SETTINGS_INITIAL_WINDOW_SIZE`, RFC 9113 §6.5.2 — per stream.
@@ -781,6 +794,9 @@ enum Pumped {
     PeerStoppedReading,
 }
 
+// Maintainer notes (not rendered):
+// — which,
+// by amendment C2, would cut the auto traits off everything above it.
 /// The request body, in flight — and the reason it is a value rather than
 /// three locals inside [`exchange`].
 ///
@@ -793,8 +809,8 @@ enum Pumped {
 /// **Not a boxed future**, which is what `hclient_h3::pump` had to use.
 /// There the write is an `async fn` and has to be erased to be stored;
 /// here it was already a poll function, so keeping it as a struct costs
-/// nothing and puts no `dyn` on the `Client -> Transport` path — which,
-/// by amendment C2, would cut the auto traits off everything above it.
+/// nothing and puts no `dyn` on the `Client -> Transport` path — which
+/// would cut the auto traits off everything above it.
 /// [`H2Body`] stays generic and unboxed, exactly as this module's doc
 /// comment says it must.
 struct Pump {
@@ -1481,6 +1497,16 @@ where
     )
 }
 
+// Maintainer notes (not rendered):
+// Its own doc comment records that it was
+// unobservable until this existed.
+//
+// which nothing in
+// this transport could do before
+//
+// Measured: dropped on the
+// floor, requests fail with a broken pipe; held and never polled, no
+// verdict in 500 ms.
 /// The future [`crate::Native::multiplexed`] spawns: one HTTP/2
 /// connection, polled by nobody's request.
 ///
@@ -1500,11 +1526,9 @@ where
 /// 1. Several requests can be in flight on it at once.
 /// 2. The `RST_STREAM(CANCEL)` `Pump`'s `Drop` queues **reaches the
 ///    wire**: the connection outlives the stream, so there is still
-///    something to write it. Its own doc comment records that it was
-///    unobservable until this existed.
-/// 3. A `PING` is answered while the connection is idle, which nothing in
-///    this transport could do before — an idle pooled connection has no
-///    holder at all.
+///    something to write it.
+/// 3. A `PING` is answered while the connection is idle — an idle pooled
+///    connection has no holder at all.
 ///
 /// # It is at most as good as the executor under it
 ///
@@ -1512,9 +1536,7 @@ where
 /// task, drops it, and cannot say so — and here that is **worse than the
 /// reaper's version of the same mistake**, which costs file descriptors:
 /// a request on a connection whose driver is never polled does not fail,
-/// it **hangs**. Measured: dropped on the
-/// floor, requests fail with a broken pipe; held and never polled, no
-/// verdict in 500 ms. `Timeouts::first_byte` is the only bound that cuts
+/// it **hangs**. `Timeouts::first_byte` is the only bound that cuts
 /// it, and it is not a default. Said again on
 /// [`crate::Native::multiplexed`], which is where a caller meets it.
 pub struct H2Driver<I, H, Tm>

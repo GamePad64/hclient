@@ -1,25 +1,27 @@
+// Maintainer notes (not rendered):
+//
+// # It is SSE's splitter, promoted rather than copied
+//
+// These are the WHATWG `EventSource` rules, and they were written here for
+// `SseDecoder` alone. [`crate::lines`] is the public door onto this type,
+// opened when a general line adapter was wanted for NDJSON and log
+// tailing: the overlap was measured before it was believed, and it is the
+// whole file — terminator set, chunk-boundary survival, byte accounting,
+// the compaction that keeps it linear. Nothing was changed to make the
+// second caller fit, and [`Self::take_unterminated`] is the only method
+// added for it, which `SseDecoder` does not call.
+//
+// **The file stays under `sse/` and the door is elsewhere**, which is a
+// wart with a reason: `just test-sse-complexity` pins
+// `sse::lines::tests::parsing_scales_linearly_not_quadratically` by its
+// exact path, because it is the one test that must run on a runner of its
+// own. Moving the module would rename that test, and a recipe that
+// silently stops running its one test is the defect this workspace keeps
+// finding.
+
 /// Splits a byte stream into lines: exactly one leading BOM is stripped,
 /// terminators are CRLF, LF, or a lone CR. Survives a chunk break at any
 /// point, including mid-BOM and between CR and LF.
-///
-/// # It is SSE's splitter, promoted rather than copied
-///
-/// These are the WHATWG `EventSource` rules, and they were written here for
-/// `SseDecoder` alone. [`crate::lines`] is the public door onto this type,
-/// opened when a general line adapter was wanted for NDJSON and log
-/// tailing: the overlap was measured before it was believed, and it is the
-/// whole file — terminator set, chunk-boundary survival, byte accounting,
-/// the compaction that keeps it linear. Nothing was changed to make the
-/// second caller fit, and [`Self::take_unterminated`] is the only method
-/// added for it, which `SseDecoder` does not call.
-///
-/// **The file stays under `sse/` and the door is elsewhere**, which is a
-/// wart with a reason: `just test-sse-complexity` pins
-/// `sse::lines::tests::parsing_scales_linearly_not_quadratically` by its
-/// exact path, because it is the one test that must run on a runner of its
-/// own. Moving the module would rename that test, and a recipe that
-/// silently stops running its one test is the defect this workspace keeps
-/// finding.
 #[derive(Debug)]
 pub struct LineSplitter {
     buf: Vec<u8>,

@@ -9,26 +9,32 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
     http::header::PROXY_AUTHORIZATION,
 ];
 
+// Maintainer notes (not rendered):
+//
+// **The rule for anyone adding a field: it may only ever switch a
+// protection off.** That is what makes [`Self::and`] — field-wise `&&` —
+// the right meet, and it is why composing two grants intersects rather
+// than unions: a chain of policies must never hand back more than any
+// one of them gave. A field meaning *turn a protection on* would invert
+// that for itself alone, and `and` would silently be wrong for it while
+// staying right for its neighbours. The rule was written in a test's doc
+// comment until the freeze audit and is stated here because this is
+// where whoever adds the field will be standing — the test
+// (`two_grants_compose_by_intersection_so_neither_field_can_be_widened`)
+// is what checks it, having been written after a mutation run replaced
+// both `&&` with `||` and left the whole suite green.
+
 /// What a [`RedirectVerdict::Follow`] relaxes, and nothing else.
 ///
 /// `Default` is every protection *on*, so a policy states only what it
 /// has an opinion about and the safe answer costs no field.
 ///
-/// **The rule for anyone adding a field: it may only ever switch a
-/// protection off.** That is what makes [`Self::and`] — field-wise `&&` —
-/// the right meet, and it is why composing two grants intersects rather
-/// than unions: a chain of policies must never hand back more than any
-/// one of them gave. A field meaning *turn a protection on* would invert
-/// that for itself alone, and `and` would silently be wrong for it while
-/// staying right for its neighbours. The rule was written in a test's doc
-/// comment until the freeze audit and is stated here because this is
-/// where whoever adds the field will be standing — the test
-/// (`two_grants_compose_by_intersection_so_neither_field_can_be_widened`)
-/// is what checks it, having been written after a mutation run replaced
-/// both `&&` with `||` and left the whole suite green.
+/// A field may only ever switch a protection off, never turn one on:
+/// composing two grants with [`Self::and`] intersects rather than unions,
+/// so a chain of policies never hands back more than any one of them
+/// gave.
 ///
-/// **Deliberately not `#[non_exhaustive]`**, which is answer 1 of the
-/// three this workspace records: its whole use is
+/// **Deliberately not `#[non_exhaustive]`**: its whole use is
 /// `Allow { keep_credentials: true, ..Default::default() }`, written by a
 /// caller in their own policy, and the attribute forbids exactly that
 /// expression — functional update included — from outside this crate.
@@ -382,6 +388,17 @@ impl RedirectPolicy for HttpsOnly {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// # The field is private, and that is a decision about the freeze
+//
+// It was `pub Vec<Box<dyn ..>>`, which made **both** the `Vec` and the
+// `Box` part of the promise: a later representation — a `SmallVec`, an
+// `Arc` so the list is cheap to clone, an inline pair for the common
+// two-policy case — would each have been a major version. Nothing
+// outside this crate constructed one, measured before the change, so
+// closing the field cost no consumer and buys back every one of those.
+
 /// Every policy in a list must permit, for a chain built at run time.
 ///
 /// [`and`](RedirectPolicyExt::and) composes at the type level and costs
@@ -393,16 +410,7 @@ impl RedirectPolicy for HttpsOnly {
 /// An empty list permits everything, which is what a meet over nothing
 /// means and is worth knowing before reading one out of a file.
 ///
-/// # The field is private, and that is a decision about the freeze
-///
-/// It was `pub Vec<Box<dyn ..>>`, which made **both** the `Vec` and the
-/// `Box` part of the promise: a later representation — a `SmallVec`, an
-/// `Arc` so the list is cheap to clone, an inline pair for the common
-/// two-policy case — would each have been a major version. Nothing
-/// outside this crate constructed one, measured before the change, so
-/// closing the field cost no consumer and buys back every one of those.
-///
-/// What replaces it is [`All::new`], [`All::push`] and
+/// The field is private. What replaces it is [`All::new`], [`All::push`] and
 /// [`FromIterator`], which is `Vec`'s own vocabulary and keeps the
 /// run-time case this type exists for — a list read out of a config file
 /// — expressible in one expression.
@@ -488,8 +496,12 @@ impl RedirectPolicy for All {
     }
 }
 
-/// A closure as a policy — what the separate redirect predicate used to
-/// be, now one implementation among the rest.
+// Maintainer notes (not rendered):
+//
+// A closure as a policy — what the separate redirect predicate used to
+// be, now one implementation among the rest.
+
+/// A closure as a [`RedirectPolicy`].
 #[derive(Clone, Copy)]
 pub struct FromFn<F>(pub F);
 
@@ -513,7 +525,7 @@ where
 
 /// The hop [`decide`] worked out, for a caller to carry out.
 ///
-/// **`#[non_exhaustive]`, answer 3**: it is handed back and only read —
+/// **`#[non_exhaustive]`**: it is handed back and only read —
 /// [`decide`] is the only thing that builds one — so a further
 /// instruction about a hop is an added field rather than a major
 /// version. That is not hypothetical: every field here is something the
@@ -547,8 +559,7 @@ pub struct Follow {
 
 /// What [`decide`] concluded about one response.
 ///
-/// **Deliberately not `#[non_exhaustive]`, which is answer 2 with the
-/// translator rule on top.** Its one consumer — `hclient::Client::run` —
+/// **Deliberately not `#[non_exhaustive]`.** Its one consumer — `hclient::Client::run` —
 /// matches every arm and turns each into something different: a returned
 /// response, a `Redirect` error naming the policy's reason, a
 /// `BadLocation` error, or the next hop. A `_` arm there would be a
@@ -566,12 +577,16 @@ pub enum RedirectAction {
     Stop,
     /// Follow it, doing what the [`Follow`] says.
     Follow(Follow),
+    // Maintainer notes (not rendered):
+    //
+    // A policy refused, naming why — a limit, an origin, a caller's own
+    // rule. One variant where there used to be `TooManyRedirects` alone,
+    // because with a policy trait "too many" is one refusal among
+    // several and the reason is what a caller needs. `to` is carried
+    // because the refusal is about a resolved target, and an error that
+    // named only a reason would leave a caller unable to say which hop.
     /// A policy refused, naming why — a limit, an origin, a caller's own
-    /// rule. One variant where there used to be `TooManyRedirects` alone,
-    /// because with a policy trait "too many" is one refusal among
-    /// several and the reason is what a caller needs. `to` is carried
-    /// because the refusal is about a resolved target, and an error that
-    /// named only a reason would leave a caller unable to say which hop.
+    /// rule — and the resolved target it was refused for.
     Refused {
         /// The policy's own words, as [`RedirectVerdict::Refuse`] gave
         /// them — not this function's reconstruction of which policy was

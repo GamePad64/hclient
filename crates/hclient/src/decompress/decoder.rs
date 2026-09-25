@@ -64,40 +64,46 @@
 use bytes::Bytes;
 use std::fmt::Debug;
 
+// Maintainer notes (not rendered):
+//
+// Where a library's decoder is pull-shaped instead, the buffering is
+// this crate's: see `zstd`'s module doc.
+//
+// The defect that made the bound necessary, and why it is stated at the
+// alias rather than here, is recorded on that alias in this file's
+// source.
+//
+// **`&mut self` on `finish`, although two of the four codings would
+// rather consume their writer.** `Decompressed` holds its decoder in a
+// struct field and moves to `Ended` after finishing, so a by-value
+// `finish` would need that field to be an `Option` — pushing brotli's
+// local problem onto the three codings that do not have it. Brotli keeps
+// the `Option` inside its own type instead, where its own doc explains
+// it.
+//
+// # Public, because the set of codings is open
+//
+// This was `pub(crate)`, and its doc could say *"not a seam a caller
+// implements"* while the codings were a compiled-in table. They are a
+// [`ContentCoding`](super::ContentCoding) list a caller writes now, and
+// [`ContentCoding::decoder`](super::ContentCoding::decoder) hands one of
+// these back — so implementing this trait is how a coding of somebody
+// else's does its work. Nothing about the three methods changed to make
+// that possible; they were already IO-free, object-safe and stateful per
+// body, which is what the decision to publish rested on rather than a
+// rewrite.
 /// One coding's incremental decoder.
 ///
 /// Implementors are push-shaped — bytes in with [`push`](Self::push),
 /// plaintext out — which is what lets a body be driven a frame at a time
 /// from `poll_frame` with no IO traits and no executor anywhere near it.
-/// Where a library's decoder is pull-shaped instead, the buffering is
-/// this crate's: see `zstd`'s module doc.
+///
+/// Implement it for a coding of your own and hand it back, boxed, from
+/// [`ContentCoding::decoder`](super::ContentCoding::decoder).
 ///
 /// **This trait declares no auto trait, and the alias this crate boxes it
 /// into does** — `Box<dyn Decode + Send>`, which is what
 /// [`ContentCoding::decoder`](super::ContentCoding::decoder) hands back.
-/// The defect that made the bound necessary, and why it is stated at the
-/// alias rather than here, is recorded on that alias in this file's
-/// source.
-///
-/// **`&mut self` on `finish`, although two of the four codings would
-/// rather consume their writer.** `Decompressed` holds its decoder in a
-/// struct field and moves to `Ended` after finishing, so a by-value
-/// `finish` would need that field to be an `Option` — pushing brotli's
-/// local problem onto the three codings that do not have it. Brotli keeps
-/// the `Option` inside its own type instead, where its own doc explains
-/// it.
-///
-/// # Public, because the set of codings is open
-///
-/// This was `pub(crate)`, and its doc could say *"not a seam a caller
-/// implements"* while the codings were a compiled-in table. They are a
-/// [`ContentCoding`](super::ContentCoding) list a caller writes now, and
-/// [`ContentCoding::decoder`](super::ContentCoding::decoder) hands one of
-/// these back — so implementing this trait is how a coding of somebody
-/// else's does its work. Nothing about the three methods changed to make
-/// that possible; they were already IO-free, object-safe and stateful per
-/// body, which is what the decision to publish rested on rather than a
-/// rewrite.
 pub trait Decode: Debug {
     // send-bound-exception: amendment-C14
     /// Feeds `input` in and takes whatever plaintext came out — possibly
@@ -139,10 +145,13 @@ pub trait Decode: Debug {
     /// response and a shorter document.
     fn finish(&mut self) -> Result<Bytes, std::io::Error>;
 
+    // Maintainer notes (not rendered):
+    //
+    // the wire has one spelling for both — see `deflate`'s module doc.
     /// The token as it appeared on the wire.
     ///
     /// `"deflate"` whichever wrapper that coding's sniff chose: the wire
-    /// has one spelling for both — see `deflate`'s module doc.
+    /// has one spelling for both.
     ///
     /// **`&str` rather than `&'static str`, which is what
     /// [`ClientBody::coding`](crate::body::ClientBody::coding) pays for in
@@ -157,49 +166,58 @@ pub trait Decode: Debug {
     fn token(&self) -> &str;
 }
 
+// Maintainer notes (not rendered):
+//
+// **`Box<dyn Decode>` rather than an enum, and it costs nothing**: every
+// arm of the enum this replaced was already boxed, for the reason the
+// module doc records and measures — 16 bytes and one allocation per
+// decoded body, either shape.
+//
+// # `Send` is declared here, and leaving it off was this change's one
+// real defect
+//
+// The enum this replaced *inferred* `Send` from its concrete payloads. A
+// `dyn` declares its own auto traits, so the first version of this alias
+// was `!Send` — and the wrapper this crate puts round every
+// response body carries one, so `tokio::spawn` of a response body
+// stopped compiling. That is
+// this workspace's own rule met from the direction that costs
+// something: *a `dyn` that declares no auto traits does not hide `Send`,
+// it removes it.* `tests/spawnable_body.rs` said so on the first
+// `--all-targets` build, which is amendment C14's own test doing exactly
+// what C14 exists for.
+//
+// **The bound is on this alias and not on the trait**, and that is not a
+// preference: a marker on a `pub trait X: Send {` line is **deleted** by
+// `cargo fmt`, so `just fmt-check` and `just invariants` cannot both
+// pass with it there — reproduced here, on this trait, before it was
+// believed. This workspace already met that once and drew the rule then:
+// demand the auto trait where the value is *stored*, never on the seam.
+// A one-line `type` is a line `cargo fmt` does not reflow.
+//
+// **Public, and it is the seam's return type rather than a spelling
+// repeated at every implementor.** Seven `impl`s wrote
+// `Box<dyn Decode + Send>` out by hand for a day, and
+// `no-send-or-sync-in-the-core-surface.sh` refused all seven — correctly,
+// because each was a bare `Send` in the core surface with no marker, and
+// a marker on seven `fn` lines is seven chances for one to be deleted by
+// a reflow. Naming the type once is what the rule above already says to
+// do, and this alias was already the place.
+//
+// It excludes nobody **and it is now a demand rather than an
+// observation**, which is the one thing publishing the seam changed
+// about it. While the codings were a compiled-in table this sentence
+// read *"a fact about four types in this crate rather than a demand on
+// anybody outside it"*; [`ContentCoding::decoder`](super::ContentCoding::decoder)
+// hands back this type, so a third-party decoder holding an [`Rc`](std::rc::Rc)
+// is `E0277` where it is boxed. That is the right direction and the
+// alternative is worse: a `Client` whose response body stopped being
+// `Send` because of a coding somebody installed would break
+// `tokio::spawn` for every body it never touched.
 /// The decoder for one response body.
 ///
-/// **`Box<dyn Decode>` rather than an enum, and it costs nothing**: every
-/// arm of the enum this replaced was already boxed, for the reason the
-/// module doc records and measures — 16 bytes and one allocation per
-/// decoded body, either shape.
-///
-/// # `Send` is declared here, and leaving it off was this change's one
-/// real defect
-///
-/// The enum this replaced *inferred* `Send` from its concrete payloads. A
-/// `dyn` declares its own auto traits, so the first version of this alias
-/// was `!Send` — and the wrapper this crate puts round every
-/// response body carries one, so `tokio::spawn` of a response body
-/// stopped compiling. That is
-/// this workspace's own rule met from the direction that costs
-/// something: *a `dyn` that declares no auto traits does not hide `Send`,
-/// it removes it.* `tests/spawnable_body.rs` said so on the first
-/// `--all-targets` build, which is amendment C14's own test doing exactly
-/// what C14 exists for.
-///
-/// **The bound is on this alias and not on the trait**, and that is not a
-/// preference: a marker on a `pub trait X: Send {` line is **deleted** by
-/// `cargo fmt`, so `just fmt-check` and `just invariants` cannot both
-/// pass with it there — reproduced here, on this trait, before it was
-/// believed. This workspace already met that once and drew the rule then:
-/// demand the auto trait where the value is *stored*, never on the seam.
-/// A one-line `type` is a line `cargo fmt` does not reflow.
-///
-/// **Public, and it is the seam's return type rather than a spelling
-/// repeated at every implementor.** Seven `impl`s wrote
-/// `Box<dyn Decode + Send>` out by hand for a day, and
-/// `no-send-or-sync-in-the-core-surface.sh` refused all seven — correctly,
-/// because each was a bare `Send` in the core surface with no marker, and
-/// a marker on seven `fn` lines is seven chances for one to be deleted by
-/// a reflow. Naming the type once is what the rule above already says to
-/// do, and this alias was already the place.
-///
-/// It excludes nobody **and it is now a demand rather than an
-/// observation**, which is the one thing publishing the seam changed
-/// about it. While the codings were a compiled-in table this sentence
-/// read *"a fact about four types in this crate rather than a demand on
-/// anybody outside it"*; [`ContentCoding::decoder`](super::ContentCoding::decoder)
+/// A boxed [`Decode`], and `Send`:
+/// [`ContentCoding::decoder`](super::ContentCoding::decoder)
 /// hands back this type, so a third-party decoder holding an [`Rc`](std::rc::Rc)
 /// is `E0277` where it is boxed. That is the right direction and the
 /// alternative is worse: a `Client` whose response body stopped being

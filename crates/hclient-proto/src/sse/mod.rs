@@ -16,15 +16,17 @@ pub(crate) mod lines;
 pub use decode::{SseDecoder, SseError, SseEvent};
 pub(crate) use lines::LineSplitter;
 
+// Maintainer notes (not rendered):
+//
+// **The number came from `rmcp::DEFAULT_MAX_SSE_EVENT_SIZE`**, so that
+// an adapter over that crate kept its behaviour. That adapter is in no
+// manifest here and the reason has outlived it, which is worth writing
+// down rather than deleting: the figure is now a plain guess at *no
+// event anybody means to send is this large*, and nothing makes it
+// track `rmcp` if `rmcp` moves.
+
 /// The ceiling [`SseDecoder::new`] is usually handed: 16 MiB for one
 /// event, counting the raw bytes rather than the decoded `data`.
-///
-/// **The number came from `rmcp::DEFAULT_MAX_SSE_EVENT_SIZE`**, so that
-/// an adapter over that crate kept its behaviour. That adapter is in no
-/// manifest here and the reason has outlived it, which is worth writing
-/// down rather than deleting: the figure is now a plain guess at *no
-/// event anybody means to send is this large*, and nothing makes it
-/// track `rmcp` if `rmcp` moves.
 ///
 /// What is load-bearing is that there **is** a bound — an SSE stream is
 /// unframed, so a peer that never sends a blank line would otherwise

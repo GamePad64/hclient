@@ -4,12 +4,18 @@
 //! **Nothing in this file is `unsafe`, and nothing in it may become so.**
 //! `forbid` is not usable here (it propagates into the child modules,
 //! which are the crate's foreign-function boundaries), so the crate
-//! root's `deny` stands — and CI's `unsafe-code-policy.sh` path-scopes
-//! the `amendment-C9` marker to `icu/windows.rs` alone, so an `unsafe`
-//! block added HERE fails the build exactly as it would in any other
-//! crate. That split is the point of the file: the backend does nothing
-//! but call C, and every decision about whether to believe the answer
-//! lives here, in safe code.
+//! root's `deny` stands, path-scoped by CI to `icu/windows.rs` alone, so
+//! an `unsafe` block added HERE fails the build exactly as it would in
+//! any other crate. That split is the point of the file: the backend
+//! does nothing but call C, and every decision about whether to believe
+//! the answer lives here, in safe code.
+//
+// Maintainer notes (not rendered):
+//
+// root's `deny` stands — and CI's `unsafe-code-policy.sh` path-scopes
+// the `amendment-C9` marker to `icu/windows.rs` alone, so an `unsafe`
+// block added HERE fails the build exactly as it would in any other
+// crate.
 //!
 //! # One backend, and the rule that makes it the only one
 //!

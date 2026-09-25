@@ -347,8 +347,11 @@ struct Handlers {
 /// [`FetchWebSocket`] the caller dropped.
 struct Socket {
     ws: web_sys::WebSocket,
+    // Maintainer notes (not rendered):
+    //
+    // crate's one `unsafe impl Send` (amendment C7) — **no second one**,
     /// Wrapped in [`crate::promise::SingleThreaded`], which carries this
-    /// crate's one `unsafe impl Send` (amendment C7) — **no second one**,
+    /// crate's one `unsafe impl Send` — **no second one**,
     /// the same way `timer.rs` builds on `SendJsFuture` rather than
     /// writing a fresh claim. A `Closure` cannot be given a `Send` inner
     /// `dyn` instead: `WasmClosure` is implemented for
@@ -577,21 +580,30 @@ impl Sink<Message> for FetchWebSocket {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// can do WebSocket. There is no capability to read: `Capabilities` used to
+// carry an `upgrade` field, every backend set it to `None`, and nothing
+// ever branched on it, which is why it is gone.
+//
+// Not behind a cargo feature, and that is a measurement rather than a
+// preference. `hclient-native` gates its implementation at `websocket`
+// because `tungstenite` and its RFC 6455 codec are +14 crates in a real
+// client build. Here the protocol implementation is the browser's: this
+// file adds four `web-sys` feature names (`WebSocket`, `BinaryType`,
+// `MessageEvent`, `CloseEvent`) to a crate that already depends on
+// `web-sys`, and **no crate at all** to the graph. A feature gating
+// nothing would still cost something — the browser suite would need it
+// spelled in one more place, which is the drift `justfile`'s own check
+// warns about.
 /// The seam, implemented — which is the whole of how this transport says it
-/// can do WebSocket. There is no capability to read: `Capabilities` used to
-/// carry an `upgrade` field, every backend set it to `None`, and nothing
-/// ever branched on it, which is why it is gone.
+/// can do WebSocket.
 ///
-/// Not behind a cargo feature, and that is a measurement rather than a
-/// preference. `hclient-native` gates its implementation at `websocket`
-/// because `tungstenite` and its RFC 6455 codec are +14 crates in a real
-/// client build. Here the protocol implementation is the browser's: this
-/// file adds four `web-sys` feature names (`WebSocket`, `BinaryType`,
+/// Not behind a cargo feature: the protocol implementation is the browser's,
+/// this file adds four `web-sys` feature names (`WebSocket`, `BinaryType`,
 /// `MessageEvent`, `CloseEvent`) to a crate that already depends on
-/// `web-sys`, and **no crate at all** to the graph. A feature gating
-/// nothing would still cost something — the browser suite would need it
-/// spelled in one more place, which is the drift `justfile`'s own check
-/// warns about.
+/// `web-sys`, and **no crate at all** to the graph.
+///
 /// Generic in `H` so that a caller who asked for events keeps the seam —
 /// but **no event is emitted here**, for the reason `hclient-native`'s own
 /// `WebSocketConnect` gives one seam over: the observability vocabulary is

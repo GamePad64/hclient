@@ -1,29 +1,11 @@
-//! Driving a [`Handshake`] over a socket — the whole of what proxying
-//! costs a transport.
+//! Proxies for [`Native`](crate::Native): the configuration, the seam
+//! and the three protocols.
 //!
-//! The protocols themselves are `hclient-proxy`'s and are **sans-io**: state machines that are
-//! handed the bytes that arrived and answer with the bytes to send. This
-//! file is the thirty lines that know what a `poll_read` is, and it is
-//! the same thirty lines for all three of them.
+//! The protocols are `hclient-proxy`'s and are **sans-io**: state machines
+//! handed the bytes that arrived, answering with the bytes to send. This
+//! transport drives them over its socket.
 //!
-//! # Why the protocols are a crate and this is not
-//!
-//! Because the split falls where a dependency does. The protocols carry
-//! none — which is why this feature has no `dep:` line — but the
-//! machine's own settings carry `proxy_cfg`, and through it `url` and the
-//! ICU tables. A feature on this crate would put those into every build
-//! in any graph that switched it on, which is the argument that keeps
-//! `tungstenite` in `hclient-tungstenite` (and kept `quinn-proto` out of
-//! `hclient-tls` until that seam stopped carrying it at all).
-//!
-//! What the split bought beyond that is measurable in this file: driving
-//! `CONNECT` used to mean driving **hyper's h1 dispatcher** through
-//! `crate::upgrade`, because writing one request and reading one response
-//! needed an HTTP client. It does not any more — see
-//! `hclient_proxy::connect` — so this file has one loop rather than a
-//! special case.
-//!
-//! # Why this is not a `TcpConnect` wrapper, which would have cost nothing
+//! # The origin's name goes to the proxy
 //!
 //! [`TcpConnect::connect`](hclient_rt::TcpConnect::connect) takes a
 //! `SocketAddr` and nothing else, so a wrapper implementing it could never
@@ -32,6 +14,34 @@
 //! and `http://` could never take absolute-form, because that is decided
 //! where the request head is written. A proxy replaces the resolve →
 //! Happy-Eyeballs → connect block; it does not decorate the socket.
+
+// Maintainer notes (not rendered):
+// Driving a [`Handshake`] over a socket — the whole of what proxying
+// costs a transport.
+//
+// The protocols themselves are `hclient-proxy`'s and are **sans-io**: state machines that are
+// handed the bytes that arrived and answer with the bytes to send. This
+// file is the thirty lines that know what a `poll_read` is, and it is
+// the same thirty lines for all three of them.
+//
+// # Why the protocols are a crate and this is not
+//
+// Because the split falls where a dependency does. The protocols carry
+// none — which is why this feature has no `dep:` line — but the
+// machine's own settings carry `proxy_cfg`, and through it `url` and the
+// ICU tables. A feature on this crate would put those into every build
+// in any graph that switched it on, which is the argument that keeps
+// `tungstenite` in `hclient-tungstenite` (and kept `quinn-proto` out of
+// `hclient-tls` until that seam stopped carrying it at all).
+//
+// What the split bought beyond that is measurable in this file: driving
+// `CONNECT` used to mean driving **hyper's h1 dispatcher** through
+// `crate::upgrade`, because writing one request and reading one response
+// needed an HTTP client. It does not any more — see
+// `hclient_proxy::connect` — so this file has one loop rather than a
+// special case.
+//
+// # Why this is not a `TcpConnect` wrapper, which would have cost nothing
 
 use std::io;
 use std::pin::Pin;
@@ -47,9 +57,13 @@ use std::future::poll_fn;
 #[doc(inline)]
 pub use hclient_proxy::system;
 pub use hclient_proxy::{Approach, Handshake, NoProxy, Proxy, ProxyScheme, Step};
-/// The three protocols, behind the `proxy` feature exactly as they were
-/// before they moved: the seam above is unconditional because `Native`'s
-/// own `P = NoProxy` default names one of its types.
+// Maintainer notes (not rendered):
+// The three protocols, behind the `proxy` feature exactly as they were
+// before they moved: the seam above is unconditional because `Native`'s
+// own `P = NoProxy` default names one of its types.
+/// The three protocols, behind the `proxy` feature. The seam above is
+/// unconditional because `Native`'s own `P = NoProxy` default names one of
+/// its types.
 #[cfg(feature = "proxy")]
 pub use hclient_proxy::{
     ConnectError, HttpConnect, ProxyRefused, Socks4, Socks4HandshakeError, Socks4Refused, Socks5,

@@ -9,31 +9,42 @@
 //! failed to cache is indistinguishable from one that cached and was
 //! evicted, and only one of those is worth changing a header for.
 //!
-//! **Why this is here and not in `hclient`'s own `error.rs`.** This module
-//! was the `hclient-cache` crate until this year, so by the convention that
-//! puts a crate's errors in an `error.rs` it already had one; the fold that
-//! made it a module was argued as costing exactly one sentence in
-//! `docs/competitive-gaps.md` and nothing else. Its own doc still says it
-//! is sans-io, clockless, and reaches for neither `Client` nor
-//! `hclient-core` — and an error type shared with the client's would end
-//! the last of those.
-//!
-//! [`NotStored`] is re-exported from [`crate::cache`], where it has always
-//! been, so no consumer's `use` line moves.
+//! [`NotStored`] is re-exported from [`crate::cache`].
+
+// Maintainer notes (not rendered):
+//
+// **Why this is here and not in `hclient`'s own `error.rs`.** This module
+// was the `hclient-cache` crate until this year, so by the convention that
+// puts a crate's errors in an `error.rs` it already had one; the fold that
+// made it a module was argued as costing exactly one sentence in
+// `docs/competitive-gaps.md` and nothing else. Its own doc still says it
+// is sans-io, clockless, and reaches for neither `Client` nor
+// `hclient-core` — and an error type shared with the client's would end
+// the last of those.
+//
+// [`NotStored`] is re-exported from [`crate::cache`], where it has always
+// been, so no consumer's `use` line moves.
 
 use http::{Method, StatusCode};
 
+// Maintainer notes (not rendered):
+//
+// Reported rather than swallowed, for the reason `hclient-cookie`'s
+// [`Rejected`] carries: *"the response silently was not cached"* is among
+// the harder things to debug in an HTTP client, and every variant here is
+// a rule someone will one day be surprised by.
+//
+// [`Rejected`]: https://docs.rs/hclient-cookie
+
 /// Why a response was not stored.
 ///
-/// Reported rather than swallowed, for the reason `hclient-cookie`'s
-/// [`Rejected`] carries: *"the response silently was not cached"* is among
-/// the harder things to debug in an HTTP client, and every variant here is
-/// a rule someone will one day be surprised by. `hclient::Client` drops
-/// these — one uncacheable response must not fail an exchange — so this is
-/// for whoever drives the cache directly, and for the tests that pin which
-/// rule fired.
-///
-/// [`Rejected`]: https://docs.rs/hclient-cookie
+/// Reported rather than swallowed, for the same reason
+/// [`crate::cookie::Rejected`] is: *"the response silently was not
+/// cached"* is among the harder things to debug in an HTTP client, and
+/// every variant here is a rule someone will one day be surprised by.
+/// `hclient::Client` drops these — one uncacheable response must not fail
+/// an exchange — so this is for whoever drives the cache directly, and
+/// for the tests that pin which rule fired.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum NotStored {

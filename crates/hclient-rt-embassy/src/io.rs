@@ -115,6 +115,9 @@ impl<const N: usize, const TX: usize, const RX: usize> futures_io::AsyncWrite
     // syscall.
 }
 
+// Maintainer notes (not rendered):
+// and did not". `CLAUDE.md` records that as blocker two against a NAL
+// adapter, and this impl is the other side of it.
 /// **The half-close this backend exists to be able to perform.**
 ///
 /// `embassy_net::tcp::TcpSocket::close` sends FIN and leaves the read half
@@ -122,8 +125,7 @@ impl<const N: usize, const TX: usize, const RX: usize> futures_io::AsyncWrite
 /// through an `embedded-nal-async` `Connection` — that seam has `write` and
 /// `flush` and nothing else, so an adapter over it can only forward a
 /// shutdown to `flush` and report "a half-close hyper believes it performed
-/// and did not". `CLAUDE.md` records that as blocker two against a NAL
-/// adapter, and this impl is the other side of it.
+/// and did not".
 impl<const N: usize, const TX: usize, const RX: usize> hclient_rt::Shutdown
     for EmbassyIo<N, TX, RX>
 {

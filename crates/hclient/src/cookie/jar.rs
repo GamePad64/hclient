@@ -180,6 +180,12 @@ pub(super) enum Arrival {
     Record,
 }
 
+// Maintainer notes (not rendered):
+// **It is no longer sans-io, and the seam is why.** Where the cookies
+// live is [`CookieStore`]'s: a jar over a store on disk awaits a disk, a
+// jar over the default [`MemoryStore`] awaits [`std::future::Ready`] and
+// suspends never. The *rules* do no I/O either way — every refusal below
+// is decided before the store is asked.
 /// A cookie jar: parse, store, expire and hand back.
 ///
 /// Clockless — every method that needs the time takes it as a `now`
@@ -188,11 +194,11 @@ pub(super) enum Arrival {
 /// behaviour on every backend" a structural fact rather than a
 /// consequence of everyone happening to call the same client.
 ///
-/// **It is no longer sans-io, and the seam is why.** Where the cookies
-/// live is [`CookieStore`]'s: a jar over a store on disk awaits a disk, a
-/// jar over the default [`MemoryStore`] awaits [`std::future::Ready`] and
-/// suspends never. The *rules* do no I/O either way — every refusal below
-/// is decided before the store is asked.
+/// Where the cookies live is [`CookieStore`]'s: a jar over a store on
+/// disk awaits a disk, a jar over the default [`MemoryStore`] awaits
+/// [`std::future::Ready`] and suspends never. The *rules* do no I/O
+/// either way — every refusal below is decided before the store is
+/// asked.
 ///
 /// ```
 /// use std::time::SystemTime;
@@ -441,6 +447,16 @@ impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
         Ok(cookie)
     }
 
+    // Maintainer notes (not rendered):
+    // **One read for the whole response, not one per header**, and the
+    // difference is a fact about the store rather than about the rules.
+    // Each header used to go through [`store`](Self::store), and each of
+    // those asked the store what it already held so that §5.7's
+    // replacement could keep the old cookie's `seq` and `creation`.
+    // Measured from outside the workspace against a store that logs its
+    // statements: a response carrying five `Set-Cookie` headers cost
+    // **six reads and five writes**, where one read serves them all.
+
     /// Store every `Set-Cookie` in a response's headers, returning how many
     /// were accepted.
     ///
@@ -448,14 +464,8 @@ impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
     /// `Set-Cookie` must not stop the others from being stored — that is
     /// what a browser does and what a server assumes. Use
     /// [`store`](Self::store) per header when the reasons matter.
-    /// **One read for the whole response, not one per header**, and the
-    /// difference is a fact about the store rather than about the rules.
-    /// Each header used to go through [`store`](Self::store), and each of
-    /// those asked the store what it already held so that §5.7's
-    /// replacement could keep the old cookie's `seq` and `creation`.
-    /// Measured from outside the workspace against a store that logs its
-    /// statements: a response carrying five `Set-Cookie` headers cost
-    /// **six reads and five writes**, where one read serves them all.
+    ///
+    /// **One read for the whole response, not one per header.**
     /// `MemoryStore` answers [`std::future::Ready`] so it never showed;
     /// a store on the far side of a file or a socket pays every one.
     ///

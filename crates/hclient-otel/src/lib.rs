@@ -24,7 +24,6 @@
 //! happens — and widening it would make every backend's emission site a
 //! place where a caller's code rewrites a request mid-flight.
 //!
-//! Two smaller facts point the same way, both measured in this tree.
 //! **There is no request-start event**: `Event`'s variants are the life of
 //! a *connection*, the arrival of a head, and octets moving, and a span
 //! needs a beginning. And **`Hooks` is not universal**: `fn hooks` is
@@ -39,8 +38,7 @@
 //!
 //! `hclient::Client` names no type parameters, so **nothing leaks
 //! downward**: `Client::builder(Instrumented::otel(t))` is one line at the
-//! call site and every signature below it is unchanged. That is the
-//! erasure paying for itself a second time, after `hc --backend`.
+//! call site and every signature below it is unchanged.
 //!
 //! # This crate does not own a pipeline
 //!
@@ -54,10 +52,8 @@
 //!
 //! **And a bootstrap loop that has to be named.** If the OTLP exporter
 //! makes its own requests through an instrumented `Client`, exporting
-//! produces spans which produce exports. The rule is already written in
-//! this workspace for DNS — *a resolver's client is not the user's
-//! client* — and it applies verbatim: **the exporter's client must be a
-//! plain `Client`, built on the bare transport.** It is said at
+//! produces spans which produce exports: **the exporter's client must be
+//! a plain `Client`, built on the bare transport.** It is said at
 //! [`Instrumented::otel`] as well as here, because the constructor is
 //! where somebody is about to get it wrong.
 //!
@@ -67,8 +63,8 @@
 //! are **not set**. They live in the `Connected` hook event, and a
 //! decorator would have to be the hook as well to see them — which is a
 //! capability that varies by backend, since `fn hooks` exists on four of
-//! six. This workspace's rule is that an attribute whose value would be a
-//! guess is omitted. Both `Connected` and `Head` carry a
+//! six. An attribute whose value would be a guess is omitted here. Both
+//! `Connected` and `Head` carry a
 //! `hclient_core::hooks::RequestId` now, so a caller who installs a
 //! hook of their own can join it to a span on a key; the crate does not
 //! decide that for them.
@@ -76,6 +72,26 @@
 //! Metrics are a separate surface and are not here — the same data, and
 //! the duration they want is the one this crate already fixes: to the end
 //! of the body.
+//
+// Maintainer notes (not rendered):
+//
+// Two smaller facts point the same way, both measured in this tree.
+// **There is no request-start event**: `Event`'s variants are the life of
+// a *connection*, the arrival of a head, and octets moving, and a span
+// needs a beginning. And **`Hooks` is not universal**: `fn hooks` is
+// declared on four backends of the six that could carry it, so even a
+// mutating hook would have reached two thirds of them.
+//
+// call site and every signature below it is unchanged. That is the
+// erasure paying for itself a second time, after `hc --backend`.
+//
+// produces spans which produce exports. The rule is already written in
+// this workspace for DNS — *a resolver's client is not the user's
+// client* — and it applies verbatim: **the exporter's client must be a
+// plain `Client`, built on the bare transport.**
+//
+// six. This workspace's rule is that an attribute whose value would be a
+// guess is omitted. Both `Connected` and `Head` carry a
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -150,14 +166,19 @@ impl<T> Instrumented<T> {
     /// span*, not *what it is about*.
     pub const SCOPE: &'static str = "hclient-otel";
 
+    // Maintainer notes (not rendered):
+    //
+    // Build the exporter's client on the bare transport — the same rule
+    // this workspace already writes for DNS, where *a resolver's client
+    // is not the user's client*.
     /// Record an OpenTelemetry span through the global tracer provider,
     /// and inject `traceparent` and `baggage` with the global propagator.
     ///
     /// **Not for the exporter's own client.** If the OTLP exporter makes
     /// its requests through a `Client` built on this, exporting produces
     /// spans which produce exports. Build the exporter's client on the
-    /// bare transport — the same rule this workspace already writes for
-    /// DNS, where *a resolver's client is not the user's client*.
+    /// bare transport: *a resolver's client is not the user's client*,
+    /// and the same is true of an exporter's.
     ///
     /// A **provider**, not a `Tracer` handed in, and that is a deliberate
     /// narrowing of `docs/otel-design.md` §7's *"or to a `Tracer` handed
@@ -185,6 +206,11 @@ impl<T> Instrumented<T> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Only on the `otel` front, because it is the only one that injects
+    // — a setter that existed on the other would be the *silently
+    // ignored setting* defect this workspace has closed four times.
     /// Restrict which hops are given the trace context.
     ///
     /// **Read `context::PropagateWhen`'s doc before setting one**, because
@@ -198,8 +224,7 @@ impl<T> Instrumented<T> {
     /// does.
     ///
     /// Only on the `otel` front, because it is the only one that injects
-    /// — a setter that existed on the other would be the *silently
-    /// ignored setting* defect this workspace has closed four times.
+    /// — a setter that existed on the other would silently do nothing.
     #[must_use]
     pub fn propagate_when<F>(mut self, allow: F) -> Self
     where

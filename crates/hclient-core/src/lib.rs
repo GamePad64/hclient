@@ -4,8 +4,7 @@
 //! # Which door is yours
 //!
 //! Twelve modules, and a reader needs at most two of them. The split is
-//! not by topic but by **audience**, which is the same line the module
-//! declarations below are grouped on.
+//! not by topic but by **audience**.
 //!
 //! **Implementing a backend, a runtime or a resolver** — you write one of
 //! these traits:
@@ -32,12 +31,8 @@
 //! **And a caller of `hclient` needs none of this.** Every type here that
 //! a caller meets is re-exported from that crate under a shorter path —
 //! `hclient::caps`, `hclient::hooks`, `hclient::Error`. This crate is the
-//! door for whoever is *implementing* something, which is why the auth
-//! seam lives here rather than in `hclient` — an implementor of a
-//! two-method trait should not carry a whole HTTP client's graph. The
-//! measurement is in [`auth`]'s own module doc rather than repeated here,
-//! because a figure copied to a second place is a figure that goes stale
-//! in two.
+//! door for whoever is *implementing* something: an implementor of a
+//! two-method trait should not carry a whole HTTP client's graph.
 //!
 //! # The `Send` rule
 //!
@@ -59,45 +54,59 @@
 //!   `Arc`. Neither is a **seam**: a blanket impl covers every `Transport`, so no backend
 //!   implements or is taxed by it, and one that cannot meet the bound is
 //!   refused at a constructor rather than at a trait.
-//!
-//! The list above says what kinds of site exist; the source is the
-//! authority on which ones do, and every one of them is marked where it
-//! is written.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # What growing this crate costs, measured rather than promised
-//!
-//! Every module here is a published surface, so the question that decides
-//! the shape of all of it is *what breaks when something is added*. It
-//! was simulated rather than argued — a fifth `Timeouts` bound and its
-//! `TimeoutSupport` mirror, added on a scratch checkout and taken through
-//! the whole workspace and an out-of-tree consumer:
-//!
-//! - **A caller breaks nowhere.** A consumer crate depending on
-//!   `hclient-core` and naming all 64 public items compiles unchanged.
-//!   `Timeouts` is `#[non_exhaustive]` with a `const fn` constructor, so a
-//!   bound nobody has heard of is `None` and asks for nothing.
-//! - **`hclient-core` breaks in exactly two places**, both `E0027`:
-//!   [`req::Timeouts::or`] and [`req::Timeouts::support_checks`], which
-//!   are the merge and the support gate. Those destructures live here
-//!   rather than in `hclient` precisely so that they are compile errors
-//!   in the crate that grew the field — under `#[non_exhaustive]` a
-//!   consumer would have to write `..`, and a `..` is where a new bound
-//!   goes to be silently unchecked and silently dropped.
-//! - **No transport breaks**, and that is the change rather than an
-//!   oversight. A claim added to `TimeoutSupport` arrives as `false` at
-//!   every transport that has not stated it, which is the only true answer
-//!   a transport can give before it implements the bound — it cannot
-//!   honestly report `true` first. The decision happens later, in one
-//!   line, in the crate that makes the claim true.
-//! - **`hclient` itself breaks nowhere**, because the gate consumes what
-//!   `support_checks` returns rather than destructuring the struct.
-//!
-//! So the seam is additive for the audience that only reads, and a
-//! compile error for the audience that must answer. That split is the
-//! whole design, and it is checkable again by repeating the simulation.
-//!
+// Maintainer notes (not rendered):
+//
+// Twelve modules, and a reader needs at most two of them. The split is
+// not by topic but by **audience**, which is the same line the module
+// declarations below are grouped on.
+//
+// `hclient::caps`, `hclient::hooks`, `hclient::Error`. This crate is the
+// door for whoever is *implementing* something, which is why the auth
+// seam lives here rather than in `hclient` — an implementor of a
+// two-method trait should not carry a whole HTTP client's graph. The
+// measurement is in [`auth`]'s own module doc rather than repeated here,
+// because a figure copied to a second place is a figure that goes stale
+// in two.
+//
+// The list above says what kinds of site exist; the source is the
+// authority on which ones do, and every one of them is marked where it
+// is written.
+//
+// # What growing this crate costs, measured rather than promised
+//
+// Every module here is a published surface, so the question that decides
+// the shape of all of it is *what breaks when something is added*. It
+// was simulated rather than argued — a fifth `Timeouts` bound and its
+// `TimeoutSupport` mirror, added on a scratch checkout and taken through
+// the whole workspace and an out-of-tree consumer:
+//
+// - **A caller breaks nowhere.** A consumer crate depending on
+//   `hclient-core` and naming all 64 public items compiles unchanged.
+//   `Timeouts` is `#[non_exhaustive]` with a `const fn` constructor, so a
+//   bound nobody has heard of is `None` and asks for nothing.
+// - **`hclient-core` breaks in exactly two places**, both `E0027`:
+//   [`req::Timeouts::or`] and [`req::Timeouts::support_checks`], which
+//   are the merge and the support gate. Those destructures live here
+//   rather than in `hclient` precisely so that they are compile errors
+//   in the crate that grew the field — under `#[non_exhaustive]` a
+//   consumer would have to write `..`, and a `..` is where a new bound
+//   goes to be silently unchecked and silently dropped.
+// - **No transport breaks**, and that is the change rather than an
+//   oversight. A claim added to `TimeoutSupport` arrives as `false` at
+//   every transport that has not stated it, which is the only true answer
+//   a transport can give before it implements the bound — it cannot
+//   honestly report `true` first. The decision happens later, in one
+//   line, in the crate that makes the claim true.
+// - **`hclient` itself breaks nowhere**, because the gate consumes what
+//   `support_checks` returns rather than destructuring the struct.
+//
+// So the seam is additive for the audience that only reads, and a
+// compile error for the audience that must answer. That split is the
+// whole design, and it is checkable again by repeating the simulation.
+//
 pub mod auth;
 pub mod body;
 pub mod caps;

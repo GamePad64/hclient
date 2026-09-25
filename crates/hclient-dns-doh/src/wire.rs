@@ -344,6 +344,20 @@ fn check_question(dns: &Message<[u8]>, name: &str, query: Query) -> Result<(), D
     Ok(())
 }
 
+// Maintainer notes (not rendered):
+//
+// been in this crate. `ca5ab5e4` is the precedent, one crate over and one
+// dependency along: `winnow` came off `hclient-proto`'s public surface on
+// exactly this argument, *before the freeze*, because a leaked foreign
+// type is cheap to withdraw from a pre-release and a major version
+// afterwards.
+//
+// **Not a regression from the decoder change**, which is worth saying
+// because the timing invites it: the parent of `99672f92` had
+// `pub fn binding_from_decoded(binding: &dns_message_parser::rr::ServiceBinding)`
+// — the same leak with a different foreign crate. Moving to `domain`
+// replaced one leaked type with another rather than introducing the
+// defect.
 /// A `domain`-decoded HTTPS record, reduced to the backend-neutral
 /// [`RawBinding`] every resolver in this workspace produces.
 ///
@@ -355,18 +369,7 @@ fn check_question(dns: &Message<[u8]>, name: &str, query: Query) -> Result<(), D
 /// name those types without adding the crate to their own manifest at a
 /// matching version. That made `domain`'s major version part of the
 /// `Resolve` seam's promise, for a function whose only caller has always
-/// been in this crate. `ca5ab5e4` is the precedent, one crate over and one
-/// dependency along: `winnow` came off `hclient-proto`'s public surface on
-/// exactly this argument, *before the freeze*, because a leaked foreign
-/// type is cheap to withdraw from a pre-release and a major version
-/// afterwards.
-///
-/// **Not a regression from the decoder change**, which is worth saying
-/// because the timing invites it: the parent of `99672f92` had
-/// `pub fn binding_from_decoded(binding: &dns_message_parser::rr::ServiceBinding)`
-/// — the same leak with a different foreign crate. Moving to `domain`
-/// replaced one leaked type with another rather than introducing the
-/// defect.
+/// been in this crate.
 ///
 /// **What stayed in `hclient-dns` is the half that names nothing.**
 /// [`RawBinding`], [`RawParam`] and [`endpoint_from_binding`] are the

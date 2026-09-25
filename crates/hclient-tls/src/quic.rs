@@ -22,31 +22,6 @@
 //! defect rather than an inconvenience, so the answer is a separate trait
 //! that a backend either implements or does not.
 //!
-//! # Why this is neither its own crate nor a feature any more
-//!
-//! It was both, in that order, and each reason expired rather than being
-//! wrong. As `hclient-tls-quic` it was a crate because Cargo unifies
-//! features: a `quic` feature on `hclient-tls` would have put
-//! `quinn-proto` into the graph of every build in which *any* crate
-//! wanted HTTP/3, including builds whose TLS is [`NoTls`] and whose
-//! reason for existing is that they have no room for a stack. Folded in
-//! at `169dbdd`, it became that feature, on the measurement that the
-//! identical cost had already been accepted one crate over.
-//!
-//! **Both arguments were about the same thing, and it is gone.** They
-//! turned on this module *carrying* an `Arc<dyn
-//! quinn_proto::crypto::ClientConfig>`, so whichever crate held the seam
-//! linked quinn — 38 crates against 21, with `chacha20`, `rand_core` and
-//! `ring` among the difference. [`QuicCryptoConfig`] is this crate's own
-//! declarative type now and [`QuicTlsConnect::Session`] is opaque, so
-//! there is no dependency to gate and no cost to move: the two seams are
-//! **peers**, each describing what a backend must answer, and a `NoTls`
-//! build carries both descriptions and neither implementation.
-//!
-//! What a feature would buy at this point is a flag a consumer has to
-//! remember for nothing, which is the distinction with one reachable
-//! side this workspace deletes rather than keeps.
-//!
 //! # What it costs the two shipped TLS backends
 //!
 //! `hclient-tls-rustls` gains one implementation behind its own `quic`
@@ -64,6 +39,33 @@
 //!
 //! [`TlsConnect`]: crate::TlsConnect
 //! [`NoTls`]: crate::NoTls
+
+// Maintainer notes (not rendered):
+//
+// # Why this is neither its own crate nor a feature any more
+//
+// It was both, in that order, and each reason expired rather than being
+// wrong. As `hclient-tls-quic` it was a crate because Cargo unifies
+// features: a `quic` feature on `hclient-tls` would have put
+// `quinn-proto` into the graph of every build in which *any* crate
+// wanted HTTP/3, including builds whose TLS is [`NoTls`] and whose
+// reason for existing is that they have no room for a stack. Folded in
+// at `169dbdd`, it became that feature, on the measurement that the
+// identical cost had already been accepted one crate over.
+//
+// **Both arguments were about the same thing, and it is gone.** They
+// turned on this module *carrying* an `Arc<dyn
+// quinn_proto::crypto::ClientConfig>`, so whichever crate held the seam
+// linked quinn — 38 crates against 21, with `chacha20`, `rand_core` and
+// `ring` among the difference. [`QuicCryptoConfig`] is this crate's own
+// declarative type now and [`QuicTlsConnect::Session`] is opaque, so
+// there is no dependency to gate and no cost to move: the two seams are
+// **peers**, each describing what a backend must answer, and a `NoTls`
+// build carries both descriptions and neither implementation.
+//
+// What a feature would buy at this point is a flag a consumer has to
+// remember for nothing, which is the distinction with one reachable
+// side this workspace deletes rather than keeps.
 
 use crate::TlsIdentity;
 use hclient_core::error::Error;
@@ -116,14 +118,15 @@ pub struct QuicTlsRequest<'a> {
     ///
     /// [`TlsRequest::ech`]: crate::TlsRequest::ech
     pub ech: Option<&'a [u8]>,
+    // Maintainer notes (not rendered):
+    //
+    // **A `bool`, and it corrected the `Option<usize>` `TlsRequest`
+    // reserved for the same idea** — which is part of why that slot left
+    // before the type was frozen: `max_early_data_size` is a *server*
+    // field in rustls, and a client's early-data budget comes from the
+    // ticket it remembered, not from a number it chooses. The `usize` had
+    // no client-side meaning to carry.
     /// Whether to offer TLS 1.3 early data (0-RTT) on this connection.
-    ///
-    /// **A `bool`, and it corrected the `Option<usize>` `TlsRequest`
-    /// reserved for the same idea** — which is part of why that slot left
-    /// before the type was frozen: `max_early_data_size` is a *server*
-    /// field in rustls, and a client's early-data budget comes from the
-    /// ticket it remembered, not from a number it chooses. The `usize` had
-    /// no client-side meaning to carry.
     ///
     /// `true` here asks the backend to offer early data. It does not say
     /// anything went into it — the acceptance verdict is not available at
@@ -182,23 +185,25 @@ impl<'a> QuicTlsRequest<'a> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// # It is declarative, and that is the decision
+//
+// This was `Arc<dyn quinn_proto::crypto::ClientConfig>` in a newtype,
+// then briefly a `rustls::ClientConfig` in one, and both are wrong in
+// the same way: a seam whose purpose is that a backend does not promise
+// somebody else's major version cannot *carry* a value typed by
+// somebody else. A newtype hides the name from a rendered page and not
+// from the dependency graph — measured, the wrapper cost this crate
+// **38 crates** with `quinn-proto` and **29** with `rustls`, against
+// **21** with neither, and `chacha20`, `rand` and `ring` were among
+// them. A crate that exists to have no cryptography in it had
+// cryptography in it.
+
 /// What a QUIC handshake is to be configured with — **this crate's own
 /// type, carrying no other crate's**.
 ///
-/// # It is declarative, and that is the decision
-///
-/// This was `Arc<dyn quinn_proto::crypto::ClientConfig>` in a newtype,
-/// then briefly a `rustls::ClientConfig` in one, and both are wrong in
-/// the same way: a seam whose purpose is that a backend does not promise
-/// somebody else's major version cannot *carry* a value typed by
-/// somebody else. A newtype hides the name from a rendered page and not
-/// from the dependency graph — measured, the wrapper cost this crate
-/// **38 crates** with `quinn-proto` and **29** with `rustls`, against
-/// **21** with neither, and `chacha20`, `rand` and `ring` were among
-/// them. A crate that exists to have no cryptography in it had
-/// cryptography in it.
-///
-/// So this carries **what was decided**, not a thing that was built
+/// This carries **what was decided**, not a thing that was built
 /// from it: the ALPN list, whether early data is offered, the ECH
 /// config list a DNS answer supplied, and the client identity's
 /// **label**. Every field is data this crate already understands,
@@ -316,14 +321,18 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// [`quic_session`](Self::quic_session).
     type Session;
 
+    // Maintainer notes (not rendered):
+    //
+    // # Why a declaration rather than a built thing
+    //
+    // This returned `Arc<dyn quinn_proto::crypto::ClientConfig>`, then
+    // the same value inside a newtype of ours — the second fixed *whose
+    // major version the signature promised* and still made this crate
+    // link quinn to hold the value.
+
     /// Build the crypto configuration for one QUIC connection.
     ///
-    /// # Why a declaration rather than a built thing
-    ///
-    /// This returned `Arc<dyn quinn_proto::crypto::ClientConfig>`, then
-    /// the same value inside a newtype of ours — the second fixed *whose
-    /// major version the signature promised* and still made this crate
-    /// link quinn to hold the value. [`QuicCryptoConfig`] is what was
+    /// [`QuicCryptoConfig`] is what was
     /// **decided** — ALPN, early data, ECH, the identity's label — and
     /// building the stack's own object from it is
     /// [`quic_session`](Self::quic_session)'s job. The split is what lets
@@ -338,6 +347,15 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// built with the default identity instead.
     fn quic_client_config(&self, req: QuicTlsRequest<'_>) -> Result<QuicCryptoConfig, Error>;
 
+    // Maintainer notes (not rendered):
+    //
+    // So the value is the backend's and its *type* is the backend's
+    // too. This crate names neither, which is the whole point: it had
+    // `quinn-proto` in its graph for four verticals because the seam
+    // carried quinn's trait object inside a newtype — 38 crates against
+    // 21, with `chacha20`, `rand` and `ring` among the difference, in
+    // the crate that exists to have no cryptography in it.
+
     /// The QUIC stack's own session configuration, built from what
     /// [`quic_client_config`](Self::quic_client_config) decided.
     ///
@@ -350,13 +368,6 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// the trust roots, the verifier and the certificate resolver that
     /// go into it — those are settled when the backend is constructed
     /// and never per connection.
-    ///
-    /// So the value is the backend's and its *type* is the backend's
-    /// too. This crate names neither, which is the whole point: it had
-    /// `quinn-proto` in its graph for four verticals because the seam
-    /// carried quinn's trait object inside a newtype — 38 crates against
-    /// 21, with `chacha20`, `rand` and `ring` among the difference, in
-    /// the crate that exists to have no cryptography in it.
     ///
     /// **The objection this answers was recorded here and was half
     /// right.** It said an opaque associated type carries nothing,
@@ -378,6 +389,14 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// [`quic_client_config`](Self::quic_client_config) does.
     fn quic_session(&self, config: &QuicCryptoConfig) -> Result<Self::Session, Error>;
 
+    // Maintainer notes (not rendered):
+    //
+    // Note what it does **not** answer: whether a particular request's
+    // early data was accepted. In QUIC that verdict arrives *after* the
+    // response — measured at 8.63 ms against a response at 8.58 ms
+    // — so it is a future, not a property of
+    // a connector, and it is deliberately not on this trait.
+
     /// Whether [`QuicTlsRequest::early_data`] is honoured when set.
     ///
     /// **Defaulted to `false`, and there is no `true` default anywhere on
@@ -390,10 +409,9 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// which is slower and safe.
     ///
     /// Note what it does **not** answer: whether a particular request's
-    /// early data was accepted. In QUIC that verdict arrives *after* the
-    /// response — measured at 8.63 ms against a response at 8.58 ms
-    /// — so it is a future, not a property of
-    /// a connector, and it is deliberately not on this trait.
+    /// early data was accepted. That verdict is a future, not a property
+    /// of a connector, and it is deliberately not on this trait — see
+    /// [`QuicTlsRequest::early_data`].
     ///
     /// [`TlsConnect::reports_alpn`]: crate::TlsConnect::reports_alpn
     fn offers_early_data(&self) -> bool {

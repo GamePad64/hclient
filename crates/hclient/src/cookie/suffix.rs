@@ -5,31 +5,7 @@
 //! the only thing that separates "a name a registrant controls" from "a
 //! branching point in the registry" is the Mozilla Public Suffix List, a
 //! data file of some fifteen thousand rules. So the correct answer costs
-//! bytes, and this project measures bytes rather than assuming them.
-//!
-//! # What each option costs
-//!
-//! Measured, not quoted: one release binary per candidate, same profile
-//! (`opt-level = 3`, `lto = true`, `codegen-units = 1`, `panic = "abort"`,
-//! `strip = true`), each calling the crate's suffix lookup on a runtime
-//! argument so nothing is constant-folded away, against an identical
-//! baseline binary that only splits the argument on `.`. Baseline:
-//! **308,384 bytes**.
-//!
-//! | option | binary delta | crates added | refuses `Domain=co.uk`? |
-//! |---|---|---|---|
-//! | **`public-suffix` 0.1.3** | **+77,296 B (75 KiB)** | **1, with no dependencies of its own** | yes |
-//! | `publicsuffix` 2.3.0 | +186,712 B (182 KiB) of *code*, and the list is **not** included — you ship and parse the ~250 KB `.dat` yourself at run time | 32 (pulls `idna` and the whole ICU set) | yes |
-//! | `psl` 2.1.223 | +735,376 B (718 KiB) | 2 | yes |
-//! | `adbyss_psl` 0.24.2 | +789,024 B (771 KiB) | 39 (pulls `idna` and the whole ICU set) | yes |
-//! | no list, "reject a `Domain` with no embedded dot" | 0 | 0 | **no** — it catches `Domain=com`, and `co.uk` has a dot |
-//!
-//! The source-versus-binary distinction matters here and this project has
-//! been caught by it before: `public-suffix`'s generated table is **253 KB
-//! of Rust source** (`src/tld_list.rs`) and **75 KiB in the stripped
-//! binary**, because it is a bit-packed trie of `u32`s plus one
-//! concatenated text blob, not a `&[&str]`. Quoting the source figure would
-//! have made the cheapest option look like the second most expensive.
+//! bytes.
 //!
 //! # What is taken, and why
 //!
@@ -37,10 +13,8 @@
 //! `public-suffix` feature, on by default. It is a transliteration of Go's
 //! `golang.org/x/net/publicsuffix`, which is the same trie Go's own cookie
 //! jar uses; it has **no dependencies at all**, which is the property that
-//! separates it from every other candidate — `publicsuffix` and
-//! `adbyss_psl` both drag `idna` and the entire ICU data set in for a
-//! question that never leaves ASCII, and this workspace spent a whole task
-//! removing exactly that graph from `hclient-proto`.
+//! separates it from every other candidate, and costs about 75 KiB in a
+//! stripped release binary.
 //!
 //! Wildcards and exceptions are implemented, checked here rather than
 //! assumed: `foo.ck` is a public suffix (`*.ck`), `www.ck` is not
@@ -50,14 +24,13 @@
 //!
 //! # The gap this choice leaves, named
 //!
-//! **The list is a snapshot, compiled in, and it goes stale.**
-//! `public-suffix` 0.1.3 was published 2025-04-28 and the crate's own
-//! documentation says updating it means re-running a Go program by hand
+//! **The list is a snapshot, compiled in, and it goes stale.** The crate's
+//! own documentation says updating it means re-running a Go program by hand
 //! ("we intentionally do not try to download the latest version … to keep
 //! the build deterministic"). So the list in a binary built today is
-//! whatever Mozilla's file said over a year ago, and it can only ever be
-//! wrong in one direction: a suffix **added** since the snapshot is not
-//! known here.
+//! whatever Mozilla's file said when the dependency was last bumped, and it
+//! can only ever be wrong in one direction: a suffix **added** since the
+//! snapshot is not known here.
 //!
 //! That direction is the harmful one. New entries in the private section
 //! are overwhelmingly shared hosting domains — the `pages.dev`,
@@ -77,6 +50,49 @@
 //! are ASCII/A-label only: a Unicode host must already have been
 //! punycoded, which in this workspace happens upstream in
 //! `hclient_proto::uri::parse`, not here.
+
+// Maintainer notes (not rendered):
+//
+// So the correct answer costs bytes, and this project measures bytes
+// rather than assuming them.
+//
+// # What each option costs
+//
+// Measured, not quoted: one release binary per candidate, same profile
+// (`opt-level = 3`, `lto = true`, `codegen-units = 1`, `panic = "abort"`,
+// `strip = true`), each calling the crate's suffix lookup on a runtime
+// argument so nothing is constant-folded away, against an identical
+// baseline binary that only splits the argument on `.`. Baseline:
+// **308,384 bytes**.
+//
+// | option | binary delta | crates added | refuses `Domain=co.uk`? |
+// |---|---|---|---|
+// | **`public-suffix` 0.1.3** | **+77,296 B (75 KiB)** | **1, with no dependencies of its own** | yes |
+// | `publicsuffix` 2.3.0 | +186,712 B (182 KiB) of *code*, and the list is **not** included — you ship and parse the ~250 KB `.dat` yourself at run time | 32 (pulls `idna` and the whole ICU set) | yes |
+// | `psl` 2.1.223 | +735,376 B (718 KiB) | 2 | yes |
+// | `adbyss_psl` 0.24.2 | +789,024 B (771 KiB) | 39 (pulls `idna` and the whole ICU set) | yes |
+// | no list, "reject a `Domain` with no embedded dot" | 0 | 0 | **no** — it catches `Domain=com`, and `co.uk` has a dot |
+//
+// The source-versus-binary distinction matters here and this project has
+// been caught by it before: `public-suffix`'s generated table is **253 KB
+// of Rust source** (`src/tld_list.rs`) and **75 KiB in the stripped
+// binary**, because it is a bit-packed trie of `u32`s plus one
+// concatenated text blob, not a `&[&str]`. Quoting the source figure would
+// have made the cheapest option look like the second most expensive.
+//
+// It has **no dependencies at all**, which is the property that
+// separates it from every other candidate — `publicsuffix` and
+// `adbyss_psl` both drag `idna` and the entire ICU data set in for a
+// question that never leaves ASCII, and this workspace spent a whole task
+// removing exactly that graph from `hclient-proto`.
+//
+// `public-suffix` 0.1.3 was published 2025-04-28 and the crate's own
+// documentation says updating it means re-running a Go program by hand
+// ("we intentionally do not try to download the latest version … to keep
+// the build deterministic"). So the list in a binary built today is
+// whatever Mozilla's file said over a year ago, and it can only ever be
+// wrong in one direction: a suffix **added** since the snapshot is not
+// known here.
 
 /// Where a domain sits relative to the registry's branching points.
 ///

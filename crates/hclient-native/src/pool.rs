@@ -173,9 +173,7 @@
 //!
 //! **[`Protocol`] keeps the two kinds of connection in separate buckets**
 //! — `Native` speaks HTTP/1.1 always and HTTP/2 when ALPN selected it (the
-//! `http2` feature, v0.2 W3). The component was added in W2, when it had
-//! one variant and the lookup was constant, precisely so that W3 could add
-//! the second one without anything else in this file changing; the guard
+//! `http2` feature). The guard
 //! that keeps it honest is in `Native::execute`, which refuses to pool a
 //! connection at all when the *negotiated* ALPN is neither of the two
 //! protocols this transport speaks.
@@ -297,6 +295,10 @@
 //! spawner could multiplex" sentence above now has a worked example
 //! sitting in the workspace — including the price it pays, which is a
 //! `R: Spawn` bound on the transport.
+// Maintainer notes (not rendered):
+// (the `http2` feature, v0.2 W3). The component was added in W2, when it had
+// one variant and the lookup was constant, precisely so that W3 could add
+// the second one without anything else in this file changing
 use crate::established::Established;
 use futures_io::{AsyncRead as Read, AsyncWrite as Write};
 use hclient_core::timer::Timer;
@@ -310,23 +312,30 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// The v0.2 design document is explicit that an
+// idle timeout must live either in `hclient_core::req::Timeouts` or on the pool
+// and not in both places, and it lives here.
+//
+// It would also cost a
+// fourth flag in `TimeoutSupport`, which the two ambient backends would
+// have to answer `false` to for a setting only one backend could ever
+// implement.
 /// How this transport reuses connections.
 ///
-/// **One setting, not two.** The v0.2 design document is explicit that an
-/// idle timeout must live either in `hclient_core::req::Timeouts` or on the pool
-/// and not in both places, and it lives here. `Timeouts` describes phases
+/// **One setting, not two.** The idle timeout lives here and not in
+/// `hclient_core::req::Timeouts`. `Timeouts` describes phases
 /// of *one exchange* and travels with a request through
 /// `http::Extensions`; how long a connection may sit idle *after* an
 /// exchange is not a property of any request, and two requests carrying
-/// different values for it would have no meaning. It would also cost a
-/// fourth flag in `TimeoutSupport`, which the two ambient backends would
-/// have to answer `false` to for a setting only one backend could ever
-/// implement.
+/// different values for it would have no meaning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolConfig {
+    // Maintainer notes (not rendered):
+    // Read the module doc first:
     /// How long a connection may sit in the pool and still be handed out.
     ///
-    /// Read the module doc first: with nothing polling in the background,
+    /// With nothing polling in the background,
     /// this is a filter applied when a connection is taken out, not a timer
     /// that closes it.
     ///
@@ -337,10 +346,13 @@ pub struct PoolConfig {
     /// direction: the deadline is never later than the true idle deadline,
     /// only earlier, and by exactly the time the exchange took.
     pub idle_timeout: Duration,
+    // Maintainer notes (not rendered):
+    // (see the module
+    // doc)
     /// How many idle connections to keep per `PoolKey`.
     ///
-    /// Bounded rather than unbounded: without a reaper (see the module
-    /// doc), an unbounded pool that a burst of concurrent requests filled
+    /// Bounded rather than unbounded: without a reaper, an unbounded pool
+    /// that a burst of concurrent requests filled
     /// would hold every one of those sockets open until the process ended.
     /// Reaching the bound drops the *oldest* entry, which is also the one
     /// closest to its deadline.
@@ -772,6 +784,41 @@ pin_project_lite::pin_project! {
 // field is `no rules expected \`=\``, so the field notes below are `//`.
 // Nothing is lost in the rendered docs — every field here is private, and
 // rustdoc does not show those.
+//
+// Maintainer notes (not rendered):
+// That, and not `Send`, is what stood
+// behind the withdrawn claim that a spawned pool task "does not compile
+// on this seam"; see the module doc. Naming the future means writing it
+// out, and writing it out means the sleep has to be a field, which is why
+// [`hclient_core::timer::Timer`] carries an associated `Sleep` type.
+//
+// # Why the state is behind a `Box`, and the sleep behind a second one
+//
+// `tokio::time::Sleep` is `!Unpin` (smol's is not, which is exactly why
+// one of the two runtimes must not be allowed to decide the shape), so
+// polling one held in a field needs a pin projection. This workspace
+// forbids `unsafe`, and `pin_project_lite` is how a projection is had
+// without any — `SeamTimer` in `http3/runtime.rs` is the same answer to
+// the same question, and this type used to be the exception.
+//
+// **It was two boxes and it is none.** `Pin<Box<R::Sleep>>` held the
+// sleep, and an outer `Box<ReaperState<..>>` made `Reaper` `Unpin` for
+// **every** `R` — the alternative then being `R: Unpin, R::Instant:
+// Unpin` on a public constructor, a promise a caller cannot read off
+// their own runtime's documentation. Neither is needed, because `Unpin`
+// was never the requirement: [`Spawn`](hclient_rt::Spawn) declares no
+// bounds at all and neither shipped runtime's impl adds one, so a
+// spawned future may be `!Unpin` — read, not assumed.
+//
+// So `Reaper` is `!Unpin` now, which is a change to a **public** type and
+// is the whole of what this costs. It is safe here and would not have
+// been one type over: the only thing anyone does with a `Reaper` is hand
+// it to `spawn`, which takes it by value, where `IdleTimeout` is a
+// **body** and `http_body_util::BodyExt::frame()` is `where Self: Unpin`
+// — measured, which is why that one keeps its box.
+//
+// The field holds a **concrete** type, so nothing is erased and the auto
+// traits still pass through — the property `h1.rs`'s module doc is about.
 /// The background task that closes idle connections when their deadline
 /// passes — [`crate::Native::with_reaper`], and nothing else, starts one.
 ///
@@ -780,39 +827,10 @@ pin_project_lite::pin_project! {
 /// [`hclient_rt::Spawn<F>`](hclient_rt::Spawn) is hyper's `Executor<Fut>`
 /// shape: the future is a type parameter **of the trait**, so a bound has
 /// to name it — and an `async` block has no name (`E0308: expected type
-/// parameter F, found async block`). That, and not `Send`, is what stood
-/// behind the withdrawn claim that a spawned pool task "does not compile
-/// on this seam"; see the module doc. Naming the future means writing it
-/// out, and writing it out means the sleep has to be a field, which is why
-/// [`hclient_core::timer::Timer`] carries an associated `Sleep` type.
+/// parameter F, found async block`).
 ///
-/// # Why the state is behind a `Box`, and the sleep behind a second one
-///
-/// `tokio::time::Sleep` is `!Unpin` (smol's is not, which is exactly why
-/// one of the two runtimes must not be allowed to decide the shape), so
-/// polling one held in a field needs a pin projection. This workspace
-/// forbids `unsafe`, and `pin_project_lite` is how a projection is had
-/// without any — `SeamTimer` in `http3/runtime.rs` is the same answer to
-/// the same question, and this type used to be the exception.
-///
-/// **It was two boxes and it is none.** `Pin<Box<R::Sleep>>` held the
-/// sleep, and an outer `Box<ReaperState<..>>` made `Reaper` `Unpin` for
-/// **every** `R` — the alternative then being `R: Unpin, R::Instant:
-/// Unpin` on a public constructor, a promise a caller cannot read off
-/// their own runtime's documentation. Neither is needed, because `Unpin`
-/// was never the requirement: [`Spawn`](hclient_rt::Spawn) declares no
-/// bounds at all and neither shipped runtime's impl adds one, so a
-/// spawned future may be `!Unpin` — read, not assumed.
-///
-/// So `Reaper` is `!Unpin` now, which is a change to a **public** type and
-/// is the whole of what this costs. It is safe here and would not have
-/// been one type over: the only thing anyone does with a `Reaper` is hand
-/// it to `spawn`, which takes it by value, where `IdleTimeout` is a
-/// **body** and `http_body_util::BodyExt::frame()` is `where Self: Unpin`
-/// — measured, which is why that one keeps its box.
-///
-/// The field holds a **concrete** type, so nothing is erased and the auto
-/// traits still pass through — the property `h1.rs`'s module doc is about.
+/// `Reaper` is `!Unpin`: the only thing anyone does with a `Reaper` is
+/// hand it to `spawn`, which takes it by value.
 ///
 /// # A reaper is at most as good as the executor under it
 ///

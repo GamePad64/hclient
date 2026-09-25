@@ -34,9 +34,15 @@
 //! propagates into child modules, and both children are foreign-function
 //! boundaries that need the `deny` a scoped `#[allow]` can override. What
 //! holds the rule here instead is CI's `no-unsafe-code` job, which
-//! path-scopes the amendment C8 marker to `raw.rs` and `parsed.rs` alone —
-//! so an `unsafe` block added HERE fails the build exactly as it would in
-//! any other crate.
+//! path-scopes the exemption to `raw.rs` and `parsed.rs` alone — so an
+//! `unsafe` block added HERE fails the build exactly as it would in any
+//! other crate.
+//
+// Maintainer notes (not rendered):
+//
+// path-scopes the amendment C8 marker to `raw.rs` and `parsed.rs` alone —
+// so an `unsafe` block added HERE fails the build exactly as it would in
+// any other crate.
 //!
 //! the excepted list: crate::Support::AnyExcept
 

@@ -11,12 +11,15 @@ use http_body::{Body, Frame};
 use crate::delegate::{Chunk, Shared};
 use crate::error::UrlSessionError;
 
+// Maintainer notes (not rendered):
+//
+// `Capabilities::cancel_on_drop` promises — see `Cancelling` in
+// `session.rs`, which is private.
 /// A streaming response body.
 ///
 /// It holds the task so that **dropping the body cancels the transfer**,
 /// which is `Transport::execute`'s own contract and what
-/// `Capabilities::cancel_on_drop` promises — see `Cancelling` in
-/// `session.rs`, which is private.
+/// `Capabilities::cancel_on_drop` promises.
 #[derive(Debug)]
 pub struct UrlSessionBody {
     shared: Arc<Shared>,

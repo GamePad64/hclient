@@ -1,76 +1,96 @@
 //! Every seam a caller hands to [`Client`](crate::Client) by value,
 //! erased so that none of them becomes a type parameter on it.
 //!
-//! Four today — the cookie jar's public suffix list and its store, the
-//! cache's store, and the HSTS policy set's — and **the sentence here
-//! used to name two**, which is the count-in-prose defect this workspace
-//! records against itself elsewhere: nothing forces a list in a doc
-//! comment to grow when the module does. The types below are the list
-//! that cannot go stale.
+//! The wrappers — [`BoxSuffixList`], [`BoxCacheStore`], [`BoxCookieStore`]
+//! and [`BoxHstsStore`] — are built by the [`ClientBuilder`](crate::ClientBuilder)
+//! setters from whatever list or store the caller's jar, cache or HSTS
+//! policy set was carrying. A caller never needs to name one to configure
+//! a client, only to name the type of what the client hands back, such as
+//! `CookieJar<BoxSuffixList, BoxCookieStore>`.
 //!
-//! # Why erased at all, when the seams are already generic
-//!
-//! `crate::cookie::CookieJar<P, S>`, `crate::cache::HttpCache<S>` and
-//! `crate::hsts::Hsts<S>` are generic, and until this module existed
-//! `hclient` accepted only their defaulted forms — so a caller who wanted
-//! a disk-backed cache, a store shared between processes, or a jar over
-//! `NoList` could reach it in the module and not through the facade. The
-//! seam existed a layer down and was unreachable a layer up.
-//!
-//! # Why not a type parameter on `Client`
-//!
-//! Two reasons, and the second is the one that decides it.
-//!
-//! `cached.rs` had already written down the first: a recording body holds
-//! a handle to the cache, so `S` on the cache is `S` on the public
-//! [`ClientBody`](crate::body::ClientBody) alias — **the arity of a public type
-//! alias would change with a feature nobody in the graph asked for**, and
-//! Cargo unifies features, so no crate could rely on either arity.
-//!
-//! The second is that a defaulted parameter needs a default *type*, and
-//! `hclient-cookie` and `hclient-cache` are **optional dependencies**.
-//! A `Client<.., P = crate::cookie::BuiltinList, S = ..>` would name two
-//! types that do not exist in a build without those features, so the
-//! declaration would have to be forked four ways. Erasure has no such
-//! problem: the field is inside the same `#[cfg]` as the feature, and there
-//! is no parameter to default when it is off.
-//!
-//! **The same argument has since been applied to the transport and the
-//! clock**, which is why this module's reasoning outlived the shape it was
-//! written about: `Client` was forked once more, for `DefaultTransport`,
-//! and that fork is gone with the parameters. See
-//! `hclient_core::erased`.
-//!
-//! # What it costs, said plainly
-//!
-//! `Send` bounds on the opt-in setters and nowhere else — spec amendment
-//! C12. That is `Native::multiplexed()`'s shape exactly: no signature
-//! anyone else meets acquires a bound, and a caller who hands in a
-//! `!Send` list or store gets `E0277` on the line where they asked.
-//!
-//! The bounds are not new in substance. `Inner`'s own doc has said since
-//! the jar landed that a `Client` is meant to cross a `tokio::spawn`, and
-//! `BuiltinList` and both `MemoryStore`s are `Send` — so what this states
-//! is the property the concrete types already had. Erasing without it
-//! would make every `Client` in a build with the feature compiled in
-//! `!Send`, configured jar or not, which is the feature-unification
-//! hazard the paragraph above is about.
-//!
-//! **[`BoxSuffixList`] asks for `Sync` as well now, and a lock is what used to
-//! supply it.** The jar sat in a `Mutex` in `Inner`, and `Mutex<T>` is
-//! `Sync` whenever `T` is `Send` — so the list's `Sync` was being
-//! manufactured by a lock rather than held by the list. Taking the lock
-//! away when the jar took a store (`cookie::CookieStore`) took that with
-//! it, and the bound moved to where the property actually has to hold. A
-//! list that is genuinely `!Sync` was never usable from two threads; what
-//! changed is that it now says so at the setter instead of working until
-//! someone shared the client.
-//!
-//! Both wrappers implement the seam they erase, so a `CookieJar<BoxSuffixList>`
+//! Each wrapper implements the seam it erases, so a `CookieJar<BoxSuffixList>`
 //! and an `HttpCache<BoxCacheStore>` are ordinary jars and caches with their
-//! whole API — which is what lets `ClientBuilder::cookie_jar`(`crate::Client::`
-//! cookies) and `Client::cache` keep handing back
-//! a guard onto the real thing rather than onto a narrowed trait object.
+//! whole API.
+//!
+//! # What it costs
+//!
+//! The setters that take a list or a store require it to be `Send` — and a
+//! suffix list `Sync` as well — because a `Client` is meant to cross a
+//! `tokio::spawn`. A caller who hands in a `!Send` list or store gets
+//! `E0277` on the line where they asked; no other signature acquires a
+//! bound. Each store operation through a wrapper costs one boxed future.
+// Maintainer notes (not rendered):
+//
+// Four today — the cookie jar's public suffix list and its store, the
+// cache's store, and the HSTS policy set's — and **the sentence here
+// used to name two**, which is the count-in-prose defect this workspace
+// records against itself elsewhere: nothing forces a list in a doc
+// comment to grow when the module does. The types below are the list
+// that cannot go stale.
+//
+// # Why erased at all, when the seams are already generic
+//
+// `crate::cookie::CookieJar<P, S>`, `crate::cache::HttpCache<S>` and
+// `crate::hsts::Hsts<S>` are generic, and until this module existed
+// `hclient` accepted only their defaulted forms — so a caller who wanted
+// a disk-backed cache, a store shared between processes, or a jar over
+// `NoList` could reach it in the module and not through the facade. The
+// seam existed a layer down and was unreachable a layer up.
+//
+// # Why not a type parameter on `Client`
+//
+// Two reasons, and the second is the one that decides it.
+//
+// `cached.rs` had already written down the first: a recording body holds
+// a handle to the cache, so `S` on the cache is `S` on the public
+// [`ClientBody`](crate::body::ClientBody) alias — **the arity of a public type
+// alias would change with a feature nobody in the graph asked for**, and
+// Cargo unifies features, so no crate could rely on either arity.
+//
+// The second is that a defaulted parameter needs a default *type*, and
+// `hclient-cookie` and `hclient-cache` are **optional dependencies**.
+// A `Client<.., P = crate::cookie::BuiltinList, S = ..>` would name two
+// types that do not exist in a build without those features, so the
+// declaration would have to be forked four ways. Erasure has no such
+// problem: the field is inside the same `#[cfg]` as the feature, and there
+// is no parameter to default when it is off.
+//
+// **The same argument has since been applied to the transport and the
+// clock**, which is why this module's reasoning outlived the shape it was
+// written about: `Client` was forked once more, for `DefaultTransport`,
+// and that fork is gone with the parameters. See
+// `hclient_core::erased`.
+//
+// # What it costs, said plainly
+//
+// `Send` bounds on the opt-in setters and nowhere else — spec amendment
+// C12. That is `Native::multiplexed()`'s shape exactly: no signature
+// anyone else meets acquires a bound, and a caller who hands in a
+// `!Send` list or store gets `E0277` on the line where they asked.
+//
+// The bounds are not new in substance. `Inner`'s own doc has said since
+// the jar landed that a `Client` is meant to cross a `tokio::spawn`, and
+// `BuiltinList` and both `MemoryStore`s are `Send` — so what this states
+// is the property the concrete types already had. Erasing without it
+// would make every `Client` in a build with the feature compiled in
+// `!Send`, configured jar or not, which is the feature-unification
+// hazard the paragraph above is about.
+//
+// **[`BoxSuffixList`] asks for `Sync` as well now, and a lock is what used to
+// supply it.** The jar sat in a `Mutex` in `Inner`, and `Mutex<T>` is
+// `Sync` whenever `T` is `Send` — so the list's `Sync` was being
+// manufactured by a lock rather than held by the list. Taking the lock
+// away when the jar took a store (`cookie::CookieStore`) took that with
+// it, and the bound moved to where the property actually has to hold. A
+// list that is genuinely `!Sync` was never usable from two threads; what
+// changed is that it now says so at the setter instead of working until
+// someone shared the client.
+//
+// Both wrappers implement the seam they erase, so a `CookieJar<BoxSuffixList>`
+// and an `HttpCache<BoxCacheStore>` are ordinary jars and caches with their
+// whole API — which is what lets `ClientBuilder::cookie_jar`(`crate::Client::`
+// cookies) and `Client::cache` keep handing back
+// a guard onto the real thing rather than onto a narrowed trait object.
 
 #[cfg(any(feature = "cookies", feature = "cache", feature = "hsts"))]
 use std::fmt::Debug;
@@ -98,9 +118,12 @@ impl BoxSuffixList {
     }
 }
 
-/// Hand-written because a trait object has no `Debug`, and the alternative
-/// — a `Debug` supertrait on `PublicSuffixList` — would charge every
-/// implementor of a sans-io seam for this crate's `#[derive(Debug)]`.
+// Maintainer notes (not rendered):
+//
+// Hand-written because a trait object has no `Debug`, and the alternative
+// — a `Debug` supertrait on `PublicSuffixList` — would charge every
+// implementor of a sans-io seam for this crate's `#[derive(Debug)]`.
+/// Prints the wrapper only: the erased list is not required to be `Debug`.
 #[cfg(feature = "cookies")]
 impl Debug for BoxSuffixList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -223,11 +246,16 @@ impl BoxCacheStore {
 }
 
 #[cfg(feature = "cache")]
-/// **The count is gone from the `Debug`, and that is the seam's doing.**
-/// `len` is a future now, and a `Debug` cannot await one — a store on
-/// disk or in Redis would have to be asked over the network to print
-/// itself. Printing a number a remote store might not agree with is worse
-/// than printing none.
+// Maintainer notes (not rendered):
+//
+// **The count is gone from the `Debug`, and that is the seam's doing.**
+// `len` is a future now, and a `Debug` cannot await one — a store on
+// disk or in Redis would have to be asked over the network to print
+// itself. Printing a number a remote store might not agree with is worse
+// than printing none.
+/// Prints no entry count: `len` is a future, and a `Debug` cannot await
+/// one — a store on disk or in Redis would have to be asked over the
+/// network to print itself.
 impl Debug for BoxCacheStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoxCacheStore").finish_non_exhaustive()
@@ -372,9 +400,13 @@ impl BoxCookieStore {
 }
 
 #[cfg(feature = "cookies")]
-/// **The count is gone from the `Debug`, and it is the seam's doing** —
-/// `BoxCacheStore`'s sentence verbatim, for the same reason: `len` is a future
-/// now, and a `Debug` cannot await one.
+// Maintainer notes (not rendered):
+//
+// **The count is gone from the `Debug`, and it is the seam's doing** —
+// `BoxCacheStore`'s sentence verbatim, for the same reason: `len` is a future
+// now, and a `Debug` cannot await one.
+/// Prints no entry count: `len` is a future, and a `Debug` cannot await
+/// one.
 impl Debug for BoxCookieStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoxCookieStore").finish_non_exhaustive()

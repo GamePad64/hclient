@@ -174,17 +174,23 @@ pub struct Record {
 }
 
 impl Record {
+    // Maintainer notes (not rendered):
+    //
+    // **A `#[non_exhaustive]` struct cannot be built with a literal from
+    // outside the crate that defines it**, so without this the type is a
+    // wall to exactly the code that needs it most: this workspace has
+    // already been caught once by a response type with no public
+    // constructor, where a consumer wrote around the gap before finding
+    // the test double that answered it. The constructor costs a line and
+    // keeps the attribute's benefit, which is that a field added later is
+    // not a compile error at every *reader*.
     /// One record, for a caller building an answer rather than receiving
     /// one — a test, or a double standing in for a resolver.
     ///
-    /// **A `#[non_exhaustive]` struct cannot be built with a literal from
-    /// outside the crate that defines it**, so without this the type is a
-    /// wall to exactly the code that needs it most: this workspace has
-    /// already been caught once by a response type with no public
-    /// constructor, where a consumer wrote around the gap before finding
-    /// the test double that answered it. The constructor costs a line and
-    /// keeps the attribute's benefit, which is that a field added later is
-    /// not a compile error at every *reader*.
+    /// A `#[non_exhaustive]` struct cannot be built with a literal from
+    /// outside the crate that defines it, so without this constructor the
+    /// type would be a wall to exactly the code that needs it most — a
+    /// test, or a double standing in for a resolver.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -206,6 +212,20 @@ impl Record {
 /// `IN`, RFC 1035 §3.2.4 — the only class this crate asks for.
 pub const CLASS_IN: u16 = 1;
 
+// Maintainer notes (not rendered):
+//
+// The enum this replaced had to grow a variant the day musl's ceiling was
+// measured. This cannot: a platform with a stranger answer is a different
+// pair of values rather than a different type.
+//
+// **The fields are crate-private and [`allows`](Support::allows) is the
+// whole of the public surface**, which is what makes that safe to say — a
+// caller asks whether a type is answerable and cannot come to depend on
+// how the answer is stored. What the enum had and this does not is
+// exhaustiveness: a new variant used to be a compile error at every
+// reader, which is how `UpTo` was caught. What replaces it is that there
+// is now exactly one reader path, so there is nothing to be exhaustive
+// about.
 /// What this build can be asked for.
 ///
 /// **A range with holes punched in it, rather than an enum of cases**, and
@@ -213,20 +233,12 @@ pub const CLASS_IN: u16 = 1;
 /// preference. The four answers are three shapes of one thing: *every
 /// type* is the full range with nothing excepted; *every type up to 255*
 /// is a shorter range; *every type but these sixteen* is the full range
-/// with a list; *nothing at all* is an empty range.
-///
-/// The enum this replaced had to grow a variant the day musl's ceiling was
-/// measured. This cannot: a platform with a stranger answer is a different
-/// pair of values rather than a different type.
+/// with a list; *nothing at all* is an empty range. A platform with a
+/// stranger answer here is simply a different pair of values.
 ///
 /// **The fields are crate-private and [`allows`](Support::allows) is the
-/// whole of the public surface**, which is what makes that safe to say — a
-/// caller asks whether a type is answerable and cannot come to depend on
-/// how the answer is stored. What the enum had and this does not is
-/// exhaustiveness: a new variant used to be a compile error at every
-/// reader, which is how `UpTo` was caught. What replaces it is that there
-/// is now exactly one reader path, so there is nothing to be exhaustive
-/// about.
+/// whole of the public surface**: a caller asks whether a type is
+/// answerable and cannot come to depend on how the answer is stored.
 ///
 /// `Clone` and not `Copy`, because [`RangeInclusive`] is not `Copy` — it
 /// is also an iterator.

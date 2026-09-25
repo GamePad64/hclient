@@ -12,11 +12,18 @@
 //!
 //! **Why this file is not `#![forbid(unsafe_code)]`.** `forbid` propagates
 //! into child modules, and the children are this workspace's
-//! foreign-function boundaries (spec amendment C8). The crate's `deny`
-//! stands instead. Nothing in this file is unsafe and nothing may become
-//! so: CI's `no-unsafe-code` job path-scopes the C8 marker to the backend
-//! modules alone, so an `unsafe` block added HERE fails the build exactly
-//! as it would in any other crate.
+//! foreign-function boundaries. The crate's `deny` stands instead.
+//! Nothing in this file is unsafe and nothing may become so: CI's
+//! `no-unsafe-code` job path-scopes the exemption to the backend modules
+//! alone, so an `unsafe` block added HERE fails the build exactly as it
+//! would in any other crate.
+//
+// Maintainer notes (not rendered):
+//
+// foreign-function boundaries (spec amendment C8). The crate's `deny`
+// stands instead. Nothing in this file is unsafe and nothing may become
+// so: CI's `no-unsafe-code` job path-scopes the C8 marker to the backend
+// modules alone.
 
 use crate::error::Error;
 

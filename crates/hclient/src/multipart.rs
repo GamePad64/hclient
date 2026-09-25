@@ -38,10 +38,7 @@
 //!
 //! # The boundary
 //!
-//! [`Boundary::random`] draws **128 bits** from the operating system
-//! through `getrandom`, which is already in this crate's graph for the
-//! retry loop's jitter (`src/entropy.rs`) — no dependency is added by
-//! this module, and none is needed by it.
+//! [`Boundary::random`] draws **128 bits** from the operating system.
 //!
 //! RFC 2046 §5.1 (cited by RFC 7578 §4.1) requires that the delimiter not
 //! appear inside any encapsulated part, and this module **does not check
@@ -59,14 +56,10 @@
 //! remark — it is why [`Boundary::random`] is called once per
 //! [`crate::RequestBuilder::multipart`] rather than once per `Client`.
 //!
-//! **An entropy failure is an error and never a fixed fallback**, which
-//! is the opposite resolution from `entropy.rs`'s `jitter()`, where a
-//! failed draw becomes `0.0`. The two are not inconsistent:
-//! jitter's degenerate value is *un-jittered backoff*, slower and safe,
-//! where a fixed boundary is the single value most likely to appear in
+//! **An entropy failure is an error and never a fixed fallback**: a fixed
+//! boundary is the single value most likely to appear in
 //! someone's content — every copy of this library would emit it, so it is
-//! the one string an attacker could plant. A degraded value is only
-//! acceptable when the degradation has a direction.
+//! the one string an attacker could plant.
 //!
 //! # Header encoding inside a part
 //!
@@ -101,6 +94,22 @@
 //! [`RetryKind`]: hclient_core::body::RetryKind
 //! [`RetryKind::ViaFactory`]: hclient_core::body::RetryKind::ViaFactory
 //! [`RetryKind::Impossible`]: hclient_core::body::RetryKind::Impossible
+
+// Maintainer notes (not rendered):
+//
+// [`Boundary::random`] draws **128 bits** from the operating system
+// through `getrandom`, which is already in this crate's graph for the
+// retry loop's jitter (`src/entropy.rs`) — no dependency is added by
+// this module, and none is needed by it.
+//
+// **An entropy failure is an error and never a fixed fallback**, which
+// is the opposite resolution from `entropy.rs`'s `jitter()`, where a
+// failed draw becomes `0.0`. The two are not inconsistent:
+// jitter's degenerate value is *un-jittered backoff*, slower and safe,
+// where a fixed boundary is the single value most likely to appear in
+// someone's content — every copy of this library would emit it, so it is
+// the one string an attacker could plant. A degraded value is only
+// acceptable when the degradation has a direction.
 
 pub use crate::error::MultipartError;
 use crate::error::TrailersInAPart;
@@ -425,13 +434,14 @@ enum Resolved {
     Stream(StreamingPart),
 }
 
+// Maintainer notes (not rendered):
+//
+// The `Send` is not this module's choice: it is the bound
+// `RequestBody::Streaming` already carries (spec amendment-C2, and the
+// reasoning is on `RewindFactory` in `hclient-core`), and a part body has
+// to be storable back into that variant.
 /// The body inside a [`RequestBody::Streaming`], named so that a part can
 /// hold one.
-///
-/// The `Send` is not this module's choice: it is the bound
-/// `RequestBody::Streaming` already carries (spec amendment-C2, and the
-/// reasoning is on `RewindFactory` in `hclient-core`), and a part body has
-/// to be storable back into that variant.
 type StreamingPart = Box<dyn Body<Data = Bytes, Error = Error> + Unpin + Send>; // send-bound-exception: amendment-C2
 
 /// Unwraps a part's body to either bytes or a stream, through the same

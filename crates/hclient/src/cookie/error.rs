@@ -14,18 +14,22 @@
 //! alternative to a name for it is *the cookie silently did not arrive*,
 //! which is among the harder things to debug in an HTTP client.
 //!
-//! **Why these are here and not in `hclient`'s own `error.rs`.** This
-//! module was the `hclient-cookie` crate until this year, so by the
-//! convention that puts a crate's errors in an `error.rs` it already had
-//! one; the fold that made it a module was argued as costing exactly one
-//! sentence in `docs/competitive-gaps.md` and nothing else. This module's
-//! own doc still says it is sans-io, clockless, and reaches for neither
-//! `Client` nor `hclient-core` — and an error type shared with the
-//! client's would end the last of those, which is the merge finally
-//! costing something it said it did not.
-//!
-//! Both are re-exported from [`crate::cookie`], where they have always
-//! been, so no consumer's `use` line moves.
+//! Both are re-exported from [`crate::cookie`].
+
+// Maintainer notes (not rendered):
+//
+// **Why these are here and not in `hclient`'s own `error.rs`.** This
+// module was the `hclient-cookie` crate until this year, so by the
+// convention that puts a crate's errors in an `error.rs` it already had
+// one; the fold that made it a module was argued as costing exactly one
+// sentence in `docs/competitive-gaps.md` and nothing else. This module's
+// own doc still says it is sans-io, clockless, and reaches for neither
+// `Client` nor `hclient-core` — and an error type shared with the
+// client's would end the last of those, which is the merge finally
+// costing something it said it did not.
+//
+// Both are re-exported from [`crate::cookie`], where they have always
+// been, so no consumer's `use` line moves.
 
 /// Why a `Set-Cookie` header is not a cookie at all.
 ///
@@ -144,16 +148,22 @@ pub enum Rejected {
         /// The record's `path`.
         path: String,
     },
+    // Maintainer notes (not rendered):
+    // §5.7 makes an IP-literal host host-only unconditionally, so
+    // [`store`](super::CookieJar::store) cannot produce this pair — and
+    // §5.1.3's domain-match is not written to survive it. Measured:
+    // `domain_matches("evil.1.2.3.4", "1.2.3.4")` is **true**, because
+    // the IP test in that rule asks whether the *request host* is a
+    // literal, and `evil.1.2.3.4` is an ordinary name. So the pair is a
+    // cookie for every name ending in `.1.2.3.4`.
     /// [`restore`](super::CookieJar::restore) only: a record scoped to an
     /// IP literal that is **not** host-only.
     ///
     /// §5.7 makes an IP-literal host host-only unconditionally, so
-    /// [`store`](super::CookieJar::store) cannot produce this pair — and
-    /// §5.1.3's domain-match is not written to survive it. Measured:
-    /// `domain_matches("evil.1.2.3.4", "1.2.3.4")` is **true**, because
-    /// the IP test in that rule asks whether the *request host* is a
-    /// literal, and `evil.1.2.3.4` is an ordinary name. So the pair is a
-    /// cookie for every name ending in `.1.2.3.4`.
+    /// [`store`](super::CookieJar::store) cannot produce this pair; a
+    /// domain-match that did not treat an IP-literal host as host-only
+    /// would let one cookie be sent for every name ending in the same
+    /// literal.
     #[error("Domain={domain} is an IP literal, so the cookie must be host-only")]
     IpDomainNotHostOnly {
         /// The record's `domain`, an IP literal.

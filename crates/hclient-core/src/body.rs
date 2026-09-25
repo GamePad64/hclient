@@ -9,24 +9,32 @@
 //! **Two views, and they are not interchangeable.** [`Reduced`] is what a
 //! transport needs and takes the body by value, running a factory to get
 //! it; [`BodyView`] is what a *looker* gets — an auth scheme signing a
-//! payload, a log line — and borrows without ever calling one, because
-//! *one snapshot per hop* is a rule this workspace's tests pin by counting
-//! those calls.
+//! payload, a log line — and borrows without ever calling one.
 //!
 //! Both are exhaustive on purpose where [`RequestBody`] is not: a body
 //! shape added later is either visible bytes or it is not, and the crate
 //! that adds it owns those two matches. A `_` arm in a consumer is where a
 //! new shape would go to be silently mis-sent or mis-signed.
+
+// Maintainer notes (not rendered):
+//
+// **Two views, and they are not interchangeable.** [`Reduced`] is what a
+// transport needs and takes the body by value, running a factory to get
+// it; [`BodyView`] is what a *looker* gets — an auth scheme signing a
+// payload, a log line — and borrows without ever calling one, because
+// *one snapshot per hop* is a rule this workspace's tests pin by counting
+// those calls.
 use crate::error::RewindTooDeep;
 use bytes::Bytes;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+// Maintainer notes (not rendered):
+//
+// `reqwest::Request::try_clone() -> Option<Request>` answers the same
+// question after the retry layer has already decided to retry, and so
+// silently disables retries on streaming bodies.
 /// Whether this body can be replayed — known **before** sending.
-///
-/// `reqwest::Request::try_clone() -> Option<Request>` answers the same
-/// question after the retry layer has already decided to retry, and so
-/// silently disables retries on streaming bodies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RetryKind {
@@ -38,6 +46,8 @@ pub enum RetryKind {
     Impossible,
 }
 
+/// The factory behind [`RequestBody::Rewindable`].
+///
 /// `Send + Sync` bounds — one of the few places this crate declares an
 /// auto trait at all, and it is declared here rather than on a seam for a
 /// reason a caller can check. Without them `RequestBody` would be `!Send`, so
@@ -76,10 +86,16 @@ pub enum RequestBody {
     /// `retry_kind()` of the body you're currently holding, and never cache
     /// it across a `rewind()`.**
     Rewindable(RewindFactory),
-    /// A single-pass body. The concrete stream is set by the transport; in
-    /// v0.1 the core only needs to know it can't be replayed.
+    // Maintainer notes (not rendered):
+    //
+    // A single-pass body. The concrete stream is set by the transport; in
+    // v0.1 the core only needs to know it can't be replayed.
+    //
+    // `+ Send` — the same C2 exception as [`RewindFactory`]: `Box<T>: Send`
+    // requires only `T: Send`, `Sync` isn't needed here.
+    /// A single-pass body; it cannot be replayed.
     ///
-    /// `+ Send` — the same C2 exception as [`RewindFactory`]: `Box<T>: Send`
+    /// `+ Send` for the reason [`RewindFactory`] gives: `Box<T>: Send`
     /// requires only `T: Send`, `Sync` isn't needed here.
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::error::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
@@ -134,19 +150,22 @@ impl RequestBody {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The match is here rather than in a consumer because `RequestBody`
+    // is `#[non_exhaustive]`, so an exhaustive one is legal only inside
+    // this crate. A variant added later is a compile error on this line,
+    // which is the point.
+    //
+    // **That it cannot run a factory is enforced by the signature rather
+    // than by care.** Borrowing `self` means the answer borrows from
+    // `self`, so the tempting `Rewindable(f) => f().view()` is `E0515`,
+    // *cannot return value referencing temporary value* — checked by
+    // writing it. A looker therefore cannot be the reason a
+    // `Rewindable`'s factory is called, whoever writes the consumer.
     /// What is visible without consuming this body — see [`BodyView`].
     ///
-    /// The match is here rather than in a consumer because `RequestBody`
-    /// is `#[non_exhaustive]`, so an exhaustive one is legal only inside
-    /// this crate. A variant added later is a compile error on this line,
-    /// which is the point.
-    ///
-    /// **That it cannot run a factory is enforced by the signature rather
-    /// than by care.** Borrowing `self` means the answer borrows from
-    /// `self`, so the tempting `Rewindable(f) => f().view()` is `E0515`,
-    /// *cannot return value referencing temporary value* — checked by
-    /// writing it. A looker therefore cannot be the reason a
-    /// `Rewindable`'s factory is called, whoever writes the consumer.
+    /// It never calls a `Rewindable`'s factory.
     #[must_use]
     pub fn view(&self) -> BodyView<'_> {
         match self {
@@ -175,30 +194,39 @@ impl RequestBody {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// **This number was already picked twice, in two crates, and disagreed
+// with twice more.** `hclient-wasi` and `hclient-winhttp` each bounded
+// the chain at 16 and refused past it; `hclient-native`'s body and its
+// HTTP/3 pump each recursed without a bound, the second with a written
+// argument that *"defending against it here would mean picking a depth
+// limit nobody can justify"*. Four backends, one question, three
+// answers — and the two outcomes are not equivalent: unbounded recursion
+// is a stack overflow, which nothing can catch, where a bound is a
+// refusal a caller can read.
 /// Upper bound on the nesting of [`RequestBody::Rewindable`], whose
 /// factory may legally return another `Rewindable`.
 ///
-/// **This number was already picked twice, in two crates, and disagreed
-/// with twice more.** `hclient-wasi` and `hclient-winhttp` each bounded
-/// the chain at 16 and refused past it; `hclient-native`'s body and its
-/// HTTP/3 pump each recursed without a bound, the second with a written
-/// argument that *"defending against it here would mean picking a depth
-/// limit nobody can justify"*. Four backends, one question, three
-/// answers — and the two outcomes are not equivalent: unbounded recursion
-/// is a stack overflow, which nothing can catch, where a bound is a
-/// refusal a caller can read.
+/// Past it, [`RequestBody::reduce`] refuses rather than recursing: a
+/// bound is a refusal a caller can read, where unbounded recursion is a
+/// stack overflow.
 ///
 /// There is no legitimate scenario for the nesting either: a factory
 /// calling a factory referring to a third buys the caller nothing.
 pub const MAX_REWIND_DEPTH: u8 = 16;
 
+// Maintainer notes (not rendered):
+//
+// [`RequestBody`] has four variants and a transport has two cases, and
+// every backend in this workspace wrote the same reduction between them —
+// four copies of one `match`, which had already diverged on the question
+// [`MAX_REWIND_DEPTH`] answers. [`RequestBody::reduce`] is that match,
+// written once.
 /// What a transport actually has to send: bytes, or a stream.
 ///
-/// [`RequestBody`] has four variants and a transport has two cases, and
-/// every backend in this workspace wrote the same reduction between them —
-/// four copies of one `match`, which had already diverged on the question
-/// [`MAX_REWIND_DEPTH`] answers. [`RequestBody::reduce`] is that match,
-/// written once.
+/// [`RequestBody`] has four variants and a transport has two cases;
+/// [`RequestBody::reduce`] is the reduction between them.
 ///
 /// **This enum is exhaustive on purpose, where `RequestBody` is not.** A
 /// transport must handle every case here, and there is no third: a body
@@ -206,9 +234,13 @@ pub const MAX_REWIND_DEPTH: u8 = 16;
 /// stream like any other. That is what makes marking `RequestBody`
 /// additive rather than a `_` arm nobody can write correctly.
 pub enum Reduced {
+    // Maintainer notes (not rendered):
+    //
+    // No body at all. Distinct from `Bytes` of length zero, which a
+    // transport may still have to frame — every backend here treats an
+    // empty `Full` as this, which is why the reduction does it for them.
     /// No body at all. Distinct from `Bytes` of length zero, which a
-    /// transport may still have to frame — every backend here treats an
-    /// empty `Full` as this, which is why the reduction does it for them.
+    /// transport may still have to frame; an empty `Full` reduces to this.
     Empty,
     /// A body already in memory.
     Bytes(Bytes),
@@ -216,6 +248,15 @@ pub enum Reduced {
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::error::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 
+// Maintainer notes (not rendered):
+//
+// [`Reduced`] is the other half of the same idea and they are not
+// interchangeable: `reduce` takes the body by value and runs a
+// `Rewindable`'s factory to get an answer, where this borrows and never
+// does. A caller that only wants to *look* — to sign the payload, to log
+// its size — must not be the reason a factory is called a second time,
+// because "one snapshot per hop" is a rule this workspace's own tests
+// pin by counting those calls.
 /// What can be seen of a [`RequestBody`] **without consuming it and
 /// without calling a factory**.
 ///
@@ -223,9 +264,7 @@ pub enum Reduced {
 /// interchangeable: `reduce` takes the body by value and runs a
 /// `Rewindable`'s factory to get an answer, where this borrows and never
 /// does. A caller that only wants to *look* — to sign the payload, to log
-/// its size — must not be the reason a factory is called a second time,
-/// because "one snapshot per hop" is a rule this workspace's own tests
-/// pin by counting those calls.
+/// its size — must not be the reason a factory is called a second time.
 ///
 /// **Exhaustive on purpose, where `RequestBody` is not**, and for
 /// `Reduced`'s reason word for word: a variant added later is either
@@ -264,21 +303,29 @@ impl std::fmt::Debug for Reduced {
 }
 
 impl RetryKind {
+    // Maintainer notes (not rendered):
+    //
+    // **Ask this rather than matching**, and then a variant added later
+    // answers for itself. `RetryKind` is `#[non_exhaustive]`, so a
+    // `match` outside this crate needs a `_` arm — and the only safe
+    // content for one is *do not replay*, which is what this returns for
+    // anything it does not know. That is the understating direction this
+    // workspace applies to every capability constant: a retry withheld
+    // costs a request, a retry taken wrongly sends a body twice.
+    //
+    // The match below has no `_` arm and needs none: `#[non_exhaustive]`
+    // is inert inside the defining crate, so a variant added here is a
+    // compile error **here** — which is the same shape `Event` and
+    // `Capabilities` use, one exhaustive match in the crate that owns the
+    // type and no break for anybody outside.
     /// May a request carrying this body be sent again?
     ///
     /// **Ask this rather than matching**, and then a variant added later
     /// answers for itself. `RetryKind` is `#[non_exhaustive]`, so a
     /// `match` outside this crate needs a `_` arm — and the only safe
     /// content for one is *do not replay*, which is what this returns for
-    /// anything it does not know. That is the understating direction this
-    /// workspace applies to every capability constant: a retry withheld
-    /// costs a request, a retry taken wrongly sends a body twice.
-    ///
-    /// The match below has no `_` arm and needs none: `#[non_exhaustive]`
-    /// is inert inside the defining crate, so a variant added here is a
-    /// compile error **here** — which is the same shape `Event` and
-    /// `Capabilities` use, one exhaustive match in the crate that owns the
-    /// type and no break for anybody outside.
+    /// anything it does not know: a retry withheld costs a request, a
+    /// retry taken wrongly sends a body twice.
     ///
     /// **It does not answer "may an attacker send this again"**, which is
     /// method safety and a notion this codebase deliberately does not
@@ -295,12 +342,17 @@ impl RetryKind {
 }
 
 impl RequestBody {
+    // Maintainer notes (not rendered):
+    //
+    // Follows a [`RequestBody::Rewindable`] chain to its terminal body,
+    // up to [`MAX_REWIND_DEPTH`], and refuses past it rather than
+    // recursing for ever. See [`Reduced`] for why this lives here instead
+    // of once per backend.
     /// Reduce to what a transport can act on.
     ///
     /// Follows a [`RequestBody::Rewindable`] chain to its terminal body,
     /// up to [`MAX_REWIND_DEPTH`], and refuses past it rather than
-    /// recursing for ever. See [`Reduced`] for why this lives here instead
-    /// of once per backend.
+    /// recursing for ever.
     ///
     /// # Errors
     ///

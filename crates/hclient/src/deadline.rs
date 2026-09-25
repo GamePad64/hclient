@@ -20,14 +20,24 @@ use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+// Maintainer notes (not rendered):
+//
+// # Why this implements `Timer` at all
+//
+// [`crate::Client`] is generic over its clock, and `execute` needs *some*
+// clock type whether or not a bound was ever asked for. A client built
+// without the `default-transport` feature has no clock to name, and this
+// type fills the slot.
+//
+// A no-argument setter written over `Tm: Timer` instead would exist on a
+// clockless client too and do nothing there, which is the silent no-op
+// this crate refuses; Rust has no way to write "any timer except this
+// one", so the restriction is expressed by which impl block the setter
+// lives in.
 /// The clock slot of a client that was never given a clock.
 ///
-/// # Why this implements `Timer` at all
-///
-/// [`crate::Client`] is generic over its clock, and `execute` needs *some*
-/// clock type whether or not a bound was ever asked for. A client built
-/// without the `default-transport` feature has no clock to name, and this
-/// type fills the slot.
+/// A client built without the `default-transport` feature has no clock to
+/// name, and this type fills the slot.
 ///
 /// Its `sleep` never resolves and its clock never advances. That would be
 /// a silent no-op if a total timeout could ever be set on such a client —
@@ -45,12 +55,6 @@ use std::task::{Context, Poll};
 ///   `setTimeout` clock in the browser). Without the feature
 ///   `DefaultClock` *is* `NoClock`, and the method is `#[cfg]`-ed away
 ///   together with the feature that gives it something to measure with.
-///
-/// A no-argument setter written over `Tm: Timer` instead would exist on a
-/// clockless client too and do nothing there, which is the silent no-op
-/// this crate refuses; Rust has no way to write "any timer except this
-/// one", so the restriction is expressed by which impl block the setter
-/// lives in.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NoClock;
 
@@ -59,10 +63,13 @@ impl Timer for NoClock {
     /// instant, and it cannot be mistaken for a real one.
     type Instant = ();
 
-    /// `Pending<()>`: the name of "never resolves", which is what this
-    /// clock's sleep always was. Naming it changed nothing here but the
-    /// signature — and it is worth noticing that the type now says out
-    /// loud what the prose below explains.
+    // Maintainer notes (not rendered):
+    //
+    // `Pending<()>`: the name of "never resolves", which is what this
+    // clock's sleep always was. Naming it changed nothing here but the
+    // signature — and it is worth noticing that the type now says out
+    // loud what the prose below explains.
+    /// `Pending<()>`: the name of "never resolves".
     type Sleep = std::future::Pending<()>;
 
     fn sleep(&self, _: Duration) -> Self::Sleep {

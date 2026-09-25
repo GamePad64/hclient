@@ -2,31 +2,33 @@
 //!
 //! Both are **encode only**: nothing in this workspace decodes either, and
 //! a decoder is where the sharp edges live.
-//!
-//! # `form_urlencoded` does not bring `url` back, and this file said it did
-//!
-//! For two verticals this module carried twenty lines of WHATWG serialiser
-//! under the claim that the crate *"would bring `url` straight back"* —
-//! the crate `uri.rs` was rewritten to remove, at the cost of a 96-pair
-//! differential corpus, because it reached `idna` and the ICU tables.
-//!
-//! **Measured, and false.** `form_urlencoded` is its own crate and depends
-//! on `percent-encoding` alone: two crates, no `url`, no `idna`, no ICU,
-//! no build script, and both wasm targets build. Its output matches the
-//! lines it replaces on every probed input — the space that becomes `+`,
-//! the `*` that survives, the `~` that does not, and the empty string.
-//!
-//! The claim was never checked, and it was restated once after `base64`
-//! landed here. That is this workspace's own rule about a claim being as
-//! perishable as the thing it describes, met from the direction where
-//! nothing ever forced a re-measurement.
-//!
-//! What the measurement *does* rule out is the near neighbour:
-//! `urlencoding::encode` is a different function, disagreeing on 3 of 11
-//! probed inputs including the space (`a b` becomes `a%20b`), and one
-//! module over it escapes `/`, `?`, `&` and `#`, turning `/a/b?x=1&y=2`
-//! into `%2Fa%2Fb%3Fx%3D1%26y%3D2`. The right crate was available all
-//! along; the wrong one is one letter of a name away.
+
+// Maintainer notes (not rendered):
+//
+// # `form_urlencoded` does not bring `url` back, and this file said it did
+//
+// For two verticals this module carried twenty lines of WHATWG serialiser
+// under the claim that the crate *"would bring `url` straight back"* —
+// the crate `uri.rs` was rewritten to remove, at the cost of a 96-pair
+// differential corpus, because it reached `idna` and the ICU tables.
+//
+// **Measured, and false.** `form_urlencoded` is its own crate and depends
+// on `percent-encoding` alone: two crates, no `url`, no `idna`, no ICU,
+// no build script, and both wasm targets build. Its output matches the
+// lines it replaces on every probed input — the space that becomes `+`,
+// the `*` that survives, the `~` that does not, and the empty string.
+//
+// The claim was never checked, and it was restated once after `base64`
+// landed here. That is this workspace's own rule about a claim being as
+// perishable as the thing it describes, met from the direction where
+// nothing ever forced a re-measurement.
+//
+// What the measurement *does* rule out is the near neighbour:
+// `urlencoding::encode` is a different function, disagreeing on 3 of 11
+// probed inputs including the space (`a b` becomes `a%20b`), and one
+// module over it escapes `/`, `?`, `&` and `#`, turning `/a/b?x=1&y=2`
+// into `%2Fa%2Fb%3Fx%3D1%26y%3D2`. The right crate was available all
+// along; the wrong one is one letter of a name away.
 
 use base64::Engine as _;
 

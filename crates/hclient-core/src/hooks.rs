@@ -48,8 +48,7 @@
 //! monomorphised `NoHooks` cannot delete. The const is what makes that
 //! structural: a runtime `if self.hooks.is_some()` would still cost a
 //! branch, and would already have read the clock to have something to put
-//! in it. `crates/hclient-native/tests/hooks_cost.rs` measures it from
-//! outside — a runtime whose clock counts its own reads.
+//! in it.
 //!
 //! It is deliberately all-or-nothing rather than one const per event. A
 //! hook that wanted only [`Closed`] would then skip the connect timings,
@@ -86,19 +85,27 @@
 //! — a QUIC connection migrating, a transfer a background session
 //! finished after the process died.
 //!
-//! **That used to be a semver promise and is now only a caution.** These
-//! traits sat in a `unversioned` module, borrowed from `ureq`, which
-//! declared that breaking changes here would ship in a minor version
-//! rather than a major — on the stated grounds that the seams had not been
-//! validated against every backend. Eight crates implement [`Transport`]
-//! today, so the condition was met, and the module is gone.
-//!
-//! What survives it is the observation rather than the exemption:
 //! [`Event`] is `#[non_exhaustive]`, so a variant can be added without
-//! breaking a caller, and the one in-crate exhaustive match is what makes
-//! adding one a compile error in exactly one known place.
-//!
-//! [`Transport`]: crate::transport::Transport
+//! breaking a caller.
+// Maintainer notes (not rendered):
+//
+// in it. `crates/hclient-native/tests/hooks_cost.rs` measures it from
+// outside — a runtime whose clock counts its own reads.
+//
+// **That used to be a semver promise and is now only a caution.** These
+// traits sat in a `unversioned` module, borrowed from `ureq`, which
+// declared that breaking changes here would ship in a minor version
+// rather than a major — on the stated grounds that the seams had not been
+// validated against every backend. Eight crates implement [`Transport`]
+// today, so the condition was met, and the module is gone.
+//
+// What survives it is the observation rather than the exemption:
+// [`Event`] is `#[non_exhaustive]`, so a variant can be added without
+// breaking a caller, and the one in-crate exhaustive match is what makes
+// adding one a compile error in exactly one known place.
+//
+// [`Transport`]: crate::transport::Transport
+
 use crate::error::Error;
 use core::time::Duration;
 use std::fmt::Display;
@@ -106,14 +113,18 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// Maintainer notes (not rendered):
+//
+// **No `Send` bound, declared or implied** (P13, settled by construction
+// in `crates/hclient-core/tests/shape.rs`). A hook is stored in a
+// transport and called from inside a response body's `poll_frame`, which
 /// Somewhere to send what a transport did.
 ///
 /// Implemented by the application rather than by a backend — which makes
 /// it the one seam here pointing the other way. A backend
 /// *calls* it, and what it owes is written on [`Event`]'s variants.
 ///
-/// **No `Send` bound, declared or implied** (P13, settled by construction
-/// in `crates/hclient-core/tests/shape.rs`). A hook is stored in a
+/// **No `Send` bound, declared or implied.** A hook is stored in a
 /// transport and called from inside a response body's `poll_frame`, which
 /// is not the shape any other seam here has: the body outlives
 /// `Transport::execute`, so it holds the hook rather than borrowing it,
@@ -173,10 +184,14 @@ impl<H: Hooks + ?Sized> Hooks for &H {
     }
 }
 
-/// The single-threaded half of the impl above, and not decoration: it is
-/// the shape P13 asks about. A hook behind an `Rc` makes the transport
-/// holding it `!Send`, and everything still compiles — see
-/// `crates/hclient-core/tests/shape.rs`.
+// Maintainer notes (not rendered):
+//
+// The single-threaded half of the impl above, and not decoration: it is
+// the shape P13 asks about. A hook behind an `Rc` makes the transport
+// holding it `!Send`, and everything still compiles — see
+// `crates/hclient-core/tests/shape.rs`.
+/// The single-threaded half of the impl above. A hook behind an `Rc` makes
+/// the transport holding it `!Send`, and everything still compiles.
 impl<H: Hooks + ?Sized> Hooks for std::rc::Rc<H> {
     const WATCHING: bool = H::WATCHING;
     fn on(&self, event: &Event<'_>) {
@@ -184,45 +199,63 @@ impl<H: Hooks + ?Sized> Hooks for std::rc::Rc<H> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// The two seams in this workspace that already compose —
+// `RedirectPolicyExt` and `RetryPolicyExt` — keep it off their traits to
+// stay object-safe, and **that reason does not apply here**: [`Hooks`]
+// has an associated const, so it was never object-safe and never could
+// be. The reasons that do apply are two.
+//
+// `Hooks` is blanket-implemented for `Arc<H: ?Sized>` and
+// `Rc<H: ?Sized>`, and `fn and(self, ..) -> And<Self, B>` needs
+// `Self: Sized`. On the trait that is a `where Self: Sized` predicate
+// every implementor reads and none of them wrote; here the bound is
+// stated once, on the extension trait, where it is the whole point of the
+// trait existing.
+//
+// And a caller who learned `.and(..)` on a redirect policy should find it
+// spelled the same way here. A third spelling for the same idea is a
+// reader stopping to work out whether the difference means something.
 /// [`and`](HooksExt::and), kept off [`Hooks`] itself.
-///
-/// The two seams in this workspace that already compose —
-/// `RedirectPolicyExt` and `RetryPolicyExt` — keep it off their traits to
-/// stay object-safe, and **that reason does not apply here**: [`Hooks`]
-/// has an associated const, so it was never object-safe and never could
-/// be. The reasons that do apply are two.
 ///
 /// `Hooks` is blanket-implemented for `Arc<H: ?Sized>` and
 /// `Rc<H: ?Sized>`, and `fn and(self, ..) -> And<Self, B>` needs
-/// `Self: Sized`. On the trait that is a `where Self: Sized` predicate
-/// every implementor reads and none of them wrote; here the bound is
-/// stated once, on the extension trait, where it is the whole point of the
-/// trait existing.
-///
-/// And a caller who learned `.and(..)` on a redirect policy should find it
-/// spelled the same way here. A third spelling for the same idea is a
-/// reader stopping to work out whether the difference means something.
+/// `Self: Sized`; the extension trait states that bound once. It is
+/// spelled `.and(..)`, as composition is on a redirect or retry policy.
 pub trait HooksExt: Hooks + Sized {
+    // Maintainer notes (not rendered):
+    //
+    // `RedirectPolicy::and` and `RetryPolicy::and` compose *verdicts*, so
+    // composing them is a meet on a lattice: the more conservative answer
+    // wins, `Refuse` short-circuits, and the identity of the meet is the
+    // trait's own default — which is why one narrows from *yes* and the
+    // other from a single configured permission. **None of that has a
+    // subject here.** [`Hooks::on`] returns `()`, and `()` has exactly one
+    // value: there is no verdict to combine, nothing to be conservative
+    // about, and nothing that could short-circuit.
+    //
+    // So this is **sequencing**, not a meet — and the difference is
+    // visible, which is the part worth knowing. `redirect`'s own doc says
+    // order is unobservable there and that this is what separates a policy
+    // lattice from middleware. Here order *is* observable: hooks have side
+    // effects, so two of them writing to one log write in an order. `self`
+    // runs first, and that is a promise rather than an artefact of how
+    // `And` happens to be written.
     /// Both hooks see every event, `self` first.
     ///
     /// # What does **not** transfer from the policy seams
     ///
     /// `RedirectPolicy::and` and `RetryPolicy::and` compose *verdicts*, so
-    /// composing them is a meet on a lattice: the more conservative answer
-    /// wins, `Refuse` short-circuits, and the identity of the meet is the
-    /// trait's own default — which is why one narrows from *yes* and the
-    /// other from a single configured permission. **None of that has a
-    /// subject here.** [`Hooks::on`] returns `()`, and `()` has exactly one
-    /// value: there is no verdict to combine, nothing to be conservative
-    /// about, and nothing that could short-circuit.
+    /// the more conservative answer wins. **None of that has a subject
+    /// here.** [`Hooks::on`] returns `()`: there is no verdict to combine,
+    /// nothing to be conservative about, and nothing that could
+    /// short-circuit.
     ///
-    /// So this is **sequencing**, not a meet — and the difference is
-    /// visible, which is the part worth knowing. `redirect`'s own doc says
-    /// order is unobservable there and that this is what separates a policy
-    /// lattice from middleware. Here order *is* observable: hooks have side
-    /// effects, so two of them writing to one log write in an order. `self`
-    /// runs first, and that is a promise rather than an artefact of how
-    /// `And` happens to be written.
+    /// So this is **sequencing**, not a meet — and order *is* observable:
+    /// hooks have side effects, so two of them writing to one log write in an
+    /// order. `self` runs first, and that is a promise rather than an
+    /// artefact of how `And` happens to be written.
     ///
     /// # A panicking hook, composed
     ///
@@ -248,19 +281,23 @@ pub trait HooksExt: Hooks + Sized {
 
 impl<T: Hooks + Sized> HooksExt for T {}
 
+// Maintainer notes (not rendered):
+//
+// A named type rather than `impl Hooks for (A, B)`, and the tuple's cost
+// is what decided it. The ordering promise and the `WATCHING` rule below
+// are properties **of the composition**, and a tuple has nowhere to put
+// them: their only home would be a doc comment on an impl for a
+// primitive, which rustdoc renders on the tuple's own page rather than
+// anywhere a reader of this module will pass. A tuple also needs one impl
+// per arity, or `((a, b), c)`, which reads worse than `a.and(b).and(c)` —
+// and it would make every two-tuple of hooks a hook, which is a coherence
+// commitment on a foreign type taken in exchange for one import.
+//
+// That import is what the tuple would have bought, and it is a real cost:
+// `.and(..)` needs [`HooksExt`] in scope, exactly as `.and(..)` on a
+// redirect policy needs `RedirectPolicyExt`.
 /// Two hooks as one. See [`HooksExt::and`].
 ///
-/// A named type rather than `impl Hooks for (A, B)`, and the tuple's cost
-/// is what decided it. The ordering promise and the `WATCHING` rule below
-/// are properties **of the composition**, and a tuple has nowhere to put
-/// them: their only home would be a doc comment on an impl for a
-/// primitive, which rustdoc renders on the tuple's own page rather than
-/// anywhere a reader of this module will pass. A tuple also needs one impl
-/// per arity, or `((a, b), c)`, which reads worse than `a.and(b).and(c)` —
-/// and it would make every two-tuple of hooks a hook, which is a coherence
-/// commitment on a foreign type taken in exchange for one import.
-///
-/// That import is what the tuple would have bought, and it is a real cost:
 /// `.and(..)` needs [`HooksExt`] in scope, exactly as `.and(..)` on a
 /// redirect policy needs `RedirectPolicyExt`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -290,34 +327,39 @@ impl<A: Hooks, B: Hooks> Hooks for And<A, B> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// **There is deliberately no "request queued" variant.** The original
+// list for this work had one, and `hclient-native` has nothing to put in
+// it: a request that finds no live pooled connection dials a fresh one,
+// there is no per-origin connection limit to wait behind, and an h2
+// connection is checked out of the pool exclusively — one stream at a
+// time — so `SendRequest::poll_ready` never waits for a stream of ours.
+// A variant no code can emit is a capability that lies; this one belongs
+// here once a backend has a queue.
+//
+// **`#[non_exhaustive]`, and the compile error it removes is kept in one
+// place rather than lost.**
+//
+// A new variant used to be a compile error for every `match` on this
+// enum, which is how `Informational` was caught in `hclient-fetch`'s
+// suite. That property is worth something *inside* this workspace and is
+// a break every release for somebody who wrote a `Hooks` impl against a
+// published version — two audiences wanting opposite things from one
+// enum.
+//
+// The resolution is [`Capabilities`]' exactly: mark the type, and keep a
+// single exhaustive match in **this** crate, where the attribute does not
+// apply. `every_event_is_accounted_for` below is that match, so a new
+// variant is still one compile error in one known file — and no break at
+// all for anybody outside.
+//
+// [`Capabilities`]: crate::caps::Capabilities
 /// What a transport reports.
 ///
-/// **There is deliberately no "request queued" variant.** The original
-/// list for this work had one, and `hclient-native` has nothing to put in
-/// it: a request that finds no live pooled connection dials a fresh one,
-/// there is no per-origin connection limit to wait behind, and an h2
-/// connection is checked out of the pool exclusively — one stream at a
-/// time — so `SendRequest::poll_ready` never waits for a stream of ours.
-/// A variant no code can emit is a capability that lies; this one belongs
-/// here once a backend has a queue.
-///
-/// **`#[non_exhaustive]`, and the compile error it removes is kept in one
-/// place rather than lost.**
-///
-/// A new variant used to be a compile error for every `match` on this
-/// enum, which is how `Informational` was caught in `hclient-fetch`'s
-/// suite. That property is worth something *inside* this workspace and is
-/// a break every release for somebody who wrote a `Hooks` impl against a
-/// published version — two audiences wanting opposite things from one
-/// enum.
-///
-/// The resolution is [`Capabilities`]' exactly: mark the type, and keep a
-/// single exhaustive match in **this** crate, where the attribute does not
-/// apply. `every_event_is_accounted_for` below is that match, so a new
-/// variant is still one compile error in one known file — and no break at
-/// all for anybody outside.
-///
-/// [`Capabilities`]: crate::caps::Capabilities
+/// **`#[non_exhaustive]`**: a new variant is not a break for a `Hooks`
+/// impl written against a published version, so a `match` on this enum
+/// needs a `_` arm.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event<'a> {
@@ -453,20 +495,21 @@ pub struct Progress<'a> {
     /// Octets moved in this direction of this exchange **so far** —
     /// cumulative, monotonic, never a delta.
     pub transferred: u64,
+    // Maintainer notes (not rendered):
+    //
+    // **Two states rather than `Discovered`'s three**, and the missing
+    // one is *not consulted*: the transport has the response head before
+    // it counts an incoming octet and the request body before it counts
+    // an outgoing one, so there is no path on which it could have failed
+    // to look. A third variant would be a distinction with one reachable
+    // side, which is what `UpgradeSupport`'s spare variants were deleted
+    // for.
     /// What the sender said the whole body would be, in the same unit as
     /// [`Self::transferred`], or `None` where nobody said.
     ///
     /// `Some(n)` is a statement somebody made — a `Content-Length` on the
     /// response, an exact `size_hint` on the request body. `None` is the
     /// absence of one: a chunked response, an unbounded stream.
-    ///
-    /// **Two states rather than `Discovered`'s three**, and the missing
-    /// one is *not consulted*: the transport has the response head before
-    /// it counts an incoming octet and the request body before it counts
-    /// an outgoing one, so there is no path on which it could have failed
-    /// to look. A third variant would be a distinction with one reachable
-    /// side, which is what `UpgradeSupport`'s spare variants were deleted
-    /// for.
     ///
     /// It is not a promise. A server may send fewer octets than it
     /// declared, or more; this is what was claimed, not what arrived.
@@ -506,6 +549,17 @@ pub struct ConnectionId(u64);
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 impl ConnectionId {
+    // Maintainer notes (not rendered):
+    //
+    // # The name is a producer, not the meaning
+    //
+    // There is deliberately no second constant meaning *this event names
+    // no connection*, distinct from *nobody is watching*: the two would
+    // differ only in a build whose events nobody reads, so no caller
+    // decision turns on the difference — this workspace's test for
+    // whether a distinction earns a name of its own. `UNWATCHED` names
+    // one of the two producers, and any spelling would name one or the
+    // other; read it as the ambient *this event names no connection*.
     /// The id an event carries when no id was minted for it.
     ///
     /// Two things produce it, and **a reader can only ever meet the
@@ -528,25 +582,18 @@ impl ConnectionId {
     /// hook can act on rather than a gap it has to guess at: it is the
     /// only id [`ConnectionId::next`] never returns, so looking it up in
     /// a table of live connections cannot hit one.
-    ///
-    /// # The name is a producer, not the meaning
-    ///
-    /// There is deliberately no second constant meaning *this event names
-    /// no connection*, distinct from *nobody is watching*: the two would
-    /// differ only in a build whose events nobody reads, so no caller
-    /// decision turns on the difference — this workspace's test for
-    /// whether a distinction earns a name of its own. `UNWATCHED` names
-    /// one of the two producers, and any spelling would name one or the
-    /// other; read it as the ambient *this event names no connection*.
     pub const UNWATCHED: ConnectionId = ConnectionId(0);
 
+    // Maintainer notes (not rendered):
+    //
+    // connection* rather than *this event names connection zero*.
+    // `crates/hclient-core/tests/shape.rs` pins it.
     /// The next id. `Relaxed`: this counter orders nothing, it only has
     /// to hand out distinct numbers.
     ///
     /// It starts at `1`, and that is load bearing rather than tidy: it is
     /// what makes [`UNWATCHED`](Self::UNWATCHED) mean *this event names no
     /// connection* rather than *this event names connection zero*.
-    /// `crates/hclient-core/tests/shape.rs` pins it.
     pub fn next() -> Self {
         Self(NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed))
     }
@@ -593,13 +640,17 @@ pub struct RequestId(u64);
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 impl RequestId {
+    // Maintainer notes (not rendered):
+    //
+    // **This said *one producer, unlike [`ConnectionId::UNWATCHED`]'s
+    // two* until the setter had a caller**, and there are two — the
+    // same two, for the same reasons, which is worth knowing because it
+    // makes the constant next door the precedent rather than a near
+    // neighbour:
     /// The id an event carries when it names no request.
     ///
-    /// **This said *one producer, unlike [`ConnectionId::UNWATCHED`]'s
-    /// two* until the setter had a caller**, and there are two — the
-    /// same two, for the same reasons, which is worth knowing because it
-    /// makes the constant next door the precedent rather than a near
-    /// neighbour:
+    /// Two things produce it, the same two as [`ConnectionId::UNWATCHED`]
+    /// and for the same reasons:
     ///
     /// - **There is no request to name.** A transport driven directly,
     ///   with no `Client` above it, has no [`Attempt`] in the request's
@@ -715,6 +766,13 @@ pub struct Connected<'a> {
     /// The URI whose request paid for this connection, as the transport
     /// received it — absolute, before any protocol rewrote it.
     pub uri: &'a http::Uri,
+    // Maintainer notes (not rendered):
+    //
+    // The alternative was to emit no `Connected` at all for such a
+    // connection, and it is worse: the `Closed` that follows would
+    // announce the end of a connection whose beginning was never
+    // announced, which is exactly the defect recorded for building a
+    // `Closed::Failed` out of `wasi:http`'s error codes.
     /// The address that answered. One of possibly several tried:
     /// RFC 8305 races address families, and this is the winner, not the
     /// first candidate.
@@ -727,12 +785,6 @@ pub struct Connected<'a> {
     /// — a sentinel that is also an ordinary value gives a hook a *wrong*
     /// answer where the absence gives it a missing one, and only the
     /// second can be handled.
-    ///
-    /// The alternative was to emit no `Connected` at all for such a
-    /// connection, and it is worse: the `Closed` that follows would
-    /// announce the end of a connection whose beginning was never
-    /// announced, which is exactly the defect recorded for building a
-    /// `Closed::Failed` out of `wasi:http`'s error codes.
     pub remote: Option<SocketAddr>,
     /// What will be spoken on it, as negotiated — not as offered.
     pub version: http::Version,
@@ -782,24 +834,34 @@ pub struct Connected<'a> {
     pub client_cert: ClientCertAsk,
 }
 
+// Maintainer notes (not rendered):
+//
+// `Option<ClientCertRequest>` was the first shape and it collapses
+// *the server did not ask* into *this backend cannot see whether it
+// did*. Both sides are reachable in one program: `hclient-tls-rustls`
+// observes the `CertificateRequest` by being the resolver, and
+// `hclient-tls-native-tls` cannot, because the platform stacks expose no
+// hook for it — and `hc --backend` picks between them at run time. A
+// caller writing a certificate picker would then see nothing on one
+// backend and conclude that no server ever asks, which is the *silently
+// ignored setting* defect pointed at a credential.
+//
+// It is the shape [`Discovered::NoRecord`] against `NotConsulted` has
+// one crate over, and the one `Retry-After` absent against unreadable
+// has: **an answer and the absence of one are different values.**
+//
+// [`Discovered::NoRecord`]: https://docs.rs/hclient-native
 /// Whether a server asked for a client certificate — **three answers,
 /// because two of them would be a lie by omission.**
 ///
-/// `Option<ClientCertRequest>` was the first shape and it collapses
-/// *the server did not ask* into *this backend cannot see whether it
-/// did*. Both sides are reachable in one program: `hclient-tls-rustls`
-/// observes the `CertificateRequest` by being the resolver, and
-/// `hclient-tls-native-tls` cannot, because the platform stacks expose no
-/// hook for it — and `hc --backend` picks between them at run time. A
-/// caller writing a certificate picker would then see nothing on one
-/// backend and conclude that no server ever asks, which is the *silently
-/// ignored setting* defect pointed at a credential.
+/// *The server did not ask* and *this backend cannot see whether it did*
+/// are different answers, and both are reachable in one program:
+/// `hclient-tls-rustls` observes the `CertificateRequest` by being the
+/// resolver, and `hclient-tls-native-tls` cannot, because the platform
+/// stacks expose no hook for it. A caller writing a certificate picker
+/// that read both as one would see nothing on one backend and conclude
+/// that no server ever asks.
 ///
-/// It is the shape [`Discovered::NoRecord`] against `NotConsulted` has
-/// one crate over, and the one `Retry-After` absent against unreadable
-/// has: **an answer and the absence of one are different values.**
-///
-/// [`Discovered::NoRecord`]: https://docs.rs/hclient-native
 /// **Not `#[non_exhaustive]`**, unlike [`ClientCertRequest`] beside it,
 /// and the split is this workspace's own rule: the payload is a value a
 /// library hands back and a caller only reads, where this is a value
@@ -1231,13 +1293,18 @@ impl<'a> Connected<'a> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // One setter rather than three, because they come from one place —
+    // a backend either read the handshake's outcome or it did not — and
+    // three would let a caller set two and forget the third, which is
+    // the shape `Native::hooks` dropping the `1xx` installer while
+    // keeping its capability already cost this workspace once.
     /// The TLS facts, all of them at once.
     ///
     /// One setter rather than three, because they come from one place —
     /// a backend either read the handshake's outcome or it did not — and
-    /// three would let a caller set two and forget the third, which is
-    /// the shape `Native::hooks` dropping the `1xx` installer while
-    /// keeping its capability already cost this workspace once.
+    /// three would let a caller set two and forget the third.
     #[must_use]
     pub fn tls(
         mut self,
@@ -1380,17 +1447,22 @@ impl Default for ConnectTiming {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// **The gate is the point, not the line of code.** `H::WATCHING` is what
+// keeps a `NoHooks` build from paying for a feature it does not use, and
+// the discipline it needs is subtle enough to have produced a defect:
+// `hclient-fetch` once carried a second `H::WATCHING` test beside this
+// one, and a mutation that removed the *other* gate survived the whole
+// suite — a `NoHooks` build read the clock and cloned a `Uri` on every
+// request while the cost test still read zero. One `Option`, produced in
+// one place, closes that; four crates each writing their own is four
+// chances to reopen it.
 /// Read a clock, but only if a hook is watching.
 ///
 /// **The gate is the point, not the line of code.** `H::WATCHING` is what
-/// keeps a `NoHooks` build from paying for a feature it does not use, and
-/// the discipline it needs is subtle enough to have produced a defect:
-/// `hclient-fetch` once carried a second `H::WATCHING` test beside this
-/// one, and a mutation that removed the *other* gate survived the whole
-/// suite — a `NoHooks` build read the clock and cloned a `Uri` on every
-/// request while the cost test still read zero. One `Option`, produced in
-/// one place, closes that; four crates each writing their own is four
-/// chances to reopen it.
+/// keeps a `NoHooks` build from paying for a feature it does not use; one
+/// `Option`, produced in one place, is the whole of the gate.
 ///
 /// Generic over the clock read rather than over a clock **type**, because
 /// the four callers genuinely disagree about what a clock is: a `Timer`'s
@@ -1402,15 +1474,18 @@ pub fn mark<H: Hooks, T>(now: impl FnOnce() -> T) -> Option<T> {
     H::WATCHING.then(now)
 }
 
+// Maintainer notes (not rendered):
+//
+// [`mark`]'s gate for a lookup rather than a clock, and it is in this
+// module for the same recorded reason: four backends each writing their
+// own `if H::WATCHING` is four chances to reopen the defect where one of
+// them forgets, which is exactly how a `NoHooks` build once ended up
+// reading a clock and cloning a [`http::Uri`] per request while the cost
+// test still read zero.
 /// Which request this exchange is, read from the request's extensions —
 /// but only if a hook is watching.
 ///
-/// [`mark`]'s gate for a lookup rather than a clock, and it is in this
-/// module for the same recorded reason: four backends each writing their
-/// own `if H::WATCHING` is four chances to reopen the defect where one of
-/// them forgets, which is exactly how a `NoHooks` build once ended up
-/// reading a clock and cloning a [`http::Uri`] per request while the cost
-/// test still read zero.
+/// [`mark`]'s gate for a lookup rather than a clock.
 ///
 /// **Call it once per exchange and carry the answer.** A [`Progress`]
 /// fires per frame from a body that outlives `Transport::execute` and no
@@ -1440,16 +1515,19 @@ pub fn since<T>(at: Option<T>, elapsed: impl FnOnce(T) -> Duration) -> Duration 
     at.map_or(Duration::ZERO, elapsed)
 }
 
+// Maintainer notes (not rendered):
+//
+// branch — the discipline [`mark`] already enforces for clocks, and for
+// the same recorded reason. Four crates each writing `if H::WATCHING`
+// around their own counter is four chances to reopen the defect where one
+// of them forgets.
 /// A running octet count for one direction of one exchange, and the last
 /// value reported for it.
 ///
 /// **It exists only when somebody is watching**, which is the whole of the
 /// gate: [`meter`] is the only constructor and it hands back `None` under
 /// [`NoHooks`], so a build with no hook has no counter, no atomic and no
-/// branch — the discipline [`mark`] already enforces for clocks, and for
-/// the same recorded reason. Four crates each writing `if H::WATCHING`
-/// around their own counter is four chances to reopen the defect where one
-/// of them forgets.
+/// branch — the discipline [`mark`] already enforces for clocks.
 ///
 /// The count and the report are in different places on every backend here
 /// — the request body increments it and the transport emits, the response
@@ -1573,17 +1651,21 @@ where
     B: http_body::Body,
     H: Hooks,
 {
+    // Maintainer notes (not rendered):
+    //
+    // That one rule gives the right answer on every backend because each
+    // body's `size_hint` already carries its own honesty argument.
+    // `hclient-fetch`'s, for one, refuses to trust a `Content-Length`
+    // beside a `Content-Encoding`, because the browser hands over a
+    // stream it has already decoded — the same unit rule [`Progress`]
+    // states, reached independently and written down one field over
+    // before this event existed.
     /// Wrap a body. `expected` is read off the body's own
     /// [`http_body::Body::size_hint`] **once, here** — the exact hint, or
     /// `None`.
     ///
     /// That one rule gives the right answer on every backend because each
     /// body's `size_hint` already carries its own honesty argument.
-    /// `hclient-fetch`'s, for one, refuses to trust a `Content-Length`
-    /// beside a `Content-Encoding`, because the browser hands over a
-    /// stream it has already decoded — the same unit rule [`Progress`]
-    /// states, reached independently and written down one field over
-    /// before this event existed.
     /// # `uri: None` is *do not count here*, not *no uri*
     ///
     /// It is the caller's statement that this wrapper is not the counter
@@ -1668,6 +1750,16 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// **`hclient-native` deliberately does not use it**, and its own
+// `OutgoingBody` says why in a sentence written before this existed:
+// that type is *the one place every frame of every request body passes
+// through on its way to hyper*, and *a wrapper would be a second thing to
+// remember to put on*. It carries the meter as a field for exactly that
+// reason. The two ambient backends have no such single type — a
+// `wasi:http` request body is a buffered arm and a streaming arm, and a
+// browser's is three — so for them the wrapper is the choke point.
 /// A body that counts what it yields into a shared [`Meter`], and reports
 /// nothing.
 ///
@@ -1677,14 +1769,8 @@ where
 /// and what reports is [`Reporting`] or [`Counting`] back where the hook
 /// is. That is why the meter is an [`Arc`] and this type names no `H`.
 ///
-/// **`hclient-native` deliberately does not use it**, and its own
-/// `OutgoingBody` says why in a sentence written before this existed:
-/// that type is *the one place every frame of every request body passes
-/// through on its way to hyper*, and *a wrapper would be a second thing to
-/// remember to put on*. It carries the meter as a field for exactly that
-/// reason. The two ambient backends have no such single type — a
-/// `wasi:http` request body is a buffered arm and a streaming arm, and a
-/// browser's is three — so for them the wrapper is the choke point.
+/// A backend whose request bodies all pass through one type of its own
+/// can carry the meter as a field there instead.
 #[derive(Debug)]
 pub struct Metered<B> {
     inner: B,

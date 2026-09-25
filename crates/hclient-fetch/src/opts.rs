@@ -1,57 +1,94 @@
-//! The `RequestInit` members a caller could not reach.
+//! The `RequestInit` members a caller can set on [`Fetch`](crate::Fetch):
+//! `mode`, `credentials`, `cache` and `referrerPolicy`.
 //!
-//! Until this module, `to_web_request` set `method`, `headers`, `body`,
-//! `signal` and `duplex` and nothing else — so a browser caller could not
-//! send `credentials: "include"`, which is what a cross-origin
-//! authenticated request needs, could not select `no-cors`, and could not
-//! touch the cache mode or the referrer policy. Two independent browser
-//! clients expose all of it (reqwest's wasm build and `gloo-net`), which
-//! is what makes it an absence rather than a knob nobody wants.
+//! Without them a browser caller could not send `credentials: "include"`,
+//! which is what a cross-origin authenticated request needs, could not
+//! select `no-cors`, and could not touch the cache mode or the referrer
+//! policy.
 //!
 //! # Why on `Fetch` and not on `Transport` or in an extension
 //!
-//! Three of five backends have no such concept, so a `Transport` method
-//! would be `Unsupported` for most of them — the rule that put
-//! `WebSocketConnect` in its own trait and `StagedConnect` in its own
-//! crate. `Native::multiplexed()` and `Native::expect_continue()` are the
-//! shape this copies.
+//! Most other backends have no such concept, so a `Transport` method
+//! would be `Unsupported` for most of them.
 //!
-//! A request extension is the tempting alternative and is wrong for the
-//! reason `Prefetch::prepare` refuses to take an HTTPS record from a
-//! caller: an extension is a channel that any code able to build a request
-//! can write to, and `credentials: "include"` is a decision about which
-//! origins get the user's cookies.
+//! A request extension is the tempting alternative and is wrong: an
+//! extension is a channel that any code able to build a request can write
+//! to, and `credentials: "include"` is a decision about which origins get
+//! the user's cookies.
 //!
-//! # `redirect` is deliberately absent, and it is the interesting one
+//! # `redirect` is deliberately absent
 //!
 //! `fetch`'s `redirect: "manual"` does not hand back a `3xx` a caller can
 //! act on. For a cross-origin response it yields an **opaque-redirect**
 //! filtered response: `status` reads `0`, the header list is empty, the
 //! body is null, and `Location` is not readable. So
-//! `Capabilities::redirects` could not honestly move from
+//! `Capabilities::redirects` stays
 //! [`RedirectSupport::Internal`](hclient_core::caps::RedirectSupport::Internal)
-//! to `Transparent` — it would claim a policy `Client` could act on for
-//! exactly the case where redirects matter and the browser gives nothing.
-//! `hclient-urlsession` is the backend that *can* report `Transparent`,
-//! and the asymmetry between the two is stated where each of them is.
+//! rather than `Transparent` — `Transparent` would claim a policy `Client`
+//! could act on for exactly the case where redirects matter and the
+//! browser gives nothing.
 //!
-//! `redirect: "error"` is a third thing — *fail rather than follow* — and
-//! it is `hclient::redirect::Forbid` with the answer thrown away, which no
-//! caller has asked for.
+//! `redirect: "error"` — *fail rather than follow* — is
+//! `hclient::redirect::Forbid` with the answer thrown away.
+
+// Maintainer notes (not rendered):
+//
+// The `RequestInit` members a caller could not reach.
+//
+// Until this module, `to_web_request` set `method`, `headers`, `body`,
+// `signal` and `duplex` and nothing else — so a browser caller could not
+// send `credentials: "include"`, which is what a cross-origin
+// authenticated request needs, could not select `no-cors`, and could not
+// touch the cache mode or the referrer policy. Two independent browser
+// clients expose all of it (reqwest's wasm build and `gloo-net`), which
+// is what makes it an absence rather than a knob nobody wants.
+//
+// Three of five backends have no such concept, so a `Transport` method
+// would be `Unsupported` for most of them — the rule that put
+// `WebSocketConnect` in its own trait and `StagedConnect` in its own
+// crate. `Native::multiplexed()` and `Native::expect_continue()` are the
+// shape this copies.
+//
+// A request extension is the tempting alternative and is wrong for the
+// reason `Prefetch::prepare` refuses to take an HTTPS record from a
+// caller: an extension is a channel that any code able to build a request
+// can write to, and `credentials: "include"` is a decision about which
+// origins get the user's cookies.
+//
+// # `redirect` is deliberately absent, and it is the interesting one
+//
+// `Capabilities::redirects` could not honestly move from
+// [`RedirectSupport::Internal`](hclient_core::caps::RedirectSupport::Internal)
+// to `Transparent` — it would claim a policy `Client` could act on for
+// exactly the case where redirects matter and the browser gives nothing.
+// `hclient-urlsession` is the backend that *can* report `Transparent`,
+// and the asymmetry between the two is stated where each of them is.
+//
+// `redirect: "error"` is a third thing — *fail rather than follow* — and
+// it is `hclient::redirect::Forbid` with the answer thrown away, which no
+// caller has asked for.
 
 use web_sys::{ReferrerPolicy, RequestCache, RequestCredentials, RequestMode};
 
+// Maintainer notes (not rendered):
+//
+// Every field is `None` by default — *leave it to `fetch`* — which is
+// `TcpOpts`' and `H2Opts`' rule one crate over:
+// a value set here changes what the browser does, so a default of ours
+// would change behaviour for a caller who asked for nothing. That matters
+// more here than anywhere else in this workspace, because these members
+// govern **whose credentials go where**.
+//
+// Not `#[non_exhaustive]`, for `TcpOpts`' reason: the whole use is
+// `FetchOpts { credentials: Some(..), ..Default::default() }`.
 /// The `fetch` members this transport will set, where a caller asked for
 /// something other than the browser's default.
 ///
-/// Every field is `None` by default — *leave it to `fetch`* — which is
-/// `TcpOpts`' and `H2Opts`' rule one crate over:
-/// a value set here changes what the browser does, so a default of ours
-/// would change behaviour for a caller who asked for nothing. That matters
-/// more here than anywhere else in this workspace, because these members
-/// govern **whose credentials go where**.
+/// Every field is `None` by default — *leave it to `fetch`*: a value set
+/// here changes what the browser does, and these members govern **whose
+/// credentials go where**.
 ///
-/// Not `#[non_exhaustive]`, for `TcpOpts`' reason: the whole use is
+/// Built with struct-update syntax:
 /// `FetchOpts { credentials: Some(..), ..Default::default() }`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FetchOpts {

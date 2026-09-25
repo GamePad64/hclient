@@ -13,15 +13,21 @@
 //! [`RequestBody`](crate::body::RequestBody) whose factory contract was broken
 //! ([`RewindTooDeep`]).
 //!
-//! **That is why they are here and not one per backend**, which the two
-//! newer ones say in their own words: a caller downcasting on
-//! `VersionNotAvailable` must not have to know which transport is
-//! underneath, and `MAX_REWIND_DEPTH` exists because four backends
-//! answered the same question three different ways. A refusal that is
-//! portable has one type.
-//!
-//! Each is re-exported at the crate root, where it has always been, so no
-//! consumer's `use` line moves.
+//! **That is why they are here and not one per backend**: a caller
+//! downcasting on `VersionNotAvailable` must not have to know which
+//! transport is underneath. A refusal that is portable has one type.
+
+// Maintainer notes (not rendered):
+//
+// **That is why they are here and not one per backend**, which the two
+// newer ones say in their own words: a caller downcasting on
+// `VersionNotAvailable` must not have to know which transport is
+// underneath, and `MAX_REWIND_DEPTH` exists because four backends
+// answered the same question three different ways. A refusal that is
+// portable has one type.
+//
+// Each is re-exported at the crate root, where it has always been, so no
+// consumer's `use` line moves.
 
 use crate::body::MAX_REWIND_DEPTH;
 use std::error::Error as StdError;
@@ -104,25 +110,31 @@ pub enum ErrorKind {
     /// or a [`crate::req::RequireVersion`] demand this connection did not
     /// satisfy.
     Unsupported,
+    // Maintainer notes (not rendered):
+    //
+    // A separate variant, not `Other`: `Other` is the honest answer for a
+    // GENUINELY opaque backend error (the default `Transport::to_error`,
+    // when the backend has nothing to say about the category). Cancellation
+    // is the opposite of opacity: it's a condition known in advance and
+    // already typed (`Cancelled` is not a string or an OS error code, but a
+    // concrete type), one that EVERY future consumer of the `Blocking`
+    // capability will hit, not a one-off for a single backend. It must not
+    // be mixed with `Other`, and even less with the category of the failed
+    // operation itself (e.g. `Resolve` for a DNS resolver built on
+    // `Blocking`, see `hclient-dns-system`) — for the same reason `Resolve`
+    // and `Other` aren't mixed with each other: the caller must be able to
+    // tell "this attempt failed on its merits" from "this attempt didn't
+    // finish because the runtime is shutting down" without a downcast —
+    // just by comparing `kind()`.
     /// The capability behind the failed operation was pulled out from under
     /// it before it could finish — typically, the runtime is shutting down
     /// while the task was still queued (see `hclient_rt::Cancelled`,
     /// returned by `Blocking::run`).
     ///
-    /// A separate variant, not `Other`: `Other` is the honest answer for a
-    /// GENUINELY opaque backend error (the default `Transport::to_error`,
-    /// when the backend has nothing to say about the category). Cancellation
-    /// is the opposite of opacity: it's a condition known in advance and
-    /// already typed (`Cancelled` is not a string or an OS error code, but a
-    /// concrete type), one that EVERY future consumer of the `Blocking`
-    /// capability will hit, not a one-off for a single backend. It must not
-    /// be mixed with `Other`, and even less with the category of the failed
-    /// operation itself (e.g. `Resolve` for a DNS resolver built on
-    /// `Blocking`, see `hclient-dns-system`) — for the same reason `Resolve`
-    /// and `Other` aren't mixed with each other: the caller must be able to
-    /// tell "this attempt failed on its merits" from "this attempt didn't
-    /// finish because the runtime is shutting down" without a downcast —
-    /// just by comparing `kind()`.
+    /// A separate variant, not `Other` and not the category of the failed
+    /// operation itself: the caller must be able to tell "this attempt failed
+    /// on its merits" from "this attempt didn't finish because the runtime is
+    /// shutting down" without a downcast — just by comparing `kind()`.
     Cancelled,
     /// An opaque backend error with nothing further to say about its
     /// category.
@@ -135,19 +147,29 @@ pub enum ErrorKind {
     Other,
 }
 
-/// `Clone` is deliberate: reqwest's opaque, unclonable error is a source of
-/// constant complaints (reqwest#1053).
+// Maintainer notes (not rendered):
+//
+// `Clone` is deliberate: reqwest's opaque, unclonable error is a source of
+// constant complaints (reqwest#1053).
+//
+// `source` must be `Send + Sync` — the one documented exception to the
+// crate invariant "no declared `Send`/`Sync` bound anywhere." Without this
+// bound, `Arc<dyn Error>` erases the source's auto-traits, and `Error`
+// (and with it the future `Client::execute` returns) would be `!Send` for
+// every transport — `tokio::spawn(client.get(u).send())` would never
+// compile. All three v0.1 backends (hyper, wasi:http, browser fetch
+// without `target_feature = "atomics"`) already produce `Send + Sync`
+// errors, so this pins down a fact rather than adding a new restriction;
+// a transport with a fundamentally `!Send` error won't be able to use
+// this wrapper.
+/// An error from any backend: an [`ErrorKind`] and the source it came
+/// from, kept whole rather than stringified. `Clone`.
 ///
-/// `source` must be `Send + Sync` — the one documented exception to the
-/// crate invariant "no declared `Send`/`Sync` bound anywhere." Without this
-/// bound, `Arc<dyn Error>` erases the source's auto-traits, and `Error`
-/// (and with it the future `Client::execute` returns) would be `!Send` for
-/// every transport — `tokio::spawn(client.get(u).send())` would never
-/// compile. All three v0.1 backends (hyper, wasi:http, browser fetch
-/// without `target_feature = "atomics"`) already produce `Send + Sync`
-/// errors, so this pins down a fact rather than adding a new restriction;
-/// a transport with a fundamentally `!Send` error won't be able to use
-/// this wrapper.
+/// `source` must be `Send + Sync`. Without this bound, `Arc<dyn Error>`
+/// erases the source's auto-traits, and `Error` (and with it the future
+/// `Client::execute` returns) would be `!Send` for every transport —
+/// `tokio::spawn(client.get(u).send())` would never compile. A transport
+/// with a fundamentally `!Send` error won't be able to use this wrapper.
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
@@ -189,13 +211,28 @@ impl Error {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Marks this failure as one where no byte of the request reached a
+    // server.
+    //
+    // Only a transport may say so, and only where it knows — a connect
+    // that never completed, a name that did not resolve, a handshake
+    // that failed, or a dispatcher handing the request back unsent. See
+    // the field's own doc for why `ErrorKind` cannot answer this.
     /// Marks this failure as one where no byte of the request reached a
     /// server.
     ///
     /// Only a transport may say so, and only where it knows — a connect
     /// that never completed, a name that did not resolve, a handshake
-    /// that failed, or a dispatcher handing the request back unsent. See
-    /// the field's own doc for why `ErrorKind` cannot answer this.
+    /// that failed, or a dispatcher handing the request back unsent.
+    ///
+    /// [`ErrorKind`] cannot answer this: [`ErrorKind::Connect`] is also
+    /// reported for a response head too malformed to use, after the request
+    /// went out. A retry deciding from the category alone could resend a
+    /// request the server had already processed. The default is `false`: a
+    /// backend that says nothing costs a caller a retry that did not happen,
+    /// where a wrong `true` costs them a duplicated request.
     #[must_use]
     pub fn unsent(mut self) -> Self {
         self.unsent = true;
@@ -270,6 +307,12 @@ impl StdError for Error {
 #[non_exhaustive]
 pub struct RewindTooDeep;
 
+// Maintainer notes (not rendered):
+//
+// One type in this crate rather than one per backend (the shape
+// `hclient_h3::RequestTrailersNotSent` takes), because a caller
+// downcasting on it must not have to know which transport is underneath:
+// the demand is portable, so its refusal is too.
 /// A [`RequireVersion`](crate::req::RequireVersion) demand the connection in hand does not satisfy.
 ///
 /// Carries both halves, because "HTTP/2 was required" and "HTTP/1.1 is
@@ -277,10 +320,9 @@ pub struct RewindTooDeep;
 /// is the caller's own request coming back, the second is a fact about the
 /// server or the TLS configuration.
 ///
-/// One type in this crate rather than one per backend (the shape
-/// `hclient_h3::RequestTrailersNotSent` takes), because a caller
-/// downcasting on it must not have to know which transport is underneath:
-/// the demand is portable, so its refusal is too.
+/// One type rather than one per backend, because a caller downcasting on
+/// it must not have to know which transport is underneath: the demand is
+/// portable, so its refusal is too.
 ///
 /// # Not `#[non_exhaustive]`, and a new HTTP version is why it need not be
 ///
@@ -308,6 +350,19 @@ pub struct VersionNotAvailable {
     pub negotiated: http::Version,
 }
 
+// Maintainer notes (not rendered):
+//
+// Both fields are `&'static str` and the pair is the whole answer, so
+// the attribute would reserve room nothing is waiting to use. What
+// settles it is the other half: this is **constructed outside the crate
+// that defines it** — eight literal sites in `hclient` and
+// `hclient-fetch` today, and a transport of somebody else's that refuses
+// a setting of its own would write a ninth. That is the combination
+// [`crate::hooks`] records needing both halves: the attribute stops a
+// reader breaking on a new field and stops a producer building the value
+// at all, so taking it means adding a constructor in the same commit.
+// Two fields, no candidate for a third, and a producer on the far side
+// of the crate boundary is a trade with nothing on the buying side.
 /// A setting the chosen transport cannot honor.
 ///
 /// Returned from `build()` rather than silently ignored. The model is
@@ -316,16 +371,9 @@ pub struct VersionNotAvailable {
 /// # Not `#[non_exhaustive]`, and the reason is who builds one
 ///
 /// Both fields are `&'static str` and the pair is the whole answer, so
-/// the attribute would reserve room nothing is waiting to use. What
-/// settles it is the other half: this is **constructed outside the crate
-/// that defines it** — eight literal sites in `hclient` and
-/// `hclient-fetch` today, and a transport of somebody else's that refuses
-/// a setting of its own would write a ninth. That is the combination
-/// [`crate::hooks`] records needing both halves: the attribute stops a
-/// reader breaking on a new field and stops a producer building the value
-/// at all, so taking it means adding a constructor in the same commit.
-/// Two fields, no candidate for a third, and a producer on the far side
-/// of the crate boundary is a trade with nothing on the buying side.
+/// the attribute would reserve room nothing is waiting to use. And this
+/// is **constructed outside the crate that defines it** — a transport
+/// that refuses a setting of its own builds one with a struct literal.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("backend `{backend}` does not support `{what}`")]
 pub struct UnsupportedCapability {

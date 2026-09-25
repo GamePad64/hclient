@@ -8,25 +8,6 @@
 //! shape answers one question — *which codings did this build compile* —
 //! and it is the wrong question twice over.
 //!
-//! **A caller could not narrow it.** Cargo unifies features across a
-//! graph, so a library deep in somebody's tree that switches `brotli` on
-//! decides what every client in that process asks for, and the
-//! application author has no lever: setting `Accept-Encoding` by hand
-//! disables decoding **entirely** (see [`negotiate`](super::negotiate)'s
-//! caller-set-header branch), so *"ask for gzip only, and still decode
-//! it"* was inexpressible. That gap was written down in
-//! `.notes/decompression-as-an-attack-surface.md` before it was closed,
-//! and the argument that closes it is **CPU under load** rather than
-//! binary size or safety, both of which already had answers: size is
-//! settled by the features (a compiled-but-unused coding costs nothing at
-//! run time), and safety is bounded by
-//! [`ClientBuilder::response_limit`](crate::ClientBuilder::response_limit),
-//! which counts decoded bytes rather than wire bytes, because the
-//! wrapper enforcing it sits outside the one that decodes. What nothing answered is the measured one: at 1900
-//! MiB/s gzip decode, a service doing 5000 RPS of 1.7 MiB responses
-//! spends **4.5 cores** reversing codings, and there was no way to turn
-//! that off for one client.
-//!
 //! **And a caller could not extend it.** Every other extension point in
 //! this workspace — `Resolve`, [`CacheStore`](crate::cache::CacheStore),
 //! [`RetryPolicy`](hclient_proto::retry::RetryPolicy),
@@ -53,9 +34,49 @@
 //! can, and its order is the caller's to choose, which is what made the
 //! field redundant rather than merely unnecessary.
 
+// Maintainer notes (not rendered):
+//
+// **A caller could not narrow it.** Cargo unifies features across a
+// graph, so a library deep in somebody's tree that switches `brotli` on
+// decides what every client in that process asks for, and the
+// application author has no lever: setting `Accept-Encoding` by hand
+// disables decoding **entirely** (see [`negotiate`](super::negotiate)'s
+// caller-set-header branch), so *"ask for gzip only, and still decode
+// it"* was inexpressible. That gap was written down in
+// `.notes/decompression-as-an-attack-surface.md` before it was closed,
+// and the argument that closes it is **CPU under load** rather than
+// binary size or safety, both of which already had answers: size is
+// settled by the features (a compiled-but-unused coding costs nothing at
+// run time), and safety is bounded by
+// [`ClientBuilder::response_limit`](crate::ClientBuilder::response_limit),
+// which counts decoded bytes rather than wire bytes, because the
+// wrapper enforcing it sits outside the one that decodes. What nothing answered is the measured one: at 1900
+// MiB/s gzip decode, a service doing 5000 RPS of 1.7 MiB responses
+// spends **4.5 cores** reversing codings, and there was no way to turn
+// that off for one client.
+
 use super::decoder::Decoder;
 use std::sync::Arc;
 
+// Maintainer notes (not rendered):
+//
+// # This trait declares no auto trait, and that is the house rule
+//
+// [`CacheStore`](crate::cache::CacheStore) — the seam this workspace
+// holds up as the model for an open extension point — declares none
+// either, and for the reason the `no-send-or-sync-in-the-core-surface`
+// guard exists: a bound stated on a seam is a demand on every
+// implementor, including one this workspace has never seen. What needs
+// the property is the place the value is **stored**, which is
+// [`SharedContentCoding`], and that is where it is written.
+//
+// **This was tried the other way round first**, and `cargo fmt` settled
+// it rather than an argument: a `send-bound-exception` marker on a
+// `pub trait X: Send {` line is **deleted** by a reflow — reproduced on
+// this trait — so `just fmt-check` and `just invariants` cannot both
+// pass with the bound there. That is the same finding this workspace
+// recorded when `auth`'s two traits met it, arrived at from a third
+// direction.
 /// One content coding: its name on the wire, and how to start reversing
 /// it.
 ///
@@ -100,29 +121,16 @@ use std::sync::Arc;
 ///
 /// [`ClientBuilder::response_limit`]: crate::ClientBuilder::response_limit
 ///
-/// # This trait declares no auto trait, and that is the house rule
+/// # `Send` and `Sync`
 ///
-/// [`CacheStore`](crate::cache::CacheStore) — the seam this workspace
-/// holds up as the model for an open extension point — declares none
-/// either, and for the reason the `no-send-or-sync-in-the-core-surface`
-/// guard exists: a bound stated on a seam is a demand on every
-/// implementor, including one this workspace has never seen. What needs
-/// the property is the place the value is **stored**, which is
-/// [`SharedContentCoding`], and that is where it is written.
+/// This trait does not require either; [`SharedContentCoding`], the form
+/// a client stores a coding in, does.
 ///
 /// The practical consequence for an implementor is none at all: write a
 /// coding that happens to be `Send + Sync`, which any type holding no
 /// `Rc` is, and [`ClientBuilder::decompression`] accepts it. One that is
 /// genuinely not gets `E0277` where it is handed over rather than where
 /// it is defined.
-///
-/// **This was tried the other way round first**, and `cargo fmt` settled
-/// it rather than an argument: a `send-bound-exception` marker on a
-/// `pub trait X: Send {` line is **deleted** by a reflow — reproduced on
-/// this trait — so `just fmt-check` and `just invariants` cannot both
-/// pass with the bound there. That is the same finding this workspace
-/// recorded when `auth`'s two traits met it, arrived at from a third
-/// direction.
 ///
 /// [`ClientBuilder::decompression`]: crate::ClientBuilder::decompression
 pub trait ContentCoding: std::fmt::Debug {
@@ -184,6 +192,14 @@ pub trait ContentCoding: std::fmt::Debug {
     fn decoder(&self) -> Decoder;
 }
 
+// Maintainer notes (not rendered):
+//
+// `Arc` rather than `Box` because [`Config`](crate::Config) is `Clone`:
+// `Client::total_timeout` hands back a second handle by cloning it, and
+// a `Box` would deep-copy a list that is read-only after `build()`. Same
+// answer as [`SharedRedirectPolicy`](crate::redirect::SharedRedirectPolicy)
+// and [`SharedRetryPolicy`](crate::retry::SharedRetryPolicy) one field
+// over.
 /// A content coding as the client stores it.
 ///
 /// **`Arc<dyn ..>` rather than `&'static dyn ..`**, and the four built-in
@@ -194,13 +210,6 @@ pub trait ContentCoding: std::fmt::Debug {
 /// [`build()`](crate::ClientBuilder::build) — four, in the default build —
 /// against a seam that would otherwise be open only to codings that hold
 /// nothing.
-///
-/// `Arc` rather than `Box` because [`Config`](crate::Config) is `Clone`:
-/// `Client::total_timeout` hands back a second handle by cloning it, and
-/// a `Box` would deep-copy a list that is read-only after `build()`. Same
-/// answer as [`SharedRedirectPolicy`](crate::redirect::SharedRedirectPolicy)
-/// and [`SharedRetryPolicy`](crate::retry::SharedRetryPolicy) one field
-/// over.
 pub type SharedContentCoding = Arc<dyn ContentCoding + Send + Sync>; // send-bound-exception: amendment-C12
 
 /// The coding a `Content-Encoding` names, if this client carries one.

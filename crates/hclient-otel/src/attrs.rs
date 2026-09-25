@@ -100,6 +100,21 @@ impl Head {
 /// What an unrecognised method is reported as, spelled by the registry.
 const OTHER: &str = "_OTHER";
 
+// Maintainer notes (not rendered):
+//
+// **`docs/otel-design.md` §5a got this wrong**, and the correction is
+// written here rather than only in the document: it recorded
+// `method_original` as *"only when we normalise a method, which this
+// client does not — so absent, and that is an answer"*. Normalisation is
+// not optional in the specification, it is a MUST, and skipping it is
+// what would have left the span name unbounded — which the same section
+// spends its next paragraph forbidding. The document is corrected.
+//
+// Matched on the string rather than on `http::Method`'s nine constants,
+// because those are not structural-match constants and cannot appear in
+// a pattern at all — measured, `E0158`. The test beside it enumerates all
+// nine by name for the reason the constants would have given for free: a
+// tenth standard method would otherwise arrive silently.
 /// `http.request.method`, normalised, and the original where the two
 /// differ.
 ///
@@ -110,14 +125,6 @@ const OTHER: &str = "_OTHER";
 /// request cannot put one in a span name, and the name stays one of ten
 /// values for ever.
 ///
-/// **`docs/otel-design.md` §5a got this wrong**, and the correction is
-/// written here rather than only in the document: it recorded
-/// `method_original` as *"only when we normalise a method, which this
-/// client does not — so absent, and that is an answer"*. Normalisation is
-/// not optional in the specification, it is a MUST, and skipping it is
-/// what would have left the span name unbounded — which the same section
-/// spends its next paragraph forbidding. The document is corrected.
-///
 /// The second half is `Some` **if and only if** the first is `_OTHER`,
 /// which is the specification's own condition, and it is what a reader of
 /// a span needs to tell *a method we do not know* from *a method the
@@ -125,9 +132,7 @@ const OTHER: &str = "_OTHER";
 ///
 /// Matched on the string rather than on `http::Method`'s nine constants,
 /// because those are not structural-match constants and cannot appear in
-/// a pattern at all — measured, `E0158`. The test beside it enumerates all
-/// nine by name for the reason the constants would have given for free: a
-/// tenth standard method would otherwise arrive silently.
+/// a pattern at all.
 #[must_use]
 pub fn method(m: &http::Method) -> (&'static str, Option<&str>) {
     let known = match m.as_str() {
@@ -180,12 +185,18 @@ const SENSITIVE_QUERY_KEYS: &[&str] = &[
 /// The literal the specification names, for both halves of the redaction.
 const REDACTED: &str = "REDACTED";
 
+// Maintainer notes (not rendered):
+//
+// Two redactions, and neither is optional: `https://u:p@host/` becomes
+// `https://REDACTED:REDACTED@host/` (a MUST), and a sensitive query
+// value becomes `key=REDACTED` (a SHOULD, and this workspace's own rule
+// about where credentials may travel makes it one here).
 /// `url.full`, with the credentials taken out.
 ///
 /// Two redactions, and neither is optional: `https://u:p@host/` becomes
 /// `https://REDACTED:REDACTED@host/` (a MUST), and a sensitive query
-/// value becomes `key=REDACTED` (a SHOULD, and this workspace's own rule
-/// about where credentials may travel makes it one here).
+/// value becomes `key=REDACTED` (a SHOULD, treated as required here
+/// given where credentials may otherwise travel).
 ///
 /// It builds a `String` rather than borrowing, and that is the cost of the
 /// attribute rather than a choice: `http::Uri`'s `Display` is the only

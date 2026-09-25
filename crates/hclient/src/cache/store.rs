@@ -329,6 +329,21 @@ impl StoredResponse {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// **And for a while this paragraph named three stores the seam could not
+// serve.** Waiting was never the only thing an out-of-process store
+// needs: it also has to build a [`StoredResponse`] back out of whatever
+// it wrote down, and both that constructor and [`Selector`]'s were
+// `pub(crate)` — so the two halves of the round trip were public and the
+// return journey was not. Found by writing the store from a scratch
+// crate outside this workspace rather than by reading, which is this
+// project's own rule about consumers being a different instrument from
+// tests. Both are public now, and
+// `tests/pluggable_stores.rs`'s `ReloadingStore` holds no
+// `StoredResponse` at all between `put` and `get` — so a hit served out
+// of it is evidence that the journey is exact.
+
 /// Where stored responses are kept.
 ///
 /// A multimap from [`Key`] to the variants stored under it, and nothing
@@ -351,18 +366,10 @@ impl StoredResponse {
 /// answers immediately — [`std::future::Ready`], no allocation — so the
 /// shape costs it nothing.
 ///
-/// **And for a while this paragraph named three stores the seam could not
-/// serve.** Waiting was never the only thing an out-of-process store
-/// needs: it also has to build a [`StoredResponse`] back out of whatever
-/// it wrote down, and both that constructor and [`Selector`]'s were
-/// `pub(crate)` — so the two halves of the round trip were public and the
-/// return journey was not. Found by writing the store from a scratch
-/// crate outside this workspace rather than by reading, which is this
-/// project's own rule about consumers being a different instrument from
-/// tests. Both are public now, and
-/// `tests/pluggable_stores.rs`'s `ReloadingStore` holds no
-/// `StoredResponse` at all between `put` and `get` — so a hit served out
-/// of it is evidence that the journey is exact.
+/// Waiting was never the only thing an out-of-process store needs: it
+/// also has to build a [`StoredResponse`] back out of whatever it wrote
+/// down, which is why both that constructor and [`Selector::from_fields`]
+/// are public.
 ///
 /// `&self` rather than `&mut self` follows from the first: a store that
 /// awaits cannot be held across that await behind a `&mut`, and a store
@@ -476,12 +483,24 @@ impl Default for MemoryStore {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// This is the same sentence `hclient-cookie`'s `Limits` carries and the
+// same reason.
+
 impl MemoryStore {
+    // Maintainer notes (not rendered):
+    //
+    // A number rather than "unbounded": a cache with no bound is a
+    // memory-exhaustion bug with a server on the other end of it, which
+    // is the same sentence `hclient-cookie`'s `Limits` carries and the
+    // same reason.
+
     /// Room for 512 variants.
     ///
     /// A number rather than "unbounded": a cache with no bound is a
     /// memory-exhaustion bug with a server on the other end of it, which
-    /// is the same sentence `hclient-cookie`'s `Limits` carries and the
+    /// is the same sentence [`crate::cookie::Limits`] carries and the
     /// same reason. 512 is not derived from anything — no RFC states a
     /// minimum for a cache the way RFC 6265 §6.1 does for a jar — so it is
     /// named as arbitrary here rather than dressed up, and

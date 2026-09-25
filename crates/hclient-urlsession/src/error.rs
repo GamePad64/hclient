@@ -12,13 +12,17 @@
 //! [`UrlSessionError`] is re-exported at the crate root, where it has
 //! always been, so no consumer's `use` line moves.
 
+// Maintainer notes (not rendered):
+//
+// `NSError`'s `localizedDescription` and nothing more: its `domain` and
+// `code` are stable enough to match on, but mapping them onto this
+// workspace's `ErrorKind` would be a second vocabulary invented at the
+// boundary — the same reason `hclient-fetch` reports what the browser
+// said rather than a translation of it.
 /// What `URLSession` said went wrong, in Apple's own words.
 ///
-/// `NSError`'s `localizedDescription` and nothing more: its `domain` and
-/// `code` are stable enough to match on, but mapping them onto this
-/// workspace's `ErrorKind` would be a second vocabulary invented at the
-/// boundary — the same reason `hclient-fetch` reports what the browser
-/// said rather than a translation of it.
+/// The payload is `NSError`'s `localizedDescription` and nothing more; its
+/// `domain` and `code` are not mapped onto any `ErrorKind`.
 #[derive(Debug, thiserror::Error)]
 #[error("URLSession: {0}")]
 pub struct UrlSessionError(pub String);

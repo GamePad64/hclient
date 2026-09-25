@@ -4,7 +4,7 @@
 //! differ between processes running the exact same binary: Chrome sends a
 //! `ReadableStream` request body and Firefox does not, and it's
 //! `cfg!`-invisible because it's the same `wasm32-unknown-unknown` build in
-//! every one of them. As of v0.2 W6 that difference is what
+//! every one of them. That difference is what
 //! `Capabilities::streaming_request_body` actually reports —
 //! [`supports_streaming_request_body`] decides it, `Fetch::caps` stores the
 //! one answer, and BOTH readers (`Transport::capabilities()` and
@@ -23,14 +23,9 @@
 //!
 //! [`supports_duplex`] — `'duplex' in Request.prototype` — is the cheap
 //! check the ecosystem usually reaches for, and it is **not** the one that
-//! decides anything here. It stays in this file as an observation, pinned
-//! against the deciding probe by `tests/caps.rs`, because the day the two
-//! disagree is the day the cheap one starts lying and this comment needs
-//! rewriting.
+//! decides anything here.
 //!
 //! The reason the cheap check is not trusted is measured, not theoretical.
-//! `docs/measurements/w6-request-streams/` drove Chrome 151 and Firefox 153
-//! against three servers that recorded the bytes they actually received.
 //! **Firefox does not refuse a `ReadableStream` request body — it replaces
 //! it.** The `Request` constructor succeeds, `fetch` resolves, the server
 //! answers `200`, and what arrives is the 23-byte ASCII string
@@ -47,9 +42,27 @@
 //! `fetch`. [`supports_streaming_request_body`] is that decision, and it is
 //! whatwg/fetch#1470's own detection — see its doc comment.
 
+// Maintainer notes (not rendered):
+//
+// every one of them. As of v0.2 W6 that difference is what
+// `Capabilities::streaming_request_body` actually reports.
+//
+// [`supports_duplex`] — is the cheap check the ecosystem usually reaches
+// for, and it is **not** the one that decides anything here. It stays in
+// this file as an observation, pinned against the deciding probe by
+// `tests/caps.rs`, because the day the two disagree is the day the cheap
+// one starts lying and this comment needs rewriting.
+//
+// `docs/measurements/w6-request-streams/` drove Chrome 151 and Firefox 153
+// against three servers that recorded the bytes they actually received.
+
 use hclient_core::caps::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport};
 use wasm_bindgen::{JsCast, JsValue};
 
+// Maintainer notes (not rendered):
+//
+// Every name actually listed here **is** currently forbidden (checked
+// against the live spec text, not memory, while writing this).
 /// Headers that fetch forbids scripts from setting. We **declare** them
 /// rather than silently dropping them on the floor: a caller who tries to
 /// set `Cookie` or a `Proxy-*` header and has it vanish without a typed
@@ -68,8 +81,7 @@ use wasm_bindgen::{JsCast, JsValue};
 /// the exact, complete, current predicate has to ask the browser itself
 /// (`fetch()`'s own `TypeError` on a forbidden header) rather than trust
 /// this list as exhaustive. Every name actually listed here **is**
-/// currently forbidden (checked against the live spec text, not memory,
-/// while writing this).
+/// currently forbidden.
 // NOTE (amendment-C4, reverified for this exact shape): `static FORBIDDEN:
 // &[HeaderName] = &[..]` fails with E0492 for an inline array literal,
 // because `HeaderName`'s `Custom` variant carries `Bytes`, which carries an
@@ -102,10 +114,19 @@ pub const FORBIDDEN_HEADERS: [http::HeaderName; 14] = [
 /// — without invoking it, and without constructing a `Request` — is
 /// side-effect-free and needs nothing beyond the constructor itself.
 ///
+// Maintainer notes (not rendered):
+//
+// always was, kept so `tests/caps.rs` can pin the two against each other.
+//
+// Measured 2026-08-09 (`docs/measurements/w6-request-streams/`), the two
+// agree in both browsers this project's CI runs: Chrome 151 —
+// `prototypeHasDuplex: true`, behavioural `supported: true`; Firefox 153 —
+// `false` and `false`. So the presence check is not currently wrong; it is
+// merely not the one that would notice if it became wrong.
 /// **This is a presence check, not a behavioural one, and nothing in this
 /// crate decides anything by it.** [`supports_streaming_request_body`] is
 /// what `probe()` reads; this function survives as the cheap signal it
-/// always was, kept so `tests/caps.rs` can pin the two against each other.
+/// always was.
 ///
 /// whatwg/fetch#1470 ("Feature detecting streaming requests") records Jake
 /// Archibald raising exactly the scenario a presence check cannot catch: an
@@ -115,10 +136,7 @@ pub const FORBIDDEN_HEADERS: [http::HeaderName; 14] = [
 /// attribute, full stop; #1470 is where the ecosystem worked out the
 /// stronger check that [`supports_streaming_request_body`] implements.
 ///
-/// Measured 2026-08-09 (`docs/measurements/w6-request-streams/`), the two
-/// agree in both browsers this project's CI runs: Chrome 151 —
-/// `prototypeHasDuplex: true`, behavioural `supported: true`; Firefox 153 —
-/// `false` and `false`. So the presence check is not currently wrong; it is
+/// So the presence check is not currently wrong; it is
 /// merely not the one that would notice if it became wrong.
 ///
 /// On any failure to even find `Request` or its prototype — which can't
@@ -139,6 +157,21 @@ pub(crate) fn supports_duplex() -> bool {
     js_sys::Reflect::has(&proto, &wasm_bindgen::JsValue::from_str("duplex")).unwrap_or(false)
 }
 
+// Maintainer notes (not rendered):
+//
+// Both must hold, and the construction must not throw. Measured
+// 2026-08-09 (`docs/measurements/w6-request-streams/results/`):
+// Chrome 151 — `duplexAccessed: true`, `hasContentType: false`; Firefox
+// 153 — `duplexAccessed: false`, `hasContentType: true`, no throw anywhere. The
+// same reports confirm what each browser then does on the wire, which is
+// why this two-question form is the one implemented rather than the
+// cheaper [`supports_duplex`].
+//
+// Called once, from `Fetch::new()`. The cost is one `Request`
+// construction per process, which is what buys the accuracy the presence
+// check cannot give; `probe()`'s own doc comment used to argue that cost
+// was not worth paying, written when nothing in this crate could act on
+// the answer either way.
 /// Whether this browser will actually **send** a `ReadableStream` handed to
 /// it as a request body — as opposed to accepting it, reporting success,
 /// and putting entirely different bytes on the wire.
@@ -161,10 +194,7 @@ pub(crate) fn supports_duplex() -> bool {
 ///    invented `Content-Type` is the fingerprint of the corruption itself,
 ///    read one level below the network and before a single byte is sent.
 ///
-/// Both must hold, and the construction must not throw. Measured
-/// 2026-08-09 (`docs/measurements/w6-request-streams/results/`): Chrome 151
-/// — `duplexAccessed: true`, `hasContentType: false`; Firefox 153 —
-/// `duplexAccessed: false`, `hasContentType: true`, no throw anywhere. The
+/// Both must hold, and the construction must not throw. The
 /// same reports confirm what each browser then does on the wire, which is
 /// why this two-question form is the one implemented rather than the
 /// cheaper [`supports_duplex`].
@@ -179,9 +209,7 @@ pub(crate) fn supports_duplex() -> bool {
 ///
 /// Called once, from `Fetch::new()`. The cost is one `Request`
 /// construction per process, which is what buys the accuracy the presence
-/// check cannot give; `probe()`'s own doc comment used to argue that cost
-/// was not worth paying, written when nothing in this crate could act on
-/// the answer either way.
+/// check cannot give.
 ///
 /// Every failure answers `false` — the conservative direction. A wrong
 /// `true` here is what would let a corrupt body onto the wire; a wrong

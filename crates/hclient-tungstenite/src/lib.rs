@@ -14,208 +14,223 @@
 //!   result to the framing. It is the only thing here that knows what a
 //!   socket is.
 //!
-//! # The seam this crate takes from `hclient-native` is "an upgraded byte
-//! stream, plus the `read_buf`"
+//! # Key concepts
 //!
-//! Which is exactly the shape rejected as the **public** seam, where it
-//! excludes three of four backends and the browser among them. As the
-//! seam between a transport and a framing
-//! crate it is right, because it is only ever asked of the one backend
-//! that can answer it. A shape can be wrong at one level and correct at
-//! the next; §2's argument was about which level.
+//! A WebSocket opened through [`Tungstenite`] is never pooled at either
+//! end: it lives on a connection of its own from the moment the upgrade
+//! completes, because a socket that has stopped speaking HTTP is not a
+//! connection any later request could reuse.
 //!
-//! The proof that the arrangement is the right way round is
-//! `hclient-fetch`: a browser hands back **messages**, so that backend
-//! implements `WebSocketConnect` itself and needs no adapter at all. The
-//! adapter exists exactly where the platform hands back **bytes**. If
-//! both needed one, the seam would be in the wrong place.
-//!
-//! What stays on the other side of it is in
-//! [`hclient_native::Upgrading`]: the connection of its own (its
-//! connector, its TLS, `http/1.1` alone on the ALPN list, and deliberately
-//! never the pool), and the h1 upgrade — `poll_without_shutdown` +
-//! `into_parts`, and the `101` recognised by **status** before the
-//! connection is polled out, which is the trap that module exists to
-//! avoid. The three checks that are about *WebSocket* rather than about
-//! *an upgrade* — `Upgrade:`, `Connection:` and `Sec-WebSocket-Accept` —
-//! are [`Handshake::accept`]'s, here, and they run on the response head
-//! **before** [`hclient_native::Upgrading::finish`] takes the connection
-//! apart. That ordering is structural rather than remembered: this crate
-//! cannot reach the socket without having been handed the head first.
-//!
-//! # Framing: `tungstenite`, driven by us
-//!
-//! `TcpConnect::Stream` is bounded by `futures_io::{AsyncRead,
-//! AsyncWrite}` plus `hclient_rt::Shutdown`, so an
-//! adapter is needed whichever crate is picked, and the adapter that faces
-//! `std::io` removes an `unsafe`. `tungstenite::protocol::WebSocketContext`
-//! takes the stream as a *parameter* rather than owning it, so the
-//! persistent protocol state and the transient IO are separate values and
-//! the `Shim` handed to each call borrows the poll `Context` for exactly
-//! that call. `tokio-tungstenite`'s `AllowStd` owns the stream across
-//! calls and therefore has to smuggle a `*mut Context` in; this crate
-//! forbids `unsafe` and does not have to.
-//!
-//! This is the third time this workspace drives someone else's state
-//! machine by hand rather than adopting their runtime glue — `h2`'s
-//! `Connection` and hyper's h1 `Connection` are the other two.
-//!
-//! # What §6 asked to be checked when the code was written
-//!
-//! Both were read out of `tungstenite 0.30.0`'s source rather than
-//! assumed, and both hold.
-//!
-//! **`WouldBlock` out of the shim leaves `WebSocketContext` resumable on
-//! every path.** `read` catches a `WouldBlock` from its own flush and sets
-//! `unflushed_additional`, so the queued pong or close is retried on the
-//! next call rather than lost; a `WouldBlock` that escapes `read` can
-//! therefore only have come from the read side, which is what makes it
-//! safe to report as `Poll::Pending` — the read waker has been registered
-//! by then. `write` formats the frame into `out_buffer` *before* anything
-//! can block, and `close` sets `ClosedByUs` before it can block and takes
-//! its `if let Active = state` branch only once, so a resumed close does
-//! not queue a second close frame.
-//!
-//! **A partial write is not lost between polls.** `FrameCodec::
-//! write_out_buffer` loops `stream.write(&out_buffer)` and does
-//! `out_buffer.drain(0..len)` for each partial write *before* the `?` on
-//! the next one propagates — so what was written is dropped from the
-//! buffer, what was not stays in it, and the next flush continues where
-//! the last one stopped. That property is the whole reason `Shim`'s
-//! `write` must return the real `n` rather than `buf.len()`;
-//! `a_message_larger_than_the_socket_buffer_arrives_whole` is the test,
-//! and the mutation it catches.
-//!
-//! # Why a WebSocket is never pooled, at either end
-//!
-//! It is opened on a connection of its own and it never goes back,
-//! because a socket that has stopped speaking HTTP is not a connection any
-//! later request could use. That is the same conclusion
-//! `hclient-native`'s `tests/switching_protocols.rs` reached from the
-//! other side, and neither half of this arrangement can undo it: the pool
-//! is not consulted on the way in ([`hclient_native::Native::upgrade`]
-//! never asks it), and nothing here can put a connection back, because
-//! this crate is never handed one — only the `I` a connection became.
-//!
-//! # The bound an open socket has: liveness, and only when it is asked for
-//!
-//! Steps 1-3 shipped with none — only the handshake read
-//! `Timeouts::connect`, so a peer that vanished without a `FIN` left a
-//! `Stream` that never yielded and never errored.
-//!
-//! **Ping/pong, not a timeout.** `Timeouts::total` is meaningless for a
-//! connection whose whole point is to outlive the exchange that opened
-//! it, and a gap bound would be actively *wrong*: silence is the normal
-//! state of a WebSocket, so `between_bytes` here would kill healthy
-//! connections. The question is not "is this transfer taking too long",
-//! it is **is the peer still there**, and RFC 6455 §5.5.2 answers exactly
-//! that. It is configured on the connector
-//! ([`Tungstenite::keep_alive`]) rather than on the seam or in
-//! the request's extensions, because `hclient-fetch` implements the same
-//! seam and a browser has no `send(ping)` at all — §7's own reasoning.
-//!
-//! **`poll_next` is the only thing driving the socket, and that is a real
-//! difference from `hclient-h3`.** Nothing is spawned here; this crate has
-//! no `Spawn` bound anywhere, deliberately. So a ping can only be written
-//! while the caller is polling, and **a caller that stops polling gets no
-//! keep-alive.** That is accepted openly rather than worked around: a
-//! caller that is not polling is not waiting for anything. It is genuinely
-//! unlike `hclient_h3`, where a spawned driver keeps a *pooled* connection
-//! alive on behalf of requests nobody has made yet — there the connection
-//! has no caller, here it always has one.
-//! `tests/websocket.rs`'s `a_socket_nobody_polls_gets_no_keep_alive` pins
-//! it from the server's side of the wire, so it is a stated property
-//! rather than an unstated consequence.
-//!
-//! **What `tungstenite` already does, and the one thing it does not.**
-//! `WebSocketContext::read` answers a peer's `Ping` with a `Pong` itself
-//! — its own doc says "This function sends pong and close responses
-//! automatically", and `tests/websocket.rs` watches that pong leave from
-//! the server's side. What it does **not** do is keep any record of pings
-//! *we* send: `read` hands an inbound `Pong` straight back out as
-//! `Message::Pong`, solicited or not, and there is no outstanding-ping
-//! state anywhere in `tungstenite 0.30`. So the frame this file writes is
-//! a `Ping`, and every bit of bookkeeping that decides whether a pong
-//! answered it is ours. That is the same division HTTP/3 met with quinn:
-//! driving a connection is what lets it *send* a keep-alive, not what
-//! makes it *decide* to.
-//!
-//! The ping also has to be **flushed**, which is not what the shape
-//! suggests and was read out of `tungstenite 0.30.0` rather than assumed:
-//! `write` formats a `Ping` into `out_buffer` and calls through to the
-//! socket only when the buffer passes `write_buffer_size` (128 KiB by
-//! default) or when it had a queued pong or close of its own to send
-//! (`_write`'s `should_flush`). A ping written and not flushed never
-//! leaves.
-//!
-//! ## §7's first open question: no, an unanswered ping is not surfaced
-//! before its deadline
-//!
-//! The `Stream` can yield exactly two things, and neither can carry it.
-//! `Message` has no `Ping`/`Pong` variant and must not gain one — the
-//! seam's own doc records why (the browser can neither send nor receive
-//! one), and a native-only concern is not a reason to change a seam three
-//! other backends implement. And an `Err` on this stream is **terminal**
-//! by that same seam's contract ("the connection broke and the error has
-//! already been reported"; "a `Stream` that has ended stays ended"), so a
-//! warning delivered as an error would break the contract for every
-//! caller, not only the ones who asked for a keep-alive.
-//!
-//! A third channel — a callback, a watch handle — would be a second
-//! vocabulary for information nobody can act on. The only action available
-//! on "the ping has not come back *yet*" is to wait, which is precisely
-//! what `within` already does; and a pong that arrives one millisecond
-//! inside the deadline is a perfectly healthy connection, so an early
-//! signal would report ordinary jitter as a fault. What a caller can read
-//! is the configuration in force ([`TungsteniteWebSocket::keep_alive`]) and the
-//! failure when it happens. Between those two there is nothing true to
-//! say.
-//!
-//! ## §7's second open question: the interval resets on **any** inbound
-//! frame, the deadline **only** on the pong
-//!
-//! They are two clocks answering two different questions, so they reset on
-//! different events.
-//!
-//! `every` measures **silence**. Any inbound frame at all — text, binary,
-//! ping, pong, close — is proof the peer is there and ends the silence, so
-//! it restarts the interval. The consequence is the one that matters for
-//! the "off by default" argument: **a busy connection sends no keep-alive
-//! traffic whatsoever.** Resetting only on a pong would make a chatty
-//! socket ping every `every` for ever, which is exactly the traffic nobody
-//! asked for.
-//!
-//! `within` measures **an unanswered probe**, and only the answer RFC 6455
-//! §5.5.2 makes a MUST answers it: a `Pong` carrying the ping's own
-//! payload. A text frame does not, because the two say different things —
-//! data comes from the peer's application, a pong comes from its WebSocket
-//! layer, and it is the layer that has to be alive for anything we send to
-//! be read at all. Letting any frame clear the deadline would turn the
-//! probe back into the gap bound §7 rejected, restricted to the window
-//! after a ping.
-//!
-//! The payload is **matched**, not accepted on the opcode alone, because
-//! RFC 6455 §5.5.3 explicitly allows *unsolicited* pongs as a
-//! unidirectional heartbeat: a peer that emits one every second would keep
-//! our probe permanently "answered" without ever having answered it. The
-//! payload is the ping's sequence number, so a stale pong for an earlier
-//! ping does not answer a later one either.
-//!
-//! One consequence to state rather than leave to be discovered: **both
-//! sleeps are polled only when the read side has nothing**, because
-//! `Pending` is the only moment `poll_next` has to poll them in. So the
-//! deadline cannot fire in the middle of a stream of data; it fires after
-//! `within` of *silence* following a ping. That falls straight out of
-//! "`poll_next` is the only driver", and it is what makes the paragraph
-//! above safe: a peer that answers a ping with data and keeps talking is
-//! not killed, while one that answers with data and then stops is.
-//!
-//! **The keep-alive stops at our own close.** `tungstenite` refuses every
-//! write once a close frame has gone out (`ProtocolError::
-//! SendAfterClosing`), and RFC 6455 makes a ping after a close meaningless
-//! anyway, so no probe follows one — a probe already in flight still has
-//! its deadline. The closing handshake is therefore unbounded, which is
-//! the same gap [`Sink::poll_close`] already records for itself.
+//! By default an open socket has no liveness bound beyond the handshake
+//! itself: a peer that vanishes without closing the TCP connection
+//! leaves the `Stream` waiting forever. [`Tungstenite::keep_alive`] turns
+//! on RFC 6455 §5.5.2 ping/pong; see [`WebSocketKeepAlive`] for the two
+//! timers and what each one answers.
+//
+// Maintainer notes (not rendered):
+//
+// # The seam this crate takes from `hclient-native` is "an upgraded byte
+// stream, plus the `read_buf`"
+//
+// Which is exactly the shape rejected as the **public** seam, where it
+// excludes three of four backends and the browser among them. As the
+// seam between a transport and a framing
+// crate it is right, because it is only ever asked of the one backend
+// that can answer it. A shape can be wrong at one level and correct at
+// the next; §2's argument was about which level.
+//
+// The proof that the arrangement is the right way round is
+// `hclient-fetch`: a browser hands back **messages**, so that backend
+// implements `WebSocketConnect` itself and needs no adapter at all. The
+// adapter exists exactly where the platform hands back **bytes**. If
+// both needed one, the seam would be in the wrong place.
+//
+// What stays on the other side of it is in
+// [`hclient_native::Upgrading`]: the connection of its own (its
+// connector, its TLS, `http/1.1` alone on the ALPN list, and deliberately
+// never the pool), and the h1 upgrade — `poll_without_shutdown` +
+// `into_parts`, and the `101` recognised by **status** before the
+// connection is polled out, which is the trap that module exists to
+// avoid. The three checks that are about *WebSocket* rather than about
+// *an upgrade* — `Upgrade:`, `Connection:` and `Sec-WebSocket-Accept` —
+// are [`Handshake::accept`]'s, here, and they run on the response head
+// **before** [`hclient_native::Upgrading::finish`] takes the connection
+// apart. That ordering is structural rather than remembered: this crate
+// cannot reach the socket without having been handed the head first.
+//
+// # Framing: `tungstenite`, driven by us
+//
+// `TcpConnect::Stream` is bounded by `futures_io::{AsyncRead,
+// AsyncWrite}` plus `hclient_rt::Shutdown`, so an
+// adapter is needed whichever crate is picked, and the adapter that faces
+// `std::io` removes an `unsafe`. `tungstenite::protocol::WebSocketContext`
+// takes the stream as a *parameter* rather than owning it, so the
+// persistent protocol state and the transient IO are separate values and
+// the `Shim` handed to each call borrows the poll `Context` for exactly
+// that call. `tokio-tungstenite`'s `AllowStd` owns the stream across
+// calls and therefore has to smuggle a `*mut Context` in; this crate
+// forbids `unsafe` and does not have to.
+//
+// This is the third time this workspace drives someone else's state
+// machine by hand rather than adopting their runtime glue — `h2`'s
+// `Connection` and hyper's h1 `Connection` are the other two.
+//
+// # What §6 asked to be checked when the code was written
+//
+// Both were read out of `tungstenite 0.30.0`'s source rather than
+// assumed, and both hold.
+//
+// **`WouldBlock` out of the shim leaves `WebSocketContext` resumable on
+// every path.** `read` catches a `WouldBlock` from its own flush and sets
+// `unflushed_additional`, so the queued pong or close is retried on the
+// next call rather than lost; a `WouldBlock` that escapes `read` can
+// therefore only have come from the read side, which is what makes it
+// safe to report as `Poll::Pending` — the read waker has been registered
+// by then. `write` formats the frame into `out_buffer` *before* anything
+// can block, and `close` sets `ClosedByUs` before it can block and takes
+// its `if let Active = state` branch only once, so a resumed close does
+// not queue a second close frame.
+//
+// **A partial write is not lost between polls.** `FrameCodec::
+// write_out_buffer` loops `stream.write(&out_buffer)` and does
+// `out_buffer.drain(0..len)` for each partial write *before* the `?` on
+// the next one propagates — so what was written is dropped from the
+// buffer, what was not stays in it, and the next flush continues where
+// the last one stopped. That property is the whole reason `Shim`'s
+// `write` must return the real `n` rather than `buf.len()`;
+// `a_message_larger_than_the_socket_buffer_arrives_whole` is the test,
+// and the mutation it catches.
+//
+// # Why a WebSocket is never pooled, at either end
+//
+// It is opened on a connection of its own and it never goes back,
+// because a socket that has stopped speaking HTTP is not a connection any
+// later request could use. That is the same conclusion
+// `hclient-native`'s `tests/switching_protocols.rs` reached from the
+// other side, and neither half of this arrangement can undo it: the pool
+// is not consulted on the way in ([`hclient_native::Native::upgrade`]
+// never asks it), and nothing here can put a connection back, because
+// this crate is never handed one — only the `I` a connection became.
+//
+// # The bound an open socket has: liveness, and only when it is asked for
+//
+// Steps 1-3 shipped with none — only the handshake read
+// `Timeouts::connect`, so a peer that vanished without a `FIN` left a
+// `Stream` that never yielded and never errored.
+//
+// **Ping/pong, not a timeout.** `Timeouts::total` is meaningless for a
+// connection whose whole point is to outlive the exchange that opened
+// it, and a gap bound would be actively *wrong*: silence is the normal
+// state of a WebSocket, so `between_bytes` here would kill healthy
+// connections. The question is not "is this transfer taking too long",
+// it is **is the peer still there**, and RFC 6455 §5.5.2 answers exactly
+// that. It is configured on the connector
+// ([`Tungstenite::keep_alive`]) rather than on the seam or in
+// the request's extensions, because `hclient-fetch` implements the same
+// seam and a browser has no `send(ping)` at all — §7's own reasoning.
+//
+// **`poll_next` is the only thing driving the socket, and that is a real
+// difference from `hclient-h3`.** Nothing is spawned here; this crate has
+// no `Spawn` bound anywhere, deliberately. So a ping can only be written
+// while the caller is polling, and **a caller that stops polling gets no
+// keep-alive.** That is accepted openly rather than worked around: a
+// caller that is not polling is not waiting for anything. It is genuinely
+// unlike `hclient_h3`, where a spawned driver keeps a *pooled* connection
+// alive on behalf of requests nobody has made yet — there the connection
+// has no caller, here it always has one.
+// `tests/websocket.rs`'s `a_socket_nobody_polls_gets_no_keep_alive` pins
+// it from the server's side of the wire, so it is a stated property
+// rather than an unstated consequence.
+//
+// **What `tungstenite` already does, and the one thing it does not.**
+// `WebSocketContext::read` answers a peer's `Ping` with a `Pong` itself
+// — its own doc says "This function sends pong and close responses
+// automatically", and `tests/websocket.rs` watches that pong leave from
+// the server's side. What it does **not** do is keep any record of pings
+// *we* send: `read` hands an inbound `Pong` straight back out as
+// `Message::Pong`, solicited or not, and there is no outstanding-ping
+// state anywhere in `tungstenite 0.30`. So the frame this file writes is
+// a `Ping`, and every bit of bookkeeping that decides whether a pong
+// answered it is ours. That is the same division HTTP/3 met with quinn:
+// driving a connection is what lets it *send* a keep-alive, not what
+// makes it *decide* to.
+//
+// The ping also has to be **flushed**, which is not what the shape
+// suggests and was read out of `tungstenite 0.30.0` rather than assumed:
+// `write` formats a `Ping` into `out_buffer` and calls through to the
+// socket only when the buffer passes `write_buffer_size` (128 KiB by
+// default) or when it had a queued pong or close of its own to send
+// (`_write`'s `should_flush`). A ping written and not flushed never
+// leaves.
+//
+// ## §7's first open question: no, an unanswered ping is not surfaced
+// before its deadline
+//
+// The `Stream` can yield exactly two things, and neither can carry it.
+// `Message` has no `Ping`/`Pong` variant and must not gain one — the
+// seam's own doc records why (the browser can neither send nor receive
+// one), and a native-only concern is not a reason to change a seam three
+// other backends implement. And an `Err` on this stream is **terminal**
+// by that same seam's contract ("the connection broke and the error has
+// already been reported"; "a `Stream` that has ended stays ended"), so a
+// warning delivered as an error would break the contract for every
+// caller, not only the ones who asked for a keep-alive.
+//
+// A third channel — a callback, a watch handle — would be a second
+// vocabulary for information nobody can act on. The only action available
+// on "the ping has not come back *yet*" is to wait, which is precisely
+// what `within` already does; and a pong that arrives one millisecond
+// inside the deadline is a perfectly healthy connection, so an early
+// signal would report ordinary jitter as a fault. What a caller can read
+// is the configuration in force ([`TungsteniteWebSocket::keep_alive`]) and the
+// failure when it happens. Between those two there is nothing true to
+// say.
+//
+// ## §7's second open question: the interval resets on **any** inbound
+// frame, the deadline **only** on the pong
+//
+// They are two clocks answering two different questions, so they reset on
+// different events.
+//
+// `every` measures **silence**. Any inbound frame at all — text, binary,
+// ping, pong, close — is proof the peer is there and ends the silence, so
+// it restarts the interval. The consequence is the one that matters for
+// the "off by default" argument: **a busy connection sends no keep-alive
+// traffic whatsoever.** Resetting only on a pong would make a chatty
+// socket ping every `every` for ever, which is exactly the traffic nobody
+// asked for.
+//
+// `within` measures **an unanswered probe**, and only the answer RFC 6455
+// §5.5.2 makes a MUST answers it: a `Pong` carrying the ping's own
+// payload. A text frame does not, because the two say different things —
+// data comes from the peer's application, a pong comes from its WebSocket
+// layer, and it is the layer that has to be alive for anything we send to
+// be read at all. Letting any frame clear the deadline would turn the
+// probe back into the gap bound §7 rejected, restricted to the window
+// after a ping.
+//
+// The payload is **matched**, not accepted on the opcode alone, because
+// RFC 6455 §5.5.3 explicitly allows *unsolicited* pongs as a
+// unidirectional heartbeat: a peer that emits one every second would keep
+// our probe permanently "answered" without ever having answered it. The
+// payload is the ping's sequence number, so a stale pong for an earlier
+// ping does not answer a later one either.
+//
+// One consequence to state rather than leave to be discovered: **both
+// sleeps are polled only when the read side has nothing**, because
+// `Pending` is the only moment `poll_next` has to poll them in. So the
+// deadline cannot fire in the middle of a stream of data; it fires after
+// `within` of *silence* following a ping. That falls straight out of
+// "`poll_next` is the only driver", and it is what makes the paragraph
+// above safe: a peer that answers a ping with data and keeps talking is
+// not killed, while one that answers with data and then stops is.
+//
+// **The keep-alive stops at our own close.** `tungstenite` refuses every
+// write once a close frame has gone out (`ProtocolError::
+// SendAfterClosing`), and RFC 6455 makes a ping after a close meaningless
+// anyway, so no probe follows one — a probe already in flight still has
+// its deadline. The closing handshake is therefore unbounded, which is
+// the same gap [`Sink::poll_close`] already records for itself.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -360,6 +375,11 @@ impl Handshake {
         Ok((Self { key }, out))
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // What is left is what makes a `101` a *WebSocket* `101`. All three
+    // are refusals rather than warnings: `tests/websocket.rs` has a
+    // server for each, and deleting any of them kills a named test.
     /// The three checks a `101` has to pass to be *this* handshake's
     /// answer — and deliberately not the fourth.
     ///
@@ -371,9 +391,8 @@ impl Handshake {
     /// all. [`hclient_native::Native::upgrade`] carries that one and hands
     /// back a head only for a `101`.
     ///
-    /// What is left is what makes a `101` a *WebSocket* `101`. All three
-    /// are refusals rather than warnings: `tests/websocket.rs` has a
-    /// server for each, and deleting any of them kills a named test.
+    /// What is left is what makes a `101` a *WebSocket* `101`, and all
+    /// three are refusals rather than warnings.
     ///
     /// # Errors
     ///
@@ -519,6 +538,10 @@ fn ws_error(e: tungstenite::Error) -> Error {
     Error::new(kind, e)
 }
 
+// Maintainer notes (not rendered):
+//
+// The two fields reset on different events, deliberately — the module
+// doc is where the reasoning for both is written down.
 /// The liveness bound on an open WebSocket: how long the socket may be
 /// silent before a `Ping` goes out, and how long the peer then has to
 /// answer it.
@@ -535,8 +558,9 @@ fn ws_error(e: tungstenite::Error) -> Error {
 /// answer says something about the peer that is actually reading the
 /// messages.
 ///
-/// The two fields reset on different events, deliberately — the module
-/// doc is where the reasoning for both is written down.
+/// The two fields reset on different events, deliberately: `every` on any
+/// inbound frame, `within` only on a matching pong. See their own docs
+/// below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WebSocketKeepAlive {
@@ -627,12 +651,16 @@ impl<Tm: Timer> Liveness<Tm> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// The IO and the protocol state are separate fields on purpose: that is
+// what lets `Shim` borrow the poll `Context` for one call, and it is
+// the whole of §6's argument for driving `tungstenite` rather than
+// wrapping it.
 /// An open WebSocket on a native socket.
 ///
 /// The IO and the protocol state are separate fields on purpose: that is
-/// what lets `Shim` borrow the poll `Context` for one call, and it is
-/// the whole of §6's argument for driving `tungstenite` rather than
-/// wrapping it.
+/// what lets `Shim` borrow the poll `Context` for one call.
 pub struct TungsteniteWebSocket<I, Tm: Timer> {
     io: I,
     ctx: WebSocketContext,
@@ -682,22 +710,29 @@ impl<I, Tm: Timer> TungsteniteWebSocket<I, Tm> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The default being *readable* is the point: "off by default" is then
+    // a claim a caller can check rather than one it has to believe, and
+    // `tests/websocket.rs` checks it here as well as on the wire.
     /// The liveness bound in force on this socket, and `None` — the
     /// default — when there is none.
     ///
-    /// The default being *readable* is the point: "off by default" is then
-    /// a claim a caller can check rather than one it has to believe, and
-    /// `tests/websocket.rs` checks it here as well as on the wire.
+    /// The default being *readable* is the point: "off by default" is
+    /// then a claim a caller can check rather than one it has to
+    /// believe.
     pub fn keep_alive(&self) -> Option<WebSocketKeepAlive> {
         self.live.as_ref().map(|l| l.config)
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// — and, per §7's first question, the only place it is visible.
 /// Hand-written for the reason [`hclient_native::IdleTimeout`]'s is:
 /// `#[derive(Debug)]` would demand `Debug` of the clock, which [`Timer`]
 /// does not ask for. The keep-alive state is in it because an outstanding
-/// probe is exactly what a reader debugging a stalled socket wants to see
-/// — and, per §7's first question, the only place it is visible.
+/// probe is exactly what a reader debugging a stalled socket wants to see.
 ///
 /// `ctx` is deliberately not printed raw: `keep_alive` and
 /// `ping_awaiting_a_pong` are the two facts inside it a reader can act
@@ -1066,6 +1101,14 @@ where
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Nothing is spawned here — neither this crate nor `hclient-native`
+    // has a `Spawn` bound, deliberately — so the ping is written from
+    // `poll_next` or not at all. Unlike `hclient-h3`, where a spawned
+    // driver keeps a pooled connection alive for requests nobody has
+    // made yet, a WebSocket always has a caller, and one that is not
+    // polling is not waiting for anything.
     /// Prove the peer of an open WebSocket is still there, with RFC 6455
     /// §5.5.2 ping/pong — **off unless this is called.**
     ///
@@ -1087,10 +1130,8 @@ where
     /// - **A caller that stops polling gets no keep-alive.** Nothing is
     ///   spawned here — neither this crate nor `hclient-native` has a
     ///   `Spawn` bound, deliberately — so the ping is written from
-    ///   `poll_next` or not at all. Unlike `hclient-h3`, where a spawned
-    ///   driver keeps a pooled connection alive for requests nobody has
-    ///   made yet, a WebSocket always has a caller, and one that is not
-    ///   polling is not waiting for anything.
+    ///   `poll_next` or not at all. A WebSocket always has a caller, and
+    ///   one that is not polling is not waiting for anything.
     /// - **A busy connection never pings.** `every` measures silence on
     ///   the wire, and any inbound frame restarts it.
     ///
@@ -1110,14 +1151,18 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// `R: Clone` came with the keep-alive and is not a new restriction:
+// `Transport for Native` has required it since v0.2 W2, and every runtime
+// in this workspace is a ZST or a handle. The socket needs its own clock
+// because it outlives the call that opened it, and a `&R` cannot.
 /// The seam, implemented — which is the whole of how this crate says it
 /// can do WebSocket. There is no capability to read and no method that
 /// returns `Unsupported`: something that cannot do this does not write
 /// this `impl`, and asking it does not compile.
 ///
-/// `R: Clone` came with the keep-alive and is not a new restriction:
-/// `Transport for Native` has required it since v0.2 W2, and every runtime
-/// in this workspace is a ZST or a handle. The socket needs its own clock
+/// `R: Clone` came with the keep-alive: the socket needs its own clock
 /// because it outlives the call that opened it, and a `&R` cannot.
 impl<R, T, D, H> WebSocketConnect for Tungstenite<'_, R, T, D, H>
 where

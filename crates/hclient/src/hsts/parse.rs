@@ -27,17 +27,8 @@ use winnow::{ModalResult, Parser};
 
 use hclient_proto::field::{ows, quoted_string, token};
 
-/// What one well-formed `Strict-Transport-Security` field value said.
-///
-/// **There is no `Clear` arm, unlike `Alt-Svc`'s `FieldValue`, and the
-/// difference is which layer the instruction belongs to.** RFC 7838 has a
-/// literal `clear` token, so the *parser* has to report it. §6.1.1 gives
-/// deletion no syntax of its own: `max-age=0` is an ordinary directive
-/// with an ordinary value, and it is §8.1 — the rules — that reads a zero
-/// as *"cease regarding the host as a Known HSTS Host"*. So a
-/// `Directives` with `max_age: 0` is what this type hands back, and
-/// [`Hsts::note`](super::Hsts::note) is where the deletion happens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Maintainer notes (not rendered):
+//
 // **`#[non_exhaustive]`, which is answer 3 of the three this workspace
 // records**: this is handed *back* and only read, so exhaustiveness is
 // not the mechanism anywhere — nothing branches on the set of fields, and
@@ -51,6 +42,18 @@ use hclient_proto::field::{ows, quoted_string, token};
 // directive arriving here is an added field, and that must not be a major
 // version. `SetCookie` one module over carries the attribute for the same
 // reason and reads the same way.
+
+/// What one well-formed `Strict-Transport-Security` field value said.
+///
+/// **There is no `Clear` arm, unlike `Alt-Svc`'s `FieldValue`, and the
+/// difference is which layer the instruction belongs to.** RFC 7838 has a
+/// literal `clear` token, so the *parser* has to report it. §6.1.1 gives
+/// deletion no syntax of its own: `max-age=0` is an ordinary directive
+/// with an ordinary value, and it is §8.1 — the rules — that reads a zero
+/// as *"cease regarding the host as a Known HSTS Host"*. So a
+/// `Directives` with `max_age: 0` is what this type hands back, and
+/// [`Hsts::note`](super::Hsts::note) is where the deletion happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Directives {
     /// §6.1.1's REQUIRED `max-age`, in seconds.

@@ -39,18 +39,23 @@ use std::time::Duration;
 
 use hclient_core::timer::Timer;
 
+// Maintainer notes (not rendered):
+// , which is exactly what the
+// WebSocket keep-alive's own default records one crate over.
 /// How often a shared HTTP/2 connection sends a `PING`, and how long the
 /// peer then has to answer it.
 ///
 /// Off by default, and the default is the decision: a client that pings
-/// puts traffic on the wire nobody asked for, which is exactly what the
-/// WebSocket keep-alive's own default records one crate over.
+/// puts traffic on the wire nobody asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct H2KeepAlive {
+    // Maintainer notes (not rendered):
+    // — see this module's doc for why h2 cannot
+    // offer the second.
     /// The gap between one `PING` and the next.
     ///
-    /// **Time, not silence** — see this module's doc for why h2 cannot
-    /// offer the second.
+    /// **Time, not silence**: `h2` reports no traffic on a connection, so
+    /// a busy connection still sends one `PING` per interval.
     pub every: Duration,
     /// How long the peer has to answer before the connection is closed.
     pub within: Duration,

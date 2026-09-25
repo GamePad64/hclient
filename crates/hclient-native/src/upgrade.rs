@@ -67,8 +67,7 @@
 //!    `hyper::upgrade::{on, Upgraded}`.** `Upgraded` holds
 //!    `Rewind<Box<dyn Io + Send>>` (`hyper/src/upgrade.rs:66-67`), which
 //!    would put a `Send` bound on this crate's IO and shut out
-//!    single-threaded runtimes — the same objection that disqualified
-//!    `hyper/http2` in v0.2 W3. `poll_without_shutdown` and `into_parts`
+//!    single-threaded runtimes. `poll_without_shutdown` and `into_parts`
 //!    are bounded by `T: Read + Write + Shutdown + Unpin` alone.
 //!
 //!    Worth knowing, because it is not what the shape suggests: at
@@ -100,6 +99,10 @@
 //! connection any later request could use. That is the same conclusion
 //! `tests/switching_protocols.rs` reached from the other side, and here it
 //! costs nothing to arrange — this module never builds a `CheckIn`.
+
+// Maintainer notes (not rendered):
+//    single-threaded runtimes — the same objection that disqualified
+//    `hyper/http2` in v0.2 W3. `poll_without_shutdown` and `into_parts`
 use crate::connect;
 use crate::error::{EndedBeforeTheResponse, NotSwitchingProtocols};
 use crate::hyperio::HyperIo;
@@ -160,10 +163,13 @@ where
         &self.head
     }
 
+    // Maintainer notes (not rendered):
+    // `read_buf` is rule 3 — bytes hyper read off the socket in the same
+    // flight as the `101`, unreachable from anywhere else once this value
     /// Take the connection apart: the socket, and whatever the server had
     /// already sent past the response head.
     ///
-    /// `read_buf` is rule 3 — bytes hyper read off the socket in the same
+    /// `read_buf` holds the bytes hyper read off the socket in the same
     /// flight as the `101`, unreachable from anywhere else once this value
     /// is dropped. A caller that ignores it loses the peer's first frames
     /// for good, and no later read can recover them.
@@ -196,6 +202,12 @@ where
     D: Resolve,
     P: crate::proxy::Handshake + Clone,
 {
+    // Maintainer notes (not rendered):
+    // is the HTTP/2 answer to upgrades and this is not it. The pool is
+    // not consulted, and nothing here can give the connection back — see
+    // the module doc.
+    // [`NotSwitchingProtocols`] for any status but `101`, which is rule 1
+    // and the one check this method makes about the answer;
     /// Send `req` on a connection of this transport's own and hand back
     /// the `101` it was answered with, undismantled.
     ///
@@ -209,13 +221,12 @@ where
     ///
     /// `http/1.1` alone goes on the ALPN list: RFC 8441 extended CONNECT
     /// is the HTTP/2 answer to upgrades and this is not it. The pool is
-    /// not consulted, and nothing here can give the connection back — see
-    /// the module doc.
+    /// not consulted, and nothing here can give the connection back.
     ///
     /// # Errors
     ///
-    /// [`NotSwitchingProtocols`] for any status but `101`, which is rule 1
-    /// and the one check this method makes about the answer;
+    /// [`NotSwitchingProtocols`] for any status but `101`, which is the one
+    /// check this method makes about the answer;
     /// [`EndedBeforeTheResponse`] when the connection finishes with the
     /// request still queued on it; and whatever connecting failed with.
     pub async fn upgrade(

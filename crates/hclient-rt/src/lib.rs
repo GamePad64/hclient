@@ -24,9 +24,7 @@
 //!   is the understating answer: a runtime that forgets a line refuses
 //!   something it could have done, where one that over-claims silently
 //!   drops what a caller asked for. A constant meaning *every field* would
-//!   claim the next field too, the day this crate adds one — and it was
-//!   caught doing the damage it predicts before it went: `TokioHandle`
-//!   declared it while delegating to a runtime that declares less.
+//!   claim the next field too, the day this crate adds one.
 //! - **The check lives on the request**, is called `reject_unsupported`,
 //!   and answers an [`std::io::Error`] of kind `Unsupported` carrying the
 //!   refusal — so a runtime calls it on the way in and a transport can call
@@ -40,6 +38,12 @@
 //! offloads are properties of **one socket on one kernel** — GSO segment
 //! counts and whether ECN marks are delivered are measured at bind — so
 //! [`UdpDatagrams::support`] is a method on the socket.
+
+// Maintainer notes (not rendered):
+// A constant meaning *every field* would claim the next field too, the
+// day this crate adds one — and it was caught doing the damage it
+// predicts before it went: `TokioHandle` declared it while delegating to
+// a runtime that declares less.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 

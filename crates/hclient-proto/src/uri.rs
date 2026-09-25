@@ -11,46 +11,17 @@
 //! differently, leaving the same client understanding `/x` two different
 //! ways depending on who sent it.
 //!
-//! # Why the resolution is written out by hand
+//! # RFC 3986 §5.2 rather than a general-purpose URL library
 //!
-//! `url::Url::parse(base).join(reference)` is the one-line alternative.
-//! That single call puts `url` → `idna` → `icu_normalizer` +
-//! `icu_properties` into every build of `hclient-proto`, the sans-io crate
-//! every target includes: measured from vendored sources,
-//! `icu_properties_data` 1.9 MB, `idna` 1004 KB, `icu_collections` 820 KB,
-//! `icu_normalizer_data` 452 KB, almost entirely Unicode tables — for one
-//! URI join. On a 256–512 KB microcontroller that is more than the whole
-//! flash budget.
+//! This resolves a reference by implementing RFC 3986 §5.2 directly: the
+//! reference transform (§5.2.2), the merge (§5.2.3), `remove_dot_segments`
+//! (§5.2.4) and the recomposition (§5.3), on the reference exactly as
+//! written. A crate implementing the WHATWG URL Standard would also work,
+//! at the cost of pulling in that standard's normalisation, repair and
+//! Unicode tables for every build of this sans-io crate, including
+//! constrained targets that have no room for them.
 //!
-//! What replaces it is RFC 3986 §5.2 and nothing else: the reference
-//! transform (§5.2.2), the merge (§5.2.3), `remove_dot_segments` (§5.2.4)
-//! and the recomposition (§5.3), on the reference exactly as written.
-//! `url` implements the WHATWG URL Standard, which is RFC 3986 plus a
-//! layer of normalisation and repair; every place the two disagree is
-//! enumerated and pinned against `url` itself in
-//! `tests/uri_resolution.rs`, where `url` stays on as a **dev-dependency**
-//! for exactly that purpose — it is the incumbent, and the only oracle
-//! this module has.
-//!
-//! # IDN, and why it is a feature rather than a casualty
-//!
-//! The Unicode tables above exist for internationalised domain names, and
-//! dropping `url` outright would have dropped IDN with them. It would also
-//! have been a smaller loss than it looks, because what this project had
-//! before was not IDN support but IDN *inconsistency*:
-//!
-//! ```text
-//! client.get("https://münchen.de/x")
-//!   with no base_url  ->  error: invalid uri character
-//!   with any base_url ->  ok, https://xn--mnchen-3ya.de/x
-//! ```
-//!
-//! The difference was never a decision. Without a base, `hclient`'s
-//! `effective_uri` handed the string to `http::Uri`, which rejects a
-//! non-ASCII authority; with a base, it went through `resolve_reference`
-//! and `url`'s IDNA punycoded it. `Location:` on a redirect took the
-//! second path for the same reason, and a browser did its own IDNA in its
-//! own URL parser regardless.
+//! # IDN
 //!
 //! So IDN now lives here, at the single boundary where a string becomes a
 //! `Uri` ([`parse`]), which every backend reaches through the same sans-io
@@ -79,6 +50,49 @@
 //! shifted the host on a second pass would corrupt exactly those paths. It
 //! also keeps UTS 46's own ASCII lower-casing away from hosts that never
 //! asked for it.
+
+// Maintainer notes (not rendered):
+//
+// # Why the resolution is written out by hand
+//
+// `url::Url::parse(base).join(reference)` is the one-line alternative.
+// That single call puts `url` → `idna` → `icu_normalizer` +
+// `icu_properties` into every build of `hclient-proto`, the sans-io crate
+// every target includes: measured from vendored sources,
+// `icu_properties_data` 1.9 MB, `idna` 1004 KB, `icu_collections` 820 KB,
+// `icu_normalizer_data` 452 KB, almost entirely Unicode tables — for one
+// URI join. On a 256–512 KB microcontroller that is more than the whole
+// flash budget.
+//
+// What replaces it is RFC 3986 §5.2 and nothing else: the reference
+// transform (§5.2.2), the merge (§5.2.3), `remove_dot_segments` (§5.2.4)
+// and the recomposition (§5.3), on the reference exactly as written.
+// `url` implements the WHATWG URL Standard, which is RFC 3986 plus a
+// layer of normalisation and repair; every place the two disagree is
+// enumerated and pinned against `url` itself in
+// `tests/uri_resolution.rs`, where `url` stays on as a **dev-dependency**
+// for exactly that purpose — it is the incumbent, and the only oracle
+// this module has.
+//
+// # IDN, and why it is a feature rather than a casualty
+//
+// The Unicode tables above exist for internationalised domain names, and
+// dropping `url` outright would have dropped IDN with them. It would also
+// have been a smaller loss than it looks, because what this project had
+// before was not IDN support but IDN *inconsistency*:
+//
+// ```text
+// client.get("https://münchen.de/x")
+//   with no base_url  ->  error: invalid uri character
+//   with any base_url ->  ok, https://xn--mnchen-3ya.de/x
+// ```
+//
+// The difference was never a decision. Without a base, `hclient`'s
+// `effective_uri` handed the string to `http::Uri`, which rejects a
+// non-ASCII authority; with a base, it went through `resolve_reference`
+// and `url`'s IDNA punycoded it. `Location:` on a redirect took the
+// second path for the same reason, and a browser did its own IDNA in its
+// own URL parser regardless.
 
 pub use crate::error::UriError;
 
@@ -144,6 +158,15 @@ fn parse_ascii(s: &str) -> Result<Uri, UriError> {
     })
 }
 
+// Maintainer notes (not rendered):
+//
+// Until this was written by hand it was `url::Url::join`, which
+// implements WHATWG. WHATWG normalises and repairs; RFC 3986 §5 only
+// transforms. The differences that survive into the returned `Uri` are
+// listed here because they are a behaviour change to a published API, and
+// every one of them is pinned in `tests/uri_resolution.rs` against `url`
+// itself:
+
 /// Resolves `reference` against `base` per RFC 3986 §5.
 ///
 /// The base must be usable as one — a scheme and an authority; `http::Uri`
@@ -164,12 +187,9 @@ fn parse_ascii(s: &str) -> Result<Uri, UriError> {
 ///
 /// # This is RFC 3986, not the WHATWG URL Standard
 ///
-/// Until this was written by hand it was `url::Url::join`, which
-/// implements WHATWG. WHATWG normalises and repairs; RFC 3986 §5 only
-/// transforms. The differences that survive into the returned `Uri` are
-/// listed here because they are a behaviour change to a published API, and
-/// every one of them is pinned in `tests/uri_resolution.rs` against `url`
-/// itself:
+/// This implementation transforms per RFC 3986 §5 rather than normalising
+/// and repairing per the WHATWG URL Standard. The differences that survive
+/// into the returned `Uri`, against `url`:
 ///
 /// - **Host case is preserved**, where `url` lower-cased it:
 ///   `https://EXAMPLE.test/api/` + `v1` is now

@@ -13,11 +13,14 @@
 //! lives with the session it describes. [`BadCloseCapsule`] is the error
 //! of *failing to read* one, and is here.
 
+// Maintainer notes (not rendered):
+// A public source rather than a message, so that a caller can act on the
+// status without matching on a string — the same shape
+// `hclient-native`'s `PongNotReceived` uses, and for the same reason.
 /// The peer answered the CONNECT with something other than a 2xx.
 ///
 /// A public source rather than a message, so that a caller can act on the
-/// status without matching on a string — the same shape
-/// `hclient-native`'s `PongNotReceived` uses, and for the same reason.
+/// status without matching on a string.
 /// It is the server's answer, and replacing it with an error of ours would
 /// hide a status the caller can act on: RFC 9220 makes `501 Not
 /// Implemented` the answer to an unknown `:protocol`, which is a different
@@ -52,6 +55,16 @@ pub struct NotSupportedByPeer {
     pub extended_connect: bool,
 }
 
+// Maintainer notes (not rendered):
+// # There is deliberately no companion "no authority" error
+//
+// It would be a variant nothing could produce. `http::Uri` cannot hold a
+// scheme without an authority: `Uri::builder().scheme("https")
+// .path_and_query("/x").build()` is `InvalidUriParts(AuthorityMissing)`,
+// `"https:/x"` and `"https:///x"` are `InvalidFormat`, `"https://"` is
+// `Empty`, and `"https:echo"` parses with **no scheme at all** — so the
+// check above catches it. Measured, in this crate's own test run, before
+// the variant was deleted.
 /// The session URI was not `https`.
 ///
 /// Refused rather than rewritten, and that is the point: `h3`'s
@@ -59,16 +72,6 @@ pub struct NotSupportedByPeer {
 /// and otherwise sends whatever it finds, so a `http://` session URI would
 /// either go out claiming TLS or go out claiming plaintext over a QUIC
 /// connection that is not — and neither is a thing to do silently.
-///
-/// # There is deliberately no companion "no authority" error
-///
-/// It would be a variant nothing could produce. `http::Uri` cannot hold a
-/// scheme without an authority: `Uri::builder().scheme("https")
-/// .path_and_query("/x").build()` is `InvalidUriParts(AuthorityMissing)`,
-/// `"https:/x"` and `"https:///x"` are `InvalidFormat`, `"https://"` is
-/// `Empty`, and `"https:echo"` parses with **no scheme at all** — so the
-/// check above catches it. Measured, in this crate's own test run, before
-/// the variant was deleted.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("WebTransport runs over HTTP/3, which is always TLS; `{scheme}` has no plaintext form")]
 #[non_exhaustive]
@@ -77,6 +80,13 @@ pub struct NotHttps {
     pub scheme: String,
 }
 
+// Maintainer notes (not rendered):
+// act on the second alone. Both are reachable — a `h3` server can
+// announce WebTransport without `SETTINGS_H3_DATAGRAM`, and a `quinn`
+// endpoint with `datagram_receive_buffer_size(None)` sends no
+// `max_datagram_frame_size` — and both are exercised in this crate's
+// tests, which is the standard the WebTransport work set for a variant
+// existing at all.
 /// Datagrams cannot be sent on this session.
 ///
 /// Two reasons rather than one flag, because they are two different things
@@ -85,9 +95,7 @@ pub struct NotHttps {
 /// act on the second alone. Both are reachable — a `h3` server can
 /// announce WebTransport without `SETTINGS_H3_DATAGRAM`, and a `quinn`
 /// endpoint with `datagram_receive_buffer_size(None)` sends no
-/// `max_datagram_frame_size` — and both are exercised in this crate's
-/// tests, which is the standard the WebTransport work set for a variant
-/// existing at all.
+/// `max_datagram_frame_size`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DatagramsUnavailable {
@@ -125,6 +133,15 @@ pub struct DatagramTooLarge {
     pub budget: usize,
 }
 
+// Maintainer notes (not rendered):
+// treats an over-long reason as a protocol error and kills the connection
+// rather than the session (`wtransport` 0.7.2 answers
+// `ErrorCode::Datagram` and its driver turns that into a connection
+// error). The other three are raised by [`crate::Session::closed`] about what
+//
+// Every variant is reachable and every variant is exercised in this
+// crate's tests, which is the standard `DatagramsUnavailable` set for a
+// variant existing at all.
 /// A `CLOSE_WEBTRANSPORT_SESSION` capsule that could not be honoured.
 ///
 /// # One type for both directions, because it is one limit
@@ -133,16 +150,11 @@ pub struct DatagramTooLarge {
 /// [`crate::Session::close`] when the *caller's* reason is over the draft's limit
 /// — refused before a byte leaves, because a peer that reads the draft
 /// treats an over-long reason as a protocol error and kills the connection
-/// rather than the session (`wtransport` 0.7.2 answers
-/// `ErrorCode::Datagram` and its driver turns that into a connection
-/// error). The other three are raised by [`crate::Session::closed`] about what
+/// rather than the session. The other three are raised by
+/// [`crate::Session::closed`] about what
 /// the peer sent. The limit is the same number in both directions, so it
 /// is the same type; inventing a second one would be two names for
 /// draft-ietf-webtrans-http3 §5's one sentence.
-///
-/// Every variant is reachable and every variant is exercised in this
-/// crate's tests, which is the standard `DatagramsUnavailable` set for a
-/// variant existing at all.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum BadCloseCapsule {

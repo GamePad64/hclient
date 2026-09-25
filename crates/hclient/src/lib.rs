@@ -7,10 +7,7 @@
 //! **The flag is not optional and it is not a default** — see below for
 //! why. Without it `Client::new()` refuses to compile, naming the feature
 //! and the command, and this page's own first line is what a reader
-//! copies, so the two lines are together deliberately. The version is not written here: one was, `0.1.0-alpha.1`,
-//! and it was still on the rendered page for `0.1.0-alpha.2` — a version in
-//! prose goes stale on the release after it is written, and this one had
-//! already been taken out of both READMEs and left here.
+//! copies, so the two lines are together deliberately.
 //!
 //! ```no_run
 //! # async fn f() -> Result<(), hclient::Error> {
@@ -49,13 +46,7 @@
 //!
 //! # Where the things a caller looks for actually are
 //!
-//! ACT, the first consumer to port onto this crate, hand-rolled two
-//! things that were already here: a form encoder, and a way to test
-//! without a network. **Neither was missing — both were unfindable**, and
-//! the report said so precisely: *the gap is a pointer, not a feature*.
-//! `RequestBuilder` has a long method list and the crate has 25
-//! neighbours, so a reader who does not already know a name does not meet
-//! it. This section is that pointer.
+//! The table below points at what callers most often look for.
 //!
 //! | you want | it is |
 //! |---|---|
@@ -106,20 +97,20 @@
 //! **floor**: a library that took this crate with defaults would put
 //! tokio, rustls and the system resolver into every graph that also
 //! contains a crate wanting none of them, and the party who wanted the
-//! small build is not the party who decides. Measured on a scratch
-//! workspace rather than argued. The cost is one flag read before
-//! compiling, against a graph nobody can get out of afterwards.
+//! small build is not the party who decides. The cost is one flag read
+//! before compiling, against a graph nobody can get out of afterwards.
 //!
-//! # The `Send` rule, as it actually stands
+//! # `Send` and `Sync`
 //!
-//! This line read *"not a single declared `Send`/`Sync` bound"* until
-//! [`Client`] stopped naming its transport, and it is worth correcting
-//! precisely rather than deleting: the invariant that matters was never
-//! "no bound anywhere", it was **no bound on a seam**, because a bound
-//! declared where the type is abstract propagates to backends that cannot
-//! satisfy it. That is what the `no-send-or-sync` guard in `scripts/`
-//! exists for, and what `hclient-rt-embassy` would have paid.
+//! [`Client`] is `Send + Sync`, and so are both halves of a request now —
+//! the future and the response body. That took naming rather than
+//! requiring: the seams a transport awaits carry associated futures, so a
+//! consumer can name them while each implementor still answers for itself,
+//! and `SendTransport` is a separate trait whose impl may carry bounds
+//! `Transport` does not.
 //!
+//! A bound declared where the type is abstract propagates to backends
+//! that cannot satisfy it.
 //! So: the seams declare none, and auto-traits still decide. The rule for
 //! where a bound is allowed is **an opt-in call that takes a value from
 //! the caller and puts it behind the facade's `Arc`** — and the types that
@@ -128,30 +119,67 @@
 //! [`ClientBuilder::total_timeout`] and [`sse::SseBuilder::with_timer`]
 //! are the shape.
 //!
-//! **The rule is written here and the list is not**, which is this
-//! paragraph's second correction rather than its first: an enumeration
-//! stood here for one commit and was already wrong — it missed
-//! `ClientBuilder::new` and three public types. Every site carries a
-//! `send-bound-exception` marker naming the amendment that admits it, so
-//! `grep` answers *which* and *how many*, and cannot go stale the way a
-//! sentence does.
-//!
-//! Still absolutely true, and the half that was doing the work: **not a
-//! single `#[cfg]`-switched trait alias.** A `Send`-ness that depends on
-//! the target is a thing a portable library cannot reason about, which is
-//! why one was refused during the erasure even though it would have given
-//! native callers spawnable response bodies back.
-//!
-//! [`Client`] is `Send + Sync`, and so are both halves of a request now —
-//! the future and the response body. That took naming rather than
-//! requiring: the seams a transport awaits carry associated futures, so a
-//! consumer can name them while each implementor still answers for itself,
-//! and `SendTransport` is a separate trait whose impl may carry bounds
-//! `Transport` does not. This paragraph read *what a request produces is
-//! not `Send`* for two verticals, on the argument that one body type
-//! serves every backend and the browser's held a `dyn Stream` with no auto
-//! trait — true then, and answered by an actor in `hclient-fetch` rather
-//! than by a `#[cfg]`.
+//! No auto trait here depends on the target: there is **not a
+//! single `#[cfg]`-switched trait alias.**
+
+// Maintainer notes (not rendered):
+//
+// (Crate doc, first paragraph, ending) ... copies, so the two lines are
+// together deliberately. The version is not written here: one was, `0.1.0-alpha.1`,
+// and it was still on the rendered page for `0.1.0-alpha.2` — a version in
+// prose goes stale on the release after it is written, and this one had
+// already been taken out of both READMEs and left here.
+//
+// ACT, the first consumer to port onto this crate, hand-rolled two
+// things that were already here: a form encoder, and a way to test
+// without a network. **Neither was missing — both were unfindable**, and
+// the report said so precisely: *the gap is a pointer, not a feature*.
+// `RequestBuilder` has a long method list and the crate has 25
+// neighbours, so a reader who does not already know a name does not meet
+// it. This section is that pointer.
+//
+// Cargo unifies features across a graph, so a default here is a
+// **floor**: a library that took this crate with defaults would put
+// tokio, rustls and the system resolver into every graph that also
+// contains a crate wanting none of them, and the party who wanted the
+// small build is not the party who decides. Measured on a scratch
+// workspace rather than argued. The cost is one flag read before
+// compiling, against a graph nobody can get out of afterwards.
+//
+// # The `Send` rule, as it actually stands
+//
+// This line read *"not a single declared `Send`/`Sync` bound"* until
+// [`Client`] stopped naming its transport, and it is worth correcting
+// precisely rather than deleting: the invariant that matters was never
+// "no bound anywhere", it was **no bound on a seam**, because a bound
+// declared where the type is abstract propagates to backends that cannot
+// satisfy it. That is what the `no-send-or-sync` guard in `scripts/`
+// exists for, and what `hclient-rt-embassy` would have paid.
+//
+// **The rule is written here and the list is not**, which is this
+// paragraph's second correction rather than its first: an enumeration
+// stood here for one commit and was already wrong — it missed
+// `ClientBuilder::new` and three public types. Every site carries a
+// `send-bound-exception` marker naming the amendment that admits it, so
+// `grep` answers *which* and *how many*, and cannot go stale the way a
+// sentence does.
+//
+// Still absolutely true, and the half that was doing the work: **not a
+// single `#[cfg]`-switched trait alias.** A `Send`-ness that depends on
+// the target is a thing a portable library cannot reason about, which is
+// why one was refused during the erasure even though it would have given
+// native callers spawnable response bodies back.
+//
+// [`Client`] is `Send + Sync`, and so are both halves of a request now —
+// the future and the response body. That took naming rather than
+// requiring: the seams a transport awaits carry associated futures, so a
+// consumer can name them while each implementor still answers for itself,
+// and `SendTransport` is a separate trait whose impl may carry bounds
+// `Transport` does not. This paragraph read *what a request produces is
+// not `Send`* for two verticals, on the argument that one body type
+// serves every backend and the browser's held a `dyn Stream` with no auto
+// trait — true then, and answered by an actor in `hclient-fetch` rather
+// than by a `#[cfg]`.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -172,12 +200,13 @@ pub mod error;
 pub mod hsts;
 mod limit;
 pub mod lines;
+// Maintainer notes (not rendered):
+//
+// The doubles live in their own crate because a `Transport` implementation
+// sits *below* this facade: reaching them through `hclient::mock` meant a
+// transport author depending upward on the whole client. This re-export
+// exists so that callers who already had the facade see no change.
 /// Mock transport and controllable timer, re-exported from `hclient-mock`.
-///
-/// The doubles live in their own crate because a `Transport` implementation
-/// sits *below* this facade: reaching them through `hclient::mock` meant a
-/// transport author depending upward on the whole client. This re-export
-/// exists so that callers who already had the facade see no change.
 #[cfg(feature = "test-util")]
 pub use hclient_mock as mock;
 pub mod multipart;
@@ -220,19 +249,22 @@ pub use client::without_a_default_transport::DefaultTransportFeature;
 // names and these doors. Done before the first publish, because after it
 // every one of these paths is a promise.
 
+// Maintainer notes (not rendered):
+//
+// **Every enum a [`caps::Capabilities`] field can hold is here**, and
+// that took a correction: `CancelSupport` and `ReuseSupport` were not
+// re-exported, so a caller could read `cancel_on_drop`, print it with
+// `Debug`, and not compare it against anything — the value was reachable
+// and its vocabulary was not. Both are *reports* by
+// [`caps::Capabilities`]' own classification, whose stated reader is the
+// caller, and the other four reports were already here; the two were
+// missing rather than withheld. Found by writing a consumer outside this
+// workspace, which is the instrument this project keeps rediscovering:
+// a test written beside the code shares the author's knowledge of where
+// the doors are.
 /// What a transport says it can do, and the `build()` gate that reads it.
 ///
-/// **Every enum a [`caps::Capabilities`] field can hold is here**, and
-/// that took a correction: `CancelSupport` and `ReuseSupport` were not
-/// re-exported, so a caller could read `cancel_on_drop`, print it with
-/// `Debug`, and not compare it against anything — the value was reachable
-/// and its vocabulary was not. Both are *reports* by
-/// [`caps::Capabilities`]' own classification, whose stated reader is the
-/// caller, and the other four reports were already here; the two were
-/// missing rather than withheld. Found by writing a consumer outside this
-/// workspace, which is the instrument this project keeps rediscovering:
-/// a test written beside the code shares the author's knowledge of where
-/// the doors are.
+/// Every enum a [`caps::Capabilities`] field can hold is here.
 pub mod caps {
     pub use crate::config::check_supported;
     pub use hclient_core::caps::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport};
@@ -398,17 +430,18 @@ pub use config::{Config, Timeouts};
 pub use deadline::NoClock;
 
 pub use decompress::compression;
+// Maintainer notes (not rendered):
+//
+// At the root rather than behind a door of their own, unlike the four
+// values in [`compression`], and the split is the front page's rule
+// about who reaches for what: a caller *configuring* writes
+// `compression::Gzip` and never names these two, where a caller
+// *implementing* a coding names both in one `impl` block each. Same
+// division [`retry`] draws between `Standard` and the trait it
+// implements.
 /// The content-coding seam: implement [`ContentCoding`] and [`Decode`],
 /// or hand [`ClientBuilder::decompression`] the ones in
 /// [`compression`].
-///
-/// At the root rather than behind a door of their own, unlike the four
-/// values in [`compression`], and the split is the front page's rule
-/// about who reaches for what: a caller *configuring* writes
-/// `compression::Gzip` and never names these two, where a caller
-/// *implementing* a coding names both in one `impl` block each. Same
-/// division [`retry`] draws between `Standard` and the trait it
-/// implements.
 pub use decompress::{ContentCoding, Decode, Decoder, SharedContentCoding};
 
 // This list must cover not just `Capabilities`/
@@ -470,11 +503,12 @@ pub use decompress::{ContentCoding, Decode, Decoder, SharedContentCoding};
 pub use hclient_core::body::RequestBody;
 pub use hclient_core::error::{Error, ErrorKind};
 pub use hclient_core::req::{AllowEarlyData, RequireVersion};
+// Maintainer notes (not rendered):
+//
+// Re-exported so a caller configuring a retry never has to name
+// `hclient-proto`, which is the same courtesy `redirect` gets one line
+// away and which ACT's report found missing for half a dozen names.
 /// When to send a request again — see [`ClientBuilder::retry`].
-///
-/// Re-exported so a caller configuring a retry never has to name
-/// `hclient-proto`, which is the same courtesy `redirect` gets one line
-/// away and which ACT's report found missing for half a dozen names.
 pub mod retry {
     pub use crate::config::SharedRetryPolicy;
     pub use hclient_proto::backoff::Backoff;
@@ -526,6 +560,55 @@ pub mod retry {
 pub use request::RequestBuilder;
 pub use response::{Collected, Response};
 
+// Maintainer notes (not rendered):
+//
+// # What resolves under which feature — measured, not assumed
+//
+// - Without the `default-transport` feature (which is not in `default`,
+//   deliberately — see the crate doc): the type doesn't exist at all.
+//   Naming `hclient::DefaultTransport` is "cannot find type", and
+//   `Client::new()` is a refusal that names the feature and the command
+//   to add it — `client.rs`'s `without_a_default_transport`, which exists
+//   because rustc's own *"found an item that was configured out"* note is
+//   emitted for path resolution and not for associated-item lookup, so
+//   `default_transport()` announces its gate and an inherent `fn` in a
+//   `#[cfg]`-ed-out `impl` block did not. Either way a compile error and
+//   not a silent fallback to something weaker: the same decision the TLS
+//   backends make about trust anchors, where a build without a verifier
+//   fails to compile rather than silently trusting everything.
+//
+// (the wasip2 bullet, continued after "doesn't depend on":)
+//   `hclient-wasi` (`hclient-wasi/Cargo.toml` itself records this as an
+//   invariant — it has `hclient` in `dev-dependencies` for its own
+//   example, no reverse dependency exists), and adding one here would mean
+//   adding a path that no CI job in this repository builds: the
+//   `wasip2` job runs `hclient-wasi` directly, not `hclient` under
+//   `default-transport` on wasm. An optional branch never checked by a
+//   build is exactly the "implicitly swapping an error message for
+//   imagined availability" that this type is specifically obligated not
+//   to do. The decision is left as a finding rather than taken
+//   silently: the black-box acceptance test
+//   (`crates/hclient/tests/two_runtimes.rs`) doesn't require this branch —
+//   both of its tests build `Native` explicitly, the same way
+//   `Client::builder` does. Note that the browser branch below does NOT
+//   set this precedent aside: it is checked by a build, on every push
+//   (`cargo check -p hclient --features test-util --target
+//   wasm32-unknown-unknown`, in CI's `msrv` job) and executed by real
+//   browser tests on two engines (`crates/hclient/tests/wasm_default.rs`,
+//   run by the `browser` job under `wasm-pack`).
+//
+//   That sentence was written one commit before it became true: when this
+//   type was added, the `msrv` job ran that command for `hclient-fetch`
+//   only, and no CI job executed a browser test at all. Both arrived in the
+//   two commits that followed. It is stated here because the asymmetry
+//   above rests on it — "CI builds one branch and not the other" is only an
+//   argument while it is a fact, and it is worth knowing that it briefly
+//   was not one.
+//
+//   Note the command carries `--features test-util`, not `--all-features`:
+//   `--all-features` on this target pulls native-only dev-dependencies that
+//   do not build there. The narrower flag checks this branch, which is what
+//   the argument needs, and nothing wider.
 /// The default transport, chosen by **the target, not the user**.
 ///
 /// The default is an opinion, not a restriction: [`crate::Client::new`]
@@ -538,17 +621,13 @@ pub use response::{Collected, Response};
 /// concrete target exactly one branch below compiles (or none, see further
 /// down).
 ///
-/// # What resolves under which feature — measured, not assumed
+/// # What resolves under which feature
 ///
 /// - Without the `default-transport` feature (which is not in `default`,
 ///   deliberately — see the crate doc): the type doesn't exist at all.
 ///   Naming `hclient::DefaultTransport` is "cannot find type", and
 ///   `Client::new()` is a refusal that names the feature and the command
-///   to add it — `client.rs`'s `without_a_default_transport`, which exists
-///   because rustc's own *"found an item that was configured out"* note is
-///   emitted for path resolution and not for associated-item lookup, so
-///   `default_transport()` announces its gate and an inherent `fn` in a
-///   `#[cfg]`-ed-out `impl` block did not. Either way a compile error and
+///   to add it. Either way a compile error and
 ///   not a silent fallback to something weaker: the same decision the TLS
 ///   backends make about trust anchors, where a build without a verifier
 ///   fails to compile rather than silently trusting everything.
@@ -577,37 +656,7 @@ pub use response::{Collected, Response};
 ///   already exists and can be used directly via
 ///   `Client::builder(hclient_wasi::WasiHttp::new())` — but NOT through
 ///   this mechanism: `hclient` deliberately doesn't depend on
-///   `hclient-wasi` (`hclient-wasi/Cargo.toml` itself records this as an
-///   invariant — it has `hclient` in `dev-dependencies` for its own
-///   example, no reverse dependency exists), and adding one here would mean
-///   adding a path that no CI job in this repository builds: the
-///   `wasip2` job runs `hclient-wasi` directly, not `hclient` under
-///   `default-transport` on wasm. An optional branch never checked by a
-///   build is exactly the "implicitly swapping an error message for
-///   imagined availability" that this type is specifically obligated not
-///   to do. The decision is left as a finding rather than taken
-///   silently: the black-box acceptance test
-///   (`crates/hclient/tests/two_runtimes.rs`) doesn't require this branch —
-///   both of its tests build `Native` explicitly, the same way
-///   `Client::builder` does. Note that the browser branch below does NOT
-///   set this precedent aside: it is checked by a build, on every push
-///   (`cargo check -p hclient --features test-util --target
-///   wasm32-unknown-unknown`, in CI's `msrv` job) and executed by real
-///   browser tests on two engines (`crates/hclient/tests/wasm_default.rs`,
-///   run by the `browser` job under `wasm-pack`).
-///
-///   That sentence was written one commit before it became true: when this
-///   type was added, the `msrv` job ran that command for `hclient-fetch`
-///   only, and no CI job executed a browser test at all. Both arrived in the
-///   two commits that followed. It is stated here because the asymmetry
-///   above rests on it — "CI builds one branch and not the other" is only an
-///   argument while it is a fact, and it is worth knowing that it briefly
-///   was not one.
-///
-///   Note the command carries `--features test-util`, not `--all-features`:
-///   `--all-features` on this target pulls native-only dev-dependencies that
-///   do not build there. The narrower flag checks this branch, which is what
-///   the argument needs, and nothing wider.
+///   `hclient-wasi`.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 pub type DefaultTransport = hclient_native::Native<
     hclient_rt_tokio::Tokio,
@@ -625,6 +674,12 @@ pub type DefaultTransport = hclient_native::Native<
     hclient_native::proxy::HttpConnect,
 >;
 
+// Maintainer notes (not rendered):
+//
+// `all(target_family = "wasm", target_os = "unknown")`, not a bare
+// `target_family = "wasm"`: WASI targets are `wasm` too, and the whole
+// point of the paragraph above is that they must keep resolving to
+// nothing.
 /// The default transport on `wasm32-unknown-unknown`: the browser `fetch`
 /// API, via `hclient-fetch`.
 ///
@@ -633,11 +688,6 @@ pub type DefaultTransport = hclient_native::Native<
 /// the user" means in practice — see the other branch's doc comment for
 /// the full per-target table, including why `wasm32-wasip2` deliberately
 /// still has no branch at all despite `hclient_wasi::WasiHttp` existing.
-///
-/// `all(target_family = "wasm", target_os = "unknown")`, not a bare
-/// `target_family = "wasm"`: WASI targets are `wasm` too, and the whole
-/// point of the paragraph above is that they must keep resolving to
-/// nothing.
 ///
 /// What this transport can and cannot do is not hidden behind the
 /// convenience: `Fetch` reports `RedirectSupport::Internal` and no timeout
@@ -652,21 +702,43 @@ pub type DefaultTransport = hclient_native::Native<
 ))]
 pub type DefaultTransport = hclient_fetch::Fetch;
 
+// Maintainer notes (not rendered):
+//
+// The clock `Client` measures a total timeout with when the caller does
+// not supply one — chosen by **the target**, exactly like
+// [`DefaultTransport`], and for the same reason: a clock that only exists
+// on one target would put a `#[cfg]` in the facade crate, which is what
+// `crates/hclient-rt-pair-check` exists to prevent and what
+// `SseBuilder::with_timer`'s doc comment already argues against at
+// length.
+//
+// This alias is the second type parameter's default, so
+// `Client::new()?.total_timeout(d)` needs no clock argument **and stays
+// `Client`** — the type does not grow parameters because a timeout was
+// switched on. That property is not cosmetic: `struct App { http: Client
+// }` is the shape a consumer actually writes, and it is the same ground
+// on which tower layers were rejected for compression.
+// `crates/hclient/tests/deadline_client_type.rs` pins it.
+//
+// - `wasm32-wasip2` with the feature: [`NoClock`], the same as without it.
+//   **This used to have no branch at all**, on the reasoning that it was
+//   the same deliberate compile error as [`DefaultTransport`] there — and
+//   the two are not the same. `DefaultTransport` is named only by someone
+//   asking for it, so its absence is a refusal aimed at that line.
+//   `DefaultClock` is the default type parameter of `ClientBuilder`,
+//   `RequestBuilder` and both forks of [`Client`], so its absence does not
+//   refuse anything: it stops the crate compiling at all. And **Cargo
+//   unifies features across a graph**, so the trigger was never the wasip2
+//   user's own choice — any unrelated crate turning `default-transport` on
+//   broke their build. `DefaultTransport` is still absent here, which is
+//   where the refusal belongs and where it still reads as one.
 /// The clock `Client` measures a total timeout with when the caller does
 /// not supply one — chosen by **the target**, exactly like
-/// [`DefaultTransport`], and for the same reason: a clock that only exists
-/// on one target would put a `#[cfg]` in the facade crate, which is what
-/// `crates/hclient-rt-pair-check` exists to prevent and what
-/// `SseBuilder::with_timer`'s doc comment already argues against at
-/// length.
+/// [`DefaultTransport`].
 ///
-/// This alias is the second type parameter's default, so
 /// `Client::new()?.total_timeout(d)` needs no clock argument **and stays
 /// `Client`** — the type does not grow parameters because a timeout was
-/// switched on. That property is not cosmetic: `struct App { http: Client
-/// }` is the shape a consumer actually writes, and it is the same ground
-/// on which tower layers were rejected for compression.
-/// `crates/hclient/tests/deadline_client_type.rs` pins it.
+/// switched on.
 ///
 /// - Non-wasm, with `default-transport`: [`hclient_rt_tokio::Tokio`] — the
 ///   very clock already inside `DefaultTransport`
@@ -683,17 +755,6 @@ pub type DefaultTransport = hclient_fetch::Fetch;
 ///   `#[cfg]`-ed away with the feature, so nothing silently fails to be
 ///   measured — see [`NoClock`]'s own doc comment for the complete list.
 /// - `wasm32-wasip2` with the feature: [`NoClock`], the same as without it.
-///   **This used to have no branch at all**, on the reasoning that it was
-///   the same deliberate compile error as [`DefaultTransport`] there — and
-///   the two are not the same. `DefaultTransport` is named only by someone
-///   asking for it, so its absence is a refusal aimed at that line.
-///   `DefaultClock` is the default type parameter of `ClientBuilder`,
-///   `RequestBuilder` and both forks of [`Client`], so its absence does not
-///   refuse anything: it stops the crate compiling at all. And **Cargo
-///   unifies features across a graph**, so the trigger was never the wasip2
-///   user's own choice — any unrelated crate turning `default-transport` on
-///   broke their build. `DefaultTransport` is still absent here, which is
-///   where the refusal belongs and where it still reads as one.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 pub type DefaultClock = hclient_rt_tokio::Tokio;
 
@@ -706,6 +767,12 @@ pub type DefaultClock = hclient_rt_tokio::Tokio;
 ))]
 pub type DefaultClock = hclient_fetch::BrowserClock;
 
+// Maintainer notes (not rendered):
+//
+// The condition is the negation of the two branches above rather than a
+// third guess at the target list, so the three are exhaustive and
+// non-overlapping by construction: exactly one arm matches every
+// (target, feature) pair.
 /// The clockless branch of [`DefaultClock`], and the one that must catch
 /// everything the other two do not: without the `default-transport`
 /// feature there is no target-chosen clock to point at, and on
@@ -713,11 +780,6 @@ pub type DefaultClock = hclient_fetch::BrowserClock;
 /// no `DefaultTransport` to take one from. Either way the default clock
 /// is the one that measures nothing. See the first branch's doc comment,
 /// and [`NoClock`] for why that is not a silent no-op.
-///
-/// The condition is the negation of the two branches above rather than a
-/// third guess at the target list, so the three are exhaustive and
-/// non-overlapping by construction: exactly one arm matches every
-/// (target, feature) pair.
 #[cfg(any(
     not(feature = "default-transport"),
     all(target_family = "wasm", not(target_os = "unknown")),

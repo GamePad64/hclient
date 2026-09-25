@@ -7,21 +7,24 @@ use hclient_core::req::RequireVersion;
 pub use hclient_core::req::Timeouts;
 use hclient_proto::redirect::RedirectPolicy;
 
+/// A retry policy as the client stores it — see [`SharedRedirectPolicy`]
+/// for why it is an `Arc<dyn ..>` and not a type parameter.
+pub type SharedRetryPolicy = std::sync::Arc<dyn hclient_proto::retry::RetryPolicy + Send + Sync>; // send-bound-exception: amendment-C12
+
+// Maintainer notes (not rendered):
+//
+// `Send + Sync` is amendment C12's shape: a value the caller owns
+// reaching `Client` by erasure, bound where they hand it over and
+// nowhere else.
+//
+// The two aliases used to point at each other for the reason; this one
+// read: A redirect policy as the client stores it — see [`SharedRetryPolicy`]
+// for why it is an `Arc<dyn ..>` and not a type parameter.
 /// A redirect policy as the client stores it.
 ///
 /// `Arc<dyn ..>` rather than a type parameter, so `Client` keeps naming
 /// none — and so a composed `Limit::new(10).and(SameOriginOnly)` is boxed
 /// **once**, at `build()`, rather than costing anything per hop.
-///
-/// `Send + Sync` is amendment C12's shape: a value the caller owns
-/// reaching `Client` by erasure, bound where they hand it over and
-/// nowhere else.
-/// A retry policy as the client stores it — see [`SharedRedirectPolicy`]
-/// for why it is an `Arc<dyn ..>` and not a type parameter.
-pub type SharedRetryPolicy = std::sync::Arc<dyn hclient_proto::retry::RetryPolicy + Send + Sync>; // send-bound-exception: amendment-C12
-
-/// A redirect policy as the client stores it — see [`SharedRetryPolicy`]
-/// for why it is an `Arc<dyn ..>` and not a type parameter.
 pub type SharedRedirectPolicy = std::sync::Arc<dyn RedirectPolicy + Send + Sync>; // send-bound-exception: amendment-C12
 
 /// A [`Client`](crate::Client)'s configuration: timeouts, headers, the
@@ -72,6 +75,19 @@ pub struct Config {
     /// so it is theirs to make — the same reason the QUIC race and the
     /// cookie jar are both off until asked for.
     pub retry: Option<SharedRetryPolicy>,
+    // Maintainer notes (not rendered):
+    //
+    // An `Option` rather than a bare `RedirectPolicy` because
+    // `check_supported` has to tell those two apart:
+    // `RedirectPolicy::default()` is `Limited(10)`, so a check that
+    // fired on any policy at all would reject every client built against
+    // a backend that follows redirects internally, including one whose
+    // author never mentioned redirects. Same idiom as `Timeouts`, whose
+    // fields are `Option<Duration>` for exactly the same reason.
+    //
+    // Every read site takes `unwrap_or_default()`, so an unconfigured
+    // client still follows up to `RedirectPolicy::default()`'s ten hops —
+    // this field's type changed, no behavior did.
     /// `Option::None` here is "the caller never asked for a redirect
     /// policy" — distinct from `Some(Forbid)`, which is the
     /// caller explicitly asking not to follow and to be handed the 3xx.
@@ -82,80 +98,107 @@ pub struct Config {
     /// A third thing again is `Some(Limit::new(0))` — follow
     /// zero hops, so the first 3xx is `ErrorKind::Redirect`.
     ///
-    /// An `Option` rather than a bare `RedirectPolicy` because
-    /// `check_supported` has to tell those two apart:
-    /// `RedirectPolicy::default()` is `Limited(10)`, so a check that
-    /// fired on any policy at all would reject every client built against
-    /// a backend that follows redirects internally, including one whose
-    /// author never mentioned redirects. Same idiom as `Timeouts`, whose
-    /// fields are `Option<Duration>` for exactly the same reason.
-    ///
-    /// Every read site takes `unwrap_or_default()`, so an unconfigured
-    /// client still follows up to `RedirectPolicy::default()`'s ten hops —
-    /// this field's type changed, no behavior did.
+    /// With `None`, a client still follows up to ten hops, the default
+    /// policy's limit.
     pub redirect: Option<SharedRedirectPolicy>,
     /// The base every request's URI is resolved against, or `None` to
     /// resolve none — see [`ClientBuilder::base_url`](crate::ClientBuilder::base_url).
     pub base_url: Option<http::Uri>,
-    /// A bound on the **whole operation**, measured with the clock the
-    /// client carries as its second type parameter.
+    // Maintainer notes (not rendered):
+    //
+    // **Deliberately not a fourth field of [`Timeouts`]**, and the
+    // distinction is the difference between a capability that describes
+    // the transport and one that lies about it. `Timeouts` lives in
+    // `hclient-core` because TRANSPORTS read it out of
+    // `http::Extensions` and enforce it; no transport can enforce this
+    // one, because none of them owns the redirect loop that defines where
+    // the operation begins and ends. A `TimeoutSupport::total` next to
+    // `connect`/`first_byte`/`between_bytes` would therefore be a field
+    // describing the CLIENT sitting in a struct describing the backend —
+    // the shape this project has caught four times.
+    //
+    // It is consequently not checked against `Capabilities` at all (see
+    // `check_supported` below). What could be unhonourable here is the
+    // absence of a clock, and that is settled in the type system instead:
+    // see [`crate::NoClock`].
+    //
+    // Set by [`crate::ClientBuilder::total_timeout`] or
+    // `Client::total_timeout`. There is deliberately no
+    // per-request override yet — see the v0.2 W4 report.
+    /// A bound on the **whole operation**, measured with the clock handed
+    /// to [`crate::ClientBuilder::total_timeout`].
     ///
-    /// **Deliberately not a fourth field of [`Timeouts`]**, and the
-    /// distinction is the difference between a capability that describes
-    /// the transport and one that lies about it. `Timeouts` lives in
-    /// `hclient-core` because TRANSPORTS read it out of
-    /// `http::Extensions` and enforce it; no transport can enforce this
-    /// one, because none of them owns the redirect loop that defines where
-    /// the operation begins and ends. A `TimeoutSupport::total` next to
-    /// `connect`/`first_byte`/`between_bytes` would therefore be a field
-    /// describing the CLIENT sitting in a struct describing the backend —
-    /// the shape this project has caught four times.
-    ///
-    /// It is consequently not checked against `Capabilities` at all (see
-    /// `check_supported` below). What could be unhonourable here is the
-    /// absence of a clock, and that is settled in the type system instead:
-    /// see [`crate::NoClock`].
+    /// Not a field of [`Timeouts`]: transports enforce those, and no
+    /// transport owns the redirect loop that defines where the operation
+    /// begins and ends, so this is not checked against `Capabilities`.
+    /// What could be unhonourable here is the absence of a clock, and that
+    /// is settled in the type system instead: see [`crate::NoClock`].
     ///
     /// Set by [`crate::ClientBuilder::total_timeout`] or
     /// `Client::total_timeout`. There is deliberately no
-    /// per-request override yet — see the v0.2 W4 report.
+    /// per-request override yet.
     pub total: Option<core::time::Duration>,
+    // Maintainer notes (not rendered):
+    //
+    // A `bool` here and the jar itself in `Client`'s `Inner`, which is
+    // not an arrangement anyone would pick for its looks. `Config` is
+    // per-handle and `Clone`: `Client::total_timeout` hands back
+    // a second handle over the same transport by cloning it. A jar in
+    // here would be *copied* by that call, and the two handles would then
+    // disagree about what the server had set — the jar is shared state,
+    // so it lives behind the same `Arc` the transport does. What has to
+    // be in `Config` is the one bit `check_supported` reads at
+    // `build()`, and this is that bit.
+    //
+    // Set only by `ClientBuilder::cookie_jar`, which exists only
+    // under the `cookies` feature. **The field is not `#[cfg]`-ed with
+    // it**, on purpose: `check_supported` destructures `Config` without a
+    // `..`-remainder precisely so that a new field cannot be forgotten,
+    // and a field that appears and disappears would take that check —
+    // and the refusal it performs — with it into half the builds.
+    // Without the feature nothing can set this, so it is `false` and
+    // `check_cookies_supported` is inert.
     /// The caller asked this client to keep a cookie jar of its own.
     ///
-    /// A `bool` here and the jar itself in `Client`'s `Inner`, which is
-    /// not an arrangement anyone would pick for its looks. `Config` is
-    /// per-handle and `Clone`: `Client::total_timeout` hands back
-    /// a second handle over the same transport by cloning it. A jar in
-    /// here would be *copied* by that call, and the two handles would then
-    /// disagree about what the server had set — the jar is shared state,
-    /// so it lives behind the same `Arc` the transport does. What has to
-    /// be in `Config` is the one bit `check_supported` reads at
-    /// `build()`, and this is that bit.
-    ///
     /// Set only by `ClientBuilder::cookie_jar`, which exists only
-    /// under the `cookies` feature. **The field is not `#[cfg]`-ed with
-    /// it**, on purpose: `check_supported` destructures `Config` without a
-    /// `..`-remainder precisely so that a new field cannot be forgotten,
-    /// and a field that appears and disappears would take that check —
-    /// and the refusal it performs — with it into half the builds.
-    /// Without the feature nothing can set this, so it is `false` and
-    /// `check_cookies_supported` is inert.
+    /// under the `cookies` feature. Without the feature nothing can set
+    /// this, so it is `false`.
     pub cookies: bool,
+    // Maintainer notes (not rendered):
+    //
+    // A `bool` here and the cache itself in `Client`'s `Inner`, for the
+    // reason spelled out on `cookies` one field up and for one more: the
+    // cache is shared not only by every clone of the client but by every
+    // *response body* it has handed out, since a recording body holds the
+    // same `Arc` and commits into it when it ends.
+    //
+    // Set only by `ClientBuilder::cache`, which exists only
+    // under the `cache` feature, and **not `#[cfg]`-ed with it** — the
+    // same argument the field above carries: `check_supported`
+    // destructures `Config` with no `..` remainder precisely so a new
+    // field cannot be forgotten, and a field that appears and disappears
+    // takes that check into half the builds with it.
     /// The caller asked this client to keep a response cache of its own.
     ///
-    /// A `bool` here and the cache itself in `Client`'s `Inner`, for the
-    /// reason spelled out on `cookies` one field up and for one more: the
-    /// cache is shared not only by every clone of the client but by every
-    /// *response body* it has handed out, since a recording body holds the
-    /// same `Arc` and commits into it when it ends.
-    ///
     /// Set only by `ClientBuilder::cache`, which exists only
-    /// under the `cache` feature, and **not `#[cfg]`-ed with it** — the
-    /// same argument the field above carries: `check_supported`
-    /// destructures `Config` with no `..` remainder precisely so a new
-    /// field cannot be forgotten, and a field that appears and disappears
-    /// takes that check into half the builds with it.
+    /// under the `cache` feature.
     pub cache: bool,
+    // Maintainer notes (not rendered):
+    //
+    // **A default rather than an empty list, deliberately**, and the
+    // measurement is what decided it: 40 test files in this crate call
+    // `Client::builder` and none mentions a coding, because the
+    // compiled-in set applied silently. Requiring a list would have made
+    // every one of those call sites — and every consumer's — name the
+    // codings they had been getting, and would have changed behaviour on
+    // upgrade for everyone. What the open seam replaced is the
+    // *machinery*, not the behaviour.
+    //
+    // **One list, three readers**, which is the property the registry it
+    // replaced existed to keep: what goes into `Accept-Encoding`, what a
+    // `Content-Encoding` is matched against, and which decoder is built
+    // all read this field, so a client cannot advertise a coding it will
+    // not reverse or reverse one it did not ask for.
     /// The content codings this client asks for, **in the order they go
     /// into `Accept-Encoding`**, and the only ones it will reverse.
     ///
@@ -168,17 +211,7 @@ pub struct Config {
     /// [`ClientBuilder::decompression`](crate::ClientBuilder::decompression)
     /// replaces it wholesale and an empty list turns decompression off.
     ///
-    /// **A default rather than an empty list, deliberately**, and the
-    /// measurement is what decided it: 40 test files in this crate call
-    /// `Client::builder` and none mentions a coding, because the
-    /// compiled-in set applied silently. Requiring a list would have made
-    /// every one of those call sites — and every consumer's — name the
-    /// codings they had been getting, and would have changed behaviour on
-    /// upgrade for everyone. What the open seam replaced is the
-    /// *machinery*, not the behaviour.
-    ///
-    /// **One list, three readers**, which is the property the registry it
-    /// replaced existed to keep: what goes into `Accept-Encoding`, what a
+    /// **One list, three readers**: what goes into `Accept-Encoding`, what a
     /// `Content-Encoding` is matched against, and which decoder is built
     /// all read this field, so a client cannot advertise a coding it will
     /// not reverse or reverse one it did not ask for.
@@ -190,16 +223,17 @@ pub struct Config {
     pub decompression: Vec<crate::decompress::SharedContentCoding>,
 }
 
+// Maintainer notes (not rendered):
+//
+// **The other nine are `Default::default()` verbatim**, written out
+// rather than reached through a `..Default::default()` — which would be
+// this impl calling itself — so a tenth field is a compile error here
+// exactly as it is in `check_supported`. That is the same recipe for the
+// same reason, met from the construction side rather than the
+// destructuring one.
 /// Hand-written for one field: [`decompression`](Config::decompression)
 /// defaults to the codings the cargo features compiled in, which is not
 /// `Vec::default()`.
-///
-/// **The other nine are `Default::default()` verbatim**, written out
-/// rather than reached through a `..Default::default()` — which would be
-/// this impl calling itself — so a tenth field is a compile error here
-/// exactly as it is in `check_supported`. That is the same recipe for the
-/// same reason, met from the construction side rather than the
-/// destructuring one.
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -938,22 +972,23 @@ mod tests {
         );
     }
 
-    /// `Transparent` specifically, not `None`: the two are different claims
-    /// (`Capabilities::default()` returns `None` for a backend that said
-    /// nothing, while `Transparent` is `wasi:http` — and, since v0.4 W1,
-    /// `hclient-native` and `hclient-h3` — positively stating that the 3xx
-    /// arrives as-is), and a check written as "reject unless `Configurable`"
-    /// would pass a `None`-only test while breaking every non-browser
-    /// backend that follows redirects through `Client`'s own stage.
-    ///
-    /// That sentence outlived its variant: `Configurable` was deleted in
-    /// v0.4 W1, and the mutant it now describes is "reject unless
-    /// `Transparent`". **This test does not catch that one** — it is the
-    /// arm the mutant keeps. What catches it, measured across the whole
-    /// workspace, is the pair named in the block comment above these four
-    /// tests, both in `crates/hclient/tests/redirect.rs` and both by way of
-    /// `MockTransport`'s `Capabilities::default()`.
-    ///
+    // Maintainer notes (not rendered):
+    //
+    // `Transparent` specifically, not `None`: the two are different claims
+    // (`Capabilities::default()` returns `None` for a backend that said
+    // nothing, while `Transparent` is `wasi:http` — and, since v0.4 W1,
+    // `hclient-native` and `hclient-h3` — positively stating that the 3xx
+    // arrives as-is), and a check written as "reject unless `Configurable`"
+    // would pass a `None`-only test while breaking every non-browser
+    // backend that follows redirects through `Client`'s own stage.
+    //
+    // That sentence outlived its variant: `Configurable` was deleted in
+    // v0.4 W1, and the mutant it now describes is "reject unless
+    // `Transparent`". **This test does not catch that one** — it is the
+    // arm the mutant keeps. What catches it, measured across the whole
+    // workspace, is the pair named in the block comment above these four
+    // tests, both in `crates/hclient/tests/redirect.rs` and both by way of
+    // `MockTransport`'s `Capabilities::default()`.
     /// The direction this test *does* guard is the opposite one — a check
     /// that fired **on** `Transparent`, which would refuse a policy against
     /// `wasi:http`, `hclient-h3` and the native transport alike. Measured

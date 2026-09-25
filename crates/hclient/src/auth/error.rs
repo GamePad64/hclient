@@ -8,18 +8,23 @@
 //! Negotiate in their own crate, which is what this seam exists for, will
 //! meet the first and never the second.
 //!
-//! **Why these are not in `hclient`'s own `error.rs`.** This module is a
-//! seam rather than a part of the client: its whole argument is that the
-//! Kerberos glue nobody has written belongs in somebody else's crate, and
-//! an implementor of [`AuthFlow`](crate::auth::AuthFlow) reads `auth`
-//! rather than the client's failure list. `cookie` and `cache` are here
-//! for a different reason of the same shape — they were crates.
-//!
-//! [`TooManyLegs`] is re-exported from [`crate::auth`] and [`DigestError`]
-//! from [`crate::auth::digest`], where they have always been, so no
-//! consumer's `use` line moves. [`DigestError`] keeps the `digest-auth`
-//! gate on the item, so a build without the feature has no way to reach
-//! a type whose module does not exist.
+//! [`DigestError`] keeps the `digest-auth` gate on the item, so a build
+//! without the feature has no way to reach a type whose module does not
+//! exist.
+
+// Maintainer notes (not rendered):
+// **Why these are not in `hclient`'s own `error.rs`.** This module is a
+// seam rather than a part of the client: its whole argument is that the
+// Kerberos glue nobody has written belongs in somebody else's crate, and
+// an implementor of [`AuthFlow`](crate::auth::AuthFlow) reads `auth`
+// rather than the client's failure list. `cookie` and `cache` are here
+// for a different reason of the same shape — they were crates.
+//
+// [`TooManyLegs`] is re-exported from [`crate::auth`] and [`DigestError`]
+// from [`crate::auth::digest`], where they have always been, so no
+// consumer's `use` line moves. [`DigestError`] keeps the `digest-auth`
+// gate on the item, so a build without the feature has no way to reach
+// a type whose module does not exist.
 
 use super::MAX_LEGS;
 

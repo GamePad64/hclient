@@ -84,13 +84,21 @@ pub struct ClientBuilder {
     cache: Option<crate::cached::Cache>,
 }
 
+// Maintainer notes (not rendered):
+//
+// The paragraph the doc below was trimmed from, in full:
+//
+// The clock starts as [`crate::DefaultClock`] rather than being chosen by
+// the caller: `new` takes only a transport, so nothing in the call could
+// infer a clock, and a builder generic over one would be uninferrable at
+// the call site. [`Self::total_timeout`] is where a caller supplies their
+// own, and it hands back a `ClientBuilder` like any other step — erasure
+// is what makes that possible, since the clock is a field rather than a
+// type parameter and swapping it changes no type.
 /// The clock starts as [`crate::DefaultClock`] rather than being chosen by
-/// the caller: `new` takes only a transport, so nothing in the call could
-/// infer a clock, and a builder generic over one would be uninferrable at
-/// the call site. [`Self::total_timeout`] is where a caller supplies their
-/// own, and it hands back a `ClientBuilder` like any other step — erasure
-/// is what makes that possible, since the clock is a field rather than a
-/// type parameter and swapping it changes no type.
+/// the caller: `new` takes only a transport. [`Self::total_timeout`] is
+/// where a caller supplies their own, and it hands back a `ClientBuilder`
+/// like any other step.
 impl ClientBuilder {
     /// A builder over `transport`, with no timeouts, no redirect policy and
     /// no default headers set.
@@ -114,21 +122,32 @@ impl ClientBuilder {
 }
 
 impl ClientBuilder {
+    // Maintainer notes (not rendered):
+    //
+    // The two paragraphs the doc below was trimmed from, in full:
+    //
+    // Stores `Some(policy)`, and that wrapping carries meaning: it is what
+    // makes "the caller asked for a redirect policy" distinguishable from
+    // "the caller said nothing", which is the difference between rejecting
+    // an unhonourable setting and rejecting every client built on a
+    // backend that follows redirects itself (see `check_redirect_supported`
+    // in `config.rs`). Never call this and the policy stays `None`, which
+    // every read site turns into `RedirectPolicy::default()` — ten hops,
+    // exactly as before this method learned to say `Some`.
+    //
+    // Overridden wholesale by [`RequestBuilder::redirect`]; the merge is
+    // `config::effective_redirect`, run by `Client::execute`, and it is
+    // the MERGED value that gets checked against the transport's
+    // `Capabilities` — same shape as `timeouts` below.
     /// The redirect policy for every request from this client.
     ///
-    /// Stores `Some(policy)`, and that wrapping carries meaning: it is what
-    /// makes "the caller asked for a redirect policy" distinguishable from
-    /// "the caller said nothing", which is the difference between rejecting
-    /// an unhonourable setting and rejecting every client built on a
-    /// backend that follows redirects itself (see `check_redirect_supported`
-    /// in `config.rs`). Never call this and the policy stays `None`, which
-    /// every read site turns into `RedirectPolicy::default()` — ten hops,
-    /// exactly as before this method learned to say `Some`.
+    /// Never call this and the client follows up to ten hops. A policy set
+    /// here against a backend that follows redirects itself is an error at
+    /// [`build`](Self::build) rather than a setting silently ignored.
     ///
-    /// Overridden wholesale by [`RequestBuilder::redirect`]; the merge is
-    /// `config::effective_redirect`, run by `Client::execute`, and it is
-    /// the MERGED value that gets checked against the transport's
-    /// `Capabilities` — same shape as `timeouts` below.
+    /// Overridden wholesale by [`RequestBuilder::redirect`], and it is the
+    /// merged value that gets checked against the transport's
+    /// `Capabilities`.
     ///
     /// [`RequestBuilder::redirect`]: crate::RequestBuilder::redirect
     #[must_use]
@@ -139,32 +158,53 @@ impl ClientBuilder {
         self.config.redirect = Some(std::sync::Arc::new(policy));
         self
     }
+    // Maintainer notes (not rendered):
+    //
+    // The paragraph the doc below was trimmed from, in full:
+    //
+    // Overridden field by field by `RequestBuilder::timeouts`; the merge
+    // is done by `Client::execute` (`effective_timeouts`), and its result
+    // is what actually goes to the transport in `http::Extensions`. A
+    // phase the transport doesn't support is an error at `build()`, and
+    // with B1/M3 also at `execute()` for whatever the request itself set.
     /// Default timeouts for every request from this client.
     ///
-    /// Overridden field by field by `RequestBuilder::timeouts`; the merge
-    /// is done by `Client::execute` (`effective_timeouts`), and its result
-    /// is what actually goes to the transport in `http::Extensions`. A
-    /// phase the transport doesn't support is an error at `build()`, and
-    /// with B1/M3 also at `execute()` for whatever the request itself set.
+    /// Overridden field by field by
+    /// [`RequestBuilder::timeouts`](crate::RequestBuilder::timeouts); the
+    /// merged result is what actually goes to the transport. A phase the
+    /// transport doesn't support is an error at `build()`, and also at
+    /// `execute()` for whatever the request itself set.
     #[must_use]
     pub fn timeouts(mut self, t: Timeouts) -> Self {
         self.config.timeouts = t;
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The two paragraphs the doc below was trimmed from, in full:
+    //
+    // **It counts what the caller receives**, after any
+    // `Content-Encoding` is reversed, which is the axis a decompression
+    // bomb lives on — a limit applied to the wire would pass one by
+    // definition. `crate::limit::Limited`'s module doc has the full argument,
+    // including the cost: a bound of N does not promise that fewer than
+    // N bytes crossed the wire.
+    //
+    // **Unset by default**, deliberately. A default ceiling would fail a
+    // caller's legitimate large download on a number this crate picked,
+    // which is what `TcpOpts`' every-field-off default exists to avoid.
     /// Stop a response body after `bytes`, with a typed
     /// [`ResponseTooLarge`](crate::error::ResponseTooLarge).
     ///
     /// **It counts what the caller receives**, after any
     /// `Content-Encoding` is reversed, which is the axis a decompression
     /// bomb lives on — a limit applied to the wire would pass one by
-    /// definition. `crate::limit::Limited`'s module doc has the full argument,
-    /// including the cost: a bound of N does not promise that fewer than
+    /// definition. The cost: a bound of N does not promise that fewer than
     /// N bytes crossed the wire.
     ///
     /// **Unset by default**, deliberately. A default ceiling would fail a
-    /// caller's legitimate large download on a number this crate picked,
-    /// which is what `TcpOpts`' every-field-off default exists to avoid.
+    /// caller's legitimate large download on a number this crate picked.
     ///
     /// Independent of every `Timeouts` field: `total` bounds the
     /// operation's *time*, and a body dripping under the rate this bounds
@@ -175,6 +215,27 @@ impl ClientBuilder {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Sentences the doc below was trimmed of, each with the line it was
+    // cut from quoted whole:
+    //
+    // - Turning decompression off, "with an empty list: no
+    //   `Accept-Encoding` goes out and nothing is decoded. That is the one
+    //   lever the compiled-in set could not give, and the argument for it
+    //   is CPU rather than size or safety — measured at 1900 MiB/s gzip
+    //   decode ...".
+    // - Adding a coding "by implementing
+    //   [`ContentCoding`](crate::ContentCoding) — which is what makes this
+    //   a seam rather than a subset switch, and brings content codings into
+    //   line with every other extension point here."
+    // - "The four refusals in `decompress::negotiate` stand whatever is in
+    //   this list: a transport that decodes internally, a caller who set
+    //   `Accept-Encoding` themselves, ..."
+    // - "... a server picking the first token it knows picks whatever was put
+    //   first. The default is densest-first with `deflate` last, which was
+    //   a `preference: u8` field on a registry entry before a slice could
+    //   carry it."
     /// The content codings this client asks for and reverses, **in the
     /// order they go into `Accept-Encoding`**, replacing the default.
     ///
@@ -201,9 +262,8 @@ impl ClientBuilder {
     /// # The three things this is for
     ///
     /// **Turning decompression off**, with an empty list: no
-    /// `Accept-Encoding` goes out and nothing is decoded. That is the one
-    /// lever the compiled-in set could not give, and the argument for it
-    /// is CPU rather than size or safety — measured at 1900 MiB/s gzip
+    /// `Accept-Encoding` goes out and nothing is decoded. The argument for
+    /// it is CPU rather than size or safety — measured at 1900 MiB/s gzip
     /// decode, a service doing 5000 RPS of 1.7 MiB responses spends
     /// **4.5 cores** reversing codings. Size is settled by the cargo
     /// features (a compiled-but-unused coding costs nothing at run time)
@@ -219,13 +279,11 @@ impl ClientBuilder {
     /// so it disables decoding too.
     ///
     /// **Adding a coding this crate does not ship**, by implementing
-    /// [`ContentCoding`](crate::ContentCoding) — which is what makes this
-    /// a seam rather than a subset switch, and brings content codings into
-    /// line with every other extension point here.
+    /// [`ContentCoding`](crate::ContentCoding).
     ///
     /// # What it does not change
     ///
-    /// The four refusals in `decompress::negotiate` stand whatever is in
+    /// Four refusals stand whatever is in
     /// this list: a transport that decodes internally, a caller who set
     /// `Accept-Encoding` themselves, a `Range` request and a `HEAD` each
     /// get no header and no decoding. A list is what this client *may*
@@ -241,9 +299,7 @@ impl ClientBuilder {
     ///
     /// There is no `q`-value: the list goes out in the order written, and
     /// a server picking the first token it knows picks whatever was put
-    /// first. The default is densest-first with `deflate` last, which was
-    /// a `preference: u8` field on a registry entry before a slice could
-    /// carry it.
+    /// first. The default is densest-first with `deflate` last.
     ///
     /// # Errors
     ///
@@ -310,10 +366,30 @@ impl ClientBuilder {
         self.config.default_headers = headers;
         self
     }
+    // Maintainer notes (not rendered):
+    //
+    // This library's answer to reqwest #988 and #213 (open since 2017 and
+    // 2020, 104 votes).
+    //
+    // Sentences the doc below was trimmed of, with the lines they were
+    // cut from quoted whole:
+    //
+    // "... they're the merge algorithm and RFC
+    // §5.2.2; the same rules drive the `url` crate's `Url::join`, the
+    // browser's `new URL(ref, base)`, and `urllib.parse.urljoin`. Since
+    // this round the implementation is our own
+    // (`hclient_proto::uri::resolve_reference`, RFC 3986 §5.2 written
+    // out rather than delegated to `url`); the handful of places where
+    // the RFC and WHATWG genuinely disagree are listed on that function
+    // and pinned against `url` itself in
+    // `crates/hclient-proto/tests/uri_resolution.rs`."
+    //
+    // "The base itself must be absolute. A relative one (`/api/`) is a
+    // typed `InvalidBaseUrl` error from `send()`/`execute()`, not a
+    // silently ignored setting. There's deliberately no check at
+    // `build()`: that would require changing `build()`'s error type,
+    // which is wider than this round — noted in the report."
     /// The base against which each request's URI is resolved.
-    ///
-    /// This library's answer to reqwest #988 and #213 (open since 2017 and
-    /// 2020, 104 votes).
     ///
     /// **The rule is RFC 3986 §5**, the exact same one that resolves a
     /// response's `Location:`: one client shouldn't understand `/x` two
@@ -332,19 +408,13 @@ impl ClientBuilder {
     /// slash, and a reference should NOT start with one. Neither of these
     /// lines is our own invention — they're the merge algorithm and RFC
     /// §5.2.2; the same rules drive the `url` crate's `Url::join`, the
-    /// browser's `new URL(ref, base)`, and `urllib.parse.urljoin`. Since
-    /// this round the implementation is our own
-    /// (`hclient_proto::uri::resolve_reference`, RFC 3986 §5.2 written
-    /// out rather than delegated to `url`); the handful of places where
-    /// the RFC and WHATWG genuinely disagree are listed on that function
-    /// and pinned against `url` itself in
-    /// `crates/hclient-proto/tests/uri_resolution.rs`.
+    /// browser's `new URL(ref, base)`, and `urllib.parse.urljoin`. The
+    /// handful of places where the RFC and WHATWG genuinely disagree are
+    /// listed on `hclient_proto::uri::resolve_reference`.
     ///
     /// The base itself must be absolute. A relative one (`/api/`) is a
     /// typed `InvalidBaseUrl` error from `send()`/`execute()`, not a
-    /// silently ignored setting. There's deliberately no check at
-    /// `build()`: that would require changing `build()`'s error type,
-    /// which is wider than this round — noted in the report.
+    /// silently ignored setting.
     ///
     /// A limitation worth knowing: `Client::execute`, which takes an
     /// already-built `http::Request`, sees an already-parsed `http::Uri`,
@@ -395,6 +465,40 @@ impl ClientBuilder {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Sentences the doc below was trimmed of, with the lines they were
+    // cut from quoted whole:
+    //
+    // "**Against a transport that keeps its own jar this is an error at
+    // [`build`](Self::build)**, not a setting that quietly does the work
+    // twice — see `config::check_cookies_supported` for what "twice"
+    // actually costs. `hclient-fetch` is the backend that reports it."
+    //
+    // "The rules are RFC 6265bis and they live in `hclient-cookie`, which
+    // has no clock and no I/O; what this crate adds is the three things a
+    // jar cannot do for itself — deciding *when* (`Client::run`, once per
+    // redirect hop rather than once per operation), deciding *whether*
+    // (the capability gate above), and supplying a `now`."
+    //
+    // **The clock is `web-time`'s, and until it was, a cookie jar in a
+    // browser was not a configuration that existed.**
+    // `std::time::SystemTime::now()` does not fail on
+    // `wasm32-unknown-unknown` — it **panics**, `std` having no clock on
+    // that target at all — so a jar there was unreachable rather than
+    // merely discouraged: the first request that stored or matched a
+    // cookie aborted the module. Measured rather than recalled, in one
+    // `.wasm` holding both calls: `std`'s traps on `unreachable` inside
+    // `<std::time::SystemTime>::now`, `web_time`'s answers with the
+    // host's own `Date.now()`.
+    //
+    // "Off that target `web_time::SystemTime` **is**
+    // `std::time::SystemTime` — the crate's whole body there is `pub use
+    // std::time::*;` — so this is not a second clock with its own
+    // behaviour to learn: every signature the jar exposes is the same
+    // type it always was, and a native build resolves one extra crate
+    // that contains a re-export. `no-std-wall-clock-in-the-client` is
+    // what stops the plain import from coming back."
     /// Keep cookies: attach `Cookie` to every request this client sends,
     /// and store every `Set-Cookie` it gets back.
     ///
@@ -408,14 +512,13 @@ impl ClientBuilder {
     ///
     /// **Against a transport that keeps its own jar this is an error at
     /// [`build`](Self::build)**, not a setting that quietly does the work
-    /// twice — see `config::check_cookies_supported` for what "twice"
-    /// actually costs. `hclient-fetch` is the backend that reports it.
+    /// twice. `hclient-fetch` is the backend that reports it.
     ///
-    /// The rules are RFC 6265bis and they live in `hclient-cookie`, which
+    /// The rules are RFC 6265bis and they live in [`crate::cookie`], which
     /// has no clock and no I/O; what this crate adds is the three things a
-    /// jar cannot do for itself — deciding *when* (`Client::run`, once per
-    /// redirect hop rather than once per operation), deciding *whether*
-    /// (the capability gate above), and supplying a `now`.
+    /// jar cannot do for itself — deciding *when* (once per redirect hop
+    /// rather than once per operation), deciding *whether* (the capability
+    /// gate above), and supplying a `now`.
     ///
     /// **The `now` is `web_time::SystemTime::now()`, read once per
     /// operation, and not the client's [`Timer`].** That is a deliberate
@@ -431,24 +534,13 @@ impl ClientBuilder {
     /// can configure a jar — nothing about cookies needs a timer — so
     /// that is not a hypothetical.
     ///
-    /// **The clock is `web-time`'s, and until it was, a cookie jar in a
-    /// browser was not a configuration that existed.**
-    /// `std::time::SystemTime::now()` does not fail on
-    /// `wasm32-unknown-unknown` — it **panics**, `std` having no clock on
-    /// that target at all — so a jar there was unreachable rather than
-    /// merely discouraged: the first request that stored or matched a
-    /// cookie aborted the module. Measured rather than recalled, in one
-    /// `.wasm` holding both calls: `std`'s traps on `unreachable` inside
-    /// `<std::time::SystemTime>::now`, `web_time`'s answers with the
-    /// host's own `Date.now()`.
+    /// On `wasm32-unknown-unknown`, where `std` has no clock at all, this
+    /// reads the browser's own `Date.now()`, so a cookie jar works in a
+    /// browser too.
     ///
     /// Off that target `web_time::SystemTime` **is**
-    /// `std::time::SystemTime` — the crate's whole body there is `pub use
-    /// std::time::*;` — so this is not a second clock with its own
-    /// behaviour to learn: every signature the jar exposes is the same
-    /// type it always was, and a native build resolves one extra crate
-    /// that contains a re-export. `no-std-wall-clock-in-the-client` is
-    /// what stops the plain import from coming back.
+    /// `std::time::SystemTime`, so this is not a second clock with its own
+    /// behaviour to learn.
     ///
     /// **The list is the caller's**, and is erased on the way in — see
     /// [`BoxSuffixList`](crate::erased::BoxSuffixList) for why that rather than a type
@@ -474,6 +566,14 @@ impl ClientBuilder {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The last paragraph of the doc below, in full:
+    //
+    // **The store is the caller's and is erased on the way in** — see
+    // [`BoxHstsStore`](crate::erased::BoxHstsStore), and
+    // [`CookieStore`](crate::cookie::CookieStore)'s documentation for
+    // the five-way measurement that chose the seam's shape.
     /// Honour RFC 6797 Strict Transport Security: remember which hosts
     /// asserted a policy, and send `https://` where the caller wrote
     /// `http://`.
@@ -511,9 +611,7 @@ impl ClientBuilder {
     /// accident.
     ///
     /// **The store is the caller's and is erased on the way in** — see
-    /// [`BoxHstsStore`](crate::erased::BoxHstsStore), and
-    /// [`CookieStore`](crate::cookie::CookieStore)'s documentation for
-    /// the five-way measurement that chose the seam's shape.
+    /// [`BoxHstsStore`](crate::erased::BoxHstsStore).
     #[cfg(feature = "hsts")]
     #[must_use]
     pub fn hsts<S>(mut self, hsts: crate::hsts::Hsts<S>) -> Self
@@ -526,6 +624,41 @@ impl ClientBuilder {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Sentences the doc below was trimmed of, with the lines they were
+    // cut from quoted whole:
+    //
+    // "**Against a transport that keeps its own cache this is an error at
+    // [`build`](Self::build)**, not a setting that quietly does the work
+    // twice — `config::check_cache_supported` says what "twice" costs,
+    // and `hclient-fetch` is the backend that reports it. That capability,
+    // `Capabilities::owns_cache`, has existed since v0.1 with nothing
+    // reading it; this method is what gave it a reader."
+    //
+    // "The rules are `hclient-cache`'s, sans-io and clockless. What this
+    // crate adds is the three things a cache cannot do for itself:
+    // deciding *when* (`Client::run`, once per redirect hop and
+    // re-derived rather than carried, exactly as the jar is), deciding
+    // *whether* (the capability gate above), and supplying a `now`."
+    //
+    // The clock is read **only when a cache is configured**, and what
+    // that used to be protecting against is worth keeping:
+    // `std::time::SystemTime::now()` **panics on
+    // `wasm32-unknown-unknown`**, where `std` has no clock at all, so
+    // while this crate read `std`'s clock an HTTP cache in a browser was
+    // a configuration that could not run — not refused, which is what
+    // [`Capabilities::owns_cache`](hclient_core::caps::Capabilities) does one
+    // line up, but aborting on the first hop that consulted it. The
+    // clock is `web-time`'s now and that configuration exists;
+    // [`Self::cookie_jar`] has the measurement. The narrowing stays
+    // anyway, because a client that never asked for a cache must not
+    // start reading a clock — the same rule `execute` follows for
+    // `Timer::sleep`.
+    //
+    // "A cache can answer a request **without sending it**, so a hop that
+    // hits does not reach the transport at all. Three consequences, each
+    // pinned by a test:"
     /// Keep an RFC 9111 response cache: serve a fresh stored response
     /// without sending anything, revalidate a stale one conditionally, and
     /// store what comes back.
@@ -543,16 +676,13 @@ impl ClientBuilder {
     ///
     /// **Against a transport that keeps its own cache this is an error at
     /// [`build`](Self::build)**, not a setting that quietly does the work
-    /// twice — `config::check_cache_supported` says what "twice" costs,
-    /// and `hclient-fetch` is the backend that reports it. That capability,
-    /// `Capabilities::owns_cache`, has existed since v0.1 with nothing
-    /// reading it; this method is what gave it a reader.
+    /// twice; `hclient-fetch` is the backend that reports it.
     ///
-    /// The rules are `hclient-cache`'s, sans-io and clockless. What this
+    /// The rules are [`crate::cache`]'s, sans-io and clockless. What this
     /// crate adds is the three things a cache cannot do for itself:
-    /// deciding *when* (`Client::run`, once per redirect hop and
-    /// re-derived rather than carried, exactly as the jar is), deciding
-    /// *whether* (the capability gate above), and supplying a `now`.
+    /// deciding *when* (once per redirect hop and re-derived rather than
+    /// carried, exactly as the jar is), deciding *whether* (the capability
+    /// gate above), and supplying a `now`.
     ///
     /// **The `now` is `web_time::SystemTime::now()`, and not the client's
     /// [`Timer`].** The argument is [`Self::cookie_jar`]'s in full and it
@@ -567,25 +697,14 @@ impl ClientBuilder {
     /// for ever. A clockless client can configure a cache, so that is not
     /// hypothetical.
     ///
-    /// The clock is read **only when a cache is configured**, and what
-    /// that used to be protecting against is worth keeping:
-    /// `std::time::SystemTime::now()` **panics on
-    /// `wasm32-unknown-unknown`**, where `std` has no clock at all, so
-    /// while this crate read `std`'s clock an HTTP cache in a browser was
-    /// a configuration that could not run — not refused, which is what
-    /// [`Capabilities::owns_cache`](hclient_core::caps::Capabilities) does one
-    /// line up, but aborting on the first hop that consulted it. The
-    /// clock is `web-time`'s now and that configuration exists;
-    /// [`Self::cookie_jar`] has the measurement. The narrowing stays
-    /// anyway, because a client that never asked for a cache must not
-    /// start reading a clock — the same rule `execute` follows for
-    /// `Timer::sleep`.
+    /// The clock is read **only when a cache is configured**: a client
+    /// that never asked for a cache must not start reading a clock — the
+    /// same rule `execute` follows for `Timer::sleep`.
     ///
     /// # What a cache changes that a jar does not
     ///
     /// A cache can answer a request **without sending it**, so a hop that
-    /// hits does not reach the transport at all. Three consequences, each
-    /// pinned by a test:
+    /// hits does not reach the transport at all. Three consequences:
     ///
     /// - hooks see nothing for that hop, because there was no exchange;
     /// - a `Set-Cookie` on a stored response is **not** re-applied to the
@@ -614,6 +733,25 @@ impl ClientBuilder {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The two `# Errors` paragraphs the doc below was trimmed from, in full:
+    //
+    // [`BuildError::Unsupported`], naming the setting, when the
+    // transport's [`Capabilities`](crate::caps::Capabilities) cannot
+    // honour something this builder was configured with — which is every
+    // refusal this function used to make, and is why that variant carries
+    // the [`UnsupportedCapability`](crate::error::UnsupportedCapability) it
+    // used to return.
+    //
+    // [`BuildError::InvalidCodingToken`] when a coding handed to
+    // [`decompression`](Self::decompression) names itself something that
+    // is not an RFC 9110 §5.6.2 token. **Checked here rather than where
+    // the header is assembled**, because that is the one place a caller
+    // is still holding the builder: `Accept-Encoding` is written once per
+    // request, and the alternative to this refusal was an `expect` that
+    // became reachable the moment a token could come from outside this
+    // crate. See [`InvalidCodingToken`](crate::error::InvalidCodingToken).
     /// Checks the configuration against the transport's capabilities, and
     /// the configured content codings against RFC 9110. Not a single
     /// silent no-op: an unsupported setting is an error, here and now.
@@ -622,19 +760,16 @@ impl ClientBuilder {
     ///
     /// [`BuildError::Unsupported`], naming the setting, when the
     /// transport's [`Capabilities`](crate::caps::Capabilities) cannot
-    /// honour something this builder was configured with — which is every
-    /// refusal this function used to make, and is why that variant carries
-    /// the [`UnsupportedCapability`](crate::error::UnsupportedCapability) it
-    /// used to return.
+    /// honour something this builder was configured with. The variant
+    /// carries the [`UnsupportedCapability`](crate::error::UnsupportedCapability)
+    /// that names it.
     ///
     /// [`BuildError::InvalidCodingToken`] when a coding handed to
     /// [`decompression`](Self::decompression) names itself something that
     /// is not an RFC 9110 §5.6.2 token. **Checked here rather than where
     /// the header is assembled**, because that is the one place a caller
-    /// is still holding the builder: `Accept-Encoding` is written once per
-    /// request, and the alternative to this refusal was an `expect` that
-    /// became reachable the moment a token could come from outside this
-    /// crate. See [`InvalidCodingToken`](crate::error::InvalidCodingToken).
+    /// is still holding the builder. See
+    /// [`InvalidCodingToken`](crate::error::InvalidCodingToken).
     pub fn build(self) -> Result<Client, BuildError> {
         check_supported(&self.config, self.transport.capabilities(), self.backend)?;
         crate::decompress::validate(&self.config.decompression)?;
@@ -678,11 +813,17 @@ impl Debug for Client {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// The paragraph the doc below was trimmed from, in full:
+//
+// The transport and the clock live behind
+// `hclient_core::erased`, so a library takes `&Client` with
+// no `where` clause. `Clone` is an `Arc` bump.
 /// The client, and it names no type parameters at all.
 ///
-/// The transport and the clock live behind
-/// `hclient_core::erased`, so a library takes `&Client` with
-/// no `where` clause. `Clone` is an `Arc` bump.
+/// The transport and the clock are erased, so a library takes `&Client`
+/// with no `where` clause. `Clone` is an `Arc` bump.
 #[derive(Clone)]
 pub struct Client {
     inner: Arc<Inner>,
@@ -730,14 +871,20 @@ struct Inner {
     cache: Option<crate::cached::Cache>,
 }
 
+// Maintainer notes (not rendered):
+//
+// The paragraph the doc below was trimmed from, in full:
+//
+// **Cloning shares the transport and the clock rather than duplicating
+// them**, and `#[derive(Clone)]` is now enough to say so: erasure put
+// both behind the `Arc` in `Inner`, so there is no `T: Clone` for a
+// derive to demand and no way for a clone to copy a transport. This used
+// to be a hand-written impl carrying that argument in a comment.
 /// `Client::builder(t)` takes only a transport, and the clock it starts
 /// with is [`crate::DefaultClock`] — see `ClientBuilder::new`.
 ///
 /// **Cloning shares the transport and the clock rather than duplicating
-/// them**, and `#[derive(Clone)]` is now enough to say so: erasure put
-/// both behind the `Arc` in `Inner`, so there is no `T: Clone` for a
-/// derive to demand and no way for a clone to copy a transport. This used
-/// to be a hand-written impl carrying that argument in a comment.
+/// them.**
 impl Client {
     /// Starts a [`ClientBuilder`] over `transport`.
     pub fn builder<T>(transport: T) -> ClientBuilder
@@ -748,14 +895,17 @@ impl Client {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// "... so `struct App { http: Client }` keeps compiling. The design doc
+// rejects tower layers for compression (§W5) on exactly that ground, and
+// `tests/deadline_client_type.rs` pins it here."
 /// Adjusting the bound on an already-built client, for a client whose
 /// clock is the target's default one.
 ///
 /// This is the call that keeps `Client`'s type from growing when a timeout
 /// is switched on: `Client::new()?.total_timeout(d)` is still a `Client`,
-/// so `struct App { http: Client }` keeps compiling. The design doc
-/// rejects tower layers for compression (§W5) on exactly that ground, and
-/// `tests/deadline_client_type.rs` pins it here.
+/// so `struct App { http: Client }` keeps compiling.
 ///
 /// **Why this is not written over `Tm: Timer`.** [`crate::NoClock`] — the
 /// clock slot of a client that never got one — implements `Timer` too (it
@@ -794,6 +944,25 @@ impl Client {
 }
 
 impl Client {
+    // Maintainer notes (not rendered):
+    //
+    // **There is deliberately no untyped `transport()` beside this**, and
+    // it existed for one commit. Three things were wrong with it and the
+    // third is the one that decides. It returned
+    // `&hclient_core::transport::SharedTransport`, a path this
+    // facade does not re-export — so naming the return type meant adding a
+    // dependency on `hclient-core` to a crate that wanted only `hclient`,
+    // which is the tax erasure exists to remove. The name would also have
+    // collided in a reader's head with [`crate::erased`], which is this
+    // crate's *other* erasure and a different subject. And what the value
+    // offered was `capabilities()` — already forwarded by
+    // [`Self::capabilities`] — plus `execute_boxed`, which sends a request
+    // with the redirect policy, the cookie jar, the cache and every
+    // timeout skipped, while reading like "send a request".
+    //
+    // Adding it back later is a minor version and removing it later is a
+    // major one, which is what settles the direction before the first
+    // publish.
     /// This client's transport as a concrete type, if that is the type it
     /// was built with.
     ///
@@ -802,24 +971,6 @@ impl Client {
     /// caller asks for it back — a mock's recorded requests, or a `Native`
     /// to lend to a WebSocket connector. `None` means the client holds a
     /// different backend: nothing checked the guess when it was built.
-    ///
-    /// **There is deliberately no untyped `transport()` beside this**, and
-    /// it existed for one commit. Three things were wrong with it and the
-    /// third is the one that decides. It returned
-    /// `&hclient_core::transport::SharedTransport`, a path this
-    /// facade does not re-export — so naming the return type meant adding a
-    /// dependency on `hclient-core` to a crate that wanted only `hclient`,
-    /// which is the tax erasure exists to remove. The name would also have
-    /// collided in a reader's head with [`crate::erased`], which is this
-    /// crate's *other* erasure and a different subject. And what the value
-    /// offered was `capabilities()` — already forwarded by
-    /// [`Self::capabilities`] — plus `execute_boxed`, which sends a request
-    /// with the redirect policy, the cookie jar, the cache and every
-    /// timeout skipped, while reading like "send a request".
-    ///
-    /// Adding it back later is a minor version and removing it later is a
-    /// major one, which is what settles the direction before the first
-    /// publish.
     pub fn transport_as<T: 'static>(&self) -> Option<&T> {
         self.inner.transport.as_any().downcast_ref::<T>()
     }
@@ -828,20 +979,43 @@ impl Client {
     pub fn config(&self) -> &Config {
         &self.config
     }
+    // Maintainer notes (not rendered):
+    //
+    // The paragraph the doc below was trimmed from, in full:
+    //
+    // This forwarder exists so that answering the most natural question
+    // about `Capabilities` doesn't require dragging
+    // `hclient_core::transport::Transport` into scope — that trait is the contract
+    // for backend authors rather than part of the `hclient` facade. Reaching the transport and calling the trait
+    // method was once the only path; since erasure it is **the only
+    // path at all**, because [`Self::transport_as`] hands back a
+    // concrete backend and a caller who does not know which one they hold
+    // has nothing else to ask.
     /// What this client's transport can do.
     ///
-    /// This forwarder exists so that answering the most natural question
-    /// about `Capabilities` doesn't require dragging
-    /// `hclient_core::transport::Transport` into scope — that trait is the contract
-    /// for backend authors rather than part of the `hclient` facade. Reaching the transport and calling the trait
-    /// method was once the only path; since erasure it is **the only
-    /// path at all**, because [`Self::transport_as`] hands back a
-    /// concrete backend and a caller who does not know which one they hold
-    /// has nothing else to ask.
+    /// This is the one way to ask a client whose backend you do not know:
+    /// [`Self::transport_as`] hands back a concrete backend only when you
+    /// already know which one it is, and
+    /// `hclient_core::transport::Transport` is the contract for backend
+    /// authors rather than part of the `hclient` facade.
     pub fn capabilities(&self) -> &Capabilities {
         self.inner.transport.capabilities()
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The paragraph the doc below was trimmed from, in full:
+    //
+    // **A borrow rather than a guard, and there is nothing to block.**
+    // This returned a `MutexGuard` for as long as the jar was behind
+    // one, with a paragraph warning that holding it across an `.await`
+    // blocked every other request of every clone of this client — and a
+    // paragraph about recovering a poisoned lock. The jar's own methods
+    // take `&self` now, because
+    // [`CookieStore`](crate::cookie::CookieStore)'s do, so there is no
+    // lock here to hold, to poison, or to warn about. It is
+    // [`Client::cache`]'s shape, arrived at by the same route one module
+    // over.
     /// This client's cookie jar, if it was given one.
     ///
     /// `None` when no jar was configured. That is the same answer for
@@ -850,15 +1024,9 @@ impl Client {
     /// [`ClientBuilder::build`] and so cannot reach this method at all.
     ///
     /// **A borrow rather than a guard, and there is nothing to block.**
-    /// This returned a `MutexGuard` for as long as the jar was behind
-    /// one, with a paragraph warning that holding it across an `.await`
-    /// blocked every other request of every clone of this client — and a
-    /// paragraph about recovering a poisoned lock. The jar's own methods
-    /// take `&self` now, because
+    /// The jar's own methods take `&self`, because
     /// [`CookieStore`](crate::cookie::CookieStore)'s do, so there is no
-    /// lock here to hold, to poison, or to warn about. It is
-    /// [`Client::cache`]'s shape, arrived at by the same route one module
-    /// over.
+    /// lock here to hold, to poison, or to warn about.
     ///
     /// Reading a jar out — [`records`](crate::cookie::CookieJar::records)
     /// — and seeding one back in
@@ -873,6 +1041,17 @@ impl Client {
         self.inner.cookies.as_ref()
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The paragraph the doc below was trimmed from, in full:
+    //
+    // **A borrow rather than a guard, and there is nothing to block.**
+    // This returned a `MutexGuard` for as long as the cache was behind
+    // one, with a paragraph warning that holding it across an `.await`
+    // could stall a response body belonging to some other handle. The
+    // store's own methods take `&self` now, so there is no lock here to
+    // hold and that hazard is gone rather than documented — the
+    // synchronisation, where a store needs any, is the store's.
     /// This client's response cache, if it was given one.
     ///
     /// `None` when no cache was configured. That is the same answer for
@@ -882,25 +1061,27 @@ impl Client {
     /// the shape [`Client::cookies`] already has.
     ///
     /// **A borrow rather than a guard, and there is nothing to block.**
-    /// This returned a `MutexGuard` for as long as the cache was behind
-    /// one, with a paragraph warning that holding it across an `.await`
-    /// could stall a response body belonging to some other handle. The
-    /// store's own methods take `&self` now, so there is no lock here to
-    /// hold and that hazard is gone rather than documented — the
-    /// synchronisation, where a store needs any, is the store's.
+    /// The store's methods take `&self`, so there is no lock here to
+    /// hold — the synchronisation, where a store needs any, is the
+    /// store's.
     #[cfg(feature = "cache")]
     pub fn cache(&self) -> Option<&crate::cache::HttpCache<crate::erased::BoxCacheStore>> {
         Some(self.inner.cache.as_ref()?)
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // [`Client::cookies`] and [`Client::cache`]'s shape, and it was
+    // missing for a while — which is the asymmetry worth naming, because
+    // nothing failed without it. A caller who installs an
+    // [`Hsts`](crate::hsts::Hsts) could reach it on the way in and never
+    // again: what a host asserted, when it expires, and every entry a
+    // persisting store would want to write down were all one-way.
     /// The RFC 6797 policy set this client keeps, if one was configured.
     ///
-    /// [`Client::cookies`] and [`Client::cache`]'s shape, and it was
-    /// missing for a while — which is the asymmetry worth naming, because
-    /// nothing failed without it. A caller who installs an
-    /// [`Hsts`](crate::hsts::Hsts) could reach it on the way in and never
-    /// again: what a host asserted, when it expires, and every entry a
-    /// persisting store would want to write down were all one-way.
+    /// The same shape as [`Client::cookies`] and [`Client::cache`]: what a
+    /// host asserted, when it expires, and every entry a persisting store
+    /// would want to write down are readable through it.
     ///
     /// A borrow rather than a guard, for the reason both neighbours give:
     /// [`HstsStore`](crate::hsts::HstsStore)'s methods take `&self`, so
@@ -911,17 +1092,27 @@ impl Client {
         self.inner.hsts.as_ref()
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The two paragraphs the doc below was trimmed from, in full:
+    //
+    // The verb methods below, and this one, take `impl AsRef<str>` rather
+    // than `&str`, which is what lets a caller holding a `url::Url` pass
+    // it directly — `url::Url` implements `AsRef<str>`, so this crate
+    // accepts one **without depending on `url`**, which
+    // `hclient-proto` removed at measured cost. `&str`, `String`,
+    // `&String` and `Cow<str>` come along for the same reason.
+    //
+    // It is deliberately not an `IntoUrl`-style trait of ours. Such a
+    // trait's value is the conversions it names, and the one worth naming
+    // here is `url::Url` — which `AsRef<str>` already reaches, at no
+    // dependency and with nothing for a caller to learn.
+    /// Starts a request with `method` to `url`.
+    ///
     /// The verb methods below, and this one, take `impl AsRef<str>` rather
     /// than `&str`, which is what lets a caller holding a `url::Url` pass
-    /// it directly — `url::Url` implements `AsRef<str>`, so this crate
-    /// accepts one **without depending on `url`**, which
-    /// `hclient-proto` removed at measured cost. `&str`, `String`,
+    /// it directly — `url::Url` implements `AsRef<str>`. `&str`, `String`,
     /// `&String` and `Cow<str>` come along for the same reason.
-    ///
-    /// It is deliberately not an `IntoUrl`-style trait of ours. Such a
-    /// trait's value is the conversions it names, and the one worth naming
-    /// here is `url::Url` — which `AsRef<str>` already reaches, at no
-    /// dependency and with nothing for a caller to learn.
     pub fn request(&self, method: http::Method, url: impl AsRef<str>) -> RequestBuilder<'_> {
         RequestBuilder::new(self, method, url.as_ref())
     }
@@ -949,6 +1140,14 @@ impl Client {
     pub fn head(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::HEAD, url)
     }
+    // Maintainer notes (not rendered):
+    //
+    // "... A 303
+    // still becomes a GET without a body — that is what 303 means, and
+    // QUERY claims no exemption from it. Both directions are pinned by
+    // tests in `hclient-proto`, since the correct behaviour here follows
+    // only from QUERY not being POST, and would be easy to "fix" into
+    // corruption by anyone who groups it with POST for having a body."
     /// HTTP QUERY: a **safe, idempotent** request that carries a body.
     ///
     /// The method GET should have had for large or structured queries. A
@@ -966,10 +1165,7 @@ impl Client {
     /// both the method and the body, exactly as they do for PUT or PATCH,
     /// because the historical rewrite-to-GET applies to POST alone. A 303
     /// still becomes a GET without a body — that is what 303 means, and
-    /// QUERY claims no exemption from it. Both directions are pinned by
-    /// tests in `hclient-proto`, since the correct behaviour here follows
-    /// only from QUERY not being POST, and would be easy to "fix" into
-    /// corruption by anyone who groups it with POST for having a body.
+    /// QUERY claims no exemption from it.
     pub fn query(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::QUERY, url)
     }
@@ -986,22 +1182,27 @@ impl Client {
         crate::sse::SseBuilder::new(self, url.as_ref())
     }
 
-    /// The stage order is fixed and correct by construction.
-    /// In v0.1 there's one stage — redirect.
+    // Maintainer notes (not rendered):
+    //
+    // In v0.1 there's one stage — redirect.
+    //
+    // **This method used to carry `where T::Error: Send + Sync + 'static`,
+    // and erasure removed it along with three siblings** — the second
+    // documented exception to the "core declares no `Send`/`Sync`"
+    // invariant (spec amendment-C1). It was needed because
+    // `Transport::to_error` is called for an abstract `T` and its own
+    // where-clause requires the bound, `Error` storing its source as
+    // `Arc<dyn Error + Send + Sync>`. There is no abstract `T` here any
+    // more: `DynTransport::execute_boxed` calls `to_error` where `Self`
+    // is concrete, so the bound is discharged at the blanket impl and
+    // four exception markers left this file with it. That is worth more
+    // than the ergonomics the erasure was for — the invariant's own point
+    // is that a bound declared where the type is abstract propagates to
+    // backends that cannot satisfy it.
+    /// Sends `req` through this client — redirects, cookies, the cache,
+    /// retries and timeouts as configured — and returns the response.
     ///
-    /// **This method used to carry `where T::Error: Send + Sync + 'static`,
-    /// and erasure removed it along with three siblings** — the second
-    /// documented exception to the "core declares no `Send`/`Sync`"
-    /// invariant (spec amendment-C1). It was needed because
-    /// `Transport::to_error` is called for an abstract `T` and its own
-    /// where-clause requires the bound, `Error` storing its source as
-    /// `Arc<dyn Error + Send + Sync>`. There is no abstract `T` here any
-    /// more: `DynTransport::execute_boxed` calls `to_error` where `Self`
-    /// is concrete, so the bound is discharged at the blanket impl and
-    /// four exception markers left this file with it. That is worth more
-    /// than the ergonomics the erasure was for — the invariant's own point
-    /// is that a bound declared where the type is abstract propagates to
-    /// backends that cannot satisfy it.
+    /// The stage order is fixed and correct by construction.
     ///
     /// # Errors
     ///
@@ -2317,41 +2518,48 @@ fn replay_for_too_early(snapshot: Option<&RequestBody>) -> Option<RequestBody> {
 // condition makes the reason visible on the spot, not only in `lib.rs`.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 impl Client {
+    // Maintainer notes (not rendered):
+    //
+    // "... The explicit path without this requirement is
+    // `Client::builder(Native::new(rt, tls, dns))` with a runtime of your
+    // choice (see `crates/hclient/tests/two_runtimes.rs`, the same
+    // constructor for tokio and for smol)."
+    //
+    // `# Errors` opened: "Two, and they are told apart by [`ErrorKind`](hclient_core::error::ErrorKind)
+    // rather than by which function you called: ..."
+    //
+    // **This function used to panic on the first of those, and there was
+    // a `try_new` beside it that did not.** The split was argued from the
+    // error type: `UnsupportedCapability` is a typed answer to *the
+    // transport does not support this setting* and not to *the trust
+    // store could not be read*, so `new` returned the narrow type and
+    // `.expect`ed the other cause. The argument was sound and the naming
+    // it produced was not — **both functions returned `Result`**, so
+    // `try_` marked the one that was fallible about *more things* rather
+    // than the one that was fallible at all, which is not what the prefix
+    // means in Rust.
+    //
+    // Keeping the wider type and dropping the panic resolves it without
+    // giving anything up, because `ErrorKind` already draws the line the
+    // two types were drawing. What it removes is a library panicking on a
+    // machine whose certificate store cannot be read — which `try_new`'s
+    // own doc listed real cases for, and which nothing in this workspace
+    // called: `try_new` had no caller outside this file.
     /// A client with the default transport.
     ///
     /// On native this requires a surrounding tokio runtime: `tokio::spawn`
     /// and `tokio::time::sleep` panic outside a runtime. reqwest behaves
     /// exactly the same way. The explicit path without this requirement is
     /// `Client::builder(Native::new(rt, tls, dns))` with a runtime of your
-    /// choice (see `crates/hclient/tests/two_runtimes.rs`, the same
-    /// constructor for tokio and for smol).
+    /// choice.
     ///
     /// # Errors
     ///
-    /// Two, and they are told apart by [`ErrorKind`](hclient_core::error::ErrorKind)
-    /// rather than by which function you called:
+    /// Two, and they are told apart by [`ErrorKind`](hclient_core::error::ErrorKind):
     /// `Rustls::with_platform_verifier()` failing to read the OS trust
     /// store is `ErrorKind::Tls`, and a client setting the transport
     /// cannot honour is `ErrorKind::Unsupported`, carrying the
     /// `UnsupportedCapability` that names it as its source.
-    ///
-    /// **This function used to panic on the first of those, and there was
-    /// a `try_new` beside it that did not.** The split was argued from the
-    /// error type: `UnsupportedCapability` is a typed answer to *the
-    /// transport does not support this setting* and not to *the trust
-    /// store could not be read*, so `new` returned the narrow type and
-    /// `.expect`ed the other cause. The argument was sound and the naming
-    /// it produced was not — **both functions returned `Result`**, so
-    /// `try_` marked the one that was fallible about *more things* rather
-    /// than the one that was fallible at all, which is not what the prefix
-    /// means in Rust.
-    ///
-    /// Keeping the wider type and dropping the panic resolves it without
-    /// giving anything up, because `ErrorKind` already draws the line the
-    /// two types were drawing. What it removes is a library panicking on a
-    /// machine whose certificate store cannot be read — which `try_new`'s
-    /// own doc listed real cases for, and which nothing in this workspace
-    /// called: `try_new` had no caller outside this file.
     pub fn new() -> Result<Self, hclient_core::error::Error> {
         let transport = Self::default_native_transport()?;
         // **The machine's own proxy, honoured by default.** `HTTP_PROXY`
@@ -2470,6 +2678,28 @@ impl Client {
     target_os = "unknown"
 ))]
 impl Client {
+    // Maintainer notes (not rendered):
+    //
+    // The `# Panics` section of the doc below, in full before it was
+    // replaced with a one-sentence reader's version:
+    //
+    // The `.expect` below is unreachable for the configuration this
+    // function itself builds, and that rests on one fact two files away
+    // rather than on anything visible at the call site — so, named here:
+    // **`Config::default()` leaves `redirect: None`** (`config.rs`), and
+    // `check_redirect_supported` rejects only a `Some` policy against a
+    // `RedirectSupport::Internal` backend, which `Fetch` is. Nothing else
+    // in the default config can trip `build()`: `Timeouts::default()` is
+    // three `None`s, and `base_url` is not checked against `Capabilities`
+    // at all.
+    //
+    // **The moment `Config`'s default becomes
+    // `Some(RedirectPolicy::default())`, or `ClientBuilder` starts
+    // storing a policy eagerly instead of leaving it `None` until
+    // `.redirect(...)` is called, this line panics in every browser
+    // program that calls `Client::new()`** — not in a test here, in the
+    // consumer's own program. That is the dependency to preserve, or to
+    // replace this constructor's signature over.
     /// A client with the browser transport.
     ///
     /// No `Result`, unlike the native [`Client::new`] — and no panic
@@ -2482,23 +2712,9 @@ impl Client {
     ///
     /// # Panics
     ///
-    /// The `.expect` below is unreachable for the configuration this
-    /// function itself builds, and that rests on one fact two files away
-    /// rather than on anything visible at the call site — so, named here:
-    /// **`Config::default()` leaves `redirect: None`** (`config.rs`), and
-    /// `check_redirect_supported` rejects only a `Some` policy against a
-    /// `RedirectSupport::Internal` backend, which `Fetch` is. Nothing else
-    /// in the default config can trip `build()`: `Timeouts::default()` is
-    /// three `None`s, and `base_url` is not checked against `Capabilities`
-    /// at all.
-    ///
-    /// **The moment `Config`'s default becomes
-    /// `Some(RedirectPolicy::default())`, or `ClientBuilder` starts
-    /// storing a policy eagerly instead of leaving it `None` until
-    /// `.redirect(...)` is called, this line panics in every browser
-    /// program that calls `Client::new()`** — not in a test here, in the
-    /// consumer's own program. That is the dependency to preserve, or to
-    /// replace this constructor's signature over.
+    /// Never, for the configuration this function builds: the default
+    /// configuration sets no redirect policy, which is the one setting the
+    /// browser transport refuses.
     ///
     /// A caller who does configure a redirect policy on a browser client
     /// gets an ordinary `Err` from `Client::builder(Fetch::new())

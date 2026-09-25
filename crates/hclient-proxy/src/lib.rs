@@ -1,8 +1,7 @@
 //! Proxy protocols, as **sans-io handshakes**.
 //!
 //! Three ship — HTTP `CONNECT`, SOCKS5 and `SOCKS4a` — and they share no
-//! bytes, which is what makes [`Handshake`] evidence that the shape is
-//! general rather than the shape of its first caller.
+//! bytes.
 //!
 //! ```no_run
 //! use hclient_proxy::{HttpConnect, Proxy};
@@ -18,47 +17,56 @@
 //! Nothing here opens a socket, and nothing here names an IO trait. A
 //! handshake is a state machine: it is handed the bytes that arrived and
 //! answers with the bytes to send, or *not yet*, or *the tunnel is open*.
-//! The transport owns the socket and drives it —
-//! `hclient-native`'s `proxy::drive` is thirty lines and is the only
-//! place in the family that knows what a `poll_read` is.
-//!
-//! Two things follow, and the second is the one that was paid for:
-//!
-//! - Every rule in every protocol is testable **without a socket**, and
-//!   the tests here feed the exact byte sequences the RFCs print. A
-//!   mutation in the SOCKS5 reply parser is killed by a test that never
-//!   opens a file descriptor.
-//! - `CONNECT` no longer needs an HTTP client to speak HTTP. It used to
-//!   drive `hyper`'s h1 dispatcher through `hclient-native`'s upgrade
-//!   seam — which tied the whole proxy family to hyper, to hyper's IO
-//!   traits, and to a transport. What replaced it is
-//!   [`hclient_proto::head`], because a `CONNECT` response is the one
-//!   HTTP message with no body under any framing rule (RFC 9110 §9.3.6).
+//! The transport owns the socket and drives it.
 //!
 //! # What it costs, stated where somebody will look for it
 //!
 //! A protocol that has to **wrap** the IO cannot be written against this
-//! seam — TLS to the proxy itself is the real example. That is not a
-//! regression: it was unsupported before this crate existed, and
-//! `system::ParseError::TlsToProxyUnsupported` is where the refusal is
-//! already written down. Lifting it means a driver that can hand a
-//! handshake an upgraded stream, which is a change to
-//! `hclient-native`'s thirty lines rather than to this seam.
-//!
-//! # Why this is a crate and not a module of `hclient-native`
-//!
-//! For the `system` feature, and only for it. The protocols themselves
-//! carry no dependency — the whole reason `hclient-native`'s `proxy`
-//! feature had no `dep:` line — but the machine's own settings carry
-//! `proxy_cfg`, and through it `url` and the ICU tables. A feature on the
-//! transport would put those into every build in any graph that switched
-//! it on, which is the argument that keeps `quinn-proto` in
-//! `hclient-tls-quic` and `tungstenite` in `hclient-tungstenite`.
-//!
-//! The second reason is the one a dependency graph cannot show: a
-//! transport that is not `hclient-native` — `hclient-urlsession`, or
-//! somebody else's — can read the same settings and speak the same
-//! protocols without taking hyper with them.
+//! seam — TLS to the proxy itself is the real example.
+
+// Maintainer notes (not rendered):
+// Three ship — HTTP `CONNECT`, SOCKS5 and `SOCKS4a` — and they share no
+// bytes, which is what makes [`Handshake`] evidence that the shape is
+// general rather than the shape of its first caller.
+//
+// The transport owns the socket and drives it —
+// `hclient-native`'s `proxy::drive` is thirty lines and is the only
+// place in the family that knows what a `poll_read` is.
+//
+// Two things follow, and the second is the one that was paid for:
+//
+// - Every rule in every protocol is testable **without a socket**, and
+//   the tests here feed the exact byte sequences the RFCs print. A
+//   mutation in the SOCKS5 reply parser is killed by a test that never
+//   opens a file descriptor.
+// - `CONNECT` no longer needs an HTTP client to speak HTTP. It used to
+//   drive `hyper`'s h1 dispatcher through `hclient-native`'s upgrade
+//   seam — which tied the whole proxy family to hyper, to hyper's IO
+//   traits, and to a transport. What replaced it is
+//   [`hclient_proto::head`], because a `CONNECT` response is the one
+//   HTTP message with no body under any framing rule (RFC 9110 §9.3.6).
+//
+// That is not a
+// regression: it was unsupported before this crate existed, and
+// `system::ParseError::TlsToProxyUnsupported` is where the refusal is
+// already written down. Lifting it means a driver that can hand a
+// handshake an upgraded stream, which is a change to
+// `hclient-native`'s thirty lines rather than to this seam.
+//
+// # Why this is a crate and not a module of `hclient-native`
+//
+// For the `system` feature, and only for it. The protocols themselves
+// carry no dependency — the whole reason `hclient-native`'s `proxy`
+// feature had no `dep:` line — but the machine's own settings carry
+// `proxy_cfg`, and through it `url` and the ICU tables. A feature on the
+// transport would put those into every build in any graph that switched
+// it on, which is the argument that keeps `quinn-proto` in
+// `hclient-tls-quic` and `tungstenite` in `hclient-tungstenite`.
+//
+// The second reason is the one a dependency graph cannot show: a
+// transport that is not `hclient-native` — `hclient-urlsession`, or
+// somebody else's — can read the same settings and speak the same
+// protocols without taking hyper with them.
 
 // **Not `#![forbid(unsafe_code)]`, and this is the only reason.** One
 // expression in `system/read.rs` borrows an element of a `CFArray` that

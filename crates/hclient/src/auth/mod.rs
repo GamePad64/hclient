@@ -3,10 +3,7 @@
 //! # Why a seam rather than more built-in schemes
 //!
 //! Digest is implemented here and NTLM and Negotiate are not, because
-//! they need a platform's own security provider — and the measurement
-//! says that is exactly where a seam beats a feature. `sspi` is at
-//! **561,893** downloads a month, `libgssapi` at **565,785** and
-//! `cross-krb5` at **496,315**; the primitives have real users. What does
+//! they need a platform's own security provider. What does
 //! not exist, on crates.io, is any HTTP glue over them: there is no
 //! `reqwest-ntlm` and no `hyper-ntlm`, because those clients have nowhere
 //! to put one.
@@ -63,32 +60,64 @@
 //! and a per-hop flow would buy nothing. What the seam *does* make
 //! expressible, and was not before, is Basic that waits to be
 //! challenged — curl's `--anyauth` — which matters because sending it
-//! pre-emptively hands the password to whatever is at that URL. Fifteen
-//! lines here, and not shipped, because shipping it would be
-//! speculation.
+//! pre-emptively hands the password to whatever is at that URL.
 //!
-//! **OAuth 2 does not either, and the ecosystem has already settled
-//! that.** The token exchange belongs to `oauth2` (11,633,197 downloads a
-//! month), `yup-oauth2` (4,774,159) or `openidconnect` (3,870,380);
-//! sending the result is [`crate::RequestBuilder::bearer_auth`]. There is
-//! no `reqwest-oauth2` on crates.io, and the reason is not that it is
-//! impossible — it is that nobody needs one.
+//! **OAuth 2 does not either.** The token exchange belongs to `oauth2`,
+//! `yup-oauth2` or `openidconnect`; sending the result is
+//! [`crate::RequestBuilder::bearer_auth`].
 //!
 //! **What this seam cannot do is refresh a token from inside a flow.**
 //! [`AuthFlow::on_response`] is synchronous, so a flow cannot await an
-//! HTTP request of its own on a `401`. httpx supports that
-//! (`async_auth_flow`), so the want is real; here it would cost a boxed
-//! future in the seam — auto traits lost, amendment C1's tax — paid by
-//! every caller, for a case the practical pattern avoids: both `oauth2`
-//! and `yup-oauth2` hand out a token with an expiry and are refreshed
-//! **by that expiry before the request**, not in reaction to the answer.
-//! `yup-oauth2::Authenticator::token()` is awaited by the caller and its
-//! result passed in.
+//! HTTP request of its own on a `401` — here it would cost a boxed
+//! future in the seam, paid by every caller, for a case the practical
+//! pattern avoids: both `oauth2` and `yup-oauth2` hand out a token with
+//! an expiry and are refreshed **by that expiry before the request**,
+//! not in reaction to the answer. `yup-oauth2::Authenticator::token()` is
+//! awaited by the caller and its result passed in.
 //!
-//! So the cost of the absence is one loop in a caller's code, and the
-//! cost of the presence would be `Client::execute`'s future — a property
-//! this workspace spent the erasure work recovering. Stated here rather
-//! than discovered later.
+//! So the cost of the absence is one loop in a caller's code.
+
+// Maintainer notes (not rendered):
+// Digest is implemented here and NTLM and Negotiate are not, because
+// they need a platform's own security provider — and the measurement
+// says that is exactly where a seam beats a feature. `sspi` is at
+// **561,893** downloads a month, `libgssapi` at **565,785** and
+// `cross-krb5` at **496,315**; the primitives have real users. What does
+// not exist, on crates.io, is any HTTP glue over them: there is no
+// `reqwest-ntlm` and no `hyper-ntlm`, because those clients have nowhere
+// to put one.
+//
+// **Basic does not.** [`crate::RequestBuilder::basic_auth`] sets one
+// header and there is no challenge to answer; wrapping that in an `Arc`
+// and a per-hop flow would buy nothing. What the seam *does* make
+// expressible, and was not before, is Basic that waits to be
+// challenged — curl's `--anyauth` — which matters because sending it
+// pre-emptively hands the password to whatever is at that URL. Fifteen
+// lines here, and not shipped, because shipping it would be
+// speculation.
+//
+// **OAuth 2 does not either, and the ecosystem has already settled
+// that.** The token exchange belongs to `oauth2` (11,633,197 downloads a
+// month), `yup-oauth2` (4,774,159) or `openidconnect` (3,870,380);
+// sending the result is [`crate::RequestBuilder::bearer_auth`]. There is
+// no `reqwest-oauth2` on crates.io, and the reason is not that it is
+// impossible — it is that nobody needs one.
+//
+// **What this seam cannot do is refresh a token from inside a flow.**
+// [`AuthFlow::on_response`] is synchronous, so a flow cannot await an
+// HTTP request of its own on a `401`. httpx supports that
+// (`async_auth_flow`), so the want is real; here it would cost a boxed
+// future in the seam — auto traits lost, amendment C1's tax — paid by
+// every caller, for a case the practical pattern avoids: both `oauth2`
+// and `yup-oauth2` hand out a token with an expiry and are refreshed
+// **by that expiry before the request**, not in reaction to the answer.
+// `yup-oauth2::Authenticator::token()` is awaited by the caller and its
+// result passed in.
+//
+// So the cost of the absence is one loop in a caller's code, and the
+// cost of the presence would be `Client::execute`'s future — a property
+// this workspace spent the erasure work recovering. Stated here rather
+// than discovered later.
 
 mod error;
 
@@ -127,11 +156,15 @@ pub use hclient_core::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxFlow};
 /// A scheme, as the client stores it — shared by every clone.
 pub(crate) type SharedAuth = std::sync::Arc<dyn Auth + Send + Sync>; // send-bound-exception: amendment-C12
 
+// Maintainer notes (not rendered):
+// The scheme this crate implements itself, and the one the seam was
+// generalised out of: it was a hard-coded `401` branch before there was
+// anywhere else for a scheme to live.
+
 /// RFC 7616 digest, as an [`Auth`].
 ///
 /// The scheme this crate implements itself, and the one the seam was
-/// generalised out of: it was a hard-coded `401` branch before there was
-/// anywhere else for a scheme to live.
+/// generalised out of.
 #[cfg(feature = "digest-auth")]
 #[derive(Debug, Clone)]
 pub struct Digest {

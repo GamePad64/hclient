@@ -60,17 +60,26 @@ impl<B> Debug for SseStream<B> {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// Reconnection is **not** implemented here — this type has no `Client`, no
+// URL, and no way to resend a request, only a `Response` it was handed
+// once. [`Client::sse`] is the reconnecting entry point, built on top of
+// this type rather than replacing it: it opens a fresh `SseStream` on every
+// (re)connect and forwards to it, so the WHATWG terminal rules and the
+// fatal-error-then-forever-`None` ordering below are exercised identically
+// whether or not reconnect is involved, instead of being re-derived a
+// second time. `last_event_id()` was already available before reconnect
+// existed, so adding it didn't change this type's public API.
 /// A stream of SSE events over any response body.
 ///
 /// Reconnection is **not** implemented here — this type has no `Client`, no
 /// URL, and no way to resend a request, only a `Response` it was handed
 /// once. [`Client::sse`] is the reconnecting entry point, built on top of
-/// this type rather than replacing it: it opens a fresh `SseStream` on every
-/// (re)connect and forwards to it, so the WHATWG terminal rules and the
-/// fatal-error-then-forever-`None` ordering below are exercised identically
-/// whether or not reconnect is involved, instead of being re-derived a
-/// second time. `last_event_id()` was already available before reconnect
-/// existed, so adding it didn't change this type's public API.
+/// this type: it opens a fresh `SseStream` on every (re)connect and forwards
+/// to it, so the WHATWG terminal rules and the
+/// fatal-error-then-forever-`None` ordering below hold identically whether
+/// or not reconnect is involved.
 pub struct SseStream<B> {
     resp: Response<B>,
     decoder: SseDecoder,
@@ -172,15 +181,21 @@ where
         self.decoder.last_event_id()
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **There is no `status()` beside it, and the asymmetry is the
+    // point**: [`SseStream::new`] has already refused anything but a
+    // `200`, so a status accessor here would be a constant wearing the
+    // clothes of an observation. The headers are not — a server sets
+    // `Cache-Control`, its own correlation id, a rate-limit budget — and
+    // they were sitting in the `Response` this type owns, reachable by
+    // nothing.
     /// The headers of the response this stream was opened with.
+    /// A server sets `Cache-Control`, its own correlation id, a rate-limit
+    /// budget.
     ///
-    /// **There is no `status()` beside it, and the asymmetry is the
-    /// point**: [`SseStream::new`] has already refused anything but a
-    /// `200`, so a status accessor here would be a constant wearing the
-    /// clothes of an observation. The headers are not — a server sets
-    /// `Cache-Control`, its own correlation id, a rate-limit budget — and
-    /// they were sitting in the `Response` this type owns, reachable by
-    /// nothing.
+    /// There is no `status()` beside it: [`SseStream::new`] has already
+    /// refused anything but a `200`, so the status is always `200`.
     ///
     /// # Not on [`ReconnectingSseStream`], and that is not an oversight
     ///
@@ -271,26 +286,37 @@ where
 // arguments and identical error values). `SseStream::new`/`next` and their
 // existing tests keep working whether or not any of this exists.
 
+// Maintainer notes (not rendered):
+//
+// Plain public fields, no `#[non_exhaustive]` (mirrors `Backoff` in
+// `hclient-proto`, and `HeConfig` before it): a small value struct meant to
+// be built with a literal or `..Default::default()`, not something a
+// caller constructs through a builder of its own.
+//
+// No `reconnect: bool` field, deliberately: whether reconnect is
+// enabled at all is
+// decided at the TYPE level now, by whether [`SseBuilder::with_timer`] was
+// called (see its doc comment), not by a runtime flag that could disagree
+// with the type. Keeping both would have meant two things claiming to
+// control the same behavior with only one of them exercised by most
+// tests — the same shape of redundancy this crate's own mutation testing
+// on `ReconnectingSseStream` already caught once elsewhere.
 /// Configuration for [`Client::sse`]'s reconnecting stream.
 ///
-/// Plain public fields, no `#[non_exhaustive]` (mirrors `Backoff` in
-/// `hclient-proto`, and `HeConfig` before it): a small value struct meant to
-/// be built with a literal or `..Default::default()`, not something a
-/// caller constructs through a builder of its own.
+/// A small value struct, built with a literal or `..Default::default()`.
 ///
-/// No `reconnect: bool` field, deliberately: whether reconnect is
-/// enabled at all is
-/// decided at the TYPE level now, by whether [`SseBuilder::with_timer`] was
-/// called (see its doc comment), not by a runtime flag that could disagree
-/// with the type. Keeping both would have meant two things claiming to
-/// control the same behavior with only one of them exercised by most
-/// tests — the same shape of redundancy this crate's own mutation testing
-/// on `ReconnectingSseStream` already caught once elsewhere.
+/// Whether reconnect is enabled at all is not a field: it is decided by
+/// whether [`SseBuilder::with_timer`] was called.
 #[derive(Debug, Clone, Copy)]
 pub struct SseOptions {
     /// The largest single event this stream will buffer, in bytes, before
     /// failing with [`ErrorKind::Decode`].
     pub max_event_size: usize,
+    // Maintainer notes (not rendered):
+    //
+    // It's silently
+    // unused — the one piece of "one struct feeding two type branches"
+    // residue the `reconnect: bool` removal didn't fully close.
     /// The base retry policy, in the absence of a server-sent `retry:`
     /// field. See [`ReconnectingSseStream`]'s doc comment on `next` for how
     /// the two interact once the server does send one.
@@ -302,8 +328,7 @@ pub struct SseOptions {
     /// all, so it never reads `backoff`. Setting it and calling the plain
     /// `.connect()` isn't rejected (there's nothing wrong with the value
     /// itself, just no reconnect loop to apply it to), but it's silently
-    /// unused — the one piece of "one struct feeding two type branches"
-    /// residue the `reconnect: bool` removal didn't fully close.
+    /// unused.
     pub backoff: Backoff,
 }
 
@@ -316,14 +341,21 @@ impl Default for SseOptions {
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// `C` is the CLIENT's clock — the one a total timeout is measured with
+// — carried here only so the response body can hold that deadline. It is
+// NOT the reconnect backoff clock, which arrives separately through
+// [`Self::with_timer`] and is `Tm` throughout this file. The two are
+// independent on purpose: a caller can want reconnect without a total
+// bound, or a bound without reconnect.
 /// Builds either a plain [`SseStream`] (`connect`) or a reconnecting one
 /// (`with_timer(..).connect()`). Returned by [`Client::sse`].
-/// `C` is the CLIENT's clock — the one a total timeout is measured with
-/// — carried here only so the response body can hold that deadline. It is
-/// NOT the reconnect backoff clock, which arrives separately through
-/// [`Self::with_timer`] and is `Tm` throughout this file. The two are
-/// independent on purpose: a caller can want reconnect without a total
-/// bound, or a bound without reconnect.
+///
+/// The reconnect backoff clock is supplied separately, through
+/// [`Self::with_timer`]; it is independent of the client's own clock, so a
+/// caller can want reconnect without a total bound, or a bound without
+/// reconnect.
 #[derive(Debug)]
 pub struct SseBuilder<'a> {
     client: &'a Client,
@@ -350,11 +382,16 @@ impl<'a> SseBuilder<'a> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // The first invalid `(name, value)` pair wins and survives further
+    // calls — see `RequestBuilder::header`'s doc comment for the identical
+    // contract and the reasoning behind it.
     /// A header sent with the initial connection AND — if this builder
     /// goes on to [`with_timer`](Self::with_timer) — with every reconnect.
     /// The first invalid `(name, value)` pair wins and survives further
-    /// calls — see `RequestBuilder::header`'s doc comment for the identical
-    /// contract and the reasoning behind it.
+    /// calls, and is returned as the error from `connect` — the same
+    /// contract as [`RequestBuilder::header`](crate::RequestBuilder::header).
     #[must_use]
     pub fn header(mut self, name: &str, value: &str) -> Self {
         if self.error.is_some() {
@@ -380,52 +417,61 @@ impl<'a> SseBuilder<'a> {
         self
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // **Why an explicit input, not something `hclient` supplies on its
+    // own** — this crate tried the alternative first (an ambient,
+    // per-target clock built into `hclient` itself, so `connect()` alone
+    // would reconnect with no timer argument anywhere) and it was
+    // rejected on review, for two reasons that both hold independently of
+    // each other:
+    //
+    // 1. **It puts per-target runtime code in the facade crate.** `hclient`
+    //    is supposed to be the SAME code on every target, with the
+    //    *transport* swapped for the platform — that's the whole point of
+    //    `crates/hclient-rt-pair-check`, which exists to fail the day a
+    //    `#[cfg]` shows up that only one target satisfies. A clock inside
+    //    `hclient` needs a native branch and a browser branch, which is
+    //    exactly that `#[cfg]`. Checked directly: `hclient-rt-pair-check`
+    //    depends on the runtime crates, not on `hclient`, so it would not
+    //    even have caught this if it had landed.
+    // 2. **A `std::thread`-backed sleep compiles on `wasm32-wasip2` while
+    //    having no OS thread to actually hand out under stock `wasmtime`
+    //    at runtime** — a capability that LOOKS supported and silently
+    //    isn't, which is precisely the class of defect this project's
+    //    reviews exist to catch. An ambient clock in
+    //    `hclient` would carry that lie into every crate that depends on
+    //    it, with no way for a caller to see it from the type signature.
+    //
+    // Requiring `Timer` here instead is not a quarantine violation: a
+    // caller asking for reconnect WITH exponential backoff is asking for
+    // timed behavior by definition, so the capability stating its own
+    // dependency is the honest shape — `Native<R: TcpConnect + Timer, ..>`
+    // already requires exactly this from `R`, and nobody has called that a
+    // leak of the backend contract. In practice a caller on `hclient-rt-
+    // tokio` or `hclient-rt-smol` already has a `Timer` in scope (`Tokio`/
+    // `Smol` both implement it) for the SAME reason their transport needed
+    // one — nothing new to plumb through. `hclient`'s own `test-util`
+    // feature carries `mock::TestTimer` for exactly this call, so
+    // reconnect stays testable on the bare `futures_executor` this crate's
+    // test suite uses everywhere, without a real runtime and without
+    // sleeping for real — `TestTimer::sleep` records the requested
+    // `Duration` and resolves immediately, so a test can assert the
+    // backoff actually computed the interval it should have, which a
+    // thread-backed clock could only do by really waiting.
     /// Supplies the clock reconnect needs to wait out a backoff delay
     /// between attempts, and switches this builder from `SseStream`
     /// (single attempt) to [`ReconnectingSseStream`] (reconnects
     /// automatically). Returns [`ReconnectingSseBuilder`], which otherwise
     /// offers the same `header`/`options` calls before its own `connect`.
     ///
-    /// **Why an explicit input, not something `hclient` supplies on its
-    /// own** — this crate tried the alternative first (an ambient,
-    /// per-target clock built into `hclient` itself, so `connect()` alone
-    /// would reconnect with no timer argument anywhere) and it was
-    /// rejected on review, for two reasons that both hold independently of
-    /// each other:
-    ///
-    /// 1. **It puts per-target runtime code in the facade crate.** `hclient`
-    ///    is supposed to be the SAME code on every target, with the
-    ///    *transport* swapped for the platform — that's the whole point of
-    ///    `crates/hclient-rt-pair-check`, which exists to fail the day a
-    ///    `#[cfg]` shows up that only one target satisfies. A clock inside
-    ///    `hclient` needs a native branch and a browser branch, which is
-    ///    exactly that `#[cfg]`. Checked directly: `hclient-rt-pair-check`
-    ///    depends on the runtime crates, not on `hclient`, so it would not
-    ///    even have caught this if it had landed.
-    /// 2. **A `std::thread`-backed sleep compiles on `wasm32-wasip2` while
-    ///    having no OS thread to actually hand out under stock `wasmtime`
-    ///    at runtime** — a capability that LOOKS supported and silently
-    ///    isn't, which is precisely the class of defect this project's
-    ///    reviews exist to catch. An ambient clock in
-    ///    `hclient` would carry that lie into every crate that depends on
-    ///    it, with no way for a caller to see it from the type signature.
-    ///
-    /// Requiring `Timer` here instead is not a quarantine violation: a
-    /// caller asking for reconnect WITH exponential backoff is asking for
-    /// timed behavior by definition, so the capability stating its own
-    /// dependency is the honest shape — `Native<R: TcpConnect + Timer, ..>`
-    /// already requires exactly this from `R`, and nobody has called that a
-    /// leak of the backend contract. In practice a caller on `hclient-rt-
-    /// tokio` or `hclient-rt-smol` already has a `Timer` in scope (`Tokio`/
-    /// `Smol` both implement it) for the SAME reason their transport needed
-    /// one — nothing new to plumb through. `hclient`'s own `test-util`
-    /// feature carries `mock::TestTimer` for exactly this call, so
-    /// reconnect stays testable on the bare `futures_executor` this crate's
-    /// test suite uses everywhere, without a real runtime and without
-    /// sleeping for real — `TestTimer::sleep` records the requested
-    /// `Duration` and resolves immediately, so a test can assert the
-    /// backoff actually computed the interval it should have, which a
-    /// thread-backed clock could only do by really waiting.
+    /// The clock is an explicit input rather than something `hclient`
+    /// supplies on its own, so that the capability states its own
+    /// dependency in the type signature. A caller on `hclient-rt-tokio` or
+    /// `hclient-rt-smol` already has a [`Timer`] in scope (`Tokio`/`Smol`
+    /// both implement it); in tests, the `test-util` feature's
+    /// `mock::TestTimer` records the requested `Duration` and resolves
+    /// immediately.
     pub fn with_timer<Tm>(self, timer: Tm) -> ReconnectingSseBuilder<'a>
     where
         Tm: Timer + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -747,10 +793,18 @@ enum ReconnectState<B> {
     Terminated,
 }
 
+// Maintainer notes (not rendered):
+//
+// A reconnecting SSE stream: on a clean end of stream or a retryable
+// failure, resends the request (filling in `Last-Event-ID` when there's a
+// non-empty one to send) after a jittered backoff delay, waited out on
+// `Tm`. Built by [`ReconnectingSseBuilder::connect`], reachable from
+// [`Client::sse`]`.with_timer(..)`.
 /// A reconnecting SSE stream: on a clean end of stream or a retryable
 /// failure, resends the request (filling in `Last-Event-ID` when there's a
 /// non-empty one to send) after a jittered backoff delay, waited out on
-/// `Tm`. Built by [`ReconnectingSseBuilder::connect`], reachable from
+/// the clock given to [`SseBuilder::with_timer`]. Built by
+/// [`ReconnectingSseBuilder::connect`], reachable from
 /// [`Client::sse`]`.with_timer(..)`.
 pub struct ReconnectingSseStream<'a> {
     client: &'a Client,
@@ -796,22 +850,32 @@ impl Debug for ReconnectingSseStream<'_> {
 }
 
 impl ReconnectingSseStream<'_> {
+    // Maintainer notes (not rendered):
+    //
+    // The last event ID seen, across any number of reconnects — the value
+    // that would go out as `Last-Event-ID` on the NEXT reconnect (subject
+    // to the same "only if non-empty" rule `open` applies).
+    //
+    // Reads through to the live connection's own decoder while connected,
+    // and falls back to the cached snapshot while disconnected or
+    // terminated (there is no live decoder to ask at all in that state).
+    // This is safe — not just "usually right" — because `open` ALWAYS
+    // seeds the new `SseDecoder` from `cached_last_event_id` via
+    // `SseDecoder::new_with_last_event_id` (see `open`'s own doc
+    // comment): a freshly (re)opened decoder starts AT LEAST as current as
+    // the cache, and only ever moves forward from there via its own new
+    // `id:` lines. Per WHATWG the last event ID buffer is a property of
+    // the `EventSource` as a whole, not of one connection — the seeding is
+    // what makes that true here, this accessor just reads whichever
+    // source currently has the freshest value on hand.
     /// The last event ID seen, across any number of reconnects — the value
-    /// that would go out as `Last-Event-ID` on the NEXT reconnect (subject
-    /// to the same "only if non-empty" rule `open` applies).
+    /// that would go out as `Last-Event-ID` on the NEXT reconnect (only if
+    /// non-empty).
     ///
-    /// Reads through to the live connection's own decoder while connected,
-    /// and falls back to the cached snapshot while disconnected or
-    /// terminated (there is no live decoder to ask at all in that state).
-    /// This is safe — not just "usually right" — because `open` ALWAYS
-    /// seeds the new `SseDecoder` from `cached_last_event_id` via
-    /// `SseDecoder::new_with_last_event_id` (see `open`'s own doc
-    /// comment): a freshly (re)opened decoder starts AT LEAST as current as
-    /// the cache, and only ever moves forward from there via its own new
-    /// `id:` lines. Per WHATWG the last event ID buffer is a property of
-    /// the `EventSource` as a whole, not of one connection — the seeding is
-    /// what makes that true here, this accessor just reads whichever
-    /// source currently has the freshest value on hand.
+    /// It answers while disconnected or terminated too: per WHATWG the last
+    /// event ID buffer is a property of the `EventSource` as a whole, not
+    /// of one connection, and every reconnect starts from the value seen so
+    /// far.
     pub fn last_event_id(&self) -> Option<&str> {
         match &self.state {
             ReconnectState::Live(s) => s.last_event_id(),
@@ -821,9 +885,15 @@ impl ReconnectingSseStream<'_> {
         }
     }
 
-    /// The next event. On a clean end of stream or a retryable failure
-    /// (`is_retryable`), this reconnects internally — after a backoff delay
-    /// waited out on `Tm` — rather than ending the stream or surfacing the
+    // Maintainer notes (not rendered):
+    //
+    // The next event. On a clean end of stream or a retryable failure
+    // (`is_retryable`), this reconnects internally — after a backoff delay
+    // waited out on `Tm` — rather than ending the stream or surfacing the
+    /// The next event. On a clean end of stream or a retryable failure,
+    /// this reconnects internally — after a backoff delay waited out on the
+    /// clock given to [`SseBuilder::with_timer`] — rather than ending the
+    /// stream or surfacing the
     /// failure: a caller iterating this for `SseEvent`s should not see a
     /// spurious `Err` for a hiccup that was automatically recovered from,
     /// matching real `EventSource`'s behavior of retrying silently in the
@@ -831,6 +901,13 @@ impl ReconnectingSseStream<'_> {
     /// the stream is over for good — the same fatal-then-forever-`None`
     /// contract `SseStream` itself already makes, extended across
     /// reconnects rather than broken by them.
+    ///
+    /// The terminal kinds are [`ErrorKind::Decode`] (including a
+    /// `Content-Type` that is not `text/event-stream`),
+    /// [`ErrorKind::Status`] (any status other than `200`),
+    /// [`ErrorKind::Unsupported`], [`ErrorKind::Cancelled`] and
+    /// [`ErrorKind::Redirect`]. Every other kind is retried, bounded only
+    /// by [`Backoff::max_attempts`].
     ///
     /// **The server's `retry:` field REPLACES `options.backoff.base` for
     /// every delay computed from the moment it's received onward** (until

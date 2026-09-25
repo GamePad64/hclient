@@ -8077,6 +8077,34 @@ finds the item left with nothing; it is on in `hclient-native` now, where
 `just lint`'s `-D warnings` makes it a gate. Across the workspace it
 reports 270 more, and those are for another pass.
 
+### Doc comments are for docs.rs, and the argument moved beside them
+
+The rendered documentation was **154 thousand words**, written in this
+file's voice: history, rejected alternatives, measurements, test names,
+`.notes/` paths, amendment numbers and commit hashes — none of which a
+reader who installed a crate can follow. Every public doc was split: the
+reference stays in `///`/`//!`, and everything else moved **verbatim** into
+a `// Maintainer notes (not rendered):` block directly above the item, so
+the argument is still in git and still next to the code it explains.
+Rendered text is 127 thousand words after, crate front pages 18.5 thousand
+to 11.3.
+
+Nothing was deleted, and that was checked rather than promised: every
+comment line removed from a doc had to reappear in the added text, and the
+only exceptions are sentences cut in two and a handful of bridging words.
+`just doc-comments-speak-to-readers` (in `invariants`, with a CI step)
+refuses a doc comment naming `.notes/`, AGENTS.md, an amendment, a commit
+hash, a work-item label or a task number — the half of the rule a pattern
+can decide. Whether a history sentence helps a caller is review's.
+
+**One process defect worth carrying forward.** The split ran as parallel
+agents on disjoint crates in one working tree, and one of them ran `git
+stash` to compare against `HEAD` — which stashes everybody's work. Both
+stash commits were compared with the tree afterwards and nothing was lost,
+but that was luck of timing. Agents sharing a checkout must never run
+`stash`, `reset` or `checkout`; a comparison against `HEAD` is `git diff`
+or `git show HEAD:<path>`.
+
 ### The front page listed 73 items and twelve of them were for the caller
 
 `hclient`'s rendered index was one flat alphabetical list, so **`AnyList` —

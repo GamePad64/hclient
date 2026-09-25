@@ -1,4 +1,9 @@
 //! `QuicTlsConnect` on rustls, behind the `quic` feature.
+//
+// Maintainer notes (not rendered):
+//
+// already the identity v0.2 W2 put in the connection pool's key. That fit
+// is real and nothing about it needed redesigning.
 //!
 //! The only implementation of that trait in this workspace, and — unlike
 //! [`TlsConnect`](hclient_tls::TlsConnect), which has three — the only one
@@ -12,8 +17,8 @@
 //! `ClientConfig` (`Resumption { store: Arc<dyn ClientSessionStore>, .. }`),
 //! and [`Rustls`] holds exactly one `Arc<ClientConfig>` — so one `Rustls`
 //! value is one ticket cache, scoped to one [`TlsConfigId`], which is
-//! already the identity v0.2 W2 put in the connection pool's key. That fit
-//! is real and nothing about it needed redesigning.
+//! already the identity the connection pool's key uses. That fit is real
+//! and nothing about it needed redesigning.
 //!
 //! What does not carry over is the keying. `ClientSessionStore`'s methods
 //! are keyed by `ServerName` **alone**, while a TLS 1.3 ticket issued over

@@ -2,14 +2,6 @@
 //! directives on both sides of the exchange — with no I/O and no clock of
 //! its own.
 //!
-//! # Why a module and not a crate
-//!
-//! The reason [`crate::cookie`] gives, and it applies here identically:
-//! `cargo tree -i hclient-cache` named `hclient` and nothing else, so the
-//! crate boundary was holding a dependency (`jiff`, and `bytes` which was
-//! here already) that the `cache` feature gates just as well from inside.
-//!
-//! **The discipline is unchanged and a module makes it easy to lose.**
 //! Nothing here may reach for [`crate::Client`], for `hclient_core`, or
 //! for any transport: the substance — §3's storability, §4's reuse, §4.2's
 //! arithmetic — stays a pure function of a request, a response, a store
@@ -60,10 +52,9 @@
 //! - **`stale-while-revalidate` and `stale-if-error` (RFC 5861) are not
 //!   implemented.** The first needs somewhere to run the revalidation
 //!   after the response has been handed over, and the one thing
-//!   `hclient` will not do is spawn on a caller's behalf — the same
-//!   sentence `hclient-h3`'s body pump and the WebSocket keep-alive are
-//!   each written under. The second needs the *error* to reach the cache,
-//!   which means a seam on the way back that does not exist yet.
+//!   `hclient` will not do is spawn on a caller's behalf. The second
+//!   needs the *error* to reach the cache, which means a seam on the way
+//!   back that does not exist yet.
 //! - **It does not store `206`, and `Range` requests bypass it.** RFC 9111
 //!   §3.3/§3.4 — see `policy.rs`'s `CACHEABLE_STATUSES`.
 //! - **It does not evaluate a caller's own precondition** (§4.3.2). A
@@ -73,6 +64,23 @@
 //!   lookup and displaced on storing; a cache nobody touches keeps them
 //!   until it is touched. Same reason the native pool has no reaper and
 //!   the jar has no sweep — there is nothing here to run one.
+
+// Maintainer notes (not rendered):
+//
+// # Why a module and not a crate
+//
+// The reason [`crate::cookie`] gives, and it applies here identically:
+// `cargo tree -i hclient-cache` named `hclient` and nothing else, so the
+// crate boundary was holding a dependency (`jiff`, and `bytes` which was
+// here already) that the `cache` feature gates just as well from inside.
+//
+// **The discipline is unchanged and a module makes it easy to lose.**
+//
+// "stale-while-revalidate" is not implemented because the one thing
+// `hclient` will not do is spawn on a caller's behalf — the same
+// sentence `hclient-h3`'s body pump and the WebSocket keep-alive are
+// each written under. The second needs the *error* to reach the cache,
+// which means a seam on the way back that does not exist yet.
 
 mod date;
 mod directives;

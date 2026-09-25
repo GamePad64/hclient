@@ -2,19 +2,22 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+// Maintainer notes (not rendered):
+// **`unsafe`-free and, since the seam stopped being `hyper::rt`, also
+// copy-free.** The cursor version kept a per-connection scratch buffer
+// because `ReadBufCursor` hands over possibly-uninitialised memory;
+// `futures-io` hands over an initialised slice, so the read goes straight
+// into the caller's buffer and the field is gone. What remains is the
+// enum, because one associated `Stream` type has to cover both TCP and
+// Unix sockets.
+//
+// `Debug` is derived: the scratch buffer that once made a hand-written
+// one worth having left with the `hyper::rt` seam.
 /// Bridges `tokio::net::TcpStream` → [`futures_io::AsyncRead`]/
 /// [`AsyncWrite`](futures_io::AsyncWrite) plus [`hclient_rt::Shutdown`].
 ///
-/// **`unsafe`-free and, since the seam stopped being `hyper::rt`, also
-/// copy-free.** The cursor version kept a per-connection scratch buffer
-/// because `ReadBufCursor` hands over possibly-uninitialised memory;
-/// `futures-io` hands over an initialised slice, so the read goes straight
-/// into the caller's buffer and the field is gone. What remains is the
-/// enum, because one associated `Stream` type has to cover both TCP and
-/// Unix sockets.
-///
-/// `Debug` is derived: the scratch buffer that once made a hand-written
-/// one worth having left with the `hyper::rt` seam.
+/// One type covers both TCP and Unix-domain connections, and reads go
+/// straight into the caller's buffer.
 #[derive(Debug)]
 pub struct TokioIo {
     inner: Socket,
@@ -36,13 +39,15 @@ impl TokioIo {
     }
 }
 
+// Maintainer notes (not rendered):
+// **This replaced `get_ref` and `into_inner`**, which handed back a
+// `tokio::net::TcpStream` and panicked on a Unix-domain stream, where
+// there is none. A descriptor exists for both kinds, so this answers
 /// The socket itself, through the standard library's trait, for reading
 /// applied `TcpOpts` back with `socket2::SockRef::from(&io)` or handing the
 /// descriptor to anything else that takes one.
 ///
-/// **This replaced `get_ref` and `into_inner`**, which handed back a
-/// `tokio::net::TcpStream` and panicked on a Unix-domain stream, where
-/// there is none. A descriptor exists for both kinds, so this answers
+/// A descriptor exists for both TCP and Unix-domain streams, so this answers
 /// every connection this runtime makes and panics on none. It is also
 /// what `hclient-rt-smol`'s `SmolIo` offers, so code reading an option
 /// back is the same over either runtime.
@@ -96,15 +101,17 @@ macro_rules! either {
 }
 
 impl futures_io::AsyncRead for TokioIo {
-    /// **No scratch buffer, and that is what the seam change bought.**
-    ///
-    /// The cursor version read into a per-connection scratch and copied
-    /// out with `put_slice`, because `hyper::rt::ReadBufCursor` hands over
-    /// possibly-uninitialised memory and filling it directly is `unsafe`.
-    /// `futures_io::AsyncRead` hands over an initialised `&mut [u8]`, so
-    /// `tokio::io::ReadBuf::new` wraps the caller's own buffer and the
-    /// copy — one per read, per connection, on the hot path — is gone
-    /// with the field that held it.
+    // Maintainer notes (not rendered):
+    // **No scratch buffer, and that is what the seam change bought.**
+    //
+    // The cursor version read into a per-connection scratch and copied
+    // out with `put_slice`, because `hyper::rt::ReadBufCursor` hands over
+    // possibly-uninitialised memory and filling it directly is `unsafe`.
+    // `futures_io::AsyncRead` hands over an initialised `&mut [u8]`, so
+    // `tokio::io::ReadBuf::new` wraps the caller's own buffer and the
+    // copy — one per read, per connection, on the hot path — is gone
+    // with the field that held it.
+    /// Reads straight into the caller's buffer, with no intermediate copy.
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

@@ -48,50 +48,32 @@
 //! bootstrap-free deployment into a bootstrapped one is a runtime error at
 //! construction rather than a surprise in production.
 //!
-//! Shape 4 of §W3 — RFC 9461 `dohpath` discovery — is deliberately not
-//! here. Discovering a `DoH` endpoint by DNS is circular for the first
-//! lookup; `hclient_dns::svcb`'s `RECOGNISED_KEYS` still excludes key 7,
-//! and a record that makes it mandatory is still one this client refuses to
-//! use.
+//! RFC 9461 `dohpath` discovery is deliberately not here: discovering a
+//! `DoH` endpoint by DNS is circular for the first lookup, and
+//! `hclient_dns::svcb`'s `RECOGNISED_KEYS` excludes the `SvcParamKey` that
+//! would make it mandatory.
 //!
 //! ## 2. What client makes the `DoH` request? A `Transport`, never a `Client`
 //!
 //! `C` is an [`hclient_core::transport::Transport`], the seam one level
-//! below `hclient::Client`. That is the whole answer to §W3's *"a
-//! resolver's client is not the user's client"*, and it is structural
-//! rather than a rule someone has to follow: a cookie jar, a redirect
-//! policy and an `Authorization` header are all things `Client` owns and
-//! `Transport` has never heard of, so there is no arrangement of this API
-//! in which a caller accidentally sends their session cookie to a DNS
-//! provider. The shared-`Client` case is not merely awkward here; it does
-//! not typecheck.
+//! below `hclient::Client`. That is structural rather than a rule someone
+//! has to follow: a cookie jar, a redirect policy and an `Authorization`
+//! header are all things `Client` owns and `Transport` has never heard
+//! of, so there is no arrangement of this API in which a caller
+//! accidentally sends their session cookie to a DNS provider. The
+//! shared-`Client` case is not merely awkward here; it does not
+//! typecheck.
 //!
-//! **The cycle §W3 asked about is real, and the type system does refuse
-//! it** — but not by any check of ours, and it is worth being exact about
-//! the mechanism because the escape hatch is one line away. A `DoH` resolver
-//! whose transport resolves through the same `DoH` resolver would have the
-//! type `Native<R, T, Doh<Native<R, T, Doh<Native<…>>>>>`, which has no
-//! finite spelling: writing it needs a type alias that mentions itself, and
-//! `rustc` answers `E0072`/`E0391` — a size or cycle error at compile time,
-//! never a stack overflow at run time. `tests/no_cycle.rs` carries the
-//! recursive definitions in a comment, the four compiler transcripts they
-//! actually produce, and next to them the *finite* two-level composition,
-//! which does compile and is the shape a caller wants (a `DoH` resolver over
-//! a transport that resolves by IP literal only).
-//!
-//! **The escape hatch, named where it can be found:** the guard is a
-//! property of *not erasing*. `Arc<dyn Resolve>` — or any other boxed
-//! resolver — would make every level of that nesting the same type, and the
-//! regress a runtime one. This crate stores its transport by value and is
-//! generic over it for exactly that reason. Today the hatch is shut twice
-//! over, and both halves were measured rather than argued: taking rustc's
-//! own `Box` suggestion produces a type that is no longer a `Resolve`
-//! (`Box<C>` is not a `Transport`), and `dyn Resolve` cannot be written at
-//! all, because `lookup` returns an `impl Trait`. **The second is an
-//! accident**, not a promise anyone has made — `impl Stream` was chosen for
-//! RFC 8305 — so this is the place to look when someone proposes an
-//! object-safe `Resolve` or a blanket `impl Transport for Box<T>`. Neither
-//! would be a change to this crate.
+//! **A `DoH` resolver whose transport resolves through the same `DoH`
+//! resolver is refused by the type system**, not by any check of ours. Its
+//! type would be `Native<R, T, Doh<Native<R, T, Doh<Native<…>>>>>`, which
+//! has no finite spelling: writing it needs a type alias that mentions
+//! itself, and `rustc` refuses it at compile time — a size or cycle
+//! error, never a stack overflow at run time. The guard is a property of
+//! *not erasing*: this crate stores its transport by value and is
+//! generic over it, rather than behind `Arc<dyn Resolve>`, which would
+//! make every level of the nesting the same type and the cycle a runtime
+//! one.
 //!
 //! ## 3. What happens when the `DoH` server is unreachable?
 //!
@@ -119,9 +101,8 @@
 //! `supports(rtype::HTTPS)` is **`true`**, and unlike a platform resolver
 //! it is true on every target: an HTTPS/SVCB query is an ordinary DNS query in an
 //! ordinary HTTP body, so nothing about it depends on whether the local
-//! stub resolver forwards type 65. That is the point of the crate — see
-//! §W3, which names Windows 10, wasm, and anything behind a stub resolver
-//! that drops type 65.
+//! stub resolver forwards type 65 — which Windows 10, wasm, and anything
+//! behind such a stub resolver do not.
 //!
 //! `Record::ttl` is filled from the record's own TTL, per record
 //! rather than per `RRset`, for the same reason `hclient-dns-hickory` gives:
@@ -129,8 +110,7 @@
 //!
 //! # What it deliberately does not do
 //!
-//! **No cache.** Every `lookup_*` is an HTTP request. §W3 calls the TTL
-//! "the first consumer of a field nothing reads", and filling the field is
+//! **No cache.** Every `lookup_*` is an HTTP request. Filling the TTL is
 //! this crate's job; deciding what to keep and for how long is a caller's,
 //! and a cache built in here would be one no caller could turn off.
 //!
@@ -149,19 +129,66 @@
 //! support both. GET carries the query base64url-encoded in `?dns=`, which
 //! makes it cacheable by intermediaries, and an intermediary cache is not
 //! obviously something a DNS-over-HTTPS deployment wants.
-//!
-//! **The base64 arithmetic that used to sit here has expired, and the
-//! answer is unchanged.** It read that an encoder is compiled into every
-//! build of this crate already, measured as `base64 v0.22.1 <-
-//! dns-message-parser` — true of that decoder and not of `domain`, which
-//! pulls no base64 at all. So GET would now cost a crate in this graph
-//! rather than only a call site. The decision never turned on that number:
-//! GET makes a query cacheable by intermediaries, and an intermediary
-//! cache is not obviously something a DNS-over-HTTPS deployment wants.
-//! What the note is worth keeping for is the shape — a cost written down
-//! beside a decision outlives the thing it measured, and this one was
-//! re-measured rather than re-quoted. Both public operators answer the GET
-//! form (`tests/live.rs`), so nothing about the choice is forced.
+//
+// Maintainer notes (not rendered):
+//
+// Shape 4 of §W3 — RFC 9461 `dohpath` discovery — is deliberately not
+// here. Discovering a `DoH` endpoint by DNS is circular for the first
+// lookup; `hclient_dns::svcb`'s `RECOGNISED_KEYS` still excludes key 7,
+// and a record that makes it mandatory is still one this client refuses to
+// use.
+//
+// below `hclient::Client`. That is the whole answer to §W3's *"a
+// resolver's client is not the user's client"*, and it is structural
+// rather than a rule someone has to follow.
+//
+// **The cycle §W3 asked about is real, and the type system does refuse
+// it** — but not by any check of ours, and it is worth being exact about
+// the mechanism because the escape hatch is one line away. A `DoH` resolver
+// whose transport resolves through the same `DoH` resolver would have the
+// type `Native<R, T, Doh<Native<R, T, Doh<Native<…>>>>>`, which has no
+// finite spelling: writing it needs a type alias that mentions itself, and
+// `rustc` answers `E0072`/`E0391` — a size or cycle error at compile time,
+// never a stack overflow at run time. `tests/no_cycle.rs` carries the
+// recursive definitions in a comment, the four compiler transcripts they
+// actually produce, and next to them the *finite* two-level composition,
+// which does compile and is the shape a caller wants (a `DoH` resolver over
+// a transport that resolves by IP literal only).
+//
+// **The escape hatch, named where it can be found:** the guard is a
+// property of *not erasing*. `Arc<dyn Resolve>` — or any other boxed
+// resolver — would make every level of that nesting the same type, and the
+// regress a runtime one. This crate stores its transport by value and is
+// generic over it for exactly that reason. Today the hatch is shut twice
+// over, and both halves were measured rather than argued: taking rustc's
+// own `Box` suggestion produces a type that is no longer a `Resolve`
+// (`Box<C>` is not a `Transport`), and `dyn Resolve` cannot be written at
+// all, because `lookup` returns an `impl Trait`. **The second is an
+// accident**, not a promise anyone has made — `impl Stream` was chosen for
+// RFC 8305 — so this is the place to look when someone proposes an
+// object-safe `Resolve` or a blanket `impl Transport for Box<T>`. Neither
+// would be a change to this crate.
+//
+// stub resolver forwards type 65. That is the point of the crate — see
+// §W3, which names Windows 10, wasm, and anything behind a stub resolver
+// that drops type 65.
+//
+// **No cache.** Every `lookup_*` is an HTTP request. §W3 calls the TTL
+// "the first consumer of a field nothing reads", and filling the field is
+// this crate's job.
+//
+// **The base64 arithmetic that used to sit here has expired, and the
+// answer is unchanged.** It read that an encoder is compiled into every
+// build of this crate already, measured as `base64 v0.22.1 <-
+// dns-message-parser` — true of that decoder and not of `domain`, which
+// pulls no base64 at all. So GET would now cost a crate in this graph
+// rather than only a call site. The decision never turned on that number:
+// GET makes a query cacheable by intermediaries, and an intermediary
+// cache is not obviously something a DNS-over-HTTPS deployment wants.
+// What the note is worth keeping for is the shape — a cost written down
+// beside a decision outlives the thing it measured, and this one was
+// re-measured rather than re-quoted. Both public operators answer the GET
+// form (`tests/live.rs`), so nothing about the choice is forced.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -229,6 +256,14 @@ const DEFAULT_TIMEOUTS: Timeouts = Timeouts::new()
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoFallback;
 
+// Maintainer notes (not rendered):
+//
+// **The one-line part is the reason it exists.** `cargo fmt` reflows the
+// written-out form and carries the `send-bound-exception` marker off the
+// end with it, so the invariant check reports an unexcused bound and the
+// two gates cannot pass together — a defect `AGENTS.md` records three
+// times from the other side. A short alias is the workspace's own
+// remedy, and every use site writes `SendRecordStream<'a>`.
 /// The stream every `Resolve` here hands back, `Send` and short enough to
 /// stay on one line.
 ///
@@ -236,12 +271,10 @@ pub struct NoFallback;
 /// hands back one kind of `Record`, so the address stream and the SVCB
 /// stream stopped being different types.
 ///
-/// **The one-line part is the reason it exists.** `cargo fmt` reflows the
-/// written-out form and carries the `send-bound-exception` marker off the
-/// end with it, so the invariant check reports an unexcused bound and the
-/// two gates cannot pass together — a defect `AGENTS.md` records three
-/// times from the other side. A short alias is the workspace's own
-/// remedy, and every use site writes `SendRecordStream<'a>`.
+/// `cargo fmt` reflows a written-out form of this bound and carries the
+/// `send-bound-exception` marker off the end with it, so it is kept as a
+/// short alias instead, written at every use site as
+/// `SendRecordStream<'a>`.
 type SendRecordStream<'a> =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Record, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
 
@@ -278,6 +311,14 @@ pub struct Doh<C, F = NoFallback> {
 }
 
 impl<C> Doh<C, NoFallback> {
+    // Maintainer notes (not rendered):
+    //
+    // **On Linux the platform verifier accepts one** — measured, not
+    // argued: `tests/live.rs`'s
+    // `a_certificate_presented_for_an_ip_address_validates_through_the_platform_verifier`
+    // completes the handshake through `rustls-platform-verifier` against
+    // Cloudflare's `1.1.1.1` and Google's `8.8.8.8` and reads a DNS answer
+    // back from each.
     /// A `DoH` endpoint whose host is an **IP literal**: no bootstrap, no
     /// name to resolve, no cycle to worry about.
     ///
@@ -295,12 +336,7 @@ impl<C> Doh<C, NoFallback> {
     /// and accept what that means.
     ///
     /// **The certificate that address presents must carry an IP SAN.**
-    /// **On Linux the platform verifier accepts one** — measured, not
-    /// argued: `tests/live.rs`'s
-    /// `a_certificate_presented_for_an_ip_address_validates_through_the_platform_verifier`
-    /// completes the handshake through `rustls-platform-verifier` against
-    /// Cloudflare's `1.1.1.1` and Google's `8.8.8.8` and reads a DNS answer
-    /// back from each.
+    /// **On Linux the platform verifier accepts one.**
     ///
     /// The question is still open on **macOS and Windows**, and by more
     /// than a missing runner: those two do not use rustls's own webpki path
@@ -334,18 +370,25 @@ impl<C> Doh<C, NoFallback> {
         Ok(Self::build(client, endpoint))
     }
 
+    // Maintainer notes (not rendered):
+    //
+    // Which of §W3's bootstrap shapes that is depends entirely on what you
+    // pass.
+    //
+    // is this same `Doh`. Not with a check — with the type system; see the
+    // module doc, and `tests/no_cycle.rs`.
     /// A `DoH` endpoint whose host is a **name**, resolved by the resolver
     /// the transport `client` already carries.
     ///
-    /// Which of §W3's bootstrap shapes that is depends entirely on what you
-    /// pass: a transport over `SystemDns` is "the system resolver, once,
-    /// for the `DoH` host"; a transport over a resolver holding fixed
-    /// addresses for that name is "caller-supplied bootstrap addresses".
-    /// This crate cannot tell them apart and does not need to.
+    /// Depending on what you pass: a transport over `SystemDns` is "the
+    /// system resolver, once, for the `DoH` host"; a transport over a
+    /// resolver holding fixed addresses for that name is "caller-supplied
+    /// bootstrap addresses". This crate cannot tell them apart and does
+    /// not need to.
     ///
     /// **What it can tell apart, and refuses:** a transport whose resolver
-    /// is this same `Doh`. Not with a check — with the type system; see the
-    /// module doc, and `tests/no_cycle.rs`.
+    /// is this same `Doh` — refused by the type system rather than by a
+    /// runtime check; see the module doc.
     ///
     /// An IP literal here is [`EndpointError::IsAnIpLiteral`]: it would
     /// work, but it would be a `bootstrapped` that bootstraps nothing, and
@@ -638,17 +681,21 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+//
+// What they exclude, measured rather than guessed: a `Doh` over a
+// transport that cannot cross a thread, or with a fallback resolver that
+// cannot. Neither is a combination anybody assembles — a browser does its
+// own resolving and none of the four resolvers here is `!Send` — and the
+// alternative was to keep every `Doh` user's transport `!Send`, which is
+// what this cost for four verticals.
 /// The bounds beyond `Resolve`'s own are what make this resolver's streams
 /// `Send`, and they are on the **impl** rather than on the trait — an impl
 /// may carry bounds the trait does not, which is `SendTransport`'s whole
 /// shape one layer down.
 ///
-/// What they exclude, measured rather than guessed: a `Doh` over a
-/// transport that cannot cross a thread, or with a fallback resolver that
-/// cannot. Neither is a combination anybody assembles — a browser does its
-/// own resolving and none of the four resolvers here is `!Send` — and the
-/// alternative was to keep every `Doh` user's transport `!Send`, which is
-/// what this cost for four verticals.
+/// What they exclude: a `Doh` over a transport that cannot cross a
+/// thread, or with a fallback resolver that cannot.
 impl<C, F> Resolve for Doh<C, F>
 where
     C: SendTransport + Sync, // send-bound-exception: amendment-C16

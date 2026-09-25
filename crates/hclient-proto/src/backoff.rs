@@ -6,7 +6,7 @@ use core::time::Duration;
 
 /// Exponential backoff with full jitter: the schedule, without the clock.
 ///
-/// **Deliberately not `#[non_exhaustive]`, answer 1**: its whole use is
+/// **Deliberately not `#[non_exhaustive]`**: its whole use is
 /// `Backoff { max_attempts: Some(5), ..Default::default() }`, which is
 /// what `hclient`'s SSE reconnect and its retry policy both write, and
 /// the attribute forbids exactly that expression from outside this crate.
@@ -51,31 +51,38 @@ impl Default for Backoff {
 const MAX_DOUBLINGS: u32 = 128;
 
 impl Backoff {
+    // Maintainer notes (not rendered):
+    //
+    // Clamping an invalid `jitter` instead of reporting it sits in real
+    // tension with this project's "no silent no-ops" rule — unsupported
+    // or invalid input is supposed to become a typed error, never a
+    // discarded value. It's the deliberate exception here, not an
+    // oversight of that rule: this signature can't return `Result` (fixed
+    // at first), and `None` is already spoken for as "stop trying" —
+    // so an out-of-domain `jitter` (NaN, negative, or >= 1.0, all
+    // reachable from a caller bug, e.g. feeding in the wrong float) has
+    // nowhere to be *reported* to. Mapping it onto `None` would look
+    // identical to exhausting `max_attempts` to the caller, silently
+    // stopping retries instead of merely miscalculating one delay, and
+    // panicking would turn a retry primitive — meant to run inside a
+    // long-lived reconnect loop — into a crash vector over a caller's
+    // float bug. Clamping is the least-bad of the three options actually
+    // available under this signature, not the first one reached for.
+    // `f64::clamp` alone does not sanitize NaN — a NaN receiver returns
+    // NaN unchanged, verified against this toolchain — so NaN is
+    // special-cased to `0.0`: no jitter reduction, the conservative
+    // (slower) resolution, not the aggressive (immediate-retry) one that
+    // clamping NaN to `1.0` would give.
+
     /// `attempt` is zero-based. `jitter` is documented to be in
     /// `[0.0, 1.0)` (a fresh draw from a uniform RNG, per the "full
     /// jitter" model — AWS's *Exponential Backoff and Jitter*); `None`
     /// means "stop trying" (attempt budget exhausted).
     ///
-    /// Clamping an invalid `jitter` instead of reporting it sits in real
-    /// tension with this project's "no silent no-ops" rule — unsupported
-    /// or invalid input is supposed to become a typed error, never a
-    /// discarded value. It's the deliberate exception here, not an
-    /// oversight of that rule: this signature can't return `Result` (fixed
-    /// at first), and `None` is already spoken for as "stop trying" —
-    /// so an out-of-domain `jitter` (NaN, negative, or >= 1.0, all
-    /// reachable from a caller bug, e.g. feeding in the wrong float) has
-    /// nowhere to be *reported* to. Mapping it onto `None` would look
-    /// identical to exhausting `max_attempts` to the caller, silently
-    /// stopping retries instead of merely miscalculating one delay, and
-    /// panicking would turn a retry primitive — meant to run inside a
-    /// long-lived reconnect loop — into a crash vector over a caller's
-    /// float bug. Clamping is the least-bad of the three options actually
-    /// available under this signature, not the first one reached for.
-    /// `f64::clamp` alone does not sanitize NaN — a NaN receiver returns
-    /// NaN unchanged, verified against this toolchain — so NaN is
-    /// special-cased to `0.0`: no jitter reduction, the conservative
-    /// (slower) resolution, not the aggressive (immediate-retry) one that
-    /// clamping NaN to `1.0` would give.
+    /// An out-of-domain `jitter` (NaN, negative, or `>= 1.0`) is clamped
+    /// rather than reported: NaN is treated as `0.0` (no jitter
+    /// reduction — the conservative, slower resolution), and any other
+    /// out-of-range value is clamped into `[0.0, 1.0]`.
     ///
     /// `base * 2^attempt` is computed by repeated doubling, capped at
     /// `MAX_DOUBLINGS` and short-circuited the moment `max` is reached —

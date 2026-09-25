@@ -82,8 +82,11 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// A response body that fails if the peer stops sending for longer than
+// its `between_bytes` bound — see the module doc.
 /// A response body that fails if the peer stops sending for longer than
-/// its `between_bytes` bound — see the module doc.
+/// its `between_bytes` bound.
 ///
 /// With no bound set it is a pass-through and never builds a sleep at all,
 /// which matters beyond the cost of an allocation: `Tokio::sleep` panics
@@ -123,24 +126,29 @@ impl<B, Tm: Timer> IdleTimeout<B, Tm> {
         }
     }
 
+    // Maintainer notes (not rendered):
+    // **Kept although nothing in this workspace reads it**, on
+    // `Entry::persist`'s precedent rather than by default: the question
+    // is not whether we call it but whether anything *could*, and here
+    // the caller has no other way to learn the answer. `Timeouts`
+    // reaches a `Transport` in the request's extensions, and the request
+    // is consumed by the exchange — so a consumer holding only the
+    // response cannot read the bound back from anywhere else. That is
+    // what `hclient::ClientBody::total_timeout` exists for one bound
+    // over, on the path where this type has been erased.
+    //
+    // `None` is a distinction with a reachable side, which is what keeps
+    // this from being the `UpgradeSupport` deletion: it separates *this
+    // response is bounded* from *nothing is watching this peer*, and the
+    // wrapper really is inert in the second case — it never builds a
+    // sleep at all. Both halves are asserted in `tests/timeouts.rs`,
+    // because either alone is passed by a constant.
     /// The bound in force for this response, if any.
     ///
-    /// **Kept although nothing in this workspace reads it**, on
-    /// `Entry::persist`'s precedent rather than by default: the question
-    /// is not whether we call it but whether anything *could*, and here
-    /// the caller has no other way to learn the answer. `Timeouts`
-    /// reaches a `Transport` in the request's extensions, and the request
-    /// is consumed by the exchange — so a consumer holding only the
-    /// response cannot read the bound back from anywhere else. That is
-    /// what `hclient::ClientBody::total_timeout` exists for one bound
-    /// over, on the path where this type has been erased.
-    ///
-    /// `None` is a distinction with a reachable side, which is what keeps
-    /// this from being the `UpgradeSupport` deletion: it separates *this
-    /// response is bounded* from *nothing is watching this peer*, and the
-    /// wrapper really is inert in the second case — it never builds a
-    /// sleep at all. Both halves are asserted in `tests/timeouts.rs`,
-    /// because either alone is passed by a constant.
+    /// The request that carried the `Timeouts` is consumed by the
+    /// exchange, so this is where a consumer holding only the response
+    /// reads the bound back. `None` means nothing is watching this peer:
+    /// the wrapper is inert and never builds a sleep at all.
     pub fn between_bytes_timeout(&self) -> Option<Duration> {
         self.every
     }

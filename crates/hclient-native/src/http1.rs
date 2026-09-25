@@ -165,8 +165,7 @@
 //! destroys it, and hyper reports the destruction as `Ready(Ok(()))` — so
 //! "the exchange finished" and "the upgrade was thrown away" are the same
 //! observation from here, and a WebSocket seam cannot be built on top of
-//! polling `Connection` as a `Future`. That is v0.3 W4's problem, and it
-//! is a feature that does not exist rather than a defect in what does.
+//! polling `Connection` as a `Future`.
 //!
 //! `exchange` returns a `Response<H1Body>`: `Connection` is not
 //! dropped when the function returns — it moves INTO THE BODY
@@ -195,8 +194,7 @@
 //!
 //! **Only a body that ended cleanly is handed back.** The check-in happens
 //! at exactly one place — `incoming` returning `Ready(None)` — and nowhere
-//! else. Not in `Drop`, which is what makes v0.2 W1's rule structural
-//! rather than remembered: a cancelled exchange, or one whose body the
+//! else. Not in `Drop`: a cancelled exchange, or one whose body the
 //! caller abandoned half-read, leaves a connection in a protocol state
 //! nobody can describe, and there is no code path here that could return
 //! one to the pool even by mistake.
@@ -220,6 +218,12 @@
 //! `exchange_recovers_error_kind_through_hyper_error_not_flattening_it`
 //! below proves this with a real (if synthetic-IO) handshake — not just
 //! by reading the code.
+// Maintainer notes (not rendered):
+// That is v0.3 W4's problem, and it
+// is a feature that does not exist rather than a defect in what does.
+//
+// Not in `Drop`, which is what makes v0.2 W1's rule structural
+// rather than remembered.
 use crate::body::OutgoingBody;
 use crate::error::{ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBeforeTheRequest};
 use crate::established::Failed;

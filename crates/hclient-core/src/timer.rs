@@ -18,39 +18,45 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+// Maintainer notes (not rendered):
+//
+// Not `hyper::rt::Timer`: that one has `Sleep: Send + Sync` unconditionally,
+// `sleep()` returns `Pin<Box<dyn Sleep>>` (an allocation per sleep), and
+// `now()` is typed on `std::time::Instant`, which panics on
+// `wasm32-unknown-unknown`.
+//
+// # Why [`Timer::Sleep`] is an associated type and not `impl Future`
+//
+// An RPITIT — `fn sleep(&self, d: Duration) -> impl Future<Output = ()>` —
+// is more comfortable to write and costs two things:
+//
+// - **A struct cannot hold a sleep.** It has no name to store, so a body
+//   wrapper can only check elapsed time on each `poll_frame`, which
+//   structurally cannot cut a response body that goes *completely* silent
+//   after the head: nothing wakes the wrapper, so nothing ever looks at
+//   the clock again. Measured with a counting waker and no executor
+//   running, that shape registers **zero** wakes; a stored sleep
+//   registers one. `hclient::body::Deadline` holds a
+//   `Pin<Box<Tm::Sleep>>` for exactly this reason.
+// - **Generic code cannot spawn a background task.**
+//   `hclient_rt::Spawn<F>` takes the future as a type parameter, so a
+//   bound has to name it, and an anonymous future has no name. See
+//   `hclient-native`'s `pool` module doc.
+//
+// It also hides a third thing, the one most likely to be mistaken for a
+// bug: a backend whose native timer resolves to something other than
+// `()`, which `async { t.await; }` discards silently. Naming the type
+// makes that visible, and [`Discard`] is the adapter for it.
+//
+// [`TcpConnect::Stream`](https://docs.rs/hclient-rt) is the same idea
+// applied to a socket; this is not a new shape in the seam.
 /// The one runtime capability the portable core needs: timeouts and
 /// backoff. Networking and spawning live in the transports.
 ///
-/// Not `hyper::rt::Timer`: that one has `Sleep: Send + Sync` unconditionally,
-/// `sleep()` returns `Pin<Box<dyn Sleep>>` (an allocation per sleep), and
-/// `now()` is typed on `std::time::Instant`, which panics on
-/// `wasm32-unknown-unknown`.
-///
-/// # Why [`Timer::Sleep`] is an associated type and not `impl Future`
-///
-/// An RPITIT — `fn sleep(&self, d: Duration) -> impl Future<Output = ()>` —
-/// is more comfortable to write and costs two things:
-///
-/// - **A struct cannot hold a sleep.** It has no name to store, so a body
-///   wrapper can only check elapsed time on each `poll_frame`, which
-///   structurally cannot cut a response body that goes *completely* silent
-///   after the head: nothing wakes the wrapper, so nothing ever looks at
-///   the clock again. Measured with a counting waker and no executor
-///   running, that shape registers **zero** wakes; a stored sleep
-///   registers one. `hclient::body::Deadline` holds a
-///   `Pin<Box<Tm::Sleep>>` for exactly this reason.
-/// - **Generic code cannot spawn a background task.**
-///   `hclient_rt::Spawn<F>` takes the future as a type parameter, so a
-///   bound has to name it, and an anonymous future has no name. See
-///   `hclient-native`'s `pool` module doc.
-///
-/// It also hides a third thing, the one most likely to be mistaken for a
-/// bug: a backend whose native timer resolves to something other than
-/// `()`, which `async { t.await; }` discards silently. Naming the type
-/// makes that visible, and [`Discard`] is the adapter for it.
-///
-/// [`TcpConnect::Stream`](https://docs.rs/hclient-rt) is the same idea
-/// applied to a socket; this is not a new shape in the seam.
+/// [`Timer::Sleep`] is a named associated type rather than `impl Future`,
+/// so that a struct can hold a sleep and generic code can name it. A
+/// runtime whose native timer resolves to something other than `()`
+/// wraps it in [`Discard`].
 pub trait Timer {
     /// A stamp taken from this clock — comparable to another stamp from the
     /// same clock, but with no epoch and no relation to a calendar date.
@@ -72,21 +78,26 @@ pub trait Timer {
     fn elapsed_since(&self, earlier: Self::Instant) -> Duration;
 }
 
+// Maintainer notes (not rendered):
+//
+// **This is not redundant, and it is not a mistake.** Two of this
+// project's clocks have a native timer whose `Output` is not `()`:
+// `async_io::Timer` resolves to the `std::time::Instant` at which it
+// fired, and `hclient-fetch`'s `SendJsFuture` resolves to
+// `Result<JsValue, JsValue>`. While [`Timer::sleep`] was an RPITIT both
+// were discarded invisibly inside an `async` block; with a named
+// associated type the discard has to be written down, and this is where
+// it is written down once instead of twice.
+//
+// `F: Unpin` rather than a pin projection: every timer this wraps is
+// `Unpin` already, and this workspace forbids `unsafe`, so the safe
+// projection is the only one available and the bound is honest about it.
 /// Adapts a future that resolves to *something* into one that resolves to
 /// `()`, for use as a [`Timer::Sleep`].
 ///
-/// **This is not redundant, and it is not a mistake.** Two of this
-/// project's clocks have a native timer whose `Output` is not `()`:
-/// `async_io::Timer` resolves to the `std::time::Instant` at which it
-/// fired, and `hclient-fetch`'s `SendJsFuture` resolves to
-/// `Result<JsValue, JsValue>`. While [`Timer::sleep`] was an RPITIT both
-/// were discarded invisibly inside an `async` block; with a named
-/// associated type the discard has to be written down, and this is where
-/// it is written down once instead of twice.
-///
-/// `F: Unpin` rather than a pin projection: every timer this wraps is
-/// `Unpin` already, and this workspace forbids `unsafe`, so the safe
-/// projection is the only one available and the bound is honest about it.
+/// For a native timer whose `Output` is not `()` — `async_io::Timer`, for
+/// example, resolves to the `std::time::Instant` at which it fired. The
+/// wrapped future must be `Unpin`.
 #[derive(Debug, Clone, Copy)]
 pub struct Discard<F>(pub F);
 
@@ -112,19 +123,24 @@ impl<F: Future + Unpin> Future for Discard<F> {
 /// silent body — so the two answer the same question.
 pub type BoxSleep = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>; // send-bound-exception: amendment-C14
 
+// Maintainer notes (not rendered):
+//
+// One method on purpose: it is what lets an erased clock exist at all.
+// See this module's own doc.
 /// A moment a [`DynTimer`] recorded, which can be asked how long ago it
 /// was and nothing else.
-///
-/// One method on purpose: it is what lets an erased clock exist at all.
-/// See this module's own doc.
 pub trait DynInstant {
     /// How long since this stamp was taken, on the clock that took it.
     fn elapsed(&self) -> Duration;
 }
 
+// Maintainer notes (not rendered):
+//
+// Not `Send`, for [`BoxSleep`]'s reason: the same body holds the stamp the
+// sleep was computed from.
 /// A stamp a [`DynTimer`] took, erased.
 ///
-/// Not `Send`, for [`BoxSleep`]'s reason: the same body holds the stamp the
+/// `Send`, for [`BoxSleep`]'s reason: the same body holds the stamp the
 /// sleep was computed from.
 pub type BoxInstant = Box<dyn DynInstant + Send>; // send-bound-exception: amendment-C14
 

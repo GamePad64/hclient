@@ -48,9 +48,7 @@
 //! would also have upgraded changes nothing about the request that goes
 //! out.
 //!
-//! So a capability here would be a gate with nothing to refuse, which is
-//! the *distinction with one reachable side* this workspace deletes
-//! rather than adds — `UpgradeSupport`'s four variants went for it. If a
+//! So a capability here would be a gate with nothing to refuse. If a
 //! transport ever appears that would be made **wrong** by an upgrade
 //! above it, the capability, the check and the refusal arrive together,
 //! which is the rule `owns_cookie_jar`'s own doc states for its third
@@ -86,6 +84,15 @@
 //!   Hosts"* read as *before it can affect an answer*, which is the jar's
 //!   rule and the alt-svc cache's for the same reason: there is nothing
 //!   here to run a sweep.
+
+// Maintainer notes (not rendered):
+//
+// "There is no capability gate, and that is a decision": So a capability
+// here would be a gate with nothing to refuse, which is
+// the *distinction with one reachable side* this workspace deletes
+// rather than adds — `UpgradeSupport`'s four variants went for it. If a
+// transport ever appears that would be made wrong by an upgrade above
+// it, the capability, the check and the refusal arrive together.
 
 mod kv;
 mod parse;

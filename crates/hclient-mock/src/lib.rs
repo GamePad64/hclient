@@ -2,28 +2,16 @@
 //! implementation, or a client built on one, on the host — with no network
 //! and no wasm runtime.
 //!
-//! Depends on `hclient-core` alone. It was carved out of the `hclient`
-//! facade for that reason: transports live *below* the facade, so reaching
-//! these doubles through it meant a `Transport` author depending upward on
-//! the whole client. Re-exported as `hclient::mock` behind the facade's
-//! `test-util` feature, so existing callers see no change.
+//! Depends on `hclient-core` alone, so a `Transport` author can use it
+//! without depending on the whole client. It is also re-exported as
+//! `hclient::mock` behind the `hclient` facade's `test-util` feature.
 //!
 //! The response queue and request log sit behind a `std::sync::Mutex`, not
 //! a `RefCell`. This isn't a style choice: `RefCell` would make
 //! `MockTransport` `!Sync`, which would make `&MockTransport` `!Send`, and
 //! therefore the future `execute` returns — it borrows the transport —
 //! would be `!Send` too. A test double should not be the thing that stops
-//! that property from being checked.
-//!
-//! **That sentence has been wrong in both directions, which is why it now
-//! says what it rests on.** It first read *the client's future is `Send`
-//! when the transport is*, true while `Client` carried its transport as a
-//! type parameter. Erasure made it false, and the correction said the
-//! property lived at the `Transport` seam and nowhere above it — true
-//! then, and false since `BoxExchange` began declaring `Send` (amendment
-//! C16). What has been constant is the `Mutex`: this mock implements
-//! `SendTransport`, and it can only do that because nothing in it is
-//! behind a `RefCell`.
+//! that property from being checked. This mock implements `SendTransport`.
 //!
 //! # Writing a test with it
 //!
@@ -65,6 +53,25 @@
 //! **ordered**, and a matcher would let a test pass while the code made
 //! its requests in the wrong order. Matching on the request is a different
 //! product; assert on `requests()` instead.
+
+// Maintainer notes (not rendered):
+//
+// Depends on `hclient-core` alone. It was carved out of the `hclient`
+// facade for that reason: transports live *below* the facade, so reaching
+// these doubles through it meant a `Transport` author depending upward on
+// the whole client. Re-exported as `hclient::mock` behind the facade's
+// `test-util` feature, so existing callers see no change.
+//
+// **That sentence has been wrong in both directions, which is why it now
+// says what it rests on.** It first read *the client's future is `Send`
+// when the transport is*, true while `Client` carried its transport as a
+// type parameter. Erasure made it false, and the correction said the
+// property lived at the `Transport` seam and nowhere above it — true
+// then, and false since `BoxExchange` began declaring `Send` (amendment
+// C16). What has been constant is the `Mutex`: this mock implements
+// `SendTransport`, and it can only do that because nothing in it is
+// behind a `RefCell`.
+
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -121,15 +128,20 @@ pub struct RecordedRequest {
     /// [`RequestBody::size_hint`] reported it: `Some(0)` for no body,
     /// `None` for a body whose length is not known in advance.
     pub body_size_hint: Option<u64>,
+    // Maintainer notes (not rendered):
+    // **The single most useful thing a test asks a mock**, and it was
+    // absent for four verticals: this struct recorded a `size_hint` and
+    // dropped the body, so *"my code posted the right JSON"* — the
+    // commonest assertion anybody makes against a double — could not be
+    // written at all. Everything the workspace's own tests needed was
+    // about redirects, retries and capability gates, none of which reads
+    // a body, so nothing here noticed.
     /// The bytes the request carried.
     ///
-    /// **The single most useful thing a test asks a mock**, and it was
-    /// absent for four verticals: this struct recorded a `size_hint` and
-    /// dropped the body, so *"my code posted the right JSON"* — the
-    /// commonest assertion anybody makes against a double — could not be
-    /// written at all. Everything the workspace's own tests needed was
-    /// about redirects, retries and capability gates, none of which reads
-    /// a body, so nothing here noticed.
+    /// **The single most useful thing a test asks a mock:** without it,
+    /// *"my code posted the right JSON"* — the
+    /// commonest assertion anybody makes against a double — cannot be
+    /// written.
     pub body: RecordedBody,
 }
 
@@ -149,17 +161,20 @@ pub enum RecordedBody {
     Empty,
     /// The bytes, from a [`RequestBody::Full`].
     Bytes(Bytes),
+    // Maintainer notes (not rendered):
+    // The obvious implementation calls the factory here and records the
+    // bytes. It is wrong, and a test in this workspace said so within a
+    // minute: `too_early.rs`'s
+    // `a_rewindable_body_is_replayed_from_the_snapshot_taken_before_the_first_attempt`
+    // counts factory calls to pin *one snapshot per hop, not one per
+    // attempt* — a claim about the **client** — and a mock that called
+    // the factory to fill a field made that count 2. Purity is not the
     /// A [`RequestBody::Rewindable`], handed over as its factory rather
     /// than as bytes — **so that the extra call is the test's choice and
     /// not the mock's.**
     ///
-    /// The obvious implementation calls the factory here and records the
-    /// bytes. It is wrong, and a test in this workspace said so within a
-    /// minute: `too_early.rs`'s
-    /// `a_rewindable_body_is_replayed_from_the_snapshot_taken_before_the_first_attempt`
-    /// counts factory calls to pin *one snapshot per hop, not one per
-    /// attempt* — a claim about the **client** — and a mock that called
-    /// the factory to fill a field made that count 2. Purity is not the
+    /// Calling the factory here and recording the bytes would be
+    /// wrong. Purity is not the
     /// question: the contract makes the *result* the same and says nothing
     /// about a caller counting calls. A real backend calls the factory
     /// because it sends the body; a mock that calls it is simply an extra
@@ -402,16 +417,20 @@ impl MockTransport {
         self
     }
 
+    // Maintainer notes (not rendered):
+    // It was `&'static str` for four verticals, which is fine for a
+    // literal written in the test and refuses the ordinary case of a
+    // payload built at run time: `serde_json::to_string(&value)` yields a
+    // `String`, and a test author's first attempt therefore did not
+    // compile. `impl Into<Bytes>` costs nothing and accepts both.
     /// Queues a response made of a single frame — the common case when a
     /// test doesn't care about chunk boundaries.
     /// The body is anything that becomes [`Bytes`] — `&'static str`,
     /// `String`, `Vec<u8>`, `Bytes`.
     ///
-    /// It was `&'static str` for four verticals, which is fine for a
-    /// literal written in the test and refuses the ordinary case of a
-    /// payload built at run time: `serde_json::to_string(&value)` yields a
-    /// `String`, and a test author's first attempt therefore did not
-    /// compile. `impl Into<Bytes>` costs nothing and accepts both.
+    /// `impl Into<Bytes>` accepts both a literal written in the test and a
+    /// payload built at run time, such as `serde_json::to_string(&value)`,
+    /// which yields a `String`.
     ///
     /// # Panics
     ///
@@ -428,15 +447,17 @@ impl MockTransport {
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
+    // Maintainer notes (not rendered):
+    // not valid UTF-8, so it can only be reached through `unsafe` or
+    // through this method. Added for v0.2 W5, whose tests have to hand the
+    // client a real coded stream and read plaintext back out.
     /// Queues a response whose body is arbitrary BYTES, split into frames
     /// by the caller — for anything that is not text.
     ///
     /// Every other `push_response*` takes `&'static str`, which is exactly
     /// right for the SSE and redirect scenarios they were written for and
     /// cannot express a compressed body at all: a gzip or brotli stream is
-    /// not valid UTF-8, so it can only be reached through `unsafe` or
-    /// through this method. Added for v0.2 W5, whose tests have to hand the
-    /// client a real coded stream and read plaintext back out.
+    /// not valid UTF-8. This method is how such a body can be sent.
     ///
     /// `Vec<Bytes>` rather than one `Bytes` for the same reason
     /// `push_response_frames` exists: a decoder that only ever sees a whole

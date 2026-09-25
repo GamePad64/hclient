@@ -52,10 +52,15 @@ use crate::error::UnsupportedIpc;
 use std::future::Future;
 use std::path::PathBuf;
 
+// Maintainer notes (not rendered):
+// A runtime that can connect to a same-machine endpoint — a Unix-domain
+// socket today, and the kinds [`IpcAddr`] gains later. See the module
+// documentation for why this extends [`TcpConnect`] rather than living on
+// it.
 /// A runtime that can connect to a same-machine endpoint — a Unix-domain
-/// socket today, and the kinds [`IpcAddr`] gains later. See the module
-/// documentation for why this extends [`TcpConnect`] rather than living on
-/// it.
+/// socket today, and the kinds [`IpcAddr`] gains later. It extends
+/// [`TcpConnect`] because a same-machine connect hands back the same
+/// [`Stream`](TcpConnect::Stream) type, so one transport carries both.
 pub trait IpcConnect: TcpConnect {
     /// Which endpoint kinds [`connect_ipc`](Self::connect_ipc) dials — see
     /// [`IpcSupport`].

@@ -91,16 +91,19 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 use std::time::Instant;
 
+// Maintainer notes (not rendered):
+// Named, `Send` and `'static` — which is the whole reason `Spawn` is
+// usable here when generic library code cannot use it. `Spawn<F>` makes
+// the future a type parameter of the *trait*, so a bound has to name it,
+// and an `async` block has no name (`E0308: expected type parameter F,
+// found async block`) — the wall v0.2 W2 hit and recorded. quinn does not
+// hand over an `async` block; it hands over exactly this type, which
+// `impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Tokio`
+// accepts verbatim.
 /// The future type `quinn::Runtime::spawn` hands over.
 ///
-/// Named, `Send` and `'static` — which is the whole reason `Spawn` is
-/// usable here when generic library code cannot use it. `Spawn<F>` makes
-/// the future a type parameter of the *trait*, so a bound has to name it,
-/// and an `async` block has no name (`E0308: expected type parameter F,
-/// found async block`) — the wall v0.2 W2 hit and recorded. quinn does not
-/// hand over an `async` block; it hands over exactly this type, which
-/// `impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Tokio`
-/// accepts verbatim.
+/// Named, `Send` and `'static`, so a runtime's `Spawn` bound can name it:
+/// a runtime used for HTTP/3 must implement `Spawn<QuinnTask>`.
 pub type QuinnTask = Pin<Box<dyn Future<Output = ()> + Send>>; // send-bound-exception: amendment-C10
 
 /// The runtime seam, dressed as a `quinn::Runtime`.

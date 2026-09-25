@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 /// the former you can't build a keep-alive detector, without the latter
 /// blocks containing only `retry:` are lost.
 ///
-/// **Deliberately not `#[non_exhaustive]`, which is answer 2**:
+/// **Deliberately not `#[non_exhaustive]`**:
 /// exhaustiveness is the mechanism. Both consumers here branch on every
 /// arm with no `_` — `hclient-cli` renders each one differently and
 /// `hclient`'s reconnecting stream acts on `Retry` alone — so a fourth

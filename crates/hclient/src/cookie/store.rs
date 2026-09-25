@@ -149,16 +149,106 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
     out
 }
 
+// Maintainer notes (not rendered):
+//
+// **A store that outlives the process writes
+// [`CookieRecord`](super::CookieRecord)s and reads them back with
+// [`Cookie::from_record`]** — [`Cookie`]'s own fields are private, and
+// that pair is the serialisable form this module already argues for.
+//
+// So a persisting store holds two things: what it has, as [`Cookie`],
+// and what it would write down, which is the strict subset that has a
+// record. Written here because it is not visible from the signatures —
+// [`put`](Self::put) takes a `Cookie` and nothing says the round trip
+// through a record is lossy — and because the first store written
+// against this seam outside the workspace fell into it inside five
+// minutes: a plain `sid=abc` never reached the second request, and the
+// seam had done exactly what it was asked.
+//
+// Three, and none of them is an RFC 6265 rule — see this module's
+// documentation for why that line is where it is:
+//
+// A store author still never writes the erasure:
+//
+// # Associated futures, not `async fn` — measured, five ways
+//
+// `async fn` in traits is stable, and it is the obvious way to write
+// this. It was tried on a scratch crate before this shape was kept, and
+// the three outcomes are why it is not used here.
+//
+// [`Client`](crate::Client) boxes its jar `Send + Sync`, so something
+// has to prove the store's futures `Send`.
+//
+// 1. **`async fn` on the trait, `Send` box in the erasure** — `E0277`,
+//    *`impl Future<Output = ..>` cannot be sent between threads
+//    safely*. An `async fn` in a trait is an RPITIT, and a generic impl
+//    cannot prove a property of a future it cannot name. This is the
+//    rule this workspace states everywhere: at a concrete type `Send`
+//    is inferred, in a generic impl it must be proven.
+// 2. **Return type notation** — `Store<get(..): Send>` is exactly the
+//    language feature for naming one, and it is `E0658`, *return type
+//    notation is experimental*, on this crate's stable toolchain. The
+//    workspace has measured its full cost once already and declined it.
+// 3. **`+ Send` on the seam itself**, which is what rustc suggests —
+//    `fn get(&self) -> impl Future<Output = ..> + Send`. It compiles,
+//    and it **excludes every single-threaded store**: an
+//    implementor holding an `Rc` across an await is rejected at its own
+//    `impl`, with the bound named as the cause. The control is the same
+//    store holding an `Arc`, which compiles. So the cost is not a
+//    ceremony, it is a store the browser or a single-threaded device
+//    could have written and now cannot.
+//
+// 4. **`#[async_trait]`**, which is where this shape came from before
+//    1.75 made it a language feature. It is option 3 with a macro and a
+//    heap allocation: the plain form writes `Pin<Box<dyn Future + Send>>`
+//    into the trait, so it fails on the same `Rc`-holding store and with
+//    the same cause; `#[async_trait(?Send)]` writes a plain box, so the
+//    erasure [`Client`](crate::Client) needs stops compiling instead —
+//    `E0308`, the two box types. Both halves were built. The choice is
+//    fixed at the trait rather than per implementor, which is the whole
+//    of the objection, and the allocation is what it costs on top:
+//    measured with a counting allocator over 1,000 calls to a store that
+//    answers immediately, **1,000 allocations against 0**. `MemoryStore`
+//    answers [`Ready`] and allocates nothing today.
+// 5. **`trait_variant`**, rust-lang's own crate for this question, and
+//    the only alternative that carries this workspace's exact shape.
+//    `#[trait_variant::make(SendStore: Send)]` writes a *second* trait
+//    whose futures are `Send`, with a blanket impl making every
+//    `SendStore` a `Store`. Built against the three-sided constraint —
+//    a single-threaded store in a bare jar, a threaded store erased
+//    through [`ClientBuilder::cookie_jar`](crate::ClientBuilder::cookie_jar),
+//    and the erased jar still `Send + Sync` — **all three compile**, and
+//    it allocates nothing: measured at 0 per 1,000 calls, the same as
+//    this shape and unlike `#[async_trait]`.
+//
+//    **What it costs is that the seam is two traits and the author's
+//    choice between them is one-way.** A store whose futures are
+//    genuinely `Send`, written against the trait the seam is *named*
+//    after, works in a bare jar and is refused at the erasure —
+//    `E0277`, *the trait bound `..: SendStore` is not satisfied* — and
+//    the author cannot add the second impl beside the first, because
+//    the macro's own blanket impl conflicts (`E0119`). The repair is to
+//    delete the impl and rewrite it against the other name. So the
+//    property is *declared per store* rather than inferred, which is
+//    option 3's objection scoped down rather than removed.
+//
+// An associated future type is the answer that costs nothing: **naming is not requiring**, so each implementor answers for
+// its own auto traits — amendment C15, `TcpConnect::Connecting`'s
+// argument one seam down and [`CacheStore`](crate::cache::CacheStore)'s
+// one module over. **One trait, one impl per store, and the property is
+// read off the concrete type**: the same `MemoryStore` source is a jar's
+// store and a `Client`'s, and its author wrote nothing about `Send` at
+// all. That is the whole of what separates it from 5.
 /// Where a [`CookieJar`](super::CookieJar) keeps its cookies.
 ///
 /// Implement it to put a jar on disk, in a database or in the browser's
 /// own storage; [`MemoryStore`] is what a plain `CookieJar::new()` uses
 /// and is the reference for what the methods mean.
 ///
-/// **A store that outlives the process writes
+/// A store that outlives the process writes
 /// [`CookieRecord`](super::CookieRecord)s and reads them back with
-/// [`Cookie::from_record`]** — [`Cookie`]'s own fields are private, and
-/// that pair is the serialisable form this module already argues for.
+/// [`Cookie::from_record`] — [`Cookie`]'s own fields are private, and
+/// that pair is the serialisable form.
 ///
 /// # And a record is not a representation, which is the trap
 ///
@@ -172,17 +262,13 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
 ///
 /// So a persisting store holds two things: what it has, as [`Cookie`],
 /// and what it would write down, which is the strict subset that has a
-/// record. Written here because it is not visible from the signatures —
+/// record. This is not visible from the signatures alone —
 /// [`put`](Self::put) takes a `Cookie` and nothing says the round trip
-/// through a record is lossy — and because the first store written
-/// against this seam outside the workspace fell into it inside five
-/// minutes: a plain `sid=abc` never reached the second request, and the
-/// seam had done exactly what it was asked.
+/// through a record is lossy.
 ///
 /// # The obligations
 ///
-/// Three, and none of them is an RFC 6265 rule — see this module's
-/// documentation for why that line is where it is:
+/// Three, and none of them is an RFC 6265 rule:
 ///
 /// 1. [`get`](Self::get) answers **exact** domain matches, and nothing
 ///    else. A store that applied a suffix rule of its own would be
@@ -195,77 +281,15 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
 ///    everything is a memory-exhaustion bug with a server on the other
 ///    end of it.
 ///
-/// # Associated futures, not `async fn` — measured, five ways
+/// # Associated futures, not `async fn`
 ///
-/// `async fn` in traits is stable, and it is the obvious way to write
-/// this. It was tried on a scratch crate before this shape was kept, and
-/// the three outcomes are why it is not used here.
+/// Each implementor answers for its own auto traits: nothing on this
+/// trait demands `Send` of a store's futures, so a single-threaded store
+/// (holding an `Rc`, say) and a threaded one are equally valid
+/// implementations, and the property is read off the concrete type
+/// rather than declared on it.
 ///
-/// [`Client`](crate::Client) boxes its jar `Send + Sync`, so something
-/// has to prove the store's futures `Send`.
-///
-/// 1. **`async fn` on the trait, `Send` box in the erasure** — `E0277`,
-///    *`impl Future<Output = ..>` cannot be sent between threads
-///    safely*. An `async fn` in a trait is an RPITIT, and a generic impl
-///    cannot prove a property of a future it cannot name. This is the
-///    rule this workspace states everywhere: at a concrete type `Send`
-///    is inferred, in a generic impl it must be proven.
-/// 2. **Return type notation** — `Store<get(..): Send>` is exactly the
-///    language feature for naming one, and it is `E0658`, *return type
-///    notation is experimental*, on this crate's stable toolchain. The
-///    workspace has measured its full cost once already and declined it.
-/// 3. **`+ Send` on the seam itself**, which is what rustc suggests —
-///    `fn get(&self) -> impl Future<Output = ..> + Send`. It compiles,
-///    and it **excludes every single-threaded store**: an
-///    implementor holding an `Rc` across an await is rejected at its own
-///    `impl`, with the bound named as the cause. The control is the same
-///    store holding an `Arc`, which compiles. So the cost is not a
-///    ceremony, it is a store the browser or a single-threaded device
-///    could have written and now cannot.
-///
-/// 4. **`#[async_trait]`**, which is where this shape came from before
-///    1.75 made it a language feature. It is option 3 with a macro and a
-///    heap allocation: the plain form writes `Pin<Box<dyn Future + Send>>`
-///    into the trait, so it fails on the same `Rc`-holding store and with
-///    the same cause; `#[async_trait(?Send)]` writes a plain box, so the
-///    erasure [`Client`](crate::Client) needs stops compiling instead —
-///    `E0308`, the two box types. Both halves were built. The choice is
-///    fixed at the trait rather than per implementor, which is the whole
-///    of the objection, and the allocation is what it costs on top:
-///    measured with a counting allocator over 1,000 calls to a store that
-///    answers immediately, **1,000 allocations against 0**. `MemoryStore`
-///    answers [`Ready`] and allocates nothing today.
-/// 5. **`trait_variant`**, rust-lang's own crate for this question, and
-///    the only alternative that carries this workspace's exact shape.
-///    `#[trait_variant::make(SendStore: Send)]` writes a *second* trait
-///    whose futures are `Send`, with a blanket impl making every
-///    `SendStore` a `Store`. Built against the three-sided constraint —
-///    a single-threaded store in a bare jar, a threaded store erased
-///    through [`ClientBuilder::cookie_jar`](crate::ClientBuilder::cookie_jar),
-///    and the erased jar still `Send + Sync` — **all three compile**, and
-///    it allocates nothing: measured at 0 per 1,000 calls, the same as
-///    this shape and unlike `#[async_trait]`.
-///
-///    **What it costs is that the seam is two traits and the author's
-///    choice between them is one-way.** A store whose futures are
-///    genuinely `Send`, written against the trait the seam is *named*
-///    after, works in a bare jar and is refused at the erasure —
-///    `E0277`, *the trait bound `..: SendStore` is not satisfied* — and
-///    the author cannot add the second impl beside the first, because
-///    the macro's own blanket impl conflicts (`E0119`). The repair is to
-///    delete the impl and rewrite it against the other name. So the
-///    property is *declared per store* rather than inferred, which is
-///    option 3's objection scoped down rather than removed.
-///
-/// An associated future type is the answer that costs nothing: **naming is not requiring**, so each implementor answers for
-/// its own auto traits — amendment C15, `TcpConnect::Connecting`'s
-/// argument one seam down and [`CacheStore`](crate::cache::CacheStore)'s
-/// one module over. **One trait, one impl per store, and the property is
-/// read off the concrete type**: the same `MemoryStore` source is a jar's
-/// store and a `Client`'s, and its author wrote nothing about `Send` at
-/// all. That is the whole of what separates it from 5.
-///
-/// A store author still never writes the erasure:
+/// A store author never writes the erasure:
 /// [`BoxCookieStore`](crate::erased::BoxCookieStore) is a blanket impl
 /// over a private object-safe trait, so `Send` is inferred where the type
 /// is still concrete, and it is demanded only on

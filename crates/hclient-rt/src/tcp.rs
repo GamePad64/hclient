@@ -9,22 +9,30 @@ use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// # `default()` is all-off, and that was re-decided rather than inherited
+//
+// Nagle's algorithm costs the head of a `Native` TLS exchange **41 ms** on
+// loopback — measured from the server's side of the wire in
+// `hclient-native`'s `tests/nagle_cost.rs`, and 0.9 ms with `nodelay` set.
+// Every field here stays `false`/`None` anyway, for two reasons that are
+// not caution:
+//
+// - **This is a socket seam, and it does not know who is writing.** The
+//   41 ms is the write-write-read pattern of a request over TLS meeting a
+//   peer's delayed ACK. A protocol that streams one way is exactly the one
+//   Nagle helps, …
 /// Socket options are applied in hclient **once**, on the `socket2::Socket`,
 /// and the runtime only adopts the descriptor (`TcpAdoptStd`). Otherwise
 /// every runtime crate would rewrite this whole rigmarole again.
 ///
-/// # `default()` is all-off, and that was re-decided rather than inherited
+/// # `default()` is all-off
 ///
-/// Nagle's algorithm costs the head of a `Native` TLS exchange **41 ms** on
-/// loopback — measured from the server's side of the wire in
-/// `hclient-native`'s `tests/nagle_cost.rs`, and 0.9 ms with `nodelay` set.
-/// Every field here stays `false`/`None` anyway, for two reasons that are
+/// Every field here stays `false`/`None`, for two reasons that are
 /// not caution:
 ///
-/// - **This is a socket seam, and it does not know who is writing.** The
-///   41 ms is the write-write-read pattern of a request over TLS meeting a
-///   peer's delayed ACK. A protocol that streams one way is exactly the one
-///   Nagle helps, and a default here would impose one caller's protocol on
+/// - **This is a socket seam, and it does not know who is writing.** A
+///   protocol that streams one way is exactly the one Nagle helps, and a default here would impose one caller's protocol on
 ///   every other caller of the trait.
 /// - **A set option is a refusal, not a preference.**
 ///   [`TcpOpts::reject_unsupported`] fails the connect on a runtime whose
@@ -627,6 +635,8 @@ pub trait TcpConnect {
 /// applied outside the runtime, and the runtime only adopts the finished
 /// socket.
 pub trait TcpAdoptStd: TcpConnect {
+    /// Take ownership of an already-configured `std` socket.
+    ///
     /// # Errors
     ///
     /// Whatever the OS or the runtime's own reactor registration returns

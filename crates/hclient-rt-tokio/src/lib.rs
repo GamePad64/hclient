@@ -47,6 +47,10 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+// Maintainer notes (not rendered):
+// always holds, and a ZST costs a pointer less. Its module doc has a
+// measured table of exactly which capabilities the handle makes total —
+// notably not `TcpConnect`, and it says why.
 /// The `hclient-rt` capabilities on tokio's **ambient** runtime.
 ///
 /// A ZST: the tokio handle is picked up from the thread's current runtime
@@ -67,16 +71,18 @@ use std::time::Duration;
 /// [`TokioHandle`] is the same capabilities with the runtime carried as a
 /// value instead, which turns that panic into a `Result` at construction.
 /// It does not replace this type: inside `#[tokio::main]` the precondition
-/// always holds, and a ZST costs a pointer less. Its module doc has a
-/// measured table of exactly which capabilities the handle makes total —
-/// notably not `TcpConnect`, and it says why.
+/// always holds, and a ZST costs a pointer less. The handle does not make
+/// every capability total: the futures returned by [`TcpConnect::connect`]
+/// and `connect_ipc` must still be polled on a runtime thread.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tokio;
 
 impl Timer for Tokio {
     type Instant = tokio::time::Instant;
-    /// `tokio::time::Sleep` already resolves to `()`, so this side needs
-    /// no adapter — unlike smol's, see `hclient-rt-smol`.
+    // Maintainer notes (not rendered):
+    // `tokio::time::Sleep` already resolves to `()`, so this side needs
+    // no adapter — unlike smol's, see `hclient-rt-smol`.
+    /// tokio's own `Sleep`, which already resolves to `()`.
     type Sleep = tokio::time::Sleep;
     fn sleep(&self, d: Duration) -> Self::Sleep {
         tokio::time::sleep(d)
@@ -96,6 +102,13 @@ impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Tokio {
 }
 
 impl Blocking for Tokio {
+    // Maintainer notes (not rendered):
+    // `classify` is factored out into its own function and covered by a
+    // unit test against a REAL `JoinError` — see
+    // `tests::classify_reports_cancelled_for_a_join_error_that_is_not_a_panic`
+    // and its comment on why the `JoinError` there is obtained via
+    // `AbortHandle::abort()` rather than by racing a whole-runtime
+    // shutdown.
     /// `tokio::task::spawn_blocking` returns `JoinError` for two distinct
     /// cases, and `hclient_rt::Blocking`'s contract requires not conflating
     /// them: the closure panicked, OR the
@@ -106,13 +119,6 @@ impl Blocking for Tokio {
     /// the calling code as-is); the second is a typed `Cancelled`, not a
     /// panic: it isn't a bug in the calling code, but an ordinary runtime
     /// lifecycle event.
-    ///
-    /// `classify` is factored out into its own function and covered by a
-    /// unit test against a REAL `JoinError` — see
-    /// `tests::classify_reports_cancelled_for_a_join_error_that_is_not_a_panic`
-    /// and its comment on why the `JoinError` there is obtained via
-    /// `AbortHandle::abort()` rather than by racing a whole-runtime
-    /// shutdown.
     fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
         f: F,
@@ -132,18 +138,23 @@ fn classify<T>(r: Result<T, tokio::task::JoinError>) -> Result<T, Cancelled> {
 impl TcpConnect for Tokio {
     type Stream = TokioIo;
 
-    /// What `build_socket` below applies on this target — stated rather
-    /// than left to the trait's `NONE` default, which would understate
-    /// this runtime (see `TcpConnect::TCP_SUPPORT`).
+    // Maintainer notes (not rendered):
+    // What `build_socket` below applies on this target — stated rather
+    // than left to the trait's `NONE` default, which would understate
+    // this runtime (see `TcpConnect::TCP_SUPPORT`).
+    //
+    // **Built from `NONE`, one option at a time, and that is the
+    // point.** Two of the fields are Linux socket options with no counterpart elsewhere —
+    // moment or not at all. There is no `ALL` to start from any more:
+    // a constant meaning *every field* would silently claim the next field
+    // too, the day `hclient-rt` adds one.
+    /// The socket options this runtime applies on the current target.
     ///
-    /// **Built from `NONE`, one option at a time, and that is the
-    /// point.** Two of the fields are Linux socket options with no counterpart elsewhere —
+    /// Two of the fields are Linux socket options with no counterpart elsewhere —
     /// `SO_BINDTODEVICE` on Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` on
     /// those plus Cygwin — and a constant claiming them on macOS or
     /// Windows would be a capability that lies, refused at the wrong
-    /// moment or not at all. There is no `ALL` to start from any more:
-    /// a constant meaning *every field* would silently claim the next field
-    /// too, the day `hclient-rt` adds one.
+    /// moment or not at all.
     ///
     /// The direction of the `cfg` matters: an understated `TCP_SUPPORT` costs
     /// a caller a named `Unsupported` error, an overstated one costs them
@@ -175,10 +186,12 @@ impl TcpConnect for Tokio {
             target_os = "solaris"
         )));
 
+    // Maintainer notes (not rendered):
+    // say so. See the trait's own doc for why the choice is here rather
+    // than in the seam.
     /// A `Send` box: everything this awaits is `tokio`'s own, and a
     /// consumer that wants to prove a `Send` future needs to be able to
-    /// say so. See the trait's own doc for why the choice is here rather
-    /// than in the seam.
+    /// say so.
     type Connecting<'a> =
         std::pin::Pin<Box<dyn Future<Output = std::io::Result<TokioIo>> + Send + 'a>>;
 

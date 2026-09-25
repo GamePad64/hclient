@@ -1,4 +1,8 @@
-//! Windows: `icuuc.dll` through `windows-sys` (spec amendment C9).
+//! Windows: `icuuc.dll` through `windows-sys`.
+//
+// Maintainer notes (not rendered):
+//
+// Windows: `icuuc.dll` through `windows-sys` (spec amendment C9).
 //!
 //! # Nothing is declared here, and that is the whole point
 //!

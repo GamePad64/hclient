@@ -1,51 +1,63 @@
 //! Every way this transport refuses, or fails to make, an exchange.
 //!
-//! **One file, and it is ordered by *when* rather than by which module
-//! raises it.** Grouping by subsystem was the other option and it would
-//! have rebuilt the thing this move undoes: the errors were already
-//! grouped by subsystem — that is what having them in `connect.rs`,
-//! `http1.rs`, `proxy.rs` and six more files *was* — and a reader who
-//! knows which module to look in did not need the move. What no file
-//! could answer before is the question a reader actually arrives with,
-//! *how far did my request get before this*, and the answer is an order:
-//! a configuration refused before a socket exists, a request with nowhere
+//! The types are ordered by *how far did my request get before this*: a
+//! configuration refused before a socket exists, a request with nowhere
 //! to go, a connection that was not made, a clock that won, an exchange
-//! that broke. Each section below is one of those, and a type's position
-//! in the file is a claim about how much of the request had happened.
+//! that broke.
 //!
-//! That order is also what makes the near-duplicates readable.
 //! [`ResolveTimedOut`], [`ConnectTimedOut`], [`FirstByteTimedOut`] and
-//! [`BetweenBytesElapsed`] are one type written four times over, and the
-//! only thing that distinguishes them is which phase's bound was in
-//! force — which is exactly why they are four types and not one with a
-//! `Phase` field: a caller tells them apart with
-//! `Error::source().downcast_ref()`. Side by side that reads as a
-//! design; scattered across `connect.rs`, `lib.rs` and `idle.rs` it read
-//! as four unrelated timeouts.
-//!
-//! **The two protocol arms keep their own**, and that is the one line
-//! drawn against this file. `http2/` and `http3/` are self-contained
-//! stacks behind features of their own — the second was a crate of its
-//! own until `f4dfe48` — and their failures are about frames and streams
-//! rather than about this transport's phases: `http2/error.rs` and
-//! `http3/pump.rs` say what `h2` and `h3` mean, which is a different
-//! subject from the one above. The rule is mechanical rather than a
-//! judgement, so it cannot drift: a type stays where it is if and only if
-//! it lives under `src/http2/` or `src/http3/`.
-//!
-//! No consumer's `use` line moved — each type was re-exported at the path
-//! it already had, including the two the `proxy` module publishes under
-//! its own name as well as at the root. `Disagreement` has since moved to
-//! the root with the others, when `caps` stopped being public.
-//! **Nothing became public that was not**, and the whole of what the move
-//! cost is one step of widening on what now crosses a file boundary:
-//! seven types that were private to their module are `pub(crate)`, with
-//! `pub(crate)` fields wherever the module they left still constructs
-//! them, and three methods — `ResolveErrors::{from_families,
-//! distinguishing_error}` and `Disagreement::new` — for the same reason.
-//! `UndeclaredRequestTrailers`'s field is the one on an already-public
-//! type, and it is `pub(crate)` rather than `pub`: the accessor
-//! [`UndeclaredRequestTrailers::fields`] is still how a caller reads it.
+//! [`BetweenBytesElapsed`] differ only in which phase's bound was in
+//! force; a caller tells them apart with
+//! `Error::source().downcast_ref()`.
+
+// Maintainer notes (not rendered):
+//
+// **One file, and it is ordered by *when* rather than by which module
+// raises it.** Grouping by subsystem was the other option and it would
+// have rebuilt the thing this move undoes: the errors were already
+// grouped by subsystem — that is what having them in `connect.rs`,
+// `http1.rs`, `proxy.rs` and six more files *was* — and a reader who
+// knows which module to look in did not need the move. What no file
+// could answer before is the question a reader actually arrives with,
+// *how far did my request get before this*, and the answer is an order:
+// a configuration refused before a socket exists, a request with nowhere
+// to go, a connection that was not made, a clock that won, an exchange
+// that broke. Each section below is one of those, and a type's position
+// in the file is a claim about how much of the request had happened.
+//
+// That order is also what makes the near-duplicates readable.
+// [`ResolveTimedOut`], [`ConnectTimedOut`], [`FirstByteTimedOut`] and
+// [`BetweenBytesElapsed`] are one type written four times over, and the
+// only thing that distinguishes them is which phase's bound was in
+// force — which is exactly why they are four types and not one with a
+// `Phase` field: a caller tells them apart with
+// `Error::source().downcast_ref()`. Side by side that reads as a
+// design; scattered across `connect.rs`, `lib.rs` and `idle.rs` it read
+// as four unrelated timeouts.
+//
+// **The two protocol arms keep their own**, and that is the one line
+// drawn against this file. `http2/` and `http3/` are self-contained
+// stacks behind features of their own — the second was a crate of its
+// own until `f4dfe48` — and their failures are about frames and streams
+// rather than about this transport's phases: `http2/error.rs` and
+// `http3/pump.rs` say what `h2` and `h3` mean, which is a different
+// subject from the one above. The rule is mechanical rather than a
+// judgement, so it cannot drift: a type stays where it is if and only if
+// it lives under `src/http2/` or `src/http3/`.
+//
+// No consumer's `use` line moved — each type was re-exported at the path
+// it already had, including the two the `proxy` module publishes under
+// its own name as well as at the root. `Disagreement` has since moved to
+// the root with the others, when `caps` stopped being public.
+// **Nothing became public that was not**, and the whole of what the move
+// cost is one step of widening on what now crosses a file boundary:
+// seven types that were private to their module are `pub(crate)`, with
+// `pub(crate)` fields wherever the module they left still constructs
+// them, and three methods — `ResolveErrors::{from_families,
+// distinguishing_error}` and `Disagreement::new` — for the same reason.
+// `UndeclaredRequestTrailers`'s field is the one on an already-public
+// type, and it is `pub(crate)` rather than `pub`: the accessor
+// [`UndeclaredRequestTrailers::fields`] is still how a caller reads it.
 
 use crate::http1::MINIMUM_MAX_BUF_SIZE;
 use hclient_core::error::{Error, ErrorKind};
@@ -128,7 +140,9 @@ pub struct Disagreement {
     pub field: &'static str,
     /// What `hclient-native` said, formatted with `Debug`.
     pub tcp: String,
-    /// What `hclient-h3` said, formatted with `Debug`.
+    // Maintainer notes (not rendered):
+    // What `hclient-h3` said, formatted with `Debug`.
+    /// What the QUIC stack said, formatted with `Debug`.
     pub quic: String,
 }
 
@@ -177,12 +191,12 @@ pub struct PlaintextNeedsHttp1;
 #[error("no client identity named `{0}` in this TLS backend")]
 pub(crate) struct UnknownClientIdentity(pub(crate) String);
 
+// Maintainer notes (not rendered):
+// Unreachable through `Native::route`, which only ever chooses QUIC
+// after finding an arm — it exists because `over_quic` is also reached
+// from the hedge, and an `unreachable!` in a transport is a panic in a
+// caller's process for a mistake that is ours.
 /// Routing chose the QUIC arm on a transport that has none.
-///
-/// Unreachable through `Native::route`, which only ever chooses QUIC
-/// after finding an arm — it exists because `over_quic` is also reached
-/// from the hedge, and an `unreachable!` in a transport is a panic in a
-/// caller's process for a mistake that is ours.
 #[cfg(feature = "http3")]
 #[derive(Debug, thiserror::Error)]
 #[error("this transport has no QUIC arm; see `Native::http3`")]
@@ -289,17 +303,22 @@ impl ResolveErrors {
     }
 }
 
+// Maintainer notes (not rendered):
+// **The transport's rule rather than any protocol's**, which is why it
+// lives here and not in `hclient-proxy`: a handshake reports faithfully
+// how much of the buffer was its own, and what to make of the rest is a
+// question about what happens next. Nothing the origin might say can have
+// arrived yet — the client has not written to it — so these bytes are the
+// proxy's, and carrying them on would feed them to the TLS handshake, or
+// to hyper, as if the origin had sent them. A refusal to connect rather
+// than a rewind, because the rewind is the quieter failure and the worse
+// one.
 /// The proxy sent bytes past the end of its own handshake.
 ///
-/// **The transport's rule rather than any protocol's**, which is why it
-/// lives here and not in `hclient-proxy`: a handshake reports faithfully
-/// how much of the buffer was its own, and what to make of the rest is a
-/// question about what happens next. Nothing the origin might say can have
-/// arrived yet — the client has not written to it — so these bytes are the
-/// proxy's, and carrying them on would feed them to the TLS handshake, or
-/// to hyper, as if the origin had sent them. A refusal to connect rather
-/// than a rewind, because the rewind is the quieter failure and the worse
-/// one.
+/// Nothing the origin might say can have arrived yet — the client has not
+/// written to it — so these bytes are the proxy's, and carrying them on
+/// would feed them to the TLS handshake, or to hyper, as if the origin had
+/// sent them. The connection is refused.
 #[derive(Debug, thiserror::Error)]
 #[error("the proxy sent {0} bytes past its own handshake, before anything was sent to the origin")]
 pub struct ProxySpokeFirst(pub usize);
@@ -311,7 +330,10 @@ pub struct ProxySpokeFirst(pub usize);
 // relied on to carry.
 // ---------------------------------------------------------------------
 
-/// The failure `first_address_within` ends in.
+// Maintainer notes (not rendered):
+// The failure `first_address_within` ends in.
+/// The failure the `resolve` bound ends in when no address arrives in
+/// time.
 ///
 /// A named type rather than a string, for the reason
 /// [`crate::FirstByteTimedOut`] is one: a caller tells the phases apart
@@ -322,13 +344,15 @@ pub struct ProxySpokeFirst(pub usize);
 #[error("no address from the resolver within the resolve timeout of {0:?}")]
 pub struct ResolveTimedOut(pub Duration);
 
+// Maintainer notes (not rendered):
+// A named type rather than a string, for [`ResolveTimedOut`]'s reason. It
+// was crate-private while every payload beside it was public, so the one
+// timeout a caller could not tell apart by type was the commonest one;
+// that went when this module became the path for all of them.
 /// The failure the `connect` bound ends in when the timer wins the race
 /// against resolving and dialling.
 ///
-/// A named type rather than a string, for [`ResolveTimedOut`]'s reason. It
-/// was crate-private while every payload beside it was public, so the one
-/// timeout a caller could not tell apart by type was the commonest one;
-/// that went when this module became the path for all of them.
+/// A named type rather than a string, for [`ResolveTimedOut`]'s reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("connect timed out after {0:?}")]
 pub struct ConnectTimedOut(pub Duration);
@@ -390,13 +414,18 @@ pub struct NotSwitchingProtocols(pub http::StatusCode);
 #[error("the connection ended before the handshake response arrived")]
 pub struct EndedBeforeTheResponse;
 
+// Maintainer notes (not rendered):
+// **Some of the request may already have gone**, and the error says so
+// rather than leaving a caller to assume otherwise. How much is a fact
+// about the caller's own body, measured both ways in
+// `tests/request_trailers.rs`: a body that pends between its last data
+// frame and its trailers
 /// The request body carried trailer field(s) the request never declared,
 /// on a connection speaking HTTP/1.1.
 ///
 /// **Some of the request may already have gone**, and the error says so
 /// rather than leaving a caller to assume otherwise. How much is a fact
-/// about the caller's own body, measured both ways in
-/// `tests/request_trailers.rs`: a body that pends between its last data
+/// about the caller's own body: a body that pends between its last data
 /// frame and its trailers — the shape of any real streaming producer —
 /// has had the head and every preceding chunk flushed to the socket by
 /// then, while one that answers `Ready` throughout is drained inside a
