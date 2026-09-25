@@ -41,7 +41,7 @@ pub(crate) const ALPN_H3: &[u8] = b"h3";
 #[cfg(feature = "http3")]
 pub mod altsvc;
 #[cfg(feature = "http3")]
-pub mod caps;
+mod caps;
 mod established;
 #[cfg(feature = "http3")]
 mod failures;
@@ -115,6 +115,8 @@ mod upgrade;
 
 pub use connect::Conn;
 pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
+#[cfg(feature = "http3")]
+pub use error::Disagreement;
 pub use error::{
     BetweenBytesElapsed, EndedBeforeTheResponse, FirstByteTimedOut, Http2NotCompiledIn,
     MaxBufSizeTooSmall, NoVersionsLeft, NotSwitchingProtocols, PlaintextNeedsHttp1,
@@ -2000,11 +2002,18 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// # Errors
     ///
-    /// A boxed [`caps::Disagreement`] when this transport's own
-    /// capabilities and `quic`'s cannot be combined into one true value —
-    /// see [`caps::combine`] for which field is checked and reported.
+    /// A boxed [`Disagreement`] when this transport's own
+    /// capabilities and `quic`'s cannot be combined into one true value. A
+    /// `bool` both can be held to takes the weaker claim and never refuses;
+    /// `early_data` takes the stronger one. The fields with no value true of
+    /// both are checked in declaration order and the first is named:
+    /// `redirects`, `cancel_on_drop`, `connection_reuse`,
+    /// `response_decompression`, `tls_config`, `owns_cookie_jar`,
+    /// `owns_cache` and `forbidden_request_headers`. Of these, only
+    /// `connection_reuse` is reachable from the stacks this workspace ships,
+    /// through [`Native::without_pool`].
     #[cfg(feature = "http3")]
-    pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
+    pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<Disagreement>>
     where
         crate::http3::H3<R, T, D>: crate::http3::H3StagedConnect<Error = Error> + Debug,
         <crate::http3::H3<R, T, D> as hclient_core::transport::Transport>::Body:

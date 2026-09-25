@@ -47,7 +47,7 @@
 //! in `tests/capabilities.rs` counts the fields off the `Debug` output and
 //! fails when the count moves.
 
-pub use crate::error::Disagreement;
+use crate::error::Disagreement;
 
 use hclient_core::caps::Capabilities;
 use std::fmt::Debug;
@@ -61,22 +61,25 @@ use std::fmt::Debug;
 /// [`Capabilities`], so which one is reported is stable rather than
 /// incidental.
 ///
-/// Public because the decision is worth reading and worth testing directly:
-/// only one of the refusals below is reachable from a `Native` and an `H3`
-/// built in this workspace today (`connection_reuse`, via
-/// `Native::without_pool`), and a rule whose other arms can only be
-/// exercised by a member that does not exist yet would otherwise be
-/// unpinned.
+/// Crate-private: its one caller is `Native::http3`, which is the only way
+/// to build a transport over two stacks. It was public so that
+/// `tests/capabilities.rs` could reach the refusals no member here
+/// produces, and those are unit tests at the bottom of this file now: a
+/// test is a reason to reach a function, not a reason to promise it.
 ///
 /// # Errors
 ///
 /// [`Disagreement`] on the first field where `tcp` and `quic` report
 /// different claims that neither the weaker-claim-wins rule nor
-/// `early_data`'s stronger-claim-wins rule can reconcile — `redirects`,
-/// `cancel_on_drop`, `connection_reuse`, `response_decompression` and
-/// `tls_config` are checked in that order, and the error names whichever
-/// one disagrees first.
-pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, Disagreement> {
+/// `early_data`'s stronger-claim-wins rule can reconcile. `redirects`,
+/// `cancel_on_drop`, `connection_reuse`, `response_decompression`,
+/// `tls_config`, `owns_cookie_jar`, `owns_cache` and
+/// `forbidden_request_headers` are checked in that order, and the error
+/// names whichever one disagrees first.
+pub(crate) fn combine(
+    tcp: &Capabilities,
+    quic: &Capabilities,
+) -> Result<Capabilities, Disagreement> {
     // Built from `Capabilities::default()` and filled in field by field, for
     // the reason every backend here does the same: the struct is
     // `#[non_exhaustive]`, so a literal would not compile, and a field
@@ -229,5 +232,283 @@ fn same<V: PartialEq + Copy + Debug>(
         Ok(*tcp)
     } else {
         Err(Disagreement::new(field, tcp, quic))
+    }
+}
+
+/// The rule, driven with hand-assembled `Capabilities` rather than with
+/// real members: only one of its refusals (`connection_reuse`) is reachable
+/// from a `Native` and an `H3` built in this workspace, and
+/// `tests/capabilities.rs` pins that one and the measured composite. These
+/// were in that file once, which is why [`combine`] was public with no
+/// caller outside this crate.
+#[cfg(test)]
+mod tests {
+    use super::combine;
+    use hclient_core::caps::{Capabilities, RedirectSupport, TlsSupport};
+
+    // --- the rule itself, on capability sets no member here produces --------
+
+    /// A pair of `Capabilities` differing in exactly one field, built from
+    /// `none()` so that everything else agrees by construction.
+    fn pair(f: impl Fn(&mut Capabilities, bool)) -> (Capabilities, Capabilities) {
+        let (mut a, mut b) = (Capabilities::default(), Capabilities::default());
+        f(&mut a, false);
+        f(&mut b, true);
+        (a, b)
+    }
+
+    #[test]
+    fn a_disagreement_on_any_unordered_enum_is_refused_and_names_its_field() {
+        // `RedirectSupport` is the sharpest example: three variants, no
+        // order between them, and `None` is not a weaker
+        // `Transparent` — it is the stronger claim that redirects are
+        // impossible.
+        let (a, b) = pair(|c, on| {
+            c.redirects = if on {
+                RedirectSupport::Internal
+            } else {
+                RedirectSupport::Transparent
+            }
+        });
+        assert_eq!(combine(&a, &b).unwrap_err().field, "redirects");
+
+        // A duty owed on every dropped future, so a member that does not owe
+        // it falsifies the claim. This is the contrast that makes `early_data`
+        // different rather than inconsistent.
+        let (a, b) = pair(|c, on| c.cancel_on_drop = on);
+        assert_eq!(combine(&a, &b).unwrap_err().field, "cancel_on_drop");
+
+        // Getting this one wrong corrupts rather than degrades: `false` against
+        // a member that already decoded makes `Client` decode twice.
+        let (a, b) = pair(|c, on| c.response_decompression = on);
+        assert_eq!(combine(&a, &b).unwrap_err().field, "response_decompression");
+
+        let (a, b) = pair(|c, on| {
+            c.tls_config = if on {
+                TlsSupport::Full
+            } else {
+                TlsSupport::None
+            }
+        });
+        assert_eq!(combine(&a, &b).unwrap_err().field, "tls_config");
+    }
+
+    /// The two "the transport already does this itself" flags, which are
+    /// `bool`s and are still refusals.
+    ///
+    /// This is the pair that shows the rule is about what a value *says*
+    /// rather than about its type. `false` here does not ask the caller to
+    /// assume less — it tells `Client` to run a jar of its own, which would
+    /// double up against a member that keeps one; and `true` tells it not to,
+    /// which drops cookies for the member that does not. Neither is weaker.
+    #[test]
+    fn owning_a_jar_or_a_cache_is_a_refusal_rather_than_a_conjunction() {
+        let (a, b) = pair(|c, on| c.owns_cookie_jar = on);
+        assert_eq!(combine(&a, &b).unwrap_err().field, "owns_cookie_jar");
+
+        let (a, b) = pair(|c, on| c.owns_cache = on);
+        assert_eq!(combine(&a, &b).unwrap_err().field, "owns_cache");
+    }
+
+    /// `forbidden_request_headers` refuses because the type leaves nothing
+    /// else: the honest combination is the union of the two lists, and
+    /// `&'static [HeaderName]` has nowhere to put a slice computed at
+    /// construction, because `capabilities()` returns a reference and the
+    /// answer must therefore be stored.
+    #[test]
+    fn two_different_forbidden_header_lists_have_no_honest_union_to_store() {
+        let mut a = Capabilities::default();
+        let mut b = Capabilities::default();
+        a.forbidden_request_headers = &[http::header::COOKIE];
+        b.forbidden_request_headers = &[http::header::ACCEPT_ENCODING];
+        assert_eq!(
+            combine(&a, &b).unwrap_err().field,
+            "forbidden_request_headers"
+        );
+
+        // Equal lists are not a disagreement, including when they are equal
+        // and non-empty.
+        b.forbidden_request_headers = &[http::header::COOKIE];
+        assert!(combine(&a, &b).is_ok());
+    }
+
+    /// Every `bool` that is a claim about what a caller may assume takes the
+    /// conjunction, in both directions.
+    ///
+    /// Both directions, because a rule implemented as "take the first
+    /// member's value" passes a one-directional test on every field.
+    #[test]
+    fn a_capability_only_one_member_has_is_not_promised_by_the_pair() {
+        for field in [
+            "streaming_request_body",
+            "full_duplex",
+            "request_trailers",
+            "response_trailers",
+            "client_certs",
+            "proxy",
+            "informational_1xx",
+            "version_select",
+            "version_reported",
+            // `resolve` was absent from this list from the day the field
+            // arrived in v0.4 until the composite was rewritten, and the
+            // composite computed it from **`connect`** on both members the
+            // whole time. Both stacks answer `true` to both, so no run could
+            // tell the two expressions apart — a capability that would have
+            // started lying the moment one member stopped bounding one of
+            // them. A list of field names is exactly as complete as the last
+            // person to extend it.
+            "timeouts.resolve",
+            "timeouts.connect",
+            "timeouts.first_byte",
+            "timeouts.between_bytes",
+        ] {
+            for swapped in [false, true] {
+                let mut yes = Capabilities::default();
+                set(&mut yes, field, true);
+                let no = Capabilities::default();
+                let (a, b) = if swapped { (&no, &yes) } else { (&yes, &no) };
+                let c = combine(a, b).expect("a bool disagreement is never a refusal");
+                assert!(
+                    !get(&c, field),
+                    "`{field}` was promised by a pair in which only one member has it (swapped: {swapped})"
+                );
+            }
+            // …and both saying yes really does reach the composite, or the
+            // assertion above would be satisfied by a function returning
+            // `Capabilities::default()`.
+            let mut yes = Capabilities::default();
+            set(&mut yes, field, true);
+            let c = combine(&yes, &yes).unwrap();
+            assert!(
+                get(&c, field),
+                "`{field}` was lost although both members have it"
+            );
+        }
+    }
+
+    fn set(c: &mut Capabilities, field: &str, v: bool) {
+        match field {
+            "streaming_request_body" => c.streaming_request_body = v,
+            "full_duplex" => c.full_duplex = v,
+            "request_trailers" => c.request_trailers = v,
+            "response_trailers" => c.response_trailers = v,
+            "client_certs" => c.client_certs = v,
+            "proxy" => c.proxy = v,
+            "informational_1xx" => c.informational_1xx = v,
+            "version_select" => c.version_select = v,
+            "version_reported" => c.version_reported = v,
+            "timeouts.resolve" => c.timeouts.resolve = v,
+            "timeouts.connect" => c.timeouts.connect = v,
+            "timeouts.first_byte" => c.timeouts.first_byte = v,
+            "timeouts.between_bytes" => c.timeouts.between_bytes = v,
+            other => panic!("unknown field `{other}`"),
+        }
+    }
+
+    fn get(c: &Capabilities, field: &str) -> bool {
+        match field {
+            "streaming_request_body" => c.streaming_request_body,
+            "full_duplex" => c.full_duplex,
+            "request_trailers" => c.request_trailers,
+            "response_trailers" => c.response_trailers,
+            "client_certs" => c.client_certs,
+            "proxy" => c.proxy,
+            "informational_1xx" => c.informational_1xx,
+            "version_select" => c.version_select,
+            "version_reported" => c.version_reported,
+            "timeouts.resolve" => c.timeouts.resolve,
+            "timeouts.connect" => c.timeouts.connect,
+            "timeouts.first_byte" => c.timeouts.first_byte,
+            "timeouts.between_bytes" => c.timeouts.between_bytes,
+            other => panic!("unknown field `{other}`"),
+        }
+    }
+
+    /// `early_data` is the one field where either member having it is enough,
+    /// and it is asserted in both directions so that "take the QUIC member's
+    /// value" does not pass for it.
+    #[test]
+    fn either_member_offering_early_data_is_enough_for_the_pair_to_offer_it() {
+        let none = Capabilities::default();
+        let mut supported = Capabilities::default();
+        supported.early_data = true;
+
+        assert!(combine(&none, &supported).unwrap().early_data);
+        assert!(combine(&supported, &none).unwrap().early_data);
+        assert!(!combine(&none, &none).unwrap().early_data);
+    }
+
+    // --- the tripwire for a field nobody decided about ----------------------
+
+    /// `Capabilities` is `#[non_exhaustive]`, so no destructuring `let` outside
+    /// `hclient-core` can be made exhaustive and there is no compile error when
+    /// a field is added — it would simply arrive in [`combine`]'s output as
+    /// `Capabilities::default()`'s value, decided by nobody.
+    ///
+    /// So the guard is this test. It reads the field names off `Debug`, which
+    /// is derived and therefore lists every field, and fails when the set
+    /// moves. Whoever adds a field decides what a pair of stacks says about it
+    /// and adds it here.
+    #[test]
+    fn every_capability_field_is_accounted_for_and_a_new_one_fails_this_test() {
+        let printed = format!("{:?}", Capabilities::default());
+        assert_eq!(
+            top_level_fields(&printed),
+            [
+                "streaming_request_body",
+                "full_duplex",
+                "request_trailers",
+                "response_trailers",
+                "redirects",
+                "cancel_on_drop",
+                "connection_reuse",
+                "response_decompression",
+                "early_data",
+                "tls_config",
+                "client_certs",
+                "proxy",
+                "owns_cookie_jar",
+                "owns_cache",
+                "version_select",
+                "version_reported",
+                "timeouts",
+                "informational_1xx",
+                "forbidden_request_headers",
+            ],
+            "`Capabilities` has changed shape; `caps::combine` must say \
+             what a pair of stacks reports for the new field before this list moves"
+        );
+    }
+
+    /// The field names of a derived `Debug` for a struct, at the top level
+    /// only — nested `TimeoutSupport { .. }` contributes its own name and not
+    /// its members'.
+    fn top_level_fields(printed: &str) -> Vec<String> {
+        let inner = printed
+            .split_once('{')
+            .expect("a derived struct Debug has a brace")
+            .1;
+        let mut depth = 0i32;
+        let mut names = Vec::new();
+        let mut current = String::new();
+        for ch in inner.chars() {
+            match ch {
+                '{' | '[' | '(' => depth += 1,
+                '}' | ']' | ')' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        break;
+                    }
+                }
+                ',' if depth == 0 => current.clear(),
+                ':' if depth == 0 => {
+                    names.push(current.trim().to_owned());
+                    current.clear();
+                }
+                _ if depth == 0 => current.push(ch),
+                _ => {}
+            }
+        }
+        names
     }
 }

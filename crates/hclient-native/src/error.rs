@@ -33,9 +33,10 @@
 //! judgement, so it cannot drift: a type stays where it is if and only if
 //! it lives under `src/http2/` or `src/http3/`.
 //!
-//! No consumer's `use` line moves — each type is re-exported at the path
-//! it already had, including `crate::caps::Disagreement` and the two the
-//! `proxy` module publishes under its own name as well as at the root.
+//! No consumer's `use` line moved — each type was re-exported at the path
+//! it already had, including the two the `proxy` module publishes under
+//! its own name as well as at the root. `Disagreement` has since moved to
+//! the root with the others, when `caps` stopped being public.
 //! **Nothing became public that was not**, and the whole of what the move
 //! cost is one step of widening on what now crosses a file boundary:
 //! seven types that were private to their module are `pub(crate)`, with
@@ -110,8 +111,8 @@ pub(crate) struct InvalidHeConfig {
 
 /// Two stacks that cannot be given one honest answer for one field.
 ///
-/// Returned from [`crate::caps::combine`], and therefore from
-/// [`Selecting::new`](crate::Native::new) — the same shape as
+/// Returned from [`Native::http3`](crate::Native::http3), when the TCP and
+/// QUIC stacks are joined — the same shape as
 /// `UnsupportedCapability` at `ClientBuilder::build()`, and for the same
 /// reason: the error arrives where the mistake was made, rather than as a
 /// surprise on the first request that happens to take the other stack.
