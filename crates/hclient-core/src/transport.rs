@@ -32,7 +32,10 @@ use std::task::{Context, Poll};
 /// No `poll_ready`, no `&mut self`, no `Send`: Send-ness is inferred by
 /// auto-traits through the returned `impl Future`.
 pub trait Transport {
+    /// The response body this transport hands back.
     type Body: http_body::Body<Data = Bytes>;
+    /// This transport's own error type, converted to [`Error`] by
+    /// [`Self::to_error`].
     type Error: StdError + 'static;
 
     /// Send the request.

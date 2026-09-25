@@ -573,6 +573,8 @@ jobs:
         run: just no-crate-for-what-std-does
       - name: "every `#[allow(clippy::..)]` says why"
         run: just allows-name-their-reason
+      - name: "every publishable library asks for `missing_docs`"
+        run: just libraries-require-docs
       - name: every in-workspace requirement names its target's version
         run: just versions-agree
       - name: "every `run:` in this file is a call to a recipe that exists"

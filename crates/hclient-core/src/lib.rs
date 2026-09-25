@@ -64,6 +64,7 @@
 //! authority on which ones do, and every one of them is marked where it
 //! is written.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 //! # What growing this crate costs, measured rather than promised
 //!

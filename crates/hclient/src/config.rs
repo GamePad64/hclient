@@ -20,11 +20,21 @@ use hclient_proto::redirect::RedirectPolicy;
 /// for why it is an `Arc<dyn ..>` and not a type parameter.
 pub type SharedRetryPolicy = std::sync::Arc<dyn hclient_proto::retry::RetryPolicy + Send + Sync>; // send-bound-exception: amendment-C12
 
+/// A redirect policy as the client stores it — see [`SharedRetryPolicy`]
+/// for why it is an `Arc<dyn ..>` and not a type parameter.
 pub type SharedRedirectPolicy = std::sync::Arc<dyn RedirectPolicy + Send + Sync>; // send-bound-exception: amendment-C12
 
+/// A [`Client`](crate::Client)'s configuration: timeouts, headers, the
+/// redirect and retry policies, and the base URL.
+///
+/// Read back with [`Client::config`](crate::Client::config). Set through
+/// [`ClientBuilder`](crate::ClientBuilder)'s setters rather than
+/// constructed directly.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Config {
+    /// Default timeouts for every request from this client, before a
+    /// request's own [`RequestBuilder::timeouts`](crate::RequestBuilder::timeouts) is merged in.
     pub timeouts: Timeouts,
     /// A ceiling on the bytes a response body may yield, or `None` for
     /// none. Which bytes it counts is the outermost body wrapper's answer,
@@ -84,6 +94,8 @@ pub struct Config {
     /// client still follows up to `RedirectPolicy::default()`'s ten hops —
     /// this field's type changed, no behavior did.
     pub redirect: Option<SharedRedirectPolicy>,
+    /// The base every request's URI is resolved against, or `None` to
+    /// resolve none — see [`ClientBuilder::base_url`](crate::ClientBuilder::base_url).
     pub base_url: Option<http::Uri>,
     /// A bound on the **whole operation**, measured with the clock the
     /// client carries as its second type parameter.

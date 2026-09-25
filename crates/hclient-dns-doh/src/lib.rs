@@ -163,6 +163,7 @@
 //! re-measured rather than re-quoted. Both public operators answer the GET
 //! form (`tests/live.rs`), so nothing about the choice is forced.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod error;
 mod wire;

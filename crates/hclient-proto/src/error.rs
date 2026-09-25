@@ -39,14 +39,19 @@
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum HeadError {
+    /// The status line is not `HTTP/1.x SP <3 digits> [SP <reason>]`.
     #[error("the status line is not `HTTP/1.x SP <3 digits>`")]
     MalformedStatusLine,
+    /// The three digits on the status line are not a valid status code.
     #[error("`{0}` is not a status code")]
     BadStatus(Box<str>),
+    /// A header line is not `name: value`.
     #[error("a header line is not `name: value`")]
     MalformedHeader,
+    /// A header line's name is not a valid header field name.
     #[error("`{0}` is not a header name")]
     BadHeaderName(Box<str>),
+    /// A header line's value is not a valid header field value.
     #[error("the value of `{0}` is not a header value")]
     BadHeaderValue(Box<str>),
     /// A continuation line — RFC 9112 §5.2's obs-fold.

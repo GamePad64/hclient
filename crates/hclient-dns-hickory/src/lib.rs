@@ -33,6 +33,7 @@
 //! its own rather than the `RRset`'s minimum: a caller doing Happy Eyeballs
 //! or its own caching wants the value the server actually sent.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use futures_core::Stream;
 use futures_util::StreamExt;

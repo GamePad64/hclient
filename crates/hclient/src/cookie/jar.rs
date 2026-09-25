@@ -99,15 +99,20 @@ pub struct Cookie {
 }
 
 impl Cookie {
+    /// The cookie's name.
     pub fn name(&self) -> &str {
         &self.name
     }
+    /// The cookie's value.
     pub fn value(&self) -> &str {
         &self.value
     }
+    /// The domain this cookie is scoped to — lowercased, with no leading
+    /// dot.
     pub fn domain(&self) -> &str {
         &self.domain
     }
+    /// The path this cookie is scoped to, always absolute.
     pub fn path(&self) -> &str {
         &self.path
     }
@@ -121,12 +126,17 @@ impl Cookie {
     pub fn host_only(&self) -> bool {
         self.host_only
     }
+    /// Whether this cookie was set with `Expires` or `Max-Age`, rather than
+    /// being a session cookie.
     pub fn persistent(&self) -> bool {
         self.persistent
     }
+    /// Whether this cookie carries the `Secure` attribute — sent only over
+    /// a secure request.
     pub fn secure(&self) -> bool {
         self.secure
     }
+    /// Whether this cookie carries the `HttpOnly` attribute.
     pub fn http_only(&self) -> bool {
         self.http_only
     }
@@ -135,6 +145,8 @@ impl Cookie {
     pub fn same_site(&self) -> Option<SameSite> {
         self.same_site
     }
+    /// When this cookie was created, per RFC 6265bis §5.7 — kept across a
+    /// `Set-Cookie` that only refreshes it.
     pub fn creation(&self) -> SystemTime {
         self.creation
     }
@@ -296,6 +308,7 @@ impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
         self
     }
 
+    /// The bound this jar is currently applying.
     pub fn limits(&self) -> Limits {
         self.limits
     }
@@ -307,10 +320,12 @@ impl<P: PublicSuffixList, S: CookieStore> CookieJar<P, S> {
         self.store.len().await
     }
 
+    /// Whether the jar holds no cookies at all, expired ones included.
     pub async fn is_empty(&self) -> bool {
         self.len().await == 0
     }
 
+    /// Drop every cookie the jar holds.
     pub async fn clear(&self) {
         self.store.clear().await;
     }

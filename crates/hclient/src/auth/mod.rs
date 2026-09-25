@@ -141,6 +141,7 @@ pub struct Digest {
 
 #[cfg(feature = "digest-auth")]
 impl Digest {
+    /// Builds a Digest [`Auth`] from a username and password.
     #[must_use]
     pub fn new(user: impl Into<String>, password: impl Into<String>) -> Self {
         Self {

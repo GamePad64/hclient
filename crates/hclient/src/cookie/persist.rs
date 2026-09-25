@@ -181,7 +181,9 @@ use super::suffix::PublicSuffixList;
 /// first by §5.3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CookieRecord {
+    /// The cookie's name.
     pub name: String,
+    /// The cookie's value.
     pub value: String,
     /// Lowercased and without the leading `.` some servers send;
     /// [`CookieJar::restore`] applies both rather than refusing, because
@@ -201,8 +203,11 @@ pub struct CookieRecord {
     /// Part of §5.7's replacement key, so it is not decoration: without
     /// it a reload can collapse two cookies into one.
     pub host_only: bool,
+    /// Whether this cookie carries the `Secure` attribute.
     pub secure: bool,
+    /// Whether this cookie carries the `HttpOnly` attribute.
     pub http_only: bool,
+    /// The `SameSite` attribute as sent, if any — see [`SameSite`].
     pub same_site: Option<SameSite>,
 }
 

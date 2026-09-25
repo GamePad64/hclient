@@ -363,6 +363,7 @@ pub enum Event<'a> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Informational<'a> {
+    /// The connection this `1xx` arrived on.
     pub id: ConnectionId,
     /// Which request. See [`RequestId`] and [`RequestId::UNIDENTIFIED`].
     pub request: RequestId,
@@ -370,6 +371,7 @@ pub struct Informational<'a> {
     /// `103`, so it is not narrowed to an enum: a status this crate has
     /// never heard of is still a status the server sent.
     pub status: http::StatusCode,
+    /// The headers carried on this interim response.
     pub headers: &'a http::HeaderMap,
 }
 
@@ -446,6 +448,7 @@ pub struct Progress<'a> {
     /// share one multiplexed connection, so the id alone cannot say whose
     /// octets these are.
     pub uri: &'a http::Uri,
+    /// Which way the octets went. See [`Direction`].
     pub direction: Direction,
     /// Octets moved in this direction of this exchange **so far** —
     /// cumulative, monotonic, never a delta.
@@ -700,6 +703,8 @@ impl Attempt {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Connected<'a> {
+    /// The id minted for this connection, so a later [`Reused`], [`Head`]
+    /// or [`Closed`] event can be matched back to it.
     pub id: ConnectionId,
     /// The request that paid for this connection. See [`RequestId`].
     ///
@@ -731,6 +736,8 @@ pub struct Connected<'a> {
     pub remote: Option<SocketAddr>,
     /// What will be spoken on it, as negotiated — not as offered.
     pub version: http::Version,
+    /// How long each phase of establishing this connection took. See
+    /// [`ConnectTiming`].
     pub timing: ConnectTiming,
     /// The TLS version, as the backend reports it: `"TLSv1.3"`, dotted,
     /// which is the spelling curl prints and OpenSSL uses.
@@ -962,6 +969,7 @@ pub struct Reused<'a> {
     /// **not** the request the [`Connected`] with the same [`Self::id`]
     /// names, which is the point of carrying both.
     pub request: RequestId,
+    /// The URI whose request took this connection out of the pool.
     pub uri: &'a http::Uri,
     /// What is spoken on it. A pooled connection is keyed on its
     /// protocol, so this is what the connection negotiated when it was
@@ -973,10 +981,14 @@ pub struct Reused<'a> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Head<'a> {
+    /// The connection this head arrived on, or
+    /// [`ConnectionId::UNWATCHED`] where the transport owns none.
     pub id: ConnectionId,
     /// Which request. See [`RequestId`] and [`RequestId::UNIDENTIFIED`].
     pub request: RequestId,
+    /// The URI this response answers.
     pub uri: &'a http::Uri,
+    /// The response's status code.
     pub status: http::StatusCode,
     /// What was spoken — or `None` where the transport could not observe
     /// it.
@@ -1056,7 +1068,10 @@ pub struct Head<'a> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Closed<'a> {
+    /// The connection that ended — the same id a [`Connected`] or
+    /// [`Reused`] reported earlier.
     pub id: ConnectionId,
+    /// Why it ended. See [`CloseReason`].
     pub reason: CloseReason<'a>,
 }
 
@@ -1238,6 +1253,7 @@ impl<'a> Connected<'a> {
         self
     }
 
+    /// How long each phase of establishing this connection took.
     #[must_use]
     pub fn timing(mut self, timing: ConnectTiming) -> Self {
         self.timing = timing;

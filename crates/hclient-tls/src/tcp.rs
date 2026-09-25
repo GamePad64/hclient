@@ -334,10 +334,8 @@ pub trait TlsConnect: TlsIdentity {
     where
         S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin;
 
-    /// Performs a TLS handshake over an already established `io` (a
-    /// runtime's own `hclient_rt::TcpConnect::Stream`, handed over as it
-    /// is — `connect` itself knows nothing about the transport) and returns the encrypted stream along with whatever
-    /// negotiated parameters the implementation can honestly report.
+    /// The future [`connect`](Self::connect) hands back.
+    ///
     /// **An associated type, not an RPITIT**, for the reason
     /// `hclient_rt::TcpConnect::Connecting` gives at length: a consumer
     /// that must prove its own future `Send` has to be able to *name*
@@ -364,6 +362,43 @@ pub trait TlsConnect: TlsIdentity {
         Self: 'a,
         S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;
 
+    /// Perform a TLS client handshake over `io` and hand back the encrypted
+    /// stream with what was negotiated.
+    ///
+    /// Performs a TLS handshake over an already established `io` (a
+    /// runtime's own `hclient_rt::TcpConnect::Stream`, handed over as it
+    /// is — `connect` itself knows nothing about the transport) and returns
+    /// the encrypted stream along with whatever negotiated parameters the
+    /// implementation can honestly report.
+    ///
+    /// `io` is an already connected byte stream — usually a runtime's
+    /// [`hclient_rt::TcpConnect::Stream`], handed over as it is; this method
+    /// knows nothing about how it was opened. Work that needs no I/O
+    /// (building the session, validating `req`) may happen here, before the
+    /// future is returned; everything that touches `io` happens when it is
+    /// polled.
+    ///
+    /// What `req` asks for must be honoured or refused, never approximated:
+    ///
+    /// - [`server_name`](TlsRequest::server_name) is sent in SNI and the
+    ///   certificate is verified against it.
+    /// - [`alpn`](TlsRequest::alpn) is offered as given; the protocol the
+    ///   server chose goes into [`TlsInfo`], if this backend can read it
+    ///   back (see [`reports_alpn`](Self::reports_alpn)).
+    /// - A non-`None` [`ech`](TlsRequest::ech) the backend cannot apply is
+    ///   an error, because connecting anyway sends the name in the clear.
+    /// - A non-`None` [`identity`](TlsRequest::identity) must present that
+    ///   identity or fail — never fall back to the default one.
+    ///
+    /// The returned [`TlsInfo`] reports only what the backend really
+    /// observed; a field it cannot read stays `None`.
+    ///
+    /// # Errors
+    ///
+    /// The future resolves to an [`Error`] — conventionally of kind
+    /// [`ErrorKind::Tls`] — when the handshake fails (certificate
+    /// verification, protocol alert, I/O on `io`) or when `req` asks for
+    /// something this backend cannot do.
     fn connect<'a, S>(&'a self, io: S, req: TlsRequest<'a>) -> Self::Handshake<'a, S>
     where
         S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'a;

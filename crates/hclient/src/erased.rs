@@ -89,6 +89,7 @@ pub struct BoxSuffixList(
 
 #[cfg(feature = "cookies")]
 impl BoxSuffixList {
+    /// Erases `list`'s type behind this wrapper.
     pub fn new<P>(list: P) -> Self
     where
         P: crate::cookie::PublicSuffixList + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -209,6 +210,7 @@ pub struct BoxCacheStore(
 
 #[cfg(feature = "cache")]
 impl BoxCacheStore {
+    /// Erases `store`'s type behind this wrapper.
     pub fn new<S>(store: S) -> Self
     where
         S: crate::cache::CacheStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -357,6 +359,7 @@ pub struct BoxCookieStore(
 
 #[cfg(feature = "cookies")]
 impl BoxCookieStore {
+    /// Erases `store`'s type behind this wrapper.
     pub fn new<S>(store: S) -> Self
     where
         S: crate::cookie::CookieStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -467,6 +470,7 @@ pub struct BoxHstsStore(
 
 #[cfg(feature = "hsts")]
 impl BoxHstsStore {
+    /// Erases `store`'s type behind this wrapper.
     pub fn new<S>(store: S) -> Self
     where
         S: crate::hsts::HstsStore + Send + Sync + 'static, // send-bound-exception: amendment-C12

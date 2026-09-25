@@ -1,3 +1,10 @@
+//! Server-Sent Events: a one-shot [`SseStream`], and a
+//! [`ReconnectingSseStream`] that retries a dropped connection.
+//!
+//! [`Client::sse`](crate::Client::sse) starts a request through
+//! [`SseBuilder`]; [`SseStream::new`] wraps a response you already have,
+//! with no [`Client`] involved at all.
+
 use crate::client::Client;
 use crate::error::{ReconnectExhausted, SseRejected};
 use std::error::Error as StdError;
@@ -160,6 +167,7 @@ where
         })
     }
 
+    /// The last event ID seen so far, or `None` if none has arrived.
     pub fn last_event_id(&self) -> Option<&str> {
         self.decoder.last_event_id()
     }
@@ -280,6 +288,8 @@ where
 /// on `ReconnectingSseStream` already caught once elsewhere.
 #[derive(Debug, Clone, Copy)]
 pub struct SseOptions {
+    /// The largest single event this stream will buffer, in bytes, before
+    /// failing with [`ErrorKind::Decode`].
     pub max_event_size: usize,
     /// The base retry policy, in the absence of a server-sent `retry:`
     /// field. See [`ReconnectingSseStream`]'s doc comment on `next` for how
@@ -363,6 +373,7 @@ impl<'a> SseBuilder<'a> {
         self
     }
 
+    /// Replaces this builder's [`SseOptions`].
     #[must_use]
     pub fn options(mut self, o: SseOptions) -> Self {
         self.options = o;
@@ -461,6 +472,8 @@ impl Debug for ReconnectingSseBuilder<'_> {
     }
 }
 
+/// Builds a [`ReconnectingSseStream`], with the clock supplied by
+/// [`SseBuilder::with_timer`].
 pub struct ReconnectingSseBuilder<'a> {
     builder: SseBuilder<'a>,
     timer: Arc<hclient_core::timer::SharedTimer>,

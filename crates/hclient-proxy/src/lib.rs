@@ -70,6 +70,7 @@
 // deleted wholesale, and `scripts/unsafe-code-policy.sh` is what keeps a
 // second site from appearing beside it unannounced.
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 use bytes::{Bytes, BytesMut};
 

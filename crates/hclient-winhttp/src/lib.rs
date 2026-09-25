@@ -174,6 +174,7 @@
 //! handle ever gets — is stated in `sys.rs` where the code depends on it,
 //! so the next person with a Windows box knows exactly what to check.
 #![cfg(windows)]
+#![warn(missing_docs)]
 
 mod body;
 mod error;

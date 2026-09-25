@@ -292,6 +292,7 @@
 // marker to `src/icu.rs` alone, so an `unsafe` block added to this file
 // fails the build exactly as it would in any other crate.
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::borrow::Cow;
 

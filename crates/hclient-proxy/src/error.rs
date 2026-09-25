@@ -53,12 +53,16 @@ pub struct ProxyRefused(pub http::StatusCode);
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConnectError {
+    /// The bytes the proxy sent back do not parse as an HTTP response head
+    /// at all.
     #[error("the proxy's answer to CONNECT is not an HTTP response head: {0}")]
     Malformed(#[from] head::HeadError),
     /// A head that never ends is a proxy holding the connection open at
     /// our expense, and the bound is ours because HTTP states none.
     #[error("the proxy's response head passed {0} bytes without ending")]
     HeadTooLong(usize),
+    /// The origin's host and port cannot be written as a `CONNECT`
+    /// authority — the host, and the port.
     #[error("`{0}:{1}` cannot be written as an authority")]
     BadAuthority(Box<str>, u16),
 }
@@ -95,6 +99,9 @@ pub enum Socks4HandshakeError {
 #[error("the SOCKS4 proxy refused with CD={cd} ({})", socks4_reply(*cd))]
 #[non_exhaustive]
 pub struct Socks4Refused {
+    /// The `CD` byte the proxy sent back. `90` is a grant; `91`, `92` and
+    /// `93` are the protocol's three refusal reasons, and any other value
+    /// is unassigned.
     pub cd: u8,
 }
 
@@ -114,6 +121,9 @@ fn socks4_reply(cd: u8) -> &'static str {
 #[error("the SOCKS5 proxy refused with REP={rep:#04x} ({})", socks5_reply(*rep))]
 #[non_exhaustive]
 pub struct Socks5Refused {
+    /// The `REP` byte the proxy sent back, naming why the request was
+    /// refused. RFC 1928 §6 defines eight failure reasons (`0x01`–`0x08`);
+    /// any other value is unassigned.
     pub rep: u8,
 }
 
@@ -136,16 +146,27 @@ fn socks5_reply(rep: u8) -> &'static str {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Socks5HandshakeError {
+    /// RFC 1928 §3: the method-selection reply named `0xFF`, meaning the
+    /// proxy accepted none of the methods this client offered.
     #[error("the SOCKS5 proxy accepted none of the authentication methods offered")]
     NoAcceptableMethods,
+    /// The proxy's method-selection reply names a method this client never
+    /// offered.
     #[error("the SOCKS5 proxy chose method {0:#04x}, which was not offered")]
     UnofferedMethod(u8),
+    /// The username/password sub-negotiation (RFC 1929) failed: the proxy
+    /// did not accept the credentials.
     #[error("the SOCKS5 proxy rejected the username and password")]
     BadCredentials,
+    /// The proxy's reply carries a protocol version other than `5`.
     #[error("the SOCKS5 proxy answered version {0} rather than 5")]
     BadVersion(u8),
+    /// A destination host name is longer than the 255 bytes SOCKS5's
+    /// length-prefixed `DOMAINNAME` field can carry.
     #[error("a SOCKS5 host name must be at most 255 bytes, this one is {0}")]
     HostTooLong(usize),
+    /// A username or password is longer than the 255 bytes RFC 1929's
+    /// length-prefixed fields can carry.
     #[error("a SOCKS5 username and password must each be at most 255 bytes")]
     CredentialTooLong,
 }
@@ -169,8 +190,11 @@ pub enum SystemProxyRefused {
          a transport holds one proxy protocol, so build that one with `Proxy::new(..)`"
     )]
     MixedProtocols {
+        /// The protocol the system names for this proxy.
         kind: ProxyKind,
+        /// The proxy's host, as the system reported it.
         host: Box<str>,
+        /// The proxy's port, as the system reported it.
         port: u16,
     },
     /// A bypass pattern this crate's matcher cannot express — a subnet,
@@ -206,7 +230,12 @@ pub enum SystemProxyRefused {
     /// Installing the proxy without it would authenticate against
     /// nothing and collect a `407` the caller could not explain.
     #[error("the credential for the proxy at {host}:{port} cannot be sent as a header")]
-    UnusableCredential { host: Box<str>, port: u16 },
+    UnusableCredential {
+        /// The proxy's host, as the system reported it.
+        host: Box<str>,
+        /// The proxy's port, as the system reported it.
+        port: u16,
+    },
 }
 
 #[cfg(feature = "system")]

@@ -14,6 +14,8 @@ pub(crate) struct BodyFailure(pub(crate) String);
 #[derive(Debug, thiserror::Error)]
 #[error("this app transport serves `{expected}`; the request named `{actual}`")]
 pub struct WrongAuthority {
+    /// The authority this transport was constructed to serve.
     pub expected: String,
+    /// The authority the refused request actually named.
     pub actual: String,
 }

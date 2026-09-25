@@ -69,10 +69,20 @@ pub enum NotStored {
     /// Larger than [`Limits::max_body_bytes`](super::Limits::max_body_bytes) — by the `Content-Length`
     /// the head declared, or by the bytes that actually arrived.
     #[error("the body is {bytes} bytes, over the {limit}-byte limit")]
-    TooLarge { bytes: u64, limit: u64 },
+    TooLarge {
+        /// The body's length, or the `Content-Length` the head declared.
+        bytes: u64,
+        /// The [`Limits::max_body_bytes`](super::Limits::max_body_bytes) that was exceeded.
+        limit: u64,
+    },
     /// The body that arrived is not the length the head promised. A
     /// truncated entry served later is indistinguishable from a complete
     /// one, which is why this is a refusal and not a repair.
     #[error("the body is {bytes} bytes where Content-Length said {declared}")]
-    LengthMismatch { bytes: u64, declared: u64 },
+    LengthMismatch {
+        /// The number of bytes that actually arrived.
+        bytes: u64,
+        /// The length the head's `Content-Length` declared.
+        declared: u64,
+    },
 }

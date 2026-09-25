@@ -32,5 +32,9 @@ pub enum SvcbRecordError {
     /// because it is a statement about the record as a whole and not about
     /// any one parameter's encoding.
     #[error("SvcParamKey {key} is listed as mandatory but is not present in the record")]
-    MandatoryKeyAbsent { key: u16 },
+    MandatoryKeyAbsent {
+        /// The `SvcParamKey` number (RFC 9460 §14.3.2) that `mandatory`
+        /// names and the record lacks.
+        key: u16,
+    },
 }

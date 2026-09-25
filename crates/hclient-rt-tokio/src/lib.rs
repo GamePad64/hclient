@@ -27,6 +27,7 @@
 //! # }
 //! ```
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 // docs.rs builds with every feature and passes `--cfg docsrs`, so an item
 // behind a feature or a platform is shown with a badge naming it rather
 // than looking unconditional.

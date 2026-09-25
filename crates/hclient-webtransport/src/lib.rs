@@ -161,6 +161,7 @@
 //!   the arm that keeps it is guarded by `enable_webtransport`, which
 //!   `h3` 0.0.8's **client** builder has no setter for.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use bytes::{Buf, Bytes};
 use h3::ConnectionState as _;

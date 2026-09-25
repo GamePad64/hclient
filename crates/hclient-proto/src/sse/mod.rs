@@ -1,3 +1,11 @@
+//! WHATWG's `EventSource` decoder, sans-io.
+//!
+//! [`SseDecoder`] turns bytes from a `text/event-stream` response body into
+//! [`SseEvent`]s. It holds no socket and no clock: a caller pushes bytes as
+//! they arrive and drains whatever events that made ready, and reconnection,
+//! waiting out a `retry:` interval and honouring `Last-Event-ID` are left to
+//! whoever owns the connection.
+
 mod decode;
 // `pub(crate)` rather than private: `crate::lines` is the public door
 // onto `LineSplitter`, and a sibling module cannot reach into a private

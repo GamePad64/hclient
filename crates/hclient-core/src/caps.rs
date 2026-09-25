@@ -199,8 +199,11 @@ pub struct TimeoutSupport {
     /// every ambient backend: `wasi:http` and `fetch` do the resolving
     /// inside the host, so there is no moment for a client to bound.
     pub resolve: bool,
+    /// Whether [`crate::req::Timeouts::connect`] is enforced.
     pub connect: bool,
+    /// Whether [`crate::req::Timeouts::first_byte`] is enforced.
     pub first_byte: bool,
+    /// Whether [`crate::req::Timeouts::between_bytes`] is enforced.
     pub between_bytes: bool,
 }
 
@@ -560,8 +563,29 @@ pub struct Capabilities {
     /// transport reporting `false`, so the absence is a fact about the
     /// backend and never a field somebody forgot to fill in.
     pub version_reported: bool,
+    /// Which of [`crate::req::Timeouts`]' bounds this transport enforces.
+    ///
+    /// **A gate**, field by field: a bound the caller set and this does not
+    /// cover is refused at `build()` naming that bound, rather than being
+    /// silently ignored.
     pub timeouts: TimeoutSupport,
+    /// Whether this transport emits
+    /// [`Event::Informational`](crate::hooks::Event::Informational) for a
+    /// `1xx` response ahead of the final one.
+    ///
+    /// **A gate in the other direction**: no `Client` setting turns this
+    /// on, and what it guards is a claim rather than a request — a
+    /// transport that installs a hook but does not actually emit `1xx`
+    /// events must report `false`, since claiming `true` while reporting
+    /// nothing would be a capability that lies.
     pub informational_1xx: bool,
+    /// Header names this transport sets itself and refuses to let a caller
+    /// override on a request — e.g. a browser backend that forbids
+    /// `Cookie` or `Accept-Encoding` because it manages them internally.
+    ///
+    /// **A gate.** Empty by default, and a caller setting a header this
+    /// list names is refused rather than having the header silently
+    /// dropped or overridden.
     pub forbidden_request_headers: &'static [HeaderName],
 }
 

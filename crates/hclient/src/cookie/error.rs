@@ -87,18 +87,29 @@ pub enum Rejected {
     /// The sibling-domain case (`Domain=example.com` from
     /// `notexample.com`) lands here.
     #[error("Domain={domain} does not match request host {host}")]
-    DomainMismatch { domain: String, host: String },
+    DomainMismatch {
+        /// The `Domain` attribute's value.
+        domain: String,
+        /// The request's host.
+        host: String,
+    },
     /// §5.7: the `Domain` attribute is a public suffix and is not the
     /// request host itself — `Domain=co.uk`, which would put one cookie on
     /// every registrant under `.uk`.
     #[error("Domain={domain} is a public suffix")]
-    DomainIsPublicSuffix { domain: String },
+    DomainIsPublicSuffix {
+        /// The `Domain` attribute's value.
+        domain: String,
+    },
     /// The same refusal, from a build with no list to consult: this crate
     /// without the `public-suffix` feature, or a jar built on
     /// [`NoList`](super::NoList). Every `Domain` attribute is refused
     /// there, so the cause is the build rather than the cookie.
     #[error("Domain={domain} cannot be checked: this build has no public suffix list")]
-    NoPublicSuffixList { domain: String },
+    NoPublicSuffixList {
+        /// The `Domain` attribute's value.
+        domain: String,
+    },
     /// §5.7: a `Secure` cookie offered over a scheme that is not secure.
     #[error("a Secure cookie was offered over a non-secure request")]
     SecureOverInsecure,
@@ -112,7 +123,12 @@ pub enum Rejected {
     HostPrefix,
     /// [`Limits::max_name_value_bytes`](super::Limits::max_name_value_bytes).
     #[error("name and value are {bytes} bytes, over the {limit}-byte limit")]
-    TooLarge { bytes: usize, limit: usize },
+    TooLarge {
+        /// The combined size of the name and value, in bytes.
+        bytes: usize,
+        /// The [`Limits::max_name_value_bytes`](super::Limits::max_name_value_bytes) that was exceeded.
+        limit: usize,
+    },
     /// [`restore`](super::CookieJar::restore) only: a record whose
     /// `domain` is empty, or is nothing but the leading `.` §5.2.3 strips.
     /// A `Set-Cookie` cannot reach this — an empty `Domain` attribute is
@@ -124,7 +140,10 @@ pub enum Rejected {
     /// makes such a `Path` unspecified and the default path stands in,
     /// and there is no request here for a default to be derived from.
     #[error("Path={path} is not absolute")]
-    RelativePath { path: String },
+    RelativePath {
+        /// The record's `path`.
+        path: String,
+    },
     /// [`restore`](super::CookieJar::restore) only: a record scoped to an
     /// IP literal that is **not** host-only.
     ///
@@ -136,5 +155,8 @@ pub enum Rejected {
     /// literal, and `evil.1.2.3.4` is an ordinary name. So the pair is a
     /// cookie for every name ending in `.1.2.3.4`.
     #[error("Domain={domain} is an IP literal, so the cookie must be host-only")]
-    IpDomainNotHostOnly { domain: String },
+    IpDomainNotHostOnly {
+        /// The record's `domain`, an IP literal.
+        domain: String,
+    },
 }

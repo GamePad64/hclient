@@ -77,6 +77,7 @@
 //! the duration they want is the one this crate already fixes: to the end
 //! of the body.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod attrs;
 mod body;

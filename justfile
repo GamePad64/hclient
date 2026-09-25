@@ -1661,7 +1661,7 @@ fuzz-smoke:
 # ── invariants no build can express ─────────────────────────────────────
 
 # the text scans, together
-invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs no-crate-for-what-std-does allows-name-their-reason versions-agree ci-mirrors-just
+invariants: ast-grep no-send-or-sync unsafe-policy errors-in-error-rs no-crate-for-what-std-does allows-name-their-reason libraries-require-docs versions-agree ci-mirrors-just
 
 # the ast-grep rules, their own corpus tests, and a fail-closed glob check
 ast-grep:
@@ -1692,6 +1692,11 @@ no-crate-for-what-std-does:
 # arrived with, held by a check rather than by habit
 allows-name-their-reason:
     ./scripts/every-allow-names-its-reason.sh
+
+# every publishable library asks for `missing_docs`, which is what finds a
+# public item whose doc was left on a neighbour
+libraries-require-docs:
+    ./scripts/every-library-requires-docs.sh
 
 # every in-workspace requirement names the workspace version
 versions-agree:

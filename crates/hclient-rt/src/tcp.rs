@@ -37,6 +37,18 @@ use std::time::Duration;
 /// So the opinion lives where the protocol is: `hclient_native::Native::new`
 /// asks for `nodelay`, and asks only where the runtime declares it applies
 /// it.
+///
+/// # Building one
+///
+/// The struct is `#[non_exhaustive]`, so from another crate it is built
+/// with the chained setters rather than a literal —
+/// `TcpOpts::default().nodelay(true)` — and a new option can be added
+/// without breaking anyone. `TcpOpts::default().nodelay(true)` is one
+/// line at the call site and costs nothing when an eleventh option arrives.
+///
+/// The fields stay `pub` because a runtime **reads** them —
+/// `#[non_exhaustive]` blocks construction and matching from outside,
+/// not field access.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct TcpOpts {
@@ -94,30 +106,47 @@ pub struct TcpOpts {
     /// is the only one of the two that a build with no `Client` above it
     /// can reach.
     pub user_timeout: Option<Duration>,
+    /// The source address to bind before connecting; `None` lets the
+    /// kernel choose.
+    ///
+    /// Only the address is bound — the port is always ephemeral. It must
+    /// be of the same family as the address being connected to.
     pub local_address: Option<IpAddr>,
+    /// `SO_SNDBUF` — the kernel's send buffer, in bytes; `None` keeps the
+    /// operating system's default.
+    ///
+    /// The kernel may round or double the value (Linux doubles it for
+    /// bookkeeping), so what reads back need not equal what was set.
     pub send_buffer_size: Option<usize>,
+    /// `SO_RCVBUF` — the kernel's receive buffer, in bytes; `None` keeps
+    /// the operating system's default.
+    ///
+    /// The same rounding as [`send_buffer_size`](Self::send_buffer_size)
+    /// applies.
     pub recv_buffer_size: Option<usize>,
+    /// `SO_REUSEADDR` — allow binding a local address still held by a
+    /// connection in `TIME_WAIT`.
+    ///
+    /// Only matters together with [`local_address`](Self::local_address);
+    /// `false` leaves the option unset.
     pub reuse_address: bool,
 }
 
 impl TcpOpts {
-    /// Chained setters, and they exist so this struct can grow.
-    ///
-    /// It is `#[non_exhaustive]`, so `TcpOpts { nodelay: true,
-    /// ..Default::default() }` does not compile from another crate — and
-    /// that expression was the whole argument this type's own doc used to
-    /// make **against** the attribute. Setters answer the argument rather
-    /// than losing to it: `TcpOpts::default().nodelay(true)` is one line
-    /// at the call site and costs nothing when an eleventh option arrives.
-    ///
-    /// The measurement behind that: this struct went from six fields to
-    /// ten in thirty-odd commits, and `TCP_FASTOPEN`, DSCP and `SO_MARK`
-    /// are all still unwritten. Each of those was a major version before
-    /// the attribute and is additive after it.
-    ///
-    /// The fields stay `pub` because a runtime **reads** them —
-    /// `#[non_exhaustive]` blocks construction and matching from outside,
-    /// not field access.
+    // Maintainer notes (not rendered):
+    // Chained setters, and they exist so this struct can grow.
+    //
+    // It is `#[non_exhaustive]`, so `TcpOpts { nodelay: true,
+    // ..Default::default() }` does not compile from another crate — and
+    // that expression was the whole argument this type's own doc used to
+    // make **against** the attribute. Setters answer the argument rather
+    // than losing to it: `TcpOpts::default().nodelay(true)` is one line
+    // at the call site and costs nothing when an eleventh option arrives.
+    //
+    // The measurement behind that: this struct went from six fields to
+    // ten in thirty-odd commits, and `TCP_FASTOPEN`, DSCP and `SO_MARK`
+    // are all still unwritten. Each of those was a major version before
+    // the attribute and is additive after it.
     /// Set `TCP_NODELAY`.
     #[must_use]
     pub fn nodelay(mut self, value: bool) -> Self {
@@ -189,11 +218,38 @@ impl TcpOpts {
     }
 }
 
-/// Which of [`TcpOpts`]' six fields a runtime can actually apply.
+/// Which of [`TcpOpts`]' fields a runtime can actually apply.
 ///
 /// One `bool` per field of `TcpOpts`, not a count and not a bitflags crate:
 /// the error a caller gets has to name the option it asked for, and a
 /// field-per-field mirror is the only shape that can.
+///
+/// # Building one
+///
+/// Chained `const` setters, so a runtime states its support from
+/// [`Self::NONE`] and this type can grow.
+///
+/// `const` rather than plain, because the value a runtime writes is an
+/// associated **constant** — `TcpConnect::TCP_SUPPORT` — computed with
+/// `cfg!`. So the ordinary shape is
+/// `TcpSupport::NONE.nodelay(true).bind_device(cfg!(target_os = "linux"))`,
+/// which reads as the claim it is.
+///
+/// ```
+/// use hclient_rt::TcpSupport;
+///
+/// const SUPPORT: TcpSupport = TcpSupport::NONE
+///     .nodelay(true)
+///     .keepalive(true)
+///     .bind_device(cfg!(target_os = "linux"));
+/// assert!(SUPPORT.nodelay);
+/// assert!(!SUPPORT.reuse_address);
+/// ```
+///
+/// Starting from `NONE` rather than from a literal is also the
+/// understating direction, which this seam's own rule requires: an
+/// understated claim costs a caller a named `Unsupported`, an
+/// overstated one costs them an option silently not applied.
 // Deliberately many bools, one per `TcpOpts` field — see this type's own
 // doc above and AGENTS.md "A capability that answers yes or no is a
 // `bool`".
@@ -204,9 +260,17 @@ impl TcpOpts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TcpSupport {
+    /// The runtime applies [`TcpOpts::nodelay`](TcpOpts#structfield.nodelay).
     pub nodelay: bool,
+    /// The runtime applies [`TcpOpts::keepalive`](TcpOpts#structfield.keepalive),
+    /// the idle time before the first probe.
     pub keepalive: bool,
+    /// The runtime applies
+    /// [`TcpOpts::keepalive_interval`](TcpOpts#structfield.keepalive_interval).
     pub keepalive_interval: bool,
+    /// The runtime applies
+    /// [`TcpOpts::keepalive_retries`](TcpOpts#structfield.keepalive_retries),
+    /// which some targets (OpenBSD, Redox, Solaris) cannot set.
     pub keepalive_retries: bool,
     /// `SO_BINDTODEVICE`, which exists on Linux, Android and Fuchsia and
     /// nowhere else — so a runtime that sets this **must** decide it per
@@ -215,9 +279,17 @@ pub struct TcpSupport {
     /// `TCP_USER_TIMEOUT`, Linux/Android/Fuchsia/Cygwin — the same
     /// per-target rule as [`bind_device`](Self::bind_device).
     pub user_timeout: bool,
+    /// The runtime applies
+    /// [`TcpOpts::local_address`](TcpOpts#structfield.local_address).
     pub local_address: bool,
+    /// The runtime applies
+    /// [`TcpOpts::send_buffer_size`](TcpOpts#structfield.send_buffer_size).
     pub send_buffer_size: bool,
+    /// The runtime applies
+    /// [`TcpOpts::recv_buffer_size`](TcpOpts#structfield.recv_buffer_size).
     pub recv_buffer_size: bool,
+    /// The runtime applies
+    /// [`TcpOpts::reuse_address`](TcpOpts#structfield.reuse_address).
     pub reuse_address: bool,
 }
 
@@ -237,19 +309,6 @@ impl TcpSupport {
         reuse_address: false,
     };
 
-    /// Chained `const` setters, so a runtime states its support from
-    /// [`Self::NONE`] and this type can grow.
-    ///
-    /// `const` rather than plain, because the value a runtime writes is an
-    /// associated **constant** — `TcpConnect::TCP_SUPPORT` — computed with
-    /// `cfg!`. So the ordinary shape is
-    /// `TcpSupport::NONE.nodelay(true).bind_device(cfg!(target_os = "linux"))`,
-    /// which reads as the claim it is.
-    ///
-    /// Starting from `NONE` rather than from a literal is also the
-    /// understating direction, which this seam's own rule requires: an
-    /// understated claim costs a caller a named `Unsupported`, an
-    /// overstated one costs them an option silently not applied.
     /// Claim, or disclaim, `nodelay`.
     #[must_use]
     pub const fn nodelay(mut self, applies: bool) -> Self {
@@ -358,46 +417,167 @@ impl TcpOpts {
     }
 }
 
+/// A runtime that can open an outgoing TCP connection.
+///
+/// This is the seam a native transport dials through: a runtime crate
+/// implements it once for its handle type (a unit struct, or a wrapper
+/// around a runtime handle), and the transport above it puts TLS and HTTP
+/// on whatever [`Stream`](Self::Stream) comes back. A runtime also
+/// implements [`Timer`](crate::Timer), and optionally [`Blocking`](crate::Blocking),
+/// [`Spawn`](crate::Spawn), [`UdpBind`](crate::UdpBind) and
+/// [`IpcConnect`](crate::IpcConnect) — each a separate trait, so a runtime
+/// without, say, file descriptors implements only what it has.
+///
+/// # Implementing it
+///
+/// - Declare [`TCP_SUPPORT`](Self::TCP_SUPPORT): which [`TcpOpts`] fields
+///   this runtime applies **on the target being compiled for**, built from
+///   [`TcpSupport::NONE`] with `cfg!` where support differs by platform.
+///   Leaving it out claims nothing, which is safe but refuses every option.
+/// - In [`connect`](Self::connect), call
+///   [`TcpOpts::reject_unsupported`] with that same constant before
+///   anything else, then apply every option that is set, then connect.
+/// - Hand back a stream implementing `futures-io`'s
+///   [`AsyncRead`](futures_io::AsyncRead) and
+///   [`AsyncWrite`](futures_io::AsyncWrite) plus [`Shutdown`](crate::Shutdown),
+///   whose `poll_shutdown` sends FIN and keeps the read half open. Its
+///   `poll_close` should do the same half-close.
+///
+/// On platforms with file descriptors a runtime can build and configure a
+/// `std` socket itself and adopt it; [`TcpAdoptStd`] is that second half.
+///
+/// # Same-machine endpoints
+///
+/// Unix-domain sockets are [`IpcConnect`](crate::IpcConnect), which
+/// requires this trait: a same-machine connect must hand back the same
+/// [`Stream`](Self::Stream) type, so one transport carries both. A runtime
+/// with no such endpoints implements this trait alone.
+///
+/// # Example
+///
+/// A deliberately tiny runtime over blocking `std` sockets. It is correct
+/// as a contract illustration — it refuses what it cannot apply and
+/// half-closes properly — but blocking calls inside `poll_*` stall an
+/// async executor, so a real runtime registers the socket with a reactor.
+///
+/// ```no_run
+/// use std::io::{self, Read, Write};
+/// use std::net::{Shutdown as HalfClose, SocketAddr, TcpStream};
+/// use std::pin::Pin;
+/// use std::task::{Context, Poll};
+///
+/// use hclient_rt::{Shutdown, TcpConnect, TcpOpts, TcpSupport};
+///
+/// struct BlockingRuntime;
+///
+/// struct BlockingStream(TcpStream);
+///
+/// impl futures_io::AsyncRead for BlockingStream {
+///     fn poll_read(
+///         self: Pin<&mut Self>,
+///         _: &mut Context<'_>,
+///         buf: &mut [u8],
+///     ) -> Poll<io::Result<usize>> {
+///         Poll::Ready((&self.0).read(buf))
+///     }
+/// }
+///
+/// impl futures_io::AsyncWrite for BlockingStream {
+///     fn poll_write(
+///         self: Pin<&mut Self>,
+///         _: &mut Context<'_>,
+///         buf: &[u8],
+///     ) -> Poll<io::Result<usize>> {
+///         Poll::Ready((&self.0).write(buf))
+///     }
+///     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+///         Poll::Ready((&self.0).flush())
+///     }
+///     // The same half-close as `poll_shutdown`, as `Shutdown` recommends.
+///     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+///         self.poll_shutdown(cx)
+///     }
+/// }
+///
+/// impl Shutdown for BlockingStream {
+///     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+///         // Close the writing half only: the response is still to be read.
+///         Poll::Ready(self.0.shutdown(HalfClose::Write))
+///     }
+/// }
+///
+/// impl TcpConnect for BlockingRuntime {
+///     type Stream = BlockingStream;
+///
+///     // `std::net::TcpStream` can set Nagle, and nothing else here.
+///     const TCP_SUPPORT: TcpSupport = TcpSupport::NONE.nodelay(true);
+///
+///     type Connecting<'a> = std::future::Ready<io::Result<BlockingStream>>;
+///
+///     fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
+///         std::future::ready((|| {
+///             // Refuse, by name, any option this runtime would otherwise drop.
+///             opts.reject_unsupported(Self::TCP_SUPPORT)?;
+///             let stream = TcpStream::connect(addr)?;
+///             stream.set_nodelay(opts.nodelay)?;
+///             Ok(BlockingStream(stream))
+///         })())
+///     }
+/// }
+/// ```
 pub trait TcpConnect {
+    /// The connected byte stream [`connect`](Self::connect) hands back.
+    ///
+    /// Reads and writes are `futures-io`'s traits; [`Shutdown`](crate::Shutdown)
+    /// adds the half-close an HTTP/1 client needs to send its request and
+    /// still read the response. `Unpin` lets TLS and HTTP layers hold it by
+    /// value without pinning it themselves. The same type is returned for
+    /// same-machine connections through [`IpcConnect`](crate::IpcConnect),
+    /// so a runtime dialling both usually makes this an enum.
     type Stream: ::futures_io::AsyncRead + ::futures_io::AsyncWrite + crate::io::Shutdown + Unpin;
 
     /// Which [`TcpOpts`] fields this runtime actually applies.
     ///
+    /// Declare it per target — see [`TcpSupport`] for the `const` builder —
+    /// and check requests against it in [`connect`](Self::connect). A
+    /// transport also reads it at configuration time, so a caller who asks
+    /// for an option this runtime lacks is refused before any connection is
+    /// attempted.
+    ///
     /// # Why the default is `NONE` and not `ALL`
     ///
     /// A default is a claim made by silence, and it must never be stronger
-    /// than the truth — the rule written down on
-    /// [`false`](false) and
-    /// learned from `RedirectSupport::Transparent`. `ALL` would make a
+    /// than the truth. `ALL` would make a
     /// backend that forgot the line claim it applies every option; `NONE`
     /// makes it understate itself, so the worst case is one refused connect
     /// too many rather than an option dropped on the floor without a trace.
+    // Maintainer notes (not rendered):
+    // A default is a claim made by silence, and it must never be stronger
+    // than the truth — the rule written down on
+    // [`false`](false) and
+    // learned from `RedirectSupport::Transparent`.
     const TCP_SUPPORT: TcpSupport = TcpSupport::NONE;
 
-    /// # The options are not optional
+    // Maintainer notes (not rendered):
+    // **An associated type, not an RPITIT, and it demands nothing.**
+    // A consumer that must prove its own future `Send` — `Native`, so
+    // that `hclient::Client`'s can be — has to *name* this one, and
+    // `impl Future` has no name. An associated type is nameable while
+    // leaving the answer to the implementor: `Tokio` and `Smol` box it
+    // `Send`, `hclient-rt-embassy` boxes it plain, because
+    // `embassy_net::Stack` is `&RefCell<..>` and its executor is
+    // single-threaded. Both satisfy this trait. Writing `+ Send` into the
+    // seam instead would have excluded the second, which is the whole
+    // difference between naming a property and requiring it.
+    /// The future [`connect`](Self::connect) hands back.
     ///
-    /// A runtime that cannot apply an option the caller set **must fail
-    /// this call** — [`TcpOpts::reject_unsupported`] is the shared way to
-    /// do it, and the error it builds names the option. Ignoring it is not
-    /// an available answer: `connect` returns `io::Result<Self::Stream>`
-    /// and nothing else, so an option quietly dropped here is dropped
-    /// without a trace anywhere in the stack.
-    ///
-    /// On platforms with file descriptors the whole set is applied outside
-    /// the runtime, on a `socket2::Socket`, and the runtime only adopts the
-    /// finished socket ([`TcpAdoptStd`]) — which is why both shipped
-    /// runtimes declare every option their target has and refuse only the
-    /// ones it has not.
-    /// **An associated type, not an RPITIT, and it demands nothing.**
-    /// A consumer that must prove its own future `Send` — `Native`, so
-    /// that `hclient::Client`'s can be — has to *name* this one, and
-    /// `impl Future` has no name. An associated type is nameable while
-    /// leaving the answer to the implementor: `Tokio` and `Smol` box it
-    /// `Send`, `hclient-rt-embassy` boxes it plain, because
-    /// `embassy_net::Stack` is `&RefCell<..>` and its executor is
-    /// single-threaded. Both satisfy this trait. Writing `+ Send` into the
-    /// seam instead would have excluded the second, which is the whole
-    /// difference between naming a property and requiring it.
+    /// **An associated type, not an `impl Future`, and it demands
+    /// nothing.** A consumer that must prove its own future `Send` has to
+    /// *name* this one, and `impl Future` has no name. An associated type
+    /// is nameable while leaving the answer to the implementor: a runtime
+    /// on a multi-threaded executor boxes it `Send`, one on a
+    /// single-threaded executor boxes it plain, and both satisfy this
+    /// trait.
     ///
     /// It costs the implementor a `Box::pin`, because an `async fn` body
     /// has no name either — one allocation per connect, against a round
@@ -410,6 +590,36 @@ pub trait TcpConnect {
     where
         Self: 'a;
 
+    /// Open a TCP connection to `addr`, applying `opts`.
+    ///
+    /// `addr` is already resolved — name resolution happens above this
+    /// seam — and one call makes one attempt; racing address families is
+    /// the caller's business.
+    ///
+    /// # The options are not optional
+    ///
+    /// A runtime that cannot apply an option the caller set **must fail
+    /// this call** — [`TcpOpts::reject_unsupported`] is the shared way to
+    /// do it, and the error it builds names the option. Ignoring it is not
+    /// an available answer: `connect` returns `io::Result<Self::Stream>`
+    /// and nothing else, so an option quietly dropped here is dropped
+    /// without a trace anywhere in the stack. Pass it
+    /// [`Self::TCP_SUPPORT`]. Options left unset (`None` or `false`) must
+    /// leave the operating system's defaults alone.
+    ///
+    /// On platforms with file descriptors the whole set is applied outside
+    /// the runtime, on a `socket2::Socket`, and the runtime only adopts the
+    /// finished socket ([`TcpAdoptStd`]) — which is why both shipped
+    /// runtimes declare every option their target has and refuse only the
+    /// ones it has not.
+    ///
+    /// # Errors
+    ///
+    /// The returned future resolves to an error of kind
+    /// [`std::io::ErrorKind::Unsupported`] carrying
+    /// [`UnsupportedTcp`] when `opts` asks for something this runtime does
+    /// not apply, and otherwise to whatever the operating system answers
+    /// while creating, configuring or connecting the socket.
     fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a>;
 }
 

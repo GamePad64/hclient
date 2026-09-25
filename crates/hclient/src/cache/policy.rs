@@ -124,7 +124,11 @@ pub enum Lookup {
     /// [`HttpCache::revalidated`] (a `304`) or
     /// [`HttpCache::superseded`] (anything else).
     Revalidate {
+        /// The key under which the fresh answer must be stored.
         key: Key,
+        /// The stale entry, to be freshened by
+        /// [`HttpCache::revalidated`] or discarded by
+        /// [`HttpCache::superseded`].
         stale: StoredResponse,
         /// `If-None-Match` and/or `If-Modified-Since`, RFC 9111 §4.3.1.
         conditions: Vec<(HeaderName, HeaderValue)>,
@@ -168,6 +172,7 @@ impl Storing {
         self.max_body_bytes
     }
 
+    /// The key this response, once stored, will be recorded under.
     pub fn key(&self) -> &Key {
         &self.key
     }
@@ -266,16 +271,19 @@ impl<S: CacheStore> HttpCache<S> {
         }
     }
 
+    /// The same cache with different [`Limits`] applied.
     #[must_use]
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
         self
     }
 
+    /// The [`Limits`] this cache is currently applying.
     pub fn limits(&self) -> Limits {
         self.limits
     }
 
+    /// The store backing this cache.
     pub fn store_ref(&self) -> &S {
         &self.store
     }

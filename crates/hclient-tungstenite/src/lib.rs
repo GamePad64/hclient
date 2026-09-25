@@ -217,6 +217,7 @@
 //! its deadline. The closing handshake is therefore unbounded, which is
 //! the same gap [`Sink::poll_close`] already records for itself.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use bytes::Bytes;
 use futures_core::Stream;

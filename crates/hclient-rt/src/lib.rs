@@ -41,6 +41,7 @@
 //! counts and whether ECN marks are delivered are measured at bind — so
 //! [`UdpDatagrams::support`] is a method on the socket.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod error;
 mod io;

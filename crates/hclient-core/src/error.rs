@@ -28,6 +28,8 @@ use std::error::Error as StdError;
 use std::fmt::Display;
 use std::sync::Arc;
 
+/// Which bound of a [`crate::req::Timeouts`] fired, carried by
+/// [`ErrorKind::Timeout`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Phase {
@@ -37,9 +39,17 @@ pub enum Phase {
     /// and why it is not
     /// [`Connect`](Self::Connect) minus the rest.
     Resolve,
+    /// The connect budget: from having an address to having an open
+    /// connection. See [`Timeouts::connect`](crate::req::Timeouts::connect).
     Connect,
+    /// The wait for the response head. See
+    /// [`Timeouts::first_byte`](crate::req::Timeouts::first_byte).
     FirstByte,
+    /// The gap between two body frames. See
+    /// [`Timeouts::between_bytes`](crate::req::Timeouts::between_bytes).
     BetweenBytes,
+    /// The whole exchange, start to end, regardless of which phase it was
+    /// in when the bound was reached.
     Total,
 }
 
@@ -48,14 +58,51 @@ pub enum Phase {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
+    /// A DNS lookup failed: the name could not be resolved to an address.
+    ///
+    /// Not raised for a resolver that never got to run — a runtime
+    /// shutting down under it is [`Self::Cancelled`] instead, because the
+    /// name may be perfectly fine and there simply was never an answer.
     Resolve,
+    /// A connection could not be established, or a response arrived in a
+    /// shape too malformed to use.
+    ///
+    /// Covers the ordinary case — a TCP connect, a proxy that refused the tunnel, or
+    /// a QUIC handshake that failed — and one less obvious one: a response
+    /// head so large or so malformed that nothing usable came off the
+    /// connection is also reported here, even though bytes had already
+    /// gone out. See [`Error::is_unsent`] before assuming this kind means
+    /// nothing was sent.
     Connect,
+    /// The TLS handshake failed — a certificate the client would not
+    /// accept, a protocol or cipher mismatch, or any other failure the TLS
+    /// backend reports.
     Tls,
+    /// A redirect could not be followed: a `Location` header that would
+    /// not parse, a redirect refused by policy, or a redirect chain that
+    /// exceeded its limit.
     Redirect,
+    /// A bound from [`crate::req::Timeouts`] elapsed. See [`Phase`] for
+    /// which one.
     Timeout(Phase),
+    /// Something went wrong reading or writing the body, after the head
+    /// was already exchanged — a connection reset mid-transfer, a
+    /// truncated response, a body a transport could not finish sending.
     Body,
+    /// The body arrived intact but could not be turned into what the
+    /// caller asked for — invalid UTF-8 where text was expected, a
+    /// decompression failure, a malformed protocol frame (an SSE event, a
+    /// WebSocket message).
     Decode,
+    /// The response's status is one this crate treats as a failure: a
+    /// `4xx`/`5xx` from a caller who asked to fail on it, or a status a
+    /// protocol handshake — such as a WebSocket upgrade — refused.
     Status,
+    /// Something was asked of a backend that it cannot do — a client
+    /// setting it cannot honour (refused at `build()`, with an
+    /// [`UnsupportedCapability`] source), a URI scheme it does not handle,
+    /// or a [`crate::req::RequireVersion`] demand this connection did not
+    /// satisfy.
     Unsupported,
     /// The capability behind the failed operation was pulled out from under
     /// it before it could finish — typically, the runtime is shutting down
@@ -77,6 +124,14 @@ pub enum ErrorKind {
     /// finish because the runtime is shutting down" without a downcast —
     /// just by comparing `kind()`.
     Cancelled,
+    /// An opaque backend error with nothing further to say about its
+    /// category.
+    ///
+    /// The default a transport's error becomes when it has not classified
+    /// it — see [`crate::transport::Transport::to_error`]. Not a catch-all
+    /// for every failure this crate cannot otherwise name: [`Self::Resolve`],
+    /// [`Self::Connect`], [`Self::Tls`] and the rest exist precisely so a
+    /// backend does not have to fall back to this.
     Other,
 }
 
@@ -118,6 +173,11 @@ pub struct Error {
 }
 
 impl Error {
+    /// Builds an error of the given category, wrapping `source` as its
+    /// cause.
+    ///
+    /// `unsent()` is `false` until a transport says otherwise — see
+    /// [`Self::unsent`].
     pub fn new<E>(kind: ErrorKind, source: E) -> Self
     where
         E: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
@@ -152,26 +212,32 @@ impl Error {
         self.unsent
     }
 
+    /// This error's category.
     #[must_use]
     pub fn kind(&self) -> &ErrorKind {
         &self.kind
     }
+    /// Whether this is [`ErrorKind::Timeout`], for whichever [`Phase`].
     #[must_use]
     pub fn is_timeout(&self) -> bool {
         matches!(self.kind, ErrorKind::Timeout(_))
     }
+    /// Whether this is [`ErrorKind::Redirect`].
     #[must_use]
     pub fn is_redirect(&self) -> bool {
         matches!(self.kind, ErrorKind::Redirect)
     }
+    /// Whether this is [`ErrorKind::Connect`].
     #[must_use]
     pub fn is_connect(&self) -> bool {
         matches!(self.kind, ErrorKind::Connect)
     }
+    /// Whether this is [`ErrorKind::Unsupported`].
     #[must_use]
     pub fn is_unsupported(&self) -> bool {
         matches!(self.kind, ErrorKind::Unsupported)
     }
+    /// Whether this is [`ErrorKind::Cancelled`].
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         matches!(self.kind, ErrorKind::Cancelled)
@@ -236,7 +302,9 @@ pub struct RewindTooDeep;
      it was refused before the head was written"
 )]
 pub struct VersionNotAvailable {
+    /// The version the request demanded, via [`RequireVersion`](crate::req::RequireVersion).
     pub required: http::Version,
+    /// The version this connection actually negotiated.
     pub negotiated: http::Version,
 }
 
@@ -261,7 +329,10 @@ pub struct VersionNotAvailable {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("backend `{backend}` does not support `{what}`")]
 pub struct UnsupportedCapability {
+    /// The name of the setting that was refused, e.g. `"connect_timeout"`
+    /// or `"redirect_policy"`.
     pub what: &'static str,
+    /// The name of the backend that could not honour it.
     pub backend: &'static str,
 }
 

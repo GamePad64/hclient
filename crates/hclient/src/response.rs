@@ -126,9 +126,11 @@ impl<B> Response<B> {
         Ok(self)
     }
 
+    /// The response's status code.
     pub fn status(&self) -> http::StatusCode {
         self.parts.status
     }
+    /// The response's header fields.
     pub fn headers(&self) -> &http::HeaderMap {
         &self.parts.headers
     }
@@ -207,6 +209,8 @@ impl<B> Response<B> {
         Links::from_headers(self.headers()).resolved_against(self.url())
     }
 
+    /// Splits this response into its head and its body, discarding the
+    /// URL [`Self::url`] would have reported.
     pub fn into_parts(self) -> (http::response::Parts, B) {
         (self.parts, self.body)
     }
@@ -416,12 +420,16 @@ impl Collected {
         Ok(self)
     }
 
+    /// The response's status code.
     pub fn status(&self) -> http::StatusCode {
         self.parts.status
     }
+    /// The response's header fields.
     pub fn headers(&self) -> &http::HeaderMap {
         &self.parts.headers
     }
+    /// The URL this answer came from — the last hop of a redirect chain,
+    /// as [`Response::url`] documents.
     pub fn url(&self) -> &http::Uri {
         &self.url
     }
@@ -479,6 +487,7 @@ impl Collected {
         Links::from_headers(self.headers()).resolved_against(self.url())
     }
 
+    /// The whole response body, as collected bytes.
     pub fn bytes(&self) -> &Bytes {
         &self.body
     }

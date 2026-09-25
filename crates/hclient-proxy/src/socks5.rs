@@ -45,6 +45,7 @@ enum State {
 }
 
 impl Socks5 {
+    /// A handshake with no credentials configured.
     pub fn new() -> Self {
         Self::default()
     }

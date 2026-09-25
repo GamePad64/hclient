@@ -3,6 +3,7 @@
 //! Crate invariant: no `async fn`, no runtime dependency, anywhere. Anything
 //! that depends on time takes `now` as a parameter. Enforced in CI.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod error;
 

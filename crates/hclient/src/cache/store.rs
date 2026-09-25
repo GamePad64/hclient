@@ -69,6 +69,7 @@ impl Key {
         })
     }
 
+    /// The request method this key was built for.
     pub fn method(&self) -> &Method {
         &self.method
     }
@@ -273,6 +274,7 @@ impl StoredResponse {
         }
     }
 
+    /// The status the response arrived with.
     pub fn status(&self) -> StatusCode {
         self.status
     }
@@ -290,6 +292,7 @@ impl StoredResponse {
         self.version
     }
 
+    /// The response's stored header fields.
     pub fn headers(&self) -> &HeaderMap {
         &self.headers
     }
@@ -298,18 +301,24 @@ impl StoredResponse {
         &mut self.headers
     }
 
+    /// The stored body, still carrying whatever `Content-Encoding` the
+    /// server chose.
     pub fn body(&self) -> &Bytes {
         &self.body
     }
 
+    /// The [`Selector`] this entry was stored under.
     pub fn selector(&self) -> &Selector {
         &self.selector
     }
 
+    /// RFC 9111 §4.2.3's `request_time`: when the request that produced
+    /// this entry was sent.
     pub fn requested_at(&self) -> SystemTime {
         self.requested_at
     }
 
+    /// RFC 9111 §4.2.3's `response_time`: when the response head arrived.
     pub fn received_at(&self) -> SystemTime {
         self.received_at
     }
@@ -482,6 +491,8 @@ impl MemoryStore {
         Self::with_capacity(512)
     }
 
+    /// A store with room for `capacity` variants, evicting the oldest
+    /// entry once it is full.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: Mutex::new(Held::default()),
@@ -489,6 +500,7 @@ impl MemoryStore {
         }
     }
 
+    /// The number of variants this store has room for.
     pub fn capacity(&self) -> usize {
         self.capacity
     }

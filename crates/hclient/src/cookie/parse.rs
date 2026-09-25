@@ -41,7 +41,9 @@ pub struct SetCookie {
     /// preserved rather than clamped here, because §5.7 gives it a meaning
     /// (expire immediately) that this layer has no clock to express.
     pub max_age: Option<i64>,
+    /// Whether the `Secure` attribute was present.
     pub secure: bool,
+    /// Whether the `HttpOnly` attribute was present.
     pub http_only: bool,
     /// `SameSite`, parsed and carried. **Not enforced by this crate** — see
     /// [`SameSite`].
@@ -60,8 +62,12 @@ pub struct SetCookie {
 /// (`Capabilities::owns_cookie_jar`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SameSite {
+    /// The cookie is sent only with same-site requests.
     Strict,
+    /// The cookie is sent with same-site requests and with top-level
+    /// cross-site navigation.
     Lax,
+    /// The cookie is sent with every request, same-site or not.
     None,
 }
 

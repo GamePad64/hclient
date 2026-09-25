@@ -43,7 +43,9 @@ impl Handshake for NoProxy {
 /// records against `Box<dyn Handshake>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyScheme {
+    /// Plain `http://` requests.
     Http,
+    /// `https://` requests.
     Https,
 }
 
@@ -63,6 +65,8 @@ pub struct Proxy<P> {
 }
 
 impl<P> Proxy<P> {
+    /// A proxy at `host:port`, speaking `protocol`, with no bypass list and
+    /// serving both schemes.
     pub fn new(protocol: P, host: impl Into<Box<str>>, port: u16) -> Self {
         Self {
             protocol,
@@ -244,6 +248,8 @@ impl<P> Proxy<P> {
         list.iter().find(|p| p.serves(use_tls, host, port))
     }
 
+    /// The configured protocol, as a template — not the per-connection
+    /// state machine. See [`Self::handshake`] for one of those.
     pub fn protocol(&self) -> &P {
         &self.protocol
     }
@@ -255,10 +261,12 @@ impl<P> Proxy<P> {
         &mut self.protocol
     }
 
+    /// The proxy's host, as configured.
     pub fn host(&self) -> &str {
         &self.host
     }
 
+    /// The proxy's port, as configured.
     pub fn port(&self) -> u16 {
         self.port
     }

@@ -28,6 +28,7 @@ pub struct Socks4 {
 }
 
 impl Socks4 {
+    /// A handshake with an empty `USERID`.
     pub fn new() -> Self {
         Self::default()
     }

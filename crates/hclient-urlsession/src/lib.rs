@@ -67,6 +67,7 @@
 //! workspace can read. That is the same reading `hclient-native` gives
 //! the field, where a proxy carrying a bypass list still reports `true`.
 #![cfg(target_vendor = "apple")]
+#![warn(missing_docs)]
 
 //! # WebSocket
 //!

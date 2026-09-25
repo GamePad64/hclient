@@ -153,6 +153,7 @@
 //! trait — true then, and answered by an actor in `hclient-fetch` rather
 //! than by a `#[cfg]`.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod auth;
 #[cfg(feature = "cache")]

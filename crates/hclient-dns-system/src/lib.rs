@@ -125,6 +125,7 @@
 // Rust API and a decoder, so the strongest form of the rule is available
 // again and is taken.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod error;
 mod svcb;
@@ -145,12 +146,20 @@ use hclient_dns::{RData, Record, Resolve, rtype};
 use hclient_rt::{Blocking, Cancelled};
 use std::net::{IpAddr, ToSocketAddrs};
 
+/// A [`Resolve`] backed by the operating system's own resolver.
+///
+/// Address lookups go through `getaddrinfo`, via `B`; HTTPS/SVCB lookups go
+/// through a second, platform-specific system call. Both are blocking, so
+/// this type requires an [`hclient_rt::Blocking`] implementation to run them
+/// on, and is unavailable wherever that capability is not (wasm).
 #[derive(Debug, Clone)]
 pub struct SystemDns<B> {
     blocking: B,
 }
 
 impl<B> SystemDns<B> {
+    /// Wraps a [`Blocking`] implementation to run the platform's resolver
+    /// calls on.
     pub fn new(blocking: B) -> Self {
         Self { blocking }
     }

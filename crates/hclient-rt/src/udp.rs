@@ -185,6 +185,7 @@ pub trait UdpDatagrams {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Datagrams<'a> {
+    /// Where the datagrams go: the peer's address and port.
     pub destination: SocketAddr,
     /// The source address to send from. Needed when the socket is bound to
     /// a wildcard v6 address and the stack has to keep answering from the
@@ -203,6 +204,9 @@ pub struct Datagrams<'a> {
     /// degradation" would look like here and would put a 3600-byte packet
     /// on a 1200-byte path.
     pub segment_size: Option<usize>,
+    /// The payload: one datagram, or with
+    /// [`segment_size`](Self::segment_size) a run of equal-sized datagrams
+    /// laid end to end.
     pub contents: &'a [u8],
 }
 
@@ -210,6 +214,7 @@ pub struct Datagrams<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RecvMeta {
+    /// The address and port the datagram(s) came from.
     pub addr: SocketAddr,
     /// Bytes written into the corresponding buffer.
     pub len: usize,

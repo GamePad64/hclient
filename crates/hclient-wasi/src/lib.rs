@@ -27,6 +27,7 @@
 //! instead, and whoever builds the URL converts once. That is the right
 //! trade far more often here than anywhere else this crate builds for.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod body;
 mod convert;
@@ -133,6 +134,14 @@ impl<H> WasiHttp<H> {
 }
 
 impl WasiHttp {
+    /// A transport over the host's `wasi:http` client, with no hooks.
+    ///
+    /// Nothing is opened here and nothing can fail: the host owns the
+    /// connections, the TLS and the name resolution. The transport streams
+    /// request bodies, carries trailers both ways, applies the `connect`,
+    /// `first_byte` and `between_bytes` timeouts (not `resolve`), and
+    /// leaves redirects to the client above it — see
+    /// [`Transport::capabilities`] for the full report.
     pub fn new() -> Self {
         let mut caps = Capabilities::default();
         // `streaming_request_body`: `RequestBody::Streaming` goes straight

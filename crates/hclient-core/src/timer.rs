@@ -52,6 +52,8 @@ use std::task::{Context, Poll};
 /// [`TcpConnect::Stream`](https://docs.rs/hclient-rt) is the same idea
 /// applied to a socket; this is not a new shape in the seam.
 pub trait Timer {
+    /// A stamp taken from this clock — comparable to another stamp from the
+    /// same clock, but with no epoch and no relation to a calendar date.
     type Instant: Copy + PartialOrd;
 
     /// The future [`Timer::sleep`] returns, **named**.
@@ -62,8 +64,11 @@ pub trait Timer {
     /// rather than declared.
     type Sleep: Future<Output = ()>;
 
+    /// A future that resolves once `d` has elapsed.
     fn sleep(&self, d: Duration) -> Self::Sleep;
+    /// The current moment, on this clock.
     fn now(&self) -> Self::Instant;
+    /// How long ago `earlier` was, on this clock.
     fn elapsed_since(&self, earlier: Self::Instant) -> Duration;
 }
 

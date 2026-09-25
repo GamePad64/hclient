@@ -49,11 +49,13 @@ use std::borrow::Cow;
 pub struct ClientIdentity(Cow<'static, str>);
 
 impl ClientIdentity {
+    /// Names the client identity a request asks to be presented.
     #[must_use]
     pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
         Self(name.into())
     }
 
+    /// The label, as the caller wrote it.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.0

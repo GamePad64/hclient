@@ -40,6 +40,7 @@ pub struct HttpConnect {
 }
 
 impl HttpConnect {
+    /// A handshake with no credentials configured.
     pub fn new() -> Self {
         Self::default()
     }

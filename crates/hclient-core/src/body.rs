@@ -52,8 +52,11 @@ pub type RewindFactory = Arc<dyn Fn() -> RequestBody + Send + Sync>; // send-bou
 #[derive(Default)]
 #[non_exhaustive]
 pub enum RequestBody {
+    /// No body at all.
     #[default]
     Empty,
+    /// The whole body, already in memory. Replays for free, by cloning the
+    /// [`Bytes`].
     Full(Bytes),
     /// Replays by calling the factory.
     ///
@@ -93,6 +96,10 @@ impl Debug for RequestBody {
 }
 
 impl RequestBody {
+    /// Builds a [`RequestBody::Rewindable`] from a factory closure.
+    ///
+    /// The closure must be pure — see the variant's own doc for the
+    /// contract it has to honour.
     pub fn rewindable<F>(f: F) -> Self
     where
         F: Fn() -> RequestBody + Send + Sync + 'static, // send-bound-exception: amendment-C2
@@ -100,6 +107,8 @@ impl RequestBody {
         RequestBody::Rewindable(Arc::new(f))
     }
 
+    /// Whether this body may be sent again, known before the first attempt.
+    /// See [`RetryKind`].
     #[must_use]
     pub fn retry_kind(&self) -> RetryKind {
         match self {
@@ -109,6 +118,12 @@ impl RequestBody {
         }
     }
 
+    /// A fresh copy of this body, ready to send again — `None` where it
+    /// cannot be.
+    ///
+    /// `Empty` and `Full` are cloned; `Rewindable` calls its factory;
+    /// `Streaming` always answers `None`, since a single-pass body has
+    /// already been consumed by the time this could be asked.
     #[must_use]
     pub fn rewind(&self) -> Option<RequestBody> {
         match self {
@@ -144,6 +159,12 @@ impl RequestBody {
         }
     }
 
+    /// The body's exact length in bytes, where it is known without
+    /// consuming the body.
+    ///
+    /// `Some(0)` for [`RequestBody::Empty`] and `Some(len)` for
+    /// [`RequestBody::Full`]; `None` for a `Rewindable` (whose factory this
+    /// must not call to find out) and for a `Streaming` body.
     #[must_use]
     pub fn size_hint(&self) -> Option<u64> {
         match self {

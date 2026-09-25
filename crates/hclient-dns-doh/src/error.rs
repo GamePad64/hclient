@@ -28,18 +28,27 @@
 pub enum EndpointError {
     /// The URI has no host at all — `/dns-query`, or `https:///`.
     #[error("the DoH endpoint `{uri}` has no host")]
-    NoHost { uri: String },
+    NoHost {
+        /// The URI that had no host.
+        uri: String,
+    },
     /// [`Doh::pinned`](crate::Doh::pinned) was given a name.
     #[error(
         "`{host}` is a name, not an IP literal: `Doh::pinned` is the no-bootstrap constructor, \
          use `Doh::bootstrapped` if the inner transport's resolver should look this name up"
     )]
-    NotAnIpLiteral { host: String },
+    NotAnIpLiteral {
+        /// The name that was given where an IP literal was required.
+        host: String,
+    },
     /// [`Doh::bootstrapped`](crate::Doh::bootstrapped) was given an IP literal.
     #[error(
         "`{host}` is an IP literal, so nothing bootstraps it: use `Doh::pinned`, which says so"
     )]
-    IsAnIpLiteral { host: String },
+    IsAnIpLiteral {
+        /// The IP literal that was given where a name was required.
+        host: String,
+    },
     /// The scheme is neither `https` nor loopback `http`. See
     /// [`Doh::pinned`](crate::Doh::pinned) for the loopback rule.
     #[error(
@@ -47,7 +56,10 @@ pub enum EndpointError {
          RFC 8484 is DNS over HTTPS, and cleartext DNS to a host that is not this machine \
          is the thing it exists to prevent"
     )]
-    NotConfidential { uri: String },
+    NotConfidential {
+        /// The URI that was neither `https` nor a loopback `http` address.
+        uri: String,
+    },
 }
 
 /// Everything that can go wrong between "the caller asked for a name" and
@@ -62,7 +74,12 @@ pub enum DohError {
     /// name, or a label is too long. A caller bug or a hostile input, never
     /// a server problem.
     #[error("`{name}` cannot be used as a DNS query name: {reason}")]
-    NameNotUsable { name: String, reason: String },
+    NameNotUsable {
+        /// The name that could not be used.
+        name: String,
+        /// Why the name was refused.
+        reason: String,
+    },
     /// The query could not be serialised. Structurally unreachable for a
     /// one-question query with no answer sections — kept because the
     /// encoder returns a `Result` and swallowing it would be the
@@ -76,11 +93,17 @@ pub enum DohError {
     /// The `DoH` server answered with something other than 200. RFC 8484 §4.2
     /// gives no other success status.
     #[error("the DoH server answered with HTTP status {status}")]
-    Status { status: u16 },
+    Status {
+        /// The HTTP status the `DoH` server answered with.
+        status: u16,
+    },
     /// The response was not `application/dns-message` (RFC 8484 §6). A
     /// captive portal's login page, most often.
     #[error("the DoH server answered with content-type `{got}`, not `application/dns-message`")]
-    ContentType { got: String },
+    ContentType {
+        /// The content type the `DoH` server actually sent.
+        got: String,
+    },
     /// The response body could not be read to the end, or exceeded
     /// [`MAX_RESPONSE_BYTES`](crate::MAX_RESPONSE_BYTES).
     ///
@@ -107,7 +130,10 @@ pub enum DohError {
     /// RCODE was neither NOERROR nor NXDOMAIN. RFC 1035 §4.1.1 / RFC 6895
     /// §2.3.
     #[error("the DoH server answered with RCODE {rcode}")]
-    ResponseCode { rcode: u8 },
+    ResponseCode {
+        /// The RCODE the `DoH` server answered with.
+        rcode: u8,
+    },
     /// The response's question section does not echo the question that was
     /// asked.
     ///
@@ -116,10 +142,18 @@ pub enum DohError {
     /// answers the wrong question, which over plain DNS would be a
     /// cache-poisoning primitive and here would be a silent wrong address.
     #[error("the DoH server answered a different question: asked {asked}, got {got}")]
-    QuestionMismatch { asked: String, got: String },
+    QuestionMismatch {
+        /// The question that was sent.
+        asked: String,
+        /// The question the response actually echoed.
+        got: String,
+    },
     /// RFC 9460 §8: a record's `mandatory` list names a key the record does
     /// not carry. The one client-side malformity no decoder checks — see
     /// `hclient_dns::svcb`.
     #[error("SvcParamKey {key} is listed as mandatory but is not present in the record")]
-    MandatoryKeyAbsent { key: u16 },
+    MandatoryKeyAbsent {
+        /// The `SvcParamKey` listed as mandatory but missing from the record.
+        key: u16,
+    },
 }

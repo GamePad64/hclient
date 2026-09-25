@@ -37,6 +37,7 @@
 //!   identity both seams require, so one connector has one identity rather
 //!   than two.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod quic;
 mod tcp;

@@ -79,7 +79,9 @@ pub use hclient_proto::uri::UriError;
 #[error("cannot resolve `{requested}` against base URL `{base}` (a base URL must be absolute)")]
 #[non_exhaustive]
 pub struct InvalidBaseUrl {
+    /// The base URL the request was resolved against.
     pub base: http::Uri,
+    /// The reference — the string handed to the base, before parsing.
     pub requested: String,
 }
 
@@ -93,7 +95,9 @@ pub struct InvalidBaseUrl {
 #[error("the redirect policy refused a {status} to {to} after {after_hops} hops: {why}")]
 #[non_exhaustive]
 pub struct RedirectRefused {
+    /// The `Location` the redirect would have gone to.
     pub to: http::Uri,
+    /// The response's redirect status.
     pub status: http::StatusCode,
     /// The policy's own words — `"redirect limit reached"`,
     /// `"redirect leaves the origin"`, or whatever a caller's own policy
@@ -142,7 +146,9 @@ pub struct TotalTimeoutElapsed(pub Duration);
 #[error("the response body exceeded the {limit}-byte limit (stopped at {seen})")]
 #[non_exhaustive]
 pub struct ResponseTooLarge {
+    /// The configured limit, in bytes.
     pub limit: u64,
+    /// How many bytes had arrived when the body was stopped.
     pub seen: u64,
 }
 
@@ -155,7 +161,9 @@ pub struct ResponseTooLarge {
 #[error("a single line exceeded the {limit}-byte limit (stopped at {seen})")]
 #[non_exhaustive]
 pub struct LineTooLong {
+    /// The configured limit, in bytes.
     pub limit: usize,
+    /// How many bytes of the line had arrived when it was stopped.
     pub seen: usize,
 }
 
@@ -316,7 +324,9 @@ pub struct InvalidCodingToken {
 #[error("the server answered {status} for {url}")]
 #[non_exhaustive]
 pub struct UnexpectedStatus {
+    /// The status the server answered with.
     pub status: http::StatusCode,
+    /// The URL that produced this response.
     pub url: http::Uri,
 }
 
@@ -328,11 +338,17 @@ pub enum CharsetError {
     /// The `charset` parameter named something the WHATWG Encoding
     /// Standard has no encoding for.
     #[error("the response declared `charset={label}`, which names no encoding")]
-    UnknownLabel { label: String },
+    UnknownLabel {
+        /// The `charset` parameter's value, exactly as declared.
+        label: String,
+    },
     /// The bytes are not a valid sequence in the charset that was used —
     /// which is the declared one unless a byte order mark overrode it.
     #[error("the response body is not valid {charset}")]
-    Malformed { charset: &'static str },
+    Malformed {
+        /// The name of the charset the bytes were decoded against.
+        charset: &'static str,
+    },
 }
 
 /// A `multipart/form-data` body was set and so was a `Content-Type`.

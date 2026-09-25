@@ -98,6 +98,8 @@ const RECOGNISED_KEYS: &[u16] = &[0, 1, 2, 3, 4, 5, 6];
 /// decoders it leaked in turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawBinding {
+    /// RFC 9460's `SvcPriority`: `0` is `AliasMode`, anything else
+    /// `ServiceMode` with lower values preferred.
     pub priority: u16,
     /// The record's owner name, without a trailing dot.
     pub owner: String,
@@ -105,6 +107,7 @@ pub struct RawBinding {
     /// (`.` on the wire), which is what §2.4.2 and §2.5 give their special
     /// meanings to.
     pub target: String,
+    /// The record's `SvcParams`, in wire order.
     pub params: Vec<RawParam>,
     /// The record's TTL, as the resolver reported it — `None` where it
     /// reported none. See [`crate::Record::ttl`], which this becomes.
@@ -135,11 +138,21 @@ pub struct RawBinding {
 // So this is `Event`'s rule, twice over: exhaustiveness is the mechanism,
 // and the compile error is the feature.
 pub enum RawParam {
+    /// Key 0, `mandatory`: the key numbers a client must understand to use
+    /// this record at all (RFC 9460 §8).
     Mandatory(Vec<u16>),
+    /// Key 1, `alpn`: ALPN protocol identifiers as raw bytes, such as
+    /// `b"h3"`.
     Alpn(Vec<Vec<u8>>),
+    /// Key 2, `no-default-alpn`: the scheme's default protocol is not
+    /// implied. It has no value.
     NoDefaultAlpn,
+    /// Key 3, `port`: the port to connect to instead of the scheme's
+    /// default.
     Port(u16),
+    /// Key 4, `ipv4hint`: IPv4 addresses the target is expected to have.
     Ipv4Hint(Vec<Ipv4Addr>),
+    /// Key 6, `ipv6hint`: IPv6 addresses the target is expected to have.
     Ipv6Hint(Vec<Ipv6Addr>),
     /// The `ECHConfigList` **including RFC 9460 §7.3's redundant length
     /// prefix**, which is the form rustls parses. Backends are responsible

@@ -74,6 +74,7 @@
 //! rather than borrow; it is not written yet, and the design document
 //! records the gap rather than implying it away.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod app;
 mod error;
@@ -113,6 +114,7 @@ impl<T> Clone for TransportService<T> {
 }
 
 impl<T> TransportService<T> {
+    /// Wraps `transport` so it can be driven as a `tower_service::Service`.
     pub fn new(transport: T) -> Self {
         Self {
             inner: Arc::new(transport),

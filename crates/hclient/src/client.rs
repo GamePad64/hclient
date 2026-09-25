@@ -40,6 +40,12 @@ use std::sync::Arc;
 // not match.
 use web_time::SystemTime;
 
+/// A builder for [`Client`]: a transport plus everything configured on top
+/// of it — timeouts, a redirect policy, default headers, and, behind their
+/// features, a cookie jar, an HSTS policy set and a response cache.
+///
+/// Every setter is `#[must_use]` and consumes and returns `self`, so a
+/// chain ends with [`ClientBuilder::build`].
 pub struct ClientBuilder {
     transport: Box<hclient_core::transport::SharedTransport>,
     /// The transport's type name, captured at construction: erasure loses
@@ -86,6 +92,8 @@ pub struct ClientBuilder {
 /// is what makes that possible, since the clock is a field rather than a
 /// type parameter and swapping it changes no type.
 impl ClientBuilder {
+    /// A builder over `transport`, with no timeouts, no redirect policy and
+    /// no default headers set.
     pub fn new<T>(transport: T) -> Self
     where
         T: hclient_core::transport::DynTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -350,6 +358,12 @@ impl ClientBuilder {
         self.config.base_url = Some(uri);
         self
     }
+    /// Retry a failed attempt according to `policy`, using `timer` to time
+    /// any `Retry-After` wait.
+    ///
+    /// Replaces the client's clock with `timer`, the same way
+    /// [`Self::total_timeout`] does — a client has one clock, so retrying
+    /// and bounding the total time both draw on it.
     #[must_use]
     pub fn retry<Tm2, P>(mut self, timer: Tm2, policy: P) -> Self
     where
@@ -363,6 +377,12 @@ impl ClientBuilder {
         self
     }
 
+    /// Bound the whole operation — every hop, retry and authentication leg
+    /// together — by `total`, timed with `timer`.
+    ///
+    /// Replaces the client's clock with `timer`: the deadline is measured
+    /// against it, so a `NoClock`-built client needs a real one supplied
+    /// here before a total timeout can be set.
     #[must_use]
     pub fn total_timeout<Tm2>(mut self, timer: Tm2, total: Duration) -> Self
     where
@@ -719,6 +739,7 @@ struct Inner {
 /// derive to demand and no way for a clone to copy a transport. This used
 /// to be a hand-written impl carrying that argument in a comment.
 impl Client {
+    /// Starts a [`ClientBuilder`] over `transport`.
     pub fn builder<T>(transport: T) -> ClientBuilder
     where
         T: hclient_core::transport::DynTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -802,6 +823,8 @@ impl Client {
     pub fn transport_as<T: 'static>(&self) -> Option<&T> {
         self.inner.transport.as_any().downcast_ref::<T>()
     }
+    /// The configuration this client was built with — timeouts, the
+    /// redirect policy, default headers and the rest.
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -902,21 +925,27 @@ impl Client {
     pub fn request(&self, method: http::Method, url: impl AsRef<str>) -> RequestBuilder<'_> {
         RequestBuilder::new(self, method, url.as_ref())
     }
+    /// Starts a `GET` request to `url`.
     pub fn get(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::GET, url)
     }
+    /// Starts a `POST` request to `url`.
     pub fn post(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::POST, url)
     }
+    /// Starts a `PUT` request to `url`.
     pub fn put(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::PUT, url)
     }
+    /// Starts a `DELETE` request to `url`.
     pub fn delete(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::DELETE, url)
     }
+    /// Starts a `PATCH` request to `url`.
     pub fn patch(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::PATCH, url)
     }
+    /// Starts a `HEAD` request to `url`.
     pub fn head(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
         self.request(http::Method::HEAD, url)
     }

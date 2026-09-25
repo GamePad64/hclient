@@ -108,6 +108,7 @@
 //! including the two defects that changed the Windows and Apple paths.
 
 #![doc(html_no_source)]
+#![warn(missing_docs)]
 
 mod error;
 /// Compiled and tested on every host, and reached by **three** of the five

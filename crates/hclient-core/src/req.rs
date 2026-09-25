@@ -90,8 +90,15 @@ pub struct Timeouts {
     /// from the other, because a resolver that answered in 10 ms has not
     /// spent any of the connect budget in any sense a connector can see.
     pub resolve: Option<core::time::Duration>,
+    /// A bound on the connect: from having an address to having an open
+    /// connection. Unset means the connect may take as long as it takes.
     pub connect: Option<core::time::Duration>,
+    /// A bound on the wait for the response head, once the request has
+    /// been sent. Unset means wait as long as it takes.
     pub first_byte: Option<core::time::Duration>,
+    /// A bound on the gap between two consecutive body frames, in either
+    /// direction. Unset means no gap is too long, provided the connection
+    /// stays open.
     pub between_bytes: Option<core::time::Duration>,
 }
 

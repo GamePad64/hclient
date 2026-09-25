@@ -66,6 +66,7 @@
 //! its requests in the wrong order. Matching on the request is a different
 //! product; assert on `requests()` instead.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod error;
 
@@ -102,11 +103,23 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct RecordedRequest {
+    /// The request method.
     pub method: http::Method,
+    /// The request URI as the transport received it — absolute, after any
+    /// redirect or base-URL resolution done above the transport.
     pub uri: http::Uri,
+    /// The request headers as the transport received them, including any
+    /// the client added (cookies, `Accept-Encoding`, authorisation).
     pub headers: http::HeaderMap,
+    /// The request's extensions, moved out whole — per-request settings
+    /// such as timeouts travel here.
     pub extensions: http::Extensions,
+    /// Whether the body could have been sent again, as
+    /// [`RequestBody::retry_kind`] reported it.
     pub retry_kind: RetryKind,
+    /// The body's exact length in bytes when known up front, as
+    /// [`RequestBody::size_hint`] reported it: `Some(0)` for no body,
+    /// `None` for a body whose length is not known in advance.
     pub body_size_hint: Option<u64>,
     /// The bytes the request carried.
     ///
@@ -351,6 +364,8 @@ struct Shared {
 }
 
 impl MockTransport {
+    /// An empty mock: no responses queued, nothing recorded, and
+    /// [`Capabilities::default`] as its capabilities.
     pub fn new() -> Self {
         Self {
             shared: std::sync::Arc::default(),
@@ -373,6 +388,14 @@ impl MockTransport {
         self.shared.queue.lock().expect("mock lock poisoned").len()
     }
 
+    /// Report `caps` from [`Transport::capabilities`] instead of the
+    /// defaults.
+    ///
+    /// Use it to put the mock in the shape of the backend under test — for
+    /// example one that follows redirects itself — so that
+    /// capability-dependent behaviour above the transport can be tested.
+    /// Call it before cloning: each clone keeps the capabilities it was
+    /// cloned with.
     #[must_use]
     pub fn with_capabilities(mut self, caps: Capabilities) -> Self {
         self.caps = caps;
@@ -740,6 +763,7 @@ pub struct TestTimer {
 }
 
 impl TestTimer {
+    /// A timer with no sleeps recorded yet.
     pub fn new() -> Self {
         Self::default()
     }

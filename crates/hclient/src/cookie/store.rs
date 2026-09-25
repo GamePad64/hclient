@@ -101,6 +101,7 @@ impl CookieKey {
         }
     }
 
+    /// The cookie's name.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -112,10 +113,13 @@ impl CookieKey {
         &self.domain
     }
 
+    /// The path this cookie is stored under, always absolute.
     pub fn path(&self) -> &str {
         &self.path
     }
 
+    /// Whether this cookie goes only to the exact host that set it, rather
+    /// than to that host's subdomains.
     pub fn host_only(&self) -> bool {
         self.host_only
     }
@@ -417,6 +421,7 @@ impl MemoryStore {
         }
     }
 
+    /// The bound this store is currently applying.
     pub fn capacity(&self) -> Capacity {
         self.capacity
     }

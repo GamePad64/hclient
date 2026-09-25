@@ -127,6 +127,8 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    /// Sets the request body, replacing any [`multipart`](Self::multipart)
+    /// body set earlier.
     #[must_use]
     pub fn body(mut self, body: RequestBody) -> Self {
         self.body = body;

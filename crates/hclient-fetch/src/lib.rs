@@ -8,6 +8,7 @@
 //! cannot be locally relaxed for it. Every other crate in the workspace
 //! keeps `forbid`; see `docs/exceptions.md`, amendment C7.
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 mod body;
 mod caps;
@@ -113,6 +114,8 @@ pub struct Fetch<H = NoHooks> {
 }
 
 impl Fetch {
+    /// Creates a transport over the browser's `fetch`, probing its
+    /// [`Capabilities`] once at construction.
     pub fn new() -> Self {
         Self {
             caps: caps::probe(),

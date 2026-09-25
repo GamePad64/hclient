@@ -65,6 +65,7 @@
 //! type, a fourth method and a fourth capability constant, which every
 //! implementor outside this workspace would have had to grow.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod error;
 mod overrides;
@@ -246,12 +247,33 @@ impl RData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SvcbEndpoint {
+    /// RFC 9460's `SvcPriority`: `0` is `AliasMode`, where the record only
+    /// points at another name; any other value is `ServiceMode`, and lower
+    /// values are preferred.
     pub priority: u16,
+    /// RFC 9460's `TargetName`: the host name to resolve and connect to.
+    ///
+    /// Endpoints produced by [`svcb::endpoint_from_binding`] carry it
+    /// without a trailing dot, and a `ServiceMode` record's root target
+    /// (`.`) has already been replaced by the record's owner name.
     pub target: String,
+    /// The `alpn` `SvcParam`: ALPN protocol identifiers the endpoint
+    /// speaks, as raw bytes (`b"h2"`, `b"h3"`); empty when the record has
+    /// none.
     pub alpn: Vec<Vec<u8>>,
+    /// The `port` `SvcParam`: the TCP or UDP port to connect to instead of
+    /// the scheme's default; `None` keeps the default.
     pub port: Option<u16>,
+    /// The `ipv4hint` `SvcParam`: IPv4 addresses the target is expected to
+    /// have, usable before (or instead of) an A lookup; empty when absent.
     pub ipv4hint: Vec<Ipv4Addr>,
+    /// The `ipv6hint` `SvcParam`: IPv6 addresses the target is expected to
+    /// have, usable before (or instead of) an AAAA lookup; empty when
+    /// absent.
     pub ipv6hint: Vec<Ipv6Addr>,
+    /// The `ech` `SvcParam`: an Encrypted Client Hello `ECHConfigList`,
+    /// including its two-byte length prefix — the form a TLS backend
+    /// parses; `None` when the record offers no ECH.
     pub ech_config_list: Option<Bytes>,
 }
 

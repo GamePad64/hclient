@@ -89,7 +89,9 @@ pub enum ProxyKind {
 /// rather than merely read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scheme {
+    /// Plain `http://` requests.
     Http,
+    /// `https://` requests.
     Https,
 }
 
@@ -104,10 +106,12 @@ pub struct Credentials {
 }
 
 impl Credentials {
+    /// The username, percent-decoded.
     pub fn user(&self) -> &str {
         &self.user
     }
 
+    /// The password, percent-decoded.
     pub fn password(&self) -> &str {
         &self.password
     }
@@ -137,14 +141,17 @@ pub struct ProxyEntry {
 }
 
 impl ProxyEntry {
+    /// The protocol this proxy speaks.
     pub fn kind(&self) -> ProxyKind {
         self.kind
     }
 
+    /// The proxy's host, as the system reported it.
     pub fn host(&self) -> &str {
         &self.host
     }
 
+    /// The proxy's port, as the system reported it.
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -154,6 +161,7 @@ impl ProxyEntry {
         self.applies_to
     }
 
+    /// The credentials carried in the proxy URL's userinfo, if any.
     pub fn credentials(&self) -> Option<&Credentials> {
         self.credentials.as_ref()
     }
@@ -174,10 +182,12 @@ pub struct UnsupportedBypass {
 }
 
 impl UnsupportedBypass {
+    /// The pattern as the system wrote it, lower-cased.
     pub fn pattern(&self) -> &str {
         &self.pattern
     }
 
+    /// Why this pattern could not be translated.
     pub fn reason(&self) -> BypassReason {
         self.reason
     }

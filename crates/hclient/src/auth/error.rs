@@ -40,7 +40,10 @@ pub enum DigestError {
     /// A `Digest` challenge without `realm` or without `nonce`, which
     /// RFC 7616 §3.3 makes required.
     #[error("the Digest challenge is missing its `{parameter}`")]
-    MissingParameter { parameter: &'static str },
+    MissingParameter {
+        /// The name of the missing directive, `"realm"` or `"nonce"`.
+        parameter: &'static str,
+    },
     /// The server asked for `qop="auth-int"` and nothing else. See this
     /// module's doc for why that is refused rather than approximated.
     #[error("the server requires qop=auth-int, which needs the request body hashed")]
