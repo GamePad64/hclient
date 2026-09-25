@@ -8205,6 +8205,26 @@ by the instruments this file trusts:
   in the matcher. The note was right that `>= 4` and `> 4` agree, for a
   premise that was false until the fix made it true.
 
+**`H3` stays in `hclient-native`, and the owner's call is to pay for it
+in the version rather than in a crate.** With the gate reading impl
+where-clauses, `native`'s public API reaches `quinn_proto` through
+`impl Transport for H3 where T: QuicTlsConnect<Session = Arc<dyn
+quinn_proto::crypto::ClientConfig>>`. Moving `H3` into a crate of its
+own, with the staged-connect trait left in `native` and `Native::http3`
+generic over it, was measured as cheap — `lib.rs` names the concrete
+`H3` in that one signature, and everything else already goes through
+`http3::arm`'s erasure — and declined for now. So a stable `native`
+promises `quinn-proto` 0.11 behind `http3`, as `hclient-tls-rustls`
+does behind `quic`, and `quinn` 0.12 is a major version of `native`.
+A seam for HTTP/3 may come later; this paragraph is where the
+measurement for it lives.
+
+**`hclient-proto` is to go stable ahead of `proxy`**, with frequent
+0.x minor steps as the honest label for its churn: no stable crate
+exposes its types, so a step costs its dependents a requirement bump
+and a patch release, and `just exposed-majors` fails the day one of
+them starts exposing it.
+
 ### `hclient::Client` names no type parameters, and the browser decided what that costs
 
 `Client` is one concrete type. `Clone` is an `Arc` bump, and a library takes
