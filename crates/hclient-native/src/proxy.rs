@@ -66,8 +66,8 @@ pub use hclient_proxy::{Approach, Handshake, NoProxy, Proxy, ProxyScheme, Step};
 /// its types.
 #[cfg(feature = "proxy")]
 pub use hclient_proxy::{
-    ConnectError, HttpConnect, ProxyRefused, Socks4, Socks4HandshakeError, Socks4Refused, Socks5,
-    Socks5HandshakeError, Socks5Refused,
+    ConnectError, HttpConnect, MalformedHead, ProxyRefused, Socks4, Socks4HandshakeError,
+    Socks4Refused, Socks5, Socks5HandshakeError, Socks5Refused,
 };
 
 /// How the *request* is written, which is the one thing a proxy changes

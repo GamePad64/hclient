@@ -120,8 +120,8 @@ pub mod system;
 
 pub use connect::HttpConnect;
 pub use error::{
-    ConnectError, ProxyRefused, Socks4HandshakeError, Socks4Refused, Socks5HandshakeError,
-    Socks5Refused,
+    ConnectError, MalformedHead, ProxyRefused, Socks4HandshakeError, Socks4Refused,
+    Socks5HandshakeError, Socks5Refused,
 };
 pub use proxy::{NoProxy, Proxy, ProxyScheme};
 pub use socks4::Socks4;
@@ -241,8 +241,8 @@ pub(crate) fn take(buf: &mut BytesMut, n: usize) -> Option<Bytes> {
 /// the **whole** exchange — what went out, in what order, and what was
 /// left over — in one call, which is the property that a sans-io
 /// handshake makes testable at all.
-#[doc(hidden)]
-pub fn drive_for_test<H: Handshake>(
+#[cfg(test)]
+pub(crate) fn drive_for_test<H: Handshake>(
     h: &mut H,
     host: &str,
     port: u16,

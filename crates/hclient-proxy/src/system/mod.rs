@@ -45,6 +45,8 @@
 
 use std::fmt;
 
+use crate::ProxyScheme;
+
 #[cfg(target_os = "android")]
 mod jvm;
 mod parse;
@@ -66,7 +68,7 @@ pub use translate::{http_proxies, http_proxies_lossy};
 // reason as `SvcbRecordError` in `hclient-dns`.
 /// Which protocol a proxy speaks.
 ///
-/// Not the scheme of the *request* — see [`Scheme`] for that. A SOCKS5
+/// Not the scheme of the *request* — see [`ProxyScheme`] for that. A SOCKS5
 /// proxy carries `https://` requests perfectly well.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProxyKind {
@@ -90,18 +92,12 @@ pub enum ProxyKind {
 //
 // Not `#[non_exhaustive]`, for [`ProxyKind`]'s reason: it is translated
 // rather than merely read.
-/// Which request scheme an entry serves.
-///
-/// `None` — the field's own `Option` rather than a variant here — is an
-/// entry that serves both, which is what an unqualified `ProxyServer` on
-/// Windows and an `ALL_PROXY` in the environment both mean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Scheme {
-    /// Plain `http://` requests.
-    Http,
-    /// `https://` requests.
-    Https,
-}
+// It was a second two-variant enum, `system::Scheme`, beside the root's
+// `ProxyScheme` with the same two variants, and `translate.rs` mapped one
+// onto the other arm by arm. One concept, one type.
+// `None` — the field's own `Option` rather than a variant — is an entry that
+// serves both, which is what an unqualified `ProxyServer` on Windows and an
+// `ALL_PROXY` in the environment both mean.
 
 /// A username and password carried in a proxy URL's userinfo.
 ///
@@ -147,7 +143,7 @@ pub struct ProxyEntry {
     kind: ProxyKind,
     host: Box<str>,
     port: u16,
-    applies_to: Option<Scheme>,
+    applies_to: Option<ProxyScheme>,
     credentials: Option<Credentials>,
 }
 
@@ -168,7 +164,7 @@ impl ProxyEntry {
     }
 
     /// The request scheme this entry serves, or `None` for both.
-    pub fn applies_to(&self) -> Option<Scheme> {
+    pub fn applies_to(&self) -> Option<ProxyScheme> {
         self.applies_to
     }
 
@@ -479,8 +475,8 @@ impl SystemProxies {
         proxies.sort();
         for (key, value) in proxies {
             let applies_to = match key.as_str() {
-                "http" => Some(Scheme::Http),
-                "https" => Some(Scheme::Https),
+                "http" => Some(ProxyScheme::Http),
+                "https" => Some(ProxyScheme::Https),
                 // `*` is what Windows produces for an unqualified
                 // `ProxyServer`, `all` what an `ALL_PROXY` produces.
                 //
@@ -619,7 +615,7 @@ mod tests {
             false,
         );
         assert_eq!(sys.entries()[0].host(), "secure");
-        assert_eq!(sys.entries()[0].applies_to(), Some(Scheme::Https));
+        assert_eq!(sys.entries()[0].applies_to(), Some(ProxyScheme::Https));
         assert_eq!(sys.entries()[1].host(), "everything");
         assert_eq!(sys.entries()[1].applies_to(), None);
     }

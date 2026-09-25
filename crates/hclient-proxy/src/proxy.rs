@@ -45,7 +45,7 @@ impl Handshake for NoProxy {
 /// `HTTP_PROXY` and an `HTTPS_PROXY` pointing at different hosts — not two
 /// different proxy *protocols*: a transport has one `P`, so every proxy on
 /// one transport speaks the same one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProxyScheme {
     /// Plain `http://` requests.
     Http,
@@ -260,13 +260,6 @@ impl<P> Proxy<P> {
         &self.protocol
     }
 
-    /// The protocol, to be driven. A handshake is a state machine and
-    /// running one mutates it, so a transport takes it by value — two
-    /// connections through one proxy are two handshakes.
-    pub fn protocol_mut(&mut self) -> &mut P {
-        &mut self.protocol
-    }
-
     /// The proxy's host, as configured.
     pub fn host(&self) -> &str {
         &self.host
@@ -275,14 +268,6 @@ impl<P> Proxy<P> {
     /// The proxy's port, as configured.
     pub fn port(&self) -> u16 {
         self.port
-    }
-
-    /// The pool-key component. Two proxies to one origin are two
-    /// connections, and a tunnel reused through a *different* proxy would
-    /// be a security defect rather than a redundancy — the same argument
-    /// a pool key's TLS-identity field is already kept for.
-    pub fn key(&self) -> String {
-        format!("{}:{}", self.host, self.port)
     }
 }
 
@@ -362,10 +347,20 @@ fn parse_prefix(addr: &str) -> Option<std::net::IpAddr> {
     }
     let mut octets = [0u8; 4];
     let parts: Vec<&str> = addr.split('.').collect();
-    if parts.len() > 4 {
+    // Only the abbreviated forms are this fallback's to read: a four-part
+    // string `IpAddr` refused was refused for a reason, and more than four
+    // would be truncated by `zip`. (With the octet guard below, four parts
+    // cannot reach here; the bound says so rather than relying on it.)
+    if parts.len() >= 4 {
         return None;
     }
     for (slot, part) in octets.iter_mut().zip(parts) {
+        // Digits only, and no leading zero: `u8::from_str` also takes
+        // `+10`, and `010` is ten to it and eight to `inet_aton`. The
+        // strict parser refuses both, so this one does too.
+        if !part.bytes().all(|b| b.is_ascii_digit()) || (part.len() > 1 && part.starts_with('0')) {
+            return None;
+        }
         *slot = part.parse().ok()?;
     }
     Some(std::net::IpAddr::from(octets))
@@ -568,10 +563,13 @@ mod tests {
         // Measured: `parts.len() > 4` weakened to `== 4` left the suite
         // at 134 passing, and turns `1.2.3.4.5/8` into the subnet
         // `1.2.3.4/8` — a pattern that matches a network nobody wrote
-        // down. (`>= 4` is **equivalent** rather than unkilled: every
-        // four-label string that survives the octet parse already
-        // parsed as an `IpAddr` and returned before this line, so no
-        // input distinguishes it.)
+        // down. (`>= 4` is **equivalent** rather than unkilled, and this
+        // note said so once before it was true: `u8::from_str` accepted
+        // `010` and `+10`, which `IpAddr` refuses, so a four-label string
+        // could survive the octet parse without being an address. The
+        // octet parse takes digits without a leading zero now, and with
+        // that every four-label survivor already returned above — the
+        // leading-zero test below is the one that pins the guard.)
         let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
         // The host the truncation would produce, and a host inside the
         // `/8` it would produce. Either alone kills the mutation; both
@@ -584,6 +582,35 @@ mod tests {
         // match — so the refusal above is about the count and not about
         // the pattern being odd.
         assert!(!p("1.2.3.4/8").serves(true, "1.0.0.1", 80));
+    }
+
+    #[test]
+    fn a_prefix_with_a_leading_zero_matches_nothing() {
+        // `010` is decimal ten to `u8::from_str` and octal eight to
+        // `inet_aton`, which is what the platform that wrote the pattern
+        // may have meant. `IpAddr` refuses it for that reason, and the
+        // abbreviated-form fallback must not quietly accept what the
+        // strict parser refused: a pattern in no accepted shape matches
+        // nothing.
+        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+        for pat in [
+            "010.0.0.0/8",
+            "010/8",
+            "169.0254/16",
+            "+10.0.0.0/8",
+            "+10/8",
+        ] {
+            for host in ["10.1.2.3", "8.1.2.3", "169.254.1.1", "169.172.1.1"] {
+                assert!(p(pat).serves(true, host, 80), "{pat} bypassed {host}");
+            }
+        }
+        // The controls: the same networks written without the zero.
+        assert!(!p("10.0.0.0/8").serves(true, "10.1.2.3", 80));
+        assert!(!p("10/8").serves(true, "10.1.2.3", 80));
+        assert!(!p("169.254/16").serves(true, "169.254.1.1", 80));
+        // `0` alone is a zero, not a leading one.
+        assert!(!p("0.0.0.0/0").serves(true, "10.1.2.3", 80));
+        assert!(!p("10.0/16").serves(true, "10.0.1.1", 80));
     }
 
     #[test]
@@ -680,8 +707,8 @@ mod tests {
     }
 
     #[test]
-    fn the_pool_key_names_the_proxy_and_not_the_origin() {
+    fn the_host_and_port_are_the_proxys_and_not_the_origins() {
         let p = Proxy::new(Socks5::new(), "px", 1080);
-        assert_eq!(p.key(), "px:1080");
+        assert_eq!((p.host(), p.port()), ("px", 1080));
     }
 }

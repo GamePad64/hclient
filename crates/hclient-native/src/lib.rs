@@ -2838,7 +2838,11 @@ where
                         host,
                         port,
                     )
-                    .map(|p| p.key().into_boxed_str())
+                    // Two proxies to one origin are two connections, and a
+                    // tunnel reused through a *different* proxy would be a
+                    // security defect rather than a redundancy — the same
+                    // argument the TLS-identity field of this key is kept for.
+                    .map(|p| format!("{}:{}", p.host(), p.port()).into_boxed_str())
                 }),
         })
     }

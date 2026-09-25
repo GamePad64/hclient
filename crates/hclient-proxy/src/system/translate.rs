@@ -24,8 +24,8 @@
 
 use crate::error::SystemProxyRefused;
 
-use super::{ProxyKind, Scheme, SystemProxies};
-use crate::{HttpConnect, Proxy, ProxyScheme};
+use super::{ProxyKind, SystemProxies};
+use crate::{HttpConnect, Proxy};
 
 /// The HTTP proxies in `sys`, in the order they should be tried.
 ///
@@ -85,10 +85,7 @@ pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, Syst
             proxy = proxy.bypass_local();
         }
         if let Some(scheme) = entry.applies_to() {
-            proxy = proxy.only_for(match scheme {
-                Scheme::Http => ProxyScheme::Http,
-                Scheme::Https => ProxyScheme::Https,
-            });
+            proxy = proxy.only_for(scheme);
         }
         out.push(proxy);
     }
@@ -181,10 +178,7 @@ pub fn http_proxies_lossy(
             proxy = proxy.bypass_local();
         }
         if let Some(scheme) = entry.applies_to() {
-            proxy = proxy.only_for(match scheme {
-                Scheme::Http => ProxyScheme::Http,
-                Scheme::Https => ProxyScheme::Https,
-            });
+            proxy = proxy.only_for(scheme);
         }
         out.push(proxy);
     }
@@ -444,7 +438,9 @@ mod tests {
             let (lossy, dropped) = http_proxies_lossy(&sys);
             assert!(dropped.is_empty());
             let key = |l: &[Proxy<HttpConnect>]| {
-                l.iter().map(|p| (p.key(), p.scheme())).collect::<Vec<_>>()
+                l.iter()
+                    .map(|p| (p.host().to_owned(), p.port(), p.scheme()))
+                    .collect::<Vec<_>>()
             };
             assert_eq!(key(&strict), key(&lossy));
         }

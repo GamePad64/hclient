@@ -12,13 +12,14 @@
 
 use crate::error::ParseError;
 
-use super::{BypassReason, Credentials, ProxyEntry, ProxyKind, Scheme};
+use super::{BypassReason, Credentials, ProxyEntry, ProxyKind};
+use crate::ProxyScheme;
 
 /// One `(key, value)` from the platform into an entry.
 pub(crate) fn entry(
     key: &str,
     value: &str,
-    applies_to: Option<Scheme>,
+    applies_to: Option<ProxyScheme>,
 ) -> Result<ProxyEntry, ParseError> {
     let value = value.trim();
 
@@ -215,7 +216,7 @@ mod tests {
     use rstest::rstest;
 
     fn parse(value: &str) -> Result<ProxyEntry, ParseError> {
-        entry("http", value, Some(Scheme::Http))
+        entry("http", value, Some(ProxyScheme::Http))
     }
 
     #[rstest]

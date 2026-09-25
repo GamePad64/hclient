@@ -8149,6 +8149,62 @@ with default features never saw it — `charset` is off by default, but
 caught it**, which is the recipe this file records as having once printed
 `error:` and exited zero. It earns its place here.
 
+### `hclient-proxy` was audited for a stable number, and the gate had a blind side
+
+Asked what stood between `hclient-native` and a stable version, the
+answer began with what `native` exposes — and the first finding was
+about the instrument. **`just exposed-majors` read an impl's trait and
+its items and never its where-clause**, so `impl Transport for H3 where
+T: QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>>`
+reached no report: on `native` the scan answered eight crates and the
+truth is ten, `quinn_proto` and `hclient_dns` among the missing. The
+eight published stable crates carry no such bound and all still pass,
+so nothing shipped wrong — what the hole would have done is let
+`native` itself through with a clean bill. A path through a `__private`
+module (`pin-project-lite`'s generated `Unpin` impl) is skipped, since a
+macro's plumbing is not a promise.
+
+**`native` exposes `hclient-proxy`**, a pre-release, so that crate goes
+first — `hclient-tls` waiting on `hclient-rt` a second time. Its audit,
+by the instruments this file trusts:
+
+- **An outside consumer** wrote a third protocol against `Handshake`
+  alone — `HELLO host:port`, `OK`, tunnel — and drove a real request
+  through `Native::proxy` and `Client`. It compiled and passed on the
+  first try, which is the seam's best evidence.
+- **It leaked a pre-release of its own**: `ConnectError::Malformed`
+  carried `hclient_proto::head::HeadError` with a `#[from]`. It carries
+  `MalformedHead` now, an opaque newtype whose `source()` is the
+  parser's error, and the public API reaches `bytes`, `http` and
+  `hclient-core` and nothing else. `hclient-proto` is still a normal
+  dependency — the head parser and base64 — so a stable `proxy` would
+  have a pre-release in its graph without one in its surface.
+- **`ProxyRefused(pub StatusCode)`** was a tuple struct with a public
+  field and no `#[non_exhaustive]`: handed back and only read, so answer
+  three. It is `ProxyRefused { status }`, non-exhaustive, with room for
+  the `Proxy-Authenticate` challenge a proxy-auth flow will want.
+- **One concept had two types**: `system::Scheme` and the root's
+  `ProxyScheme`, the same two variants, mapped arm by arm in
+  `translate.rs`. `ProxyScheme` is the one left.
+- **Three items served nobody outside**: `Proxy::key` (the pool-key
+  string, which `native` now builds from `host` and `port` where the pool
+  is), `Proxy::protocol_mut` (no caller anywhere, and a doc contradicting
+  its own signature) and `drive_for_test`, a `#[doc(hidden)] pub` used
+  only by the crate's own unit tests and `#[cfg(test)]` now.
+- **Mutation: 334 mutants, 254 caught, 53 unviable, 3 timeouts, 24
+  missed**, and 23 of the 24 are artefacts of a Linux host — the
+  Windows, Apple and Android readers are never compiled here, the Linux
+  `platform()` already *is* `Raw::default()`, and `NoProxy::begin` has an
+  uninhabited receiver. **The twenty-fourth was a real defect under a
+  note calling it equivalent.** `parse_prefix` re-read an address
+  `IpAddr` had refused through `u8::from_str`, which takes `010` as ten
+  and `+10` as ten, so a bypass `010.0.0.0/8` covered `10.0.0.0/8` —
+  where `inet_aton`, and so the platform that wrote the pattern, reads
+  `010` as eight. The fallback takes digits without a leading zero now,
+  and a pattern in no accepted shape matches nothing, as everywhere else
+  in the matcher. The note was right that `>= 4` and `> 4` agree, for a
+  premise that was false until the fix made it true.
+
 ### `hclient::Client` names no type parameters, and the browser decided what that costs
 
 `Client` is one concrete type. `Clone` is an `Arc` bump, and a library takes

@@ -45,8 +45,12 @@ use crate::system::ProxyKind;
 /// and handing it back as one would report a refusal to connect as an
 /// HTTP result the caller could act on.
 #[derive(Debug, thiserror::Error)]
-#[error("the proxy refused CONNECT with {0}")]
-pub struct ProxyRefused(pub http::StatusCode);
+#[error("the proxy refused CONNECT with {status}")]
+#[non_exhaustive]
+pub struct ProxyRefused {
+    /// The status the proxy answered — `407` when it wants credentials.
+    pub status: http::StatusCode,
+}
 
 /// The proxy answered something that is not an HTTP response, or too much
 /// of one.
@@ -56,7 +60,7 @@ pub enum ConnectError {
     /// The bytes the proxy sent back do not parse as an HTTP response head
     /// at all.
     #[error("the proxy's answer to CONNECT is not an HTTP response head: {0}")]
-    Malformed(#[from] head::HeadError),
+    Malformed(#[source] MalformedHead),
     /// A head that never ends is a proxy holding the connection open at
     /// our expense, and the bound is ours because HTTP states none.
     #[error("the proxy's response head passed {0} bytes without ending")]
@@ -65,6 +69,29 @@ pub enum ConnectError {
     /// authority — the host, and the port.
     #[error("`{0}:{1}` cannot be written as an authority")]
     BadAuthority(Box<str>, u16),
+}
+
+// Maintainer notes (not rendered):
+// A newtype rather than `hclient_proto::head::HeadError` itself, because
+// that crate is a pre-release and a public field naming its type would make
+// this crate's stable promise depend on one it does not own — the rule
+// `just exposed-majors` checks. The parser's own error is still the
+// `source()`, so nothing a log prints is lost.
+/// Why a `CONNECT` response head did not parse. Its [`Display`](std::fmt::Display)
+/// names the defect; there is nothing to match on.
+#[derive(Debug)]
+pub struct MalformedHead(pub(crate) head::HeadError);
+
+impl std::fmt::Display for MalformedHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for MalformedHead {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
 }
 
 /// What a `USERID` or a host name cannot be.

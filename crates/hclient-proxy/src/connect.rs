@@ -18,7 +18,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::error::{Error, ErrorKind};
 use hclient_proto::head;
 
-use crate::error::{ConnectError, ProxyRefused};
+use crate::error::{ConnectError, MalformedHead, ProxyRefused};
 use crate::{Approach, Handshake, Step};
 
 /// A response head this large is a proxy that has stopped answering and
@@ -117,8 +117,12 @@ impl Handshake for HttpConnect {
         if !self.awaiting_head {
             return Ok(Step::Done);
         }
-        let parsed = head::parse_response(from_peer)
-            .map_err(|e| Error::new(ErrorKind::Connect, ConnectError::Malformed(e)))?;
+        let parsed = head::parse_response(from_peer).map_err(|e| {
+            Error::new(
+                ErrorKind::Connect,
+                ConnectError::Malformed(MalformedHead(e)),
+            )
+        })?;
         let Some((head, len)) = parsed else {
             if from_peer.len() > MAX_HEAD {
                 return Err(Error::new(
@@ -145,7 +149,12 @@ impl Handshake for HttpConnect {
             len,
         );
         if !head.status.is_success() {
-            return Err(Error::new(ErrorKind::Connect, ProxyRefused(head.status)));
+            return Err(Error::new(
+                ErrorKind::Connect,
+                ProxyRefused {
+                    status: head.status,
+                },
+            ));
         }
         // Consumed only now: a refusal leaves the buffer as it was, which
         // costs nothing and keeps the failure path from being the one
