@@ -1094,6 +1094,13 @@ where
 /// same reason: **a name that is absent can only be guessed at, where a
 /// name that is present can explain itself.**
 ///
+/// **`#[doc(hidden)]`, with the stub method, because neither is API.** The
+/// trait exists only in a build *without* the feature, so turning the
+/// feature on removes a public item, where features should only ever add
+/// items. Nobody outside can implement it (it and `Rustls` are both this
+/// crate's) or has a reason to name it, and hidden, it is no longer
+/// documented as though it were part of the public API.
+///
 /// **The lifetime parameter is load-bearing and must not be tidied away.**
 /// A `where Self: Trait` predicate that mentions no generic parameter is
 /// checked where the method is *defined*, so the plain form makes this
@@ -1101,6 +1108,7 @@ where
 /// the caller never writes defers the check to the call site, which is the
 /// only place the message is any use.
 #[cfg(not(feature = "webpki-roots"))]
+#[doc(hidden)]
 #[diagnostic::on_unimplemented(
     message = "`Rustls::with_webpki_roots()` needs the `webpki-roots` feature of `hclient-tls-rustls`",
     label = "this build of `hclient-tls-rustls` compiled in no root certificates",
@@ -1112,7 +1120,9 @@ pub trait WebpkiRootsFeature<'g> {}
 
 #[cfg(not(feature = "webpki-roots"))]
 impl Rustls {
-    /// Not available in this build — see [`WebpkiRootsFeature`].
+    /// Not available in this build: it needs the `webpki-roots` feature.
+    /// Present only so that a call names the feature in its error.
+    #[doc(hidden)]
     pub fn with_webpki_roots<'g>() -> Self
     where
         Self: WebpkiRootsFeature<'g>,
