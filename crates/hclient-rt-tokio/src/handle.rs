@@ -134,6 +134,14 @@ impl TokioHandle {
     }
 }
 
+/// The same as [`TokioHandle::from_handle`], so a handle converts where a
+/// `TokioHandle` is wanted: `rt.handle().clone().into()`.
+impl From<tokio::runtime::Handle> for TokioHandle {
+    fn from(h: tokio::runtime::Handle) -> Self {
+        Self::from_handle(h)
+    }
+}
+
 impl Timer for TokioHandle {
     /// Delegated, exactly: an instant from `TokioHandle` and one from
     /// [`Tokio`] are the same value and can be compared. Anything else
@@ -296,6 +304,15 @@ mod tests {
         })
         .join()
         .expect("probe thread")
+    }
+
+    /// `From` is `from_handle` under another name: the handle it wraps is
+    /// the runtime it was given, checked by identity rather than by type.
+    #[test]
+    fn from_a_handle_wraps_that_runtime() {
+        let rt = rt();
+        let h: TokioHandle = rt.handle().clone().into();
+        assert_eq!(h.handle().id(), rt.handle().id());
     }
 
     #[test]
@@ -561,7 +578,9 @@ mod tests {
              fails with an unsupported-option error, TCP_SUPPORT has drifted \
              below what connect does",
         );
-        let applied = s.get_ref().nodelay().expect("nodelay query");
+        let applied = socket2::SockRef::from(&s)
+            .tcp_nodelay()
+            .expect("nodelay query");
         assert!(applied, "nodelay did not reach the socket");
         assert_eq!(<TokioHandle as TcpConnect>::TCP_SUPPORT.nodelay, applied);
     }

@@ -34,38 +34,34 @@ impl TokioIo {
     fn over(inner: Socket) -> Self {
         Self { inner }
     }
+}
 
-    /// A reference to the underlying `tokio::net::TcpStream` — for example,
-    /// to read applied `TcpOpts` back (`nodelay()`, …) in tests or
-    /// diagnostics.
-    ///
-    /// # Panics
-    ///
-    /// On a Unix-domain stream, where there is no `TcpStream` to hand
-    /// back and every `TcpOpts` field this accessor exists to read has no
-    /// meaning. A `Result` or an `Option` was the alternative and is
-    /// worse: every caller of this method today holds a connection it made
-    /// with [`TcpConnect::connect`](hclient_rt::TcpConnect::connect), and
-    /// `AF_UNIX` cannot be reached from there — so the failing arm would
-    /// be unreachable noise at each of them.
-    pub fn get_ref(&self) -> &tokio::net::TcpStream {
+/// The socket itself, through the standard library's trait, for reading
+/// applied `TcpOpts` back with `socket2::SockRef::from(&io)` or handing the
+/// descriptor to anything else that takes one.
+///
+/// **This replaced `get_ref` and `into_inner`**, which handed back a
+/// `tokio::net::TcpStream` and panicked on a Unix-domain stream, where
+/// there is none. A descriptor exists for both kinds, so this answers
+/// every connection this runtime makes and panics on none. It is also
+/// what `hclient-rt-smol`'s `SmolIo` offers, so code reading an option
+/// back is the same over either runtime.
+#[cfg(unix)]
+impl std::os::fd::AsFd for TokioIo {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         match &self.inner {
-            Socket::Tcp(s) => s,
-            #[cfg(unix)]
-            Socket::Unix(_) => panic!("get_ref on a Unix-domain stream: there is no TcpStream"),
+            Socket::Tcp(s) => s.as_fd(),
+            Socket::Unix(s) => s.as_fd(),
         }
     }
+}
 
-    /// The underlying `tokio::net::TcpStream`, by value.
-    ///
-    /// # Panics
-    ///
-    /// On a Unix-domain stream, for [`get_ref`](Self::get_ref)'s reason.
-    pub fn into_inner(self) -> tokio::net::TcpStream {
-        match self.inner {
-            Socket::Tcp(s) => s,
-            #[cfg(unix)]
-            Socket::Unix(_) => panic!("into_inner on a Unix-domain stream: there is no TcpStream"),
+/// The Windows half of the `AsFd` impl above. Only TCP exists there.
+#[cfg(windows)]
+impl std::os::windows::io::AsSocket for TokioIo {
+    fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
+        match &self.inner {
+            Socket::Tcp(s) => s.as_socket(),
         }
     }
 }

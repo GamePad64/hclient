@@ -48,6 +48,29 @@ pub struct TokioUdpSocket {
     caps: UdpSupport,
 }
 
+/// The socket itself, through the standard library's trait, for reading
+/// its options back with `socket2::SockRef::from(&socket)`: the same access
+/// `TokioIo` gives to a stream.
+///
+/// **For reading, not for changing.** [`UdpDatagrams::support`] was measured
+/// on this socket at bind, so an option switched through the descriptor
+/// afterwards, ECN reception above all, is one that report no longer
+/// describes.
+#[cfg(unix)]
+impl std::os::fd::AsFd for TokioUdpSocket {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.io.as_fd()
+    }
+}
+
+/// The Windows half of the `AsFd` impl above.
+#[cfg(windows)]
+impl std::os::windows::io::AsSocket for TokioUdpSocket {
+    fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
+        self.io.as_socket()
+    }
+}
+
 impl TokioUdpSocket {
     fn from_std(std: std::net::UdpSocket) -> io::Result<Self> {
         std.set_nonblocking(true)?;

@@ -501,3 +501,19 @@ async fn readiness_for_a_datagram_someone_else_took_is_waited_out() {
 // `linux.rs`) and the ordinary receive keeps answering `WouldBlock`.
 // Written, run, and measured timing out under the *unmutated* code before
 // it was removed.
+
+/// The descriptor `AsFd`/`AsSocket` hands out is this socket's own: read
+/// through `socket2`, it names the address the socket reports for itself.
+/// A descriptor for some other socket would name another port.
+#[tokio::test]
+async fn the_descriptor_is_the_sockets_own() {
+    let s = hclient_rt_tokio::Tokio
+        .bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .expect("bind");
+    let via_fd = socket2::SockRef::from(&s)
+        .local_addr()
+        .expect("local_addr through the descriptor")
+        .as_socket()
+        .expect("an IP socket");
+    assert_eq!(via_fd, s.local_addr().expect("local_addr"));
+}

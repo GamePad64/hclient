@@ -1,4 +1,31 @@
 //! `hclient-rt` capabilities implemented on top of tokio.
+//!
+//! Two runtimes, one choice between them:
+//!
+//! - [`Tokio`] is a zero-sized type that reads the runtime from the current
+//!   thread. It is what you want inside `#[tokio::main]`, and every
+//!   capability panics off a runtime thread; its own doc lists where.
+//! - [`TokioHandle`] carries a `tokio::runtime::Handle`, so the check
+//!   happens once, at construction, as a `Result`. Spawning, blocking work,
+//!   timers and adopting a socket then work from any thread.
+//!
+//! Either is the `R` of `hclient_native::Native::new(R, tls, resolver)`.
+//! Used directly, each is the seam and nothing more:
+//!
+//! ```no_run
+//! use hclient_rt::{TcpConnect, TcpOpts};
+//! use hclient_rt_tokio::{Tokio, TokioHandle};
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let addr = "127.0.0.1:8080".parse()?;
+//! let io = Tokio.connect(addr, &TcpOpts::default().nodelay(true)).await?;
+//!
+//! // The same runtime, carried as a value for use from other threads.
+//! let rt = TokioHandle::current()?;
+//! # drop((io, rt));
+//! # Ok(())
+//! # }
+//! ```
 #![forbid(unsafe_code)]
 
 mod handle;
@@ -424,7 +451,9 @@ mod tests {
         // actually reached the socket: read the option back from the
         // `TcpStream` itself, rather than relying on the call having
         // happened.
-        let applied = s.get_ref().nodelay().expect("nodelay query");
+        let applied = socket2::SockRef::from(&s)
+            .tcp_nodelay()
+            .expect("nodelay query");
         assert!(
             applied,
             "TcpOpts::nodelay was not applied to the connected socket"
@@ -451,7 +480,7 @@ mod tests {
 
         let opts = TcpOpts::default().keepalive(Some(Duration::from_secs(30)));
         let s = Tokio.connect(addr, &opts).await.expect("connect");
-        let enabled = socket2::SockRef::from(s.get_ref())
+        let enabled = socket2::SockRef::from(&s)
             .keepalive()
             .expect("keepalive query");
         assert!(
@@ -490,7 +519,7 @@ mod tests {
             .keepalive_interval(Some(Duration::from_secs(7)))
             .keepalive_retries(Some(4));
         let s = Tokio.connect(addr, &opts).await.expect("connect");
-        let sock = socket2::SockRef::from(s.get_ref());
+        let sock = socket2::SockRef::from(&s);
         assert!(sock.keepalive().expect("keepalive query"));
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         {
@@ -517,7 +546,7 @@ mod tests {
             .await
             .expect("connect");
         assert!(
-            socket2::SockRef::from(s.get_ref())
+            socket2::SockRef::from(&s)
                 .keepalive()
                 .expect("keepalive query"),
             "an interval with no idle time still enables SO_KEEPALIVE"
@@ -537,9 +566,7 @@ mod tests {
             let opts = TcpOpts::default().bind_device(Some("lo".to_owned()));
             match Tokio.connect(addr, &opts).await {
                 Ok(s) => {
-                    let got = socket2::SockRef::from(s.get_ref())
-                        .device()
-                        .expect("device query");
+                    let got = socket2::SockRef::from(&s).device().expect("device query");
                     assert_eq!(
                         got.as_deref(),
                         Some(&b"lo"[..]),

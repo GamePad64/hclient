@@ -65,7 +65,11 @@ async fn local_address_selects_the_connecting_source_ip() {
     let connected = Tokio.connect(addr, &opts).await;
     if assignable {
         let s = connected.expect("connect");
-        let local = s.get_ref().local_addr().expect("local_addr query");
+        let local = socket2::SockRef::from(&s)
+            .local_addr()
+            .expect("local_addr query")
+            .as_socket()
+            .expect("an IP socket");
         assert_eq!(
             local.ip(),
             IpAddr::V4(SECOND_LOOPBACK),
@@ -100,7 +104,11 @@ async fn default_local_address_is_not_127_0_0_2() {
         .connect(addr, &TcpOpts::default())
         .await
         .expect("connect");
-    let local = s.get_ref().local_addr().expect("local_addr query");
+    let local = socket2::SockRef::from(&s)
+        .local_addr()
+        .expect("local_addr query")
+        .as_socket()
+        .expect("an IP socket");
     assert_ne!(local.ip(), IpAddr::V4(SECOND_LOOPBACK));
 }
 
@@ -121,7 +129,7 @@ async fn send_buffer_size_is_applied_before_connect() {
         .connect(small_addr, &TcpOpts::default().send_buffer_size(Some(4096)))
         .await
         .expect("small connect");
-    let small_size = socket2::SockRef::from(small.get_ref())
+    let small_size = socket2::SockRef::from(&small)
         .send_buffer_size()
         .expect("small send_buffer_size query");
 
@@ -134,7 +142,7 @@ async fn send_buffer_size_is_applied_before_connect() {
         )
         .await
         .expect("large connect");
-    let large_size = socket2::SockRef::from(large.get_ref())
+    let large_size = socket2::SockRef::from(&large)
         .send_buffer_size()
         .expect("large send_buffer_size query");
 
@@ -152,7 +160,7 @@ async fn recv_buffer_size_is_applied_before_connect() {
         .connect(small_addr, &TcpOpts::default().recv_buffer_size(Some(4096)))
         .await
         .expect("small connect");
-    let small_size = socket2::SockRef::from(small.get_ref())
+    let small_size = socket2::SockRef::from(&small)
         .recv_buffer_size()
         .expect("small recv_buffer_size query");
 
@@ -165,7 +173,7 @@ async fn recv_buffer_size_is_applied_before_connect() {
         )
         .await
         .expect("large connect");
-    let large_size = socket2::SockRef::from(large.get_ref())
+    let large_size = socket2::SockRef::from(&large)
         .recv_buffer_size()
         .expect("large recv_buffer_size query");
 
@@ -181,7 +189,7 @@ async fn reuse_address_is_applied_before_connect() {
     let addr = spawn_accepting_listener();
     let opts = TcpOpts::default().reuse_address(true);
     let s = Tokio.connect(addr, &opts).await.expect("connect");
-    let enabled = socket2::SockRef::from(s.get_ref())
+    let enabled = socket2::SockRef::from(&s)
         .reuse_address()
         .expect("reuse_address query");
     assert!(enabled, "TcpOpts::reuse_address did not set SO_REUSEADDR");
@@ -195,7 +203,7 @@ async fn default_reuse_address_is_off() {
         .connect(addr, &TcpOpts::default())
         .await
         .expect("connect");
-    let enabled = socket2::SockRef::from(s.get_ref())
+    let enabled = socket2::SockRef::from(&s)
         .reuse_address()
         .expect("reuse_address query");
     assert!(
