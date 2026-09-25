@@ -3,7 +3,11 @@
 //! `getaddrinfo` only returns A and AAAA. This returns whatever you ask
 //! for: HTTPS/SVCB, CAA, TLSA, anything. It calls the platform's own
 //! resolver API, so the answer comes from the same place and under the
-//! same configuration as every other lookup on the machine.
+//! same configuration as every other lookup on the machine — no socket, no
+//! cache, no retries and no config parsing of this crate's own, unlike a
+//! resolver crate that reads `/etc/resolv.conf` and sends its own queries.
+//!
+//! # Quick start
 //!
 //! ```no_run
 //! # fn main() -> Result<(), system_resolver::Error> {
@@ -14,99 +18,173 @@
 //! # Ok(()) }
 //! ```
 //!
-//! # Why not a resolver crate
+//! # Key concepts
 //!
-//! `hickory-resolver` and the c-ares bindings are resolvers: they read
-//! `/etc/resolv.conf` and send their own queries to the servers listed
-//! there. That misses anything configured elsewhere, such as a VPN's split
-//! DNS, per-interface servers on Windows, macOS supplemental resolvers or
-//! Android's Private DNS, and it does not use the system cache.
+//! - [`lookup`] — the one call, blocking; run it from a thread pool.
+//! - [`support()`] — which record types this build and platform can ask
+//!   for, before spending a query; [`lookup`] answers
+//!   [`Error::UnsupportedType`] rather than guessing for the rest.
+//! - [`Record`] — the answer: a name, a TTL and raw RDATA. This crate does
+//!   not decode RDATA (that is a type per RFC); pair it with a decoder
+//!   that takes a record type and a byte slice, such as `hickory-proto`'s
+//!   `RData::read` or `domain`'s `AllRecordData::parse_rdata`. Names
+//!   inside RDATA are already expanded, since a record that has left its
+//!   message has nothing left for a compression pointer to point into.
 //!
-//! This crate sends nothing. No socket, no cache, no retries, no config
-//! parsing. Whatever your machine already does still happens, because the
-//! machine is what answers.
-//!
-//! # Platforms
+//! # Platforms and limits
 //!
 //! | target | API used | can be asked for |
 //! |---|---|---|
 //! | Linux, glibc | `res_query` | every type |
 //! | Linux, musl | `res_query` | every type up to 255 |
 //! | Android 29+ | `android_res_nquery` | every type |
-//! | FreeBSD | `res_query` | every type |
+//! | FreeBSD | `res_query` | every type (compiled and type-checked on every push, never run there) |
 //! | macOS, iOS | `DNSServiceQueryRecord` | every type |
 //! | Windows 11 | `DnsQueryRaw` | every type |
-//! | Windows 10 | `DnsQuery_UTF8` | every type but sixteen |
+//! | Windows 10 | `DnsQuery_UTF8` | every type but sixteen — see [below](#windows-10) |
 //!
-//! Anything else compiles and answers [`Error::Unsupported`].
+//! Anything else compiles and answers [`Error::Unsupported`]. The two
+//! Windows rows are one binary, resolved at run time, which is why
+//! [`support()`] is a function and not a constant.
 //!
-//! The two Windows rows are one binary. `DnsQueryRaw` is resolved at run
-//! time, so a build does not know which of the two it is until it runs,
-//! which is why [`support()`] is a function and not a constant.
-//!
-//! # Limits
-//!
-//! Not every platform can be asked for everything. [`support()`] and its
-//! `allows(rtype)` answer before you spend a query, and [`lookup`] returns
-//! [`Error::UnsupportedType`] naming the type rather than guessing.
-//!
-//! - musl cannot pass a type number above 255, so `CAA` (257) and `URI`
-//!   (256) are unavailable there.
-//! - Windows 10 refuses sixteen types; see below.
-//! - Apple reports "no such name" and "no such record" with one code, so
-//!   [`Error::NameDoesNotExist`] is unreachable there and an absent name
-//!   comes back as an empty answer.
-//! - There is no message header, so no `AD` bit and no `TC`. You get
-//!   records. Where a caller needs to tell `NXDOMAIN` from *no records of
-//!   this type*, [`Error::NameDoesNotExist`] and `Ok(vec![])` are
-//!   different values on every platform but Apple.
-//! - Every call blocks. Run it from a blocking thread pool.
-//! - FreeBSD is compiled and type-checked on every push, but has never
-//!   been run on FreeBSD.
+//! Three more limits worth knowing before reading an empty answer as
+//! *nothing there*: Apple reports "no such name" and "no such record"
+//! with one code, so [`Error::NameDoesNotExist`] is unreachable there and
+//! an absent name comes back as an empty `Ok(vec![])` like any other; there
+//! is no message header on any platform, so no `AD` bit and no `TC`; and
+//! musl cannot pass a type number above 255, so `CAA` (257) and `URI`
+//! (256) are unavailable there.
 //!
 //! ## Windows 10
 //!
 //! `DnsQuery_UTF8` parses 43 record types into structures of its own
-//! before this crate can see them. 26 are converted back into RDATA, so
-//! `A`, `AAAA`, `MX`, `TXT`, `SRV`, `SOA`, `NS`, `CNAME`, `PTR`, `DS`,
-//! `DNSKEY` and `TLSA` work as anywhere else. Sixteen are refused by name:
-//! the DNSSEC signature and denial records, `OPT`, `TKEY`, `TSIG`, and
-//! `WKS`, `ATMA`, `NULL`, `DHCID`, `WINS`, `WINSR`. Most of the registry
-//! is in neither group and arrives as RDATA, `CAA`, `HTTPS`, `SVCB`,
-//! `SSHFP`, `OPENPGPKEY`, `CERT`, `LOC` and `URI` among them.
+//! before this crate can see them: 26 are converted back into RDATA, and
+//! sixteen — the DNSSEC signature and denial records, `OPT`, `TKEY`,
+//! `TSIG`, `WKS`, `ATMA`, `NULL`, `DHCID`, `WINS`, `WINSR` — are refused
+//! by name. Two things are missing rather than altered on that path:
+//! records of another type beside the answer, so a CNAME chain is not
+//! visible, and the `TC` bit, so a truncated answer cannot be detected.
+//! Windows 11's `DnsQueryRaw` hands over the wire message and has none of
+//! this; see the maintainer notes for the full type lists.
 //!
-//! Two things are missing rather than altered on that path: records of
-//! another type beside the answer, so a CNAME chain is not visible, and
-//! the `TC` bit, so a truncated answer cannot be detected.
+//! # Where to go next
 //!
-//! Windows 11 has `DnsQueryRaw`, which hands over the wire message and
-//! has none of this. It is resolved with `GetProcAddress` rather than
-//! named as an import, because naming a function a machine does not export
-//! stops the process from starting at all.
-//!
-//! # Record data
-//!
-//! [`Record::rdata`] is the raw RDATA bytes. This crate does not decode
-//! them, because that would mean a type per RFC and most callers want one
-//! of them.
-//!
-//! Use a decoder that takes a record type and a byte slice —
-//! `hickory-proto`'s `RData::read` or `domain`'s
-//! `AllRecordData::parse_rdata` both do. A decoder written for whole
-//! messages, such as `dns-message-parser`'s `RR::decode`, wants a record
-//! header first, so you would have to build one.
-//!
-//! Names inside RDATA are expanded before you get them. A compression
-//! pointer (RFC 1035 §4.1.4) refers to an offset in the message it arrived
-//! in, and a record that has left its message has nothing to point into,
-//! so a bare field would otherwise be undecodable out of context.
-//!
-//! # Notes
-//!
+//! `hclient-dns-system` is this crate's `Resolve` frontend, and
 //! `docs/system-resolver-design.md` in the repository records what was
-//! measured on each platform and why each backend is the one it is,
-//! including the two defects that changed the Windows and Apple paths.
+//! measured on each platform and why each backend is the one it is.
 
+// Maintainer notes (not rendered):
+//
+// The original front-page prose, kept verbatim:
+//
+// Ask the operating system's own DNS resolver for any record type.
+//
+// `getaddrinfo` only returns A and AAAA. This returns whatever you ask
+// for: HTTPS/SVCB, CAA, TLSA, anything. It calls the platform's own
+// resolver API, so the answer comes from the same place and under the
+// same configuration as every other lookup on the machine.
+//
+// ```no_run
+// # fn main() -> Result<(), system_resolver::Error> {
+// // RR type 65 is HTTPS (RFC 9460 §14.1).
+// for record in system_resolver::lookup("cloudflare.com", 65)? {
+//     println!("{} ttl {:?} rdata {} bytes", record.name, record.ttl, record.rdata.len());
+// }
+// # Ok(()) }
+// ```
+//
+// # Why not a resolver crate
+//
+// `hickory-resolver` and the c-ares bindings are resolvers: they read
+// `/etc/resolv.conf` and send their own queries to the servers listed
+// there. That misses anything configured elsewhere, such as a VPN's split
+// DNS, per-interface servers on Windows, macOS supplemental resolvers or
+// Android's Private DNS, and it does not use the system cache.
+//
+// This crate sends nothing. No socket, no cache, no retries, no config
+// parsing. Whatever your machine already does still happens, because the
+// machine is what answers.
+//
+// # Platforms
+//
+// | target | API used | can be asked for |
+// |---|---|---|
+// | Linux, glibc | `res_query` | every type |
+// | Linux, musl | `res_query` | every type up to 255 |
+// | Android 29+ | `android_res_nquery` | every type |
+// | FreeBSD | `res_query` | every type |
+// | macOS, iOS | `DNSServiceQueryRecord` | every type |
+// | Windows 11 | `DnsQueryRaw` | every type |
+// | Windows 10 | `DnsQuery_UTF8` | every type but sixteen |
+//
+// Anything else compiles and answers `Error::Unsupported`.
+//
+// The two Windows rows are one binary. `DnsQueryRaw` is resolved at run
+// time, so a build does not know which of the two it is until it runs,
+// which is why `support()` is a function and not a constant.
+//
+// # Limits
+//
+// Not every platform can be asked for everything. [`support()`] and its
+// `allows(rtype)` answer before you spend a query, and [`lookup`] returns
+// [`Error::UnsupportedType`] naming the type rather than guessing.
+//
+// - musl cannot pass a type number above 255, so `CAA` (257) and `URI`
+//   (256) are unavailable there.
+// - Windows 10 refuses sixteen types; see below.
+// - Apple reports "no such name" and "no such record" with one code, so
+//   `Error::NameDoesNotExist` is unreachable there and an absent name
+//   comes back as an empty answer.
+// - There is no message header, so no `AD` bit and no `TC`. You get
+//   records. Where a caller needs to tell `NXDOMAIN` from *no records of
+//   this type*, [`Error::NameDoesNotExist`] and `Ok(vec![])` are
+//   different values on every platform but Apple.
+// - Every call blocks. Run it from a blocking thread pool.
+// - FreeBSD is compiled and type-checked on every push, but has never
+//   been run on FreeBSD.
+//
+// ## Windows 10
+//
+// `DnsQuery_UTF8` parses 43 record types into structures of its own
+// before this crate can see them. 26 are converted back into RDATA, so
+// `A`, `AAAA`, `MX`, `TXT`, `SRV`, `SOA`, `NS`, `CNAME`, `PTR`, `DS`,
+// `DNSKEY` and `TLSA` work as anywhere else. Sixteen are refused by name:
+// the DNSSEC signature and denial records, `OPT`, `TKEY`, `TSIG`, and
+// `WKS`, `ATMA`, `NULL`, `DHCID`, `WINS`, `WINSR`. Most of the registry
+// is in neither group and arrives as RDATA, `CAA`, `HTTPS`, `SVCB`,
+// `SSHFP`, `OPENPGPKEY`, `CERT`, `LOC` and `URI` among them.
+//
+// Two things are missing rather than altered on that path: records of
+// another type beside the answer, so a CNAME chain is not visible, and
+// the `TC` bit, so a truncated answer cannot be detected.
+//
+// Windows 11 has `DnsQueryRaw`, which hands over the wire message and
+// has none of this. It is resolved with `GetProcAddress` rather than
+// named as an import, because naming a function a machine does not export
+// stops the process from starting at all.
+//
+// # Record data
+//
+// [`Record::rdata`] is the raw RDATA bytes. This crate does not decode
+// them, because that would mean a type per RFC and most callers want one
+// of them.
+//
+// Use a decoder that takes a record type and a byte slice —
+// `hickory-proto`'s `RData::read` or `domain`'s
+// `AllRecordData::parse_rdata` both do. A decoder written for whole
+// messages, such as `dns-message-parser`'s `RR::decode`, wants a record
+// header first, so you would have to build one.
+//
+// Names inside RDATA are expanded before you get them. A compression
+// pointer (RFC 1035 §4.1.4) refers to an offset in the message it arrived
+// in, and a record that has left its message has nothing to point into,
+// so a bare field would otherwise be undecodable out of context.
+//
+// # Notes
+//
+// `docs/system-resolver-design.md` in the repository records what was
+// measured on each platform and why each backend is the one it is,
+// including the two defects that changed the Windows and Apple paths.
 #![doc(html_no_source)]
 #![warn(missing_docs)]
 
@@ -191,6 +269,16 @@ impl Record {
     /// outside the crate that defines it, so without this constructor the
     /// type would be a wall to exactly the code that needs it most — a
     /// test, or a double standing in for a resolver.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use system_resolver::{CLASS_IN, Record};
+    ///
+    /// let record = Record::new("example.com", 1, CLASS_IN, Duration::from_secs(300), vec![
+    ///     127, 0, 0, 1,
+    /// ]);
+    /// assert_eq!(record.name, "example.com");
+    /// ```
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -334,6 +422,12 @@ impl Support {
     /// Asking anyway is not undefined — it is [`Error::UnsupportedType`],
     /// naming the type. This exists so a caller can choose a different
     /// route before spending a query rather than after.
+    ///
+    /// ```
+    /// // RR type 1 is A (RFC 1035 §3.4.1) and is answerable everywhere
+    /// // this crate has a backend at all.
+    /// assert!(system_resolver::support().allows(1));
+    /// ```
     #[must_use]
     pub fn allows(&self, rtype: u16) -> bool {
         self.range.contains(&rtype) && !self.except.contains(&rtype)

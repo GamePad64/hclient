@@ -167,6 +167,16 @@ impl<'a> TlsRequest<'a> {
     /// [`QuicTlsRequest::new`](crate::quic::QuicTlsRequest::new)'s shape:
     /// a handshake has to present *some* name, and an ALPN list — even an
     /// empty one — is a decision the caller made.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use hclient_tls::TlsRequest;
+    ///
+    /// let req = TlsRequest::new("example.com", &[b"h2", b"http/1.1"]);
+    /// assert_eq!(req.server_name, "example.com");
+    /// assert_eq!(req.identity, None);
+    /// ```
     #[must_use]
     pub const fn new(server_name: &'a str, alpn: &'a [&'a [u8]]) -> Self {
         Self {

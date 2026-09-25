@@ -512,6 +512,24 @@ where
 /// `TcpOpts`': a value set here changes what this client accepts, so a
 /// default of ours would change behaviour for a caller who asked for
 /// nothing.
+///
+/// # Example
+///
+/// ```
+/// use hclient_dns::IpLiteralOnly;
+/// use hclient_native::{H1Opts, Native};
+/// use hclient_rt_tokio::Tokio;
+/// use hclient_tls::NoTls;
+///
+/// # fn main() -> Result<(), hclient_core::error::Error> {
+/// let transport = Native::new(Tokio, NoTls, IpLiteralOnly).h1_opts(H1Opts {
+///     max_headers: Some(200),
+///     ..H1Opts::default()
+/// })?;
+/// # drop(transport);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct H1Opts {
     /// How many header fields a response may carry. hyper's default is

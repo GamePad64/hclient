@@ -3,13 +3,25 @@
 //! Three ship — HTTP `CONNECT`, SOCKS5 and `SOCKS4a` — and they share no
 //! bytes.
 //!
-//! ```no_run
-//! use hclient_proxy::{HttpConnect, Proxy};
+//! ```
+//! use hclient_proxy::{Handshake, HttpConnect, Proxy, Step};
 //!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let proxy = Proxy::new(HttpConnect::new(), "proxy.corp", 8080)
 //!     .bypass([".internal", "localhost"])
 //!     .bypass_local();
-//! # let _ = proxy;
+//!
+//! // A handshake is a state machine, fresh per connection.
+//! let mut handshake = proxy.handshake();
+//! let to_send = handshake.begin("example.com", 443)?;
+//! assert!(to_send.starts_with(b"CONNECT example.com:443"));
+//!
+//! // Hand back whatever arrived from the proxy so far; `advance` says
+//! // what happens next.
+//! let mut from_peer = bytes::BytesMut::from(&b"HTTP/1.1 200 Connection Established\r\n\r\n"[..]);
+//! assert_eq!(handshake.advance(&mut from_peer)?, Step::Done);
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Sans-io, and what that buys
@@ -18,6 +30,22 @@
 //! handshake is a state machine: it is handed the bytes that arrived and
 //! answers with the bytes to send, or *not yet*, or *the tunnel is open*.
 //! The transport owns the socket and drives it.
+//!
+//! # Key concepts
+//!
+//! - [`Proxy<P>`] — where a proxy lives and which requests it serves: a
+//!   scheme restriction, a bypass list, and [`Proxy::handshake`] for a
+//!   fresh state machine per connection.
+//! - [`Handshake`] — the trait the three protocols implement; see its own
+//!   doc for the contract a driver depends on.
+//! - [`Step`] — what a handshake wants to happen next.
+//! - [`HttpConnect`], [`Socks5`], [`Socks4`] — the three implementations.
+//!
+//! # Features
+//!
+//! - `system` — read the machine's own proxy settings (environment
+//!   variables, the platform's configuration store, a PAC script's URL)
+//!   through [`system`], rather than building a [`Proxy`] by hand.
 //!
 //! # What it costs, stated where somebody will look for it
 //!

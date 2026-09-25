@@ -16,6 +16,18 @@ pub(crate) type Transmitted = FutureReader<Result<(), ErrorCode>>;
 
 /// `wasi:http` response body. Reads the stream inline, with no background
 /// task — meaning the transport doesn't need the `spawn` capability.
+///
+/// A caller gets one back from [`crate::WasiHttp`]'s [`Transport`
+/// impl](hclient_core::transport::Transport); the one constructor exposed
+/// here is the empty case:
+///
+/// ```
+/// use hclient_wasi::Body;
+/// use http_body::Body as _;
+///
+/// let body = Body::empty();
+/// assert!(body.is_end_stream());
+/// ```
 pub struct Body {
     inner: Inner,
     /// Held, never polled, until the stream ends — **because on wasmtime

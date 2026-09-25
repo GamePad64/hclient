@@ -12,6 +12,8 @@
 //! them: an extra trust root, or a client certificate for mutual TLS. The
 //! result is the `T` of `hclient_native::Native::new(runtime, T, resolver)`.
 //!
+//! # Quick start
+//!
 //! ```no_run
 //! use hclient_tls_native_tls::{Certificate, Identity, NativeTls};
 //!
@@ -19,6 +21,7 @@
 //! let tls = NativeTls::new()
 //!     .with_root_certificate(Certificate::from_pem(ca_pem)?)
 //!     .with_client_identity(Identity::from_pkcs8(cert_pem, key_pem)?);
+//! // Then: hclient_native::Native::new(Tokio, tls, SystemDns::new(Tokio)).
 //! # drop(tls);
 //! # Ok(())
 //! # }
@@ -47,6 +50,27 @@
 //! The crate contains `unsafe` code, needed to bridge
 //! `native-tls`'s synchronous `Read`/`Write` to a poll-based world by
 //! giving the synchronous side a way to reach the current task's waker.
+//!
+//! # Key types
+//!
+//! - [`NativeTls`] — the backend; [`NativeTls::new`] for the platform's
+//!   defaults, then [`NativeTls::with_root_certificate`] and
+//!   [`NativeTls::with_client_identity`].
+//! - [`Certificate`] and [`Identity`] — `native-tls`'s own types,
+//!   re-exported so a caller does not have to guess its version.
+//! - [`TlsStream`] — the encrypted stream a handshake hands back.
+//!
+//! # Features
+//!
+//! - `dangerous-insecure` — `NativeTls::danger_accept_invalid_certs`,
+//!   which skips certificate and hostname verification, as `curl -k`
+//!   does.
+//!
+//! # Where next
+//!
+//! `hclient-native` is the transport this plugs into; `hclient-tls` holds
+//! the [`TlsConnect`] seam; `hclient-tls-rustls` is the default backend,
+//! and the only one that also serves HTTP/3.
 
 // Maintainer notes (not rendered):
 //
@@ -113,6 +137,17 @@ use std::fmt::Debug;
 /// same origin), and `native-tls` fixes the ALPN list when the connector is
 /// built, so one connector could not serve two requests offering different
 /// lists.
+///
+/// # Example
+///
+/// ```
+/// use hclient_tls::TlsConnect;
+/// use hclient_tls_native_tls::NativeTls;
+///
+/// let tls = NativeTls::new();
+/// // The negotiated ALPN is readable, so HTTP/2 can be offered over it.
+/// assert!(tls.reports_alpn());
+/// ```
 #[derive(Clone)]
 pub struct NativeTls {
     identity: Option<native_tls::Identity>,

@@ -20,6 +20,19 @@
 /// `UriError::NonAsciiHost` ("this build cannot convert; send the A-label
 /// yourself"). Collapsing them would tell a user to fix their domain when
 /// the actual problem is the build they are running.
+///
+/// ```
+/// use hclient_idn::IdnError;
+///
+/// match hclient_idn::domain_to_ascii("xn--zzzz.test") {
+///     Ok(ascii) => println!("{ascii}"),
+///     Err(IdnError::NotAnIdn { domain }) => eprintln!("not usable: {domain}"),
+///     Err(IdnError::NoImplementation { domain }) => {
+///         eprintln!("this build cannot convert {domain}");
+///     }
+///     Err(_) => eprintln!("a variant added since this was written"),
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum IdnError {

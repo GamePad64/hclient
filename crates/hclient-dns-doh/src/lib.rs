@@ -1,4 +1,8 @@
-//! DNS over HTTPS (RFC 8484) behind [`hclient_dns::Resolve`].
+//! DNS over HTTPS (RFC 8484) behind [`hclient_dns::Resolve`] — a resolver
+//! that makes its own lookups as HTTP requests over a caller-supplied
+//! [`Transport`](hclient_core::transport::Transport).
+//!
+//! # Quick start
 //!
 //! ```no_run
 //! # use hclient_dns_doh::Doh;
@@ -15,122 +19,193 @@
 //! of prose. What *is* checked is this crate's own half: that `pinned`
 //! takes a client and a `Uri` and hands back a resolver.
 //!
-//! # The bootstrap is the design problem, not the protocol
+//! # Key concepts
 //!
-//! `DoH` resolves a name by making an HTTP request, and an HTTP request needs
-//! a name resolved. Three questions come out of that, and this crate
-//! answers all three in its **constructors and its type**, not in prose,
-//! because prose is not read at the call site.
+//! - [`Doh`] — the resolver, generic over the [`Transport`](hclient_core::transport::Transport)
+//!   that carries its HTTP requests and, optionally, over a fallback
+//!   [`Resolve`].
+//! - [`Doh::pinned`] and [`Doh::bootstrapped`] — the two constructors,
+//!   picked by whether the endpoint's host is an IP literal or a name; see
+//!   "Bootstrapping" below.
+//! - [`Doh::with_fallback`] and [`NoFallback`] — what happens when the
+//!   `DoH` server is unreachable; `Doh<C>` fails closed by default.
+//! - [`DohError`] and [`EndpointError`] — how a lookup and a constructor
+//!   can fail.
 //!
-//! ## 1. What resolves the `DoH` server's own name?
+//! # Bootstrapping: what resolves the `DoH` server's own name
 //!
-//! Whatever resolver the transport you hand to this crate already carries —
-//! and which of the four possible shapes that is, you state by picking a
-//! constructor:
+//! `DoH` resolves a name by making an HTTP request, and an HTTP request
+//! needs a name resolved. The two constructors **partition** that
+//! question rather than leaving it to a runtime check: [`Doh::pinned`]
+//! takes an IP-literal endpoint and refuses a name, because no bootstrap
+//! exists when none is resolved; [`Doh::bootstrapped`] takes a named
+//! endpoint and resolves it through the transport's own resolver, once
+//! per connection. Which one compiles is a statement about the endpoint,
+//! so a URI change that would silently add a bootstrap is a compile
+//! error instead.
 //!
-//! - [`Doh::pinned`] — the endpoint's host is an **IP literal**
-//!   (`https://1.1.1.1/dns-query`). No bootstrap exists, because no name is
-//!   resolved. The constructor checks it rather than trusting the caller,
-//!   so `pinned` is a fact about the URI and not a hope. Its cost is stated
-//!   on the method: a pinned address that changes leaves the client with no
-//!   DNS at all, and nothing in this crate can notice — so pair it with a
-//!   [fallback](Doh::with_fallback) or expect to ship a new address.
-//! - [`Doh::bootstrapped`] — the endpoint's host is a **name**, resolved by
-//!   the inner transport's own resolver, once per connection it opens.
-//!   Pass a transport carrying `SystemDns` and the system resolver runs
-//!   once, for the `DoH` host; pass one carrying a resolver of fixed
-//!   addresses and the bootstrap is caller-supplied. This crate does not
-//!   need to distinguish them — both are "the inner transport knows how".
+//! # What this backend costs and refuses
 //!
-//! The two constructors **partition** the space: `pinned` refuses a name
-//! and `bootstrapped` refuses a literal. Which one compiles is therefore a
-//! statement about the endpoint, and a URI change that silently turns a
-//! bootstrap-free deployment into a bootstrapped one is a runtime error at
-//! construction rather than a surprise in production.
+//! - **A `Transport`, never a `Client`.** `C` is
+//!   [`hclient_core::transport::Transport`], the seam below `Client` —
+//!   structurally, not by convention, since `Transport` has never heard
+//!   of a cookie jar or an `Authorization` header. A `DoH` resolver whose
+//!   own transport resolves through itself has no finite type and is
+//!   refused by the compiler rather than by a check of ours.
+//! - **Fails closed by default.** `Doh<C>` is `Doh<C, NoFallback>`: a
+//!   `DoH` failure is a resolution failure. [`Doh::with_fallback`] makes
+//!   the alternative visible in the type instead of silent.
+//! - **HTTPS/SVCB works on every target**, unlike a platform resolver:
+//!   an ordinary DNS query in an ordinary HTTP body needs no local stub
+//!   resolver to forward type 65.
+//! - **No cache, no total bound on a query, and POST only** — a cache
+//!   would be one no caller could turn off; a total bound needs a
+//!   `Timer`, which `Resolve` has no seam for, so a slow body is bounded
+//!   only by [`MAX_RESPONSE_BYTES`] times `between_bytes`; GET would make
+//!   a lookup cacheable by an intermediary, which is not obviously wanted
+//!   here. See the maintainer notes for the full reasoning behind each.
 //!
-//! RFC 9461 `dohpath` discovery is deliberately not here: discovering a
-//! `DoH` endpoint by DNS is circular for the first lookup, and
-//! `hclient_dns::svcb`'s `RECOGNISED_KEYS` excludes the `SvcParamKey` that
-//! would make it mandatory.
+//! # Where to go next
 //!
-//! ## 2. What client makes the `DoH` request? A `Transport`, never a `Client`
-//!
-//! `C` is an [`hclient_core::transport::Transport`], the seam one level
-//! below `hclient::Client`. That is structural rather than a rule someone
-//! has to follow: a cookie jar, a redirect policy and an `Authorization`
-//! header are all things `Client` owns and `Transport` has never heard
-//! of, so there is no arrangement of this API in which a caller
-//! accidentally sends their session cookie to a DNS provider. The
-//! shared-`Client` case is not merely awkward here; it does not
-//! typecheck.
-//!
-//! **A `DoH` resolver whose transport resolves through the same `DoH`
-//! resolver is refused by the type system**, not by any check of ours. Its
-//! type would be `Native<R, T, Doh<Native<R, T, Doh<Native<…>>>>>`, which
-//! has no finite spelling: writing it needs a type alias that mentions
-//! itself, and `rustc` refuses it at compile time — a size or cycle
-//! error, never a stack overflow at run time. The guard is a property of
-//! *not erasing*: this crate stores its transport by value and is
-//! generic over it, rather than behind `Arc<dyn Resolve>`, which would
-//! make every level of the nesting the same type and the cycle a runtime
-//! one.
-//!
-//! ## 3. What happens when the `DoH` server is unreachable?
-//!
-//! **It fails closed, and the alternative is visible in the type.**
-//! `Doh<C>` is `Doh<C, NoFallback>`: a `DoH` failure is a resolution failure,
-//! full stop. [`Doh::with_fallback`] returns a `Doh<C, F>` for the caller's
-//! `F: Resolve`, and that type is then written into the transport that
-//! holds it — `Native<R, T, Doh<C, SystemDns<R>>>` says on its face that
-//! this client will resolve through the system when its `DoH` server is down.
-//!
-//! Neither behaviour is a good default for everyone, which is exactly why
-//! neither is silent. Failing closed leaves a working network unusable the
-//! moment the `DoH` endpoint is unreachable. Failing open silently defeats
-//! the reason someone chose `DoH`: an attacker who can drop packets to the
-//! `DoH` endpoint can, for the price of that one denial of service, move
-//! every subsequent lookup onto the plaintext resolver they were being kept
-//! away from. The second is a downgrade attack and it costs one dropped
-//! connection to mount, so it is not something to arrive at by accident —
-//! but a build with no other resolver at all genuinely wants the first, and
-//! neither is ours to pick. See [`Doh::with_fallback`] for the precise
-//! rule about when the fallback's answer is used.
-//!
-//! # What this crate can do that the system resolver often cannot
-//!
-//! `supports(rtype::HTTPS)` is **`true`**, and unlike a platform resolver
-//! it is true on every target: an HTTPS/SVCB query is an ordinary DNS query in an
-//! ordinary HTTP body, so nothing about it depends on whether the local
-//! stub resolver forwards type 65 — which Windows 10, wasm, and anything
-//! behind such a stub resolver do not.
-//!
-//! `Record::ttl` is filled from the record's own TTL, per record
-//! rather than per `RRset`, for the same reason `hclient-dns-hickory` gives:
-//! a caller doing its own caching wants the value the server actually sent.
-//!
-//! # What it deliberately does not do
-//!
-//! **No cache.** Every `lookup_*` is an HTTP request. Filling the TTL is
-//! this crate's job; deciding what to keep and for how long is a caller's,
-//! and a cache built in here would be one no caller could turn off.
-//!
-//! **No total bound on a query.** [`Doh::timeouts`] sets `connect`,
-//! `first_byte` and `between_bytes` in the request's extensions, which is
-//! everything [`hclient_core::req::Timeouts`] can express — there is no `total`
-//! there, because in `hclient` a total budget is enforced by `Client`,
-//! which this crate deliberately does not use (question 2 above). A server
-//! that answers the head promptly and then dribbles the body one byte per
-//! `between_bytes` interval is therefore bounded only by
-//! [`MAX_RESPONSE_BYTES`] times that interval. Recorded rather than hidden;
-//! closing it needs a `Timer` in this crate, which `Resolve` has no seam
-//! for.
-//!
-//! **POST, not GET.** RFC 8484 §4.1 defines both, and a server must
-//! support both. GET carries the query base64url-encoded in `?dns=`, which
-//! makes it cacheable by intermediaries, and an intermediary cache is not
-//! obviously something a DNS-over-HTTPS deployment wants.
-//
+//! `hclient-dns-system` and `hclient-dns-hickory` are the other resolver
+//! backends behind [`hclient_dns::Resolve`].
+
 // Maintainer notes (not rendered):
+//
+// The original front-page prose, kept verbatim because it explains the
+// three design questions and their answers in full:
+//
+// DNS over HTTPS (RFC 8484) behind [`hclient_dns::Resolve`].
+//
+// ```no_run
+// # use hclient_dns_doh::Doh;
+// # fn example<C>(transport: C) -> Result<(), Box<dyn std::error::Error>> {
+// let doh = Doh::pinned(transport, "https://1.1.1.1/dns-query".parse()?)?;
+// # let _ = doh;
+// # Ok(())
+// # }
+// ```
+//
+// `doh` is then the `D` of a transport — `Client::builder(Native::new(rt,
+// tls, doh))` — which is not checked here because it would cost this
+// crate a dev-dependency on `hclient-native` and `hclient` for one line
+// of prose. What *is* checked is this crate's own half: that `pinned`
+// takes a client and a `Uri` and hands back a resolver.
+//
+// # The bootstrap is the design problem, not the protocol
+//
+// `DoH` resolves a name by making an HTTP request, and an HTTP request needs
+// a name resolved. Three questions come out of that, and this crate
+// answers all three in its **constructors and its type**, not in prose,
+// because prose is not read at the call site.
+//
+// ## 1. What resolves the `DoH` server's own name?
+//
+// Whatever resolver the transport you hand to this crate already carries —
+// and which of the four possible shapes that is, you state by picking a
+// constructor:
+//
+// - [`Doh::pinned`] — the endpoint's host is an **IP literal**
+//   (`https://1.1.1.1/dns-query`). No bootstrap exists, because no name is
+//   resolved. The constructor checks it rather than trusting the caller,
+//   so `pinned` is a fact about the URI and not a hope. Its cost is stated
+//   on the method: a pinned address that changes leaves the client with no
+//   DNS at all, and nothing in this crate can notice — so pair it with a
+//   [fallback](Doh::with_fallback) or expect to ship a new address.
+// - [`Doh::bootstrapped`] — the endpoint's host is a **name**, resolved by
+//   the inner transport's own resolver, once per connection it opens.
+//   Pass a transport carrying `SystemDns` and the system resolver runs
+//   once, for the `DoH` host; pass one carrying a resolver of fixed
+//   addresses and the bootstrap is caller-supplied. This crate does not
+//   need to distinguish them — both are "the inner transport knows how".
+//
+// The two constructors **partition** the space: `pinned` refuses a name
+// and `bootstrapped` refuses a literal. Which one compiles is therefore a
+// statement about the endpoint, and a URI change that silently turns a
+// bootstrap-free deployment into a bootstrapped one is a runtime error at
+// construction rather than a surprise in production.
+//
+// RFC 9461 `dohpath` discovery is deliberately not here: discovering a
+// `DoH` endpoint by DNS is circular for the first lookup, and
+// `hclient_dns::svcb`'s `RECOGNISED_KEYS` excludes the `SvcParamKey` that
+// would make it mandatory.
+//
+// ## 2. What client makes the `DoH` request? A `Transport`, never a `Client`
+//
+// `C` is an [`hclient_core::transport::Transport`], the seam one level
+// below `hclient::Client`. That is structural rather than a rule someone
+// has to follow: a cookie jar, a redirect policy and an `Authorization`
+// header are all things `Client` owns and `Transport` has never heard
+// of, so there is no arrangement of this API in which a caller
+// accidentally sends their session cookie to a DNS provider. The
+// shared-`Client` case is not merely awkward here; it does not
+// typecheck.
+//
+// **A `DoH` resolver whose transport resolves through the same `DoH`
+// resolver is refused by the type system**, not by any check of ours. Its
+// type would be `Native<R, T, Doh<Native<R, T, Doh<Native<…>>>>>`, which
+// has no finite spelling: writing it needs a type alias that mentions
+// itself, and `rustc` refuses it at compile time — a size or cycle
+// error, never a stack overflow at run time. The guard is a property of
+// *not erasing*: this crate stores its transport by value and is
+// generic over it, rather than behind `Arc<dyn Resolve>`, which would
+// make every level of the nesting the same type and the cycle a runtime
+// one.
+//
+// ## 3. What happens when the `DoH` server is unreachable?
+//
+// **It fails closed, and the alternative is visible in the type.**
+// `Doh<C>` is `Doh<C, NoFallback>`: a `DoH` failure is a resolution failure,
+// full stop. [`Doh::with_fallback`] returns a `Doh<C, F>` for the caller's
+// `F: Resolve`, and that type is then written into the transport that
+// holds it — `Native<R, T, Doh<C, SystemDns<R>>>` says on its face that
+// this client will resolve through the system when its `DoH` server is down.
+//
+// Neither behaviour is a good default for everyone, which is exactly why
+// neither is silent. Failing closed leaves a working network unusable the
+// moment the `DoH` endpoint is unreachable. Failing open silently defeats
+// the reason someone chose `DoH`: an attacker who can drop packets to the
+// `DoH` endpoint can, for the price of that one denial of service, move
+// every subsequent lookup onto the plaintext resolver they were being kept
+// away from. The second is a downgrade attack and it costs one dropped
+// connection to mount, so it is not something to arrive at by accident —
+// but a build with no other resolver at all genuinely wants the first, and
+// neither is ours to pick. See [`Doh::with_fallback`] for the precise
+// rule about when the fallback's answer is used.
+//
+// # What this crate can do that the system resolver often cannot
+//
+// `supports(rtype::HTTPS)` is **`true`**, and unlike a platform resolver
+// it is true on every target: an HTTPS/SVCB query is an ordinary DNS query in an
+// ordinary HTTP body, so nothing about it depends on whether the local
+// stub resolver forwards type 65 — which Windows 10, wasm, and anything
+// behind such a stub resolver do not.
+//
+// `Record::ttl` is filled from the record's own TTL, per record
+// rather than per `RRset`, for the same reason `hclient-dns-hickory` gives:
+// a caller doing its own caching wants the value the server actually sent.
+//
+// # What it deliberately does not do
+//
+// **No cache.** Every `lookup_*` is an HTTP request. Filling the TTL is
+// this crate's job; deciding what to keep and for how long is a caller's,
+// and a cache built in here would be one no caller could turn off.
+//
+// **No total bound on a query.** [`Doh::timeouts`] sets `connect`,
+// `first_byte` and `between_bytes` in the request's extensions, which is
+// everything [`hclient_core::req::Timeouts`] can express — there is no `total`
+// there, because in `hclient` a total budget is enforced by `Client`,
+// which this crate deliberately does not use (question 2 above). A server
+// that answers the head promptly and then dribbles the body one byte per
+// `between_bytes` interval is therefore bounded only by
+// [`MAX_RESPONSE_BYTES`] times that interval. Recorded rather than hidden;
+// closing it needs a `Timer` in this crate, which `Resolve` has no seam
+// for.
+//
+// **POST, not GET.** RFC 8484 §4.1 defines both, and a server must
+// support both. GET carries the query base64url-encoded in `?dns=`, which
+// makes it cacheable by intermediaries, and an intermediary cache is not
+// obviously something a DNS-over-HTTPS deployment wants.
 //
 // Shape 4 of §W3 — RFC 9461 `dohpath` discovery — is deliberately not
 // here. Discovering a `DoH` endpoint by DNS is circular for the first
@@ -449,6 +524,17 @@ impl<C, F> Doh<C, F> {
     /// The type changes — `Doh<C, NoFallback>` becomes `Doh<C, F>` — and
     /// that is the point: it is written into the type of every transport
     /// that holds this resolver.
+    ///
+    /// ```no_run
+    /// # use hclient_dns::IpLiteralOnly;
+    /// # use hclient_dns_doh::Doh;
+    /// # fn example<C>(transport: C) -> Result<(), Box<dyn std::error::Error>> {
+    /// let doh = Doh::pinned(transport, "https://1.1.1.1/dns-query".parse()?)?
+    ///     .with_fallback(IpLiteralOnly);
+    /// # let _ = doh;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_fallback<F2: Resolve>(self, fallback: F2) -> Doh<C, F2> {
         Doh {
             client: self.client,

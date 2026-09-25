@@ -1,7 +1,11 @@
-//! WebTransport sessions over HTTP/3.
+//! WebTransport sessions over HTTP/3: streams opened on demand, in both
+//! directions, plus unreliable datagrams — a multiplexer, unlike a
+//! WebSocket's single message channel, so nothing here reuses
+//! [`Message`](hclient_core::websocket::Message).
 //!
-//! `conn` is a `quinn::Connection` that negotiated ALPN `h3` — see "Where
-//! the connection comes from" below.
+//! [`Session::connect`] takes a `quinn::Connection` that has already
+//! negotiated ALPN `h3`; dialling it — the QUIC endpoint, TLS and
+//! resolution — is the caller's.
 //!
 //! ```no_run
 //! # async fn example(
@@ -20,73 +24,31 @@
 //! # }
 //! ```
 //!
-//! # Why this is not the WebSocket seam
+//! Nothing here is spawned: the QUIC connection is driven by the endpoint
+//! driver `quinn` already runs, and a session is the caller's own object
+//! rather than a pool entry, so nothing has to stay awake on a future
+//! request's behalf. Two things to know that follow from that: a
+//! `GOAWAY` sent after a session opens is not observed (see
+//! [`Session::connect`] for the cost), and [`Session::closed`] is a plain
+//! future over the CONNECT stream, so a caller that never awaits it never
+//! learns the session ended.
 //!
-//! A WebSocket is **one** message channel — `Stream<Item =
-//! Message> + Sink<Message>` — and a WebTransport session is a
-//! **multiplexer**: streams opened on demand, in both directions, plus
-//! datagrams. Nothing here reuses
-//! [`Message`](hclient_core::websocket::Message).
+//! A session ends cleanly with a `CLOSE_WEBTRANSPORT_SESSION` capsule
+//! (draft-ietf-webtrans-http3 §5): [`Session::close`] writes one and
+//! [`Session::closed`] reads the peer's, so a caller can tell a clean
+//! close (`Ok`) from a connection that vanished (`Err`) — the distinction
+//! `hclient-fetch` draws for a WebSocket with `wasClean`.
 //!
-//! # Where the connection comes from
+//! # Key concepts
 //!
-//! [`Session::connect`] takes a `quinn::Connection` that has already
-//! negotiated ALPN `h3`. Dialling it — the QUIC endpoint, TLS and
-//! resolution — is the caller's.
-//!
-//! # Nothing is spawned
-//!
-//! The QUIC
-//! connection is driven by the endpoint driver `quinn` already runs for the
-//! endpoint it came from, and a session is the caller's own object rather
-//! than a pool entry, so there are no future requests on whose behalf
-//! anything must stay awake.
-//!
-//! The h3 *control* stream is polled exactly once, inside
-//! [`Session::connect`], to receive the peer's SETTINGS — which the draft
-//! makes a precondition of sending the CONNECT at all — and never again.
-//! A `GOAWAY` arriving later is not observed. It arrives on the control
-//! stream, which is the driver's, and the driver is held rather than
-//! polled. What that costs is a round trip and a typed
-//! `H3_REQUEST_REJECTED`, because the peer enforces the rule this client
-//! cannot see.
-//!
-//! The **CONNECT** stream is a different stream and is now read:
-//! [`Session::closed`] is the caller's own future over it, spawning
-//! nothing, so a caller that never awaits it never learns the session
-//! ended — the same trade [`Session::recv_datagram`] makes.
-//!
-//! # The capsule protocol
-//!
-//! A session ends cleanly by a `CLOSE_WEBTRANSPORT_SESSION` capsule
-//! (draft-ietf-webtrans-http3 §5) carrying an application error code and a
-//! reason, sent on the CONNECT stream and followed by its FIN.
-//! [`Session::close`] writes one and [`Session::closed`] reads the peer's,
-//! which is what lets a caller tell a clean close from a connection that
-//! vanished: `Ok` against `Err`, the distinction `hclient-fetch` draws for
-//! a WebSocket with `wasClean`.
-//!
-//! The framing splits cleanly in two and only half of it is ours. RFC 9297
-//! §3.2 carries capsules in the payload of HTTP/3 DATA frames, and that
-//! layer is `h3`'s — `RequestStream::send_data` and `poll_recv_data`, on
-//! the CONNECT stream. The capsule itself is encoded and decoded here.
-//!
-//! # More than one session on one connection
-//!
-//! [`Session::open_session`] opens another, bounded by the peer's
-//! `SETTINGS_WT_MAX_SESSIONS`. Further sessions go through it, not through
-//! a second [`Session::connect`] on the same connection, which would build
-//! a second h3 client — see [`Session::connect`].
-//!
-//! # Datagrams
-//!
-//! [`Session::send_datagram`] and [`Session::recv_datagram`] carry
-//! RFC 9297 HTTP Datagrams over the QUIC DATAGRAM extension (RFC 9221),
-//! which is the feature WebTransport exists for that streams do not
-//! already give: unreliable, unordered, no head-of-line blocking. The wire
-//! format is the Quarter Stream ID — this session's CONNECT stream ID
-//! divided by four — as a variable-length integer, then the payload; the
-//! draft adds no framing of its own.
+//! - [`Session`] — the multiplexer; [`Session::connect`] opens the first
+//!   one on a connection, [`Session::open_session`] another beside it,
+//!   bounded by the peer's `SETTINGS_WT_MAX_SESSIONS`.
+//! - [`Session::open_bi`] — a bidirectional stream, carrying [`SessionId`]
+//!   in its header.
+//! - [`Session::send_datagram`]/[`recv_datagram`](Session::recv_datagram)
+//!   — unreliable, unordered messages over RFC 9221 QUIC datagrams.
+//! - [`SessionClose`] — how a session ended, once it has.
 //!
 //! # What is deliberately not here
 //!
@@ -192,6 +154,82 @@
 // than read. Beyond that, this crate already
 // owns the QUIC varint for the stream header, for the reason on
 // `put_varint`, and the datagram header is the same two lines.
+//
+// The front page used to carry all of this at length; it is kept here
+// verbatim.
+//
+// WebTransport sessions over HTTP/3.
+//
+// `conn` is a `quinn::Connection` that negotiated ALPN `h3` — see "Where
+// the connection comes from" below.
+//
+// # Why this is not the WebSocket seam
+//
+// A WebSocket is **one** message channel — `Stream<Item =
+// Message> + Sink<Message>` — and a WebTransport session is a
+// **multiplexer**: streams opened on demand, in both directions, plus
+// datagrams. Nothing here reuses
+// [`Message`](hclient_core::websocket::Message).
+//
+// # Where the connection comes from
+//
+// [`Session::connect`] takes a `quinn::Connection` that has already
+// negotiated ALPN `h3`. Dialling it — the QUIC endpoint, TLS and
+// resolution — is the caller's.
+//
+// # Nothing is spawned
+//
+// The QUIC
+// connection is driven by the endpoint driver `quinn` already runs for the
+// endpoint it came from, and a session is the caller's own object rather
+// than a pool entry, so there are no future requests on whose behalf
+// anything must stay awake.
+//
+// The h3 *control* stream is polled exactly once, inside
+// [`Session::connect`], to receive the peer's SETTINGS — which the draft
+// makes a precondition of sending the CONNECT at all — and never again.
+// A `GOAWAY` arriving later is not observed. It arrives on the control
+// stream, which is the driver's, and the driver is held rather than
+// polled. What that costs is a round trip and a typed
+// `H3_REQUEST_REJECTED`, because the peer enforces the rule this client
+// cannot see.
+//
+// The **CONNECT** stream is a different stream and is now read:
+// [`Session::closed`] is the caller's own future over it, spawning
+// nothing, so a caller that never awaits it never learns the session
+// ended — the same trade [`Session::recv_datagram`] makes.
+//
+// # The capsule protocol
+//
+// A session ends cleanly by a `CLOSE_WEBTRANSPORT_SESSION` capsule
+// (draft-ietf-webtrans-http3 §5) carrying an application error code and a
+// reason, sent on the CONNECT stream and followed by its FIN.
+// [`Session::close`] writes one and [`Session::closed`] reads the peer's,
+// which is what lets a caller tell a clean close from a connection that
+// vanished: `Ok` against `Err`, the distinction `hclient-fetch` draws for
+// a WebSocket with `wasClean`.
+//
+// The framing splits cleanly in two and only half of it is ours. RFC 9297
+// §3.2 carries capsules in the payload of HTTP/3 DATA frames, and that
+// layer is `h3`'s — `RequestStream::send_data` and `poll_recv_data`, on
+// the CONNECT stream. The capsule itself is encoded and decoded here.
+//
+// # More than one session on one connection
+//
+// [`Session::open_session`] opens another, bounded by the peer's
+// `SETTINGS_WT_MAX_SESSIONS`. Further sessions go through it, not through
+// a second [`Session::connect`] on the same connection, which would build
+// a second h3 client — see [`Session::connect`].
+//
+// # Datagrams
+//
+// [`Session::send_datagram`] and [`Session::recv_datagram`] carry
+// RFC 9297 HTTP Datagrams over the QUIC DATAGRAM extension (RFC 9221),
+// which is the feature WebTransport exists for that streams do not
+// already give: unreliable, unordered, no head-of-line blocking. The wire
+// format is the Quarter Stream ID — this session's CONNECT stream ID
+// divided by four — as a variable-length integer, then the payload; the
+// draft adds no framing of its own.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -263,6 +301,14 @@ impl Display for SessionId {
 /// separate variant: the specification says the two are the same fact, and
 /// a distinction the wire does not carry is one a caller would learn to
 /// mistrust.
+///
+/// ```
+/// use hclient_webtransport::SessionClose;
+///
+/// // What `Session::closed` reports for a bare FIN with no capsule.
+/// let ended = SessionClose { code: 0, reason: String::new() };
+/// assert_eq!(ended.code, 0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionClose {
     /// The application error code the peer closed with.
@@ -328,6 +374,14 @@ impl BadCloseCapsule {
 /// [`close`](Self::close) **takes** the send half out from under its lock
 /// and then awaits, which is also what makes a second `close` an
 /// [`AlreadyClosed`] rather than a deadlock.
+///
+/// ```no_run
+/// # async fn example(conn: quinn::Connection, uri: http::Uri) -> Result<(), Box<dyn std::error::Error>> {
+/// let session = hclient_webtransport::Session::connect(conn, &uri).await?;
+/// session.close(0, "done").await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct Session {
     /// Everything this session shares with its siblings on the same QUIC
     /// connection — including, until v0.4, the two anchors that used to

@@ -61,6 +61,20 @@ use std::path::PathBuf;
 /// socket today, and the kinds [`IpcAddr`] gains later. It extends
 /// [`TcpConnect`] because a same-machine connect hands back the same
 /// [`Stream`](TcpConnect::Stream) type, so one transport carries both.
+///
+/// # Example
+///
+/// A caller (such as `hclient_native::Native::unix_socket`) writes generic
+/// code against the trait; see [`TcpConnect`]'s own doc for a worked
+/// skeleton of implementing the pair:
+///
+/// ```
+/// use hclient_rt::{IpcAddr, IpcConnect};
+///
+/// async fn dial_ipc<R: IpcConnect>(runtime: &R, addr: &IpcAddr) -> std::io::Result<R::Stream> {
+///     runtime.connect_ipc(addr).await
+/// }
+/// ```
 pub trait IpcConnect: TcpConnect {
     /// Which endpoint kinds [`connect_ipc`](Self::connect_ipc) dials — see
     /// [`IpcSupport`].

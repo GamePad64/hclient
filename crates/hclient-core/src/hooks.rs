@@ -124,6 +124,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// it the one seam here pointing the other way. A backend
 /// *calls* it, and what it owes is written on [`Event`]'s variants.
 ///
+/// ```
+/// use std::cell::RefCell;
+/// use hclient_core::hooks::{Event, Hooks};
+///
+/// /// Every response status this transport saw.
+/// #[derive(Default)]
+/// struct Statuses(RefCell<Vec<u16>>);
+///
+/// impl Hooks for Statuses {
+///     fn on(&self, event: &Event<'_>) {
+///         if let Event::Head(head) = event {
+///             self.0.borrow_mut().push(head.status.as_u16());
+///         }
+///     }
+/// }
+/// ```
+///
 /// **No `Send` bound, declared or implied.** A hook is stored in a
 /// transport and called from inside a response body's `poll_frame`, which
 /// is not the shape any other seam here has: the body outlives

@@ -329,6 +329,22 @@ use std::time::Duration;
 /// `http::Extensions`; how long a connection may sit idle *after* an
 /// exchange is not a property of any request, and two requests carrying
 /// different values for it would have no meaning.
+///
+/// # Example
+///
+/// ```
+/// use std::time::Duration;
+/// use hclient_dns::IpLiteralOnly;
+/// use hclient_native::{Native, PoolConfig};
+/// use hclient_rt_tokio::Tokio;
+/// use hclient_tls::NoTls;
+///
+/// let transport = Native::new(Tokio, NoTls, IpLiteralOnly).pool(PoolConfig {
+///     idle_timeout: Duration::from_secs(30),
+///     ..PoolConfig::default()
+/// });
+/// # drop(transport);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolConfig {
     // Maintainer notes (not rendered):

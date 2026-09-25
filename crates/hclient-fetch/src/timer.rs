@@ -60,6 +60,17 @@ use wasm_bindgen::JsValue;
 /// transport, `.with_timer(BrowserClock)` for reconnect — two independent
 /// values, not one type serving double duty, so a caller who only wants the
 /// transport never has to think about the timer at all.
+///
+/// ```no_run
+/// use hclient_core::timer::Timer;
+/// use hclient_fetch::BrowserClock;
+/// use std::time::Duration;
+///
+/// // Only meaningful running in a browser or a Worker, where the global
+/// // scope has `setTimeout` — `no_run` here, not executed on the host.
+/// let sleep = BrowserClock.sleep(Duration::from_millis(250));
+/// # let _ = sleep;
+/// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BrowserClock;
 

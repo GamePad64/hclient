@@ -126,6 +126,18 @@ use std::task::{Context, Poll};
 use wasm_bindgen::JsCast;
 
 /// A response body over `ReadableStream`.
+///
+/// A caller gets one back from [`crate::Fetch`]'s [`Transport`
+/// impl](hclient_core::transport::Transport); the one constructor exposed
+/// here is the empty case:
+///
+/// ```
+/// use hclient_fetch::Body;
+/// use http_body::Body as _;
+///
+/// let body = Body::empty();
+/// assert!(body.is_end_stream());
+/// ```
 pub struct Body {
     inner: Inner,
 }

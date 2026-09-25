@@ -69,6 +69,21 @@ use crate::sys::{Event, Exchange};
 /// they close in.** The socket first, so its close frame goes before the
 /// request handle it was upgraded from is torn down, and the connect
 /// handle last because the other two are derived from it.
+///
+/// Opened through [`WebSocketConnect::websocket`] on [`WinHttp`], never
+/// constructed directly:
+///
+/// ```no_run
+/// use hclient_core::websocket::WebSocketConnect;
+/// use hclient_winhttp::WinHttp;
+///
+/// # async fn f() -> Result<(), Box<dyn std::error::Error>> {
+/// let req = http::Request::get("wss://echo.example/socket").body(())?;
+/// let socket = WinHttp::new()?.websocket(req).await?;
+/// # let _ = socket;
+/// # Ok(())
+/// # }
+/// ```
 pub struct WinHttpWebSocket {
     socket: crate::sys::WebSocket,
     /// Kept alive rather than used: closing the request handle before the

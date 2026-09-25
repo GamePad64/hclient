@@ -46,6 +46,22 @@ use tokio::io::Interest;
 /// detail, and `hclient-rt`'s own [`EcnCodepoint`](hclient_rt::EcnCodepoint)
 /// is what crosses the seam, so no `quinn-udp` type is part of this
 /// crate's API.
+///
+/// # Example
+///
+/// [`UdpBind::bind`] registers with tokio's reactor, so — unlike
+/// [`TcpConnect::connect`](hclient_rt::TcpConnect::connect) — it must run
+/// inside a runtime:
+///
+/// ```
+/// use hclient_rt::{UdpBind, UdpDatagrams};
+/// use hclient_rt_tokio::Tokio;
+///
+/// tokio::runtime::Runtime::new().unwrap().block_on(async {
+///     let socket = Tokio.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+///     assert!(socket.local_addr().unwrap().port() > 0);
+/// });
+/// ```
 #[derive(Debug)]
 pub struct TokioUdpSocket {
     io: tokio::net::UdpSocket,

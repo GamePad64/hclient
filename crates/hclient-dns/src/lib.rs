@@ -1,49 +1,99 @@
-//! Pluggable name resolution.
+//! Pluggable name resolution: one trait, [`Resolve`], that
+//! `hclient-native` dials through and a resolver backend implements.
 //!
-//! Separate streams per address family, not a `Vec<SocketAddr>`: RFC 8305
-//! requires starting to connect over AAAA without waiting for A —
-//! `hclient-proto::happy_eyeballs::Scheduler` is fed results as
-//! they arrive, not as one block once the resolver has finished both
-//! families. This is the sole reason `Resolve` returns a `Stream` rather
-//! than a `Future<Output = Vec<_>>`: nothing in the trait forces the
-//! caller to wait for the stream to end or collect it into a `Vec` before
-//! starting to connect to the first address.
+//! # Quick start
 //!
-//! **Ordering guarantee within a stream: there isn't one.** `Resolve`
-//! makes no promise that addresses of one family come in RFC 6724 §6
-//! (Destination Address Selection) order — the resolver is free to hand
-//! them out in DNS-response order, cache order, or any other order.
+//! Using a resolver — here [`IpLiteralOnly`], which resolves nothing and
+//! only accepts an address already written out:
 //!
-//! **RFC 6724 §6 sorting is nobody's job today, not "the caller's job."**
+//! ```
+//! use futures_util::StreamExt;
+//! use hclient_dns::{IpLiteralOnly, Resolve, rtype};
 //!
-//! So, as things stand today: each family's addresses go into
-//! `Scheduler::offer_v4`/`offer_v6` in the SAME order the resolver handed
-//! them out — neither `Resolve`, nor `Scheduler`, nor
-//! `hclient_native::connect` (see its doc comment, the "RFC 6724 ... NOT
-//! implemented here" section) sort them. This is a recorded, explicitly
-//! named gap, not an oversight. Closing it would first require introducing a separate Source Address Selection
-//! capability, which no trait has today.
+//! let records: Vec<_> =
+//!     futures_executor::block_on(IpLiteralOnly.lookup("192.0.2.1", rtype::A).collect());
+//! assert_eq!(records.len(), 1);
+//! ```
 //!
-//! **Answering a type is a capability, not a fact.** [`Resolve::lookup`]
-//! answers every type through one method, so a resolver that cannot ask
-//! about one — `getaddrinfo` about HTTPS, `wasi:http` about anything —
-//! hands back an empty stream rather than failing to compile. But an empty
-//! stream is ambiguous on its own: it could mean *this resolver
-//! cannot ask* or *it asked and got nothing back* — two different things
-//! a caller is not obliged to conflate.
+//! See [`Resolve`]'s own doc for the skeleton of implementing it.
 //!
-//! [`Resolve::supports`] is where that distinction lives, and it is the
-//! one place it can: a resolver that cannot answer a type leaves it at the
-//! default `false`, and a resolver that can must answer `true` for exactly
-//! the types its `lookup` will really ask about. Answering `true` for a
-//! type and then always returning an empty stream conflates *cannot* with
-//! *asked and found nothing* for anyone who reads only the capability.
+//! # Key concepts
 //!
-//! **One method, and that is what makes the seam additive.** A record type
-//! this client learns to act on — TLSA for DANE, CAA before issuing —
-//! arrives as an [`RData`] variant and changes this trait not at all.
+//! - [`Resolve`] — the seam: one name, one RR type, one stream of answers.
+//! - [`Record`] and [`RData`] — what comes back; a new record type this
+//!   client learns to act on is a new `RData` variant, not a new method.
+//! - [`SvcbEndpoint`] — RFC 9460 HTTPS/SVCB, already reduced to the
+//!   client-facing fields (ALPN, hints, ECN) by whichever backend decoded it.
+//! - [`Overrides`] — `curl --resolve`: answer chosen hosts from a table,
+//!   pass the rest through to another [`Resolve`].
+//! - [`IpLiteralOnly`] — no resolution at all, for a build with no room for
+//!   one; only accepts an address already spelled out.
+//!
+//! # One stream per address family, and no ordering promise
+//!
+//! [`Resolve::lookup`] returns a `Stream` rather than a
+//! `Future<Output = Vec<_>>` so a caller can start connecting over the
+//! first address that arrives, per RFC 8305, rather than waiting for every
+//! address of every family. It makes no promise that addresses within one
+//! family arrive in RFC 6724 §6 order — sorting them is not implemented
+//! anywhere in this workspace today, a recorded gap rather than an
+//! oversight.
+//!
+//! # Where to go next
+//!
+//! `hclient-dns-system`, `hclient-dns-doh`, `hclient-dns-hickory` and
+//! `system-resolver` are the resolver backends; `hclient-native` is the
+//! transport that dials through this seam.
 
 // Maintainer notes (not rendered):
+//
+// The original front-page prose, kept verbatim:
+//
+// Pluggable name resolution.
+//
+// Separate streams per address family, not a `Vec<SocketAddr>`: RFC 8305
+// requires starting to connect over AAAA without waiting for A —
+// `hclient-proto::happy_eyeballs::Scheduler` is fed results as
+// they arrive, not as one block once the resolver has finished both
+// families. This is the sole reason `Resolve` returns a `Stream` rather
+// than a `Future<Output = Vec<_>>`: nothing in the trait forces the
+// caller to wait for the stream to end or collect it into a `Vec` before
+// starting to connect to the first address.
+//
+// **Ordering guarantee within a stream: there isn't one.** `Resolve`
+// makes no promise that addresses of one family come in RFC 6724 §6
+// (Destination Address Selection) order — the resolver is free to hand
+// them out in DNS-response order, cache order, or any other order.
+//
+// **RFC 6724 §6 sorting is nobody's job today, not "the caller's job."**
+//
+// So, as things stand today: each family's addresses go into
+// `Scheduler::offer_v4`/`offer_v6` in the SAME order the resolver handed
+// them out — neither `Resolve`, nor `Scheduler`, nor
+// `hclient_native::connect` (see its doc comment, the "RFC 6724 ... NOT
+// implemented here" section) sort them. This is a recorded, explicitly
+// named gap, not an oversight. Closing it would first require introducing a separate Source Address Selection
+// capability, which no trait has today.
+//
+// **Answering a type is a capability, not a fact.** [`Resolve::lookup`]
+// answers every type through one method, so a resolver that cannot ask
+// about one — `getaddrinfo` about HTTPS, `wasi:http` about anything —
+// hands back an empty stream rather than failing to compile. But an empty
+// stream is ambiguous on its own: it could mean *this resolver
+// cannot ask* or *it asked and got nothing back* — two different things
+// a caller is not obliged to conflate.
+//
+// [`Resolve::supports`] is where that distinction lives, and it is the
+// one place it can: a resolver that cannot answer a type leaves it at the
+// default `false`, and a resolver that can must answer `true` for exactly
+// the types its `lookup` will really ask about. Answering `true` for a
+// type and then always returning an empty stream conflates *cannot* with
+// *asked and found nothing* for anyone who reads only the capability.
+//
+// **One method, and that is what makes the seam additive.** A record type
+// this client learns to act on — TLSA for DANE, CAA before issuing —
+// arrives as an [`RData`] variant and changes this trait not at all.
+//
 // On RFC 6724 §6 sorting:
 // The tempting answer is the connector — `hclient-native::connect`, the
 // place where results actually reach `Scheduler::offer_v4`/`offer_v6`,
@@ -376,6 +426,55 @@ impl SvcbEndpoint {
 /// [`RData`] variant; the trait, its one associated type and its two
 /// methods do not move, so nothing outside this workspace has to grow a
 /// method to keep compiling.
+///
+/// # Implementing it
+///
+/// One associated type, `Records<'a>` — a `Stream` of `Result<Record,
+/// Error>` — and [`lookup`](Self::lookup), which returns one.
+/// [`supports`](Self::supports) defaults to `false` for every type, so a
+/// resolver that skips it is simply asked for nothing it cannot answer.
+///
+/// ```
+/// use futures_core::Stream;
+/// use hclient_core::error::Error;
+/// use hclient_dns::{RData, Record, Resolve, rtype};
+/// use std::net::Ipv4Addr;
+/// use std::pin::Pin;
+/// use std::task::{Context, Poll};
+///
+/// /// Answers every name with the same address.
+/// struct Fixed(Ipv4Addr);
+///
+/// /// Yields at most one item, then ends.
+/// struct Once(Option<Result<Record, Error>>);
+///
+/// impl Stream for Once {
+///     type Item = Result<Record, Error>;
+///     fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+///         Poll::Ready(self.0.take())
+///     }
+/// }
+///
+/// impl Resolve for Fixed {
+///     type Records<'a>
+///         = Once
+///     where
+///         Self: 'a;
+///
+///     fn supports(&self, rtype: u16) -> bool {
+///         rtype == rtype::A
+///     }
+///
+///     fn lookup<'a>(&'a self, _name: &str, rtype: u16) -> Self::Records<'a> {
+///         Once(match rtype {
+///             rtype::A => Some(Ok(Record::new(RData::A(self.0)))),
+///             // Any other type: this resolver has nothing to say, which
+///             // `supports` already said in advance.
+///             _ => None,
+///         })
+///     }
+/// }
+/// ```
 pub trait Resolve {
     /// The answers to one question.
     type Records<'a>: Stream<Item = Result<Record, Error>>

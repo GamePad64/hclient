@@ -6,6 +6,18 @@ use core::time::Duration;
 
 /// Exponential backoff with full jitter: the schedule, without the clock.
 ///
+/// ```
+/// use std::time::Duration;
+/// use hclient_proto::backoff::Backoff;
+///
+/// let backoff = Backoff { max_attempts: Some(3), ..Default::default() };
+/// // A jitter of `0.0` takes nothing off: the undisturbed schedule.
+/// assert_eq!(backoff.delay(0, 0.0), Some(Duration::from_secs(1)));
+/// assert_eq!(backoff.delay(2, 0.0), Some(Duration::from_secs(4)));
+/// // Out of attempts: stop.
+/// assert_eq!(backoff.delay(3, 0.0), None);
+/// ```
+///
 /// **Deliberately not `#[non_exhaustive]`**: its whole use is
 /// `Backoff { max_attempts: Some(5), ..Default::default() }`, which is
 /// what `hclient`'s SSE reconnect and its retry policy both write, and

@@ -57,6 +57,21 @@ use crate::error::UrlSessionError;
 use crate::session::UrlSession;
 
 /// An open WebSocket over `NSURLSession`.
+///
+/// Opened through [`WebSocketConnect::websocket`] on [`UrlSession`], never
+/// constructed directly:
+///
+/// ```no_run
+/// use hclient_core::websocket::WebSocketConnect;
+/// use hclient_urlsession::UrlSession;
+///
+/// # async fn f() -> Result<(), Box<dyn std::error::Error>> {
+/// let req = http::Request::get("wss://echo.example/socket").body(())?;
+/// let socket = UrlSession::new().websocket(req).await?;
+/// # let _ = socket;
+/// # Ok(())
+/// # }
+/// ```
 pub struct UrlSessionWebSocket {
     task: Retained<NSURLSessionWebSocketTask>,
     /// The receive in flight, if the caller has asked for one.

@@ -13,65 +13,48 @@
 //! # }
 //! ```
 //!
-//! # Why a transport decorator and not a hook
+//! [`Instrumented<T>`] wraps a [`Transport`] and opens a span around every
+//! request it forwards, closing it at the end of the response body (or
+//! when the body is dropped) rather than at the head — so the span's
+//! duration is the whole exchange rather than the time to first byte. It
+//! is a decorator on [`Transport`] rather than a `Hooks` implementor,
+//! because a hook cannot inject a header into an outgoing request and this
+//! needs to; [`Instrumented`]'s own doc has the full argument. `hclient::
+//! Client` names no type parameters, so nothing about wrapping the
+//! transport leaks past the call site.
 //!
-//! The obvious home for this is the `Hooks` seam, and it cannot do the job
-//! for a reason that is structural rather than a missing feature:
-//! `fn on(&self, event: &Event<'_>)` takes an immutable event, `&self` and
-//! returns nothing, so **nothing reachable from a hook can put a header
-//! into an outgoing request.** That is what the seam is for — a backend
-//! announces what happened without a hook being able to change what
-//! happens — and widening it would make every backend's emission site a
-//! place where a caller's code rewrites a request mid-flight.
+//! This crate owns no pipeline: spans go to whatever tracer provider or
+//! `tracing` subscriber the application already installed, and a process
+//! with no propagator installed gets no `traceparent`. **Do not build the
+//! OTLP exporter's own client on an instrumented transport** — exporting
+//! would then produce spans, which would produce more exports. Build the
+//! exporter's client on the bare transport instead; see
+//! [`Instrumented::otel`].
 //!
-//! **There is no request-start event**: `Event`'s variants are the life of
-//! a *connection*, the arrival of a head, and octets moving, and a span
-//! needs a beginning. And **`Hooks` is not universal**: `fn hooks` is
-//! declared on four backends of the six that could carry it, so even a
-//! mutating hook would have reached two thirds of them.
+//! `network.peer.address` and `network.peer.port` are recommended
+//! OpenTelemetry attributes and are deliberately not set: they live in a
+//! hook event not every backend emits, and an attribute whose value would
+//! be a guess is omitted here rather than faked.
 //!
-//! `Transport::execute` gives both halves away already. The request
-//! arrives **by value**, so a decorator may edit its headers; `Self::Body`
-//! is an associated type, so a decorator may wrap the response body — and
-//! wrapping the body is what makes the duration right rather than the time
-//! to first byte. `docs/otel-design.md` has the whole argument.
+//! # Key concepts
 //!
-//! `hclient::Client` names no type parameters, so **nothing leaks
-//! downward**: `Client::builder(Instrumented::otel(t))` is one line at the
-//! call site and every signature below it is unchanged.
+//! - [`Instrumented<T>`] — the transport decorator;
+//!   [`otel`](Instrumented::otel) for a full OpenTelemetry span with
+//!   propagation, [`tracing`](Instrumented::tracing) for a `tracing` span
+//!   that emits and does not inject.
+//! - [`context::PropagateWhen`] — restricts which hops carry the trace
+//!   context, for a redirect that should not necessarily see it.
+//! - [`SpanBody<B>`] — the response body wrapper that ends the span.
 //!
-//! # This crate does not own a pipeline
+//! # Features
 //!
-//! Spans go to `opentelemetry::global`'s tracer provider, or to a
-//! `tracing` subscriber. The SDK, the sampler, the propagator and the OTLP
-//! exporter are the application's to configure — a library that decides
-//! where a process's telemetry is shipped has drawn the boundary in the
-//! wrong place. A process that installs no propagator gets no
-//! `traceparent`, which is correct and is why the tests here install one
-//! exactly as an application would.
+//! - `otel` (default) — [`Instrumented::otel`]: full OpenTelemetry spans,
+//!   with `traceparent`/`baggage` injection.
+//! - `tracing` — [`Instrumented::tracing`]: a `tracing` span, with no
+//!   injection (a span's identity has no meaning outside the process that
+//!   made it).
 //!
-//! **And a bootstrap loop that has to be named.** If the OTLP exporter
-//! makes its own requests through an instrumented `Client`, exporting
-//! produces spans which produce exports: **the exporter's client must be
-//! a plain `Client`, built on the bare transport.** It is said at
-//! [`Instrumented::otel`] as well as here, because the constructor is
-//! where somebody is about to get it wrong.
-//!
-//! # What it does not set, and why
-//!
-//! `network.peer.address` and `network.peer.port` are `Recommended` and
-//! are **not set**. They live in the `Connected` hook event, and a
-//! decorator would have to be the hook as well to see them — which is a
-//! capability that varies by backend, since `fn hooks` exists on four of
-//! six. An attribute whose value would be a guess is omitted here. Both
-//! `Connected` and `Head` carry a
-//! `hclient_core::hooks::RequestId` now, so a caller who installs a
-//! hook of their own can join it to a span on a key; the crate does not
-//! decide that for them.
-//!
-//! Metrics are a separate surface and are not here — the same data, and
-//! the duration they want is the one this crate already fixes: to the end
-//! of the body.
+//! See `hclient::Client` for the transport being wrapped.
 //
 // Maintainer notes (not rendered):
 //
@@ -92,6 +75,66 @@
 //
 // six. This workspace's rule is that an attribute whose value would be a
 // guess is omitted. Both `Connected` and `Head` carry a
+//
+// # Why a transport decorator and not a hook
+//
+// The obvious home for this is the `Hooks` seam, and it cannot do the job
+// for a reason that is structural rather than a missing feature:
+// `fn on(&self, event: &Event<'_>)` takes an immutable event, `&self` and
+// returns nothing, so **nothing reachable from a hook can put a header
+// into an outgoing request.** That is what the seam is for — a backend
+// announces what happened without a hook being able to change what
+// happens — and widening it would make every backend's emission site a
+// place where a caller's code rewrites a request mid-flight.
+//
+// **There is no request-start event**: `Event`'s variants are the life of
+// a *connection*, the arrival of a head, and octets moving, and a span
+// needs a beginning. And **`Hooks` is not universal**: `fn hooks` is
+// declared on four backends of the six that could carry it, so even a
+// mutating hook would have reached two thirds of them.
+//
+// `Transport::execute` gives both halves away already. The request
+// arrives **by value**, so a decorator may edit its headers; `Self::Body`
+// is an associated type, so a decorator may wrap the response body — and
+// wrapping the body is what makes the duration right rather than the time
+// to first byte. `docs/otel-design.md` has the whole argument.
+//
+// `hclient::Client` names no type parameters, so **nothing leaks
+// downward**: `Client::builder(Instrumented::otel(t))` is one line at the
+// call site and every signature below it is unchanged.
+//
+// # This crate does not own a pipeline
+//
+// Spans go to `opentelemetry::global`'s tracer provider, or to a
+// `tracing` subscriber. The SDK, the sampler, the propagator and the OTLP
+// exporter are the application's to configure — a library that decides
+// where a process's telemetry is shipped has drawn the boundary in the
+// wrong place. A process that installs no propagator gets no
+// `traceparent`, which is correct and is why the tests here install one
+// exactly as an application would.
+//
+// **And a bootstrap loop that has to be named.** If the OTLP exporter
+// makes its own requests through an instrumented `Client`, exporting
+// produces spans which produce exports: **the exporter's client must be
+// a plain `Client`, built on the bare transport.** It is said at
+// [`Instrumented::otel`] as well as here, because the constructor is
+// where somebody is about to get it wrong.
+//
+// # What it does not set, and why
+//
+// `network.peer.address` and `network.peer.port` are `Recommended` and
+// are **not set**. They live in the `Connected` hook event, and a
+// decorator would have to be the hook as well to see them — which is a
+// capability that varies by backend, since `fn hooks` exists on four of
+// six. An attribute whose value would be a guess is omitted here. Both
+// `Connected` and `Head` carry a
+// `hclient_core::hooks::RequestId` now, so a caller who installs a
+// hook of their own can join it to a span on a key; the crate does not
+// decide that for them.
+//
+// Metrics are a separate surface and are not here — the same data, and
+// the duration they want is the one this crate already fixes: to the end
+// of the body.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -113,6 +156,18 @@ use span::{Choice, Recorder};
 use std::future::Future;
 
 /// A [`Transport`] that opens a span for every request it forwards.
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # #[cfg(feature = "tracing")] {
+/// let transport = hclient_mock::MockTransport::new();
+/// let instrumented = hclient_otel::Instrumented::tracing(transport);
+/// let client = hclient::Client::builder(instrumented).build()?;
+/// # let _ = client;
+/// # }
+/// # Ok(())
+/// # }
+/// ```
 ///
 /// # The front is chosen here, not by a feature
 ///
@@ -225,6 +280,19 @@ impl<T> Instrumented<T> {
     ///
     /// Only on the `otel` front, because it is the only one that injects
     /// — a setter that existed on the other would silently do nothing.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # #[cfg(feature = "otel")] {
+    /// let transport = hclient_mock::MockTransport::new();
+    /// let instrumented = hclient_otel::Instrumented::otel(transport)
+    ///     // Only inject the trace context into requests to our own origin.
+    ///     .propagate_when(|uri| uri.host() == Some("api.example.com"));
+    /// # let _ = instrumented;
+    /// # }
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
     pub fn propagate_when<F>(mut self, allow: F) -> Self
     where

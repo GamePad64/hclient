@@ -18,6 +18,17 @@ use crate::{Approach, Handshake, Step, take};
 /// address — which is what `socks5h` names in other clients' URL schemes
 /// and is why proxying is not a decorator over a seam that carries only a
 /// `SocketAddr`: the DNS leak is a property of that seam.
+///
+/// ```
+/// use hclient_proxy::{Proxy, Socks5};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let socks = Socks5::new().password_auth("alice", "hunter2")?;
+/// let proxy = Proxy::new(socks, "socks.corp", 1080);
+/// # let _ = proxy;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct Socks5 {
     auth: Option<(Box<str>, Box<str>)>,

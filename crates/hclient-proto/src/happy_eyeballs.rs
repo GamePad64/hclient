@@ -98,6 +98,27 @@ pub enum HeAction {
 /// `Wait` stops being bounded by `max(attempt_delay, resolution_delay)` —
 /// that's a precondition of the interface, not a checked invariant.
 ///
+/// ```
+/// use std::net::IpAddr;
+/// use std::time::Duration;
+/// use hclient_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
+///
+/// let v6: IpAddr = "2001:db8::1".parse().unwrap();
+/// let v4: IpAddr = "192.0.2.1".parse().unwrap();
+/// let mut he = Scheduler::new(HeConfig::default());
+/// he.offer_v6(&[v6]);
+/// he.mark_v6_done();
+/// he.offer_v4(&[v4]);
+/// he.mark_v4_done();
+///
+/// assert_eq!(he.poll(Duration::ZERO), HeAction::Start(v6));
+/// // The next attempt waits out the 250 ms Connection Attempt Delay.
+/// let ms = Duration::from_millis;
+/// assert_eq!(he.poll(ms(100)), HeAction::Wait(ms(150)));
+/// assert_eq!(he.poll(ms(250)), HeAction::Start(v4));
+/// assert_eq!(he.poll(ms(300)), HeAction::Exhausted);
+/// ```
+///
 /// `Scheduler` doesn't sort addresses within a family and hands them back
 /// in the order they arrived in `offer_v6` / `offer_v4`. Sorting by
 /// Destination Address Selection (RFC 8305 §4, RFC 6724 §6) is the

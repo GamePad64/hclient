@@ -1,4 +1,4 @@
-//! TLS backend on rustls.
+//! TLS backend on rustls, for `hclient_native::Native` and its QUIC arm.
 //!
 //! One type, [`Rustls`], and the constructor says where its trust comes
 //! from:
@@ -14,61 +14,120 @@
 //! request can select, or a session store. The result is the `T` of
 //! `hclient_native::Native::new(runtime, T, resolver)`.
 //!
-//! # rustls' major version is this crate's
+//! # Quick start
 //!
-//! **rustls does not appear in `hclient`'s public API**, nor in
-//! `hclient-tls`'s: the seams name no TLS implementation. It does appear in
-//! **this** crate's — [`Rustls::from_config`], [`Rustls::with_identity`],
-//! [`Rustls::with_session_store`] and, with `quic`, the
-//! `QuicTlsConnect::Session` type all name rustls or quinn types — so a
-//! rustls release that breaks those types is a major release here, and
-//! only here. That is inherent rather than a leak: a caller who hands this
-//! crate a `rustls::ClientConfig` is configuring rustls, and a wrapper that
-//! re-declared rustls' configuration would go stale against it.
+//! Build the rustls configuration through the re-exported [`rustls`], so
+//! it is the same version and crypto provider this crate links, then hand
+//! the backend to a transport:
 //!
-//! rustls 0.23 has been current since February 2024; `0.24.0-dev.1` is on
-//! crates.io (2026-07-23) and tracked in rustls#2400. What it changes that
-//! reaches this crate, read in that pre-release rather than assumed: the
-//! built-in providers are no longer features (no `ring` feature, no
-//! `std`), ALPN gains a per-connection setter on a new connection builder,
-//! and `ClientConfig::client_auth_cert_resolver` stops being a public field
-//! — which is what the recording wrapper below writes to. One rewritten
-//! crate is budgeted for.
+//! ```
+//! use std::sync::Arc;
+//! use hclient_tls_rustls::{Rustls, rustls};
 //!
-//! `forbid`, not `deny`: `deny(unsafe_code)` could be overridden with a
-//! local
-//! `#[allow(unsafe_code)]` next to the `unsafe` block itself — the
-//! compiler would stay silent; `forbid` cannot be overridden from inside
-//! the crate at all (`E0453`).
+//! let mut roots = rustls::RootCertStore::empty();
+//! // roots.add(your_ca_der)?;  — or use `Rustls::with_webpki_roots()`.
+//! # let _ = &mut roots;
+//! let tls = Rustls::from_config(Arc::new(
+//!     rustls::ClientConfig::builder()
+//!         .with_root_certificates(roots)
+//!         .with_no_client_auth(),
+//! ));
+//! // Then: hclient_native::Native::new(Tokio, tls, SystemDns::new(Tokio)).
+//! # drop(tls);
+//! ```
 //!
-//! # A client certificate, and two routes to one
+//! # Key types
 //!
-//! Both plain constructors here say `with_no_client_auth()`, so mTLS is
-//! asked for explicitly. There are two ways to ask, and which one is
-//! right turns on whether the certificate is a property of the
-//! **backend** or of the **request**.
+//! - [`Rustls`] — the backend; `Clone` shares its configuration and its
+//!   identity, so one value can serve both the TCP and the QUIC path.
+//! - [`TlsStream`] — the encrypted stream a handshake hands back.
+//! - [`rustls`] — re-exported, so a caller never adds a second copy.
 //!
-//! [`Rustls::from_config`] takes a `rustls::ClientConfig` the caller
-//! built with `.with_client_auth_cert(chain, key)`, and every connection
-//! this backend makes presents it. That is the whole of mTLS for a
-//! client with one identity, which is most of them.
+//! **rustls' major version is this crate's.** [`Rustls::from_config`],
+//! [`Rustls::with_identity`] and [`Rustls::with_session_store`] name
+//! rustls types, so a breaking rustls release is a breaking release here.
 //!
-//! [`Rustls::with_identity`] registers a config under a **name**, and a
-//! request carrying [`hclient_core::tls::ClientIdentity`] selects it. That is
-//! for a client that holds several — a tenant per certificate, a
-//! smartcard beside a software key — where the choice cannot be made at
-//! construction because it is not the same for every request.
+//! # Client certificates
 //!
-//! Two things hold for both routes and are worth knowing before assuming
-//! otherwise. [`TlsIdentity::presents_client_certs`] asks the **config**
-//! rather than remembering a constructor flag, so a `from_config` caller
-//! is reported correctly by `Capabilities::client_certs` — and by the
-//! HTTP/3 path, which clones this same config. And each config draws its
-//! own [`TlsConfigId`], which is part of `hclient-native`'s pool key, so
-//! two different certificates cannot share a connection: the isolation
-//! is by construction rather than by a check, which matters because the
-//! failure mode is presenting one tenant's certificate on another's
-//! behalf.
+//! [`Rustls::from_config`] with a config built by
+//! `.with_client_auth_cert(chain, key)` presents one certificate on every
+//! connection. [`Rustls::with_identity`] registers a config under a name,
+//! and a request carrying [`hclient_core::tls::ClientIdentity`] selects it.
+//! Each config draws its own [`TlsConfigId`], so two certificates never
+//! share a pooled connection.
+//!
+//! # Features
+//!
+//! - `platform-verifier` — `Rustls::with_platform_verifier`.
+//! - `webpki-roots` — `Rustls::with_webpki_roots`.
+//! - `dangerous-insecure` — `Rustls::danger_accept_invalid_certs`.
+//! - `quic` — HTTP/3's TLS (`hclient_tls::quic::QuicTlsConnect`), and
+//!   `quinn-proto` with it.
+//!
+//! # Where next
+//!
+//! `hclient-native` is the transport this plugs into; `hclient-tls` holds
+//! the seams it implements; `hclient-tls-native-tls` is the other backend.
+
+// Maintainer notes (not rendered):
+//
+// The front page's former sections, kept verbatim:
+//
+// # rustls' major version is this crate's
+//
+// **rustls does not appear in `hclient`'s public API**, nor in
+// `hclient-tls`'s: the seams name no TLS implementation. It does appear in
+// **this** crate's — [`Rustls::from_config`], [`Rustls::with_identity`],
+// [`Rustls::with_session_store`] and, with `quic`, the
+// `QuicTlsConnect::Session` type all name rustls or quinn types — so a
+// rustls release that breaks those types is a major release here, and
+// only here. That is inherent rather than a leak: a caller who hands this
+// crate a `rustls::ClientConfig` is configuring rustls, and a wrapper that
+// re-declared rustls' configuration would go stale against it.
+//
+// rustls 0.23 has been current since February 2024; `0.24.0-dev.1` is on
+// crates.io (2026-07-23) and tracked in rustls#2400. What it changes that
+// reaches this crate, read in that pre-release rather than assumed: the
+// built-in providers are no longer features (no `ring` feature, no
+// `std`), ALPN gains a per-connection setter on a new connection builder,
+// and `ClientConfig::client_auth_cert_resolver` stops being a public field
+// — which is what the recording wrapper below writes to. One rewritten
+// crate is budgeted for.
+//
+// `forbid`, not `deny`: `deny(unsafe_code)` could be overridden with a
+// local
+// `#[allow(unsafe_code)]` next to the `unsafe` block itself — the
+// compiler would stay silent; `forbid` cannot be overridden from inside
+// the crate at all (`E0453`).
+//
+// # A client certificate, and two routes to one
+//
+// Both plain constructors here say `with_no_client_auth()`, so mTLS is
+// asked for explicitly. There are two ways to ask, and which one is
+// right turns on whether the certificate is a property of the
+// **backend** or of the **request**.
+//
+// [`Rustls::from_config`] takes a `rustls::ClientConfig` the caller
+// built with `.with_client_auth_cert(chain, key)`, and every connection
+// this backend makes presents it. That is the whole of mTLS for a
+// client with one identity, which is most of them.
+//
+// [`Rustls::with_identity`] registers a config under a **name**, and a
+// request carrying [`hclient_core::tls::ClientIdentity`] selects it. That is
+// for a client that holds several — a tenant per certificate, a
+// smartcard beside a software key — where the choice cannot be made at
+// construction because it is not the same for every request.
+//
+// Two things hold for both routes and are worth knowing before assuming
+// otherwise. [`TlsIdentity::presents_client_certs`] asks the **config**
+// rather than remembering a constructor flag, so a `from_config` caller
+// is reported correctly by `Capabilities::client_certs` — and by the
+// HTTP/3 path, which clones this same config. And each config draws its
+// own [`TlsConfigId`], which is part of `hclient-native`'s pool key, so
+// two different certificates cannot share a connection: the isolation
+// is by construction rather than by a check, which matters because the
+// failure mode is presenting one tenant's certificate on another's
+// behalf.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 // docs.rs builds with every feature and passes `--cfg docsrs`, so an item
@@ -215,6 +274,27 @@ impl Rustls {
     ///
     /// A fresh [`TlsConfigId`] is drawn per identity, which is what keeps
     /// two of them off one connection.
+    ///
+    /// # Example
+    ///
+    /// A request selects the identity by carrying
+    /// `hclient_core::tls::ClientIdentity::new("tenant-a")` in its
+    /// extensions.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use hclient_tls_rustls::{Rustls, rustls};
+    ///
+    /// let plain = || {
+    ///     rustls::ClientConfig::builder()
+    ///         .with_root_certificates(rustls::RootCertStore::empty())
+    /// };
+    /// // A real identity ends in `.with_client_auth_cert(chain, key)?`.
+    /// let tenant_a = plain().with_no_client_auth();
+    /// let tls = Rustls::from_config(Arc::new(plain().with_no_client_auth()))
+    ///     .with_identity("tenant-a", Arc::new(tenant_a));
+    /// # drop(tls);
+    /// ```
     #[must_use]
     pub fn with_identity(
         mut self,

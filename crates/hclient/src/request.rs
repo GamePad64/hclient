@@ -18,6 +18,22 @@ use hclient_proto::redirect::RedirectPolicy;
 ///
 /// Every setter takes and returns the builder by value. An invalid value
 /// is not a panic: the first one is kept and returned by `send`.
+///
+/// ```no_run
+/// # async fn f(client: &hclient::Client) -> Result<(), hclient::Error> {
+/// let created = client
+///     .post("https://api.example.com/items")
+///     .query([("dry_run", "1")])
+///     .bearer_auth("token")
+///     .form([("name", "widget"), ("size", "large")])
+///     .send()
+///     .await?
+///     .collect()
+///     .await?
+///     .error_for_status()?;
+/// # let _ = created;
+/// # Ok(()) }
+/// ```
 #[derive(Debug)]
 pub struct RequestBuilder<'a> {
     client: &'a Client,

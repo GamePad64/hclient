@@ -1,29 +1,108 @@
-//! Pluggable TLS.
+//! Pluggable TLS: the traits a TLS backend implements and a transport
+//! calls, so the transport never names rustls, OpenSSL or a platform
+//! stack.
+//!
+//! Most callers never touch this crate directly — they pick a backend
+//! (`hclient-tls-rustls` or `hclient-tls-native-tls`) and hand it to a
+//! transport such as `hclient_native::Native`. This crate is for somebody
+//! writing a backend, or writing a transport that takes one.
+//!
+//! # Quick start
+//!
+//! Using a backend is reading what it reports and handing it on by value.
+//! [`NoTls`], shipped here, is the backend for a build with no TLS stack:
+//!
+//! ```
+//! use hclient_core::caps::TlsSupport;
+//! use hclient_tls::{NoTls, TlsConnect};
+//!
+//! let tls = NoTls;
+//! // `https://` will fail, and the backend says so before any connect.
+//! assert_eq!(tls.tls_support(), TlsSupport::None);
+//! // A transport takes it by value: `Native::new(runtime, tls, resolver)`.
+//! ```
+//!
+//! Implementing one is two associated types and one method, plus a
+//! [`TlsConfigId`] drawn once at construction. This skeleton returns the
+//! stream unwrapped — a real backend runs its handshake in `connect` and
+//! returns a stream that encrypts:
+//!
+//! ```
+//! use hclient_core::error::Error;
+//! use hclient_rt::Shutdown;
+//! use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
+//! use futures_io::{AsyncRead, AsyncWrite};
+//!
+//! struct MyTls {
+//!     id: TlsConfigId,
+//! }
+//!
+//! impl MyTls {
+//!     fn new() -> Self {
+//!         MyTls { id: TlsConfigId::new_unique() }
+//!     }
+//! }
+//!
+//! impl TlsIdentity for MyTls {
+//!     fn config_id(&self) -> TlsConfigId {
+//!         self.id
+//!     }
+//! }
+//!
+//! impl TlsConnect for MyTls {
+//!     type Stream<S>
+//!         = S
+//!     where
+//!         S: AsyncRead + AsyncWrite + Shutdown + Unpin;
+//!     type Handshake<'a, S>
+//!         = std::future::Ready<Result<(S, TlsInfo), Error>>
+//!     where
+//!         Self: 'a,
+//!         S: AsyncRead + AsyncWrite + Shutdown + Unpin + 'a;
+//!
+//!     fn connect<'a, S>(&'a self, io: S, _req: TlsRequest<'a>) -> Self::Handshake<'a, S>
+//!     where
+//!         S: AsyncRead + AsyncWrite + Shutdown + Unpin + 'a,
+//!     {
+//!         // The handshake goes here, for `_req.server_name` and `_req.alpn`.
+//!         std::future::ready(Ok((io, TlsInfo::new())))
+//!     }
+//! }
+//! # let _ = MyTls::new();
+//! ```
 //!
 //! The trait is typed on `futures_io::{AsyncRead, AsyncWrite}` plus
-//! [`hclient_rt::Shutdown`], and **not** on tokio-io or on an HTTP
-//! implementation's own IO traits. Consequence: there is no such thing as
-//! a per-runtime TLS glue crate — one adapter serves every runtime
-//! (`hclient-rt-tokio`, `hclient-rt-smol`, and any future one), because
-//! that trio is the one point every `S` in this vertical is already
-//! normalized to, not one more layer stacked on top.
+//! [`hclient_rt::Shutdown`], so one backend serves every runtime.
 //!
 //! # Where things are
 //!
 //! Two seams, peers, each in its own module, and what they share here:
 //!
 //! - `tcp` — [`TlsConnect`], a handshake over a byte stream, with
-//!   [`TlsRequest`], [`TlsInfo`] and the [`NoTls`] backend. A private
-//!   module whose items are named from this root, where every consumer
-//!   has always named them: one path per type, since a stable crate
-//!   promises every path it publishes.
+//!   [`TlsRequest`], [`TlsInfo`] and the [`NoTls`] backend. Its items
+//!   are named from this root.
 //! - [`quic`] — [`QuicTlsConnect`](quic::QuicTlsConnect), what a QUIC stack
 //!   asks of TLS, which is not a handshake over a stream at all.
 //! - here — [`TlsIdentity`] and [`TlsConfigId`], the configuration
 //!   identity both seams require, so one connector has one identity rather
-//!   than two.
+//!   than two. Two connectors with different identities never share a
+//!   pooled connection.
+//!
+//! # Where next
+//!
+//! `hclient-tls-rustls` is the default backend and implements both seams;
+//! `hclient-tls-native-tls` uses the platform's own stack and implements
+//! [`TlsConnect`] only.
 
 // Maintainer notes (not rendered):
+//
+// The trait is typed on `futures_io::{AsyncRead, AsyncWrite}` plus
+// [`hclient_rt::Shutdown`], and **not** on tokio-io or on an HTTP
+// implementation's own IO traits. Consequence: there is no such thing as
+// a per-runtime TLS glue crate — one adapter serves every runtime
+// (`hclient-rt-tokio`, `hclient-rt-smol`, and any future one), because
+// that trio is the one point every `S` in this vertical is already
+// normalized to, not one more layer stacked on top.
 //
 // **It was `hyper::rt::Read`/`Write` until the seam was frozen**, and the
 // sentence above was the whole of the argument — true, and silent about
@@ -38,6 +117,14 @@
 // is not. So the conversion to `hyper::rt` lives in `hclient-native`, the
 // one crate that hands a stream to
 // `hyper::client::conn::http1::handshake`.
+//
+// The `tcp` bullet on the front page read, in full:
+//
+// - `tcp` — [`TlsConnect`], a handshake over a byte stream, with
+//   [`TlsRequest`], [`TlsInfo`] and the [`NoTls`] backend. A private
+//   module whose items are named from this root, where every consumer
+//   has always named them: one path per type, since a stable crate
+//   promises every path it publishes.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -81,6 +168,18 @@ pub use tcp::{NoStream, NoTls, TlsConnect, TlsInfo, TlsRequest};
 /// configuration by two separate calls get different identities and will
 /// not share a socket — and that is the direction to be wrong in: less
 /// reuse, never reuse across a trust boundary.
+///
+/// # Example
+///
+/// ```
+/// use hclient_tls::TlsConfigId;
+///
+/// // Drawn once, in a backend's constructor, and stored.
+/// let a = TlsConfigId::new_unique();
+/// let b = TlsConfigId::new_unique();
+/// assert_ne!(a, b);
+/// assert_ne!(a, TlsConfigId::no_tls());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TlsConfigId(u64);
 

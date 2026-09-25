@@ -4,6 +4,22 @@
 //! public API: `Body::Error` is `hclient_core::error::Error`, which erases the
 //! source into `Arc<dyn std::error::Error + Send + Sync>`.
 //!
+//! ```no_run
+//! use hclient_wasi::WasiHttp;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let client = hclient::Client::builder(WasiHttp::new()).build()?;
+//! # let _ = client;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Key concepts
+//!
+//! [`WasiHttp`] is the transport, over the host's ambient
+//! `wasi:http/client.send` — the guest holds no socket of its own.
+//! [`Body`] is the response body it hands back.
+//!
 //! # IDN is the component's own weight, and there is nothing to share it
 //!
 //! **`wasi:http` offers no conversion and the host will not take a
@@ -24,6 +40,13 @@
 //! answering `UriError::NonAsciiHost`, which names the A-label to send
 //! instead, and whoever builds the URL converts once. That is the right
 //! trade far more often here than anywhere else this crate builds for.
+//!
+//! # Where to go next
+//!
+//! `hclient::Client` is the portable facade this transport plugs into —
+//! the same application code that uses [`WasiHttp`] here builds unchanged
+//! against `hclient-native` on a native target and `hclient-fetch` in a
+//! browser.
 
 // Maintainer notes (not rendered):
 // ASCII — asked of wasmtime rather than read off the document, by
@@ -96,6 +119,16 @@ static FORBIDDEN_REQUEST_HEADERS: std::sync::LazyLock<[http::HeaderName; 5]> =
 // are a fact about a body rather than about a connection.
 /// Transport over the ambient `wasi:http/client.send` — the guest holds no
 /// socket of its own, all network interaction is delegated to the host.
+///
+/// ```no_run
+/// use hclient_wasi::WasiHttp;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = hclient::Client::builder(WasiHttp::new()).build()?;
+/// # let _ = client;
+/// # Ok(())
+/// # }
+/// ```
 ///
 /// # `H`, the observability hook
 ///

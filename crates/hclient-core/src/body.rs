@@ -59,6 +59,20 @@ pub enum RetryKind {
 pub type RewindFactory = Arc<dyn Fn() -> RequestBody + Send + Sync>; // send-bound-exception: amendment-C2
 
 /// A request body with an explicit replay contract.
+///
+/// ```
+/// use std::sync::Arc;
+/// use bytes::Bytes;
+/// use hclient_core::body::{RequestBody, RetryKind};
+///
+/// let full = RequestBody::Full(Bytes::from_static(b"{}"));
+/// assert_eq!(full.retry_kind(), RetryKind::Free);
+///
+/// // A body built again on demand: replayable, at the factory's cost.
+/// let rewindable =
+///     RequestBody::Rewindable(Arc::new(|| RequestBody::Full(Bytes::from_static(b"{}"))));
+/// assert_eq!(rewindable.retry_kind(), RetryKind::ViaFactory);
+/// ```
 #[derive(Default)]
 #[non_exhaustive]
 pub enum RequestBody {

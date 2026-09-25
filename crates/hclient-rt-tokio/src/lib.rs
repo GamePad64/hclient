@@ -26,6 +26,21 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Key concepts
+//!
+//! - [`Tokio`] — the ambient runtime, a zero-sized type; panics off a
+//!   tokio thread.
+//! - [`TokioHandle`] — the same capabilities carried as a value, so the
+//!   precondition is a `Result` at construction rather than a panic later.
+//! - [`TokioIo`] and [`TokioUdpSocket`] — the connected stream and bound
+//!   socket each hands back.
+//!
+//! # Where to go next
+//!
+//! [`hclient_rt`] is the seam these two implement; `hclient-native` is the
+//! transport that dials through it. `hclient-rt-smol` is the other shipped
+//! runtime.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 // docs.rs builds with every feature and passes `--cfg docsrs`, so an item

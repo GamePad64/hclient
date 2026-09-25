@@ -110,6 +110,19 @@ use std::task::{Context, Poll};
 /// detail, and `hclient-rt`'s own [`EcnCodepoint`](hclient_rt::EcnCodepoint)
 /// is what crosses the seam, so no `quinn-udp` type is part of this
 /// crate's API.
+///
+/// # Example
+///
+/// Unlike `hclient-rt-tokio`'s [`UdpBind::bind`], this one needs no
+/// runtime context — `async-io`'s reactor starts itself on first use:
+///
+/// ```
+/// use hclient_rt::{UdpBind, UdpDatagrams};
+/// use hclient_rt_smol::Smol;
+///
+/// let socket = Smol.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+/// assert!(socket.local_addr().unwrap().port() > 0);
+/// ```
 #[derive(Debug)]
 pub struct SmolUdpSocket {
     io: async_io::Async<std::net::UdpSocket>,

@@ -1,16 +1,77 @@
-//! Native transport for hclient: TCP + TLS + HTTP/1.1, and HTTP/2 behind
-//! a feature.
+//! Native transport for hclient: TCP + TLS + HTTP/1.1, HTTP/2 behind a
+//! feature, and HTTP/3 over QUIC behind another.
 //!
 //! This crate wires together the runtime ([`hclient_rt`]), DNS
-//! ([`hclient_dns`]) and TLS ([`hclient_tls`]) on top of `hyper`.
+//! ([`hclient_dns`]) and TLS ([`hclient_tls`]) on top of `hyper`. It is
+//! for a native program that wants to choose those three parts itself;
+//! `hclient`'s `default-transport` feature picks this crate with tokio,
+//! rustls and the system resolver for you.
 //!
-//! The root holds what a caller builds and holds: [`Native`], its
-//! options, its body and IO types, and the QUIC stack beside it. Five
-//! modules hold the rest by what a caller does with it —
-//! [`error`] for every payload [`Error::source`](std::error::Error::source)
-//! can hand back, [`staged`] for connecting ahead of a request, [`task`]
-//! for the futures a runtime is asked to spawn, [`proxy`] for proxies,
-//! and `altsvc` for a caller's own `Alt-Svc` store.
+//! # Quick start
+//!
+//! Build a [`Native`] from a runtime, a TLS backend and a resolver, then
+//! hand it to `hclient::Client`:
+//!
+//! ```no_run
+//! use hclient_dns_system::SystemDns;
+//! use hclient_native::Native;
+//! use hclient_rt_tokio::Tokio;
+//! use hclient_tls_rustls::Rustls;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let transport = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
+//! let client = hclient::Client::builder(transport).build()?;
+//! let text = client
+//!     .get("https://example.com")
+//!     .send()
+//!     .await?
+//!     .collect()
+//!     .await?
+//!     .text()?;
+//! println!("{text}");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`Native`] is also a [`Transport`] on its own, so
+//! [`Transport::execute`] sends one `http::Request` with no `Client`
+//! around it — no redirects, cookies or cache.
+//!
+//! # Key types
+//!
+//! - [`Native`] — the transport. Its builder methods set pooling
+//!   ([`PoolConfig`]), socket options, HTTP/1 limits ([`H1Opts`]), hooks
+//!   and proxies.
+//! - [`NativeBody`] — the response body it hands back.
+//! - [`error`] — every payload [`Error::source`](std::error::Error::source)
+//!   can hand back.
+//! - [`staged`] — connecting ahead of a request, so the request itself
+//!   does not pay for the connect.
+//! - [`task`] — the futures a runtime is asked to spawn, named only
+//!   because a `Spawn` bound has to name them.
+//! - [`proxy`] — HTTP `CONNECT`, SOCKS4 and SOCKS5 proxies.
+//! - `altsvc` (with `http3`) — a caller's own store for `Alt-Svc`
+//!   advertisements.
+//!
+//! # Features
+//!
+//! - `http2` — HTTP/2, negotiated by ALPN. [`Capabilities`] still report
+//!   the HTTP/1.1 floor, because a caller cannot know which protocol a
+//!   server will pick.
+//! - `http3` — the QUIC stack (`H3`) and `Native::http3`, which sends a
+//!   request over QUIC when the origin advertises `h3`.
+//! - `proxy` — the three proxy protocols. The proxy types themselves are
+//!   always present.
+//! - `system-proxy` — `Native::system_proxy`, reading the machine's own
+//!   proxy settings.
+//!
+//! # Where next
+//!
+//! `hclient` is the client most callers use over this transport;
+//! `hclient-tls-rustls` and `hclient-tls-native-tls` are the two TLS
+//! backends, and `hclient-rt-tokio` and `hclient-rt-smol` the two
+//! runtimes.
 
 // Maintainer notes (not rendered):
 //

@@ -15,28 +15,14 @@
 //! # }
 //! ```
 //!
+//! # Key concepts
+//!
 //! **One function, and that is the whole surface**: [`domain_to_ascii`],
-//! plus the [`IdnError`] its `Result` needs.
-//!
-//! **The reverse direction was here and is not**, and the reason is the
-//! rule this crate is built on rather than a gap. Nothing needs it: an
-//! HTTP client converts U to A because `http::Uri` refuses a non-ASCII
-//! authority — measured, `"https://münchen.de/".parse::<http::Uri>()` is
-//! `Err(invalid uri character)` — and never converts back, because
-//! nothing downstream takes a U-label. A direction with no caller is a
-//! surface that has to be right on four backends for nobody, and one of
-//! them could not supply it at all: no JS API performs `ToUnicode`. So the
-//! crate is one direction, every backend is one function, and the
-//! acceptance probe asks one question. Which implementation answers is decided by the
-//! target and, where the target has a choice, by the one feature this
-//! crate has — `idna`, off by default, which forces the bundled tables
-//! everywhere.
-//!
-//! Four backends, one shape: Windows' `icuuc.dll`, Android's
-//! `android.icu.text.IDNA` over JNI, the browser's own `new URL()`, and
-//! the `idna` crate, which is what the ELF unixes, WASI and Apple get
-//! because there is no UTS 46 to ask there. `lib.rs` names the selected one `platform` and
-//! nothing past that line names an operating system.
+//! plus the [`IdnError`] its `Result` needs. There is deliberately no
+//! reverse direction — nothing downstream of an HTTP client's `http::Uri`
+//! ever takes a U-label back, so every backend answers one question,
+//! decided by the target and, where the target has a choice, by the one
+//! feature below.
 //!
 //! # Which platform answers
 //!
@@ -64,18 +50,45 @@
 //! **A system ICU tracks the operating system's Unicode version; the
 //! bundled tables track this crate's.** Where they differ, some names
 //! convert differently — and IDN decides *which host is contacted*, so
-//! that is a different destination, not a cosmetic difference.
-//!
-//! There is no run-time cross-check between the two: the two backends
-//! are never both compiled in, so on a target with a system ICU there is
-//! nothing to compare against without putting the tables back, which is
-//! the entire cost this crate exists to avoid. What guards the gap
-//! instead is a per-platform differential test corpus in CI, and a
+//! that is a different destination, not a cosmetic difference. What
+//! guards the gap is a per-platform differential test corpus in CI, and a
 //! load-time acceptance probe that refuses to trust an implementation
 //! that fails on two known-divergent inputs — a behaviour floor, not a
 //! verified Unicode-version floor.
+//!
+//! `hclient-proto`'s `idn` feature is the client-facing side of this: it
+//! is what calls [`domain_to_ascii`] on a request's authority.
 //
 // Maintainer notes (not rendered):
+//
+// **The reverse direction was here and is not**, and the reason is the
+// rule this crate is built on rather than a gap. Nothing needs it: an
+// HTTP client converts U to A because `http::Uri` refuses a non-ASCII
+// authority — measured, `"https://münchen.de/".parse::<http::Uri>()` is
+// `Err(invalid uri character)` — and never converts back, because
+// nothing downstream takes a U-label. A direction with no caller is a
+// surface that has to be right on four backends for nobody, and one of
+// them could not supply it at all: no JS API performs `ToUnicode`. So the
+// crate is one direction, every backend is one function, and the
+// acceptance probe asks one question. Which implementation answers is decided by the
+// target and, where the target has a choice, by the one feature this
+// crate has — `idna`, off by default, which forces the bundled tables
+// everywhere.
+//
+// Four backends, one shape: Windows' `icuuc.dll`, Android's
+// `android.icu.text.IDNA` over JNI, the browser's own `new URL()`, and
+// the `idna` crate, which is what the ELF unixes, WASI and Apple get
+// because there is no UTS 46 to ask there. `lib.rs` names the selected one `platform` and
+// nothing past that line names an operating system.
+//
+// There is no run-time cross-check between the two: the two backends
+// are never both compiled in, so on a target with a system ICU there is
+// nothing to compare against without putting the tables back, which is
+// the entire cost this crate exists to avoid. What guards the gap
+// instead is a per-platform differential test corpus in CI, and a
+// load-time acceptance probe that refuses to trust an implementation
+// that fails on two known-divergent inputs — a behaviour floor, not a
+// verified Unicode-version floor.
 //
 // # Why this crate exists, and what it is worth
 //
@@ -532,6 +545,16 @@ fn selected() -> Option<&'static platform::Handle> {
 /// caller that cares, `hclient-proto::uri`, never sends an all-ASCII host
 /// here at all; that is its own documented behaviour, not this
 /// function's.)
+///
+/// ```
+/// # fn main() -> Result<(), hclient_idn::IdnError> {
+/// // Already ASCII: lower-cased and returned as-is.
+/// assert_eq!(hclient_idn::domain_to_ascii("EXAMPLE.COM")?, "example.com");
+/// // Non-ASCII: converted to its punycode A-label.
+/// assert_eq!(hclient_idn::domain_to_ascii("straße.de")?, "xn--strae-oqa.de");
+/// # Ok(())
+/// # }
+/// ```
 ///
 /// # Errors
 ///

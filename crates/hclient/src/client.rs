@@ -46,6 +46,23 @@ use web_time::SystemTime;
 ///
 /// Every setter is `#[must_use]` and consumes and returns `self`, so a
 /// chain ends with [`ClientBuilder::build`].
+///
+/// ```no_run
+/// # #[cfg(feature = "test-util")]
+/// # fn f() -> Result<(), Box<dyn std::error::Error>> {
+/// use hclient::redirect::Limit;
+///
+/// let transport = hclient::mock::MockTransport::new();
+/// let client = hclient::Client::builder(transport)
+///     .base_url("https://api.example.com/v1/".parse()?)
+///     .user_agent(http::HeaderValue::from_static("my-app/1.0"))
+///     .redirect(Limit::new(5))
+///     .build()?;
+/// // Relative to the base: https://api.example.com/v1/items
+/// let request = client.get("items");
+/// # let _ = request;
+/// # Ok(()) }
+/// ```
 pub struct ClientBuilder {
     transport: Box<hclient_core::transport::SharedTransport>,
     /// The transport's type name, captured at construction: erasure loses

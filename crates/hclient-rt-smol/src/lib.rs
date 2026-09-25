@@ -26,6 +26,20 @@
 //! tokio context is found — which hides exactly the problem a second
 //! runtime is here to surface: code that only works because tokio happens
 //! to be around.
+//!
+//! # Key concepts
+//!
+//! - [`Smol`] — the whole runtime, a zero-sized type with no precondition.
+//! - [`SmolIo`] and [`SmolUdpSocket`] — the connected stream and bound
+//!   socket [`TcpConnect::connect`] and
+//!   [`UdpBind::bind`](hclient_rt::UdpBind::bind) hand back.
+//! - [`SmolSleep`] — the future [`Timer::sleep`] hands back.
+//!
+//! # Where to go next
+//!
+//! `hclient_rt` is the seam this crate implements; `hclient-native` is the
+//! transport that dials through it. `hclient-rt-tokio` is the other
+//! shipped runtime.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 // docs.rs builds with every feature and passes `--cfg docsrs`, so an item

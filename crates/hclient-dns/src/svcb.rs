@@ -209,6 +209,26 @@ impl RawParam {
 /// `Err` is reserved for the one client-side check RFC 9460 calls
 /// malformed and no decoder makes: a `mandatory` list naming a key the
 /// record does not carry.
+///
+/// # Example
+///
+/// A `ServiceMode` record whose `TargetName` is the wire's `.` — meaning
+/// "use the owner name", substituted here so every [`SvcbEndpoint`] this
+/// crate emits already carries a connectable name:
+///
+/// ```
+/// use hclient_dns::svcb::{RawBinding, endpoint_from_binding};
+///
+/// let binding = RawBinding {
+///     priority: 1,
+///     owner: "example.com".into(),
+///     target: String::new(),
+///     params: Vec::new(),
+///     ttl: None,
+/// };
+/// let record = endpoint_from_binding(&binding).unwrap().unwrap();
+/// assert_eq!(record.rdata.https().unwrap().target, "example.com");
+/// ```
 pub fn endpoint_from_binding(binding: &RawBinding) -> Result<Option<Record>, SvcbRecordError> {
     // RFC 9460 §2.4.1: "In AliasMode, ... recipients MUST ignore any
     // SvcParams that are present", so none of them reach the endpoint.

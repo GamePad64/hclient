@@ -1,6 +1,49 @@
 //! Plugin contract for hclient: the traits a backend, a runtime or a
 //! resolver implements, and the vocabulary types they exchange.
 //!
+//! The centre is [`transport::Transport`]: one request in, one response
+//! out. A caller holds any transport the same way, and a backend is two
+//! methods — this is the whole of one that answers every request `200`:
+//!
+//! ```
+//! use bytes::Bytes;
+//! use hclient_core::body::RequestBody;
+//! use hclient_core::caps::Capabilities;
+//! use hclient_core::error::Error;
+//! use hclient_core::transport::Transport;
+//! use http_body_util::Full;
+//!
+//! // Implementing: a backend.
+//! struct Canned(Capabilities);
+//!
+//! impl Transport for Canned {
+//!     type Body = Full<Bytes>;
+//!     type Error = Error;
+//!
+//!     async fn execute(
+//!         &self,
+//!         _req: http::Request<RequestBody>,
+//!     ) -> Result<http::Response<Full<Bytes>>, Error> {
+//!         Ok(http::Response::new(Full::new(Bytes::from_static(b"hello"))))
+//!     }
+//!
+//!     fn capabilities(&self) -> &Capabilities {
+//!         &self.0
+//!     }
+//! }
+//!
+//! // Using: code that works over any backend.
+//! async fn status_of<T: Transport>(t: &T, uri: &str) -> Result<u16, T::Error> {
+//!     let req = http::Request::get(uri).body(RequestBody::Empty).unwrap();
+//!     Ok(t.execute(req).await?.status().as_u16())
+//! }
+//! # let _ = status_of(&Canned(Capabilities::default()), "https://example.com");
+//! ```
+//!
+//! [`Capabilities`](caps::Capabilities) is how a backend says what it can
+//! do; `hclient::Client` reads it at `build()` and refuses a setting the
+//! transport cannot honour, rather than ignoring it.
+//!
 //! # Which door is yours
 //!
 //! Twelve modules, and a reader needs at most two of them. The split is
@@ -24,10 +67,6 @@
 //! asks of a TLS backend, and [`url`] for the one piece of URI syntax
 //! every consumer here kept re-deriving.
 //!
-//! **Neither** — the `Box*` types in [`transport`] and [`timer`] are how
-//! `hclient::Client` boxes a transport and a clock, and no backend author
-//! writes any of them: each is a blanket impl over the trait beside it.
-//!
 //! **And a caller of `hclient` needs none of this.** Every type here that
 //! a caller meets is re-exported from that crate under a shorter path —
 //! `hclient::caps`, `hclient::hooks`, `hclient::Error`. This crate is the
@@ -41,19 +80,16 @@
 //! through `impl Future`, because a bound declared where the type is
 //! abstract is forced on every backend — including ones that cannot meet
 //! it, such as a single-threaded embedded runtime whose connect future
-//! holds a `RefCell`.
+//! holds a `RefCell`. A backend whose futures are `Send` says so with
+//! [`transport::SendTransport`], usually one line of
+//! [`send_transport!`](transport::send_transport).
 //!
-//! Bounds do appear in three places, and each is a value a caller hands
-//! over rather than a demand on an implementor:
+//! # Where to go next
 //!
-//! - [`error::Error`]'s source is `Send + Sync`, or a client could not build an
-//!   error from a backend's at all.
-//! - [`body::RequestBody`]'s rewind factory and streaming arm.
-//! - [`transport::SharedTransport`] and [`timer::SharedTimer`], which a
-//!   facade writes at its own use site to put a transport behind an
-//!   `Arc`. Neither is a **seam**: a blanket impl covers every `Transport`, so no backend
-//!   implements or is taxed by it, and one that cannot meet the bound is
-//!   refused at a constructor rather than at a trait.
+//! - `hclient` — the client built on these traits.
+//! - `hclient-rt`, `hclient-tls`, `hclient-dns` — the seams one layer
+//!   down: a runtime's sockets, a TLS backend, a resolver.
+//! - `hclient-mock` — a scripted `Transport` for tests.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -106,6 +142,25 @@
 // So the seam is additive for the audience that only reads, and a
 // compile error for the audience that must answer. That split is the
 // whole design, and it is checkable again by repeating the simulation.
+//
+// (Moved from the front page when it gained the Transport example,
+// verbatim.)
+//
+// **Neither** — the `Box*` types in [`transport`] and [`timer`] are how
+// `hclient::Client` boxes a transport and a clock, and no backend author
+// writes any of them: each is a blanket impl over the trait beside it.
+//
+// Bounds do appear in three places, and each is a value a caller hands
+// over rather than a demand on an implementor:
+//
+// - [`error::Error`]'s source is `Send + Sync`, or a client could not build an
+//   error from a backend's at all.
+// - [`body::RequestBody`]'s rewind factory and streaming arm.
+// - [`transport::SharedTransport`] and [`timer::SharedTimer`], which a
+//   facade writes at its own use site to put a transport behind an
+//   `Arc`. Neither is a **seam**: a blanket impl covers every `Transport`, so no backend
+//   implements or is taxed by it, and one that cannot meet the bound is
+//   refused at a constructor rather than at a trait.
 //
 pub mod auth;
 pub mod body;

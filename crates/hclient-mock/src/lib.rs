@@ -4,14 +4,8 @@
 //!
 //! Depends on `hclient-core` alone, so a `Transport` author can use it
 //! without depending on the whole client. It is also re-exported as
-//! `hclient::mock` behind the `hclient` facade's `test-util` feature.
-//!
-//! The response queue and request log sit behind a `std::sync::Mutex`, not
-//! a `RefCell`. This isn't a style choice: `RefCell` would make
-//! `MockTransport` `!Sync`, which would make `&MockTransport` `!Send`, and
-//! therefore the future `execute` returns — it borrows the transport —
-//! would be `!Send` too. A test double should not be the thing that stops
-//! that property from being checked. This mock implements `SendTransport`.
+//! `hclient::mock` behind the `hclient` facade's `test-util` feature, and
+//! this mock implements `SendTransport`.
 //!
 //! # Writing a test with it
 //!
@@ -53,6 +47,16 @@
 //! **ordered**, and a matcher would let a test pass while the code made
 //! its requests in the wrong order. Matching on the request is a different
 //! product; assert on `requests()` instead.
+//!
+//! # Key concepts
+//!
+//! - [`MockTransport`] — the transport: a queue of responses to hand out,
+//!   and a log of every request it saw.
+//! - [`RecordedRequest`] and [`RecordedBody`] — what a test reads back
+//!   from [`MockTransport::requests`], including the body actually sent.
+//! - [`TestTimer`] — a controllable [`hclient_core::timer::Timer`] whose
+//!   `sleep` resolves immediately and records the `Duration` it was asked
+//!   for, for testing backoff and reconnect logic with no real waiting.
 
 // Maintainer notes (not rendered):
 //
@@ -71,6 +75,16 @@
 // C16). What has been constant is the `Mutex`: this mock implements
 // `SendTransport`, and it can only do that because nothing in it is
 // behind a `RefCell`.
+//
+// The response queue and request log sit behind a `std::sync::Mutex`, not
+// a `RefCell`. This isn't a style choice: `RefCell` would make
+// `MockTransport` `!Sync`, which would make `&MockTransport` `!Send`, and
+// therefore the future `execute` returns — it borrows the transport —
+// would be `!Send` too. A test double should not be the thing that stops
+// that property from being checked. This mock implements `SendTransport`.
+//
+// Also re-exported as `hclient::mock` behind the `hclient` facade's
+// `test-util` feature.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -107,6 +121,27 @@ use std::time::Duration;
 /// `TypeId -> Box<dyn Any>` map, which has nothing to compare it with in
 /// the general case), so `RecordedRequest` can't be compared as a whole —
 /// only field by field.
+///
+/// ```
+/// use hclient_core::transport::Transport;
+/// use hclient_mock::MockTransport;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mock = MockTransport::new();
+/// mock.push_response(http::Response::builder().status(204).body("")?);
+///
+/// # futures_executor::block_on(async {
+/// let req = http::Request::get("https://api.test/x").body(Default::default())?;
+/// mock.execute(req).await?;
+///
+/// let seen = mock.requests();
+/// assert_eq!(seen[0].method, http::Method::GET);
+/// assert_eq!(seen[0].uri.path(), "/x");
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// # })?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct RecordedRequest {
@@ -778,6 +813,19 @@ impl http_body::Body for MockBody {
 /// `Clone`, cheaply — `Arc` inside — so a test can hand one copy to
 /// `SseBuilder::with_timer` and keep another to call `sleeps()` on
 /// afterward.
+///
+/// ```
+/// use hclient_core::timer::Timer;
+/// use hclient_mock::TestTimer;
+/// use std::time::Duration;
+///
+/// # futures_executor::block_on(async {
+/// let timer = TestTimer::new();
+/// timer.sleep(Duration::from_secs(1)).await;
+/// timer.sleep(Duration::from_secs(2)).await;
+/// assert_eq!(timer.sleeps(), vec![Duration::from_secs(1), Duration::from_secs(2)]);
+/// # })
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct TestTimer {
     sleeps: Arc<Mutex<Vec<Duration>>>,

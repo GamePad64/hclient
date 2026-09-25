@@ -1,11 +1,37 @@
 //! hclient transport over the browser's `fetch`.
 //!
+//! For an application built for `wasm32-unknown-unknown` and running in a
+//! page or a Worker — the same application code that uses [`Fetch`] here
+//! builds unchanged against `hclient-native` on a native target and
+//! `hclient-wasi` on WASI.
+//!
 //! Its dependency graph holds neither hyper, tokio, nor `hclient-rt`.
+//!
+//! ```no_run
+//! use hclient_fetch::Fetch;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let client = hclient::Client::builder(Fetch::new()).build()?;
+//! # let _ = client;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Key concepts
 //!
 //! [`Fetch`] is the transport, [`BrowserClock`] the matching timer, and
 //! [`FetchWebSocket`] the WebSocket it connects through the browser's own
 //! `WebSocket` global. [`opts::FetchOpts`] sets the `RequestInit` members a
 //! browser caller may need beyond the request itself.
+//!
+//! [`Fetch::opts`] is where [`opts::FetchOpts`] is applied, and [`Body`] is
+//! the response body, over `ReadableStream`.
+//!
+//! # Where to go next
+//!
+//! `hclient::Client` is the portable facade every backend plugs into.
+//! `FORBIDDEN_HEADERS` lists what a caller cannot set because the browser
+//! sets it already — see that constant's own doc for why.
 
 // Maintainer notes (not rendered):
 //

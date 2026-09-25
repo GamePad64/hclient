@@ -8,69 +8,96 @@
 //! Enterprise roots pushed by MDM are not a reason to choose it:
 //! `hclient`'s own `DefaultTransport` verifies with
 //! `rustls-platform-verifier`, which already honours them.
+#![cfg(target_vendor = "apple")]
+#![warn(missing_docs)]
+
+//! ```no_run
+//! use hclient_urlsession::UrlSession;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let client = hclient::Client::builder(UrlSession::new()).build()?;
+//! # let _ = client;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Key concepts
+//!
+//! [`UrlSession`] is the transport, over `NSURLSession`, and
+//! [`UrlSessionBody`] its response body. [`UrlSessionWebSocket`]
+//! implements [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect)
+//! over `NSURLSessionWebSocketTask` — Foundation performs the handshake,
+//! the masking and the ping/pong itself, and hands over whole messages.
 //!
 //! # What it deliberately does NOT take from the OS
 //!
 //! `URLSession` will keep cookies, a response cache and a redirect policy
-//! for you, and this transport **turns all three off**. That is the
-//! decision worth knowing about, and it is not caution:
-//!
-//! - They are portable behaviour that `hclient`'s `Client` implements
-//!   itself, so a caller gets the same answers on every backend.
-//! - Leaving them on would make this the *second* backend to report
-//!   `owns_cookie_jar` and `owns_cache`, and a client-side jar or cache
-//!   against it would be an `UnsupportedCapability` at `build()`. A caller
-//!   porting from `hclient-native` would lose two features by changing
-//!   one line.
-//! - Redirects are the sharpest of the three, because `URLSession` lets a
-//!   delegate refuse them and the browser does not. So this backend
-//!   reports [`RedirectSupport::Transparent`](hclient_core::caps::RedirectSupport::Transparent) where `hclient-fetch`
-//!   reports `Internal`, and `Client`'s redirect policy — its hop limit,
-//!   its `Authorization` stripping across origins — works here and cannot
-//!   there.
-//!
-//! The configuration is `ephemeral`, which is Apple's own name for a
-//! session that persists nothing, plus an explicit `nil` for the cookie
-//! storage.
+//! for you, and this transport **turns all three off**: they are portable
+//! behaviour `hclient`'s `Client` already implements, so a caller gets the
+//! same answers on every backend rather than losing two features by
+//! switching backends. Redirects are the sharpest of the three — a
+//! delegate can refuse one, which the browser cannot — so this backend
+//! reports [`RedirectSupport::Transparent`](hclient_core::caps::RedirectSupport::Transparent)
+//! where `hclient-fetch` reports `Internal`. The configuration is
+//! `ephemeral`, plus an explicit `nil` for the cookie storage.
 //!
 //! # What it does take, and says so
 //!
-//! The proxy configuration, which is one of the three reasons above — and
-//! [`Capabilities::proxy`](hclient_core::caps::Capabilities::proxy) reports it,
-//! read from the machine at construction rather than left at `false`.
+//! The proxy configuration is the one thing it does take, and
+//! [`Capabilities::proxy`](hclient_core::caps::Capabilities::proxy) reports
+//! it, read from the machine's own platform settings at construction — a
+//! read that can only under-claim, never invent a proxy that is not
+//! there. `true` says the machine names one; it does not say a given
+//! request goes through it, which the exceptions list, or a PAC script
+//! only `URLSession` can run, decides.
 //!
-//! What is read is the **platform's own settings** —
-//! `hclient_proxy::system::SystemProxies::detect_platform`, which skips
-//! the `HTTP_PROXY`/`HTTPS_PROXY` variables that `detect` reads first.
-//! `URLSession` takes its proxies from the system configuration, so a
-//! value off `detect` would report `true` on a machine whose only proxy
-//! is a variable this transport ignores. The platform read can only
-//! under-claim, which is the direction to be wrong in.
+//! # Where to go next
 //!
-//! `true` says the machine names a proxy this transport hands to the OS.
-//! It does not say that any one request goes through it — the exceptions
-//! list decides that, and on a machine configured with a PAC script a
-//! JavaScript program does, which `URLSession` runs and nothing in this
-//! workspace can read. That is the same reading `hclient-native` gives
-//! the field, where a proxy carrying a bypass list still reports `true`.
-#![cfg(target_vendor = "apple")]
-#![warn(missing_docs)]
-
-//! # WebSocket
-//!
-//! [`UrlSessionWebSocket`] implements
-//! [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect) over
-//! `NSURLSessionWebSocketTask`. Foundation performs the handshake, the
-//! masking and the ping/pong itself, and hands over whole messages.
-//!
-//! Two details are Foundation's own and are handled rather than papered
-//! over: a task opens **lazily**, so the handshake's failure arrives
-//! through the first send or receive rather than from `websocket()`; and
-//! the peer's close arrives as a **failed receive** with the code on the
-//! task, which is read back and reported as
-//! [`Message::Close`](hclient_core::websocket::Message::Close).
+//! `hclient::Client` is the portable facade this transport plugs into.
+//! `hclient-winhttp` is the equivalent on Windows.
 
 // Maintainer notes (not rendered):
+//
+// `URLSession` will keep cookies, a response cache and a redirect policy
+// for you, and this transport **turns all three off**. That is the
+// decision worth knowing about, and it is not caution:
+//
+// The configuration is `ephemeral`, which is Apple's own name for a
+// session that persists nothing, plus an explicit `nil` for the cookie
+// storage.
+//
+// The proxy configuration, which is one of the three reasons above — and
+// [`Capabilities::proxy`](hclient_core::caps::Capabilities::proxy) reports it,
+// read from the machine at construction rather than left at `false`.
+//
+// - They are portable behaviour that `hclient`'s `Client` implements
+//   itself, so a caller gets the same answers on every backend.
+// - Leaving them on would make this the *second* backend to report
+//   `owns_cookie_jar` and `owns_cache`, and a client-side jar or cache
+//   against it would be an `UnsupportedCapability` at `build()`. A caller
+//   porting from `hclient-native` would lose two features by changing
+//   one line.
+// - Redirects are the sharpest of the three, because `URLSession` lets a
+//   delegate refuse them and the browser does not. So this backend
+//   reports [`RedirectSupport::Transparent`](hclient_core::caps::RedirectSupport::Transparent) where `hclient-fetch`
+//   reports `Internal`, and `Client`'s redirect policy — its hop limit,
+//   its `Authorization` stripping across origins — works here and cannot
+//   there.
+//
+// What is read is the **platform's own settings** —
+// `hclient_proxy::system::SystemProxies::detect_platform`, which skips
+// the `HTTP_PROXY`/`HTTPS_PROXY` variables that `detect` reads first.
+// `URLSession` takes its proxies from the system configuration, so a
+// value off `detect` would report `true` on a machine whose only proxy
+// is a variable this transport ignores. The platform read can only
+// under-claim, which is the direction to be wrong in.
+//
+// `true` says the machine names a proxy this transport hands to the OS.
+// It does not say that any one request goes through it — the exceptions
+// list decides that, and on a machine configured with a PAC script a
+// JavaScript program does, which `URLSession` runs and nothing in this
+// workspace can read. That is the same reading `hclient-native` gives
+// the field, where a proxy carrying a bypass list still reports `true`.
 //
 // VPN, the system proxy and its PAC file, and background transfer. Every
 // one of those is a fact about the device rather than a preference,
@@ -96,6 +123,20 @@
 // Left at `false` it was a **capability that lies**: a caller asking
 // *will my requests go through a proxy* got `no` from a transport that
 // hands every request to a stack which proxies them.
+//
+// # WebSocket
+//
+// [`UrlSessionWebSocket`] implements
+// [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect) over
+// `NSURLSessionWebSocketTask`. Foundation performs the handshake, the
+// masking and the ping/pong itself, and hands over whole messages.
+//
+// Two details are Foundation's own and are handled rather than papered
+// over: a task opens **lazily**, so the handshake's failure arrives
+// through the first send or receive rather than from `websocket()`; and
+// the peer's close arrives as a **failed receive** with the code on the
+// task, which is read back and reported as
+// [`Message::Close`](hclient_core::websocket::Message::Close).
 //
 // [`UrlSessionWebSocket`] implements
 // [`WebSocketConnect`](hclient_core::websocket::WebSocketConnect) over

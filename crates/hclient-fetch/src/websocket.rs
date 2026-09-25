@@ -470,6 +470,21 @@ impl Future for Opening<'_> {
 /// `!Send`, and deliberately: it holds `Rc`s and `Closure`s, both of which
 /// are the honest shape for an object bound to one JS event loop. The seam
 /// declares no `Send` bound, so this costs nothing — see the module doc.
+///
+/// Opened through [`WebSocketConnect::websocket`] on [`crate::Fetch`],
+/// never constructed directly:
+///
+/// ```no_run
+/// use hclient_core::websocket::WebSocketConnect;
+/// use hclient_fetch::Fetch;
+///
+/// # async fn f() -> Result<(), Box<dyn std::error::Error>> {
+/// let req = http::Request::get("wss://echo.example/socket").body(())?;
+/// let socket = Fetch::new().websocket(req).await?;
+/// # let _ = socket;
+/// # Ok(())
+/// # }
+/// ```
 pub struct FetchWebSocket {
     socket: Socket,
     shared: Arc<Mutex<Shared>>,

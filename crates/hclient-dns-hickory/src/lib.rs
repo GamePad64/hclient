@@ -10,28 +10,77 @@
 //! and answers HTTPS/SVCB on every platform rather than on the two where a
 //! system API happens to expose it.
 //!
-//! # What this costs, stated up front
+//! # Quick start
 //!
-//! `tokio`. hickory's `tokio` feature is enabled here because its
-//! `ConnectionProvider` needs an executor to drive sockets, and no
-//! runtime-agnostic provider ships with it. That is a genuine departure
-//! from the rest of this workspace, where the runtime seam exists precisely
-//! so nothing below `hclient` names a runtime — `hclient-dns-system` needs
-//! only `Blocking`, and works on smol. Choosing this resolver means
-//! choosing tokio with it.
+//! ```no_run
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! use hclient_dns::{Resolve, rtype};
+//! use hclient_dns_hickory::Hickory;
+//! use hickory_resolver::Resolver;
 //!
-//! The type is generic over `P: ConnectionProvider` rather than pinned to
-//! `TokioResolver`, so a runtime-agnostic provider — hickory's or someone
-//! else's — drops in without a change here. The feature is the constraint,
-//! not the design.
+//! let resolver = Resolver::builder_tokio()?.build()?;
+//! let dns = Hickory::new(resolver);
+//! let stream = dns.lookup("example.com", rtype::A);
+//! # let _ = stream;
+//! # Ok(())
+//! # }
+//! ```
 //!
-//! # Why the TTL is populated here and not by the system backend
+//! # Key concepts
 //!
-//! `Record::ttl` is `Option<Duration>` because `getaddrinfo` does not
-//! expose one — the system backend returns `None` and is right to. hickory
-//! parses records itself, so the TTL is present, and every address carries
-//! its own rather than the `RRset`'s minimum: a caller doing Happy Eyeballs
-//! or its own caching wants the value the server actually sent.
+//! - [`Hickory`] — the resolver; wraps an already-configured
+//!   `hickory_resolver::Resolver` rather than re-exporting its builder, so
+//!   upstreams, DNSSEC, DoT/DoH and cache policy stay out of this crate's
+//!   API.
+//! - [`Hickory::get_ref`] — the resolver underneath, for configuration this
+//!   crate does not wrap.
+//!
+//! # What this costs and gains over the system backend
+//!
+//! - **Needs `tokio`.** hickory's `ConnectionProvider` needs an executor to
+//!   drive sockets, and no runtime-agnostic provider ships with it — a
+//!   genuine departure from the rest of this workspace, where
+//!   `hclient-dns-system` needs only `Blocking` and works on smol.
+//!   [`Hickory<P>`] stays generic over `P: ConnectionProvider` rather than
+//!   pinned to tokio's, so a runtime-agnostic provider drops in without a
+//!   change here; the feature is the constraint, not the design.
+//! - **Every address carries its own TTL**, unlike the system backend's
+//!   `None` — `getaddrinfo` exposes none, hickory parses records itself,
+//!   so a caller doing Happy Eyeballs or its own caching gets the value
+//!   the server actually sent.
+//!
+//! # Where to go next
+//!
+//! `hclient-dns-system` and `hclient-dns-doh` are the other resolver
+//! backends behind [`Resolve`].
+
+// Maintainer notes (not rendered):
+//
+// The original front-page prose for the two sections reworded above, kept
+// verbatim:
+//
+// # What this costs, stated up front
+//
+// `tokio`. hickory's `tokio` feature is enabled here because its
+// `ConnectionProvider` needs an executor to drive sockets, and no
+// runtime-agnostic provider ships with it. That is a genuine departure
+// from the rest of this workspace, where the runtime seam exists precisely
+// so nothing below `hclient` names a runtime — `hclient-dns-system` needs
+// only `Blocking`, and works on smol. Choosing this resolver means
+// choosing tokio with it.
+//
+// The type is generic over `P: ConnectionProvider` rather than pinned to
+// `TokioResolver`, so a runtime-agnostic provider — hickory's or someone
+// else's — drops in without a change here. The feature is the constraint,
+// not the design.
+//
+// # Why the TTL is populated here and not by the system backend
+//
+// `Record::ttl` is `Option<Duration>` because `getaddrinfo` does not
+// expose one — the system backend returns `None` and is right to. hickory
+// parses records itself, so the TTL is present, and every address carries
+// its own rather than the `RRset`'s minimum: a caller doing Happy Eyeballs
+// or its own caching wants the value the server actually sent.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 

@@ -1,95 +1,164 @@
-//! System resolver on top of `std::net::ToSocketAddrs` (i.e. `getaddrinfo`).
+//! System resolver on top of `std::net::ToSocketAddrs` (`getaddrinfo`), a
+//! [`Resolve`] backend for `hclient-native` and any
+//! other caller of that seam.
 //!
-//! `getaddrinfo` blocks on every platform, so this crate requires the
-//! `Blocking` capability — and is therefore unavailable wherever that
-//! capability isn't (wasm).
+//! # Quick start
 //!
-//! **`getaddrinfo` still cannot return an HTTPS/SVCB record, and never
-//! will** — its result type is a list of `sockaddr`s. So SVCB does not
-//! come from `getaddrinfo` here; it comes from a second system call
-//! alongside it, made by `system-resolver`:
-//! `res_query(3)`, `android_res_nquery`, `DnsQueryRaw` and
-//! `DnsQuery_UTF8`, one seam over five platforms, `Vec<Record>` out.
-//! This crate itself contains no `unsafe` code.
+//! [`SystemDns`] wraps an [`hclient_rt::Blocking`] implementation to run
+//! `getaddrinfo` on — `hclient-rt-tokio`'s `Tokio` or `hclient-rt-smol`'s
+//! `Smol` in real use; here, a minimal one:
 //!
-//! The RDATA a resolver reports is decoded by `domain`, not by hand, and
-//! it is decoded **as RDATA**: `Https::parse` reads one record's octets,
-//! which is the only shape all five platforms below have. What this crate
-//! adds is the part
-//! a DNS decoder correctly declines to do: deciding, per RFC 9460, which
-//! decoded records a *client* may act on (§2.4/§2.5 modes and root
-//! targets, §8 `mandatory` semantics), and classifying what "no records"
-//! means.
+//! ```
+//! use futures_core::future::BoxFuture;
+//! use futures_util::StreamExt;
+//! use hclient_dns::{Resolve, rtype};
+//! use hclient_dns_system::SystemDns;
+//! use hclient_rt::{Blocking, Cancelled};
 //!
-//! # glibc: what this crate needs
+//! struct RunInPlace;
 //!
-//! **The supported minimum is glibc 2.34**, and the honest shape of that
-//! claim is a policy rather than a hard wall: `res_query` has been in
-//! glibc since `libresolv` had a version number, so nothing here *fails*
-//! on an older one. What 2.34 is, is the version from which the symbol
-//! lives in `libc.so.6` — measured on 2.43: `res_query@@GLIBC_2.34` there,
-//! and no `res_query` in `libresolv.so.2` at all. A binary built against
-//! this crate on such a host carries `res_query@GLIBC_2.34` as an
-//! undefined symbol and **does not load `libresolv` at run time**, because
-//! `--as-needed` drops a library that contributed nothing.
+//! impl Blocking for RunInPlace {
+//!     fn run<T, F>(&self, f: F) -> BoxFuture<'_, Result<T, Cancelled>>
+//!     where
+//!         T: Send + 'static,
+//!         F: FnOnce() -> T + Send + 'static,
+//!     {
+//!         Box::pin(std::future::ready(Ok(f())))
+//!     }
+//! }
 //!
-//! Below 2.34 the same source links the symbol out of `libresolv.so.2`
-//! instead, so the deployment gains a run-time dependency on that library.
-//! That configuration is expected to work and **is not tested here**,
-//! which is what "supported minimum" means: it is the version this project
-//! builds and runs against, not a version below which the code is known
-//! broken.
+//! let dns = SystemDns::new(RunInPlace);
+//! let records: Vec<_> =
+//!     futures_executor::block_on(dns.lookup("127.0.0.1", rtype::A).collect());
+//! assert_eq!(records.len(), 1);
+//! ```
 //!
-//! **This crate raises nobody's floor**, which is the part worth knowing
-//! before blaming it for one: on a 2.34-or-later build host the standard
-//! library already pins the binary there through
-//! `__libc_start_main@GLIBC_2.34`, measured on a probe that links no
-//! `res_query` at all. The effective floor of any glibc program is its
-//! build host's glibc, exactly as it always is.
+//! # Key concepts
 //!
-//! **The one requirement a packager can get wrong is at link time**, and
-//! it arrives through `system-resolver` rather than from any file here.
-//! Its `res_query` backend puts `-lresolv` on the link line for
-//! `target_env = "gnu"`, so `libresolv.so` — the development symlink, not
-//! the runtime `.so.2` — must be installed to build, even on a glibc where
-//! the library contributes not one symbol to the result. musl gets no such
-//! flag, because Rust's self-contained musl sysroot ships no `libresolv.a`
-//! and the symbol is inside `libc.a`; the reasoning for each target is in
-//! that file, beside the `#[cfg_attr]`s that carry it.
+//! - [`SystemDns`] — the resolver. Address lookups go through
+//!   `getaddrinfo`; HTTPS/SVCB lookups go through a second,
+//!   platform-specific call made by `system-resolver`, decoded by `domain`
+//!   as RDATA and reduced to an [`hclient_dns::SvcbEndpoint`] by this
+//!   crate's own RFC 9460 client rules.
 //!
-//! **`supports` says what this build can do, and nothing more.**
-//! It asks `system_resolver::support()` whether RR type 65 is answerable,
-//! so the capability and the code behind it are one statement rather than
-//! two that could drift. `true` on Linux (glibc or musl), Apple, Android
-//! and Windows; `false` everywhere else.
+//! # What this backend costs and refuses
 //!
-//! A `true` over a lookup that cannot produce a record would be the exact
-//! defect class — a capability that lies — that the
-//! `Resolve::supports` doc comment in `hclient-dns` exists to
-//! prevent.
+//! - **Needs [`Blocking`].** `getaddrinfo` blocks on
+//!   every platform, so this crate is unavailable wherever that capability
+//!   is not — wasm above all.
+//! - **`getaddrinfo` cannot return an HTTPS/SVCB record and never will** —
+//!   its result is a list of `sockaddr`s, so that half comes from
+//!   `system-resolver`'s own call. [`Resolve::supports`]
+//!   answers `true` for it on Linux, Apple, Android and Windows, `false`
+//!   elsewhere — one statement, taken from `system-resolver` rather than a
+//!   second copy of its platform list.
+//! - **Two `getaddrinfo` calls per name, not one.** The A and AAAA lookups
+//!   each resolve both families and discard half, and neither answers
+//!   sooner than the other — a known cost, not an oversight.
+//! - **glibc 2.34 is the tested floor**, met by any build host already
+//!   through `libc`'s own version pin; an older glibc is expected to work
+//!   through `libresolv.so.2` but is not tested here. See the maintainer
+//!   notes for the link-time detail a packager can get wrong.
 //!
-//! **Windows chooses its system call at run time, and it does not change
-//! this answer.** `system-resolver` uses `DnsQueryRaw` where the machine
-//! has it and `DnsQuery_UTF8` where it does not, but type 65 is
-//! answerable through both, so what `supports` reports is still decided
-//! by the build.
+//! # Where to go next
 //!
-//! **Both SVCB backends block too**, so `lookup` goes through the
-//! same `Blocking` capability as the address lookups and has the
-//! same three outcomes (see `lookup` below) — with one addition specific
-//! to it: a name with no HTTPS records yields an EMPTY stream, not an
-//! error. That case is the common one, and `res_query` reports it as a
-//! failure; turning that report into an `Error` would tell every caller
-//! its DNS was broken for every host that simply has no HTTPS record.
-//!
-//! **A known limitation: two `getaddrinfo` calls for one name, and
-//! neither gives an early result.** The A lookup and the AAAA lookup each
-//! call `getaddrinfo` independently, and each call resolves both families
-//! and discards the half it was not asked for. A Happy Eyeballs consumer
-//! that asks for both families of one name therefore pays for two full
-//! dual-family resolutions, and neither answers sooner than the other.
+//! `hclient-dns-doh` and `hclient-dns-hickory` are the other resolver
+//! backends; `system-resolver` is the platform layer this one sits on.
 
 // Maintainer notes (not rendered):
+//
+// The original front-page prose, kept verbatim:
+//
+// System resolver on top of `std::net::ToSocketAddrs` (i.e. `getaddrinfo`).
+//
+// `getaddrinfo` blocks on every platform, so this crate requires the
+// `Blocking` capability — and is therefore unavailable wherever that
+// capability isn't (wasm).
+//
+// **`getaddrinfo` still cannot return an HTTPS/SVCB record, and never
+// will** — its result type is a list of `sockaddr`s. So SVCB does not
+// come from `getaddrinfo` here; it comes from a second system call
+// alongside it, made by `system-resolver`:
+// `res_query(3)`, `android_res_nquery`, `DnsQueryRaw` and
+// `DnsQuery_UTF8`, one seam over five platforms, `Vec<Record>` out.
+// This crate itself contains no `unsafe` code.
+//
+// The RDATA a resolver reports is decoded by `domain`, not by hand, and
+// it is decoded **as RDATA**: `Https::parse` reads one record's octets,
+// which is the only shape all five platforms below have. What this crate
+// adds is the part
+// a DNS decoder correctly declines to do: deciding, per RFC 9460, which
+// decoded records a *client* may act on (§2.4/§2.5 modes and root
+// targets, §8 `mandatory` semantics), and classifying what "no records"
+// means.
+//
+// # glibc: what this crate needs
+//
+// **The supported minimum is glibc 2.34**, and the honest shape of that
+// claim is a policy rather than a hard wall: `res_query` has been in
+// glibc since `libresolv` had a version number, so nothing here *fails*
+// on an older one. What 2.34 is, is the version from which the symbol
+// lives in `libc.so.6` — measured on 2.43: `res_query@@GLIBC_2.34` there,
+// and no `res_query` in `libresolv.so.2` at all. A binary built against
+// this crate on such a host carries `res_query@GLIBC_2.34` as an
+// undefined symbol and **does not load `libresolv` at run time**, because
+// `--as-needed` drops a library that contributed nothing.
+//
+// Below 2.34 the same source links the symbol out of `libresolv.so.2`
+// instead, so the deployment gains a run-time dependency on that library.
+// That configuration is expected to work and **is not tested here**,
+// which is what "supported minimum" means: it is the version this project
+// builds and runs against, not a version below which the code is known
+// broken.
+//
+// **This crate raises nobody's floor**, which is the part worth knowing
+// before blaming it for one: on a 2.34-or-later build host the standard
+// library already pins the binary there through
+// `__libc_start_main@GLIBC_2.34`, measured on a probe that links no
+// `res_query` at all. The effective floor of any glibc program is its
+// build host's glibc, exactly as it always is.
+//
+// **The one requirement a packager can get wrong is at link time**, and
+// it arrives through `system-resolver` rather than from any file here.
+// Its `res_query` backend puts `-lresolv` on the link line for
+// `target_env = "gnu"`, so `libresolv.so` — the development symlink, not
+// the runtime `.so.2` — must be installed to build, even on a glibc where
+// the library contributes not one symbol to the result. musl gets no such
+// flag, because Rust's self-contained musl sysroot ships no `libresolv.a`
+// and the symbol is inside `libc.a`; the reasoning for each target is in
+// that file, beside the `#[cfg_attr]`s that carry it.
+//
+// **`supports` says what this build can do, and nothing more.**
+// It asks `system_resolver::support()` whether RR type 65 is answerable,
+// so the capability and the code behind it are one statement rather than
+// two that could drift. `true` on Linux (glibc or musl), Apple, Android
+// and Windows; `false` everywhere else.
+//
+// A `true` over a lookup that cannot produce a record would be the exact
+// defect class — a capability that lies — that the
+// `Resolve::supports` doc comment in `hclient-dns` exists to
+// prevent.
+//
+// **Windows chooses its system call at run time, and it does not change
+// this answer.** `system-resolver` uses `DnsQueryRaw` where the machine
+// has it and `DnsQuery_UTF8` where it does not, but type 65 is
+// answerable through both, so what `supports` reports is still decided
+// by the build.
+//
+// **Both SVCB backends block too**, so `lookup` goes through the
+// same `Blocking` capability as the address lookups and has the
+// same three outcomes (see `lookup` below) — with one addition specific
+// to it: a name with no HTTPS records yields an EMPTY stream, not an
+// error. That case is the common one, and `res_query` reports it as a
+// failure; turning that report into an `Error` would tell every caller
+// its DNS was broken for every host that simply has no HTTPS record.
+//
+// **A known limitation: two `getaddrinfo` calls for one name, and
+// neither gives an early result.** The A lookup and the AAAA lookup each
+// call `getaddrinfo` independently, and each call resolves both families
+// and discards the half it was not asked for. A Happy Eyeballs consumer
+// that asks for both families of one name therefore pays for two full
+// dual-family resolutions, and neither answers sooner than the other.
 //
 // alongside it, and **that call is `system-resolver`'s now**:
 //

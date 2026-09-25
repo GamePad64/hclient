@@ -165,6 +165,16 @@ pub enum ErrorKind {
 /// An error from any backend: an [`ErrorKind`] and the source it came
 /// from, kept whole rather than stringified. `Clone`.
 ///
+/// ```
+/// use hclient_core::error::{Error, ErrorKind};
+///
+/// // A backend wraps its own failure and says what kind it was — and,
+/// // where it knows, that no byte of the request left.
+/// let e = Error::new(ErrorKind::Connect, std::io::Error::other("refused")).unsent();
+/// assert!(e.is_connect());
+/// assert!(e.is_unsent());
+/// ```
+///
 /// `source` must be `Send + Sync`. Without this bound, `Arc<dyn Error>`
 /// erases the source's auto-traits, and `Error` (and with it the future
 /// `Client::execute` returns) would be `!Send` for every transport —

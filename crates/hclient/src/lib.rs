@@ -1,13 +1,13 @@
-//! Cross-platform async HTTP client.
+//! Cross-platform async HTTP client. The same application code builds for
+//! native, the browser and WASI: only the transport underneath changes,
+//! and a caller who takes a `&Client` names none of them.
 //!
 //! ```text
 //! cargo add hclient --features default-transport
 //! ```
 //!
-//! **The flag is not optional and it is not a default** — see below for
-//! why. Without it `Client::new()` refuses to compile, naming the feature
-//! and the command, and this page's own first line is what a reader
-//! copies, so the two lines are together deliberately.
+//! **The flag is not optional and it is not a default.** Without it
+//! `Client::new()` refuses to compile, naming the feature and the command.
 //!
 //! ```no_run
 //! # async fn f() -> Result<(), hclient::Error> {
@@ -44,39 +44,51 @@
 //! memory*. `Response::chunk` is the other answer, and
 //! [`ClientBuilder::response_limit`] bounds the first one.
 //!
-//! # Where the things a caller looks for actually are
+//! # Key types
 //!
-//! The table below points at what callers most often look for.
+//! - [`Client`] and [`ClientBuilder`] — the client, and its configuration.
+//!   [`Client::builder`] takes a transport of your own.
+//! - [`RequestBuilder`] — one request: [`query`](RequestBuilder::query)
+//!   (appends to the URL's own), [`form`](RequestBuilder::form),
+//!   [`basic_auth`](RequestBuilder::basic_auth),
+//!   [`bearer_auth`](RequestBuilder::bearer_auth),
+//!   [`client_identity`](RequestBuilder::client_identity), then `send`.
+//! - [`Response`] — the head, with the body still a stream;
+//!   [`Response::lines`] reads it line by line and [`Response::links`]
+//!   parses a paginated API's `Link:` header.
+//! - [`Collected`] — the whole body: bytes, text, or JSON.
+//!   [`Collected::error_for_status`] turns a `4xx`/`5xx` into an `Err`.
+//! - [`RequestBody`] — a body built by hand, with its replay contract.
+//! - [`Error`] and [`ErrorKind`] — one error type, and what went wrong.
+//! - [`redirect`], [`retry`], [`auth`], [`sse`], [`multipart`] — redirect
+//!   and retry policies, authentication schemes, Server-Sent Events and
+//!   `multipart/form-data`.
 //!
-//! | you want | it is |
-//! |---|---|
-//! | a form body | [`RequestBuilder::form`] — `application/x-www-form-urlencoded`, no feature, sets the header |
-//! | a JSON body, or to read one | [`RequestBuilder`]`::json` and [`Collected`]`::json`, behind the `json` feature |
-//! | query parameters | [`RequestBuilder::query`] — **appends**, so a `?` already in your URL survives |
-//! | to test without a network | `mock::MockTransport`, behind this crate's `test-util` feature — see below |
-//! | a `4xx`/`5xx` as an `Err` | [`Response::error_for_status`] and [`Collected::error_for_status`] |
-//! | to build a body by hand | [`RequestBody`], re-exported at this crate's root |
-//! | text in a charset that is not UTF-8 | [`Collected`]`::text_with_charset`, behind the `charset` feature |
-//! | basic or bearer auth | [`RequestBuilder::basic_auth`], [`RequestBuilder::bearer_auth`] |
-//! | to choose a client certificate per request | [`RequestBuilder::client_identity`] — a label your TLS backend was configured with |
-//! | to put your own value where the transport can read it | [`RequestBuilder::extension`] |
-//! | cookies kept and sent back | [`ClientBuilder`]`::cookie_jar`, behind the `cookies` feature — off by default, because the compiled-in public suffix list is 77 KiB and a browser keeps its own jar anyway |
-//! | to save a cookie jar across a restart | `cookie::CookieJar::records` and `cookie::CookieJar::restore`, behind `cookies` — the format is yours, so no `serde` arrives with it |
-//! | cookies kept somewhere other than memory | `cookie::CookieStore`, behind `cookies` — a jar on disk, in a database or in the browser's own storage; the storage is yours and RFC 6265 stays ours |
-//! | responses cached between requests | [`ClientBuilder`]`::cache`, behind the `cache` feature — RFC 9111, in memory unless you hand it a `cache::CacheStore` of your own |
-//! | `http://` upgraded to `https://` where a host asked for it | [`ClientBuilder`]`::hsts`, behind the `hsts` feature — RFC 6797, off by default because it changes which scheme a request goes out on |
-//! | that policy set kept somewhere other than memory | `hsts::HstsStore`, behind `hsts` — a set on disk, or one seeded from a preload list |
-//! | the `Link:` header a paginated API sends | [`Response::links`] and [`Collected::links`] |
-//! | a body read line by line | [`Response::lines`] — for NDJSON and log tailing |
+//! # Features
 //!
-//! ## Testing: use `hclient-mock`, not a hand-built `Response`
+//! - `default-transport` — `Client::new()` and `default_transport()`:
+//!   tokio, rustls and the system resolver natively, `fetch` in a browser.
+//!   There is none on WASI; build one with
+//!   `Client::builder(hclient_wasi::WasiHttp::new())`.
+//! - `http2`, `http3` — those protocols on the default transport.
+//! - `proxy`; `system-proxy` (default) — proxies, configured on the
+//!   transport; `Client::new()` reads the machine's own settings.
+//! - `json`, `charset` — JSON bodies both ways; text that is not UTF-8.
+//! - `gzip`, `brotli`, `deflate`, `zstd` — one response decoder each.
+//! - `cookies`, `cache`, `hsts` — a cookie jar, an RFC 9111 response
+//!   cache, RFC 6797 `https://` upgrades. Each takes a store of your own.
+//! - `digest-auth` — RFC 7616 digest authentication.
+//! - `idn` (default) — non-ASCII host names.
+//! - `test-util` — `mock`, a scripted transport for tests.
+//! - `dangerous-insecure` — the rustls constructor that skips certificate
+//!   verification, for `curl -k`-style tools.
 //!
-//! [`Response`] cannot be constructed by a consumer, which reads as a wall
-//! and is a signpost pointing the other way. `MockTransport` scripts
-//! responses and drives a **real** `Client` over them, so a test exercises
-//! the same redirect, cookie, decompression and retry code a live request
-//! does — where a hand-built `Response` would test a path production never
-//! takes.
+//! # Testing
+//!
+//! [`Response`] cannot be constructed by a consumer. `MockTransport`
+//! scripts responses and drives a **real** `Client` over them, so a test
+//! exercises the same redirect, cookie, decompression and retry code a
+//! live request does, and it records what went out — bodies included:
 //!
 //! ```no_run
 //! # fn f() -> Result<(), Box<dyn std::error::Error>> {
@@ -88,39 +100,14 @@
 //! # Ok(()) }
 //! ```
 //!
-//! It also records what went out — including request **bodies**, which is
-//! how *"my code posted the right JSON"* gets asserted.
+//! # Where to go next
 //!
-//! # Why `default-transport` is not a default
-//!
-//! Cargo unifies features across a graph, so a default here is a
-//! **floor**: a library that took this crate with defaults would put
-//! tokio, rustls and the system resolver into every graph that also
-//! contains a crate wanting none of them, and the party who wanted the
-//! small build is not the party who decides. The cost is one flag read
-//! before compiling, against a graph nobody can get out of afterwards.
-//!
-//! # `Send` and `Sync`
-//!
-//! [`Client`] is `Send + Sync`, and so are both halves of a request now —
-//! the future and the response body. That took naming rather than
-//! requiring: the seams a transport awaits carry associated futures, so a
-//! consumer can name them while each implementor still answers for itself,
-//! and `SendTransport` is a separate trait whose impl may carry bounds
-//! `Transport` does not.
-//!
-//! A bound declared where the type is abstract propagates to backends
-//! that cannot satisfy it.
-//! So: the seams declare none, and auto-traits still decide. The rule for
-//! where a bound is allowed is **an opt-in call that takes a value from
-//! the caller and puts it behind the facade's `Arc`** — and the types that
-//! hold such a value, like `erased::BoxCacheStore` or
-//! [`redirect::SharedRedirectPolicy`]. [`Client::builder`],
-//! [`ClientBuilder::total_timeout`] and [`sse::SseBuilder::with_timer`]
-//! are the shape.
-//!
-//! No auto trait here depends on the target: there is **not a
-//! single `#[cfg]`-switched trait alias.**
+//! - `hclient-native` — the native transport, when you configure it
+//!   yourself: runtime, TLS backend, resolver, HTTP/2 and HTTP/3.
+//! - `hclient-core` — [`Transport`](hclient_core::transport::Transport),
+//!   for writing a backend.
+//! - `hclient-fetch` and `hclient-wasi` — the browser and WASI transports.
+//! - `hclient-mock` — the test double behind `test-util`.
 
 // Maintainer notes (not rendered):
 //
@@ -180,6 +167,82 @@
 // serves every backend and the browser's held a `dyn Stream` with no auto
 // trait — true then, and answered by an actor in `hclient-fetch` rather
 // than by a `#[cfg]`.
+//
+// (Moved from the front page when it was cut to a quick start: the
+// "where things are" table and the design sections, verbatim.)
+//
+// **The flag is not optional and it is not a default** — see below for
+// why. Without it `Client::new()` refuses to compile, naming the feature
+// and the command, and this page's own first line is what a reader
+// copies, so the two lines are together deliberately.
+//
+// # Where the things a caller looks for actually are
+//
+// The table below points at what callers most often look for.
+//
+// | you want | it is |
+// |---|---|
+// | a form body | [`RequestBuilder::form`] — `application/x-www-form-urlencoded`, no feature, sets the header |
+// | a JSON body, or to read one | [`RequestBuilder`]`::json` and [`Collected`]`::json`, behind the `json` feature |
+// | query parameters | [`RequestBuilder::query`] — **appends**, so a `?` already in your URL survives |
+// | to test without a network | `mock::MockTransport`, behind this crate's `test-util` feature — see below |
+// | a `4xx`/`5xx` as an `Err` | [`Response::error_for_status`] and [`Collected::error_for_status`] |
+// | to build a body by hand | [`RequestBody`], re-exported at this crate's root |
+// | text in a charset that is not UTF-8 | [`Collected`]`::text_with_charset`, behind the `charset` feature |
+// | basic or bearer auth | [`RequestBuilder::basic_auth`], [`RequestBuilder::bearer_auth`] |
+// | to choose a client certificate per request | [`RequestBuilder::client_identity`] — a label your TLS backend was configured with |
+// | to put your own value where the transport can read it | [`RequestBuilder::extension`] |
+// | cookies kept and sent back | [`ClientBuilder`]`::cookie_jar`, behind the `cookies` feature — off by default, because the compiled-in public suffix list is 77 KiB and a browser keeps its own jar anyway |
+// | to save a cookie jar across a restart | `cookie::CookieJar::records` and `cookie::CookieJar::restore`, behind `cookies` — the format is yours, so no `serde` arrives with it |
+// | cookies kept somewhere other than memory | `cookie::CookieStore`, behind `cookies` — a jar on disk, in a database or in the browser's own storage; the storage is yours and RFC 6265 stays ours |
+// | responses cached between requests | [`ClientBuilder`]`::cache`, behind the `cache` feature — RFC 9111, in memory unless you hand it a `cache::CacheStore` of your own |
+// | `http://` upgraded to `https://` where a host asked for it | [`ClientBuilder`]`::hsts`, behind the `hsts` feature — RFC 6797, off by default because it changes which scheme a request goes out on |
+// | that policy set kept somewhere other than memory | `hsts::HstsStore`, behind `hsts` — a set on disk, or one seeded from a preload list |
+// | the `Link:` header a paginated API sends | [`Response::links`] and [`Collected::links`] |
+// | a body read line by line | [`Response::lines`] — for NDJSON and log tailing |
+//
+// ## Testing: use `hclient-mock`, not a hand-built `Response`
+//
+// [`Response`] cannot be constructed by a consumer, which reads as a wall
+// and is a signpost pointing the other way. `MockTransport` scripts
+// responses and drives a **real** `Client` over them, so a test exercises
+// the same redirect, cookie, decompression and retry code a live request
+// does — where a hand-built `Response` would test a path production never
+// takes.
+//
+// It also records what went out — including request **bodies**, which is
+// how *"my code posted the right JSON"* gets asserted.
+//
+// # Why `default-transport` is not a default
+//
+// Cargo unifies features across a graph, so a default here is a
+// **floor**: a library that took this crate with defaults would put
+// tokio, rustls and the system resolver into every graph that also
+// contains a crate wanting none of them, and the party who wanted the
+// small build is not the party who decides. The cost is one flag read
+// before compiling, against a graph nobody can get out of afterwards.
+//
+// # `Send` and `Sync`
+//
+// [`Client`] is `Send + Sync`, and so are both halves of a request now —
+// the future and the response body. That took naming rather than
+// requiring: the seams a transport awaits carry associated futures, so a
+// consumer can name them while each implementor still answers for itself,
+// and `SendTransport` is a separate trait whose impl may carry bounds
+// `Transport` does not.
+//
+// A bound declared where the type is abstract propagates to backends
+// that cannot satisfy it.
+// So: the seams declare none, and auto-traits still decide. The rule for
+// where a bound is allowed is **an opt-in call that takes a value from
+// the caller and puts it behind the facade's `Arc`** — and the types that
+// hold such a value, like `erased::BoxCacheStore` or
+// [`redirect::SharedRedirectPolicy`]. [`Client::builder`],
+// [`ClientBuilder::total_timeout`] and [`sse::SseBuilder::with_timer`]
+// are the shape.
+//
+// No auto trait here depends on the target: there is **not a
+// single `#[cfg]`-switched trait alias.**
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 

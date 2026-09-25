@@ -108,6 +108,9 @@ use std::task::{Context, Poll};
 /// `embedded_io_async::Write` is `write` and
 /// `flush` and nothing else, so an adapter over it has no honest body for
 /// this method.
+///
+/// See [`TcpConnect`](crate::TcpConnect)'s own doc for a worked example
+/// implementing this trait alongside a stream.
 pub trait Shutdown {
     /// Send FIN. The read half stays open.
     ///

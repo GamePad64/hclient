@@ -114,6 +114,18 @@ pub struct ResponseHead {
 /// terminating CRLF. Everything after that in `buf` belongs to whoever
 /// comes next, which for a `CONNECT` tunnel is the origin.
 ///
+/// ```
+/// use hclient_proto::head::parse_response;
+///
+/// // Not all of it yet: loop and read more.
+/// assert!(parse_response(b"HTTP/1.1 200 OK\r\nVia: p\r\n").unwrap().is_none());
+///
+/// let buf = b"HTTP/1.1 200 OK\r\nVia: p\r\n\r\ntunnel bytes";
+/// let (head, used) = parse_response(buf).unwrap().unwrap();
+/// assert_eq!(head.status, 200);
+/// assert_eq!(&buf[used..], b"tunnel bytes");
+/// ```
+///
 /// # Errors
 ///
 /// A [`HeadError`] when `buf` does not begin with a well-formed status

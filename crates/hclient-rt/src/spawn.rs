@@ -47,6 +47,24 @@ use std::future::Future;
 /// What it must not do is accept the future and drop it: the caller cannot
 /// tell, and a driver that never runs is a connection that hangs.
 ///
+/// # Example
+///
+/// ```
+/// use hclient_rt::Spawn;
+/// use std::future::Future;
+///
+/// /// Runs everything immediately, on a bare executor with no reactor.
+/// struct Immediate;
+///
+/// impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Immediate {
+///     fn spawn(&self, f: F) {
+///         futures_executor::block_on(f);
+///     }
+/// }
+///
+/// Immediate.spawn(async {});
+/// ```
+///
 /// **A runtime whose spawn can run out should not implement this trait**,
 /// and that is the one real cost of the shape. Embassy's executor is the
 /// example: tasks come from a pool whose size is fixed at compile time,
@@ -103,6 +121,30 @@ pub trait Spawn<F: Future<Output = ()>> {
 ///   running) is not a bug in the calling code, but an ordinary runtime
 ///   lifecycle event. The implementation must return [`Cancelled`], not
 ///   panic.
+///
+/// # Example
+///
+/// ```
+/// use futures_core::future::BoxFuture;
+/// use hclient_rt::{Blocking, Cancelled};
+///
+/// /// No real thread pool: runs `f` where it's called, which is honest on
+/// /// a target with no threads to hand work off to.
+/// struct RunInPlace;
+///
+/// impl Blocking for RunInPlace {
+///     fn run<T, F>(&self, f: F) -> BoxFuture<'_, Result<T, Cancelled>>
+///     where
+///         T: Send + 'static,
+///         F: FnOnce() -> T + Send + 'static,
+///     {
+///         Box::pin(std::future::ready(Ok(f())))
+///     }
+/// }
+///
+/// let sum = futures_executor::block_on(RunInPlace.run(|| 2 + 2)).unwrap();
+/// assert_eq!(sum, 4);
+/// ```
 pub trait Blocking {
     // Maintainer notes (not rendered):
     // A boxed `Send` future is the honest form here rather than an

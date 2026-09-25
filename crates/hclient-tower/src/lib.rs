@@ -2,28 +2,47 @@
 //! middleware stack — decompression, tracing, retries, timeouts — applies
 //! to this client without any of it being reimplemented here.
 //!
-//! # The impedance mismatch, and the one thing it costs
+//! ```
+//! use hclient_mock::MockTransport;
+//! use hclient_tower::{ServiceTransport, TransportService};
 //!
-//! `Transport::execute` is `fn(&self, ..) -> impl Future`: the future
-//! borrows the transport. `Service::Future` is an associated type with no
-//! lifetime parameter, so it cannot borrow `self` at all. The bridge is an
-//! owned handle inside the future — the transport lives in an `Arc`, cloned
-//! per call — and a boxed future, because an RPITIT's type cannot be named
-//! to declare it as an associated type.
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let mock = MockTransport::new();
+//! mock.push_response(http::Response::builder().status(200).body("")?);
+//!
+//! // A `Transport` as a `tower_service::Service` — any `tower` middleware
+//! // can now sit around `service`.
+//! let service = TransportService::new(mock);
+//! let caps = service.capabilities().clone();
+//!
+//! // Taken back as a `Transport`, so it can back an `hclient::Client`.
+//! let transport = ServiceTransport::new(service, caps);
+//! let client = hclient::Client::builder(transport).build()?;
+//!
+//! # futures_executor::block_on(async {
+//! let body = client.get("https://api.test").send().await?.collect().await?;
+//! assert_eq!(body.status(), 200);
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! # })?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Key concepts
+//!
+//! - [`TransportService<T>`] — a [`Transport`] wearing tower's clothes,
+//!   the outward direction.
+//! - [`ServiceTransport<S>`] — a [`tower_service::Service`] wearing the
+//!   seam's clothes, the return journey: this is what lets a tower stack
+//!   sit *underneath* `hclient::Client` instead of replacing it.
 //!
 //! **The boxed future is `Send`**, so this service goes wherever a tower
 //! service goes — `tokio::spawn`, `axum` handlers, a multithreaded
 //! executor — and the `tower-http` middleware stack, which never required
-//! `Send` of its own accord, composes as it always did.
-//!
-//! `hclient_core::transport::SendTransport` is a separate trait whose
-//! impl may carry bounds `Transport` does not — so `T: SendTransport` says
-//! what `T: Transport<execute(..): Send>` would have said, on stable, and
-//! excludes nobody from the seam.
-//!
-//! What it costs is that a transport which cannot promise `Send` cannot be
-//! adapted here. `hclient-dns-doh`-resolving transports are that case, and
-//! they keep `Transport` itself.
+//! `Send` of its own accord, composes as it always did. What it costs is
+//! that a transport which cannot promise `Send` cannot be adapted here.
+//! `hclient-dns-doh`-resolving transports are that case, and they keep
+//! `Transport` itself.
 //!
 //! # Bounding concurrency
 //!
@@ -92,6 +111,20 @@
 // Deadline` both use — and that is a layer this crate would have to own
 // rather than borrow; it is not written yet, and the design document
 // records the gap rather than implying it away.
+//
+// # The impedance mismatch, and the one thing it costs
+//
+// `Transport::execute` is `fn(&self, ..) -> impl Future`: the future
+// borrows the transport. `Service::Future` is an associated type with no
+// lifetime parameter, so it cannot borrow `self` at all. The bridge is an
+// owned handle inside the future — the transport lives in an `Arc`, cloned
+// per call — and a boxed future, because an RPITIT's type cannot be named
+// to declare it as an associated type.
+//
+// `hclient_core::transport::SendTransport` is a separate trait whose
+// impl may carry bounds `Transport` does not — so `T: SendTransport` says
+// what `T: Transport<execute(..): Send>` would have said, on stable, and
+// excludes nobody from the seam.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -117,6 +150,27 @@ use std::task::{Context, Poll};
 ///
 /// Cloning is cheap and shares one transport: `Arc` internally, which is
 /// what `Service::call`'s `&mut self` plus a `'static` future require.
+///
+/// ```
+/// use hclient_mock::MockTransport;
+/// use hclient_tower::TransportService;
+/// use tower_service::Service;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mock = MockTransport::new();
+/// mock.push_response(http::Response::builder().status(204).body("")?);
+///
+/// let mut service = TransportService::new(mock);
+/// # futures_executor::block_on(async {
+/// std::future::poll_fn(|cx| service.poll_ready(cx)).await?;
+/// let req = http::Request::get("https://api.test").body(Default::default())?;
+/// let response = service.call(req).await?;
+/// assert_eq!(response.status(), 204);
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// # })?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct TransportService<T> {
     inner: Arc<T>,
@@ -239,6 +293,24 @@ where
 ///
 /// ```text
 /// Native -> TransportService -> [tower layers] -> ServiceTransport -> Client
+/// ```
+///
+/// ```
+/// use hclient_mock::MockTransport;
+/// use hclient_tower::{ServiceTransport, TransportService};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mock = MockTransport::new();
+/// let service = TransportService::new(mock);
+/// let caps = service.capabilities().clone();
+///
+/// // No tower layer in between here, but any `tower::Layer` could sit
+/// // where `service` is passed straight through.
+/// let transport = ServiceTransport::new(service, caps);
+/// let client = hclient::Client::builder(transport).build()?;
+/// # let _ = client;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// **The client's type does not change shape:**

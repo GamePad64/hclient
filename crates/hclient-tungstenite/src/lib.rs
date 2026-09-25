@@ -1,6 +1,28 @@
 //! RFC 6455 framing on an already-upgraded byte stream, and the connector
 //! that opens one over `hclient-native`.
 //!
+//! ```no_run
+//! use futures_util::{SinkExt, StreamExt};
+//! use hclient_core::websocket::{Message, WebSocketConnect};
+//! use hclient_dns::IpLiteralOnly;
+//! use hclient_native::Native;
+//! use hclient_rt_tokio::Tokio;
+//! use hclient_tls_rustls::Rustls;
+//! use hclient_tungstenite::Tungstenite;
+//!
+//! # async fn f() -> Result<(), Box<dyn std::error::Error>> {
+//! let native = Native::new(Tokio, Rustls::with_webpki_roots(), IpLiteralOnly);
+//! let req = http::Request::get("wss://echo.example/socket").body(())?;
+//! let mut socket = Tungstenite::new(&native).websocket(req).await?;
+//!
+//! socket.send(Message::Text("hello".into())).await?;
+//! while let Some(msg) = socket.next().await {
+//!     println!("{:?}", msg?);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! Two halves, and the seam between them is the whole reason this crate
 //! exists rather than a `websocket` feature on `hclient-native`:
 //!
@@ -561,6 +583,15 @@ fn ws_error(e: tungstenite::Error) -> Error {
 /// The two fields reset on different events, deliberately: `every` on any
 /// inbound frame, `within` only on a matching pong. See their own docs
 /// below.
+///
+/// ```
+/// use hclient_tungstenite::WebSocketKeepAlive;
+/// use std::time::Duration;
+///
+/// let keep_alive = WebSocketKeepAlive::new(Duration::from_secs(30), Duration::from_secs(10));
+/// assert_eq!(keep_alive.every, Duration::from_secs(30));
+/// assert_eq!(keep_alive.within, Duration::from_secs(10));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WebSocketKeepAlive {

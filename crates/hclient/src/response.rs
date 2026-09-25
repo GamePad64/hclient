@@ -368,6 +368,18 @@ where
 ///
 /// reqwest's `Response::{text,json,bytes}` take `self` by value, which
 /// leaves the status unreachable once the body's been read (issue #1542).
+///
+/// ```no_run
+/// # async fn f(client: &hclient::Client) -> Result<(), hclient::Error> {
+/// let page = client.get("https://example.com").send().await?.collect().await?;
+/// // The body is in memory, and the head is still here beside it.
+/// if page.status().is_success() {
+///     println!("{} bytes from {}", page.bytes().len(), page.url());
+///     let text = page.text()?;
+/// #   let _ = text;
+/// }
+/// # Ok(()) }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Collected {
     parts: http::response::Parts,
