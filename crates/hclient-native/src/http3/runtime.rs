@@ -1,10 +1,10 @@
 //! `quinn::Runtime` over this workspace's runtime seam.
 //!
 //! `rt` is any `R` a runtime crate here supplies — `Tokio`, `Smol`, ... —
-//! and the bounds below are [`endpoint`]'s own, spelled out because a
-//! doctest cannot infer them from a sketch.
+//! and the bounds below are [`endpoint`]'s own. [`endpoint`] is
+//! crate-private, so the sketch is illustrative rather than a doctest.
 //!
-//! ```no_run
+//! ```text
 //! # use std::fmt;
 //! # use hclient_rt::{Spawn, Timer, UdpAdoptStd};
 //! # use hclient_native::task::QuinnTask;
@@ -18,7 +18,7 @@
 //! #     R::Sleep: Send + 'static,
 //! #     R::Socket: fmt::Debug + Send + Sync + 'static,
 //! # {
-//! let endpoint = hclient_native::endpoint(rt, "0.0.0.0:0".parse()?)?;
+//! let endpoint = crate::http3::runtime::endpoint(rt, "0.0.0.0:0".parse()?)?;
 //! let conn = endpoint.connect_with(client_cfg, addr, "example.com")?.await?;
 //! # let _ = conn;
 //! # Ok(())
@@ -423,7 +423,7 @@ where
 ///
 /// Whatever [`UdpBind::bind`] returns for `local` — typically the OS
 /// refusing the bind (address in use, permission denied).
-pub fn endpoint<R>(rt: &R, local: SocketAddr) -> io::Result<quinn::Endpoint>
+pub(crate) fn endpoint<R>(rt: &R, local: SocketAddr) -> io::Result<quinn::Endpoint>
 where
     R: Timer + UdpAdoptStd + hclient_rt::Spawn<QuinnTask> + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C10
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10

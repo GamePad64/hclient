@@ -262,7 +262,7 @@ impl fmt::Debug for Shared {
 /// gets pinged or dies, so a client holding one idle for an hour sends 720
 /// PINGs. [`H3::keep_alive_interval`] and [`H3::without_keep_alive`] exist
 /// for callers who would rather pay the handshake.
-pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(5);
+pub(crate) const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(5);
 
 // Maintainer notes (not rendered):
 // What this transport can and cannot say is in `crate::http3::hooks`: `tcp`
@@ -443,8 +443,13 @@ where
         }
     }
 
-    /// Ping an idle pooled connection this often. See
-    /// [`DEFAULT_KEEP_ALIVE`], which is what this starts at.
+    /// Ping an idle pooled connection this often; the default is 5 seconds.
+    ///
+    /// A QUIC connection nobody pings is closed by the peer's idle timeout,
+    /// and 5 s is under every common server default (nginx and Caddy both
+    /// sit at 30 s). The cost is traffic on an idle connection — one held
+    /// for an hour sends 720 PINGs — so a caller who would rather pay a
+    /// fresh handshake raises this or calls [`H3::without_keep_alive`].
     #[must_use]
     pub fn keep_alive_interval(mut self, d: Duration) -> Self {
         self.keep_alive = Some(d);

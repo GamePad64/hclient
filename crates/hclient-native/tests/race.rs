@@ -39,9 +39,9 @@ use hclient_core::body::RequestBody;
 use hclient_core::error::{Error, ErrorKind, Phase};
 use hclient_core::req::{RequireVersion, Timeouts};
 use hclient_core::transport::Transport;
-use hclient_native::DEFAULT_HEAD_START;
 use hclient_native::H3;
 use hclient_native::Native;
+use hclient_native::testing::DEFAULT_HEAD_START;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use servers::{ORIGIN, Pair, Quic, Tcp};
@@ -282,7 +282,7 @@ async fn with_no_head_start_exactly_one_request_reaches_the_origin() {
 
 /// The other end of the same knob, and the reason the default is not zero.
 ///
-/// At [`DEFAULT_HEAD_START`] against a working QUIC origin the hedge is
+/// At `DEFAULT_HEAD_START` against a working QUIC origin the hedge is
 /// never started: **no TCP socket is opened at all**. The margin is stated
 /// rather than assumed — a cold QUIC exchange on this host is 2.5–7.8 ms
 /// median and 19.6 ms at its worst sample, against a 250 ms head start, so

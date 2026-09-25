@@ -8063,6 +8063,13 @@ every caller built it with `Prepared::new` — a type in a public signature
 whose other half nothing read. It takes the request now, as the QUIC
 trait always did.
 
+**The owner then took the last three off the root.** `endpoint` — the
+bare-QUIC entry point that was `hclient-quinn`'s whole surface — had no
+caller anywhere, and `DEFAULT_HEAD_START` and `DEFAULT_KEEP_ALIVE` were
+read only by tests. The two numbers are stated where a caller meets them
+now, on `Native::hedging` (250 ms) and `H3::keep_alive_interval` (5 s),
+and the tests reach the head start through `testing`.
+
 **And the rendered page had lost `Native`'s own documentation.** Its
 whole doc — the `Send` argument and both doctest fences — sat on the
 private `Versions` struct below it, and five methods' docs were shifted

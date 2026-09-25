@@ -153,17 +153,6 @@ mod http3;
 mod hyperio;
 // Maintainer notes (not rendered):
 //
-// A build that wants bare QUIC and no HTTP opinion takes this and nothing
-// else from the crate; it was `hclient-quinn`'s whole public surface.
-/// Bind a QUIC endpoint on this workspace's own runtime seam — quinn
-/// driven by whichever `hclient_rt` implementation the caller already has.
-///
-/// A build that wants bare QUIC and no HTTP opinion takes this and nothing
-/// else from the crate.
-#[cfg(feature = "http3")]
-pub use crate::http3::runtime::endpoint;
-// Maintainer notes (not rendered):
-//
 // It was `hclient-h3`, a crate of its own, on a reason that measurement
 // disproved: `H3`'s declaration carries no where-clause, so a feature
 // here makes the module and the constructor unconditional rather than the
@@ -180,15 +169,12 @@ pub use crate::http3::runtime::endpoint;
 /// A build that wants HTTP/3 **alone**, with no TCP stack beside it,
 /// has `Client::builder(H3::new(..))`: the type is a full `Transport`.
 #[cfg(feature = "http3")]
-pub use http3::{DEFAULT_KEEP_ALIVE, H3, H3Body, H3Runtime};
+pub use http3::{H3, H3Body, H3Runtime};
 #[cfg(feature = "http3")]
 mod race;
 #[cfg(feature = "http3")]
 mod route;
 
-/// The default head start the hedge gives the QUIC arm.
-#[cfg(feature = "http3")]
-pub use race::DEFAULT_HEAD_START;
 #[cfg(feature = "http2")]
 mod http2;
 mod idle;
@@ -1464,7 +1450,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// The case this exists for is the ordinary corporate one, an
     /// `HTTP_PROXY` and an `HTTPS_PROXY` at different hosts:
     ///
-    /// ```no_run
+    // `HttpConnect` exists only with the `proxy` feature, so the example is
+    // compiled where the feature is on and shown as text where it is not.
+    #[cfg_attr(feature = "proxy", doc = "```no_run")]
+    #[cfg_attr(not(feature = "proxy"), doc = "```text")]
     /// # use hclient_native::Native;
     /// # use hclient_native::proxy::{HttpConnect, Proxy, ProxyScheme};
     /// # use hclient_rt::{TcpConnect, Timer};
@@ -1950,8 +1939,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// # What the head start is, and what to pass
     ///
-    /// [`DEFAULT_HEAD_START`] where there is no reason to pass anything
-    /// else: 250 ms, RFC 8305 §5's Connection Attempt Delay. Its floor is
+    /// 250 ms where there is no reason to pass anything else: RFC 8305
+    /// §5's Connection Attempt Delay, the value Happy Eyeballs uses between
+    /// address families. Its floor is
     /// [`Duration::ZERO`]: with no head start both stacks connect at once,
     /// **and the losing arm still sends nothing**.
     ///
@@ -4293,7 +4283,12 @@ pub mod testing {
     }
 
     pub use crate::body::OutgoingBody;
+
     pub use crate::established::NativeBody;
+    /// The head start the race uses when a caller has no reason to name
+    /// another, for tests that race at the default.
+    #[cfg(feature = "http3")]
+    pub use crate::race::DEFAULT_HEAD_START;
 
     /// The `Alt-Svc` parser and the rules over a store — crate-private,
     /// and exercised in depth by `tests/altsvc_*.rs`, which is why they are
