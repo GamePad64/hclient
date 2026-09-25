@@ -700,6 +700,21 @@ foreign type it reaches:
   `hclient`'s `DefaultTransportFeature` has the same shape and is left as
   it is, because that crate was not part of this audit.
 
+**A polish pass after it made the two runtimes read the same, and it
+came from the fix above.** Once `SmolIo` reached its socket through `AsFd`,
+`TokioIo` was the odd one out: its `get_ref` and `into_inner` handed back a
+`tokio::net::TcpStream` and **panicked on a Unix-domain stream**, a
+`# Panics` section documenting an accessor that could not answer every
+connection its own runtime makes. Both went, and `TokioIo` implements
+`AsFd`/`AsSocket` as `SmolIo` does, so reading an option back is
+`socket2::SockRef::from(&io)` over either runtime and panics over neither.
+The UDP sockets of both runtimes gained the same impls, documented as
+read-only: `UdpDatagrams::support` was measured at bind, so an option
+changed through the descriptor afterwards is one the report no longer
+describes. `TokioHandle` gained `From<tokio::runtime::Handle>`, and all four
+crates open with a compiled example of the type a caller picks, where two
+of them had none.
+
 **`hclient-tls-rustls` 0.1.x lasts exactly as long as rustls 0.23**, and
 the migration is a redesign rather than a bump. The owner's call is to stay
 on `0.23.45` and ship a breaking release when 0.24 is out. Read in
