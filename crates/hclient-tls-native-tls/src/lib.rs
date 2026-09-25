@@ -48,13 +48,17 @@
 
 mod stream;
 
-/// The `native-tls` this crate is built against, so that a caller builds
-/// the [`native_tls::Identity`] and [`native_tls::Certificate`] that
-/// [`NativeTls`] takes from the same version, without a second dependency
-/// line to keep in step. `native-tls` has been 0.2 since 2018; a major
-/// step there is a major step here, because this crate *is* a binding of
-/// it.
-pub use native_tls;
+/// The two `native-tls` types [`NativeTls`] takes, re-exported so that a
+/// caller builds its [`Identity`] and [`Certificate`] from the same
+/// `native-tls` version this crate uses, without adding a second dependency
+/// line to keep in step.
+///
+/// **These two and not the whole crate.** Re-exporting all of `native-tls`
+/// would make every item in it part of this crate's API, where a caller
+/// needs only what the constructors take. `native-tls` has been at 0.2
+/// since 2018, and a major step there is still a major step here, because
+/// these two types are in [`NativeTls`]'s signatures.
+pub use native_tls::{Certificate, Identity};
 pub use stream::TlsStream;
 
 use hclient_core::error::{Error, ErrorKind};

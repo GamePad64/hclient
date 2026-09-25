@@ -210,3 +210,18 @@ fn debug_names_the_configuration_without_printing_the_secrets() {
         "the trust identity is what decides pooling, so it is worth printing: {printed}"
     );
 }
+
+/// The re-exports are `native-tls`'s own types, not look-alikes: a value
+/// built through this test's own `native-tls` dependency is accepted
+/// where the re-exported name is expected. If this crate ever resolved a
+/// different `native-tls` than its caller, this would stop compiling with
+/// "expected `Certificate`, found a different `Certificate`".
+#[test]
+fn the_reexports_are_the_native_tls_types_the_constructors_take() {
+    let cert: hclient_tls_native_tls::Certificate = a_certificate();
+    let _ = NativeTls::new().add_root_certificate(cert);
+    if let Some(identity) = an_identity() {
+        let identity: hclient_tls_native_tls::Identity = identity;
+        let _ = NativeTls::new().identity(identity);
+    }
+}
