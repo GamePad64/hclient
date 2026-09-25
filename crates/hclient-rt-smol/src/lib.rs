@@ -1,5 +1,27 @@
 //! `hclient-rt` capabilities implemented on top of smol.
 //!
+//! [`Smol`] is the whole runtime: a zero-sized type with no precondition,
+//! usable from any thread and under any executor, including a bare
+//! `futures_executor::block_on`. It is the `R` of
+//! `hclient_native::Native::new(R, tls, resolver)`. Used directly, it is the
+//! seam and nothing more:
+//!
+//! ```no_run
+//! use hclient_rt::{TcpConnect, TcpOpts, Timer};
+//! use hclient_rt_smol::Smol;
+//! use std::time::Duration;
+//!
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let addr = "127.0.0.1:8080".parse()?;
+//! futures_executor::block_on(async {
+//!     let io = Smol.connect(addr, &TcpOpts::default().nodelay(true)).await?;
+//!     Smol.sleep(Duration::from_millis(10)).await;
+//!     # drop(io);
+//!     Ok(())
+//! })
+//! # }
+//! ```
+//!
 //! **No `async-compat`.** It spins up a second runtime in-process if no
 //! tokio context is found — which hides exactly the problem a second
 //! runtime is here to surface: code that only works because tokio happens

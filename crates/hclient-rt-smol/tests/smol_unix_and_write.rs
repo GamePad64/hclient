@@ -328,6 +328,14 @@ fn a_unix_socket_connects_and_carries_bytes_when_ipc_says_so() {
         let mut s = bounded(Smol.connect_ipc(&hclient_rt::IpcAddr::unix(&path)))
             .await
             .expect("connect_ipc to a bound unix socket");
+        // The Unix arm of `AsFd` hands out the Unix socket, not something else.
+        assert!(
+            socket2::SockRef::from(&s)
+                .local_addr()
+                .expect("local_addr through the descriptor")
+                .is_unix(),
+            "the descriptor of a Unix-domain connection is not a Unix socket"
+        );
         write_all(&mut s, b"over-a-unix-socket")
             .await
             .expect("write");

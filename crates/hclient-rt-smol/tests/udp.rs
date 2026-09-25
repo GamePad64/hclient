@@ -387,3 +387,19 @@ fn a_v6_only_socket_claims_ecn_although_it_grants_no_v4_recvtos() {
 // `poll_writable -> Ready(Ok(()))` stays alive, for the reason recorded
 // above the capability test at the head of this file: a loopback UDP send
 // drops rather than queues, so no socket here is ever unwritable.
+
+/// The descriptor `AsFd`/`AsSocket` hands out is this socket's own: read
+/// through `socket2`, it names the address the socket reports for itself.
+/// A descriptor for some other socket would name another port.
+#[test]
+fn the_descriptor_is_the_sockets_own() {
+    let s: SmolUdpSocket = Smol
+        .bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .expect("bind");
+    let via_fd = socket2::SockRef::from(&s)
+        .local_addr()
+        .expect("local_addr through the descriptor")
+        .as_socket()
+        .expect("an IP socket");
+    assert_eq!(via_fd, s.local_addr().expect("local_addr"));
+}
