@@ -13,9 +13,7 @@ mod udp;
 pub use udp::SmolUdpSocket;
 
 use futures_core::future::BoxFuture;
-use hclient_rt::{
-    Blocking, Cancelled, Discard, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport, Timer,
-};
+use hclient_rt::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport, Timer};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -39,28 +37,41 @@ pub struct Smol;
 
 impl Timer for Smol {
     type Instant = Instant;
-    /// **The adapter is not redundant, and it is not a mistake.**
-    /// `async_io::Timer` is a `Future` whose `Output` is the
-    /// `std::time::Instant` at which it fired, not `()`. While
-    /// `Timer::sleep` was an RPITIT this file wrote `async_io::Timer::
-    /// after(d).await;` inside an `async fn` and the instant was dropped
-    /// invisibly by the trailing semicolon. A named associated type has to
-    /// state the conversion, and [`Discard`] is where it is stated — once,
-    /// in `hclient-core`, shared with `hclient-fetch`, whose browser timer
-    /// resolves to a `Result<JsValue, JsValue>` for the same reason.
-    ///
-    /// Nothing about the timing changed; the previous `async fn` form was
-    /// chosen only to avoid `clippy::manual_async_fn`, which a plain
-    /// constructor does not trip.
-    type Sleep = Discard<async_io::Timer>;
+    /// [`SmolSleep`] rather than `async_io::Timer` itself, so that
+    /// `async-io`'s major version is not part of this crate's promise.
+    type Sleep = SmolSleep;
     fn sleep(&self, d: Duration) -> Self::Sleep {
-        Discard(async_io::Timer::after(d))
+        SmolSleep(async_io::Timer::after(d))
     }
     fn now(&self) -> Instant {
         Instant::now()
     }
     fn elapsed_since(&self, earlier: Instant) -> Duration {
         Instant::now().saturating_duration_since(earlier)
+    }
+}
+
+/// The future [`Smol`]'s [`Timer::sleep`] hands back: ready once the
+/// duration has passed, with `()` as its output.
+///
+/// **A newtype so that `async-io` is not in this crate's public API.**
+/// `Timer::Sleep` is a public associated type, so naming
+/// `async_io::Timer` there would make every `async-io` major step a major
+/// step here too, for a type a caller only ever awaits. The newtype leaves
+/// that choice to this crate.
+///
+/// It also does the job `hclient_rt::Discard` did: `async_io::Timer`
+/// resolves to the `Instant` it fired at, and the seam asks for `()`.
+///
+/// `Unpin`, `Send` and `Sync`, as `async_io::Timer` is, so it can be
+/// polled through `&mut` without being pinned first.
+#[derive(Debug)]
+pub struct SmolSleep(async_io::Timer);
+
+impl Future for SmolSleep {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        Pin::new(&mut self.0).poll(cx).map(drop)
     }
 }
 
@@ -549,6 +560,15 @@ mod tests {
             t.sleep(Duration::from_millis(20)).await;
             assert!(t.elapsed_since(start) >= Duration::from_millis(20));
         });
+    }
+
+    /// `SmolSleep`'s doc promises the auto traits `async_io::Timer` has;
+    /// a field added to the newtype that lacked one would break a caller
+    /// polling it through `&mut` or across a thread, so it is asked here.
+    #[test]
+    fn the_sleep_is_unpin_send_and_sync() {
+        fn check<T: Unpin + Send + Sync>(_: &T) {}
+        check(&Smol.sleep(Duration::ZERO));
     }
 
     #[test]
