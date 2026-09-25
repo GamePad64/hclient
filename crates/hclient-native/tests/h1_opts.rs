@@ -13,7 +13,8 @@
 use hclient_core::body::RequestBody;
 use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
-use hclient_native::{H1Opts, MaxBufSizeTooSmall, Native};
+use hclient_native::error::MaxBufSizeTooSmall;
+use hclient_native::{H1Opts, Native};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use std::error::Error as StdError;

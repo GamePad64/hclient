@@ -349,7 +349,7 @@ async fn a_blocked_origin_is_answered_without_waiting_for_quinn_to_give_up() {
 /// The hand-off from the winning arm to the request goes through the
 /// **pool**, and this is what says so.
 ///
-/// The hedge connects, its handle is dropped, and `hclient_native::Staged`'s
+/// The hedge connects, its handle is dropped, and `hclient_native::staged::Staged`'s
 /// own `Drop` checks that connection in warm. The request is then sent on
 /// it. If the handle's connection were discarded instead — or if the routed
 /// request dialled afresh — the listener would have accepted **two**

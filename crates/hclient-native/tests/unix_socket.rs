@@ -116,7 +116,7 @@ fn a_request_goes_over_the_socket_and_the_head_is_ordinary() {
 #[cfg(feature = "proxy")]
 #[test]
 fn a_proxy_and_a_socket_cannot_both_be_configured() {
-    use hclient_native::{HttpConnect, Proxy};
+    use hclient_native::proxy::{HttpConnect, Proxy};
 
     let (path, _seen) = unix_server();
     let err = Native::new(Tokio, NoTls, IpLiteralOnly)
@@ -131,7 +131,7 @@ fn a_proxy_and_a_socket_cannot_both_be_configured() {
     );
     assert!(
         StdError::source(&err)
-            .and_then(|s| s.downcast_ref::<hclient_native::ProxyAndUnixSocket>())
+            .and_then(|s| s.downcast_ref::<hclient_native::error::ProxyAndUnixSocket>())
             .is_some(),
         "the typed refusal: {err:?}"
     );

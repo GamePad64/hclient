@@ -321,11 +321,16 @@ pub struct ProxySpokeFirst(pub usize);
 #[error("no address from the resolver within the resolve timeout of {0:?}")]
 pub struct ResolveTimedOut(pub Duration);
 
-/// The failure [`crate::with_connect_timeout`] ends in when the timer wins the
-/// race against `connect::connect`.
-#[derive(Debug, thiserror::Error)]
+/// The failure the `connect` bound ends in when the timer wins the race
+/// against resolving and dialling.
+///
+/// A named type rather than a string, for [`ResolveTimedOut`]'s reason. It
+/// was crate-private while every payload beside it was public, so the one
+/// timeout a caller could not tell apart by type was the commonest one;
+/// that went when this module became the path for all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("connect timed out after {0:?}")]
-pub(crate) struct ConnectTimedOut(pub(crate) Duration);
+pub struct ConnectTimedOut(pub Duration);
 
 /// The failure `Native`'s `first_byte` gate ends in when the timer wins
 /// the race against the exchange.
@@ -428,3 +433,18 @@ impl UndeclaredRequestTrailers {
         &self.0
     }
 }
+
+// ---------------------------------------------------------------------
+// The two protocol arms' own, published here so that every payload a
+// caller can meet through `Error::source` has one path.
+// ---------------------------------------------------------------------
+
+#[cfg(feature = "http2")]
+pub use crate::http2::PingNotAnswered;
+/// The QUIC connect deadline's error, renamed on the way out: the TCP one
+/// above carries the same name, and two types with one name in one module
+/// is how a reader ends up reading the wrong doc.
+#[cfg(feature = "http3")]
+pub use crate::http3::ConnectTimedOut as H3ConnectTimedOut;
+#[cfg(feature = "http3")]
+pub use crate::http3::{RequestTrailersNotSent, UnknownRequestBodyFrame};

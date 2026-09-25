@@ -8,7 +8,7 @@
 //! - a staged connect **shares** the pooled connection rather than dialling
 //!   a second one, which on this stack is what "found one" means — the
 //!   `SendRequest` is cloned and the connection multiplexes;
-//! - **a handle nobody spends needs no `Drop`.** `hclient_native::H3Staged`
+//! - **a handle nobody spends needs no `Drop`.** `hclient_native::staged::h3::Staged`
 //!   had to be given one, because it *owns* the connection it took out of
 //!   the pool. Here `checkout` inserted the connection into the pool before
 //!   its caller ever saw it, so a dropped handle leaves the pool
@@ -24,7 +24,8 @@ use hclient_core::body::RequestBody;
 use hclient_core::error::ErrorKind;
 use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
-use hclient_native::{H3, H3StagedConnect as StagedConnect};
+use hclient_native::H3;
+use hclient_native::staged::h3::StagedConnect;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;

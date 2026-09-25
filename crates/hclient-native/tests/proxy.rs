@@ -9,7 +9,8 @@
 
 use hclient::Client;
 use hclient_dns::IpLiteralOnly;
-use hclient_native::{HttpConnect, Native, Proxy, Socks4, Socks5};
+use hclient_native::Native;
+use hclient_native::proxy::{HttpConnect, Proxy, Socks4, Socks5};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use std::error::Error as StdError;
@@ -491,7 +492,7 @@ async fn a_proxy_that_speaks_first_is_refused() {
     // the defect and how many bytes were invented, and a test reading the
     // rendered string would pass for any wording.
     let spoke = StdError::source(&err)
-        .and_then(|s| s.downcast_ref::<hclient_native::ProxySpokeFirst>())
+        .and_then(|s| s.downcast_ref::<hclient_native::error::ProxySpokeFirst>())
         .expect("the defect must be readable off the error");
     assert_eq!(spoke.0, 8, "the eight bytes the fixture invented");
 }
@@ -772,7 +773,7 @@ async fn a_socks5_upstream_failure_arrives_with_its_own_reply_code() {
             .expect_err("a refused CONNECT is not a response");
         assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Connect);
         let refused = StdError::source(&err)
-            .and_then(|s| s.downcast_ref::<hclient_native::Socks5Refused>())
+            .and_then(|s| s.downcast_ref::<hclient_native::proxy::Socks5Refused>())
             .unwrap_or_else(|| panic!("REP={rep:#04x} must be readable off the error: {err:?}"));
         assert_eq!(refused.rep, rep);
     }
@@ -793,16 +794,16 @@ async fn a_socks5_proxy_that_refuses_every_method_says_so_and_not_a_reply_code()
     let source = StdError::source(&err).expect("a source");
     assert!(
         source
-            .downcast_ref::<hclient_native::Socks5HandshakeError>()
+            .downcast_ref::<hclient_native::proxy::Socks5HandshakeError>()
             .is_some_and(|e| matches!(
                 e,
-                hclient_native::Socks5HandshakeError::NoAcceptableMethods
+                hclient_native::proxy::Socks5HandshakeError::NoAcceptableMethods
             )),
         "the handshake failed, not the CONNECT: {err:?}"
     );
     assert!(
         source
-            .downcast_ref::<hclient_native::Socks5Refused>()
+            .downcast_ref::<hclient_native::proxy::Socks5Refused>()
             .is_none(),
         "and it must not be reported as a reply code the proxy never sent"
     );
@@ -825,7 +826,7 @@ async fn a_socks5_proxy_that_refuses_every_method_says_so_and_not_a_reply_code()
 /// proxy received the `CONNECT`, which is the routing question.
 #[tokio::test]
 async fn two_proxies_route_by_scheme_and_each_one_sees_only_its_own() {
-    use hclient_native::ProxyScheme;
+    use hclient_native::proxy::ProxyScheme;
 
     let (secure, secure_seen) = http_proxy("200");
     let (plain, plain_seen) = http_proxy("200");
@@ -916,7 +917,7 @@ async fn two_proxies_route_by_scheme_and_each_one_sees_only_its_own() {
 /// the call site.
 #[tokio::test]
 async fn an_unrestricted_proxy_placed_first_shadows_the_one_after_it() {
-    use hclient_native::ProxyScheme;
+    use hclient_native::proxy::ProxyScheme;
 
     let (first, first_seen) = http_proxy("200");
     let (second, second_seen) = http_proxy("200");
@@ -1117,7 +1118,7 @@ async fn a_socks4a_tunnel_carries_the_userid_and_the_unresolved_host() {
 /// or cannot reach the origin.
 #[tokio::test]
 async fn a_socks4_refusal_is_a_typed_connect_error() {
-    use hclient_native::Socks4Refused;
+    use hclient_native::proxy::Socks4Refused;
 
     let (proxy, _seen) = socks4_proxy(91);
     let transport = Native::new(Tokio, NoTls, IpLiteralOnly).proxy(Proxy::new(
@@ -1146,7 +1147,7 @@ async fn a_socks4_refusal_is_a_typed_connect_error() {
 /// `4` there is refused by name rather than being read as a grant.
 #[tokio::test]
 async fn a_reply_version_of_four_is_refused_rather_than_read_as_a_grant() {
-    use hclient_native::Socks4HandshakeError;
+    use hclient_native::proxy::Socks4HandshakeError;
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -1189,7 +1190,7 @@ async fn a_reply_version_of_four_is_refused_rather_than_read_as_a_grant() {
 /// read as the hostname.
 #[test]
 fn a_nul_in_the_userid_is_refused_where_it_is_written() {
-    use hclient_native::Socks4HandshakeError;
+    use hclient_native::proxy::Socks4HandshakeError;
     assert_eq!(
         Socks4::new().userid("al\0ice").map(|_| ()),
         Err(Socks4HandshakeError::NulInUserid)

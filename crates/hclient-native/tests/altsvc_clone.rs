@@ -14,7 +14,8 @@
 //! so, because no test named the property until this one.
 #![cfg(feature = "http3")]
 
-use hclient_native::altsvc::{AltSvcCache, AltSvcStore, Entry, InMemory, Origin};
+use hclient_native::altsvc::{AltSvcStore, Entry, Origin};
+use hclient_native::testing::altsvc::{AltSvcCache, InMemory};
 use std::time::SystemTime;
 
 fn at(secs: u64) -> SystemTime {

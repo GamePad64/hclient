@@ -2215,7 +2215,7 @@ the same bound off the same request and applies it again — a caller who set
 need a comment and a test, but **absent**.
 
 **The handle is not the same thing on the two stacks, and that was found by
-letting `H3` answer for itself.** `hclient_native::Staged` *owns* the
+letting `H3` answer for itself.** `hclient_native::staged::Staged` *owns* the
 connection it took out of the pool, and needs a `Drop` that checks it back
 in, so a connection made for a request that went elsewhere is warm rather
 than closed (`without_pool()` is the control: no check-in, and the drop
@@ -2234,7 +2234,7 @@ the rule with an exception.
 **The first customer is Alt-Svc's negative half**, not the race — the
 reverse of the order both were written in. the transport asks its QUIC arm to
 *connect*; where that fails it records the origin in
-`hclient_native::H3Failures` and routes the request — untouched, unsent,
+`hclient-native`'s crate-private `H3Failures` and routes the request — untouched, unsent,
 never handed to a transport — over TCP. So the fallback is not
 request-level retry and needs no `retry_kind()` condition:
 `hclient-native`'s own sentence is true of it verbatim, *this is not a
@@ -2359,7 +2359,7 @@ reading to establish that it was missing rather than misplaced:
 `hclient-native`'s `NegativeCache` is a different fact — a TCP connect
 through a discovered endpoint failed — and it never sees an h3 attempt,
 because when the transport routes to its QUIC arm the TCP path is not called
-at all. `hclient_native::H3Failures` is the memory that was owed; the
+at all. `H3Failures`, private to `hclient-native`, is the memory that was owed; the
 **staged connect** is what unblocked it, and the section below is that.
 
 `.notes/v04-w1-acceptance.md` §7 and §9 say what the race would need and what
@@ -2472,13 +2472,16 @@ by nothing, because `send_future.rs` builds the arm-less stack.
 crate — one per stack, which was one per *crate* until `hclient-h3`
 folded in at `f4dfe48`. The root already exported the h3 one as
 `H3StagedConnect`, so the surface was unambiguous and the definition was
-not; the definition took the exported name.
+not; the definition took the exported name. **Both went back to
+`StagedConnect` when the pairs left the root** — `staged::StagedConnect`
+and `staged::h3::StagedConnect` — because a module tells them apart and
+a name prefix was only ever standing in for one.
 
 **And this section's own subject matter was stale in four places.** The
 transport that chooses between the stacks was `Selecting` in
 `hclient-select` when it was written, and both dissolved into
 `hclient-native` with the same commit: `H3Failures` is
-`hclient_native::H3Failures`, `network_changed` is `Native`'s, and there
+`hclient-native`'s own (and crate-private since), `network_changed` is `Native`'s, and there
 is no type called `Selecting` anywhere in the workspace. Four sentences
 here named one or the other. That is the defect this file records against
 itself in every other section, found by asking a scan which traits exist
@@ -2617,7 +2620,7 @@ are the change's largest practical result:
   speaks futures-io, to land at the trait the seam now names.
 
 **The conversion lives at the one call that needs it.**
-`hclient_native::hyperio::HyperIo` is the seam → `hyper::rt` adapter, used
+`hclient-native`'s private `hyperio::HyperIo` is the seam → `hyper::rt` adapter, used
 at `http1::handshake` and nowhere else, and it is the only place in the
 workspace where hyper's IO traits are named in anger. `hclient-native`'s h2
 adapter — seam → `tokio::io`, for `h2`'s benefit — got *simpler* rather than
@@ -8000,6 +8003,48 @@ run of that check answered `403` for every name including its control**,
 this file's rule about a check whose answers cannot differ, met one more
 time. With a `User-Agent` the controls separate: `reqwest` 200, a nonsense
 name 404.
+
+### `hclient-native`'s root held 61 names, and a third of them were one kind of thing
+
+The same exercise one crate down, measured the same way — rustdoc's JSON
+rather than a read of `lib.rs`, because re-exports behind five features
+do not add up by eye. **61 names and three modules at the root, now 19
+and five**, and the move answers one question per module rather than
+tidying: *what does a caller do with this?*
+
+- **`error::`, 19 payloads** — everything `Error::source` can hand back.
+  Seventeen were at the root beside `Native`, the proxy two were also
+  under `proxy::`, and `H3ConnectTimedOut` carried a prefix because the
+  root could hold one `ConnectTimedOut`.
+- **`staged::` and `staged::h3::`** — each stack's `StagedConnect`,
+  `Staged` and `Refused` under its own module and its own name. The QUIC
+  trait had been renamed `H3StagedConnect` for exactly the root's reason,
+  and `Staged`/`Refused` beside it went out as `H3Staged`/`H3Refused`.
+  A module is what a name prefix was standing in for.
+- **`task::`** — `H2Driver`, `Reaper`, `QuinnTask`: public only because a
+  `Spawn` bound names them.
+- **`proxy::`** was already public and every proxy type was *also* at the
+  root. One path each now.
+
+**Eleven items left the public API**, each named by no public signature:
+`hyperio::HyperIo`, the failure memory `H3Failures` and both TTLs, and
+the `Alt-Svc` parser and rules — `AltSvcCache`, `FieldValue`,
+`Alternative`, `parse`, `DEFAULT_MAX_AGE`, `BoxAltSvcStore`, `InMemory`.
+`altsvc::` keeps what a store author writes against: `AltSvcStore`,
+`Entry`, `Origin`, `KvStore`. The tests that exercise the rest reach it
+through `#[doc(hidden)] testing`, which is this crate's existing door
+for exactly that.
+
+**The move found a payload a caller could not name.** The TCP
+`ConnectTimedOut` was `pub(crate)` while `ResolveTimedOut`,
+`FirstByteTimedOut` and `BetweenBytesElapsed` beside it were public —
+under a module doc arguing that the four are four types *so that a
+caller can tell them apart by `downcast_ref`*. The commonest timeout was
+the one that argument did not reach. It is public in `error::` now, and
+`NoQuicArm`, raised by the routing and reachable by no path, is public
+beside it. **A module with one job is what made both visible**: scattered
+across the root, a missing payload is an absence nobody reads; listed in
+the one place payloads live, it is a gap in a list.
 
 ### The front page listed 73 items and twelve of them were for the caller
 

@@ -39,7 +39,7 @@ pub(crate) struct AcceptKeyMismatch;
 /// The source of the [`hclient_core::error::ErrorKind::Body`] error a missed pong produces.
 ///
 /// A named public type rather than a message, for the reason
-/// [`hclient_native::BetweenBytesElapsed`] is one: a caller must be able to tell
+/// [`hclient_native::error::BetweenBytesElapsed`] is one: a caller must be able to tell
 /// this apart from every other way a connection can fail with
 /// `Error::source().downcast_ref()`, and to read the bound that was
 /// actually in force rather than parse it out of a string.

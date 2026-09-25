@@ -1,6 +1,9 @@
 //! Connect now, send later — on the one kind of backend that has a
 //! connector to stage.
 //!
+//! The TCP stack's trio is here; the QUIC stack's is in `h3`, under the
+//! same three names, behind the `http3` feature.
+//!
 //! # It is not a method on `Transport`, and that is the third refusal of
 //! the same shape
 //!
@@ -111,6 +114,26 @@ use hclient_tls::TlsConnect;
 use std::fmt::Debug;
 use std::future::Future;
 use std::time::Duration;
+
+/// The QUIC stack's staged trio.
+///
+/// It is a separate trait rather than a second impl of
+/// [`StagedConnect`], and the merge of the two stacks into one crate did
+/// not change that: **the two do not agree on what `connect` takes**.
+/// [`StagedConnect::connect`] takes a [`Prepared`], the
+/// request *with* the HTTPS record fetched for it;
+/// [`h3::StagedConnect::connect`] takes the request alone, because the
+/// QUIC arm has no record lookup of its own. Nothing needs polymorphism
+/// between them: the routing owns both concretely.
+///
+/// The handle differs too, and that is a finding rather than a choice:
+/// [`Staged`] *owns* the connection it took out of the pool and checks it
+/// back in on drop, where [`h3::Staged`] is a claim on a connection the
+/// pool already holds and needs no `Drop` at all.
+#[cfg(feature = "http3")]
+pub mod h3 {
+    pub use crate::http3::{Refused, Staged, StagedConnect};
+}
 
 /// A transport whose connect can be asked for on its own, and whose answer
 /// can then be spent on exactly one request.

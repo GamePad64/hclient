@@ -28,7 +28,7 @@
 //! connector's own lookup ([`crate::Prefetch::prepare`]), so a request
 //! that ends up on TCP does not pay for a second one.
 
-use crate::altsvc::{self, Origin};
+use crate::altsvc_cache::{self as altsvc, Origin};
 use crate::connect::HTTPS_DEFAULT_PORT;
 use crate::discovery::Discovered;
 use crate::error::NoQuicArm;

@@ -3,9 +3,16 @@
 //!
 //! This crate wires together the runtime ([`hclient_rt`]), DNS
 //! ([`hclient_dns`]) and TLS ([`hclient_tls`]) on top of `hyper`.
-//! [`Native`] is the only public type; the modules under it are
-//! `pub(crate)` — `body` (the request-body adapter), `connect` (resolution
-//! and Happy Eyeballs), `h1` and `http2` (the protocol drivers, the second
+//!
+//! The root holds what a caller builds and holds: [`Native`], its
+//! options, its body and IO types, and the QUIC stack beside it. Five
+//! modules hold the rest by what a caller does with it —
+//! [`error`] for every payload [`Error::source`](std::error::Error::source)
+//! can hand back, [`staged`] for connecting ahead of a request, [`task`]
+//! for the futures a runtime is asked to spawn, [`proxy`] for proxies,
+//! and `altsvc` for a caller's own `Alt-Svc` store. The machinery is
+//! private: `body` (the request-body adapter), `connect` (resolution and
+//! Happy Eyeballs), `http1` and `http2` (the protocol drivers, the second
 //! behind the `http2` feature and **not** on hyper — see its module doc),
 //! `pool`, and `established`, the one place that knows there is more than
 //! one protocol.
@@ -32,14 +39,37 @@
 mod body;
 mod connect;
 mod discovery;
-mod error;
+pub mod error;
 /// RFC 9114's ALPN identifier, and the one string that decides whether an
 /// origin's HTTPS record or `Alt-Svc` advertisement is about HTTP/3.
 #[cfg(feature = "http3")]
 pub(crate) const ALPN_H3: &[u8] = b"h3";
 
+/// Where `Alt-Svc` advertisements are remembered — the store seam, and
+/// nothing else.
+///
+/// A caller installs a store with
+/// [`Native::alt_svc_store`](crate::Native::alt_svc_store); every RFC 7838
+/// rule — §3's *a present field replaces everything*, the `ma`
+/// comparison, §2.2's `persist`, the narrowing to *h3 at this origin's
+/// own authority* — stays inside this crate and is applied to whatever
+/// the store answers. So what is public here is exactly what a store
+/// author writes against: the trait, the key, the value, and the adapter
+/// over `hclient_core`'s byte store.
+///
+/// **An [`Entry`](crate::altsvc::Entry) carries a calendar time**, not an offset from one
+/// transport's epoch, so that it means something to a store outside the
+/// process that wrote it.
+///
+/// The parser and the rules are not public, and that is the point of the
+/// split: a caller could only have used them to reimplement what
+/// `Native` already does on every response.
 #[cfg(feature = "http3")]
-pub mod altsvc;
+pub mod altsvc {
+    pub use crate::altsvc_cache::{AltSvcStore, Entry, KvStore, Origin};
+}
+#[cfg(feature = "http3")]
+mod altsvc_cache;
 #[cfg(feature = "http3")]
 mod caps;
 mod established;
@@ -48,7 +78,7 @@ mod failures;
 mod http1;
 #[cfg(feature = "http3")]
 mod http3;
-pub mod hyperio;
+mod hyperio;
 /// Bind a QUIC endpoint on this workspace's own runtime seam — quinn
 /// driven by whichever `hclient_rt` implementation the caller already has.
 ///
@@ -56,11 +86,6 @@ pub mod hyperio;
 /// else from the crate; it was `hclient-quinn`'s whole public surface.
 #[cfg(feature = "http3")]
 pub use crate::http3::runtime::endpoint;
-/// The QUIC connect deadline's error, renamed on the way out: this crate's
-/// own TCP one is private and carries the same name, and two types with
-/// one name in one crate is how a reader ends up reading the wrong doc.
-#[cfg(feature = "http3")]
-pub use http3::ConnectTimedOut as H3ConnectTimedOut;
 /// The HTTP/3 stack this transport's QUIC arm is built from.
 ///
 /// It was `hclient-h3`, a crate of its own, on a reason that measurement
@@ -75,33 +100,12 @@ pub use http3::ConnectTimedOut as H3ConnectTimedOut;
 /// has `Client::builder(H3::new(..))`: the type is a full `Transport` and
 /// nothing about it changed in the move.
 #[cfg(feature = "http3")]
-pub use http3::{
-    DEFAULT_KEEP_ALIVE, H3, H3Body, H3Runtime, QuinnTask, RequestTrailersNotSent,
-    UnknownRequestBodyFrame,
-};
-/// The QUIC stack's staged pair, renamed on the way out because this crate
-/// has two.
-///
-/// They are separate traits rather than one, and the merge did not change
-/// that: a trait is declared by the crate — now the module — that
-/// implements it, and **the two do not agree on what `connect` takes**.
-/// [`StagedConnect::connect`] takes a [`Prepared`], the request *with* the
-/// HTTPS record fetched for it; [`H3StagedConnect::connect`] takes the
-/// request alone, because the QUIC arm has no record lookup of its own.
-///
-/// Nothing needs polymorphism between them: the routing owns both
-/// concretely.
-#[cfg(feature = "http3")]
-pub use http3::{H3StagedConnect, Refused as H3Refused, Staged as H3Staged};
+pub use http3::{DEFAULT_KEEP_ALIVE, H3, H3Body, H3Runtime};
 #[cfg(feature = "http3")]
 mod race;
 #[cfg(feature = "http3")]
 mod route;
 
-/// How long a failed HTTP/3 connect suppresses the QUIC arm for one
-/// origin, and the memory that records it.
-#[cfg(feature = "http3")]
-pub use failures::{H3_FAILURE_TTL, H3Failures};
 /// The default head start the hedge gives the QUIC arm.
 #[cfg(feature = "http3")]
 pub use race::DEFAULT_HEAD_START;
@@ -110,35 +114,44 @@ mod http2;
 mod idle;
 mod pool;
 pub mod proxy;
-mod staged;
+pub mod staged;
 mod upgrade;
 
 pub use connect::Conn;
-pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
+pub use discovery::{Discovered, Prepared};
+use error::{ConnectTimedOut, UnknownClientIdentity};
+// Private: the public path for each is `error::`, and these keep the
+// crate's own code reading `crate::X` as it did when they were at the root.
 #[cfg(feature = "http3")]
-pub use error::Disagreement;
-pub use error::{
-    BetweenBytesElapsed, EndedBeforeTheResponse, FirstByteTimedOut, Http2NotCompiledIn,
-    MaxBufSizeTooSmall, NoVersionsLeft, NotSwitchingProtocols, PlaintextNeedsHttp1,
-    ProxyAndUnixSocket, ProxySpokeFirst, ResolveTimedOut, UndeclaredRequestTrailers,
+use error::Disagreement;
+use error::{
+    FirstByteTimedOut, Http2NotCompiledIn, NoVersionsLeft, PlaintextNeedsHttp1, ProxyAndUnixSocket,
 };
-pub(crate) use error::{ConnectTimedOut, UnknownClientIdentity};
-/// The future `Native::multiplexed` spawns — public because that
-/// constructor's `Spawn` bound has to name it, and for no other reason.
 #[cfg(feature = "http2")]
-pub use http2::{H2Driver, H2KeepAlive, H2Opts, PingNotAnswered};
+pub use http2::{H2KeepAlive, H2Opts};
+use pool::Reaper;
+#[cfg(feature = "http3")]
+use staged::StagedConnect;
 // `Prefetch` is declared in this file, beside the exchange it refines.
 pub use http1::H1Opts;
 pub use idle::IdleTimeout;
-pub use pool::{PoolConfig, Reaper};
-pub use proxy::{Approach, Handshake, NoProxy, Proxy, ProxyScheme};
-#[cfg(feature = "proxy")]
-pub use proxy::{
-    HttpConnect, ProxyRefused, Socks4, Socks4HandshakeError, Socks4Refused, Socks5,
-    Socks5HandshakeError, Socks5Refused,
-};
-pub use staged::{Refused, Staged, StagedConnect};
+pub use pool::PoolConfig;
 pub use upgrade::Upgrading;
+
+/// The futures this transport hands to a caller's runtime to spawn.
+///
+/// Each is public because a constructor's `Spawn` bound has to name it —
+/// `Native::multiplexed` for `H2Driver` (behind `http2`), the pool's
+/// reaper for [`Reaper`], and the QUIC endpoint for `QuinnTask` (behind
+/// `http3`) — and for no other reason. A caller never builds or
+/// polls one; what they write is the bound, on a runtime of their own.
+pub mod task {
+    #[cfg(feature = "http2")]
+    pub use crate::http2::H2Driver;
+    #[cfg(feature = "http3")]
+    pub use crate::http3::QuinnTask;
+    pub use crate::pool::Reaper;
+}
 
 use hclient_core::body::RequestBody;
 use hclient_core::caps::{Capabilities, RedirectSupport, TimeoutSupport};
@@ -593,7 +606,7 @@ where
     /// has no answer, so an origin that publishes an HTTPS record never
     /// touches it and the fast path takes no lock.
     #[cfg(feature = "http3")]
-    alt_svc: altsvc::AltSvcCache<altsvc::BoxAltSvcStore>,
+    alt_svc: altsvc_cache::AltSvcCache<altsvc_cache::BoxAltSvcStore>,
     /// Origins whose HTTP/3 connect has already failed, and when.
     ///
     /// The negative half, and a different fact from
@@ -953,8 +966,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             #[cfg(feature = "http3")]
             h3: None,
             #[cfg(feature = "http3")]
-            alt_svc: altsvc::AltSvcCache::with_store(altsvc::BoxAltSvcStore::new(
-                altsvc::InMemory::default(),
+            alt_svc: altsvc_cache::AltSvcCache::with_store(altsvc_cache::BoxAltSvcStore::new(
+                altsvc_cache::InMemory::default(),
             )),
             #[cfg(feature = "http3")]
             h3_failures: failures::H3Failures::default(),
@@ -1336,7 +1349,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `HTTP_PROXY` and an `HTTPS_PROXY` at different hosts:
     ///
     /// ```no_run
-    /// # use hclient_native::{Native, Proxy, ProxyScheme, HttpConnect};
+    /// # use hclient_native::Native;
+    /// # use hclient_native::proxy::{HttpConnect, Proxy, ProxyScheme};
     /// # use hclient_rt::{TcpConnect, Timer};
     /// # use hclient_tls::TlsConnect;
     /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
@@ -1357,7 +1371,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// ProxyProtocol>`.
     ///
     /// Uncallable before `proxy` for free rather than by a check: without
-    /// it `P` is [`NoProxy`], an empty enum, so there is
+    /// it `P` is [`NoProxy`](crate::proxy::NoProxy), an empty enum, so there is
     /// no `Proxy<NoProxy>` to pass.
     #[must_use]
     pub fn and_proxy(mut self, proxy: crate::proxy::Proxy<P>) -> Self {
@@ -1873,9 +1887,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// argued away: nothing is written to disk, and the cache is a field
     /// of this transport, so dropping the client does the whole job.
     ///
-    /// **Both memories are cleared, and not by the same rule** — see
-    /// [`H3Failures`]. The advertisement cache keeps `persist=1` entries,
-    /// because that flag is the origin's own claim that what it advertised
+    /// **Both memories are cleared, and not by the same rule.** The
+    /// advertisement cache keeps `persist=1` entries, because that flag is the origin's own claim that what it advertised
     /// is a property of the origin rather than of the path. The failure
     /// memory keeps nothing: *"UDP/443 did not get through"* is a fact
     /// about the network alone, no peer ever asked us to carry it, and it
@@ -1907,7 +1920,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         for<'a> S::Get<'a>: Send,                       // send-bound-exception: amendment-C12
         for<'a> S::Done<'a>: Send,                      // send-bound-exception: amendment-C12
     {
-        self.alt_svc = altsvc::AltSvcCache::with_store(altsvc::BoxAltSvcStore::new(store));
+        self.alt_svc =
+            altsvc_cache::AltSvcCache::with_store(altsvc_cache::BoxAltSvcStore::new(store));
         self
     }
 
@@ -1957,8 +1971,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// request will probably not use — checked into the pool warm rather
     /// than thrown away. A head start above it is paid, in full, by the
     /// first request to an origin whose HTTP/3 cannot be reached, and by
-    /// no other one for [`H3_FAILURE_TTL`] afterwards, because a QUIC arm
-    /// that loses the race teaches [`H3Failures`].
+    /// no other one for five minutes afterwards, because a QUIC arm that
+    /// loses the race is remembered as a failed connect.
     ///
     /// # And it is spent inside `Timeouts::connect`, not beside it
     ///
@@ -2015,12 +2029,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     #[cfg(feature = "http3")]
     pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<Disagreement>>
     where
-        crate::http3::H3<R, T, D>: crate::http3::H3StagedConnect<Error = Error> + Debug,
+        crate::http3::H3<R, T, D>: crate::http3::StagedConnect<Error = Error> + Debug,
         <crate::http3::H3<R, T, D> as hclient_core::transport::Transport>::Body:
             http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
-        <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
-        for<'a> <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
-        for<'a> <crate::http3::H3<R, T, D> as crate::http3::H3StagedConnect>::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
+        <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
+        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
         crate::http3::H3<R, T, D>: Sync, // send-bound-exception: amendment-C15
         R: Send + Sync + 'static,        // send-bound-exception: amendment-C12
         T: Send + Sync + 'static,        // send-bound-exception: amendment-C12
@@ -2154,7 +2168,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// The peer's failure to answer within
     /// [`H2KeepAlive::within`](http2::H2KeepAlive::within) closes the
-    /// connection with [`PingNotAnswered`] —
+    /// connection with [`PingNotAnswered`](crate::error::PingNotAnswered) —
     /// `ErrorKind::Connect`, because what ended is a connection and not
     /// an exchange.
     #[must_use]
@@ -2309,7 +2323,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # What it replaces
     ///
     /// The whole resolve → HTTPS-record discovery → Happy Eyeballs →
-    /// `connect` block, which is [`Proxy`]'s slot exactly:
+    /// `connect` block, which is [`Proxy`](crate::proxy::Proxy)'s slot exactly:
     /// there is no name to resolve, no address family to race and no port.
     /// It is **not** a proxy — nothing is tunnelled and the request head is
     /// written origin-form — which is why it is a setting rather than a
@@ -4018,6 +4032,22 @@ pub mod testing {
 
     pub use crate::body::OutgoingBody;
     pub use crate::established::NativeBody;
+
+    /// The `Alt-Svc` parser and the rules over a store — crate-private,
+    /// and exercised in depth by `tests/altsvc_*.rs`, which is why they are
+    /// reachable here and nowhere else.
+    #[cfg(feature = "http3")]
+    pub mod altsvc {
+        pub use crate::altsvc_cache::{
+            AltSvcCache, Alternative, DEFAULT_MAX_AGE, FieldValue, InMemory, parse,
+        };
+    }
+
+    pub use crate::discovery::SVCB_FAILURE_TTL;
+    /// The memory of failed HTTP/3 connects, and how long it and the
+    /// HTTPS-record negative cache suppress an origin.
+    #[cfg(feature = "http3")]
+    pub use crate::failures::{H3_FAILURE_TTL, H3Failures};
 
     /// An empty request body — what any `http1::exchange` test with nothing
     /// to send needs (a bodyless GET).

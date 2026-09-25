@@ -36,7 +36,6 @@
 use std::io;
 use std::pin::Pin;
 
-pub use crate::error::{ProxyAndUnixSocket, ProxySpokeFirst};
 use bytes::{Bytes, BytesMut};
 
 use futures_io::{AsyncRead as Read, AsyncWrite as Write};
@@ -72,7 +71,7 @@ pub(crate) enum Via<'a> {
 /// Run `h` over `io` until the tunnel is open.
 ///
 /// Returns whatever the proxy sent past the end of its own handshake,
-/// which the caller decides what to do with — see [`ProxySpokeFirst`].
+/// which the caller decides what to do with — see [`ProxySpokeFirst`](crate::error::ProxySpokeFirst).
 pub(crate) async fn drive<S, H>(
     io: &mut S,
     h: &mut H,

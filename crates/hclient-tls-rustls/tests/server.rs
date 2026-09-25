@@ -131,7 +131,7 @@ pub fn spawn_tls_pusher(n: usize) -> (SocketAddr, Vec<u8>) {
 
 /// The seam → `hyper::rt`, as a test double.
 ///
-/// **A deliberate duplicate of `hclient_native::hyperio::HyperIo`, and the
+/// **A deliberate duplicate of `hclient-native`'s private `HyperIo`, and the
 /// duplication is the dependency graph rather than an oversight.**
 /// `TlsStream` is written against `futures_io::{AsyncRead, AsyncWrite}`
 /// plus `hclient_rt::Shutdown`; `hyper::client::conn::http1::handshake`

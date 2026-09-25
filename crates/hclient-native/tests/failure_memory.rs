@@ -10,7 +10,7 @@
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 use hclient_native::altsvc::Origin;
-use hclient_native::{H3_FAILURE_TTL, H3Failures};
+use hclient_native::testing::{H3_FAILURE_TTL, H3Failures};
 use std::time::Duration;
 
 fn origin() -> Origin {

@@ -15,7 +15,8 @@
 
 use hclient_core::error::Error;
 use hclient_dns::IpLiteralOnly;
-use hclient_native::{Native, NotSwitchingProtocols};
+use hclient_native::Native;
+use hclient_native::error::NotSwitchingProtocols;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use std::error::Error as _;

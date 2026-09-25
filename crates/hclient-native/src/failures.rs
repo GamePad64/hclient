@@ -95,7 +95,7 @@ use std::time::Duration;
 /// How long a failed QUIC connect keeps this transport off an origin's
 /// HTTP/3.
 ///
-/// Five minutes, and it is `hclient_native::SVCB_FAILURE_TTL`'s number
+/// Five minutes, and it is `discovery::SVCB_FAILURE_TTL`'s number
 /// arrived at by the same argument rather than that constant imported: the
 /// two are different facts about different protocols, and importing one
 /// would make a later change to either silently change the other. What is

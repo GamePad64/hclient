@@ -935,7 +935,7 @@ where
             if !read_buf.is_empty() {
                 return Err(Error::new(
                     ErrorKind::Connect,
-                    crate::proxy::ProxySpokeFirst(read_buf.len()),
+                    crate::error::ProxySpokeFirst(read_buf.len()),
                 ));
             }
             stream

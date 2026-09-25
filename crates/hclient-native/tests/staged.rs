@@ -24,7 +24,8 @@ use hclient_core::body::RequestBody;
 use hclient_core::error::ErrorKind;
 use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
-use hclient_native::{Native, Prepared, StagedConnect};
+use hclient_native::staged::StagedConnect;
+use hclient_native::{Native, Prepared};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use http_body_util::BodyExt;
@@ -325,7 +326,7 @@ async fn a_refused_connect_hands_the_request_back() {
 /// would not compile beside it, because a test cannot observe a move:
 ///
 /// ```compile_fail
-/// # use hclient_native::StagedConnect;
+/// # use hclient_native::staged::StagedConnect;
 /// # async fn f<T: StagedConnect>(t: &T, s: T::Staged) {
 /// let _ = t.exchange(s).await;
 /// let _ = t.exchange(s).await; // `s` moved

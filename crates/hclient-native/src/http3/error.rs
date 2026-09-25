@@ -28,7 +28,7 @@ pub struct UnknownRequestBodyFrame;
 /// The failure `within_connect` ends in when the timer wins.
 ///
 /// A named type rather than a string, for the reason
-/// `hclient_native::FirstByteTimedOut` gives: a caller must be able to tell
+/// `hclient_native::error::FirstByteTimedOut` gives: a caller must be able to tell
 /// the phases apart with `Error::source().downcast_ref()`, and to read the
 /// bound that was actually in force rather than parse it back out of a
 /// message.

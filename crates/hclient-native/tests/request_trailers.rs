@@ -27,7 +27,7 @@
 //! feature: an intermediary that must decide whether to buffer needs to
 //! know before the body starts. An **undeclared** field was logged at
 //! `debug!`, dropped, and the request completed with a `200`. It is
-//! `hclient_native::UndeclaredRequestTrailers` now, and the three tests
+//! `hclient_native::error::UndeclaredRequestTrailers` now, and the three tests
 //! that pin it are the two shapes that must raise it (no header at all,
 //! and a header naming another field) and the one that must not (an
 //! empty trailers frame, which loses nothing because there is nothing to
@@ -56,7 +56,8 @@
 
 use hclient::Client;
 use hclient_dns_system::SystemDns;
-use hclient_native::{Native, UndeclaredRequestTrailers};
+use hclient_native::Native;
+use hclient_native::error::UndeclaredRequestTrailers;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use std::error::Error as _;

@@ -12,9 +12,10 @@
 use hclient::Client;
 use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
+use hclient_native::Native;
+use hclient_native::proxy::HttpConnect;
 use hclient_native::proxy::system::testing::system_proxies;
 use hclient_native::testing::chosen_proxy;
-use hclient_native::{HttpConnect, Native};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use std::io::{Read, Write};

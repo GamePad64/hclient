@@ -7,7 +7,7 @@
 //! ```no_run
 //! # use std::fmt;
 //! # use hclient_rt::{Spawn, Timer, UdpAdoptStd};
-//! # use hclient_native::QuinnTask;
+//! # use hclient_native::task::QuinnTask;
 //! # async fn example<R>(
 //! #     rt: &R,
 //! #     client_cfg: quinn::ClientConfig,

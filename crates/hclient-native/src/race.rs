@@ -24,7 +24,7 @@
 //! client cannot see, or the hedge stopped being a hedge and became a coin
 //! toss that sent the request twice.
 //!
-//! The staged connect landed since, and `hclient_native::StagedConnect` and
+//! The staged connect landed since, and `hclient_native::staged::StagedConnect` and
 //! `crate::http3::StagedConnect` are what this is built out of. Neither
 //! `connect` writes a request — the property is structural rather than
 //! promised, since the request is not handed to a stream at all until
@@ -115,7 +115,7 @@
 //! # 3. The losing arm
 //!
 //! Both arms are dropped the instant the other answers, and neither drop
-//! needs anything from this crate: `hclient_native::Staged`'s own `Drop`
+//! needs anything from this crate: `hclient_native::staged::Staged`'s own `Drop`
 //! checks its connection back into the pool, and `crate::http3::Staged` is a
 //! claim on a connection the pool already holds. §7.6 measured the QUIC
 //! side of a mid-handshake drop — one padded goodbye datagram 1.3–2.4 ms
@@ -124,7 +124,7 @@
 //! Two things about that are decisions rather than mechanics.
 //!
 //! **"Warm" is the only disposal the seam offers, and it is the right one
-//! anyway.** A dropped `hclient_native::Staged` checks in whenever reuse is
+//! anyway.** A dropped `hclient_native::staged::Staged` checks in whenever reuse is
 //! on, and reuse is always on under a `Native`: `connection_reuse` is one
 //! of [`combine`](crate::caps::combine)'s *same-or-refuse* fields, so
 //! `Native::without_pool()` against an `H3` does not construct. So this

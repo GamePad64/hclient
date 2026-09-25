@@ -8,7 +8,8 @@
 //! is actually used.
 #![cfg(feature = "http3")]
 
-use hclient_native::altsvc::{AltSvcStore, Entry, InMemory, Origin};
+use hclient_native::altsvc::{AltSvcStore, Entry, Origin};
+use hclient_native::testing::altsvc::InMemory;
 use std::time::SystemTime;
 
 fn assert_send<T: Send>(_: T) {}

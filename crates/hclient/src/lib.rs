@@ -621,7 +621,7 @@ pub type DefaultTransport = hclient_native::Native<
     // transport a *different type* from `default_transport()`'s, and
     // `transport_as::<DefaultTransport>()` — the documented way past the
     // facade — would work on one machine and not on the next.
-    hclient_native::HttpConnect,
+    hclient_native::proxy::HttpConnect,
 >;
 
 /// The default transport on `wasm32-unknown-unknown`: the browser `fetch`

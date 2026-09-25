@@ -12,9 +12,8 @@
 //! itself).
 #![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_native::altsvc::{
-    AltSvcCache, AltSvcStore, Entry, FieldValue, InMemory, Origin, parse,
-};
+use hclient_native::altsvc::{AltSvcStore, Entry, Origin};
+use hclient_native::testing::altsvc::{AltSvcCache, FieldValue, InMemory, parse};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};

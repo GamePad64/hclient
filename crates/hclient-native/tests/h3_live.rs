@@ -591,8 +591,9 @@ async fn a_connect_timeout_cuts_a_quic_handshake_that_never_completes() {
         "the phase has to be readable without parsing a message: {err}"
     );
     assert_eq!(
-        StdError::source(&err).and_then(|s| s.downcast_ref::<hclient_native::H3ConnectTimedOut>()),
-        Some(&hclient_native::H3ConnectTimedOut(CONNECT_BOUND)),
+        StdError::source(&err)
+            .and_then(|s| s.downcast_ref::<hclient_native::error::H3ConnectTimedOut>()),
+        Some(&hclient_native::error::H3ConnectTimedOut(CONNECT_BOUND)),
         "and the bound that was in force has to be readable off the source rather than \
          reconstructed from the caller's own copy: {err}"
     );

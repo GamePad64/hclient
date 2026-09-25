@@ -46,7 +46,8 @@
 
 use hclient::Client;
 use hclient_dns_system::SystemDns;
-use hclient_native::{Native, NativeIo, PoolConfig, Reaper};
+use hclient_native::task::Reaper;
+use hclient_native::{Native, NativeIo, PoolConfig};
 use hclient_rt::{Blocking, Spawn, TcpConnect, Timer};
 use hclient_tls_rustls::Rustls;
 use std::future::Future;
