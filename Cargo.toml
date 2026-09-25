@@ -120,11 +120,15 @@ percent-encoding = "2"
 winnow         = { version = "1.0", default-features = false, features = ["alloc", "ascii"] }
 
 # Internal: published because its dependents need it on crates.io, and
-# exposed by none of them (`just internal-crates-stay-internal`). It had an
+# exposed by none of them (`just internal-crates-stay-internal`).
+# Stable numbering all the same, so `cargo semver-checks` has a subject:
+# inside a pre-release it runs none of its lints. A break here is an honest
+# 0.x minor step, which costs its dependents a requirement bump and a
+# patch release and nothing more, since none of them exposes it. It had an
 # `idn` default, hence the `default-features = false` this line used to
 # carry; the URI parser that needed it moved into `hclient`, and the
 # feature went with it.
-hclient-proto = { path = "crates/hclient-proto", version = "0.1.0-alpha.9" }
+hclient-proto = { path = "crates/hclient-proto", version = "0.1.0" }
 hclient-core  = { path = "crates/hclient-core", version = "0.2.2" }
 hclient-mock  = { path = "crates/hclient-mock", version = "0.1.2" }
 # Default features left ON: this crate's default is `platform`, which is

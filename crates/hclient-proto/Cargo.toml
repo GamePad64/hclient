@@ -1,6 +1,6 @@
 [package]
 name = "hclient-proto"
-version = "0.1.0-alpha.9"
+version = "0.1.0"
 description = "Internal to hclient: the sans-io response-head parser, Happy Eyeballs scheduler and encoders its transports share. Not a public API"
 keywords     = ["hclient", "http", "sans-io"]
 categories   = ["web-programming::http-client", "parser-implementations"]

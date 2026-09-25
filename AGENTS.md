@@ -8256,6 +8256,14 @@ graph gates followed their subjects: `graph-no-url` and
 `graph-idn-feature` ask `hclient`, and the latter now also asserts that
 `hclient-proto` carries no IDN at all.
 
+**And it leaves the pre-release series at `0.1.0`, for the gate rather
+than for anybody's confidence.** Inside a pre-release `cargo semver-checks`
+runs none of its lints, so an internal crate that breaks often is exactly
+the one that most needs a stable number: each break is then a 0.x minor
+step the tool can see, and it costs the three dependents a requirement
+bump and a patch release, because none of them exposes it. Its graph holds
+no pre-release now that `hclient-idn` left with the URI parser.
+
 **It is held by a gate rather than by this paragraph.**
 `just internal-crates-stay-internal` reads a crate's
 `[package.metadata.hclient] internal = true`, documents every other
