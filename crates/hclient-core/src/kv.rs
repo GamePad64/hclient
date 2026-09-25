@@ -124,6 +124,30 @@
 //! cannot count cookies, and the counts that matter are per domain and
 //! per kind — so capacity lives in the wrapper, which knows what an entry
 //! is. See [`MemoryStore`] for what this one does instead.
+//!
+//! # Growing this seam: a new operation is a new trait
+//!
+//! [`KeyValueStore`] does not gain methods. Every operation it has is
+//! required, and a new one would be too: its future has to be an
+//! associated type so a consumer can name it and prove it `Send`, and an
+//! associated type cannot have a default on stable Rust. So one more
+//! method would break every store written outside this workspace, and
+//! because this crate's types cross every seam in the family, the major
+//! step would carry `hclient-rt`, `hclient-tls`, `hclient-dns`,
+//! `hclient-mock` and `hclient-wasi` with it.
+//!
+//! This is not hypothetical: the trait grew three operations in its first
+//! two days (`scan`, `scan_many`, `remove_prefix`), each on a real need,
+//! before it was frozen. The next ones are foreseeable too: a store-side
+//! TTL (Redis `EXPIRE`), a batch write, compare-and-swap.
+//!
+//! So a new operation arrives the way `hclient_rt::IpcConnect` arrived
+//! beside `TcpConnect`: **as a trait that extends this one**
+//! (`trait KeyValueBatch: KeyValueStore { .. }`), with its bound on the one
+//! wrapper or constructor that needs it. A store that cannot do it
+//! implements nothing and loses only that wrapper, as a compile error
+//! where it was asked for. What must not happen is the obvious edit: a
+//! method added here.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
