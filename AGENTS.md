@@ -614,8 +614,21 @@ being reported, not a defect to fix by bumping. And the gap it exposed
 is general: **a dependency whose types a stable crate exposes cannot
 change major without that crate changing major too**, and nothing here
 checks it — not `cargo semver-checks`, not release-plz, not
-`versions-agree`. It is written here rather than gated, which this
-file's own rule says is the weaker of the two.
+`versions-agree`. It was written here rather than gated, which this
+file's own rule says is the weaker of the two, and **it is gated now**:
+`just exposed-majors`, its own CI job, reads each stable crate's public
+API out of rustdoc's JSON, keeps the external crates it reaches that are
+direct dependencies, and fails when the requirement on one has left the
+compatible range of the published release while the crate's own version
+has not. Checked in the failing direction by setting core to 0.3.0 and
+leaving its dependents alone: it names all five, `hclient-rt`,
+`hclient-tls`, `hclient-dns`, `hclient-mock` and `hclient-wasi`, where the
+first draft stopped at the first. It needs nightly for the JSON and the
+network for the published manifests, which is why it is not in
+`invariants`. Its first run on the current tree agreed with the manual
+audit it came from, crate by crate: `hclient-core` exposes `http`,
+`http-body`, `bytes`, `futures-core` and `futures-sink`, and `hclient-idn`
+and `system-resolver` expose nothing.
 
 **The two runtimes and the two TLS backends were audited next, in
 parallel, and the first result is a correction to a sentence written two

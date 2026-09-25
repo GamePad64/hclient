@@ -231,7 +231,58 @@ So the policy has two shapes, and both are in the tree:
   only that constructor, as a compile error where it was asked for.
 
 A method added to an existing seam is the thing neither shape needs, and
-it is written here so the next one is not.
+it is written here so the next one is not. `hclient_core::kv::KeyValueStore`
+is the seam most likely to be tempted: its module doc says the same
+thing where the next store author will read it.
+
+### 6. What waits for the next major, so it goes in one release
+
+**A major step of `hclient-core` is a major step of five crates.**
+`hclient-rt` re-exports its `Timer`, `hclient-tls` names its `caps` and
+`Error`, `hclient-dns` its `Error`, and `hclient-mock` and `hclient-wasi`
+its `body`, `caps`, `error` and `Transport`. A caller holding the old core
+beside a crate that moved to the new one gets two `hclient_core`s, so
+each of the five needs a major step too, whichever core module broke.
+`just exposed-majors` fails a release that forgets. So a core major is
+expensive, and these items wait for one and go into it together rather
+than each costing a major of its own:
+
+- **`UnsupportedCapability` and `VersionNotAvailable` take
+  `#[non_exhaustive]`.** Both are errors handed back and only read, which
+  is the case the three-answer rule gives the attribute to. They have public
+  fields and no attribute, so any new field is a major step today.
+- **`DynTransport`, `DynTimer` and `DynInstant` are sealed.** Each has a
+  blanket impl and nobody has a reason to implement one by hand. But
+  nothing stops them, so a new method on any of them is formally a
+  breaking change.
+- **`CloseReason` gains a fourth variant, if one arrives.** Its doc says it
+  has three because the code can tell three apart. An idle connection
+  evicted by the pool, a `GOAWAY` and a close by the h3 driver are the
+  candidates. The enum is exhaustive on purpose, so the variant is a major
+  step, deliberately.
+- **`Reduced` gains a variant with any new kind of `RequestBody`**, such as
+  a file body for `sendfile`. It is exhaustive on purpose too, owned by
+  the crate that would add the variant.
+
+And for `hclient-dns`, which breaks on its own schedule, since nothing
+stable re-exports it:
+
+- **`RawBinding` takes `#[non_exhaustive]`.** It has public fields, so any
+  new field is a major step today.
+- **`RawParam` gains a variant for each SvcParamKey this crate starts to
+  parse.** RFC 9461's `dohpath` (key 7) is the likely first one, because
+  `hclient-dns-doh` would read it. `ohttp` (RFC 9540) and
+  `tls-supported-groups` follow. `Other(u16)` already absorbs every key
+  that is not parsed, so the timing is this workspace's choice rather than
+  the wire's.
+
+Outside the workspace, only one major step is in sight. rustls 0.24 is out
+as `0.24.0-dev.1`, and moving to it is a breaking release of
+`hclient-tls-rustls` (the owner's call, recorded in `AGENTS.md`). If
+`quinn-proto` 0.12 lands in the same window, it should share that release,
+because the `quic` feature exposes it. Nothing else a stable crate exposes
+(`http`, `http-body`, `bytes`, `tokio`, the `futures-*` crates,
+`native-tls`) has a next major published, even as a pre-release.
 
 ## `SendTransport` earns its place, and not on the argument it looks like
 
