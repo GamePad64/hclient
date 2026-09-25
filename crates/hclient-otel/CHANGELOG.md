@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.17](https://github.com/GamePad64/hclient/compare/hclient-otel-v0.1.0-alpha.16...hclient-otel-v0.1.0-alpha.17) - 2026-09-25
+
+### Other
+
+- updated the following local packages: hclient
+
 ## [0.1.0-alpha.16](https://github.com/GamePad64/hclient/compare/hclient-otel-v0.1.0-alpha.15...hclient-otel-v0.1.0-alpha.16) - 2026-09-25
 
 ### Other

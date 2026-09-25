@@ -1,6 +1,6 @@
 [package]
 name = "hclient-tungstenite"
-version = "0.1.0-alpha.16"
+version = "0.1.0-alpha.17"
 description = "WebSocket framing for hclient: RFC 6455 over an upgraded byte stream, on tungstenite"
 keywords     = ["hclient", "websocket", "tungstenite", "rfc6455"]
 categories   = ["web-programming::websocket"]
@@ -29,7 +29,7 @@ futures-sink = { workspace = true }
 http         = { workspace = true }
 hclient-core = { workspace = true }
 hclient-dns  = { path = "../hclient-dns", version = "0.1.2" }
-hclient-native = { path = "../hclient-native", version = "0.1.0-alpha.16" }
+hclient-native = { path = "../hclient-native", version = "0.1.0-alpha.17" }
 hclient-rt   = { path = "../hclient-rt", version = "0.1.1" }
 hclient-tls  = { path = "../hclient-tls", version = "0.1.1" }
 # For the seam's read and write halves and nothing else. It was `hyper`

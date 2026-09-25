@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0-alpha.9...hclient-proto-v0.1.0) - 2026-09-25
+
+### Other
+
+- *(proto)* hclient-proto leaves the pre-release series at 0.1.0
+- [**breaking**] hclient-proto is internal, and what it held for hclient moved into hclient
+
 ## [0.1.0-alpha.9](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0-alpha.8...hclient-proto-v0.1.0-alpha.9) - 2026-09-25
 
 ### Other

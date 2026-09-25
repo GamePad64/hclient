@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.17](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.16...hclient-native-v0.1.0-alpha.17) - 2026-09-25
+
+### Added
+
+- *(proxy)* [**breaking**] the surface a stable number would promise, and a bypass that meant two things
+
 ## [0.1.0-alpha.16](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.15...hclient-native-v0.1.0-alpha.16) - 2026-09-25
 
 ### Added
