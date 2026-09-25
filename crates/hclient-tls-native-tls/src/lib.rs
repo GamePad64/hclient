@@ -8,6 +8,22 @@
 //! FIPS-validated provider — needs the platform stack, and that is a
 //! deployment fact no library can argue with.
 //!
+//! [`NativeTls::new`] is the platform's defaults, and the builders widen
+//! them: an extra trust root, or a client certificate for mutual TLS. The
+//! result is the `T` of `hclient_native::Native::new(runtime, T, resolver)`.
+//!
+//! ```no_run
+//! use hclient_tls_native_tls::{Certificate, Identity, NativeTls};
+//!
+//! # fn example(ca_pem: &[u8], cert_pem: &[u8], key_pem: &[u8]) -> Result<(), native_tls::Error> {
+//! let tls = NativeTls::new()
+//!     .with_root_certificate(Certificate::from_pem(ca_pem)?)
+//!     .with_client_identity(Identity::from_pkcs8(cert_pem, key_pem)?);
+//! # drop(tls);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! **Smartcards were on that list and are not reachable through this
 //! backend**, measured rather than assumed: [`native_tls::Identity`] has
 //! two constructors, `from_pkcs12(der, password)` and `from_pkcs8(pem,

@@ -1,5 +1,19 @@
 //! TLS backend on rustls.
 //!
+//! One type, [`Rustls`], and the constructor says where its trust comes
+//! from:
+//!
+//! | constructor | trust | feature |
+//! |---|---|---|
+//! | `Rustls::with_platform_verifier` | the operating system's store, as a browser does | `platform-verifier` |
+//! | `Rustls::with_webpki_roots` | Mozilla's roots, compiled in | `webpki-roots` |
+//! | [`Rustls::from_config`] | whatever the `rustls::ClientConfig` you built says | none |
+//! | `Rustls::danger_accept_invalid_certs` | none at all, as `curl -k` does | `dangerous-insecure` |
+//!
+//! The `with_*` builders then add to it: a named client identity a
+//! request can select, or a session store. The result is the `T` of
+//! `hclient_native::Native::new(runtime, T, resolver)`.
+//!
 //! # rustls' major version is this crate's
 //!
 //! **rustls does not appear in `hclient`'s public API**, nor in
