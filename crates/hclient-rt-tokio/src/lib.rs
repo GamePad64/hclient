@@ -34,12 +34,10 @@
 
 mod handle;
 mod io;
-#[cfg(feature = "udp")]
 mod udp;
 
 pub use handle::TokioHandle;
 pub use io::TokioIo;
-#[cfg(feature = "udp")]
 pub use udp::TokioUdpSocket;
 
 use futures_core::future::BoxFuture;

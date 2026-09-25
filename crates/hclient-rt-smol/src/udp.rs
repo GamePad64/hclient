@@ -1,4 +1,4 @@
-//! `UdpBind`/`UdpAdoptStd` on smol, behind the `udp` feature.
+//! `UdpBind`/`UdpAdoptStd` on smol.
 //!
 //! The second implementation of the UDP seam, and the reason it exists is
 //! not that anyone needed UDP on smol: it is that a seam with one

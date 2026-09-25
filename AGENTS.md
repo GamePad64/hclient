@@ -715,6 +715,22 @@ describes. `TokioHandle` gained `From<tokio::runtime::Handle>`, and all four
 crates open with a compiled example of the type a caller picks, where two
 of them had none.
 
+**The runtimes' `udp` feature is gone, and `quic` on the rustls backend
+stays, because the same rule gave the two opposite answers.** A feature
+earns its place by the dependency it holds. `udp` held one crate,
+`quinn-udp` (and `libc` on Windows), whose types never reach either
+runtime's API because `hclient_rt::EcnCodepoint` is what crosses the seam.
+So it cost nothing to make unconditional: `hclient-rt-tokio` goes from 21
+crates to 22 and `hclient-rt-smol` from 40 to 41. And it had cost
+something to keep: every consumer had to write `features = ["udp"]`, and
+`hclient-native` once did not build on its own for want of that line.
+`quic` holds eleven crates, `quinn-proto` among them, and `quinn-proto` is
+public through `QuicTlsConnect::Session` and the re-export. It is at 0.11,
+where any minor release may break, so without the feature its major would
+become part of the promise to every caller who never speaks HTTP/3. The
+seams themselves, `UdpBind` and `QuicTlsConnect`, were never behind a
+feature in either case.
+
 **`hclient-tls-rustls` 0.1.x lasts exactly as long as rustls 0.23**, and
 the migration is a redesign rather than a bump. The owner's call is to stay
 on `0.23.45` and ship a breaking release when 0.24 is out. Read in
@@ -7742,7 +7758,7 @@ A dependency bump asked for `quinn-udp` 0.6.1. The first look said it was
 unreachable — it arrives through `quinn`, and `quinn` 0.11.11 is the newest
 release and still requires `^0.5`. That was wrong about *where* it arrives:
 it is a **direct** dependency of `hclient-rt-tokio` and `hclient-rt-smol`,
-optional, behind each crate's `udp` feature. Ours can move; quinn's cannot.
+unconditional since their `udp` feature went. Ours can move; quinn's cannot.
 
 **What makes the split safe is a decision made long before, for a different
 reason.** `hclient-rt` declares its own `EcnCodepoint` rather than
@@ -7754,8 +7770,8 @@ consequence only became visible here: the two sides never exchange a
 interchange format, so the versions on either side of it are free to differ
 — and no code changed to get 0.6.1, at any site.
 
-The cost is one duplicate crate, in a build that both enables `udp` on a
-runtime and uses quinn — which is the realistic HTTP/3 configuration.
+The cost is one duplicate crate, in a build that uses one of these
+runtimes and quinn — which is the realistic HTTP/3 configuration.
 `cargo deny` has `multiple-versions = "warn"`, so it says so without
 failing. **Every crate count in this file is unchanged**, because the
 duplicate exists only in a workspace-wide all-features graph and never in
@@ -7935,8 +7951,8 @@ backend.
 **`hclient-rt-pair-check` is the one that looks superfluous and is not.** A
 5-line lib whose own doc says *deliberately empty*, 500 lines of tests, an
 empty `[dependencies]`, `publish = false` — and it must depend on
-`hclient-rt-tokio` **and** `hclient-rt-smol` at once, with `udp` on both,
-which no shipped crate may do. Its name sits in the runtime-implementation
+`hclient-rt-tokio` **and** `hclient-rt-smol` at once, which no shipped
+crate may do. Its name sits in the runtime-implementation
 namespace while being a test harness, and it is left alone deliberately: the
 name never reaches crates.io, and it is cited as evidence in seventeen doc
 comments across the workspace, so it has become a landmark whose renaming

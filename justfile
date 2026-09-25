@@ -1751,24 +1751,25 @@ graph-no-quic:
       -- -p hclient-tls-rustls --features quic
 
 # And the other direction, because a ban that would pass against an empty
-# graph proves nothing: the tokio runtime's `udp` feature really does pull
-# `quinn-udp`, so the ban above is checked against a graph where the crate is
-# one step away rather than absent from the workspace.
+# graph proves nothing: both runtimes pull `quinn-udp` in their **default**
+# graph, so the `quinn-udp` in the ban above is checked against a crate that
+# is one step away rather than absent from the workspace.
+#
+# It used to check a `udp` feature, off by default, that pulled it. The
+# feature went because it held that one crate and nothing else, so what this
+# pins now is the reverse: UDP is unconditional, and a feature that quietly
+# gated it again would put the forgotten `features = ["udp"]` line back
+# into every consumer's manifest.
 
-# ...and the udp feature really does pull quinn-udp, off by default
-graph-udp-pulls-quic:
+# both runtimes carry quinn-udp with no feature asked for
+graph-runtimes-carry-udp:
     #!/usr/bin/env bash
     set -euo pipefail
-    out="$(cargo tree -p hclient-rt-tokio --features udp -e normal --prefix none)"
-    printf '%s\n' "$out" | grep -q '^quinn-udp ' || {
-      echo "::error::hclient-rt-tokio/udp no longer pulls quinn-udp — either the feature is dead or the ban in graph-no-quic is now vacuous"
-      exit 1
-    }
-    off="$(cargo tree -p hclient-rt-tokio -e normal --prefix none)"
-    if printf '%s\n' "$off" | grep -q '^quinn-udp '; then
-      echo "::error::quinn-udp is in hclient-rt-tokio's default graph; the udp feature is not off by default"
-      exit 1
-    fi
+    for c in hclient-rt-tokio hclient-rt-smol; do
+      ./scripts/tree-guard.sh present '^quinn-udp ' \
+        "$c no longer pulls quinn-udp by default: either UDP went back behind a feature, or the quinn-udp ban in graph-no-quic is now vacuous" \
+        -- -p "$c"
+    done
 
 # the smol path carries no reactor, only hyper's inert tokio leaf
 graph-smol-path:
@@ -2340,7 +2341,7 @@ features:
         --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-default-has-no-hsts graph-proto-sans-io graph-dns-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-runtimes-carry-udp graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-default-has-no-hsts graph-proto-sans-io graph-dns-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
 
 # ── mutation testing, which cannot be run naively here ──────────────────
 

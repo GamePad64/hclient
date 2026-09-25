@@ -9,24 +9,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# UDP is behind a feature, off by default, mirroring
-# `crates/hclient-rt-tokio/Cargo.toml` line for line and for the same
-# measurement rather than preference: the GSO/GRO/ECN work is `cmsg` on a
-# descriptor, `quinn-udp` already does it correctly for six platforms, and
-# reimplementing it here would be a second copy of the hardest part of a
-# UDP stack in a crate whose job is to adapt a runtime. So the feature
-# pulls `quinn-udp` — and a build that only ever speaks HTTP/1 or HTTP/2
-# does not pay for it.
+# UDP is unconditional, as in `hclient-rt-tokio`. The GSO/GRO/ECN work is `cmsg` on a descriptor,
+# and `quinn-udp` already does it correctly for six platforms, so it is a
+# dependency rather than a second copy of the hardest part of a UDP stack.
 #
-# It costs **no other new dependency**: `async-io` is already a direct
-# dependency below, and it is the only thing this backend needs from smol.
+# It was behind a `udp` feature, off by default, and the feature went on a
+# measurement: it held exactly one crate, `quinn-udp` (plus `libc` on
+# Windows); everything else it needs was already in the graph. None of its
+# types reach this crate's API: `hclient_rt::EcnCodepoint` is what crosses
+# the seam, so its version is not part of this crate's promise either. What
+# the feature cost was a line every consumer had to remember, and
+# `hclient-native` once failed to build on its own for want of it. The UDP
+# seam itself, `hclient_rt::UdpBind`, was never behind a feature.
+#
 # See the root Cargo.toml: `default` is near-empty here by design.
 [package.metadata.docs.rs]
 all-features = true
-
-[features]
-default = []
-udp = ["dep:quinn-udp"]
 
 [dependencies]
 futures-core = { workspace = true }
@@ -36,7 +34,7 @@ async-executor = "1"
 blocking       = "1"
 futures-lite   = "2"
 hclient-rt     = { path = "../hclient-rt", version = "0.1.0" }
-quinn-udp      = { version = "0.6", default-features = false, optional = true }
+quinn-udp      = { version = "0.6", default-features = false }
 socket2        = { version = "0.6", features = ["all"] }
 
 # `EINPROGRESS` can't be observed through `std::io::ErrorKind`: the

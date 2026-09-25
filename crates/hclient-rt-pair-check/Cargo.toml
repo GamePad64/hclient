@@ -12,10 +12,10 @@ publish = false
 
 [dev-dependencies]
 hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
-# `udp` on both, because the point of this crate is that the seam has two
+# Both runtimes, because the point of this crate is that the seam has two
 # implementations and the same body runs on either.
-hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.13", features = ["udp"] }
-hclient-rt-smol  = { path = "../hclient-rt-smol", version = "0.1.0-alpha.13", features = ["udp"] }
+hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.13" }
+hclient-rt-smol  = { path = "../hclient-rt-smol", version = "0.1.0-alpha.13" }
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
 tokio            = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }

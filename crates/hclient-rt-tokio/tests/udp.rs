@@ -7,7 +7,6 @@
 //! vanished is if the run says so. Asserting the numbers would be flaky by
 //! construction: 64/64 is this kernel's `UDP_MAX_SEGMENTS`, not a property
 //! of this code, and a virtualised runner may honestly answer 1/1.
-#![cfg(feature = "udp")]
 
 use hclient_rt::{Datagrams, EcnCodepoint, RecvMeta, UdpBind, UdpDatagrams};
 use std::future::poll_fn;

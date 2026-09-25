@@ -32,10 +32,8 @@
 // than looking unconditional.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-#[cfg(feature = "udp")]
 mod udp;
 
-#[cfg(feature = "udp")]
 pub use udp::SmolUdpSocket;
 
 use futures_core::future::BoxFuture;

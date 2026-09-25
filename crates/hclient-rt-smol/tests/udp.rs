@@ -16,7 +16,6 @@
 //! tokio sibling's stated reason: 64/64 is this host's `UDP_MAX_SEGMENTS`
 //! and a virtualised runner may honestly answer 1/1, so asserting them
 //! would be flaky by construction.
-#![cfg(feature = "udp")]
 
 use hclient_rt::{Datagrams, EcnCodepoint, RecvMeta, UdpBind, UdpDatagrams};
 use hclient_rt_smol::{Smol, SmolUdpSocket};

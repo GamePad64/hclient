@@ -143,7 +143,6 @@ http2 = ["default-transport", "hclient-native/http2"]
 http3 = [
     "default-transport",
     "hclient-native/http3",
-    "hclient-rt-tokio/udp",
     "hclient-tls-rustls/quic",
 ]
 # `curl -k` reached through the facade, so a caller who wants it does not

@@ -80,7 +80,7 @@ rustls = ["dep:hclient-tls-rustls", "hclient-tls-rustls/dangerous-insecure"]
 native-tls = ["dep:hclient-tls-native-tls", "hclient-tls-native-tls/dangerous-insecure"]
 websocket = ["dep:hclient-tungstenite"]
 http2 = ["hclient-native/http2"]
-http3 = ["hclient-native/http3", "hclient-rt-tokio/udp", "hclient-tls-rustls?/quic"]
+http3 = ["hclient-native/http3", "hclient-tls-rustls?/quic"]
 
 [dependencies]
 thiserror = { workspace = true }

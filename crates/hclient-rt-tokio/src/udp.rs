@@ -1,4 +1,4 @@
-//! `UdpBind`/`UdpAdoptStd` on tokio, behind the `udp` feature.
+//! `UdpBind`/`UdpAdoptStd` on tokio.
 //!
 //! # Why `quinn-udp` and not our own `cmsg` code
 //!

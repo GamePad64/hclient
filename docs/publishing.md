@@ -234,8 +234,8 @@ versioned dev-dependency has to resolve from the registry. `just
 package-build` is what catches it.
 
 `hclient-rt-pair-check` is `publish = false` and is not in the count — it
-must depend on `hclient-rt-tokio` **and** `hclient-rt-smol` at once, with
-`udp` on both, which no shipped crate may do.
+must depend on `hclient-rt-tokio` **and** `hclient-rt-smol` at once, which
+no shipped crate may do.
 
 Re-derive after any dependency change:
 

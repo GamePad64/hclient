@@ -586,9 +586,9 @@ jobs:
       - name: the runtime and TLS seams contain no QUIC
         shell: bash
         run: just graph-no-quic
-      - name: and the udp feature really does pull it
+      - name: and both runtimes carry quinn-udp, with no feature asked for
         shell: bash
-        run: just graph-udp-pulls-quic
+        run: just graph-runtimes-carry-udp
       - name: the WebSocket framing stays out of the transport
         shell: bash
         run: just graph-no-framing-in-the-transport
