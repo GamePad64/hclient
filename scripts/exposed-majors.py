@@ -16,8 +16,12 @@ newest stable release on crates.io is semver-compatible with it (so no major
 step is being taken on purpose):
 
 1. rustdoc's JSON output (nightly) names every external crate the public API
-   reaches: re-exports, signatures, fields, variants, trait impls and the
-   associated types inside them;
+   reaches: re-exports, signatures, fields, variants, trait impls, the
+   associated types inside them, and the where-clause of every impl block —
+   `impl Transport for H3 where T: QuicTlsConnect<Session = X>` makes `X`
+   part of the contract as surely as a signature does. A path through a
+   `__private` module is a macro's own plumbing (`pin-project-lite`'s
+   generated `Unpin` impl) and is not counted;
 2. of those, the ones that are direct normal dependencies are the exposed
    ones;
 3. the requirement on each, in the working manifest and in the published
@@ -87,7 +91,7 @@ def exposed_crates(doc: Path) -> set[str]:
 
     def crate_of(i) -> str | None:
         p = paths.get(str(i))
-        if not p or p["crate_id"] == 0:
+        if not p or p["crate_id"] == 0 or "__private" in p["path"]:
             return None
         return ext[str(p["crate_id"])]["name"]
 
@@ -158,6 +162,7 @@ def exposed_crates(doc: Path) -> set[str]:
             ib = idx[str(im)]["inner"]["impl"]
             if ib.get("is_synthetic") or ib.get("blanket_impl"):
                 continue
+            scan(ib.get("generics"))
             tr = ib.get("trait")
             if tr:
                 c = crate_of(tr["id"])
