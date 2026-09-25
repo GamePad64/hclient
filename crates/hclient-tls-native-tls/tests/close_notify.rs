@@ -112,7 +112,7 @@ async fn closing_the_session_sends_close_notify_and_the_peer_sees_a_clean_end() 
     let (mut stream, _) = tokio::time::timeout(
         OP_TIMEOUT,
         NativeTls::new()
-            .add_root_certificate(root)
+            .with_root_certificate(root)
             .connect(tcp, TlsRequest::new("localhost", &[])),
     )
     .await
@@ -230,7 +230,7 @@ async fn session(pend_next_shutdown: bool) -> Fixture {
     let (stream, _) = tokio::time::timeout(
         OP_TIMEOUT,
         NativeTls::new()
-            .add_root_certificate(root)
+            .with_root_certificate(root)
             .connect(io, TlsRequest::new("localhost", &[])),
     )
     .await

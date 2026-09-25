@@ -200,6 +200,11 @@ impl<S> Drop for Guard<'_, S> {
 /// `Send`/`Sync` exactly when `S` is, by ordinary inference — which is the
 /// property the whole port exists for, and is why this is a struct rather
 /// than anything boxed.
+///
+/// It has no inherent accessors. The negotiated ALPN and the peer's leaf
+/// certificate reach a caller in the `TlsInfo` the handshake returns,
+/// which is where the rustls backend puts them too. Two routes to one
+/// fact would be two things to keep in step.
 #[derive(Debug)]
 pub struct TlsStream<S>(native_tls::TlsStream<StdAdapter<S>>);
 
@@ -208,18 +213,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TlsStream<S> {
         Self(inner)
     }
 
-    /// The negotiated ALPN protocol, if the peer chose one — the same
-    /// value the handshake reported as `TlsInfo::alpn`.
-    ///
-    /// Reachable only because this crate owns the stream; see the crate
-    /// documentation.
-    pub fn negotiated_alpn(&self) -> Option<Vec<u8>> {
+    /// The negotiated ALPN protocol, if the peer chose one: the source
+    /// of `TlsInfo::alpn`. Reachable only because this crate owns the
+    /// stream; see the crate documentation.
+    pub(crate) fn negotiated_alpn(&self) -> Option<Vec<u8>> {
         self.0.negotiated_alpn().ok().flatten()
     }
 
-    /// The peer's leaf certificate in DER, if it sent one. The leaf only:
-    /// `native-tls` does not hand back the chain.
-    pub fn peer_certificate_der(&self) -> Option<Vec<u8>> {
+    /// The peer's leaf certificate in DER, if it sent one: the source of
+    /// `TlsInfo::peer_certificates`. The leaf only, because `native-tls`
+    /// does not hand back the chain.
+    pub(crate) fn peer_certificate_der(&self) -> Option<Vec<u8>> {
         self.0
             .peer_certificate()
             .ok()

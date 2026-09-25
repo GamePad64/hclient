@@ -16,7 +16,7 @@
 //! # Why the root is added rather than verification turned off
 //!
 //! Every test here trusts the fixture's own certificate through
-//! [`NativeTls::add_root_certificate`], not
+//! [`NativeTls::with_root_certificate`], not
 //! `danger_accept_invalid_certs`. Two reasons, and the second is the one
 //! that matters. It runs under **both** feature settings, where anything
 //! reaching for the insecure constructor is compiled out without
@@ -121,7 +121,7 @@ async fn connect_trusting(
     alpn: &[&[u8]],
 ) -> Result<(Stream, TlsInfo), hclient_core::error::Error> {
     let root = native_tls::Certificate::from_der(der).expect("the fixture's own DER is a root");
-    let tls = NativeTls::new().add_root_certificate(root);
+    let tls = NativeTls::new().with_root_certificate(root);
     let tcp = Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
@@ -317,7 +317,7 @@ async fn the_peer_certificate_is_the_leaf_the_server_actually_presented() {
 /// handshake that *succeeded*, and would prove it just as well for a
 /// client that had stopped verifying anything. This is the arm that says
 /// the success was earned. It is also what discriminates
-/// [`NativeTls::add_root_certificate`] itself — a survivor, since a body
+/// [`NativeTls::with_root_certificate`] itself — a survivor, since a body
 /// returning `Default::default()` drops the root silently and every test
 /// above would fail for the wrong reason while this one passed.
 #[tokio::test]

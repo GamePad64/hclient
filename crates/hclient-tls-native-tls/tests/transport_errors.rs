@@ -183,7 +183,7 @@ async fn session_with_a_breakable_transport() -> (
         .expect("tcp");
     let (stream, _) = tokio::time::timeout(
         OP_TIMEOUT,
-        NativeTls::new().add_root_certificate(root).connect(
+        NativeTls::new().with_root_certificate(root).connect(
             Faulty {
                 inner: tcp,
                 failing: Arc::clone(&failing),

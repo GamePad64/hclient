@@ -131,9 +131,15 @@ impl NativeTls {
         Self::default()
     }
 
-    /// A client certificate, for mutual TLS.
+    /// A client certificate, for mutual TLS, presented on every connection.
+    ///
+    /// **Named `with_client_identity` and not `identity`** because the word
+    /// alone means something else next door: `hclient_tls_rustls::Rustls::
+    /// with_identity(name, config)` registers a *named* identity a request
+    /// selects, and this backend refuses named identities. This one is the
+    /// single default.
     #[must_use]
-    pub fn identity(mut self, identity: native_tls::Identity) -> Self {
+    pub fn with_client_identity(mut self, identity: native_tls::Identity) -> Self {
         self.identity = Some(identity);
         self.config_id = TlsConfigId::new_unique();
         self
@@ -189,7 +195,7 @@ impl NativeTls {
     /// decision widened by the roots given here, never narrowed. (This doc
     /// used to say `native-tls` had no such switch; 0.2.18 has one.)
     #[must_use]
-    pub fn add_root_certificate(mut self, cert: native_tls::Certificate) -> Self {
+    pub fn with_root_certificate(mut self, cert: native_tls::Certificate) -> Self {
         self.roots.push(cert);
         self.config_id = TlsConfigId::new_unique();
         self
@@ -274,7 +280,7 @@ impl TlsConnect for NativeTls {
                 ErrorKind::Tls,
                 std::io::Error::other(format!(
                     "native-tls has no client identity named {label:?}: this backend \
-                     presents only the one set with `NativeTls::identity`, and names none"
+                     presents only the one set with `NativeTls::with_client_identity`, and names none"
                 )),
             )));
         }

@@ -164,7 +164,7 @@ async fn a_flush_on_the_session_reaches_the_transport() {
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .expect("tcp");
-    let (mut stream, _) = bounded(NativeTls::new().add_root_certificate(root).connect(
+    let (mut stream, _) = bounded(NativeTls::new().with_root_certificate(root).connect(
         Counting {
             inner: tcp,
             counts: Arc::clone(&counts),
@@ -219,7 +219,7 @@ async fn the_counting_transport_is_genuinely_under_the_session() {
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
         .expect("tcp");
-    let _stream = bounded(NativeTls::new().add_root_certificate(root).connect(
+    let _stream = bounded(NativeTls::new().with_root_certificate(root).connect(
         Counting {
             inner: tcp,
             counts: Arc::clone(&counts),

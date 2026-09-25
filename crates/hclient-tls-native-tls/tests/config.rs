@@ -5,7 +5,7 @@
 //! socket, and none of them was checked. The mutation sweep found every one
 //! of them alive — `presents_client_certs` in **both** directions (a
 //! constant `true` and a constant `false` each passed the whole suite),
-//! `identity` and `add_root_certificate` returning `Default::default()`,
+//! `with_client_identity` and `with_root_certificate` returning `Default::default()`,
 //! and `Debug::fmt` printing nothing at all.
 //!
 //! The rustls backend has had `tests/config_id.rs` for this since the
@@ -15,7 +15,7 @@
 use hclient_tls::TlsIdentity;
 use hclient_tls_native_tls::NativeTls;
 
-/// A certificate this crate can hand to `add_root_certificate`, freshly
+/// A certificate this crate can hand to `with_root_certificate`, freshly
 /// minted so that two calls genuinely differ.
 fn a_certificate() -> native_tls::Certificate {
     let cert = rcgen::generate_simple_self_signed(vec!["test-ca.invalid".into()])
@@ -81,7 +81,9 @@ fn a_connector_holding_an_identity_reports_it() {
         return;
     };
     assert!(
-        NativeTls::new().identity(identity).presents_client_certs(),
+        NativeTls::new()
+            .with_client_identity(identity)
+            .presents_client_certs(),
         "the accessor asks whether an identity was configured, and one was — \
          a `false` here is the mTLS half of the capability going missing"
     );
@@ -129,8 +131,8 @@ fn two_connectors_have_different_identities() {
 /// The struct's own doc says this is what keeps the id honest under
 /// `Clone`: a clone is interchangeable with its original and shares an
 /// identity, and the moment it is given a different root or a different
-/// client certificate it stops being either. `add_root_certificate` and
-/// `identity` were both live survivors — a body returning
+/// client certificate it stops being either. `with_root_certificate` and
+/// `with_client_identity` were both live survivors — a body returning
 /// `Default::default()` drops the setting **and** draws a fresh id, so the
 /// obvious assertion on the id alone would pass for it. That is why the
 /// clone is the baseline: it pins that the id moved *relative to a value
@@ -146,7 +148,7 @@ fn adding_a_root_redraws_the_trust_identity() {
          this, the assertion below would hold for any method at all"
     );
 
-    let extended = base.clone().add_root_certificate(a_certificate());
+    let extended = base.clone().with_root_certificate(a_certificate());
     assert_ne!(
         extended.config_id(),
         base.config_id(),
@@ -165,7 +167,7 @@ fn setting_an_identity_redraws_the_trust_identity() {
         return;
     };
     let base = NativeTls::new();
-    let with_cert = base.clone().identity(identity);
+    let with_cert = base.clone().with_client_identity(identity);
     assert_ne!(
         with_cert.config_id(),
         base.config_id(),
@@ -189,7 +191,7 @@ fn setting_an_identity_redraws_the_trust_identity() {
 fn debug_names_the_configuration_without_printing_the_secrets() {
     let printed = format!(
         "{:?}",
-        NativeTls::new().add_root_certificate(a_certificate())
+        NativeTls::new().with_root_certificate(a_certificate())
     );
 
     assert!(
@@ -219,9 +221,9 @@ fn debug_names_the_configuration_without_printing_the_secrets() {
 #[test]
 fn the_reexports_are_the_native_tls_types_the_constructors_take() {
     let cert: hclient_tls_native_tls::Certificate = a_certificate();
-    let _ = NativeTls::new().add_root_certificate(cert);
+    let _ = NativeTls::new().with_root_certificate(cert);
     if let Some(identity) = an_identity() {
         let identity: hclient_tls_native_tls::Identity = identity;
-        let _ = NativeTls::new().identity(identity);
+        let _ = NativeTls::new().with_client_identity(identity);
     }
 }
