@@ -18,14 +18,13 @@
 //! `Transport::connect` would be `Unsupported` for two of four backends and
 //! dishonest rather than merely unimplemented for one of them.
 //!
-//! The nearer precedent is in this crate: [`crate::Prefetch`] staged the
-//! phase one step earlier — name resolution — and refused the seam with the
+//! The nearer precedent is in this crate: `Prefetch`, public until the
+//! routing it served moved inside, staged the phase one step earlier — name resolution — and refused the seam with the
 //! sentence that decides this one too, about a phase that had not come up
 //! yet: *"a `fetch`-shaped transport has no DNS of its own to save, and a
 //! `wasi:http` one has no connector at all."*
 //!
-//! A trait rather than two inherent methods for [`crate::Prefetch`]'s
-//! mechanical reason: a caller generic over `Native<R, T, D>` reaches it
+//! A trait rather than two inherent methods, for a mechanical reason: a caller generic over `Native<R, T, D>` reaches it
 //! through a `where` bound, and an inherent method would make that caller
 //! repeat every structural bound [`crate::Native`]'s exchange impl declares
 //! — and then still not be able to name the response body, because
@@ -100,7 +99,7 @@
 use crate::established::{self, Established};
 use crate::pool::CheckIn;
 use crate::{
-    Native, NativeIo, Prepared, body, connect, connection_id, discovery, handshake_for, mark,
+    Native, NativeIo, body, connect, connection_id, discovery, handshake_for, mark,
     negotiated_protocol, protocol_admissible, since, spoken_version, with_connect_timeout,
 };
 use hclient_core::body::RequestBody;
@@ -119,14 +118,9 @@ use std::time::Duration;
 ///
 /// It is a separate trait rather than a second impl of
 /// [`StagedConnect`], and the merge of the two stacks into one crate did
-/// not change that: **the two do not agree on what `connect` takes**.
-/// [`StagedConnect::connect`] takes a [`Prepared`], the
-/// request *with* the HTTPS record fetched for it;
-/// [`h3::StagedConnect::connect`] takes the request alone, because the
-/// QUIC arm has no record lookup of its own. Nothing needs polymorphism
-/// between them: the routing owns both concretely.
-///
-/// The handle differs too, and that is a finding rather than a choice:
+/// not change that. Nothing needs polymorphism between them — the routing
+/// owns both concretely — and the handle differs, which is a finding
+/// rather than a choice:
 /// [`Staged`] *owns* the connection it took out of the pool and checks it
 /// back in on drop, where [`h3::Staged`] is a claim on a connection the
 /// pool already holds and needs no `Drop` at all.
@@ -162,9 +156,7 @@ pub trait StagedConnect: Transport {
     /// request it was made for.
     ///
     /// Opaque, and produced only by [`Self::connect`]: the wrong-connection
-    /// question is not answered here, it cannot be asked — which is
-    /// [`Prepared`]'s own argument for pairing a record with the request it
-    /// was fetched for, one phase earlier.
+    /// question is not answered here, it cannot be asked.
     type Staged;
 
     /// Everything `Transport::execute` does up to and including *"a
@@ -177,7 +169,10 @@ pub trait StagedConnect: Transport {
     /// Written as `-> impl Future` rather than `async fn` for
     /// `Transport::execute`'s reason: no `Send` bound is added anywhere in
     /// this workspace's seams, and this one is on the same footing.
-    fn connect(&self, prepared: Prepared) -> impl Future<Output = Result<Self::Staged, Refused>>;
+    fn connect(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> impl Future<Output = Result<Self::Staged, Refused>>;
 
     /// The rest of `Transport::execute`, on the connection
     /// [`Self::connect`] produced.
@@ -203,11 +198,6 @@ impl Refused {
     /// Why, without taking the request.
     pub fn error(&self) -> &Error {
         &self.error
-    }
-
-    /// Why, for a caller with nowhere else to send this.
-    pub fn into_error(self) -> Error {
-        self.error
     }
 
     /// Both halves, for the caller this type exists for.
@@ -312,10 +302,10 @@ where
     }
 }
 
-/// The one implementation, and the contract is on the trait — for
-/// [`Prefetch`](crate::Prefetch)'s reason: an inherent method of the same
-/// name wins method resolution over a trait one, so a caller with the trait
-/// in scope would silently get the other function.
+/// The one implementation, and the contract is on the trait. There is
+/// deliberately no inherent method of the same name: one would win method
+/// resolution over the trait's, so a caller with the trait in scope would
+/// silently get the other function.
 impl<R, T, D, H, P> StagedConnect for Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
@@ -340,16 +330,14 @@ where
     /// pool, because a socket that stops speaking HTTP is not a connection
     /// any later request could use. A staged one is.
     ///
-    /// # What the `Prepared` is used for, and what it is not
+    /// # It takes the request, and the record lookup stays inside
     ///
-    /// The request. The record it carries is **not** handed to the
-    /// connector on this path: the caller staging a connect is by
-    /// construction one that has already read the record for itself, and
-    /// `Prepared` is taken rather than a bare request so that this entry
-    /// point composes with [`Prefetch::prepare`](crate::Prefetch::prepare)
-    /// instead of competing with it. `Refused` hands the *request* back
-    /// rather than the `Prepared`, because a record the connector has
-    /// already tried and failed through is not an answer worth passing on.
+    /// This took a `Prepared` — a request paired with an HTTPS record the
+    /// transport had fetched ahead — and read only the request out of it:
+    /// every caller built one with `Prepared::new`, which carries no
+    /// record, and the connector does its own discovery here exactly as
+    /// `run` does. A parameter whose other half nothing ever read was a
+    /// type in the public API with no job, so it went.
     ///
     /// # Where this and `run` are kept in step
     ///
@@ -361,8 +349,8 @@ where
     /// What is written twice is the *order*, and the two orders differ in
     /// exactly one place: `run` retries across candidates and this cannot,
     /// because it returns one connection.
-    async fn connect(&self, prepared: Prepared) -> Result<Self::Staged, Refused> {
-        match self.stage(prepared.req).await {
+    async fn connect(&self, req: http::Request<RequestBody>) -> Result<Self::Staged, Refused> {
+        match self.stage(req).await {
             Ok(staged) => Ok(staged),
             Err((error, request)) => Err(Refused { error, request }),
         }

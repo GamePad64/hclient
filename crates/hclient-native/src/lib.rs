@@ -35,6 +35,7 @@
 //! `resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened`
 //! checks the property survives the whole `Client::execute` path.
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod body;
 mod connect;
@@ -118,7 +119,7 @@ pub mod staged;
 mod upgrade;
 
 pub use connect::Conn;
-pub use discovery::{Discovered, Prepared};
+pub(crate) use discovery::Prepared;
 use error::{ConnectTimedOut, UnknownClientIdentity};
 // Private: the public path for each is `error::`, and these keep the
 // crate's own code reading `crate::X` as it did when they were at the root.
@@ -127,15 +128,14 @@ use error::Disagreement;
 use error::{
     FirstByteTimedOut, Http2NotCompiledIn, NoVersionsLeft, PlaintextNeedsHttp1, ProxyAndUnixSocket,
 };
+pub use http1::H1Opts;
 #[cfg(feature = "http2")]
 pub use http2::{H2KeepAlive, H2Opts};
+pub use idle::IdleTimeout;
+pub use pool::PoolConfig;
 use pool::Reaper;
 #[cfg(feature = "http3")]
 use staged::StagedConnect;
-// `Prefetch` is declared in this file, beside the exchange it refines.
-pub use http1::H1Opts;
-pub use idle::IdleTimeout;
-pub use pool::PoolConfig;
 pub use upgrade::Upgrading;
 
 /// The futures this transport hands to a caller's runtime to spawn.
@@ -293,8 +293,8 @@ fn install_1xx<H>(
     });
 }
 
-/// The IO a [`Native`] speaks HTTP/1 over: a plain socket from the runtime,
-/// or that same socket wrapped by the TLS backend.
+/// The IO a [`Native`] speaks HTTP over, for the runtime `R` and the TLS
+/// backend `T`: a [`Conn`] over their two streams.
 ///
 /// A public alias rather than an anonymous type in a signature, because it
 /// is what `Native`'s `Transport::Body` is generic over, and a caller who
@@ -388,6 +388,45 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
         ConnectionId::next()
     } else {
         ConnectionId::UNWATCHED
+    }
+}
+
+/// Which HTTP versions a [`Native`] may speak.
+///
+/// Private, and the setters are [`Native::http1`] and [`Native::http2`]:
+/// a public struct here would be a fourth way to reach a state the two
+/// setters already refuse between them.
+#[derive(Debug, Clone, Copy)]
+struct Versions {
+    h1: bool,
+    h2: bool,
+    /// Whether the QUIC arm may serve a request. Meaningful only once
+    /// [`Native::http3`] has installed one — a `true` with no arm has
+    /// nothing to route to, which is why the constructor sets it rather
+    /// than a setter of its own.
+    ///
+    /// Behind the feature with the arm it describes: a policy field for a
+    /// protocol whose code is not compiled has no reader, and this crate
+    /// treats a field nothing reads as a defect rather than as headroom.
+    #[cfg(feature = "http3")]
+    h3: bool,
+}
+
+impl Default for Versions {
+    /// `h1` always, `h2` wherever the code was compiled in.
+    ///
+    /// The h2 default follows the feature because that is what the
+    /// transport did before this setting existed: with `http2` on, h2 is
+    /// offered wherever ALPN can carry it. A default of `false` would make
+    /// the feature a no-op until a second call, which is a silent
+    /// downgrade for every build that has it on today.
+    fn default() -> Self {
+        Self {
+            h1: true,
+            h2: cfg!(feature = "http2"),
+            #[cfg(feature = "http3")]
+            h3: false,
+        }
     }
 }
 
@@ -516,45 +555,6 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// let t = Native::new(Tokio, NoTls, IpLiteralOnly).hooks(Counting(Rc::default()));
 /// assert_send(t.execute(http::Request::new(RequestBody::Empty)));
 /// ```
-/// Which HTTP versions a [`Native`] may speak.
-///
-/// Private, and the setters are [`Native::http1`] and [`Native::http2`]:
-/// a public struct here would be a fourth way to reach a state the two
-/// setters already refuse between them.
-#[derive(Debug, Clone, Copy)]
-struct Versions {
-    h1: bool,
-    h2: bool,
-    /// Whether the QUIC arm may serve a request. Meaningful only once
-    /// [`Native::http3`] has installed one — a `true` with no arm has
-    /// nothing to route to, which is why the constructor sets it rather
-    /// than a setter of its own.
-    ///
-    /// Behind the feature with the arm it describes: a policy field for a
-    /// protocol whose code is not compiled has no reader, and this crate
-    /// treats a field nothing reads as a defect rather than as headroom.
-    #[cfg(feature = "http3")]
-    h3: bool,
-}
-
-impl Default for Versions {
-    /// `h1` always, `h2` wherever the code was compiled in.
-    ///
-    /// The h2 default follows the feature because that is what the
-    /// transport did before this setting existed: with `http2` on, h2 is
-    /// offered wherever ALPN can carry it. A default of `false` would make
-    /// the feature a no-op until a second call, which is a silent
-    /// downgrade for every build that has it on today.
-    fn default() -> Self {
-        Self {
-            h1: true,
-            h2: cfg!(feature = "http2"),
-            #[cfg(feature = "http3")]
-            h3: false,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct Native<R, T, D, H = NoHooks, P = crate::proxy::NoProxy>
 where
@@ -715,6 +715,27 @@ where
 /// the only question needing `T: TlsConnect` was `new`'s "what should I
 /// advertise", and the bound sat on `new` alone for exactly that reason.
 impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
+    /// A transport over `rt`, `tls` and `dns`, with what a caller who asks
+    /// for nothing should get.
+    ///
+    /// - **Connections are pooled** ([`PoolConfig::default`]), without a
+    ///   reaper: an idle connection is refused at checkout once its
+    ///   deadline passes, and closed only then. [`with_reaper`](Self::with_reaper)
+    ///   closes it on time; [`without_pool`](Self::without_pool) is one
+    ///   connection per request.
+    /// - **`TCP_NODELAY` is asked for exactly when the runtime says it can
+    ///   apply it** — `<R as TcpConnect>::TCP_SUPPORT.nodelay` — because a
+    ///   set option is a refusal on a runtime that cannot, and Nagle costs
+    ///   the head of every TLS exchange about 41 ms where it can.
+    /// - **HTTP/1.1 is on, HTTP/2 is on when the `http2` feature compiled
+    ///   it in** and the TLS backend reports ALPN, and there is no QUIC
+    ///   arm until [`http3`](Self::http3).
+    /// - **No proxy, no hooks, no `1xx` reporting, no `100-continue`
+    ///   gate** — each is a setter below that changes what goes on the
+    ///   wire, and none of them is a default a caller did not ask for.
+    ///
+    /// The [`Capabilities`] it reports are the floor over every protocol
+    /// it may speak, read off `tls` where the answer is the backend's.
     pub fn new(rt: R, tls: T, dns: D) -> Self {
         let pool = Pool::new(Some(PoolConfig::default()));
         let mut caps = Capabilities::default();
@@ -1058,34 +1079,6 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
 /// this block would make `Native::<_, _, _, MyHook>::new` a thing a
 /// caller could write and get a hookless transport from.
 impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
-    /// Send this transport's events to `hooks` — see
-    /// [`hclient_core::hooks::Hooks`] for what it hears and what it
-    /// costs, and [`Event`] for the vocabulary.
-    ///
-    /// **It returns a different type**, and that is the zero-cost
-    /// mechanism rather than an inconvenience: the hook is a type
-    /// parameter, so the `NoHooks` build monomorphises to code with no
-    /// clock reads in it at all, where a `Box<dyn Hooks>` field would
-    /// leave every no-hook build carrying a null check on the request
-    /// path. A caller who wants to choose at run time can hold an `H`
-    /// that decides for itself — an `Arc<dyn Fn..>` inside their own type
-    /// — and pay for the choice they actually made.
-    ///
-    /// The hook may be `!Send`: nothing on this path declares it, so an
-    /// `Rc` inside a hook makes this transport `!Send` and leaves it
-    /// working (P13; `crates/hclient-core/tests/shape.rs`).
-    ///
-    /// # It turns `Native::multiplexed` back off, and the type is why
-    ///
-    /// The spawner `multiplexed()` captures is a
-    /// `fn(&R, H2Driver<_, H>)` — it **names the hook**, because the
-    /// driver carries it — so a method whose whole purpose is to change
-    /// `H` cannot carry that pointer across. Write `.hooks(..)` first and
-    /// `.multiplexed()` last; the other order compiles and shares no
-    /// connections, which is the same cost, stated the same way, as
-    /// [`Native::tcp_opts`] replacing the whole option set. Pinned by
-    /// `tests/http2_multiplex.rs`'s pair of orders, so the rule is
-    /// measured rather than only written here.
     /// Reach every origin through `proxy` instead of directly.
     ///
     /// Changes `P`, the way [`Native::hooks`] changes `H`, because the
@@ -1102,10 +1095,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///   resolves it — an HTTP proxy from the `CONNECT` target, SOCKS5
     ///   from `ATYP=0x03 DOMAINNAME`. Happy Eyeballs still runs, over the
     ///   *proxy's* addresses.
-    /// - **No HTTPS/SVCB discovery for the origin**, which answers
-    ///   [`Discovered::NotConsulted`](crate::Discovered): address hints
-    ///   for an address nobody will dial, and a record port we would not
-    ///   honour, are worse than no answer.
+    /// - **No HTTPS/SVCB discovery for the origin** — the lookup reports
+    ///   that it did not consult rather than that it found nothing:
+    ///   address hints for an address nobody will dial, and a record port
+    ///   we would not honour, are worse than no answer.
     /// - **The pool key names the proxy**, so a tunnel is never reused
     ///   through a different one.
     /// - **A `407` is a connect error, never a response.** It is the
@@ -1379,39 +1372,6 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
-    /// Report `1xx` responses (`100 Continue`, `103 Early Hints`) to this
-    /// transport's hooks, and say so in
-    /// [`Capabilities::informational_1xx`].
-    ///
-    /// # Why this is an opt-in rather than always on
-    ///
-    /// Not cost: hyper's own callback fires only when a `1xx` arrives.
-    /// **The bound.** `hyper::ext::on_informational` takes
-    /// `F: Fn(..) + Send + Sync + 'static`, so a hook that reaches it must
-    /// be `Send + Sync + 'static` too — and this crate documents the
-    /// opposite as supported: a hook may hold an `Rc`
-    /// (`hclient-core/tests/shape.rs`, P13), which is the whole reason the
-    /// seam declares no auto traits. Putting the bound here rather than on
-    /// `H` is `Native::multiplexed`'s shape: the field is a `fn`
-    /// pointer, so **no signature a single-threaded hook meets changes**,
-    /// and a runtime that never calls this constructor is untouched. A
-    /// hook holding an `Rc` gets `E0277` on the line where it asked.
-    ///
-    /// # What the two protocols cost, which is not the same thing
-    ///
-    /// HTTP/1 goes through hyper's callback, hence the bound. HTTP/2 needs
-    /// no bound at all — `h2::client::ResponseFuture::poll_informational`
-    /// is a poll, driven by the same future that awaits the response — and
-    /// it is switched on by the same call anyway. The capability reports
-    /// the **floor**, the rule v0.2 W3 set for `full_duplex`: one switch
-    /// for both, because a `true` that held on h2 alone would be a claim
-    /// an HTTP/1 connection could not keep.
-    ///
-    /// # Ordering
-    ///
-    /// `.hooks(..)` must come **before** this, for the reason it must come
-    /// before `Native::multiplexed`: the pointer's type names `H`. The
-    /// other order compiles and watches nothing.
     /// Withhold a request body carrying `Expect: 100-continue` until the
     /// server answers `100`, or until `after` has passed.
     ///
@@ -1448,6 +1408,39 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    /// Report `1xx` responses (`100 Continue`, `103 Early Hints`) to this
+    /// transport's hooks, and say so in
+    /// [`Capabilities::informational_1xx`].
+    ///
+    /// # Why this is an opt-in rather than always on
+    ///
+    /// Not cost: hyper's own callback fires only when a `1xx` arrives.
+    /// **The bound.** `hyper::ext::on_informational` takes
+    /// `F: Fn(..) + Send + Sync + 'static`, so a hook that reaches it must
+    /// be `Send + Sync + 'static` too — and this crate documents the
+    /// opposite as supported: a hook may hold an `Rc`
+    /// (`hclient-core/tests/shape.rs`, P13), which is the whole reason the
+    /// seam declares no auto traits. Putting the bound here rather than on
+    /// `H` is `Native::multiplexed`'s shape: the field is a `fn`
+    /// pointer, so **no signature a single-threaded hook meets changes**,
+    /// and a runtime that never calls this constructor is untouched. A
+    /// hook holding an `Rc` gets `E0277` on the line where it asked.
+    ///
+    /// # What the two protocols cost, which is not the same thing
+    ///
+    /// HTTP/1 goes through hyper's callback, hence the bound. HTTP/2 needs
+    /// no bound at all — `h2::client::ResponseFuture::poll_informational`
+    /// is a poll, driven by the same future that awaits the response — and
+    /// it is switched on by the same call anyway. The capability reports
+    /// the **floor**, the rule v0.2 W3 set for `full_duplex`: one switch
+    /// for both, because a `true` that held on h2 alone would be a claim
+    /// an HTTP/1 connection could not keep.
+    ///
+    /// # Ordering
+    ///
+    /// `.hooks(..)` must come **before** this, for the reason it must come
+    /// before `Native::multiplexed`: the pointer's type names `H`. The
+    /// other order compiles and watches nothing.
     #[must_use]
     pub fn watching_1xx(mut self) -> Self
     where
@@ -1458,6 +1451,34 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self
     }
 
+    /// Send this transport's events to `hooks` — see
+    /// [`hclient_core::hooks::Hooks`] for what it hears and what it
+    /// costs, and [`Event`] for the vocabulary.
+    ///
+    /// **It returns a different type**, and that is the zero-cost
+    /// mechanism rather than an inconvenience: the hook is a type
+    /// parameter, so the `NoHooks` build monomorphises to code with no
+    /// clock reads in it at all, where a `Box<dyn Hooks>` field would
+    /// leave every no-hook build carrying a null check on the request
+    /// path. A caller who wants to choose at run time can hold an `H`
+    /// that decides for itself — an `Arc<dyn Fn..>` inside their own type
+    /// — and pay for the choice they actually made.
+    ///
+    /// The hook may be `!Send`: nothing on this path declares it, so an
+    /// `Rc` inside a hook makes this transport `!Send` and leaves it
+    /// working (P13; `crates/hclient-core/tests/shape.rs`).
+    ///
+    /// # It turns `Native::multiplexed` back off, and the type is why
+    ///
+    /// The spawner `multiplexed()` captures is a
+    /// `fn(&R, H2Driver<_, H>)` — it **names the hook**, because the
+    /// driver carries it — so a method whose whole purpose is to change
+    /// `H` cannot carry that pointer across. Write `.hooks(..)` first and
+    /// `.multiplexed()` last; the other order compiles and shares no
+    /// connections, which is the same cost, stated the same way, as
+    /// [`Native::tcp_opts`] replacing the whole option set. Pinned by
+    /// `tests/http2_multiplex.rs`'s pair of orders, so the rule is
+    /// measured rather than only written here.
     pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2, P> {
         // The capability must go with the pointer. Dropping one and
         // carrying the other left this transport saying it reports `1xx`
@@ -1623,6 +1644,333 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             config.idle_timeout,
         );
         self.rt.spawn(reaper);
+        self
+    }
+
+    /// Elapsed time on this transport's own clock, measured from its
+    /// construction.
+    ///
+    /// `hclient_rt::Timer` rather than `std::time::Instant::now()`, for
+    /// the reason every other clock reading here is: `Timer` is the one
+    /// seam through which time reaches a transport, so a caller testing
+    /// under `tokio::time::pause()` sees what this transport sees.
+    #[cfg(feature = "http3")]
+    fn now(&self) -> Duration {
+        self.rt.elapsed_since(self.epoch)
+    }
+
+    /// Keep the `Alt-Svc` advertisements somewhere of your own.
+    ///
+    /// The slow discovery tier's storage, and only its storage: every RFC
+    /// 7838 rule — §3's *a present field replaces everything*, the `ma`
+    /// comparison, §2.2's `persist`, the narrowing to *h3 at this
+    /// origin's own authority* — stays on this side of the seam and is
+    /// applied to whatever a store answers. See
+    /// [`AltSvcStore`](altsvc::AltSvcStore).
+    ///
+    /// **The store is erased here rather than becoming a sixth type
+    /// parameter**, which is `hclient::Client`'s argument one crate up:
+    /// a parameter would reach every signature in this crate to serve one
+    /// opt-in call. The `Send + Sync` that costs is on this method and
+    /// nowhere else — amendment C12's shape.
+    ///
+    /// Nothing in this workspace persists these; what the seam is for is
+    /// a store that does, and `altsvc`'s module doc says what an entry
+    /// has to carry for that to be possible at all.
+    #[cfg(feature = "http3")]
+    #[must_use]
+    pub fn alt_svc_store<S>(mut self, store: S) -> Self
+    where
+        S: altsvc::AltSvcStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        for<'a> S::Get<'a>: Send,                       // send-bound-exception: amendment-C12
+        for<'a> S::Done<'a>: Send,                      // send-bound-exception: amendment-C12
+    {
+        self.alt_svc =
+            altsvc_cache::AltSvcCache::with_store(altsvc_cache::BoxAltSvcStore::new(store));
+        self
+    }
+
+    /// The caller has seen a network configuration change: forget every
+    /// `Alt-Svc` advertisement that did not carry `persist=1`.
+    ///
+    /// **This exists because the transport cannot see the event itself,
+    /// and saying so at the type is the honest alternative to pretending
+    /// the cache is safe.** RFC 7838 §2.2 asks a client to clear
+    /// non-persistent alternatives on a network change *"when information
+    /// about network state is available"* — and to a `Transport` it is
+    /// not: nothing in `hclient-rt` reports an interface coming up, a
+    /// default route changing or a VPN connecting. An application usually
+    /// can see it, so the duty is handed to the caller in the one shape
+    /// that lets them discharge it.
+    ///
+    /// Until it is called, every entry behaves as though it carried
+    /// `persist=1`. That is the unsafe direction — a laptop that moved
+    /// networks is advertising an alt-authority that was reachable
+    /// somewhere else — and it is bounded by two things rather than
+    /// argued away: nothing is written to disk, and the cache is a field
+    /// of this transport, so dropping the client does the whole job.
+    ///
+    /// **Both memories are cleared, and not by the same rule.** The
+    /// advertisement cache keeps `persist=1` entries, because that flag is
+    /// the origin's own claim that what it advertised is a property of the
+    /// origin rather than of the path. The failure
+    /// memory keeps nothing: *"UDP/443 did not get through"* is a fact
+    /// about the network alone, no peer ever asked us to carry it, and it
+    /// is exactly the entry a network change makes certainly wrong.
+    ///
+    /// **`async` since the alt-svc memory took a store**, which is the
+    /// one thing about this method a caller has to change: the store may
+    /// be on the far side of a file or a socket, and forgetting an
+    /// advertisement there is not a lock and a `retain`. The half that
+    /// clears failed QUIC connects is still ours and still immediate.
+    ///
+    // The gate is repeated rather than inherited: inserting
+    // `alt_svc_store` above took the `#[cfg]` that used to sit here with
+    // it, and a `--no-default-features` build stopped compiling. That is
+    // `hclient::lib.rs`'s orphaned-attribute defect for the third time in
+    // one week, and the second time it was caused rather than found. The
+    // same insertion took the first half of this doc, which read as
+    // `alt_svc_store`'s until `missing_docs` found this method with none
+    // of its own — rustdoc cannot tell a doc on the wrong item from one on
+    // the right one, so only the lint that sees the empty neighbour can.
+    #[cfg(feature = "http3")]
+    pub async fn network_changed(&self) {
+        self.alt_svc.network_changed().await;
+        self.h3_failures.network_changed();
+    }
+
+    /// Hedge every request this transport sends to QUIC with a TCP connect
+    /// started `head_start` later — the race, and it is off until this is
+    /// called.
+    ///
+    /// **It is a hedge and not a chooser**.
+    /// The record and the advertisement decide which stack an origin
+    /// speaks; this decides nothing, and only stops a request waiting out
+    /// quinn's 30 s `max_idle_timeout` at an origin whose UDP does not get
+    /// through. A request the two tiers sent to TCP is not raced, and
+    /// neither is a `RequireVersion(HTTP_3)` demand — a TCP connection
+    /// opened for a request that can never be sent over TCP is a
+    /// connection opened for nothing.
+    ///
+    /// # What the head start is, and what to pass
+    ///
+    /// [`DEFAULT_HEAD_START`] where there is no reason to pass anything
+    /// else: 250 ms, RFC 8305 §5's Connection Attempt Delay, which is
+    /// already this workspace's answer to the same question one layer
+    /// down. the hedge has what the staged connect changed about that
+    /// number's justification — and about its floor, which is now
+    /// [`Duration::ZERO`]: with no head start both stacks connect at once,
+    /// **and the losing arm still sends nothing**, which is the property
+    /// that made this worth building.
+    ///
+    /// Bigger is not free and smaller is not unsafe. A head start below
+    /// one QUIC handshake costs a TCP connect and TLS handshake the
+    /// request will probably not use — checked into the pool warm rather
+    /// than thrown away. A head start above it is paid, in full, by the
+    /// first request to an origin whose HTTP/3 cannot be reached, and by
+    /// no other one for five minutes afterwards, because a QUIC arm that
+    /// loses the race is remembered as a failed connect.
+    ///
+    /// # And it is spent inside `Timeouts::connect`, not beside it
+    ///
+    /// The QUIC arm carries the caller's whole `connect` bound and the
+    /// hedge carries what is left after the head start, so the pair costs
+    /// one bound rather than two. A caller whose bound has no room for two
+    /// connects in it — `head_start` at or above `Timeouts::connect` —
+    /// gets the sequential fallback instead, unchanged, rather than a
+    /// refusal or a doubled bound.
+    #[must_use]
+    #[cfg(feature = "http3")]
+    pub fn hedging(mut self, head_start: Duration) -> Self {
+        self.hedge = Some(head_start);
+        self
+    }
+
+    /// Give this transport a QUIC arm, and let it serve HTTP/3.
+    ///
+    /// # Every bound in this crate's QUIC story is on this one signature
+    ///
+    /// `H3` needs `R: UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Send +
+    /// Sync + 'static` and `T: QuicTlsConnect`. None of that reaches
+    /// [`Native`]'s own declaration or its `impl Transport`, because the
+    /// arm is stored erased — so a runtime that has no UDP and a TLS
+    /// backend that has no QUIC are unaffected by the `http3` feature
+    /// being switched on somewhere else in the graph. They simply never
+    /// write this call. `Native::new(Embassy, NoTls, IpLiteralOnly)`
+    /// compiles with the feature on, which is asserted by the workspace
+    /// building `--all-features --all-targets`.
+    ///
+    /// The shape is `Native::multiplexed`'s: a bound that belongs to one
+    /// opt-in lives on the opt-in.
+    ///
+    /// # It takes an `H3`, it does not build one
+    ///
+    /// Building one here would mean choosing its resolver and its TLS
+    /// backend, which are this transport's `D` and `T` — and `H3::new` is
+    /// fallible in a way `Native::new` is not. A caller who wants both
+    /// stacks over one configuration passes the same values twice, which
+    /// is what `Rustls: Clone` is for.
+    ///
+    /// # Errors
+    ///
+    /// A boxed [`Disagreement`] when this transport's own
+    /// capabilities and `quic`'s cannot be combined into one true value. A
+    /// `bool` both can be held to takes the weaker claim and never refuses;
+    /// `early_data` takes the stronger one. The fields with no value true of
+    /// both are checked in declaration order and the first is named:
+    /// `redirects`, `cancel_on_drop`, `connection_reuse`,
+    /// `response_decompression`, `tls_config`, `owns_cookie_jar`,
+    /// `owns_cache` and `forbidden_request_headers`. Of these, only
+    /// `connection_reuse` is reachable from the stacks this workspace ships,
+    /// through [`Native::without_pool`].
+    #[cfg(feature = "http3")]
+    pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<Disagreement>>
+    where
+        crate::http3::H3<R, T, D>: crate::http3::StagedConnect<Error = Error> + Debug,
+        <crate::http3::H3<R, T, D> as hclient_core::transport::Transport>::Body:
+            http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
+        <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
+        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
+        crate::http3::H3<R, T, D>: Sync, // send-bound-exception: amendment-C15
+        R: Send + Sync + 'static,        // send-bound-exception: amendment-C12
+        T: Send + Sync + 'static,        // send-bound-exception: amendment-C12
+        D: Send + Sync + 'static,        // send-bound-exception: amendment-C12
+    {
+        // **The stored value must be true whichever path serves the
+        // request**, and `capabilities()` hands back a reference computed
+        // once — so the two are reduced here, at the only moment both are
+        // in hand. Five fields take the weaker claim, `early_data` the
+        // stronger one (the variant means *can*), and where the two are
+        // different claims rather than a stronger and a weaker one there
+        // is no true value and this refuses, naming the field.
+        //
+        // `Native::without_pool()` against a QUIC arm is the one refusal
+        // reachable from what this workspace ships, and it is an ordinary
+        // mistake rather than a contrived one.
+        self.caps = caps::combine(&self.caps, quic.capabilities()).map_err(Box::new)?;
+        self.h3 = Some(Arc::new(quic));
+        self.versions.h3 = true;
+        Ok(self)
+    }
+
+    /// Whether this transport may speak HTTP/1.1. On by default.
+    ///
+    /// **Turning it off is a guarantee, not a preference**, and that is
+    /// what makes it worth having. Over TLS the ALPN offer becomes `h2`
+    /// alone, so a server that cannot speak HTTP/2 finds no overlap and
+    /// the handshake fails — there is no path by which a connection this
+    /// transport made carries HTTP/1.1.
+    ///
+    /// # What it moves that nothing else can
+    ///
+    /// [`Capabilities::full_duplex`] and [`Capabilities::response_trailers`]
+    /// report the **floor** — the value that holds on the worst protocol
+    /// this transport might negotiate — which is why they stay `false`
+    /// even with the `http2` feature on. With HTTP/1.1 forbidden the floor
+    /// is HTTP/2's, and both become honestly `true`.
+    ///
+    /// `RequireVersion` cannot do this: it is per request and arrives
+    /// after `capabilities()` has been answered, and `capabilities()`
+    /// returns a `&Capabilities` stored at construction.
+    ///
+    /// # `http://` is refused, and it has to be
+    ///
+    /// Plaintext carries no ALPN, so the only way to reach HTTP/2 there is
+    /// prior knowledge (RFC 9113 §3.4), which this transport does not do.
+    /// A plaintext request on a transport that has forbidden HTTP/1.1 is
+    /// therefore a typed [`ErrorKind::Unsupported`] at connect rather than
+    /// a quiet fall back to the protocol the caller just ruled out — which
+    /// would also make the raised floor above a lie.
+    ///
+    /// # Errors
+    ///
+    /// [`NoVersionsLeft`] if HTTP/2 is already off, or is not compiled in:
+    /// the two setters refuse the empty state between them, so it is
+    /// unreachable rather than checked later.
+    pub fn http1(mut self, on: bool) -> Result<Self, Error> {
+        // Written as "off, and h2 not available" rather than De Morgan's
+        // "not (on or h2 available)" — the two negative conditions name
+        // the empty state the doc above describes more directly than the
+        // logically equivalent disjunction would.
+        #[allow(
+            clippy::nonminimal_bool,
+            reason = "Written as 'off, and h2 not available' rather than De Morgan's 'not (on or h2 available)' — the two negative conditions name the empty state the doc above describes more directly than the logically equivalent disjunction would."
+        )]
+        if !on && !(self.versions.h2 && cfg!(feature = "http2")) {
+            return Err(Error::new(ErrorKind::Unsupported, NoVersionsLeft));
+        }
+        self.versions.h1 = on;
+        self.caps = Self::capabilities_for(&self.caps, self.versions);
+        Ok(self)
+    }
+
+    /// Whether this transport may speak HTTP/2. Defaults to whether the
+    /// `http2` feature compiled it in.
+    ///
+    /// Off, the ALPN offer loses `h2` and the pool stops holding h2
+    /// buckets — `may_speak_h2` is the one predicate both read, so they
+    /// cannot drift into a client that offers a protocol it will not pool
+    /// or pools one it will not offer.
+    ///
+    /// The default follows the feature rather than being `false`, because
+    /// that is what the transport did before this setting existed: a build
+    /// with `http2` on offered h2 wherever ALPN could carry it, and a
+    /// default of `false` would make the feature a silent no-op until a
+    /// second call.
+    ///
+    /// # Errors
+    ///
+    /// [`Http2NotCompiledIn`] for `http2(true)` in a build without the
+    /// feature — a named refusal, because the fix is a cargo feature and
+    /// not something a caller can infer from a request that quietly went
+    /// out over HTTP/1.1. [`NoVersionsLeft`] for `http2(false)` when
+    /// HTTP/1.1 is already off.
+    pub fn http2(mut self, on: bool) -> Result<Self, Error> {
+        http2_refusal(on, cfg!(feature = "http2"), self.versions.h1)?;
+        self.versions.h2 = on;
+        self.caps = Self::capabilities_for(&self.caps, self.versions);
+        Ok(self)
+    }
+
+    /// The two capability fields whose value depends on which versions are
+    /// allowed, recomputed wherever that changes.
+    ///
+    /// A function rather than two assignments at each setter, so the rule
+    /// — *the floor is HTTP/1.1's unless HTTP/1.1 is forbidden* — is
+    /// written once and cannot drift between the two call sites.
+    fn capabilities_for(base: &Capabilities, versions: Versions) -> Capabilities {
+        let mut caps = base.clone();
+        let h2_only = !versions.h1;
+        caps.full_duplex = h2_only;
+        caps.response_trailers = h2_only;
+        caps
+    }
+
+    /// Send a `PING` on every **shared** HTTP/2 connection, and close one
+    /// whose peer stops answering.
+    ///
+    /// Off by default, which is the decision rather than an omission: a
+    /// client that pings puts traffic on the wire nobody asked for. What
+    /// it is for is the path rather than the peer — a NAT or a load
+    /// balancer whose flow timer drops a connection that has been quiet,
+    /// which is what a long-poll or an SSE stream between events looks
+    /// like from the middle of a network.
+    ///
+    /// **Only reached with `Native::multiplexed`**, and that is
+    /// structural: an idle pooled connection has no holder at all, so
+    /// there is nothing to write a `PING` or read its answer. Set here
+    /// without `multiplexed()`, it is inert.
+    ///
+    /// The peer's failure to answer within
+    /// [`H2KeepAlive::within`](http2::H2KeepAlive::within) closes the
+    /// connection with [`PingNotAnswered`](crate::error::PingNotAnswered) —
+    /// `ErrorKind::Connect`, because what ended is a connection and not
+    /// an exchange.
+    #[must_use]
+    #[cfg(feature = "http2")]
+    pub fn h2_keep_alive(mut self, cfg: http2::H2KeepAlive) -> Self {
+        self.h2_keep_alive = Some(cfg);
         self
     }
 
@@ -1855,329 +2203,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// on a dropped future, which goes on being owed — what changes is
     /// that the peer now sees a `RST_STREAM(CANCEL)` where it used to see
     /// the socket close. `full_duplex` and `response_trailers` still
-    /// Elapsed time on this transport's own clock, measured from its
-    /// construction.
-    ///
-    /// `hclient_rt::Timer` rather than `std::time::Instant::now()`, for
-    /// the reason every other clock reading here is: `Timer` is the one
-    /// seam through which time reaches a transport, so a caller testing
-    /// under `tokio::time::pause()` sees what this transport sees.
-    #[cfg(feature = "http3")]
-    fn now(&self) -> Duration {
-        self.rt.elapsed_since(self.epoch)
-    }
-
-    /// The caller has seen a network configuration change: forget every
-    /// `Alt-Svc` advertisement that did not carry `persist=1`.
-    ///
-    /// **This exists because the transport cannot see the event itself,
-    /// and saying so at the type is the honest alternative to pretending
-    /// the cache is safe.** RFC 7838 §2.2 asks a client to clear
-    /// non-persistent alternatives on a network change *"when information
-    /// about network state is available"* — and to a `Transport` it is
-    /// not: nothing in `hclient-rt` reports an interface coming up, a
-    /// default route changing or a VPN connecting. An application usually
-    /// can see it, so the duty is handed to the caller in the one shape
-    /// that lets them discharge it.
-    ///
-    /// Until it is called, every entry behaves as though it carried
-    /// `persist=1`. That is the unsafe direction — a laptop that moved
-    /// networks is advertising an alt-authority that was reachable
-    /// somewhere else — and it is bounded by two things rather than
-    /// argued away: nothing is written to disk, and the cache is a field
-    /// of this transport, so dropping the client does the whole job.
-    ///
-    /// **Both memories are cleared, and not by the same rule.** The
-    /// advertisement cache keeps `persist=1` entries, because that flag is the origin's own claim that what it advertised
-    /// is a property of the origin rather than of the path. The failure
-    /// memory keeps nothing: *"UDP/443 did not get through"* is a fact
-    /// about the network alone, no peer ever asked us to carry it, and it
-    /// is exactly the entry a network change makes certainly wrong.
-    #[cfg(feature = "http3")]
-    /// Keep the `Alt-Svc` advertisements somewhere of your own.
-    ///
-    /// The slow discovery tier's storage, and only its storage: every RFC
-    /// 7838 rule — §3's *a present field replaces everything*, the `ma`
-    /// comparison, §2.2's `persist`, the narrowing to *h3 at this
-    /// origin's own authority* — stays on this side of the seam and is
-    /// applied to whatever a store answers. See
-    /// [`AltSvcStore`](altsvc::AltSvcStore).
-    ///
-    /// **The store is erased here rather than becoming a sixth type
-    /// parameter**, which is `hclient::Client`'s argument one crate up:
-    /// a parameter would reach every signature in this crate to serve one
-    /// opt-in call. The `Send + Sync` that costs is on this method and
-    /// nowhere else — amendment C12's shape.
-    ///
-    /// Nothing in this workspace persists these; what the seam is for is
-    /// a store that does, and `altsvc`'s module doc says what an entry
-    /// has to carry for that to be possible at all.
-    #[cfg(feature = "http3")]
-    #[must_use]
-    pub fn alt_svc_store<S>(mut self, store: S) -> Self
-    where
-        S: altsvc::AltSvcStore + Send + Sync + 'static, // send-bound-exception: amendment-C12
-        for<'a> S::Get<'a>: Send,                       // send-bound-exception: amendment-C12
-        for<'a> S::Done<'a>: Send,                      // send-bound-exception: amendment-C12
-    {
-        self.alt_svc =
-            altsvc_cache::AltSvcCache::with_store(altsvc_cache::BoxAltSvcStore::new(store));
-        self
-    }
-
-    /// **`async` since the alt-svc memory took a store**, which is the
-    /// one thing about this method a caller has to change: the store may
-    /// be on the far side of a file or a socket, and forgetting an
-    /// advertisement there is not a lock and a `retain`. The half that
-    /// clears failed QUIC connects is still ours and still immediate.
-    ///
-    // The gate is repeated rather than inherited: inserting
-    // `alt_svc_store` above took the `#[cfg]` that used to sit here with
-    // it, and a `--no-default-features` build stopped compiling. That is
-    // `hclient::lib.rs`'s orphaned-attribute defect for the third time in
-    // one week, and the second time it was caused rather than found.
-    #[cfg(feature = "http3")]
-    pub async fn network_changed(&self) {
-        self.alt_svc.network_changed().await;
-        self.h3_failures.network_changed();
-    }
-
-    /// Hedge every request this transport sends to QUIC with a TCP connect
-    /// started `head_start` later — the race, and it is off until this is
-    /// called.
-    ///
-    /// **It is a hedge and not a chooser**.
-    /// The record and the advertisement decide which stack an origin
-    /// speaks; this decides nothing, and only stops a request waiting out
-    /// quinn's 30 s `max_idle_timeout` at an origin whose UDP does not get
-    /// through. A request the two tiers sent to TCP is not raced, and
-    /// neither is a `RequireVersion(HTTP_3)` demand — a TCP connection
-    /// opened for a request that can never be sent over TCP is a
-    /// connection opened for nothing.
-    ///
-    /// # What the head start is, and what to pass
-    ///
-    /// [`DEFAULT_HEAD_START`] where there is no reason to pass anything
-    /// else: 250 ms, RFC 8305 §5's Connection Attempt Delay, which is
-    /// already this workspace's answer to the same question one layer
-    /// down. the hedge has what the staged connect changed about that
-    /// number's justification — and about its floor, which is now
-    /// [`Duration::ZERO`]: with no head start both stacks connect at once,
-    /// **and the losing arm still sends nothing**, which is the property
-    /// that made this worth building.
-    ///
-    /// Bigger is not free and smaller is not unsafe. A head start below
-    /// one QUIC handshake costs a TCP connect and TLS handshake the
-    /// request will probably not use — checked into the pool warm rather
-    /// than thrown away. A head start above it is paid, in full, by the
-    /// first request to an origin whose HTTP/3 cannot be reached, and by
-    /// no other one for five minutes afterwards, because a QUIC arm that
-    /// loses the race is remembered as a failed connect.
-    ///
-    /// # And it is spent inside `Timeouts::connect`, not beside it
-    ///
-    /// The QUIC arm carries the caller's whole `connect` bound and the
-    /// hedge carries what is left after the head start, so the pair costs
-    /// one bound rather than two. A caller whose bound has no room for two
-    /// connects in it — `head_start` at or above `Timeouts::connect` —
-    /// gets the sequential fallback instead, unchanged, rather than a
-    /// refusal or a doubled bound.
-    #[must_use]
-    #[cfg(feature = "http3")]
-    pub fn hedging(mut self, head_start: Duration) -> Self {
-        self.hedge = Some(head_start);
-        self
-    }
-
-    /// Give this transport a QUIC arm, and let it serve HTTP/3.
-    ///
-    /// # Every bound in this crate's QUIC story is on this one signature
-    ///
-    /// `H3` needs `R: UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Send +
-    /// Sync + 'static` and `T: QuicTlsConnect`. None of that reaches
-    /// [`Native`]'s own declaration or its `impl Transport`, because the
-    /// arm is stored erased — so a runtime that has no UDP and a TLS
-    /// backend that has no QUIC are unaffected by the `http3` feature
-    /// being switched on somewhere else in the graph. They simply never
-    /// write this call. `Native::new(Embassy, NoTls, IpLiteralOnly)`
-    /// compiles with the feature on, which is asserted by the workspace
-    /// building `--all-features --all-targets`.
-    ///
-    /// The shape is `Native::multiplexed`'s: a bound that belongs to one
-    /// opt-in lives on the opt-in.
-    ///
-    /// # It takes an `H3`, it does not build one
-    ///
-    /// Building one here would mean choosing its resolver and its TLS
-    /// backend, which are this transport's `D` and `T` — and `H3::new` is
-    /// fallible in a way `Native::new` is not. A caller who wants both
-    /// stacks over one configuration passes the same values twice, which
-    /// is what `Rustls: Clone` is for.
-    ///
-    /// # Errors
-    ///
-    /// A boxed [`Disagreement`] when this transport's own
-    /// capabilities and `quic`'s cannot be combined into one true value. A
-    /// `bool` both can be held to takes the weaker claim and never refuses;
-    /// `early_data` takes the stronger one. The fields with no value true of
-    /// both are checked in declaration order and the first is named:
-    /// `redirects`, `cancel_on_drop`, `connection_reuse`,
-    /// `response_decompression`, `tls_config`, `owns_cookie_jar`,
-    /// `owns_cache` and `forbidden_request_headers`. Of these, only
-    /// `connection_reuse` is reachable from the stacks this workspace ships,
-    /// through [`Native::without_pool`].
-    #[cfg(feature = "http3")]
-    pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<Disagreement>>
-    where
-        crate::http3::H3<R, T, D>: crate::http3::StagedConnect<Error = Error> + Debug,
-        <crate::http3::H3<R, T, D> as hclient_core::transport::Transport>::Body:
-            http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
-        <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
-        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
-        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
-        crate::http3::H3<R, T, D>: Sync, // send-bound-exception: amendment-C15
-        R: Send + Sync + 'static,        // send-bound-exception: amendment-C12
-        T: Send + Sync + 'static,        // send-bound-exception: amendment-C12
-        D: Send + Sync + 'static,        // send-bound-exception: amendment-C12
-    {
-        // **The stored value must be true whichever path serves the
-        // request**, and `capabilities()` hands back a reference computed
-        // once — so the two are reduced here, at the only moment both are
-        // in hand. Five fields take the weaker claim, `early_data` the
-        // stronger one (the variant means *can*), and where the two are
-        // different claims rather than a stronger and a weaker one there
-        // is no true value and this refuses, naming the field.
-        //
-        // `Native::without_pool()` against a QUIC arm is the one refusal
-        // reachable from what this workspace ships, and it is an ordinary
-        // mistake rather than a contrived one.
-        self.caps = caps::combine(&self.caps, quic.capabilities()).map_err(Box::new)?;
-        self.h3 = Some(Arc::new(quic));
-        self.versions.h3 = true;
-        Ok(self)
-    }
-
-    /// Whether this transport may speak HTTP/1.1. On by default.
-    ///
-    /// **Turning it off is a guarantee, not a preference**, and that is
-    /// what makes it worth having. Over TLS the ALPN offer becomes `h2`
-    /// alone, so a server that cannot speak HTTP/2 finds no overlap and
-    /// the handshake fails — there is no path by which a connection this
-    /// transport made carries HTTP/1.1.
-    ///
-    /// # What it moves that nothing else can
-    ///
-    /// [`Capabilities::full_duplex`] and [`Capabilities::response_trailers`]
-    /// report the **floor** — the value that holds on the worst protocol
-    /// this transport might negotiate — which is why they stay `false`
-    /// even with the `http2` feature on. With HTTP/1.1 forbidden the floor
-    /// is HTTP/2's, and both become honestly `true`.
-    ///
-    /// `RequireVersion` cannot do this: it is per request and arrives
-    /// after `capabilities()` has been answered, and `capabilities()`
-    /// returns a `&Capabilities` stored at construction.
-    ///
-    /// # `http://` is refused, and it has to be
-    ///
-    /// Plaintext carries no ALPN, so the only way to reach HTTP/2 there is
-    /// prior knowledge (RFC 9113 §3.4), which this transport does not do.
-    /// A plaintext request on a transport that has forbidden HTTP/1.1 is
-    /// therefore a typed [`ErrorKind::Unsupported`] at connect rather than
-    /// a quiet fall back to the protocol the caller just ruled out — which
-    /// would also make the raised floor above a lie.
-    ///
-    /// # Errors
-    ///
-    /// [`NoVersionsLeft`] if HTTP/2 is already off, or is not compiled in:
-    /// the two setters refuse the empty state between them, so it is
-    /// unreachable rather than checked later.
-    pub fn http1(mut self, on: bool) -> Result<Self, Error> {
-        // Written as "off, and h2 not available" rather than De Morgan's
-        // "not (on or h2 available)" — the two negative conditions name
-        // the empty state the doc above describes more directly than the
-        // logically equivalent disjunction would.
-        #[allow(
-            clippy::nonminimal_bool,
-            reason = "Written as 'off, and h2 not available' rather than De Morgan's 'not (on or h2 available)' — the two negative conditions name the empty state the doc above describes more directly than the logically equivalent disjunction would."
-        )]
-        if !on && !(self.versions.h2 && cfg!(feature = "http2")) {
-            return Err(Error::new(ErrorKind::Unsupported, NoVersionsLeft));
-        }
-        self.versions.h1 = on;
-        self.caps = Self::capabilities_for(&self.caps, self.versions);
-        Ok(self)
-    }
-
-    /// Whether this transport may speak HTTP/2. Defaults to whether the
-    /// `http2` feature compiled it in.
-    ///
-    /// Off, the ALPN offer loses `h2` and the pool stops holding h2
-    /// buckets — `may_speak_h2` is the one predicate both read, so they
-    /// cannot drift into a client that offers a protocol it will not pool
-    /// or pools one it will not offer.
-    ///
-    /// The default follows the feature rather than being `false`, because
-    /// that is what the transport did before this setting existed: a build
-    /// with `http2` on offered h2 wherever ALPN could carry it, and a
-    /// default of `false` would make the feature a silent no-op until a
-    /// second call.
-    ///
-    /// # Errors
-    ///
-    /// [`Http2NotCompiledIn`] for `http2(true)` in a build without the
-    /// feature — a named refusal, because the fix is a cargo feature and
-    /// not something a caller can infer from a request that quietly went
-    /// out over HTTP/1.1. [`NoVersionsLeft`] for `http2(false)` when
-    /// HTTP/1.1 is already off.
-    pub fn http2(mut self, on: bool) -> Result<Self, Error> {
-        http2_refusal(on, cfg!(feature = "http2"), self.versions.h1)?;
-        self.versions.h2 = on;
-        self.caps = Self::capabilities_for(&self.caps, self.versions);
-        Ok(self)
-    }
-
-    /// The two capability fields whose value depends on which versions are
-    /// allowed, recomputed wherever that changes.
-    ///
-    /// A function rather than two assignments at each setter, so the rule
-    /// — *the floor is HTTP/1.1's unless HTTP/1.1 is forbidden* — is
-    /// written once and cannot drift between the two call sites.
-    fn capabilities_for(base: &Capabilities, versions: Versions) -> Capabilities {
-        let mut caps = base.clone();
-        let h2_only = !versions.h1;
-        caps.full_duplex = h2_only;
-        caps.response_trailers = h2_only;
-        caps
-    }
-
     /// report the HTTP/1.1 floor for [`Native::new`]'s reason.
-    /// Send a `PING` on every **shared** HTTP/2 connection, and close one
-    /// whose peer stops answering.
-    ///
-    /// Off by default, which is the decision rather than an omission: a
-    /// client that pings puts traffic on the wire nobody asked for. What
-    /// it is for is the path rather than the peer — a NAT or a load
-    /// balancer whose flow timer drops a connection that has been quiet,
-    /// which is what a long-poll or an SSE stream between events looks
-    /// like from the middle of a network.
-    ///
-    /// **Only reached with `Native::multiplexed`**, and that is
-    /// structural: an idle pooled connection has no holder at all, so
-    /// there is nothing to write a `PING` or read its answer. Set here
-    /// without `multiplexed()`, it is inert.
-    ///
-    /// The peer's failure to answer within
-    /// [`H2KeepAlive::within`](http2::H2KeepAlive::within) closes the
-    /// connection with [`PingNotAnswered`](crate::error::PingNotAnswered) —
-    /// `ErrorKind::Connect`, because what ended is a connection and not
-    /// an exchange.
-    #[must_use]
-    #[cfg(feature = "http2")]
-    pub fn h2_keep_alive(mut self, cfg: http2::H2KeepAlive) -> Self {
-        self.h2_keep_alive = Some(cfg);
-        self
-    }
-
     #[must_use]
     #[cfg(feature = "http2")]
     pub fn multiplexed(mut self) -> Self
@@ -3156,103 +3182,6 @@ fn is_h2(protocol: Option<Protocol>) -> bool {
     }
 }
 
-/// A transport whose own name resolution can be done ahead of the
-/// exchange, and handed straight back to it.
-///
-/// # Why this is a trait of this crate's and not a method on `Transport`
-///
-/// `Transport` is the seam **every** backend fills in, and this is a
-/// question exactly one kind of backend can be asked: a `fetch`-shaped
-/// transport has no DNS of its own to save, and a `wasi:http` one has no
-/// connector at all. Putting it on the seam would make every other backend
-/// answer for a thing it does not have — the mistake
-/// `Capabilities::upgrade` was deleted for.
-///
-/// It is a trait rather than two inherent methods for a duller reason,
-/// worth writing down because it is not obvious from the outside: a caller
-/// generic over `Native<R, T, D>` reaches it through a `where` bound, and
-/// an inherent method would make that caller repeat every structural bound
-/// [`Native`]'s exchange impl declares — and then still not be able to
-/// name the response body, because `<Native<..> as Transport>::Body`
-/// behind a `where` clause is an opaque projection that does not normalise
-/// to a concrete type. As a supertrait-bounded trait method the return
-/// type *is* that projection, which is what `hclient-select` already
-/// writes.
-pub trait Prefetch: Transport {
-    /// Do now the HTTPS-record lookup this transport would otherwise do
-    /// inside [`Transport::execute`], and hand the request back with the
-    /// answer attached.
-    /// Do now the name resolution this transport would otherwise do inside
-    /// [`Transport::execute`], and hand the request back with the answer
-    /// attached.
-    ///
-    /// # Who this is for
-    ///
-    /// A caller that is going to ask the same question anyway. RFC 9460's
-    /// `alpn` says which protocols an origin speaks, and a caller owning a
-    /// second protocol stack (`hclient-select`) has to read it *before* it
-    /// can decide which stack a request belongs to — after which this
-    /// transport, left to itself, would ask for the very same record a
-    /// second time. Measured, that was two type-65 queries for one request
-    /// (`crates/hclient-select/tests/dns_cost.rs`).
-    ///
-    /// # What it does not become
-    ///
-    /// **Not a way to tell a transport something.** The answer is fetched
-    /// *here*, by the transport, with its own resolver and its own memory,
-    /// for the authority of the request handed in — so there is no version
-    /// of this call in which a caller supplies the record. See [`Prepared`]
-    /// for why that is the whole point.
-    ///
-    /// **Not a cache.** What comes back is good for the one request it
-    /// travels with, and nothing here remembers it.
-    ///
-    /// The reason recorded here was that an HTTPS record carries no TTL,
-    /// so a cache would have to invent a lifetime for someone else's
-    /// answer — which is how a resolver's cache and ours drift apart. That
-    /// was true of the type this crate used to receive and never of the
-    /// wire: the lifetime was always on the record, and
-    /// [`Record::ttl`](hclient_dns::Record::ttl) carries it now. What is left is the ordinary work of a cache — a key,
-    /// a bound, and an answer to what `network_changed()` means for an
-    /// entry — none of which is written, so this still remembers nothing.
-    ///
-    /// # What it costs, and when it costs nothing
-    ///
-    /// Exactly what discovery costs inside `execute`, which for a URI
-    /// discovery does not apply to (`http://`, a port other than 443, an
-    /// origin held off by a failure this transport remembers) is **no
-    /// query at all** — [`Discovered::NotConsulted`] comes back and
-    /// nothing was asked.
-    ///
-    /// One difference in *timing* is worth knowing. Inside `execute` the
-    /// record is fetched only when a connection is opened, and beside the
-    /// address lookups; here it is fetched before either, so a request
-    /// that would have been served from a pooled connection still pays for
-    /// the query. That is the caller's trade, and for the caller this
-    /// exists for it is not a new cost: it is the query that caller was
-    /// about to make itself.
-    ///
-    /// Written as `-> impl Future` rather than `async fn` for
-    /// `Transport::execute`'s reason: no `Send` bound is added anywhere in
-    /// this workspace's seams, and this one is on the same footing.
-    fn prepare(&self, req: http::Request<RequestBody>) -> impl Future<Output = Prepared>;
-
-    /// [`Transport::execute`], for a request whose record has already been
-    /// fetched by [`Self::prepare`].
-    ///
-    /// Identical in every other respect — same pool, same timeouts, same
-    /// errors. What it does not do is ask DNS for a record a moment after
-    /// somebody else asked for the same one.
-    ///
-    /// A [`Prepared::new`] — nothing looked up — is exactly
-    /// [`Transport::execute`], which is what a caller that prepares some
-    /// requests and not others hands over for the rest.
-    fn execute_prepared(
-        &self,
-        prepared: Prepared,
-    ) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>;
-}
-
 /// The exchange itself.
 ///
 /// The bounds are the [`Transport`] impl's below, repeated because an
@@ -3271,8 +3200,8 @@ where
     ///
     /// One body for both entry points rather than two that must be kept
     /// in step: [`Transport::execute`] is this with [`Prepared::new`] —
-    /// nothing looked up — and [`Prefetch::execute_prepared`] is this with
-    /// whatever [`Prefetch::prepare`] found.
+    /// nothing looked up — and the routing's TCP arm is this with whatever
+    /// [`Native::prepare`] found.
     #[allow(
         clippy::too_many_lines,
         reason = "the whole exchange for both entry points, deliberately one body rather than two kept in step"
@@ -3824,7 +3753,8 @@ where
 
     /// `Native::run` with nothing looked up — which is what every
     /// request through this seam is, because the seam has no way to carry
-    /// an answer and [deliberately does not gain one](Prefetch::prepare).
+    /// an answer and deliberately does not gain one: the looked-up path is
+    /// this crate's own, through `Native::prepare` and the staged connect.
     /// The record is fetched inside, when and if a connection is opened.
     async fn execute(
         &self,
@@ -3854,14 +3784,19 @@ where
     }
 }
 
-/// The one implementation, and the contract is on the trait.
+/// The HTTPS-record lookup, done ahead of the exchange.
 ///
-/// There are deliberately **no inherent methods of the same names**: an
-/// inherent method wins method resolution over a trait one, so a caller
-/// with the trait in scope would silently get the other function and, with
-/// it, a concrete response body where the projection was wanted. Two
-/// spellings of one thing is how that mistake gets made.
-impl<R, T, D, H, P> Prefetch for Native<R, T, D, H, P>
+/// It was `Prefetch`, a public trait, for one caller: `hclient-select`,
+/// which owned a second protocol stack and had to read an origin's `alpn`
+/// before choosing a stack — after which this transport would have asked
+/// for the same record a second time. That routing is this crate's own
+/// now (`route.rs`), so the trait had no caller outside it, and its
+/// second method, `execute_prepared`, had none at all: the routing hands
+/// what it prepared straight to `run`, from inside this crate, and never
+/// needed a public door back into the exchange. What is left is one
+/// crate-private method, behind `http3` because the router is.
+#[cfg(feature = "http3")]
+impl<R, T, D, H, P> Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -3871,7 +3806,22 @@ where
     H: Hooks + Clone + Unpin,
     P: crate::proxy::Handshake + Clone,
 {
-    async fn prepare(&self, req: http::Request<RequestBody>) -> Prepared {
+    /// Do now the lookup `Transport::execute` would otherwise do inside
+    /// its connect, and hand the request back with the answer attached.
+    ///
+    /// **Not a way to tell a transport something**: the answer is fetched
+    /// here, with this transport's resolver and its negative cache, for
+    /// the authority of the request handed in — see [`Prepared`]. **Not a
+    /// cache** either: what comes back is good for the one request it
+    /// travels with.
+    ///
+    /// It costs what discovery costs inside `execute`, and nothing at all
+    /// where discovery does not apply (`http://`, a port other than 443,
+    /// an origin held off by a remembered failure). The one difference is
+    /// timing: this asks before the pool is looked at, so a request a
+    /// pooled connection would have served still pays for the query —
+    /// the query the router was about to make itself.
+    pub(crate) async fn prepare(&self, req: http::Request<RequestBody>) -> Prepared {
         // The same reading of the same clock the negative cache's window
         // is measured on — see the `epoch` field. `run` takes its own for
         // the pool's bookkeeping; these are two questions, and a request
@@ -3904,13 +3854,6 @@ where
             _ => discovery::Prefetched::NotConsulted,
         };
         Prepared { req, found }
-    }
-
-    async fn execute_prepared(
-        &self,
-        prepared: Prepared,
-    ) -> Result<http::Response<Self::Body>, Self::Error> {
-        self.run(prepared).await
     }
 }
 

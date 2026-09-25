@@ -414,7 +414,7 @@ impl Prefetched {
     }
 }
 
-/// What [`crate::Prefetch::prepare`] found, as much of it as anything
+/// What [`crate::Native::prepare`] found, as much of it as anything
 /// outside this crate has business reading.
 ///
 /// **The record's port and address hints are deliberately not here.** They
@@ -425,7 +425,7 @@ impl Prefetched {
 /// one a caller owning a second protocol stack needs in order to know
 /// whether to use this transport at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Discovered<'a> {
+pub(crate) enum Discovered<'a> {
     /// This transport did not look, so nothing here has been ruled out.
     ///
     /// Three ways to arrive, and none of them is a fact about the origin:
@@ -471,7 +471,7 @@ pub enum Discovered<'a> {
 /// this request" a question — one that can only be answered by a check,
 /// and a check needs an origin carried beside the record so that there is
 /// something to compare. Here the pairing is made by
-/// [`crate::Prefetch::prepare`] out of the request's own URI and cannot be
+/// this transport's own lookup out of the request's own URI and cannot be
 /// taken apart afterwards: no constructor puts a record beside a request
 /// it was not fetched for, and no method replaces the request. The
 /// wrong-origin question is not answered — it cannot be asked.
@@ -492,7 +492,7 @@ pub enum Discovered<'a> {
 /// address hints, so an extension carrying one would let any code that can
 /// build a request move the connection to another port and another
 /// address. Nothing in this workspace can do that today except DNS.
-pub struct Prepared {
+pub(crate) struct Prepared {
     pub(crate) req: http::Request<hclient_core::body::RequestBody>,
     pub(crate) found: Prefetched,
 }
@@ -501,36 +501,27 @@ impl Prepared {
     /// A request nothing has been looked up for — exactly what
     /// `Transport::execute` receives, and exactly what it does with it.
     ///
-    /// For a caller that prepares some requests and not others: the ones
-    /// it did not ask about still go through
-    /// [`crate::Prefetch::execute_prepared`], and this is how they get
-    /// there, with the connector's own discovery untouched.
-    pub fn new(req: http::Request<hclient_core::body::RequestBody>) -> Self {
+    /// What a caller of
+    /// [`StagedConnect::connect`](crate::staged::StagedConnect::connect)
+    /// hands over — every caller outside this crate, since the lookup that
+    /// fills one in is the transport's own. The connector's discovery then
+    /// runs inside the connect, untouched.
+    pub(crate) fn new(req: http::Request<hclient_core::body::RequestBody>) -> Self {
         Self {
             req,
             found: Prefetched::NotConsulted,
         }
     }
 
-    /// The request this was made for. There is deliberately no `_mut`: the
-    /// record inside was fetched for this URI's authority, and a URI that
-    /// could be edited afterwards would be the wrong-origin question
-    /// arriving through the back door.
-    pub fn request(&self) -> &http::Request<hclient_core::body::RequestBody> {
-        &self.req
-    }
-
     /// What the HTTPS record said — three states, see [`Discovered`].
-    pub fn discovered(&self) -> Discovered<'_> {
+    pub(crate) fn discovered(&self) -> Discovered<'_> {
         self.found.discovered()
     }
 
-    /// The request back, leaving the record behind.
-    ///
-    /// For the caller that asked, read the answer, and decided to send
-    /// this request somewhere else entirely — which is what
-    /// `hclient-select` does with a record offering `h3`.
-    pub fn into_request(self) -> http::Request<hclient_core::body::RequestBody> {
+    /// The request back, leaving the record behind — for the router, when
+    /// the record it read sends this request to the QUIC arm instead.
+    #[cfg(feature = "http3")]
+    pub(crate) fn into_request(self) -> http::Request<hclient_core::body::RequestBody> {
         self.req
     }
 }

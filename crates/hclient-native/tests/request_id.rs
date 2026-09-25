@@ -25,8 +25,8 @@ use hclient_core::body::RequestBody;
 use hclient_core::hooks::{Attempt, Event, Hooks, RequestId};
 use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
+use hclient_native::Native;
 use hclient_native::staged::StagedConnect;
-use hclient_native::{Native, Prepared};
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use http_body_util::BodyExt as _;
@@ -452,7 +452,7 @@ async fn a_staged_connect_and_its_exchange_name_the_request_too() {
 
     let first = Attempt::new(RequestId::next());
     let staged = t
-        .connect(Prepared::new(get(addr, Some(first))))
+        .connect(get(addr, Some(first)))
         .await
         .expect("the server is listening");
     assert_eq!(
@@ -470,7 +470,7 @@ async fn a_staged_connect_and_its_exchange_name_the_request_too() {
     // mutation in it survives an empty request.
     let second = Attempt::new(RequestId::next());
     let staged = t
-        .connect(Prepared::new(post(addr, second)))
+        .connect(post(addr, second))
         .await
         .expect("the pooled connection is found");
     let resp = t.exchange(staged).await.expect("the exchange succeeds");
@@ -509,7 +509,7 @@ async fn a_staged_connect_with_no_attempt_reports_unidentified() {
     let t = watched(&rec);
 
     let staged = t
-        .connect(Prepared::new(get(addr, None)))
+        .connect(get(addr, None))
         .await
         .expect("the server is listening");
     let resp = t.exchange(staged).await.expect("the exchange succeeds");

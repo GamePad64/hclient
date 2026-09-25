@@ -2407,10 +2407,11 @@ query per request that has a name to ask about, whichever stack answers. A
 It was two on the TCP path at an origin's default port, because
 `hclient-native` fetched the record again inside its own connector, and the
 fix is the part worth knowing: **the record is not handed to the connector,
-it is fetched by it.** `hclient_native::Prefetch::prepare` does the
+it is fetched by it.** `Native::prepare` — a public `Prefetch` trait until
+the routing moved inside the crate, a private method since — does the
 connector's own lookup — its resolver, its rule about where discovery
 applies, its negative cache — and hands back a `Prepared`, which is the
-request *with* the answer; `execute_prepared` then does not look again. A
+request *with* the answer; `run` then does not look again. A
 caller cannot supply a record, because there is no constructor that pairs
 one with a request it was not fetched for, so the wrong-origin question
 cannot be asked rather than being answered by a check. The shape that was
@@ -2446,7 +2447,8 @@ RPITIT, so nothing can demand `Send` of it and `hclient-rt-embassy` can
 exist; every seam beneath it — `Resolve`, `TcpConnect`, `TlsConnect`,
 `Blocking`, `Timer` — carries **associated future types**, so each
 implementor answers for its own auto traits. The exceptions are the two
-newest, `StagedConnect` and `Prefetch`, which are written as RPITITs, and
+newest, `StagedConnect` and `Prefetch` (a private method now), which are
+written as RPITITs, and
 the cost of that was measured rather than assumed: it is why the QUIC arm
 reaches `Native` through `http3::arm`'s erasure, and the erasure is
 `Send` anyway.
@@ -8045,6 +8047,35 @@ the one that argument did not reach. It is public in `error::` now, and
 beside it. **A module with one job is what made both visible**: scattered
 across the root, a missing payload is an absence nobody reads; listed in
 the one place payloads live, it is a gap in a list.
+
+**A second pass took four more, and found what the first had walked
+past.** `Conn`, the connection `NativeIo` names, was a `pub enum` with
+both variants public; it is a struct over a private enum now, `TokioIo`'s
+shape one layer up, and stays generic over the two *streams* rather than
+over `R` and `T` — the first attempt made it `NativeIo<R, T>` and asked
+`R: 'static` of every pooled connection, where only the stream has to be.
+`Prefetch` went private with `Discovered`, because its one outside
+caller was `hclient-select` and that routing is `route.rs` now; its
+second method, `execute_prepared`, had **no caller at all**, the router
+calling `run` directly. And `Prepared` left the public API with them:
+`StagedConnect::connect` took one, read only the request out of it, and
+every caller built it with `Prepared::new` — a type in a public signature
+whose other half nothing read. It takes the request now, as the QUIC
+trait always did.
+
+**And the rendered page had lost `Native`'s own documentation.** Its
+whole doc — the `Send` argument and both doctest fences — sat on the
+private `Versions` struct below it, and five methods' docs were shifted
+the same way: `hooks`' onto `proxy`, `watching_1xx`'s onto
+`expect_continue`, `multiplexed`'s onto `now` and `h2_keep_alive`,
+`network_changed`'s onto `alt_svc_store`, and the QUIC
+`StagedConnect::connect`'s onto an associated type. `new` had none at all. Each is a method inserted between a doc block and the item
+it described. **`just docs` cannot see it** — the links resolve, the text
+simply belongs to a neighbour — and the doctests kept running, because
+rustdoc tests private items too. What sees it is `missing_docs`, which
+finds the item left with nothing; it is on in `hclient-native` now, where
+`just lint`'s `-D warnings` makes it a gate. Across the workspace it
+reports 270 more, and those are for another pass.
 
 ### The front page listed 73 items and twelve of them were for the caller
 

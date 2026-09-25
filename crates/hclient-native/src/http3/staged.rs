@@ -61,11 +61,11 @@
 //!   this workspace does not build; the one consumer here connects on the
 //!   arm it intends to use.
 //!
-//! # There is no `Prepared` on this side, and that is not an omission
+//! # It takes the request itself
 //!
-//! `hclient-h3` makes no HTTPS-record lookup at all, so there is nothing
-//! for a `Prefetch` to save and nothing for [`StagedConnect::connect`] to
-//! take but the request itself.
+//! The QUIC arm makes no HTTPS-record lookup at all, so there is nothing
+//! for a lookup done ahead to save and nothing for
+//! [`StagedConnect::connect`] to take but the request.
 
 use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
 use hclient_core::body::RequestBody;
@@ -93,10 +93,9 @@ use std::sync::Arc;
 /// The same shape [`crate::staged::StagedConnect`] has, declared separately
 /// rather than shared: a trait is declared by the module that implements
 /// it, the routing in this crate owns both members concretely and needs no
-/// polymorphism between them, and
-/// the two do not agree on what `connect` takes — `Native` takes a
-/// `hclient_native::Prepared`, because it has a record lookup worth
-/// composing with, and this takes a request, because it has none.
+/// polymorphism between them, and the handles differ — see
+/// [`crate::staged::h3`]. Both take the request alone: the TCP one took a
+/// record-carrying `Prepared` for a while and never read the record.
 ///
 /// It is emphatically **not** a method on `Transport`. `wasi:http` 0.3's
 /// client interface is one function with no connection resource in the WIT,
@@ -112,16 +111,6 @@ pub trait StagedConnect: Transport {
     /// by a check.
     type Staged;
 
-    /// Everything `Transport::execute` does up to and including *"a
-    /// connection that can carry this request"* — the version demand, the
-    /// scheme, the early-data admission, address resolution, the QUIC
-    /// handshake and h3's own SETTINGS — and not one byte more.
-    ///
-    /// On failure the request comes back untouched, in [`Refused`], because
-    /// the caller asked this in order to decide something and the failure is
-    /// half the answer. Nothing was sent, so a caller sending it elsewhere
-    /// is not retrying: *this is not a second request, it is the first one,
-    /// which never left.*
     /// Associated types rather than RPITITs, so that `http3::arm`'s
     /// erasure can *name* these when it declares its own boxes `Send` —
     /// the same reason `hclient_rt::TcpConnect::Connecting` is one.
@@ -133,6 +122,16 @@ pub trait StagedConnect: Transport {
     where
         Self: 'a;
 
+    /// Everything `Transport::execute` does up to and including *"a
+    /// connection that can carry this request"* — the version demand, the
+    /// scheme, the early-data admission, address resolution, the QUIC
+    /// handshake and h3's own SETTINGS — and not one byte more.
+    ///
+    /// On failure the request comes back untouched, in [`Refused`], because
+    /// the caller asked this in order to decide something and the failure is
+    /// half the answer. Nothing was sent, so a caller sending it elsewhere
+    /// is not retrying: *this is not a second request, it is the first one,
+    /// which never left.*
     fn connect(&self, req: http::Request<RequestBody>) -> Self::Connecting<'_>;
 
     /// The rest of `Transport::execute`, on the connection
@@ -155,7 +154,7 @@ impl Refused {
     }
 
     /// Why, for a caller with nowhere else to send this.
-    pub fn into_error(self) -> Error {
+    pub(crate) fn into_error(self) -> Error {
         self.error
     }
 
@@ -205,9 +204,9 @@ where
     }
 }
 
-/// The one implementation, and the contract is on the trait — for
-/// `Prefetch`'s reason one crate over: an inherent method of the same name
-/// wins method resolution over a trait one.
+/// The one implementation, and the contract is on the trait — for the TCP
+/// stack's reason: an inherent method of the same name wins method
+/// resolution over a trait one.
 /// Short and named, so the marker sits where `cargo fmt` leaves it — the
 /// rule amendment C12 records about where a bound is written.
 type SendStaging<'a, S> = std::pin::Pin<Box<dyn Future<Output = Result<S, Refused>> + Send + 'a>>; // send-bound-exception: amendment-C15

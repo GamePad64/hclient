@@ -25,7 +25,7 @@
 //! **One** type-65 query per request that has a name to ask about,
 //! whichever stack answers. A [`RequireVersion`] demand, `http://` and an
 //! IP literal cost none at all — and the record is fetched by the
-//! connector's own lookup ([`crate::Prefetch::prepare`]), so a request
+//! connector's own lookup ([`crate::Native::prepare`]), so a request
 //! that ends up on TCP does not pay for a second one.
 
 use crate::altsvc_cache::{self as altsvc, Origin};
@@ -33,7 +33,7 @@ use crate::connect::HTTPS_DEFAULT_PORT;
 use crate::discovery::Discovered;
 use crate::error::NoQuicArm;
 use crate::established::NativeBody as EstablishedBody;
-use crate::{ALPN_H3, Native, Prefetch as _, Prepared, Protocol, spoken_version};
+use crate::{ALPN_H3, Native, Prepared, Protocol, spoken_version};
 use futures_util::StreamExt as _;
 use hclient_core::body::RequestBody;
 use hclient_core::error::Error;
@@ -80,7 +80,7 @@ enum Route {
         /// real answer.
         fallback: bool,
     },
-    /// The TCP stack, with whatever [`Prefetch::prepare`] found for this
+    /// The TCP stack, with whatever [`Native::prepare`] found for this
     /// request — including "nothing was looked up", for the requests this
     /// transport does not ask about (a `RequireVersion` demand, `http://`,
     /// an IP literal, a resolver that cannot ask). Those get
@@ -262,7 +262,7 @@ where
     ///
     /// # The connector is asked first, because it was going to ask anyway
     ///
-    /// [`Prefetch::prepare`] does the lookup this transport needs *and* the
+    /// [`Native::prepare`] does the lookup this transport needs *and* the
     /// one the TCP stack was about to make inside its own connector, and
     /// hands back both the answer and the request. Before it, the same
     /// record was fetched twice for one request chosen onto TCP at an

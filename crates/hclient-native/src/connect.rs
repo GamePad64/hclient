@@ -145,21 +145,42 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-/// A connection: with or without TLS. Both variants are on this
-/// workspace's byte-stream seam.
+/// A connection: a plain socket from the runtime, or that same socket
+/// wrapped by the TLS backend. What [`NativeIo`](crate::NativeIo) names.
 ///
-/// `pub`, not `pub(crate)`, since v0.2 W2: it appears in the public
-/// signature of [`crate::Native`]'s `Transport::Body`
-/// (`NativeBody<NativeIo<R, T>>`), because the response body now holds its
-/// connection as a concrete type rather than a `Box<dyn Future>` — see
-/// `h1.rs`'s module doc comment for why that box had to go. Nothing here
-/// is meant to be constructed by a caller; it is nameable because Rust
-/// requires the type in a public signature to be nameable, not because it
-/// is an API.
+/// **Opaque, and that is the point of it being a struct.** It is public
+/// because `Native`'s `Transport::Body` is generic over it and a caller
+/// who names that body must be able to name this — `hclient-tungstenite`
+/// does, to borrow a connection after a `101`. What a caller does with
+/// one is the byte-stream seam: `futures_io::{AsyncRead, AsyncWrite}` and
+/// `hclient_rt::Shutdown`, forwarded to whichever stream it holds.
+///
+/// It was `pub enum Conn { Plain, Tls }`, which made both variants — and
+/// so the choice between them — part of the API, and let a caller build
+/// one out of any two streams. That is the move `TokioIo` and `SmolIo`
+/// made one layer down: a struct over a private enum, so the
+/// representation is a thing this crate may change. It stays generic
+/// over the two **streams** rather than over the runtime and the backend
+/// that produce them, because a struct over `R` and `T` would ask
+/// `R: 'static` wherever a connection is pooled, where only the stream
+/// has to be.
 #[derive(Debug)]
-pub enum Conn<P, T> {
+pub struct Conn<P, T>(pub(crate) Side<P, T>);
+
+/// Which of the two streams a [`Conn`] holds.
+#[derive(Debug)]
+pub(crate) enum Side<P, T> {
     Plain(P),
     Tls(T),
+}
+
+impl<P, T> Conn<P, T> {
+    pub(crate) fn plain(p: P) -> Self {
+        Self(Side::Plain(p))
+    }
+    pub(crate) fn tls(t: T) -> Self {
+        Self(Side::Tls(t))
+    }
 }
 
 impl<P: Read + Unpin, T: Read + Unpin> Read for Conn<P, T> {
@@ -168,9 +189,9 @@ impl<P: Read + Unpin, T: Read + Unpin> Read for Conn<P, T> {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            Conn::Plain(p) => Pin::new(p).poll_read(cx, buf),
-            Conn::Tls(t) => Pin::new(t).poll_read(cx, buf),
+        match &mut self.get_mut().0 {
+            Side::Plain(p) => Pin::new(p).poll_read(cx, buf),
+            Side::Tls(t) => Pin::new(t).poll_read(cx, buf),
         }
     }
 }
@@ -181,21 +202,21 @@ impl<P: Write + Unpin, T: Write + Unpin> Write for Conn<P, T> {
         cx: &mut Context<'_>,
         b: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            Conn::Plain(p) => Pin::new(p).poll_write(cx, b),
-            Conn::Tls(t) => Pin::new(t).poll_write(cx, b),
+        match &mut self.get_mut().0 {
+            Side::Plain(p) => Pin::new(p).poll_write(cx, b),
+            Side::Tls(t) => Pin::new(t).poll_write(cx, b),
         }
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Conn::Plain(p) => Pin::new(p).poll_flush(cx),
-            Conn::Tls(t) => Pin::new(t).poll_flush(cx),
+        match &mut self.get_mut().0 {
+            Side::Plain(p) => Pin::new(p).poll_flush(cx),
+            Side::Tls(t) => Pin::new(t).poll_flush(cx),
         }
     }
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Conn::Plain(p) => Pin::new(p).poll_close(cx),
-            Conn::Tls(t) => Pin::new(t).poll_close(cx),
+        match &mut self.get_mut().0 {
+            Side::Plain(p) => Pin::new(p).poll_close(cx),
+            Side::Tls(t) => Pin::new(t).poll_close(cx),
         }
     }
 
@@ -204,21 +225,21 @@ impl<P: Write + Unpin, T: Write + Unpin> Write for Conn<P, T> {
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            Conn::Plain(p) => Pin::new(p).poll_write_vectored(cx, bufs),
-            Conn::Tls(t) => Pin::new(t).poll_write_vectored(cx, bufs),
+        match &mut self.get_mut().0 {
+            Side::Plain(p) => Pin::new(p).poll_write_vectored(cx, bufs),
+            Side::Tls(t) => Pin::new(t).poll_write_vectored(cx, bufs),
         }
     }
 }
 
-/// Forwarded, both halves: a `Conn` is a choice between two streams and
-/// adds nothing of its own, so it half-closes and answers about vectored
-/// writes exactly as whichever stream it holds does.
+/// Forwarded: a `Conn` is a choice between two streams and adds nothing
+/// of its own, so it half-closes exactly as whichever stream it holds
+/// does.
 impl<P: Shutdown + Unpin, T: Shutdown + Unpin> Shutdown for Conn<P, T> {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Conn::Plain(p) => Pin::new(p).poll_shutdown(cx),
-            Conn::Tls(t) => Pin::new(t).poll_shutdown(cx),
+        match &mut self.get_mut().0 {
+            Side::Plain(p) => Pin::new(p).poll_shutdown(cx),
+            Side::Tls(t) => Pin::new(t).poll_shutdown(cx),
         }
     }
 }
@@ -814,7 +835,7 @@ where
 /// `prefetched` is [`Prefetched::NotConsulted`] for every caller that has
 /// not asked, which is the behaviour this function had before the
 /// parameter existed. A caller that *has* asked — through
-/// [`crate::Prefetch::prepare`], for **this request's own authority**, with
+/// [`crate::Native::prepare`], for **this request's own authority**, with
 /// this transport's own resolver and this transport's own negative cache —
 /// hands the answer over instead, and no query goes out here.
 ///
@@ -943,7 +964,7 @@ where
     };
 
     if !use_tls {
-        return Ok((Conn::Plain(tcp), None, attempted));
+        return Ok((Conn::plain(tcp), None, attempted));
     }
 
     // The **origin's** name, never the proxy's: the tunnel is transport,
@@ -956,7 +977,7 @@ where
     if let Some(a) = attempted.as_mut() {
         a.tls = Some(since::<R>(rt, handshake_began));
     }
-    Ok((Conn::Tls(stream), Some(info), attempted))
+    Ok((Conn::tls(stream), Some(info), attempted))
 }
 
 /// The TLS half of a Unix-domain connect, which is
@@ -1007,7 +1028,7 @@ where
         })
     });
     if !use_tls {
-        return Ok((Conn::Plain(stream), None, attempted));
+        return Ok((Conn::plain(stream), None, attempted));
     }
     // The name from the URI, because a certificate is checked against who
     // the caller asked for — the socket is transport, exactly as a tunnel
@@ -1018,7 +1039,7 @@ where
     if let Some(a) = attempted.as_mut() {
         a.tls = Some(since::<R>(rt, handshake_began));
     }
-    Ok((Conn::Tls(tls_stream), Some(info), attempted))
+    Ok((Conn::tls(tls_stream), Some(info), attempted))
 }
 
 pub(crate) async fn connect<R, D, L, P, H>(
@@ -1200,7 +1221,7 @@ where
 /// are told apart.** A condition that stopped the lookup is
 /// [`Prefetched::NotConsulted`] — nobody has an answer, and anyone who
 /// wants one must ask elsewhere; a lookup that happened is
-/// `Looked(..)`, whatever it found. [`crate::Prefetch::prepare`] calls this
+/// `Looked(..)`, whatever it found. [`crate::Native::prepare`] calls this
 /// function rather than a copy of it, so the rule about where discovery
 /// applies is written once and cannot drift between the two callers.
 pub(crate) async fn discovered_endpoint<D>(
@@ -1419,11 +1440,11 @@ where
         if let Some(a) = attempted.as_mut() {
             a.tls = Some(since::<R>(rt, handshake_began));
         }
-        Ok((Conn::Tls(stream), Some(info), attempted))
+        Ok((Conn::tls(stream), Some(info), attempted))
     } else {
         // `tls` stays `None`, which is not `Some(Duration::ZERO)`: there
         // was no handshake, and a zero would read as an instant one.
-        Ok((Conn::Plain(tcp), None, attempted))
+        Ok((Conn::plain(tcp), None, attempted))
     }
 }
 
@@ -2946,7 +2967,7 @@ mod tests {
                 None,
             ))
             .expect("the v4 address must win the race");
-        assert!(matches!(conn, Conn::Plain(_)));
+        assert!(matches!(conn.0, Side::Plain(_)));
         // v6(2) never got its turn — the race stopped as soon as v4 won.
         assert_eq!(
             rt.log.borrow().len(),
@@ -3054,7 +3075,7 @@ mod tests {
                 None,
             ))
             .expect("connect");
-        assert!(matches!(conn, Conn::Plain(_)));
+        assert!(matches!(conn.0, Side::Plain(_)));
         assert!(info.is_none());
     }
 
@@ -3086,7 +3107,7 @@ mod tests {
                 None,
             ))
             .expect("connect");
-        assert!(matches!(conn, Conn::Tls(_)));
+        assert!(matches!(conn.0, Side::Tls(_)));
         assert_eq!(info.unwrap().alpn.as_deref(), Some(b"h2".as_slice()));
     }
 

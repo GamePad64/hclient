@@ -298,6 +298,9 @@ impl<R, T, D> H3<R, T, D, NoHooks>
 where
     T: QuicTlsConnect,
 {
+    /// An HTTP/3 transport over QUIC: UDP from `rt`, the QUIC TLS session
+    /// from `tls`, and names resolved by `dns`.
+    ///
     /// # The capability values, one by one
     ///
     /// - `streaming_request_body: true` and `full_duplex: true`. HTTP/3

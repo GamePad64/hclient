@@ -24,8 +24,8 @@ use hclient_core::body::RequestBody;
 use hclient_core::error::ErrorKind;
 use hclient_core::transport::Transport;
 use hclient_dns_system::SystemDns;
+use hclient_native::Native;
 use hclient_native::staged::StagedConnect;
-use hclient_native::{Native, Prepared};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use http_body_util::BodyExt;
@@ -115,13 +115,11 @@ fn native() -> Native<Tokio, NoTls, SystemDns<Tokio>> {
     Native::new(Tokio, NoTls, SystemDns::new(Tokio))
 }
 
-fn get(addr: SocketAddr) -> Prepared {
-    Prepared::new(
-        http::Request::builder()
-            .uri(format!("http://{addr}/hello"))
-            .body(RequestBody::Empty)
-            .expect("a well-formed request"),
-    )
+fn get(addr: SocketAddr) -> http::Request<RequestBody> {
+    http::Request::builder()
+        .uri(format!("http://{addr}/hello"))
+        .body(RequestBody::Empty)
+        .expect("a well-formed request")
 }
 
 async fn body_of<B>(resp: http::Response<B>) -> String
@@ -181,10 +179,7 @@ async fn a_staged_connect_finds_a_pooled_connection_rather_than_dialling() {
     let t = native();
 
     // An ordinary exchange first, to leave something in the pool.
-    let resp = t
-        .execute(get(addr).into_request())
-        .await
-        .expect("request 1");
+    let resp = t.execute(get(addr)).await.expect("request 1");
     assert_eq!(body_of(resp).await, "ok");
 
     let staged = t.connect(get(addr)).await.expect("request 2 connects");
@@ -220,7 +215,7 @@ async fn a_staged_exchange_returns_its_connection_to_the_pool() {
 
         if warm {
             // The staged connect then comes off the pooled branch.
-            let resp = t.execute(get(addr).into_request()).await.expect("warming");
+            let resp = t.execute(get(addr)).await.expect("warming");
             assert_eq!(body_of(resp).await, "ok");
             expected_heads += 1;
         }
@@ -230,7 +225,7 @@ async fn a_staged_exchange_returns_its_connection_to_the_pool() {
         assert_eq!(body_of(resp).await, "ok");
         expected_heads += 1;
 
-        let resp = t.execute(get(addr).into_request()).await.expect("after");
+        let resp = t.execute(get(addr)).await.expect("after");
         assert_eq!(body_of(resp).await, "ok");
         expected_heads += 1;
 
@@ -258,7 +253,7 @@ async fn a_handle_nobody_spends_leaves_a_warm_connection() {
     reaches(&c.accepted, 1, "accepted connections").await;
     drop(staged);
 
-    let resp = t.execute(get(addr).into_request()).await.expect("request");
+    let resp = t.execute(get(addr)).await.expect("request");
     assert_eq!(body_of(resp).await, "ok");
     assert_eq!(
         (
@@ -283,7 +278,7 @@ async fn without_a_pool_a_dropped_handle_closes_its_connection() {
     reaches(&c.accepted, 1, "accepted connections").await;
     drop(staged);
 
-    let resp = t.execute(get(addr).into_request()).await.expect("request");
+    let resp = t.execute(get(addr)).await.expect("request");
     assert_eq!(body_of(resp).await, "ok");
     assert_eq!(
         c.accepted.load(Ordering::SeqCst),
@@ -339,7 +334,7 @@ async fn the_response_is_the_one_the_ordinary_exchange_would_have_returned() {
 
     let staged = t.connect(get(addr)).await.expect("connects");
     let staged_resp = t.exchange(staged).await.expect("exchanges");
-    let direct = t.execute(get(addr).into_request()).await.expect("executes");
+    let direct = t.execute(get(addr)).await.expect("executes");
 
     assert_eq!(staged_resp.status(), direct.status());
     assert_eq!(staged_resp.version(), direct.version());

@@ -375,7 +375,7 @@ where
     ///
     /// What the race hands back is a decision and a request whose
     /// `Timeouts::connect` has been charged for it. The two ways out of here
-    /// — [`Self::over_quic`] and the TCP member's `execute_prepared` — are
+    /// — [`Self::over_quic`] and the TCP member's `run` — are
     /// each written once, which is what stops a raced request and an unraced
     /// one from becoming two transports, and is also why this function exists
     /// at all rather than the race doing its own routing (see [`Raced`]).
@@ -440,7 +440,7 @@ where
             let quic = pin!(arm.connect_boxed(quic_probe));
             let hedge = pin!(async {
                 self.rt.sleep(head_start).await;
-                TcpConnectStaged::connect(self, Prepared::new(hedge_probe)).await
+                TcpConnectStaged::connect(self, hedge_probe).await
             });
             // Every arm below drops the loser by letting it fall out of
             // scope, which is what cancels it. The handles go the same way,

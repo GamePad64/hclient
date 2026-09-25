@@ -1436,7 +1436,7 @@ and `Sized` is required on the trait **specifically to prevent a
 `dyn Connect`** (`connect/mod.rs:322-324`). A single-threaded connector is
 structurally impossible there. It is also handed a `Uri` and nothing else,
 which is exactly the signature rejected here for
-the DNS-leak reason — and the reason `Prefetch::prepare` can hand a
+the DNS-leak reason — and the reason `Native::prepare` can hand a
 connector a fetched HTTPS record where `hyper-util` has no channel for one.
 
 **Sans-io crates a third party can use without the client.**

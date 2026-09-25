@@ -83,6 +83,7 @@ pub struct Http2NotCompiledIn;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("max_buf_size is {asked}, below hyper's minimum of {MINIMUM_MAX_BUF_SIZE}")]
 pub struct MaxBufSizeTooSmall {
+    /// The value the caller asked for.
     pub asked: usize,
 }
 
@@ -376,10 +377,15 @@ pub(crate) struct ConnectionWentAwayBeforeTheRequest;
 #[error("the connection ended while the request was still queued on it")]
 pub(crate) struct ConnectionEndedWithTheRequestQueued;
 
+/// An upgrade the server declined: it answered the request, with the
+/// status carried here, instead of switching protocols.
 #[derive(Debug, thiserror::Error)]
 #[error("the server answered {0} rather than 101 Switching Protocols")]
 pub struct NotSwitchingProtocols(pub http::StatusCode);
 
+/// An upgrade whose connection closed before any response head arrived,
+/// so there is no status to report — the counterpart of
+/// [`NotSwitchingProtocols`] for a server that said nothing.
 #[derive(Debug, thiserror::Error)]
 #[error("the connection ended before the handshake response arrived")]
 pub struct EndedBeforeTheResponse;
