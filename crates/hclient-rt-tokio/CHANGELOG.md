@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-rt-tokio-v0.1.0-alpha.13...hclient-rt-tokio-v0.1.0-alpha.14) - 2026-09-25
+
+### Added
+
+- *(rt)* [**breaking**] UDP is unconditional in both runtimes
+- *(rt-tokio)* [**breaking**] TokioIo reaches its socket through AsFd, and panics on none
+- *(rt-tokio)* TokioHandle implements IpcConnect
+
+### Other
+
+- every crate's front page starts with what it is and a working example
+- doc comments speak to the docs.rs reader, and the argument moves beside them
+- every public item is documented, and every library asks for missing_docs
+- *(rt-tokio)* feature badges, and a README that names both runtimes
+- *(rt-tokio)* pin the write path, the half-close and the Unix path
+- *(tls)* what a backend over another TLS library owes Shutdown
+
 ## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-rt-tokio-v0.1.0-alpha.12...hclient-rt-tokio-v0.1.0-alpha.13) - 2026-09-23
 
 ### Added

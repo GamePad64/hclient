@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.16](https://github.com/GamePad64/hclient/compare/hclient-dns-doh-v0.1.0-alpha.15...hclient-dns-doh-v0.1.0-alpha.16) - 2026-09-25
+
+### Other
+
+- every crate's front page starts with what it is and a working example
+- doc comments speak to the docs.rs reader, and the argument moves beside them
+- every public item is documented, and every library asks for missing_docs
+- *(tls)* hclient-tls 0.1.0, and the seven requirements naming it
+
 ## [0.1.0-alpha.15](https://github.com/GamePad64/hclient/compare/hclient-dns-doh-v0.1.0-alpha.14...hclient-dns-doh-v0.1.0-alpha.15) - 2026-09-23
 
 ### Other

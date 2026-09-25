@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-tls-rustls-v0.1.0-alpha.13...hclient-tls-rustls-v0.1.0-alpha.14) - 2026-09-25
+
+### Added
+
+- *(native)* [**breaking**] the root holds the transport, and five modules hold the rest
+- *(tls-rustls)* pin every seam obligation, and re-export rustls
+
+### Other
+
+- every crate's front page starts with what it is and a working example
+- doc comments speak to the docs.rs reader, and the argument moves beside them
+- every public item is documented, and every library asks for missing_docs
+- *(tls-rustls)* feature badges, and build a config from the re-export
+- *(tls)* open both backends with how to build one
+- *(tls-rustls)* hide the with_webpki_roots stub and its trait
+- require rustls 0.23.45
+- *(tls)* hclient-tls 0.1.0, and the seven requirements naming it
+
 ## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-tls-rustls-v0.1.0-alpha.12...hclient-tls-rustls-v0.1.0-alpha.13) - 2026-09-23
 
 ### Added

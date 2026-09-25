@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/GamePad64/hclient/compare/hclient-core-v0.2.1...hclient-core-v0.2.2) - 2026-09-25
+
+### Other
+
+- every crate's front page starts with what it is and a working example
+- doc comments speak to the docs.rs reader, and the argument moves beside them
+- every public item is documented, and every library asks for missing_docs
+- *(core)* KeyValueStore grows by extension traits, not methods
+
 ## [0.2.0](https://github.com/GamePad64/hclient/compare/hclient-core-v0.1.0...hclient-core-v0.2.0) - 2026-09-23
 
 ### Added

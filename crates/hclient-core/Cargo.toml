@@ -1,6 +1,6 @@
 [package]
 name = "hclient-core"
-version = "0.2.1"
+version = "0.2.2"
 description = "Plugin contract for hclient: Transport, Capabilities, RequestBody, Error, Timer"
 keywords     = ["hclient", "http", "transport", "async"]
 categories   = ["web-programming::http-client", "asynchronous"]

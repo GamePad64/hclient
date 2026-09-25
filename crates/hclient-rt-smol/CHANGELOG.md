@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-rt-smol-v0.1.0-alpha.13...hclient-rt-smol-v0.1.0-alpha.14) - 2026-09-25
+
+### Added
+
+- *(rt)* [**breaking**] UDP is unconditional in both runtimes
+- *(rt-smol)* SmolUdpSocket reaches its socket through AsFd
+- *(rt-smol)* [**breaking**] SmolIo is opaque, and reaches the socket through AsFd
+- *(rt-smol)* [**breaking**] SmolSleep keeps async_io::Timer off the public API
+- *(rt-smol)* [**breaking**] SmolSocket is non_exhaustive, and Smol says what it is
+
+### Other
+
+- every crate's front page starts with what it is and a working example
+- doc comments speak to the docs.rs reader, and the argument moves beside them
+- every public item is documented, and every library asks for missing_docs
+- *(rt-smol)* feature badges, and a README that says what udp adds
+- *(tls)* what a backend over another TLS library owes Shutdown
+
 ## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-rt-smol-v0.1.0-alpha.12...hclient-rt-smol-v0.1.0-alpha.13) - 2026-09-23
 
 ### Added

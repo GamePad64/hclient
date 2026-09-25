@@ -1,6 +1,6 @@
 [package]
 name = "hclient-tls"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pluggable TLS trait for hclient"
 keywords     = ["hclient", "tls", "seam"]
 categories   = ["cryptography", "network-programming"]
@@ -36,7 +36,7 @@ default = []
 [dependencies]
 hclient-core = { workspace = true }
 futures-io   = { version = "0.3", default-features = false, features = ["std"] }
-hclient-rt   = { path = "../hclient-rt", version = "0.1.0" }
+hclient-rt   = { path = "../hclient-rt", version = "0.1.1" }
 
 [lints]
 workspace = true

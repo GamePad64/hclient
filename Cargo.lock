@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "hclient"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 dependencies = [
  "brotli",
  "brotli-decompressor",
@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1361,7 +1361,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-dns"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-dns-doh"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 dependencies = [
  "bytes",
  "domain",
@@ -1397,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-dns-hickory"
-version = "0.1.0-alpha.13"
+version = "0.1.0-alpha.14"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-dns-system"
-version = "0.1.0-alpha.14"
+version = "0.1.0-alpha.15"
 dependencies = [
  "const-hex",
  "domain",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-fetch"
-version = "0.1.0-alpha.13"
+version = "0.1.0-alpha.14"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-idn"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "idna",
  "jni",
@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-mock"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "futures-executor",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-native"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-otel"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 dependencies = [
  "bytes",
  "hclient",
@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-proto"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "base64",
  "bytes",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-proxy"
-version = "0.1.0-alpha.13"
+version = "0.1.0-alpha.14"
 dependencies = [
  "bytes",
  "core-foundation 0.10.1",
@@ -1579,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-rt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-core",
  "futures-executor",
@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-rt-smol"
-version = "0.1.0-alpha.13"
+version = "0.1.0-alpha.14"
 dependencies = [
  "async-executor",
  "async-io",
@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-rt-tokio"
-version = "0.1.0-alpha.13"
+version = "0.1.0-alpha.14"
 dependencies = [
  "futures-core",
  "futures-executor",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tls"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-executor",
  "futures-io",
@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tls-native-tls"
-version = "0.1.0-alpha.14"
+version = "0.1.0-alpha.15"
 dependencies = [
  "futures-executor",
  "futures-io",
@@ -1699,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tls-rustls"
-version = "0.1.0-alpha.13"
+version = "0.1.0-alpha.14"
 dependencies = [
  "futures-executor",
  "futures-io",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tower"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 dependencies = [
  "axum",
  "bytes",
@@ -1744,7 +1744,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-tungstenite"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1772,7 +1772,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-urlsession"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 dependencies = [
  "block2",
  "bytes",
@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-wasi"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bytes",
  "futures",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-webtransport"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-winhttp"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -3601,7 +3601,7 @@ dependencies = [
 
 [[package]]
 name = "system-resolver"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "const-hex",
  "rstest",

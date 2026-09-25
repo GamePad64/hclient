@@ -1,6 +1,6 @@
 [package]
 name = "hclient-tls-rustls"
-version = "0.1.0-alpha.13"
+version = "0.1.0-alpha.14"
 description = "rustls as an hclient TLS backend, with named client identities and HTTP/3 support"
 keywords     = ["hclient", "tls", "rustls"]
 categories   = ["cryptography", "network-programming"]
@@ -37,9 +37,9 @@ webpki-roots      = ["dep:webpki-roots"]
 [dependencies]
 thiserror = { workspace = true }
 hclient-core     = { workspace = true }
-hclient-tls      = { path = "../hclient-tls", version = "0.1.0" }
+hclient-tls      = { path = "../hclient-tls", version = "0.1.1" }
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
-hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
+hclient-rt       = { path = "../hclient-rt", version = "0.1.1" }
 # The 0.23 series is this crate's 0.1 series: `rustls` is re-exported, so
 # its major is this crate's major. 0.24 means a breaking release here, and
 # its API needs changes, not just a version bump. `.45` is the floor
@@ -60,8 +60,8 @@ webpki-roots     = { version = "1.0", optional = true }
 tracing          = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-hclient-rt-smol  = { path = "../hclient-rt-smol", version = "0.1.0-alpha.13" }
-hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.13" }
+hclient-rt-smol  = { path = "../hclient-rt-smol", version = "0.1.0-alpha.14" }
+hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.14" }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 # `client` + `http1`: only this task (fix round 2) actually speaks HTTP
 # over `TlsStream` — the claim "hyper decides framing, not this stream"

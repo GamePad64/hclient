@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.2...hclient-wasi-v0.1.3) - 2026-09-25
+
+### Added
+
+- *(core)* reports `TlsSupport::Platform`, the state `hclient-core` 0.2.1 added for TLS the host performs; this crate's own API is unchanged
+
+### Other
+
+- every crate's front page starts with what it is and a working example
+- doc comments speak to the docs.rs reader, and the argument moves beside them
+- every public item is documented, and every library asks for missing_docs
+
 ## [0.1.2](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.1...hclient-wasi-v0.1.2) - 2026-09-23
 
 ### Fixed

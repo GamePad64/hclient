@@ -1,6 +1,6 @@
 [package]
 name = "hclient-dns-doh"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 description = "DNS-over-HTTPS (RFC 8484) resolver for hclient, over any Transport"
 keywords     = ["hclient", "dns", "doh", "resolver"]
 categories   = ["network-programming"]
@@ -84,7 +84,7 @@ hclient-core   = { workspace = true }
 # function only this crate ever called. It is `wire.rs`'s now, beside the
 # `Message::from_slice` that produces its input, and `domain` is named in
 # this manifest, which is where the decision was actually being made.
-hclient-dns    = { path = "../hclient-dns", version = "0.1.1" }
+hclient-dns    = { path = "../hclient-dns", version = "0.1.2" }
 thiserror      = { workspace = true }
 # Unconditional, for the reason `hclient-tls-rustls` states: with no
 # subscriber installed a `trace!` is a load and a branch, and a feature
@@ -113,9 +113,9 @@ rstest           = { workspace = true }
 #
 # Not a dependency cycle: `hclient-native` depends on `hclient-dns`, never
 # on this crate.
-hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.15" }
-hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.13" }
-hclient-tls      = { path = "../hclient-tls", version = "0.1.0" }
+hclient-native   = { path = "../hclient-native", version = "0.1.0-alpha.16" }
+hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.14" }
+hclient-tls      = { path = "../hclient-tls", version = "0.1.1" }
 # `tests/live.rs` alone, and `platform-verifier` is the whole point of it
 # rather than a convenience. The unverified row that suite exists to settle
 # is whether a certificate presented for an IP ADDRESS validates through the
@@ -123,7 +123,7 @@ hclient-tls      = { path = "../hclient-tls", version = "0.1.0" }
 # handshake every pinned deployment makes. `webpki-roots` would answer a
 # different question (rustls's bundled roots, its own webpki path) and leave
 # the one asked exactly where it was.
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.13", features = ["platform-verifier"] }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.14", features = ["platform-verifier"] }
 tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

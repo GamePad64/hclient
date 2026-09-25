@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.16](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.15...hclient-native-v0.1.0-alpha.16) - 2026-09-25
+
+### Added
+
+- *(native)* [**breaking**] endpoint and the two default constants leave the public API
+- *(native)* [**breaking**] Native has its documentation back, and four more items leave the surface
+- *(native)* [**breaking**] the root holds the transport, and five modules hold the rest
+- *(native)* [**breaking**] caps is private, and Disagreement lives at the root
+- *(rt)* [**breaking**] UDP is unconditional in both runtimes
+- *(rt-smol)* [**breaking**] SmolIo is opaque, and reaches the socket through AsFd
+
+### Other
+
+- every crate's front page starts with what it is and a working example
+- doc comments speak to the docs.rs reader, and the argument moves beside them
+- require rustls 0.23.45
+- *(tls)* hclient-tls 0.1.0, and the seven requirements naming it
+- *(tls)* what a backend over another TLS library owes Shutdown
+
 ## [0.1.0-alpha.15](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.14...hclient-native-v0.1.0-alpha.15) - 2026-09-23
 
 ### Added
