@@ -70,6 +70,10 @@
 //! failure mode is presenting one tenant's certificate on another's
 //! behalf.
 #![forbid(unsafe_code)]
+// docs.rs builds with every feature and passes `--cfg docsrs`, so an item
+// behind a feature or a platform is shown with a badge naming it rather
+// than looking unconditional.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
 #[cfg(feature = "dangerous-insecure")]

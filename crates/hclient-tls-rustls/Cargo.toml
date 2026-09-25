@@ -1,9 +1,9 @@
 [package]
 name = "hclient-tls-rustls"
 version = "0.1.0-alpha.13"
-description = "hclient's rustls TLS backend, over `futures-io` plus this workspace's half-close"
+description = "rustls as an hclient TLS backend, with named client identities and HTTP/3 support"
 keywords     = ["hclient", "tls", "rustls"]
-categories   = ["cryptography"]
+categories   = ["cryptography", "network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

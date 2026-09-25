@@ -12,8 +12,13 @@ No trust store is compiled in by default; choose one:
   system's own store, which is what `hclient::Client::new()` uses;
 - `webpki-roots` — `Rustls::with_webpki_roots()`, a bundled root set;
 - no feature — `Rustls::from_config(..)`, with a `rustls::ClientConfig` you
-  build. Your `rustls` dependency must then be the same major as this
-  crate's, and enable the `ring` provider (or install a process default).
+  build. Build it from `hclient_tls_rustls::rustls`, the re-export, rather
+  than a `rustls` of your own. That way both are the same version, and a
+  second crypto provider cannot end up compiled in beside `ring`, which
+  would make `ClientConfig::builder()` panic.
+
+`with_identity(name, config)` registers a named client certificate that a
+request can select, for mutual TLS with more than one identity.
 
 `dangerous-insecure` adds `Rustls::danger_accept_invalid_certs()`, which
 skips certificate verification; it is off unless asked for.
