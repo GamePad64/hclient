@@ -39,6 +39,7 @@
 //! | [`Timer::now`], [`Timer::elapsed_since`] | already worked | unchanged — `tokio::time::Instant::now()` never read the context |
 //! | [`TcpAdoptStd::adopt`] | panics (`TcpStream::from_std` registers with the reactor) | works |
 //! | [`TcpConnect::connect`] | panics | **still panics, and that is not fixable here** |
+//! | [`IpcConnect::connect_ipc`](hclient_rt::IpcConnect::connect_ipc) | panics | still panics, for `connect`'s reason |
 //!
 //! The last row is the interesting one, so it is written down rather than
 //! left for someone to rediscover. `connect` is an `async fn`: the reactor
@@ -228,6 +229,27 @@ impl TcpConnect for TokioHandle {
     fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
         let opts = opts.clone();
         Box::pin(async move { Tokio.connect(addr, &opts).await })
+    }
+}
+
+impl hclient_rt::IpcConnect for TokioHandle {
+    /// [`Tokio`]'s, for the reason `TCP_SUPPORT` is: `connect_ipc` below
+    /// delegates to it, and a delegate's claim is its delegate's.
+    const IPC_SUPPORT: hclient_rt::IpcSupport = <Tokio as hclient_rt::IpcConnect>::IPC_SUPPORT;
+
+    type ConnectingIpc<'a>
+        = std::pin::Pin<Box<dyn Future<Output = std::io::Result<TokioIo>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    /// **Delegated to [`Tokio`]'s, with no `EnterGuard`**, for the reason
+    /// `connect` gives: the socket registers with the reactor at first
+    /// poll, inside the async body, so this future must be polled on a
+    /// runtime thread. What the handle adds is that `Native::unix_socket`
+    /// accepts it at all.
+    fn connect_ipc<'a>(&'a self, addr: &hclient_rt::IpcAddr) -> Self::ConnectingIpc<'a> {
+        let addr = addr.clone();
+        Box::pin(async move { hclient_rt::IpcConnect::connect_ipc(&Tokio, &addr).await })
     }
 }
 
@@ -542,5 +564,43 @@ mod tests {
         let applied = s.get_ref().nodelay().expect("nodelay query");
         assert!(applied, "nodelay did not reach the socket");
         assert_eq!(<TokioHandle as TcpConnect>::TCP_SUPPORT.nodelay, applied);
+    }
+
+    /// `TokioHandle` reaches a Unix-domain socket as `Tokio` does, and
+    /// claims exactly `Tokio`'s support. The connection is checked from
+    /// the listener's side, so a `connect_ipc` that answered without
+    /// dialing would fail here.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_handle_dials_a_unix_socket_and_claims_what_tokio_claims() {
+        use hclient_rt::IpcConnect;
+
+        let dir = std::env::temp_dir().join(format!(
+            "hclient-tokio-handle-unix-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("a clock after 1970")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let accepted = std::thread::spawn(move || listener.accept().is_ok());
+
+        let rt = TokioHandle::current().expect("inside #[tokio::test]");
+        let _s = rt
+            .connect_ipc(&hclient_rt::IpcAddr::unix(&path))
+            .await
+            .expect("connect_ipc through the handle");
+        assert!(
+            accepted.join().expect("listener thread"),
+            "the listener saw no connection"
+        );
+        assert_eq!(
+            <TokioHandle as IpcConnect>::IPC_SUPPORT,
+            <Tokio as IpcConnect>::IPC_SUPPORT
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
