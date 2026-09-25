@@ -664,8 +664,41 @@ the version.
 **`hclient-rt-smol` names `SmolSleep` where it named `async_io::Timer`**,
 for the same reason one layer down: `Timer::Sleep` is public, so the
 concrete timer made `async-io`'s major version this crate's too, for a
-value a caller only awaits. `async-net`'s streams stay public inside
-`SmolSocket`, because reading the socket back is what that type is for.
+value a caller only awaits.
+
+**And its connection type is opaque now, which reversed the sentence that
+stood here for one commit.** It said `async-net`'s streams stay public
+inside `SmolSocket` because reading the socket back is what that type is
+for. That is true of the *purpose* and did not need `async-net`: reading
+a socket back means reaching the file descriptor, and the standard library
+already has a trait for that. `SmolIo` is a struct with a private enum, like
+`TokioIo`, and implements `AsFd` on unix and `AsSocket` on Windows, so
+`socket2::SockRef::from(&io)` reaches every option the runtime sets. The
+crate's own option tests read everything back that way. The old
+`SmolSocket::tcp()` returned an `async_net::TcpStream`, which put a second
+crate's major version in the API only to serve that read-back.
+
+**A public surface audit of the four found three more, all applied.**
+The rustdoc JSON of each crate was walked for every public item and every
+foreign type it reaches:
+
+- `hclient-tls-native-tls`'s `TlsStream::negotiated_alpn` and
+  `peer_certificate_der` are `pub(crate)` now. Their only callers were in
+  the crate: the handshake already hands both to a caller in `TlsInfo`,
+  and the rustls `TlsStream` never had them.
+- Its builders are `with_client_identity` and `with_root_certificate`. The
+  first one was named `identity`, which next door in
+  `Rustls::with_identity(name, config)` means a *named* identity that a
+  request selects. This backend refuses named identities, so the same word
+  meant opposite things in the two backends.
+- `TokioHandle` implements `IpcConnect`, delegating to `Tokio` as its TCP
+  connect does. Without it `Native::unix_socket` could not be built over a
+  handle.
+- `hclient-tls-rustls`'s `WebpkiRootsFeature` stub trait and the stub
+  `with_webpki_roots` are `#[doc(hidden)]`. The trait exists only
+  *without* a feature, so enabling the feature removed a public item.
+  `hclient`'s `DefaultTransportFeature` has the same shape and is left as
+  it is, because that crate was not part of this audit.
 
 **`hclient-tls-rustls` 0.1.x lasts exactly as long as rustls 0.23**, and
 the migration is a redesign rather than a bump. The owner's call is to stay
@@ -6063,7 +6096,7 @@ is a refusal, beside `SUPPORTS_UNIX` defaulted to `false` — `reports_alpn`
 and `applies_ech`'s shape: a constant defaulted to the understating value,
 read by the layer above to decide whether to *ask*. Both shipped runtimes
 compute it with `cfg!(unix)`, and each holds an enum internally
-(`TokioIo`'s `Socket`, `hclient-rt-smol`'s `SmolSocket`) because one
+(`TokioIo`'s `Socket`, and `hclient-rt-smol`'s, inside `SmolIo`) because one
 associated type must cover both.
 
 **It is `connect_ipc(&IpcAddr)` now, and the reason is the freeze.** A
