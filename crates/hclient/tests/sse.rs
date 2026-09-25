@@ -280,7 +280,7 @@ fn tracks_last_event_id_for_future_reconnects() {
 // No test above crosses a transport chunk boundary: `MockTransport::
 // push_response` hands back the whole body as one frame, so the
 // stitching-together at the `SseStream` level (not just inside
-// `SseDecoder`/`LineSplitter`, already covered in hclient-proto) stays
+// `SseDecoder`/`LineSplitter`, already unit-tested in `sansio`) stays
 // unverified. `push_response_frames` exists exactly for this.
 
 /// An event split mid-field (`"on" | "e\n\n..."`) — the most common real

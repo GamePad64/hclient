@@ -1,9 +1,9 @@
 #[cfg(feature = "charset")]
 pub(crate) use crate::error::CharsetError;
 pub(crate) use crate::error::UnexpectedStatus;
+use crate::sansio::link::Links;
 use bytes::{Bytes, BytesMut};
 use hclient_core::error::{Error, ErrorKind};
-use hclient_proto::link::Links;
 use http_body::Body as HttpBody;
 use std::error::Error as StdError;
 use std::fmt::Debug;
@@ -102,7 +102,7 @@ impl<B> Response<B> {
     ///
     /// A `3xx` is `Ok`, because reaching one means the redirect policy
     /// already decided to hand it back — see
-    /// [`Forbid`](hclient_proto::redirect::Forbid),
+    /// [`Forbid`](crate::sansio::redirect::Forbid),
     /// where a `3xx` is stated to be the caller's answer rather than
     /// a failure to reach one. Treating it as an error here would overrule
     /// that from two layers up.
@@ -172,7 +172,7 @@ impl<B> Response<B> {
     pub fn url(&self) -> &http::Uri {
         &self.url
     }
-    /// Every [`Link:`](hclient_proto::link) header, in the order the server
+    /// Every [`Link:`](crate::link::Link) header, in the order the server
     /// wrote them, with **each target resolved against [`Self::url`]**.
     ///
     /// ```no_run
@@ -194,11 +194,11 @@ impl<B> Response<B> {
     /// redirect was followed: a `Link` on the answer is relative to where the
     /// answer came from.
     ///
-    /// [`hclient_proto::link::Links::parse_value`] is the same parse without
+    /// [`crate::sansio::link::Links::parse_value`] is the same parse without
     /// the resolution, for a caller who wants the header's own text; a target
     /// that cannot be resolved at all is left as written rather than dropped,
     /// which is argued at
-    /// [`resolved_against`](hclient_proto::link::Links::resolved_against).
+    /// [`resolved_against`](crate::sansio::link::Links::resolved_against).
     ///
     /// # Why it is on both this type and [`Collected`]
     ///
@@ -284,7 +284,7 @@ where
     /// who knows their records' size uses [`lines::LineStream::new`]
     /// instead. [`lines::LineStream`] argues why that bound is not
     /// [`ClientBuilder::response_limit`](crate::ClientBuilder::response_limit)'s
-    /// job, and [`hclient_proto::lines`] argues the terminator set.
+    /// job, and the private `sansio::lines` module argues the terminator set.
     ///
     /// # There is no `Collected::lines`, and that is not symmetry lost
     ///
@@ -413,7 +413,7 @@ impl Collected {
     ///
     /// A `3xx` is `Ok`, because reaching one means the redirect policy
     /// already decided to hand it back — see
-    /// [`Forbid`](hclient_proto::redirect::Forbid),
+    /// [`Forbid`](crate::sansio::redirect::Forbid),
     /// where a `3xx` is stated to be the caller's answer rather than
     /// a failure to reach one. Treating it as an error here would overrule
     /// that from two layers up.
@@ -472,7 +472,7 @@ impl Collected {
     pub fn version(&self) -> http::Version {
         self.parts.version
     }
-    /// Every [`Link:`](hclient_proto::link) header, in the order the server
+    /// Every [`Link:`](crate::link::Link) header, in the order the server
     /// wrote them, with **each target resolved against [`Self::url`]**.
     ///
     /// ```no_run
@@ -494,11 +494,11 @@ impl Collected {
     /// redirect was followed: a `Link` on the answer is relative to where the
     /// answer came from.
     ///
-    /// [`hclient_proto::link::Links::parse_value`] is the same parse without
+    /// [`crate::sansio::link::Links::parse_value`] is the same parse without
     /// the resolution, for a caller who wants the header's own text; a target
     /// that cannot be resolved at all is left as written rather than dropped,
     /// which is argued at
-    /// [`resolved_against`](hclient_proto::link::Links::resolved_against).
+    /// [`resolved_against`](crate::sansio::link::Links::resolved_against).
     ///
     /// # Why it is on both this type and [`Response`]
     ///
@@ -651,7 +651,7 @@ impl Collected {
 ///
 /// Not a `mime` crate for one parameter of one header — `url` was removed
 /// from this graph at the cost of writing RFC 3986 §5.2 by hand, and
-/// base64 is twenty lines in `hclient-proto` for the same reason. The
+/// the encoders were once written by hand for the same reason. The
 /// rules are RFC 9110 §5.6.6: parameters are `;`-separated after the media
 /// type, names are case-insensitive, and a value is a token or a
 /// quoted-string.
@@ -663,14 +663,14 @@ impl Collected {
 /// without a second string to allocate.
 #[cfg(feature = "charset")]
 fn charset_param(value: &str) -> Option<&str> {
-    use hclient_proto::field::{ows, quoted_string_raw, token};
+    use crate::sansio::field::{ows, quoted_string_raw, token};
     use winnow::combinator::{alt, preceded, separated};
     use winnow::token::take_till;
     use winnow::{ModalResult, Parser};
 
     /// One `parameter = token BWS "=" BWS ( token / quoted-string )`.
     ///
-    /// The three productions under it are `hclient_proto::field`'s rather
+    /// The three productions under it are `crate::sansio::field`'s rather
     /// than three more copies here — this module was one of the four this
     /// crate had. `quoted_string_raw` is the borrowing form, and the
     /// reason is the label: no encoding `encoding_rs` knows contains a

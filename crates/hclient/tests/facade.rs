@@ -104,16 +104,15 @@ fn response_collected_and_request_builder_are_reachable_from_the_facade<B>(
 ) {
 }
 
-/// `SseStream`, `SseEvent`, and `DEFAULT_MAX_EVENT_SIZE` actually
-/// live in `hclient-proto` (`SseEvent`, `DEFAULT_MAX_EVENT_SIZE`) and
-/// `hclient` (`SseStream`), but must be nameable from `hclient::` with no
-/// direct dependency on `hclient-proto` — the same contract as above. The
+/// `SseStream`, `SseEvent`, and `DEFAULT_MAX_EVENT_SIZE` are
+/// `hclient`'s own and must be nameable from `hclient::` — the same
+/// contract as above. The
 /// same trick for `SseStream` as for `Response`/`Collected`/`RequestBuilder`:
 /// no constructor without a transport exists, so reachability and shape
 /// (generic arity) are checked by compiling a function that's never called.
 #[allow(
     dead_code,
-    reason = "`SseStream`, `SseEvent`, and `DEFAULT_MAX_EVENT_SIZE` actually live in `hclient-proto` (`SseEvent`, `DEFAULT_MAX_EVENT_SIZE`) and `hclient` (`SseStream`), but must be nameable from `hclient::` with no direct dependency on `hclient-proto` — the same contract as above. The same trick for `SseStream..."
+    reason = "`SseStream`, `SseEvent`, and `DEFAULT_MAX_EVENT_SIZE` are `hclient`'s own and must be nameable from `hclient::` — the same contract as above. The same trick for `SseStream..."
 )]
 // The typed `let _: T = ..` bindings ARE the check — this function is
 // never called, so it is the type ascription that asserts reachability

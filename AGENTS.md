@@ -8225,6 +8225,65 @@ exposes its types, so a step costs its dependents a requirement bump
 and a patch release, and `just exposed-majors` fails the day one of
 them starts exposing it.
 
+### `hclient-proto` is internal, and what it held for `hclient` moved into `hclient`
+
+The owner's rule: **`hclient-proto` is an internal crate, and nothing is
+re-exported from it.** It is published because its dependents need it on
+crates.io, promises nothing, and moves its minor version whenever they
+need it to. That is safe exactly as long as no crate hands a caller one of
+its types, and at the time of the rule three did.
+
+**`hclient` re-exported it in seven places** — the redirect and retry
+policy seams, `Backoff`, `Link`/`Links`, `SseEvent` and its size default,
+and `UriError`. A trait cannot be hidden behind a re-export, and
+`redirect::decide` takes `&dyn RedirectPolicy`, so the policy and its
+mechanism had to live together. The crate split cleanly by consumer:
+`head`, `encode` and `happy_eyeballs` serve `hclient-native`,
+`hclient-proxy` and `hclient-winhttp`; `redirect`, `retry`, `backoff`,
+`link`, `lines`, `sse`, `field` and `uri` served `hclient` alone, about
+5,850 lines against 1,400. The second half moved into `hclient` as the
+private module `sansio`, whole and with its unit tests, and the public
+`redirect`, `retry`, `link` and `sse` modules re-export from it — which
+makes them this crate's own types. No caller's `use` line moved.
+
+What travelled with it: the `idn` feature and `hclient-idn` (the URI
+parser was the reason for both), `percent-encoding`, `winnow` becoming
+unconditional (it already was in every default build), the RFC 3986
+differential corpus and the retry-policy tests, and the SSE fuzz targets
+— the fuzz crate is `crates/hclient/fuzz` now, reaching the decoder
+through a `#[doc(hidden)] testing` door, `hclient-native`'s shape. The
+graph gates followed their subjects: `graph-no-url` and
+`graph-idn-feature` ask `hclient`, and the latter now also asserts that
+`hclient-proto` carries no IDN at all.
+
+**It is held by a gate rather than by this paragraph.**
+`just internal-crates-stay-internal` reads a crate's
+`[package.metadata.hclient] internal = true`, documents every other
+publishable library as rustdoc JSON with `exposed-majors`' scanner, and
+fails on any path into an internal crate. **Its first run found a leak the
+grep had missed**: `hclient-winhttp`'s `WinHttpError::Head` carried
+`HeadError` through a `#[from]`, which is `hclient-proxy`'s defect a second
+time and got the same repair — an opaque `MalformedHead` newtype whose
+`source()` is the parser's error.
+
+**The move surfaced types a caller could reach and not name**, found by
+running `-W unnameable_types` rather than by reading.
+`ProposedRetry::new` takes an `Outcome` and `Standard::decide` answers a
+`Decision` carrying a `StopReason`, and `hclient::retry` exported none of
+the three, so a policy author using only `hclient` could not build the
+value its own unit test needed. They are exported now. `hclient-winhttp`'s
+`Win32Error` was the same shape and is exported too. The lint also names
+`Step`/`Plan` enums in `hclient`'s `cache::kv` and `cookie::kv` and in
+`hclient-native`'s `altsvc_cache::kv`, which predate this and are left for
+their own look.
+
+Two smaller things fell out. `sansio::field::quoted_string_raw` has one
+caller, behind `charset`, and was invisible as dead code while it was
+another crate's `pub` item; it carries an allow naming that caller now.
+And two cookie test files carried five clippy findings that no gate could
+see, because they build only under `--no-default-features --features
+cookies`; `test-no-default` clippies that combination now.
+
 ### `hclient::Client` names no type parameters, and the browser decided what that costs
 
 `Client` is one concrete type. `Clone` is an `Arc` bump, and a library takes

@@ -3,7 +3,7 @@
 //!
 //! Everything here is a pure function of a request, a response, a store
 //! and a `now`. Nothing reads a clock, opens a socket or spawns anything —
-//! the same rule `hclient-cookie` and `hclient-proto` run under, and for
+//! the same rule the cookie jar and this crate's sans-io half run under, and for
 //! the same reason: it is what makes "a cache behaves the same behind
 //! every backend" a structural fact rather than a consequence of everyone
 //! happening to go through one client.

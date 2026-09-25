@@ -82,7 +82,7 @@ impl<I: Stream> ParserError<I> for ParseFailure {
 /// has room for one: a reason-phrase this parser currently discards
 /// would be the obvious candidate.
 ///
-/// The contrast is [`crate::redirect::Allow`] two modules over, which
+/// The contrast is `hclient::redirect::Allow`, which
 /// deliberately does *not* carry it — a caller writes
 /// `Allow { preserve_method: .., ..Default::default() }` there, and the
 /// attribute forbids exactly that expression from outside the crate.

@@ -8,6 +8,8 @@ use crate::decompress::{self, Decompressed};
 use crate::error::BuildError;
 use crate::error::{BadLocation, BodyVanishedBeforeRetry, RedirectRefused};
 use crate::request::RequestBuilder;
+use crate::sansio::redirect::{RedirectAction, RedirectPolicy, decide};
+use crate::sansio::retry::{Outcome, RetryPolicy, RetryVerdict, retry_after_seconds};
 use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
 use hclient_core::body::{RequestBody, RetryKind};
@@ -15,8 +17,6 @@ use hclient_core::caps::Capabilities;
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::req::Timeouts;
 use hclient_core::timer::Timer;
-use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
-use hclient_proto::retry::{Outcome, RetryPolicy, RetryVerdict, retry_after_seconds};
 use std::fmt::Debug;
 use std::sync::Arc;
 // **There is no `Mutex` here any more**, and the `#[cfg(feature =
@@ -395,7 +395,7 @@ impl ClientBuilder {
     // §5.2.2; the same rules drive the `url` crate's `Url::join`, the
     // browser's `new URL(ref, base)`, and `urllib.parse.urljoin`. Since
     // this round the implementation is our own
-    // (`hclient_proto::uri::resolve_reference`, RFC 3986 §5.2 written
+    // (`crate::sansio::uri::resolve_reference`, RFC 3986 §5.2 written
     // out rather than delegated to `url`); the handful of places where
     // the RFC and WHATWG genuinely disagree are listed on that function
     // and pinned against `url` itself in
@@ -427,7 +427,7 @@ impl ClientBuilder {
     /// §5.2.2; the same rules drive the `url` crate's `Url::join`, the
     /// browser's `new URL(ref, base)`, and `urllib.parse.urljoin`. The
     /// handful of places where the RFC and WHATWG genuinely disagree are
-    /// listed on `hclient_proto::uri::resolve_reference`.
+    /// listed on `crate::sansio::uri::resolve_reference`.
     ///
     /// The base itself must be absolute. A relative one (`/api/`) is a
     /// typed `InvalidBaseUrl` error from `send()`/`execute()`, not a
@@ -1458,7 +1458,7 @@ impl Client {
         // `follow` defaulted to ten would be a limit no implementor could
         // opt out of.
         let redirect: crate::config::SharedRedirectPolicy = redirect
-            .unwrap_or_else(|| std::sync::Arc::new(hclient_proto::redirect::Limit::default()));
+            .unwrap_or_else(|| std::sync::Arc::new(crate::sansio::redirect::Limit::default()));
 
         // The third of the three, and the only one with nothing to merge:
         // `RequireVersion` is per request by design (see
@@ -1768,7 +1768,7 @@ impl Client {
                         // then a predicate call. A guard is a policy now,
                         // so `Standard::transient().and(SafeMethodsOnly)`
                         // is one value and answers once.
-                        let verdict = policy.retry(&hclient_proto::retry::ProposedRetry::new(
+                        let verdict = policy.retry(&crate::sansio::retry::ProposedRetry::new(
                             &hp.method,
                             &hp.uri,
                             attempt,

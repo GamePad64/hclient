@@ -5,11 +5,11 @@
 
 use core::time::Duration;
 
-use hclient_proto::backoff::Backoff;
-use hclient_proto::retry::{
-    BoxRetryPolicy, Decision, Never, Outcome, ProposedRetry, RetryAll, RetryPolicy, RetryStatuses,
-    RetryVerdict, SafeMethodsOnly, Standard, StopReason, retry_after_seconds,
+use hclient::retry::{
+    Backoff, BoxRetryPolicy, Decision, Never, Outcome, ProposedRetry, RetryAll, RetryPolicy,
+    RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard, StopReason,
 };
+use hclient::testing::retry::retry_after_seconds;
 
 fn status(code: u16) -> Outcome {
     Outcome::status(http::StatusCode::from_u16(code).unwrap(), None, false)

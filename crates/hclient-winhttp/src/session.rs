@@ -438,8 +438,12 @@ impl Transport for WinHttp {
         // The head is WinHTTP's own copy of a message it has already
         // finished receiving, so an incomplete one is not "wait for
         // more" — there is no more.
-        let Some((head, _)) = hclient_proto::head::parse_response(&raw)
-            .map_err(|e| Error::new(ErrorKind::Body, WinHttpError::Head(e)))?
+        let Some((head, _)) = hclient_proto::head::parse_response(&raw).map_err(|e| {
+            Error::new(
+                ErrorKind::Body,
+                WinHttpError::Head(crate::error::MalformedHead(e)),
+            )
+        })?
         else {
             return Err(Error::new(
                 ErrorKind::Body,

@@ -31,10 +31,9 @@
 //! (including when following HTTP redirects)"* — and the redirect loop
 //! is here.
 //!
-//! It is also not in [`hclient_proto`], where the redirect *mechanism*
-//! lives, for the reason the jar and the cache are not: this needs a
-//! calendar clock and a store, and that crate is the sans-io leaf whose
-//! dependency count is guarded.
+//! It is also not beside the redirect *mechanism*, which is sans-io, for
+//! the reason the jar and the cache are not: this needs a calendar clock
+//! and a store.
 //!
 //! # There is no capability gate, and that is a decision
 //!

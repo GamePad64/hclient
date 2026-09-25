@@ -251,10 +251,16 @@ jobs:
       - uses: moonrepo/setup-rust@v1
         with:
           channel: nightly
+          # `internal-crates-stay-internal` documents the two platform
+          # backends for their own targets, as docs.rs does.
+          targets: x86_64-pc-windows-msvc,aarch64-apple-darwin
           bins: just
       - name: stable crates keep the majors they expose
         shell: bash
         run: just exposed-majors
+      - name: no crate exposes a crate marked internal
+        shell: bash
+        run: just internal-crates-stay-internal
 
   browser:
     strategy:

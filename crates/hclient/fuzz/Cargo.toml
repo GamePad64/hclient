@@ -1,5 +1,5 @@
 [package]
-name = "hclient-proto-fuzz"
+name = "hclient-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -9,7 +9,11 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hclient-proto = { path = ".." }
+# `hclient` for the SSE decoder, reached through its hidden `testing`
+# door; `hclient-proto` for the Happy Eyeballs scheduler. The crate lived
+# under `hclient-proto` until the SSE decoder moved into `hclient`.
+hclient = { path = "..", default-features = false }
+hclient-proto = { path = "../../hclient-proto" }
 
 [[bin]]
 name = "sse"

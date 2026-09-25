@@ -387,7 +387,7 @@ pub(crate) fn negotiate<'a>(
     // stands aside.
     //
     // Decided once, before the first hop, and that stays right for the
-    // whole chain: `Range` is not in `hclient_proto::redirect::
+    // whole chain: `Range` is not in `crate::sansio::redirect::
     // SENSITIVE_HEADERS`, so `next_hop`'s clone carries it to every
     // subsequent hop — a request that is ranged at hop 0 is ranged at
     // hop 3.

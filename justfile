@@ -38,7 +38,7 @@ default:
 test *ARGS:
     cargo nextest run --workspace --all-features --no-fail-fast {{ARGS}}
 
-# one crate, optionally one test: `just t hclient-proto uri`
+# one crate, optionally one test: `just t hclient uri`
 t PKG *FILTER:
     cargo nextest run -p {{PKG}} --all-features --no-fail-fast {{FILTER}}
 
@@ -106,8 +106,8 @@ test-sse-complexity:
     #!/usr/bin/env bash
     set -euo pipefail
     rc=0
-    out="$(cargo nextest run -p hclient-proto --all-features --color never \
-      -E 'test(=sse::lines::tests::parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
+    out="$(cargo nextest run -p hclient --all-features --color never \
+      -E 'test(=sansio::sse::lines::tests::prop::parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
     printf '%s\n' "$out"
     [ "$rc" -eq 0 ] || exit "$rc"
     if ! printf '%s\n' "$out" | grep -qE '1 test run: 1 passed'; then
@@ -986,8 +986,7 @@ test-no-default:
     # dead-code errors under `--no-default-features` sat on `main` while this
     # recipe — and the CI job that calls it — stayed green.
     set -euo pipefail
-    for args in "-p hclient-proto --no-default-features" \
-                "-p hclient-native --no-default-features" \
+    for args in "-p hclient-native --no-default-features" \
                 "-p hclient-native --features http2" \
                 "-p hclient-rt-embassy" \
                 "-p hclient --no-default-features --features cookies,test-util" \
@@ -1001,10 +1000,12 @@ test-no-default:
         exit 1
       fi
     done
-    cargo clippy -p hclient-proto --all-targets --no-default-features -- -D warnings
     cargo clippy -p hclient-native --all-targets --no-default-features -- -D warnings
     cargo clippy -p hclient-rt-embassy --all-targets -- -D warnings
     cargo clippy -p hclient --all-targets --no-default-features --features test-util -- -D warnings
+    # The cookie tests that run only without the list compile only here, and
+    # four clippy findings sat in them unseen until the list's module moved.
+    cargo clippy -p hclient --all-targets --no-default-features --features cookies,test-util -- -D warnings
 
 # The whole claim of `hclient-idn` is that the platform's ICU answers what
 # the bundled `idna` crate answers. The platform column of
@@ -1327,6 +1328,19 @@ msrv:
     done
     echo "msrv: $checked crate(s) with a floor of their own, each checked on it"
 
+# no crate hands a caller a type from a crate marked internal
+# `hclient-proto` is published because its dependents need it on crates.io
+# and promises nothing; that is safe only while no other crate exposes it.
+# Same rustdoc-JSON scanner as `exposed-majors`, so the same nightly.
+internal-crates-stay-internal:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +nightly --version >/dev/null 2>&1 || {
+      echo "::error::internal-crates-stay-internal needs a nightly toolchain (rustdoc --output-format json)"
+      exit 1
+    }
+    python3 scripts/internal-crates-stay-internal.py
+
 # the compatibility promise, for the one crate that is in a position to make one
 # A stable crate must not move the major of a dependency whose types it
 # exposes without a major step of its own. `cargo semver-checks` cannot see
@@ -1625,7 +1639,7 @@ docs:
 
 # fuzz one target for N seconds: `just fuzz sse_accounting 30`
 fuzz TARGET="sse" SECONDS="60":
-    cd crates/hclient-proto/fuzz && \
+    cd crates/hclient/fuzz && \
       RUSTUP_TOOLCHAIN=nightly cargo fuzz run \
         --target "$(rustc -vV | sed -n 's/^host: //p')" \
         {{TARGET}} -- -max_total_time={{SECONDS}}
@@ -1645,7 +1659,7 @@ fuzz-smoke:
     fi
     host="$(rustc -vV | sed -n 's/^host: //p')"
     [ -n "$host" ] || { echo "::error::could not read the host triple out of rustc -vV"; exit 1; }
-    ( cd crates/hclient-proto/fuzz && \
+    ( cd crates/hclient/fuzz && \
       cargo fuzz run --target "$host" sse -- -max_total_time=60 && \
       cargo fuzz run --target "$host" sse_accounting -- -max_total_time=30 -max_len=256 ) || exit 1
     # **`hclient-idn` has no fuzz targets any more**, and the reason is
@@ -2022,19 +2036,20 @@ graph-default-has-no-hsts:
         "the hsts feature did not appear in a build that asked for it — this guard's pattern has gone stale, so its absent half above is checking nothing" \
         -- -p hclient --features hsts -f '{p} {f}' --depth 0
 
-# `url` is gone from the graph either way: hclient-proto writes out RFC 3986
-# §5.2 in src/uri.rs precisely so that it does not depend on `url`, which
-# belongs in [dev-dependencies] where it is the oracle for
-# tests/uri_resolution.rs.
+# `url` is gone from the graph either way: hclient writes out RFC 3986
+# §5.2 in src/sansio/uri.rs precisely so that it does not depend on `url`,
+# which belongs in [dev-dependencies] where it is the oracle for
+# tests/uri_resolution.rs. (That module was `hclient-proto`'s until it
+# moved into the only crate that used it.)
 
-# url is absent from hclient-proto, with the idn feature and without
+# url is absent from hclient, with the idn feature and without
 graph-no-url:
     #!/usr/bin/env bash
     set -euo pipefail
     for flags in "" "--no-default-features"; do
       ./scripts/tree-guard.sh absent '^url ' \
-        "hclient-proto ${flags:-with default features} depends on url again — RFC 3986 §5.2 is written out in src/uri.rs precisely so that it does not; url belongs in [dev-dependencies], where it is the oracle for tests/uri_resolution.rs" \
-        -- -p hclient-proto $flags
+        "hclient ${flags:-with default features} depends on url again — RFC 3986 §5.2 is written out in src/sansio/uri.rs precisely so that it does not; url belongs in [dev-dependencies], where it is the oracle for tests/uri_resolution.rs" \
+        -- -p hclient $flags
     done
 
 # What `hclient-proxy` costs, asserted instead of written down. Three
@@ -2127,8 +2142,7 @@ graph-default-has-no-transport:
 
 # icu_properties_data alone is 1.9 MB of vendored source; that is the entire
 # measurable benefit of the feature. The usual cause of a failure is some
-# crate depending on hclient-proto WITH default features, unioning idn back
-# on — see [workspace.dependencies].
+# crate depending on hclient WITH default features, unioning idn back on.
 
 # `form_urlencoded` and `percent-encoding` were named here too, as proxies
 # for url — taking either used to mean taking url with them. They are direct
@@ -2142,9 +2156,11 @@ graph-default-has-no-transport:
 graph-idn-feature:
     #!/usr/bin/env bash
     set -euo pipefail
-    ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
-      "--no-default-features still pulls in idna/ICU" \
-      -- -p hclient-proto --no-default-features
+    # `hclient-proto` carries no IDN at all since `uri` moved into `hclient`:
+    # it has no `idn` feature left, so any of these under it is a regression.
+    ./scripts/tree-guard.sh absent '^(hclient-idn|idna|idna_adapter|icu_)' \
+      "hclient-proto pulls in an IDN implementation — the URI parser that needed one lives in hclient now" \
+      -- -p hclient-proto
     ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
       "hclient --no-default-features still pulls in idna/ICU — the facade's idn feature is not forwarding, or something else in its graph turns it on" \
       -- -p hclient --no-default-features
@@ -2153,22 +2169,19 @@ graph-idn-feature:
     # `hclient-idn` (which picks its backend by target), the implementation
     # being in the graph is the target-independent claim.
     ./scripts/tree-guard.sh present '^hclient-idn ' \
-      "the default build of hclient-proto has no hclient-idn — the idn feature is in [features] default, so either it was removed or the dependency is no longer reached" \
-      -- -p hclient-proto
+      "the default build of hclient has no hclient-idn — the idn feature is in [features] default, so either it was removed or the dependency is no longer reached" \
+      -- -p hclient
     # What it COSTS on this runner, and deliberately not target-independent:
     # measured, `--target x86_64-pc-windows-msvc` brings `windows-sys` and no
     # `idna`; `aarch64-apple-darwin` brings `idna` like Linux does.
     # This is the line that must MOVE rather than be widened if this ever
     # runs anywhere but Linux.
     ./scripts/tree-guard.sh present '^idna ' \
-      "the default build of hclient-proto on Linux has no idna — hclient-idn takes the bundled tables on every target that is not Windows or Android, so these are the tables the feature is supposed to bring here" \
-      -- -p hclient-proto
+      "the default build of hclient on Linux has no idna — hclient-idn takes the bundled tables on every target that is not Windows or Android, so these are the tables the feature is supposed to bring here" \
+      -- -p hclient
     # And that the feature is the ONLY thing bringing it, stated
     # target-independently: the idna|icu_ absence above passes trivially on
     # Windows and Android, where those never appear.
-    ./scripts/tree-guard.sh absent '^hclient-idn ' \
-      "--no-default-features still pulls in hclient-idn — the idn feature is the only thing that should" \
-      -- -p hclient-proto --no-default-features
     ./scripts/tree-guard.sh absent '^hclient-idn ' \
       "hclient --no-default-features still pulls in hclient-idn — the facade's idn feature is not forwarding" \
       -- -p hclient --no-default-features

@@ -1,10 +1,13 @@
 # hclient-proto
 
-The sans-io half of `hclient`: bytes and rules, no sockets and no clock.
+**Internal to hclient — not a public API.** Depend on `hclient`,
+`hclient-native` or `hclient-proxy` instead.
 
-URI resolution, redirect rules, the retry policy, header grammars,
-server-sent events, and the encoders. Everything here is a pure function
-over values, so it is testable without a network.
+The sans-io pieces hclient's transports share: an RFC 9112 response-head
+parser, the RFC 8305 Happy Eyeballs scheduler, and two encoders. It is
+published only because those crates depend on it; it makes no stability
+promise and moves its minor version whenever they need it to. No other
+hclient crate exposes its types.
 
 Part of [hclient](https://github.com/GamePad64/hclient), a cross-platform
 HTTP client for native, browser and WASI targets.

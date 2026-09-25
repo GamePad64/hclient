@@ -11,7 +11,7 @@
 //! to resolve `Location:`.** One client shouldn't resolve relative
 //! references by two different rules depending on whether they came from
 //! the caller or from a response header; the shared implementation is
-//! `hclient_proto::uri::resolve_reference`, which the redirect stage also
+//! `sansio::uri::resolve_reference`, which the redirect stage also
 //! calls.
 
 // `hclient::mock` lives behind the `test-util` feature (see `mock.rs`).
@@ -217,7 +217,7 @@ fn a_path_relative_reference_is_expressible_through_the_builder_only() {
 // anyone: without a base the string went to `http::Uri`, which rejects a
 // non-ASCII authority; with one it went through `url::Url`, whose IDNA
 // punycoded it. `Location:` on a redirect took the second path for the
-// same reason. Both paths now go through `hclient_proto::uri`, so the
+// same reason. Both paths now go through `sansio::uri`, so the
 // answer no longer depends on an unrelated setting — which is the whole
 // point of the first two tests standing next to each other.
 

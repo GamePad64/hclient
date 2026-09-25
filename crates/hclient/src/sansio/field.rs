@@ -133,6 +133,13 @@ pub fn quoted_string(i: &mut &str) -> ModalResult<String> {
 ///
 /// A winnow parse error when `i` does not begin with `"` or has no closing
 /// `"`.
+#[cfg_attr(
+    not(feature = "charset"),
+    allow(
+        dead_code,
+        reason = "its one caller is `Collected::text_with_charset`, behind `charset`"
+    )
+)]
 pub fn quoted_string_raw<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
     delimited(
         '"',

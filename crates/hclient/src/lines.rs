@@ -6,7 +6,7 @@
 //! that has arrived until the rest of it does, so a record cut in half by
 //! a frame boundary comes out whole.
 //!
-//! The splitting itself is [`hclient_proto::lines`], which is where the
+//! The splitting itself is the private `sansio::lines` module, which is where the
 //! terminator set and the leading-BOM rule are argued. This module is the
 //! part that has a body to read: the bound, the ordering of an error
 //! against the lines that were already whole when it happened, and what
@@ -16,9 +16,9 @@ use std::collections::VecDeque;
 use std::error::Error as StdError;
 use std::fmt::Debug;
 
+use crate::sansio::lines::LineSplitter;
 use bytes::Bytes;
 use hclient_core::error::{Error, ErrorKind};
-use hclient_proto::lines::LineSplitter;
 use http_body::Body as HttpBody;
 
 use crate::error::LineTooLong;
@@ -26,7 +26,7 @@ use crate::response::Response;
 
 /// The ceiling [`Response::lines`] applies to a single line.
 ///
-/// 16 MiB, which is the same number [`hclient_proto::sse::DEFAULT_MAX_EVENT_SIZE`]
+/// 16 MiB, which is the same number [`crate::sansio::sse::DEFAULT_MAX_EVENT_SIZE`]
 /// carries — **written out rather than referenced**, because the two are
 /// the same size for different reasons: that one matches
 /// `rmcp::DEFAULT_MAX_SSE_EVENT_SIZE` so an adapter's behaviour does not
@@ -136,7 +136,7 @@ where
     // "... and
     // dropping it would lose a whole record with nothing said, which is
     // the silent-loss shape this workspace refuses. The WHATWG rules
-    // [`hclient_proto::lines`] otherwise implements go the other way ..."
+    // the private `sansio::lines` module otherwise implements go the other way ..."
     /// The next line, without its terminator.
     ///
     /// Reads as many chunks from the body as it takes to complete one
@@ -157,7 +157,7 @@ where
     /// body only. A file whose last record has no trailing newline is
     /// ordinary — half the NDJSON writers in the world produce one — and
     /// dropping it would lose a whole record with nothing said. The WHATWG
-    /// rules [`hclient_proto::lines`] otherwise implements go the other way for
+    /// rules the private `sansio::lines` module otherwise implements go the other way for
     /// SSE, and that is a fact about *events*: an event is dispatched by a
     /// blank line, so a partial one was never a whole anything.
     ///

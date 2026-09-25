@@ -77,10 +77,10 @@ use winnow::token::take_till;
 use winnow::{ModalResult, Parser};
 
 // RFC 9110 §5.6's three productions, shared rather than written a fourth
-// time — see `crate::field` for the count and for why there are two
+// time — see `crate::sansio::field` for the count and for why there are two
 // `quoted-string`s.
-use crate::field::{ows, quoted_string, token};
-use crate::uri::{UriError, resolve_reference};
+use crate::sansio::field::{ows, quoted_string, token};
+use crate::sansio::uri::{UriError, resolve_reference};
 
 /// One `link-value`: a target and the parameters that came with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +144,7 @@ impl Link {
     /// case they can both reach.
     ///
     /// ```
-    /// use hclient_proto::link::Link;
+    /// use hclient::link::Link;
     ///
     /// let link = Link::new(
     ///     "/items?page=2",
@@ -402,7 +402,7 @@ impl Links {
 /// [`Links::get`] and [`Links::iter`] promise.
 ///
 /// ```
-/// use hclient_proto::link::{Link, Links};
+/// use hclient::link::{Link, Links};
 ///
 /// let links: Links = [
 ///     Link::new("/p2", ["next"], [] as [(&str, Option<&str>); 0]),

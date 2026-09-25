@@ -3,9 +3,9 @@ use crate::error::{ColonInUsername, ContentTypeIsNotOursToKeep};
 use std::error::Error as StdError;
 
 use crate::response::Response;
+use crate::sansio::redirect::RedirectPolicy;
 use hclient_core::body::RequestBody;
 use hclient_core::error::{Error, ErrorKind};
-use hclient_proto::redirect::RedirectPolicy;
 
 // Maintainer notes (not rendered):
 //
@@ -492,7 +492,7 @@ impl<'a> RequestBuilder<'a> {
     // `hclient` was a fresh `Client` per request — the very cost
     // `RequestBuilder::timeouts` already exists to avoid (reqwest #2641).
     //
-    // **The consumer's other branch is [`Forbid`](hclient_proto::redirect::Forbid), not
+    // **The consumer's other branch is [`Forbid`](crate::sansio::redirect::Forbid), not
     // `Limited(0)`.** `Limited(0)` means "follow up to zero hops", so the
     // first 301/302/303/307/308 carrying a `Location` becomes
     // `ErrorKind::Redirect`. `None` returns that response to the caller
@@ -511,7 +511,7 @@ impl<'a> RequestBuilder<'a> {
     /// `config::effective_redirect`, which does the merge).
     ///
     /// To be handed a 3xx itself, pass
-    /// [`Forbid`](hclient_proto::redirect::Forbid). `Limit::new(0)` means
+    /// [`Forbid`](crate::sansio::redirect::Forbid). `Limit::new(0)` means
     /// "follow up to zero hops", so the first 301/302/303/307/308 carrying
     /// a `Location` becomes `ErrorKind::Redirect`. `reqwest` keeps the two
     /// intents apart the same way, as `Policy::none()` and

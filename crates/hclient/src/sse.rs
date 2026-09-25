@@ -18,9 +18,9 @@ use hclient_core::error::{Error, ErrorKind};
 use hclient_core::timer::Timer;
 // Re-exported rather than merely imported, so the whole of SSE is behind
 // one door: `hclient::sse::{SseStream, SseEvent, Backoff, ..}`.
-pub use hclient_proto::backoff::Backoff;
-use hclient_proto::sse::SseDecoder;
-pub use hclient_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
+pub use crate::sansio::backoff::Backoff;
+use crate::sansio::sse::SseDecoder;
+pub use crate::sansio::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
 use http_body::Body as HttpBody;
 use std::time::Duration;
 
@@ -335,7 +335,7 @@ pub struct SseOptions {
 impl Default for SseOptions {
     fn default() -> Self {
         Self {
-            max_event_size: hclient_proto::sse::DEFAULT_MAX_EVENT_SIZE,
+            max_event_size: crate::sansio::sse::DEFAULT_MAX_EVENT_SIZE,
             backoff: Backoff::default(),
         }
     }
@@ -635,8 +635,8 @@ async fn open(
 /// construction, retrying changes nothing:
 /// - `Decode`: this crate's only source of a `Decode` `ErrorKind` on this
 ///   path is `SseDecoder`'s own event-size limit, and that is documented
-///   as fatal and not retried (`hclient-proto/src/sse/decode.rs`,
-///   `DEFAULT_MAX_EVENT_SIZE`'s doc comment) — resurrecting it via
+///   as fatal and not retried ([`DEFAULT_MAX_EVENT_SIZE`]'s doc
+///   comment) — resurrecting it via
 ///   reconnect would undo exactly what that limit exists for. A content-type
 ///   rejection from `validate_sse_response` is ALSO `Decode`, for the same
 ///   reason: the server is sending something that isn't SSE, and a delay
@@ -714,8 +714,8 @@ fn is_retryable(kind: &ErrorKind) -> bool {
 /// `Timer`, which reconnect takes as an explicit input — see
 /// [`SseBuilder::with_timer`]'s doc comment for why the two are treated
 /// differently), so `hclient` sources this itself rather than asking the
-/// reconnect caller for an RNG, the same way `hclient-proto`'s
-/// `Backoff::delay` already expects SOME caller to supply `jitter`.
+/// reconnect caller for an RNG, the same way
+/// [`Backoff::delay`] already expects SOME caller to supply `jitter`.
 ///
 /// `getrandom` failing is a documented but exceedingly rare condition (the
 /// OS's entropy source is unavailable). Silently discarding the error
@@ -747,7 +747,7 @@ pub(crate) fn jitter() -> f64 {
 /// The delay before the next (re)connect attempt — pure, and taking
 /// `jitter` as an explicit parameter rather than reading `jitter()` (above)
 /// itself, for exactly the reason `Backoff::delay` itself takes `jitter` as
-/// a parameter (`hclient-proto/src/backoff.rs`'s own doc comment): a
+/// a parameter (its own doc comment says why): a
 /// function that reads live entropy internally can only be tested
 /// probabilistically. Factored out of `next()`'s `Disconnected`
 /// arm specifically so the "server's `retry:` REPLACES `options.backoff.

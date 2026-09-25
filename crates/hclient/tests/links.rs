@@ -1,6 +1,6 @@
 //! `Response::links` / `Collected::links` at the `Client` level.
 //!
-//! The grammar is `hclient-proto`'s and is tested there — commas inside
+//! The grammar is `sansio::link` and is unit-tested there — commas inside
 //! quoted parameters, a repeated relation, the case rules. What is checked
 //! here is the one thing this layer adds: the base a relative target is
 //! resolved against, and that both types answer it.

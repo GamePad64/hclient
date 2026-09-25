@@ -1,5 +1,5 @@
 //! Tests for the redirect stage at the `Client` level:
-//! `hclient-proto::redirect::decide` is already tested as a pure function
+//! `sansio::redirect::decide` is already tested as a pure function
 //! — this checks that the `client.rs`/`stages/redirect.rs` plumbing
 //! doesn't distort its decision while shuffling data between hops.
 

@@ -88,7 +88,7 @@ pub(crate) fn request_path(uri: &http::Uri) -> &str {
 ///
 /// No IDN conversion. A non-ASCII host cannot reach an `http::Uri` in the
 /// first place, and in this workspace the A-label conversion happens
-/// upstream, in `hclient_proto::uri::parse`, where every backend goes
+/// upstream, in `crate::sansio::uri::parse`, where every backend goes
 /// through it — doing it a second time here would be a second place for
 /// the two answers to differ.
 pub(crate) fn canonical_host(uri: &http::Uri) -> Option<String> {

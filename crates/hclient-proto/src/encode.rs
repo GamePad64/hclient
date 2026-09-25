@@ -49,7 +49,7 @@ pub fn base64(input: &[u8]) -> String {
 /// The WHATWG URL Standard's serialiser, which is **not** RFC 3986
 /// percent-encoding and differs in two places that bite: a space becomes
 /// `+` rather than `%20`, and `*`, `-`, `.` and `_` are the only
-/// punctuation that survives. [`crate::uri`]'s encoder is the other one
+/// punctuation that survives. `hclient`'s URI encoder is the other one
 /// and they are not interchangeable — a query built with that set and
 /// read by a form parser gets `+` back as a literal plus.
 pub fn form_urlencoded<K: AsRef<str>, V: AsRef<str>>(

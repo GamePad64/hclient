@@ -1,6 +1,6 @@
 //! `Response::lines` at the `Client` level.
 //!
-//! The splitter itself is `hclient-proto`'s and is tested there against
+//! The splitter itself is `sansio::lines` and is unit-tested there against
 //! chunk boundaries and a property test. What is checked here is the half
 //! that has a body: the bound, the ordering of an error against the lines
 //! that were already whole, and what becomes of a final line with no

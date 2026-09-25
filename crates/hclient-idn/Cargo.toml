@@ -11,8 +11,8 @@ name = "hclient-idn"
 #
 # It is a crate that can afford it: two public functions, an error type,
 # and a use outside HTTP entirely — nothing here depends on `hclient`'s
-# mechanisms, and `cargo tree -i` names `hclient-proto` as its only
-# in-workspace consumer.
+# mechanisms, and `cargo tree -i` names `hclient` as its only
+# in-workspace consumer (it was `hclient-proto` until the URI parser moved).
 version = "0.2.6"
 description = "IDN (UTS 46) domain-to-ASCII and back, through whatever UTS 46 the platform already carries"
 keywords     = ["hclient", "idn", "uts46", "punycode", "idna"]
@@ -188,7 +188,7 @@ idna = { version = "1.1", default-features = false, features = [
 rstest = { workspace = true }
 
 # **The oracle, and deliberately a dev-dependency** — the same role `url`
-# plays for `hclient-proto`'s `tests/uri_resolution.rs`. The whole claim
+# plays for `hclient`'s `tests/uri_resolution.rs`. The whole claim
 # of this crate is that the platform agrees with `idna`, and that
 # comparison has to be possible on the very targets where `idna` is NOT a
 # normal dependency, which is every target that has a system UTS 46. As a

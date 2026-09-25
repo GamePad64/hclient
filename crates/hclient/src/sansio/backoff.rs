@@ -8,7 +8,7 @@ use core::time::Duration;
 ///
 /// ```
 /// use std::time::Duration;
-/// use hclient_proto::backoff::Backoff;
+/// use hclient::retry::Backoff;
 ///
 /// let backoff = Backoff { max_attempts: Some(3), ..Default::default() };
 /// // A jitter of `0.0` takes nothing off: the undisturbed schedule.
@@ -410,107 +410,113 @@ mod tests {
         assert_eq!(zero_base.delay(u32::MAX, 0.0), Some(Duration::ZERO));
     }
 
-    use proptest::prelude::*;
+    // `proptest` is a host-only dev-dependency of this crate (it does not
+    // build for wasm32), so the property tests are too.
+    #[cfg(not(target_family = "wasm"))]
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
 
-    proptest! {
-        // Deliberately mixes small values with the boundary values
-        // (`0`, `u32::MAX`, `u32::MAX - 1`) rather than relying solely on
-        // `any::<u32>()` — an earlier review here
-        // found a proptest whose generator never actually reached the
-        // interesting states, so the boundary is forced in, not hoped for.
-        #[test]
-        fn delay_never_exceeds_max(
-            attempt in prop_oneof![
-                4 => 0u32..10_000,
-                1 => Just(0u32),
-                1 => Just(u32::MAX),
-                1 => Just(u32::MAX - 1),
-                1 => any::<u32>(),
-            ],
-            jitter in 0.0f64..1.0,
-            base_ms in 0u64..5_000,
-            max_ms in 1u64..60_000,
-        ) {
-            let b = Backoff {
-                base: Duration::from_millis(base_ms),
-                max: Duration::from_millis(max_ms),
-                max_attempts: None,
-            };
-            let d = b.delay(attempt, jitter).expect("max_attempts is None");
-            prop_assert!(d <= b.max);
-        }
-
-        #[test]
-        fn jitter_never_increases_the_delay_above_the_unjittered_value(
-            attempt in prop_oneof![
-                4 => 0u32..10_000,
-                1 => Just(u32::MAX),
-                1 => any::<u32>(),
-            ],
-            jitter in 0.0f64..1.0,
-        ) {
-            let backoff = b();
-            let full = backoff.delay(attempt, 0.0).expect("max_attempts is None");
-            let jittered = backoff.delay(attempt, jitter).expect("max_attempts is None");
-            prop_assert!(jittered <= full);
-        }
-
-        // The proptest above only asserts `jittered <= full`, which holds
-        // at `jitter = 0.0` where equality is the *correct* answer (that's
-        // in its domain) — so it's a legitimate invariant on its own, not
-        // a mistake. But across its whole domain it's also exactly as
-        // vacuous as a `jitter_only_ever_reduces_the_delay` would be:
-        // an implementation that drops `jitter` entirely produces
-        // `jittered == full` for every input, which still satisfies `<=`
-        // everywhere, including here. `jitter_scales_the_delay_to_an_exact_fraction`
-        // fixed this for the *unit* test, but the fix was never carried
-        // over to this proptest sibling — identifying a vacuity pattern in
-        // one test doesn't inoculate against the identical pattern a few
-        // lines away in another. This closes that gap with a strict `<`,
-        // on a `jitter` range clear of both clamp boundaries (`0.0` and
-        // `1.0`, where equality is legitimately possible) so reduction is
-        // unambiguously required to hold.
-        #[test]
-        fn jitter_strictly_reduces_the_delay_away_from_the_clamp_boundaries(
-            attempt in 1u32..20, // small enough that `full` is reliably > 0
-            jitter in 0.01f64..0.99, // clear of both clamp boundaries
-        ) {
-            let backoff = b();
-            let full = backoff.delay(attempt, 0.0).expect("max_attempts is None");
-            let jittered = backoff.delay(attempt, jitter).expect("max_attempts is None");
-            prop_assert!(
-                jittered < full,
-                "jitter={jitter} on full={full:?} produced jittered={jittered:?}, expected strictly less"
-            );
-        }
-
-        #[test]
-        fn max_attempts_boundary_is_exact(
-            limit in 0u32..1_000,
-            attempt in 0u32..1_100,
-        ) {
-            let b = Backoff { max_attempts: Some(limit), ..Backoff::default() };
-            let result = b.delay(attempt, 0.0);
-            if attempt >= limit {
-                prop_assert!(result.is_none());
-            } else {
-                prop_assert!(result.is_some());
+        proptest! {
+            // Deliberately mixes small values with the boundary values
+            // (`0`, `u32::MAX`, `u32::MAX - 1`) rather than relying solely on
+            // `any::<u32>()` — an earlier review here
+            // found a proptest whose generator never actually reached the
+            // interesting states, so the boundary is forced in, not hoped for.
+            #[test]
+            fn delay_never_exceeds_max(
+                attempt in prop_oneof![
+                    4 => 0u32..10_000,
+                    1 => Just(0u32),
+                    1 => Just(u32::MAX),
+                    1 => Just(u32::MAX - 1),
+                    1 => any::<u32>(),
+                ],
+                jitter in 0.0f64..1.0,
+                base_ms in 0u64..5_000,
+                max_ms in 1u64..60_000,
+            ) {
+                let b = Backoff {
+                    base: Duration::from_millis(base_ms),
+                    max: Duration::from_millis(max_ms),
+                    max_attempts: None,
+                };
+                let d = b.delay(attempt, jitter).expect("max_attempts is None");
+                prop_assert!(d <= b.max);
             }
-        }
 
-        // Out-of-domain jitter (including NaN, which proptest's f64
-        // strategy does generate) must never panic, and must never
-        // produce a delay above the un-jittered value or below zero.
-        #[test]
-        fn any_f64_jitter_is_safe(
-            attempt in 0u32..10_000,
-            jitter in any::<f64>(),
-        ) {
-            let backoff = b();
-            let full = backoff.delay(attempt, 0.0).expect("max_attempts is None");
-            let d = backoff.delay(attempt, jitter).expect("max_attempts is None");
-            prop_assert!(d <= full);
-            prop_assert!(d >= Duration::ZERO);
+            #[test]
+            fn jitter_never_increases_the_delay_above_the_unjittered_value(
+                attempt in prop_oneof![
+                    4 => 0u32..10_000,
+                    1 => Just(u32::MAX),
+                    1 => any::<u32>(),
+                ],
+                jitter in 0.0f64..1.0,
+            ) {
+                let backoff = b();
+                let full = backoff.delay(attempt, 0.0).expect("max_attempts is None");
+                let jittered = backoff.delay(attempt, jitter).expect("max_attempts is None");
+                prop_assert!(jittered <= full);
+            }
+
+            // The proptest above only asserts `jittered <= full`, which holds
+            // at `jitter = 0.0` where equality is the *correct* answer (that's
+            // in its domain) — so it's a legitimate invariant on its own, not
+            // a mistake. But across its whole domain it's also exactly as
+            // vacuous as a `jitter_only_ever_reduces_the_delay` would be:
+            // an implementation that drops `jitter` entirely produces
+            // `jittered == full` for every input, which still satisfies `<=`
+            // everywhere, including here. `jitter_scales_the_delay_to_an_exact_fraction`
+            // fixed this for the *unit* test, but the fix was never carried
+            // over to this proptest sibling — identifying a vacuity pattern in
+            // one test doesn't inoculate against the identical pattern a few
+            // lines away in another. This closes that gap with a strict `<`,
+            // on a `jitter` range clear of both clamp boundaries (`0.0` and
+            // `1.0`, where equality is legitimately possible) so reduction is
+            // unambiguously required to hold.
+            #[test]
+            fn jitter_strictly_reduces_the_delay_away_from_the_clamp_boundaries(
+                attempt in 1u32..20, // small enough that `full` is reliably > 0
+                jitter in 0.01f64..0.99, // clear of both clamp boundaries
+            ) {
+                let backoff = b();
+                let full = backoff.delay(attempt, 0.0).expect("max_attempts is None");
+                let jittered = backoff.delay(attempt, jitter).expect("max_attempts is None");
+                prop_assert!(
+                    jittered < full,
+                    "jitter={jitter} on full={full:?} produced jittered={jittered:?}, expected strictly less"
+                );
+            }
+
+            #[test]
+            fn max_attempts_boundary_is_exact(
+                limit in 0u32..1_000,
+                attempt in 0u32..1_100,
+            ) {
+                let b = Backoff { max_attempts: Some(limit), ..Backoff::default() };
+                let result = b.delay(attempt, 0.0);
+                if attempt >= limit {
+                    prop_assert!(result.is_none());
+                } else {
+                    prop_assert!(result.is_some());
+                }
+            }
+
+            // Out-of-domain jitter (including NaN, which proptest's f64
+            // strategy does generate) must never panic, and must never
+            // produce a delay above the un-jittered value or below zero.
+            #[test]
+            fn any_f64_jitter_is_safe(
+                attempt in 0u32..10_000,
+                jitter in any::<f64>(),
+            ) {
+                let backoff = b();
+                let full = backoff.delay(attempt, 0.0).expect("max_attempts is None");
+                let d = backoff.delay(attempt, jitter).expect("max_attempts is None");
+                prop_assert!(d <= full);
+                prop_assert!(d >= Duration::ZERO);
+            }
         }
     }
 }

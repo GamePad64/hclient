@@ -1,15 +1,15 @@
 // `Timeouts` is defined in `hclient-core`: transports read it from
 // `http::Extensions`, and they don't depend on `hclient`.
 use crate::error::InvalidBaseUrl;
+use crate::sansio::redirect::RedirectPolicy;
 use hclient_core::caps::{Capabilities, RedirectSupport};
 use hclient_core::error::{Error, ErrorKind, UnsupportedCapability};
 use hclient_core::req::RequireVersion;
 pub use hclient_core::req::Timeouts;
-use hclient_proto::redirect::RedirectPolicy;
 
 /// A retry policy as the client stores it — see [`SharedRedirectPolicy`]
 /// for why it is an `Arc<dyn ..>` and not a type parameter.
-pub type SharedRetryPolicy = std::sync::Arc<dyn hclient_proto::retry::RetryPolicy + Send + Sync>; // send-bound-exception: amendment-C12
+pub type SharedRetryPolicy = std::sync::Arc<dyn crate::sansio::retry::RetryPolicy + Send + Sync>; // send-bound-exception: amendment-C12
 
 // Maintainer notes (not rendered):
 //
@@ -256,7 +256,7 @@ impl Default for Config {
 ///
 /// The rule is RFC 3986 §5, the exact same one `redirect::decide` uses to
 /// resolve `Location:`; the shared implementation is
-/// `hclient_proto::uri::resolve_reference`. One client shouldn't understand
+/// `crate::sansio::uri::resolve_reference`. One client shouldn't understand
 /// `/x` two different ways depending on whether the server sent it or the
 /// caller did.
 ///
@@ -280,19 +280,19 @@ impl Default for Config {
 /// `timeouts` (B1).
 pub(crate) fn effective_uri(base: Option<&http::Uri>, url: &str) -> Result<http::Uri, Error> {
     let Some(base) = base else {
-        // `hclient_proto::uri::parse`, NOT `url.parse::<http::Uri>()`.
+        // `crate::sansio::uri::parse`, NOT `url.parse::<http::Uri>()`.
         // That difference is the whole of the IDN inconsistency this
         // client used to have: `http::Uri` rejects a non-ASCII authority,
         // so `client.get("https://münchen.de/x")` failed here and
         // succeeded through the branch below, where `url::Url` punycoded
         // it. The conversion now lives at one boundary, in the sans-io
         // crate every backend shares.
-        return hclient_proto::uri::parse(url).map_err(|e| Error::new(ErrorKind::Other, e));
+        return crate::sansio::uri::parse(url).map_err(|e| Error::new(ErrorKind::Other, e));
     };
-    hclient_proto::uri::resolve_reference(base, url).map_err(|e| match e {
+    crate::sansio::uri::resolve_reference(base, url).map_err(|e| match e {
         // "This base cannot be a base" is the setting's own problem, and
         // the only failure that can name both sides usefully.
-        hclient_proto::uri::UriError::UnusableBase { .. } => Error::new(
+        crate::sansio::uri::UriError::UnusableBase { .. } => Error::new(
             ErrorKind::Other,
             InvalidBaseUrl {
                 base: base.clone(),
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn configured_redirect_policy_against_an_internal_backend_is_an_error() {
         let cfg = Config {
-            redirect: Some(std::sync::Arc::new(hclient_proto::redirect::Limit::new(5))),
+            redirect: Some(std::sync::Arc::new(crate::sansio::redirect::Limit::new(5))),
             ..Default::default()
         };
         let err = check_supported(
@@ -999,7 +999,7 @@ mod tests {
     #[test]
     fn configured_redirect_policy_against_a_transparent_backend_is_fine() {
         let cfg = Config {
-            redirect: Some(std::sync::Arc::new(hclient_proto::redirect::Limit::new(5))),
+            redirect: Some(std::sync::Arc::new(crate::sansio::redirect::Limit::new(5))),
             ..Default::default()
         };
         assert!(
@@ -1019,19 +1019,19 @@ mod tests {
     /// directions are checked here, and the client-only case below.
     #[test]
     fn request_redirect_policy_replaces_the_clients() {
-        use hclient_proto::redirect::Limit;
+        use crate::sansio::redirect::Limit;
 
         // **Compared by behaviour, not by value.** The policy is an
         // `Arc<dyn ..>` now, so there is no `PartialEq` to assert on —
         // and asking the returned policy what it does is the better
         // assertion anyway: it would fail for a merge that returned the
         // right *type* configured wrongly.
-        fn probe(hops: u8) -> hclient_proto::redirect::ProposedRedirect<'static> {
+        fn probe(hops: u8) -> crate::sansio::redirect::ProposedRedirect<'static> {
             static FROM: std::sync::LazyLock<http::Uri> =
                 std::sync::LazyLock::new(|| "https://a/".parse().unwrap());
             static TO: std::sync::LazyLock<http::Uri> =
                 std::sync::LazyLock::new(|| "https://a/next".parse().unwrap());
-            hclient_proto::redirect::ProposedRedirect::new(
+            crate::sansio::redirect::ProposedRedirect::new(
                 &FROM,
                 &TO,
                 http::StatusCode::FOUND,
@@ -1047,7 +1047,7 @@ mod tests {
                 .find(|&h| {
                     matches!(
                         p.follow(&probe(h)),
-                        hclient_proto::redirect::RedirectVerdict::Refuse(_)
+                        crate::sansio::redirect::RedirectVerdict::Refuse(_)
                     )
                 })
                 .expect("some hop count is refused")
@@ -1078,7 +1078,7 @@ mod tests {
     fn a_request_only_redirect_policy_is_still_checked_against_internal() {
         let mut ext = http::Extensions::new();
         ext.insert::<SharedRedirectPolicy>(std::sync::Arc::new(
-            hclient_proto::redirect::Limit::new(0),
+            crate::sansio::redirect::Limit::new(0),
         ));
         let merged = effective_redirect(&ext, None);
         let err = check_redirect_supported(

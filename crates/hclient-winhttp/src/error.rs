@@ -75,8 +75,32 @@ pub enum WinHttpError {
     /// The head `WinHTTP` handed back is not one this workspace's RFC 9112
     /// §4 parser accepts.
     #[error("the response head did not parse: {0}")]
-    Head(#[from] hclient_proto::head::HeadError),
+    Head(#[source] MalformedHead),
     /// The request cannot be expressed to `WinHTTP` at all.
     #[error("{0}")]
     Unsupported(String),
+}
+
+// Maintainer notes (not rendered):
+// A newtype rather than `hclient_proto::head::HeadError` itself, because
+// that crate is internal and promises nothing, so a public field naming its
+// type would make its every release this crate's breaking change —
+// `just internal-crates-stay-internal` refuses exactly that. The parser's
+// own error is still the `source()`. `hclient-proxy` carries the same type
+// under the same name for the same reason.
+/// Why the response head did not parse. Its [`Display`](std::fmt::Display)
+/// names the defect; there is nothing to match on.
+#[derive(Debug)]
+pub struct MalformedHead(pub(crate) hclient_proto::head::HeadError);
+
+impl std::fmt::Display for MalformedHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for MalformedHead {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
 }

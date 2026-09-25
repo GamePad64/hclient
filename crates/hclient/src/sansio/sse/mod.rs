@@ -7,13 +7,13 @@
 //! whoever owns the connection.
 
 mod decode;
-// `pub(crate)` rather than private: `crate::lines` is the public door
+// `pub(crate)` rather than private: `crate::sansio::lines` is the public door
 // onto `LineSplitter`, and a sibling module cannot reach into a private
 // one. See that module, and the splitter's own doc, for why the file
 // stays here.
 pub(crate) mod lines;
 
-pub use decode::{SseDecoder, SseError, SseEvent};
+pub use decode::{SseDecoder, SseEvent};
 pub(crate) use lines::LineSplitter;
 
 // Maintainer notes (not rendered):
@@ -31,7 +31,7 @@ pub(crate) use lines::LineSplitter;
 /// What is load-bearing is that there **is** a bound — an SSE stream is
 /// unframed, so a peer that never sends a blank line would otherwise
 /// grow the decoder's buffer without limit — and that is
-/// [`SseError::EventTooLarge`]'s subject rather than this value's.
+/// [`SseError::EventTooLarge`](crate::error::SseError::EventTooLarge)'s subject rather than this value's.
 /// `hclient`'s `DEFAULT_MAX_LINE` writes out the same 16 MiB for its own
 /// reason and deliberately does not reference this one: the two are
 /// equal by coincidence and one moving is no reason for the other to.

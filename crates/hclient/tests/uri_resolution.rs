@@ -40,7 +40,8 @@
 //! carry it. `rstest` is used below for the divergence classes, where one
 //! named case per behaviour is what a failure should read like.
 
-use hclient_proto::uri::{self, UriError, resolve_reference};
+use hclient::error::UriError;
+use hclient::testing::uri::{self, resolve_reference};
 use http::Uri;
 use rstest::rstest;
 

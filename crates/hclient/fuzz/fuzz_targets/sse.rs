@@ -1,5 +1,5 @@
 #![no_main]
-use hclient_proto::sse::SseDecoder;
+use hclient::testing::SseDecoder;
 use libfuzzer_sys::fuzz_target;
 
 // Invariant: the decoder never panics and never grows past the limit.

@@ -1,6 +1,6 @@
 //! RFC 6797 §6.1's `Strict-Transport-Security` grammar.
 //!
-//! The productions are [`hclient_proto::field`]'s — §6.1 names `token`
+//! The productions are [`crate::sansio::field`]'s — §6.1 names `token`
 //! and `quoted-string` from RFC 2616 §2.2, which are the same two that
 //! module already carries for `Cache-Control`, `Link` and `charset`. This
 //! is its third consumer, which is what that module's own doc says it
@@ -25,7 +25,7 @@
 use winnow::combinator::{alt, opt, preceded, separated};
 use winnow::{ModalResult, Parser};
 
-use hclient_proto::field::{ows, quoted_string, token};
+use crate::sansio::field::{ows, quoted_string, token};
 
 // Maintainer notes (not rendered):
 //

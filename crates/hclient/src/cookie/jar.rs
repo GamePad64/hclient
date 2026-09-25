@@ -189,7 +189,7 @@ pub(super) enum Arrival {
 /// A cookie jar: parse, store, expire and hand back.
 ///
 /// Clockless — every method that needs the time takes it as a `now`
-/// parameter, the same rule `hclient-proto` runs under. Nothing here
+/// parameter, the same rule this crate's sans-io half runs under. Nothing here
 /// reads a clock or spawns anything, which is what makes "the same cookie
 /// behaviour on every backend" a structural fact rather than a
 /// consequence of everyone happening to call the same client.

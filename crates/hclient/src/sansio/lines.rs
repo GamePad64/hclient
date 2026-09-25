@@ -53,4 +53,4 @@
 // withholds a line somebody meant to send. Accepting a bare CR is also
 // what makes this the same code SSE runs rather than a near-copy of it.
 
-pub use crate::sse::lines::LineSplitter;
+pub use crate::sansio::sse::lines::LineSplitter;

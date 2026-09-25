@@ -49,7 +49,7 @@
 //! and could not offer the alternative even if it wanted to. And lookups
 //! are ASCII/A-label only: a Unicode host must already have been
 //! punycoded, which in this workspace happens upstream in
-//! `hclient_proto::uri::parse`, not here.
+//! `crate::sansio::uri::parse`, not here.
 
 // Maintainer notes (not rendered):
 //

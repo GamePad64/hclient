@@ -40,7 +40,7 @@ fn the_builtin_list_admits_it_has_no_list() {
         // the refusal below happen at all.
         assert!(BuiltinList.is_public_suffix("example.com"));
         assert!(BuiltinList.is_public_suffix("co.uk"));
-    })
+    });
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn every_domain_attribute_is_refused_and_the_error_names_the_build() {
             Err(Rejected::NoPublicSuffixList { .. })
         );
         assert!(jar.is_empty().await);
-    })
+    });
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn a_no_list_jar_is_still_a_working_host_only_jar() {
                 .await
                 .is_none()
         );
-    })
+    });
 }
 
 #[test]
@@ -130,5 +130,5 @@ fn the_rules_that_do_not_need_a_list_are_unaffected() {
                 .is_none(),
             "a string prefix is not a path prefix, list or no list"
         );
-    })
+    });
 }

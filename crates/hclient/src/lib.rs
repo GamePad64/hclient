@@ -275,6 +275,7 @@ pub use hclient_mock as mock;
 pub mod multipart;
 mod request;
 mod response;
+mod sansio;
 pub mod sse;
 mod stages;
 
@@ -357,11 +358,11 @@ pub mod body {
 
 /// RFC 8288 `Link:` — the paginated-API header, parsed.
 ///
-/// The parse is [`hclient_proto::link`]'s, sans-io and testable with no
+/// The parse is a private sans-io module's, sans-io and testable with no
 /// socket; what this crate adds is a base to resolve against, at
 /// [`Response::links`] and [`Collected::links`].
 pub mod link {
-    pub use hclient_proto::link::{Link, Links};
+    pub use crate::sansio::link::{Link, Links};
 }
 
 /// Following redirects: how many, and whether this one.
@@ -374,7 +375,7 @@ pub mod redirect {
     // `Box<dyn RedirectPolicy + Send + Sync>` by hand — reachable, since
     // `RedirectPolicy` is here too, but a second spelling of one type, and
     // the one the crate does not maintain.
-    pub use hclient_proto::redirect::{
+    pub use crate::sansio::redirect::{
         All, Allow, And, BoxRedirectPolicy, Forbid, FromFn, HttpsOnly, Limit, ProposedRedirect,
         RedirectPolicy, RedirectPolicyExt, RedirectVerdict, SameOriginOnly,
     };
@@ -574,14 +575,14 @@ pub use hclient_core::req::{AllowEarlyData, RequireVersion};
 /// When to send a request again — see [`ClientBuilder::retry`].
 pub mod retry {
     pub use crate::config::SharedRetryPolicy;
-    pub use hclient_proto::backoff::Backoff;
+    pub use crate::sansio::backoff::Backoff;
     // **One vocabulary at this door, not two.** `Decision`, `StopReason`
     // and `Outcome` belong to `Standard::decide`, the pure function in
     // `hclient-proto`; `RetryVerdict` and `ProposedRetry` belong to the
     // trait this facade's `ClientBuilder::retry` takes. A caller who
     // *configures* writes `Standard`; one who *implements* writes the
     // trait. Neither needs the inner three, so they stay behind
-    // `hclient_proto::retry` for whoever wants the pure function
+    // `crate::sansio::retry` for whoever wants the pure function
     // directly. `retry_after_seconds` goes with them: it is the header
     // parser the policy uses, not something a caller calls.
     //
@@ -596,9 +597,15 @@ pub mod retry {
     // `BoxRetryPolicy` for the reason `redirect::BoxRedirectPolicy` is
     // re-exported: it is `RetryAll`'s `FromIterator` item type, so a
     // caller assembling a chain at run time names it.
-    pub use hclient_proto::retry::{
-        BoxRetryPolicy, Never, ProposedRetry, RetryAll, RetryAnd, RetryFromFn, RetryPolicy,
-        RetryPolicyExt, RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard,
+    // `Outcome`, `Decision` and `StopReason` are here because a public
+    // signature names each — `ProposedRetry::new` takes an `Outcome`, and
+    // `Standard::decide` answers a `Decision` carrying a `StopReason` — and
+    // a type a caller must write but cannot name is a wall. They were
+    // reachable only through `hclient-proto` until the modules moved in.
+    pub use crate::sansio::retry::{
+        BoxRetryPolicy, Decision, Never, Outcome, ProposedRetry, RetryAll, RetryAnd, RetryFromFn,
+        RetryPolicy, RetryPolicyExt, RetryStatuses, RetryVerdict, SafeMethodsOnly, Standard,
+        StopReason,
     };
 }
 // The observability seam, re-exported for the same reason
@@ -614,7 +621,7 @@ pub mod retry {
 // them here does not promise otherwise: the quarantine is a statement
 // about the trait, not about where its name is written.
 // Every URL this client is handed becomes an `http::Uri` through
-// `hclient_proto::uri`, and every way that can fail — a base that is
+// `crate::sansio::uri`, and every way that can fail — a base that is
 // not a base, a host `http::Uri` will not hold, a non-ASCII host in a
 // build without the `idn` feature — arrives at the caller as this type,
 // as the `source()` of an `ErrorKind::Other`. It is re-exported for the
@@ -848,3 +855,26 @@ pub type DefaultClock = hclient_fetch::BrowserClock;
     all(target_family = "wasm", not(target_os = "unknown")),
 ))]
 pub type DefaultClock = NoClock;
+
+// Maintainer notes (not rendered):
+//
+// The door for this workspace's own tests and fuzz targets into the
+// sans-io half, which is otherwise private: the RFC 3986 differential
+// corpus in `tests/uri_resolution.rs` drives `uri::parse` and
+// `resolve_reference` directly, and the SSE fuzz targets drive the
+// decoder with no `Client` in the way. `hclient-native` keeps the same
+// door under the same name. Not a promise.
+#[doc(hidden)]
+pub mod testing {
+    pub use crate::sansio::sse::SseDecoder;
+
+    /// The `Retry-After` reader the retry loop uses.
+    pub mod retry {
+        pub use crate::sansio::retry::retry_after_seconds;
+    }
+
+    /// URI parsing and RFC 3986 reference resolution.
+    pub mod uri {
+        pub use crate::sansio::uri::{parse, resolve_reference};
+    }
+}

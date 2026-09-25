@@ -1,10 +1,10 @@
-//! Applying the decision made in `hclient-proto`. Only data shuffling
+//! Applying the decision made in `sansio::redirect`. Only data shuffling
 //! lives here: all the logic is in the pure function
-//! `proto::redirect::decide`.
+//! `sansio::redirect::decide`.
 
+use crate::sansio::redirect::{Follow, SENSITIVE_HEADERS};
 use hclient_core::body::RequestBody;
 use hclient_core::req::AllowEarlyData;
-use hclient_proto::redirect::{Follow, SENSITIVE_HEADERS};
 
 /// Everything that carries over between hops, except the body.
 ///
@@ -77,7 +77,7 @@ pub(crate) fn next_hop(
     let mut extensions = prev.extensions.clone();
     if follow.strip_sensitive {
         for h in SENSITIVE_HEADERS {
-            headers.remove(&h);
+            headers.remove(h);
         }
         // The extension half of the same boundary — see this function's
         // doc comment for why a replay-safety judgement does not cross an

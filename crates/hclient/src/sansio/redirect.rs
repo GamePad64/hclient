@@ -3,7 +3,7 @@
 use http::{HeaderName, HeaderValue, Method, StatusCode, Uri};
 
 /// Headers stripped when moving to a different origin.
-pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
+pub const SENSITIVE_HEADERS: &[HeaderName] = &[
     http::header::AUTHORIZATION,
     http::header::COOKIE,
     http::header::PROXY_AUTHORIZATION,
@@ -40,7 +40,7 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
 /// expression — functional update included — from outside this crate.
 /// The cost is that the field above is a major version, and that is the
 /// trade taken wherever the caller is the one building the value.
-/// [`crate::head::ResponseHead`] is the contrast: handed back, never
+/// A parsed response head is the contrast: handed back, never
 /// built, so it carries the attribute.
 ///
 /// **A verdict carries these booleans and never a request**, which is the
@@ -48,14 +48,14 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
 /// proposed and refused twice over: two policies answering with different
 /// requests have no defined meet, where two `Allow`s meet field-wise; and
 /// the request carries the `uri`, which is the open-redirect surface
-/// [`decide`] exists to keep closed.
+/// the client's own redirect logic exists to keep closed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Allow {
     /// Keep the method a 301, 302 or 303 would otherwise rewrite to `GET`.
     ///
     /// curl's `--post301`/`--post302`/`--post303`. **Which** method
     /// results is not a policy's to say — RFC 9110 §15.4's table has one
-    /// home, in [`decide`] — so this only says *do not rewrite*.
+    /// home, in the client's own redirect logic — so this only says *do not rewrite*.
     pub preserve_method: bool,
     /// Let `Authorization` and other credentials survive a hop that
     /// crosses an origin.
@@ -144,7 +144,7 @@ impl RedirectVerdict {
     }
 }
 
-/// A hop [`decide`] has worked out and is about to take, offered to the
+/// A hop the client's own redirect logic has worked out and is about to take, offered to the
 /// policy.
 ///
 /// **Everything here is `decide`'s *output*, never its input**, which is
@@ -246,7 +246,7 @@ impl<'a> ProposedRedirect<'a> {
 ///
 /// **One method, and everything else is mechanism.** Resolving a relative
 /// `Location`, the RFC 9110 §15.4 method table, deciding what an origin
-/// is — those stay in [`decide`], because a client that let them be
+/// is — those stay in the client's own redirect logic, because a client that let them be
 /// overridden would be letting a policy move the target, and getting them
 /// wrong is an open redirect rather than a surprise.
 ///
@@ -329,7 +329,7 @@ impl RedirectPolicy for Forbid {
 /// `Limit::new(0)` refuses the first redirect, which is deliberately not
 /// [`Forbid`]: one is an error, the other is an answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Limit(pub u8);
+pub struct Limit(u8);
 
 impl Limit {
     /// Follow at most `n` hops. `Limit::new(0)` refuses the first
@@ -523,10 +523,10 @@ where
     }
 }
 
-/// The hop [`decide`] worked out, for a caller to carry out.
+/// The hop the client's own redirect logic worked out, for a caller to carry out.
 ///
 /// **`#[non_exhaustive]`**: it is handed back and only read —
-/// [`decide`] is the only thing that builds one — so a further
+/// the client's own redirect logic is the only thing that builds one — so a further
 /// instruction about a hop is an added field rather than a major
 /// version. That is not hypothetical: every field here is something the
 /// client must *do*, and the list has grown once already.
@@ -557,7 +557,7 @@ pub struct Follow {
     pub drop_body: bool,
 }
 
-/// What [`decide`] concluded about one response.
+/// What the client's own redirect logic concluded about one response.
 ///
 /// **Deliberately not `#[non_exhaustive]`.** Its one consumer — `hclient::Client::run` —
 /// matches every arm and turns each into something different: a returned
@@ -678,10 +678,10 @@ pub fn decide(
         return RedirectAction::InvalidLocation;
     };
     // Shared with `ClientBuilder::base_url`'s RFC 3986 §5 implementation —
-    // see `crate::uri`'s doc comment: this client has exactly one rule for
+    // see `crate::sansio::uri`'s doc comment: this client has exactly one rule for
     // resolving a relative reference, regardless of whether the server sent
     // it in `Location:` or the caller sent it in `client.get(..)`.
-    let Ok(uri) = crate::uri::resolve_reference(current, location) else {
+    let Ok(uri) = crate::sansio::uri::resolve_reference(current, location) else {
         return RedirectAction::InvalidLocation;
     };
 
@@ -1246,7 +1246,7 @@ mod tests {
             "application/json".parse().unwrap(),
         );
         if f.strip_sensitive {
-            for name in &SENSITIVE_HEADERS {
+            for name in SENSITIVE_HEADERS {
                 headers.remove(name);
             }
         }

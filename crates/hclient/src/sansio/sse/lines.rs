@@ -3,7 +3,7 @@
 // # It is SSE's splitter, promoted rather than copied
 //
 // These are the WHATWG `EventSource` rules, and they were written here for
-// `SseDecoder` alone. [`crate::lines`] is the public door onto this type,
+// `SseDecoder` alone. [`crate::sansio::lines`] is the public door onto this type,
 // opened when a general line adapter was wanted for NDJSON and log
 // tailing: the overlap was measured before it was believed, and it is the
 // whole file — terminator set, chunk-boundary survival, byte accounting,
@@ -401,137 +401,143 @@ mod tests {
         assert_eq!(s.buffered_len(), 2);
     }
 
-    use proptest::prelude::*;
+    // `proptest` is a host-only dev-dependency of this crate (it does not
+    // build for wasm32), so the property tests are too.
+    #[cfg(not(target_family = "wasm"))]
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
 
-    proptest! {
+        proptest! {
+            #[test]
+            fn chunking_does_not_change_lines(
+                prefix_bom: bool,
+                data: Vec<u8>,
+                splits in proptest::collection::vec(0usize..4096, 0..4),
+            ) {
+                // A random Vec<u8> will almost never start with EF BB BF
+                // (1 in 16 million), so the BOM is inserted explicitly.
+                let mut input = Vec::new();
+                if prefix_bom { input.extend_from_slice(&[0xEF, 0xBB, 0xBF]) }
+                input.extend_from_slice(&data);
+
+                let whole = collect(&[&input]);
+
+                // An arbitrary number of pieces at arbitrary points: two isn't
+                // enough — the state (pending_cr, the BOM phase) must survive
+                // several consecutive boundaries.
+                let mut cuts: Vec<usize> = splits.iter().map(|s| s % (input.len() + 1)).collect();
+                cuts.sort_unstable();
+                let mut chunks: Vec<&[u8]> = Vec::new();
+                let mut prev = 0;
+                for c in cuts {
+                    chunks.push(&input[prev..c]);
+                    prev = c;
+                }
+                chunks.push(&input[prev..]);
+
+                prop_assert_eq!(whole, collect(&chunks));
+            }
+        }
+
+        /// Regression for quadratic behavior.
+        ///
+        /// A threshold on absolute time is useless, and this has been
+        /// verified: a time-bounded version of this test passes in 0.26 s
+        /// against a 2 s budget on quadratic code. So
+        /// what's checked is the complexity CLASS — the ratio of times under a
+        /// fourfold growth in input. Linearity predicts ~4×, quadratic behavior
+        /// ~16×; an 8× threshold leaves headroom for scheduler noise while
+        /// still separating one class from the other.
+        ///
+        /// Runs in its own CI job (`sse-complexity-guard`, `ci.yml`), NOT
+        /// sharing a runner with the whole-workspace test job — this
+        /// is the primary defense against flakiness. Sustained runner
+        /// overcommit (several heavy test processes at once) has been measured
+        /// to break best-of-N as the main antidote: the long "large" measurement has no structural way to
+        /// dodge preemption in any of its attempts, while the short "small" one
+        /// does, so the minimum over five attempts converged to the same
+        /// inflated ratio (up to 18.9× against an 8.0× threshold) as a single
+        /// measurement, rather than filtering it out — best-of-N amplified the
+        /// bias instead of damping it. Isolation eliminates specifically
+        /// sustained overcommit; `best_of_three` below is a secondary defense
+        /// ONLY against one-off scheduler noise (a GC pause, a random neighbor
+        /// on a shared cloud runner's hypervisor), which isolation alone
+        /// doesn't rule out. The 8× threshold is untouched: it's the one part
+        /// that already worked, and it's exactly what separates linearity from
+        /// O(n²) — widening the threshold doesn't work: under that same
+        /// sustained overcommit, known-linear code reached 18.9×, so a
+        /// threshold robust to that kind of noise would let a genuine quadratic
+        /// regression through too.
+        ///
+        /// Calibration (a 30 ms threshold, not 1 ms) is a separate fix on top
+        /// of isolation: isolation removes the overcommit noise and exposes a
+        /// DIFFERENT noise the overcommit was masking. At a 1 ms
+        /// calibration threshold, the test would stop at n on the order of
+        /// 8–16 thousand lines, where the measurement itself lands at 1–7 ms —
+        /// deep in timer/allocator/cache noise: 8 runs of the isolated job with
+        /// a deliberately reintroduced quadratic `next_line` (before the fix on
+        /// `start`, character-by-character `drain`/`remove(0)`) gave 5 honest
+        /// failures and 3 false passes, with ratios of 7.7–7.9 against the 8.0
+        /// threshold — the test was confusing measurement noise with signal.
+        /// Measured separately: the same quadratic mutation at n from 50k to
+        /// 400k gives a steady ~4× time per input doubling (not ~2×, as for
+        /// linear code) — the signal itself is real, only the measurement's
+        /// size was insufficient. At a 30 ms threshold, calibration on this
+        /// machine stops at n=400,000 (small ≈ 47–53 ms, large ≈ 195–197 ms,
+        /// ratio 3.7–4.16 on linear code across 10 consecutive runs, without a
+        /// single miss) — the same order of magnitude as the quadratic
+        /// implementation's own numbers (50k/100k/200k lines — 51/225/925 ms).
+        /// The linear one over that input range puts the signal well clear of
+        /// the noise rather than just touching it. The whole test's cost, on
+        /// the same order of fractions of a second, is acceptable precisely
+        /// because it does not share a runner with anything else.
         #[test]
-        fn chunking_does_not_change_lines(
-            prefix_bom: bool,
-            data: Vec<u8>,
-            splits in proptest::collection::vec(0usize..4096, 0..4),
-        ) {
-            // A random Vec<u8> will almost never start with EF BB BF
-            // (1 in 16 million), so the BOM is inserted explicitly.
-            let mut input = Vec::new();
-            if prefix_bom { input.extend_from_slice(&[0xEF, 0xBB, 0xBF]) }
-            input.extend_from_slice(&data);
-
-            let whole = collect(&[&input]);
-
-            // An arbitrary number of pieces at arbitrary points: two isn't
-            // enough — the state (pending_cr, the BOM phase) must survive
-            // several consecutive boundaries.
-            let mut cuts: Vec<usize> = splits.iter().map(|s| s % (input.len() + 1)).collect();
-            cuts.sort_unstable();
-            let mut chunks: Vec<&[u8]> = Vec::new();
-            let mut prev = 0;
-            for c in cuts {
-                chunks.push(&input[prev..c]);
-                prev = c;
+        fn parsing_scales_linearly_not_quadratically() {
+            fn parse_millis(lines: usize) -> f64 {
+                let mut input = Vec::with_capacity(lines * 8);
+                for _ in 0..lines {
+                    input.extend_from_slice(b"data: x\n");
+                }
+                let start = std::time::Instant::now();
+                let got = collect(&[&input]);
+                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(got.len(), lines);
+                elapsed
             }
-            chunks.push(&input[prev..]);
 
-            prop_assert_eq!(whole, collect(&chunks));
-        }
-    }
-
-    /// Regression for quadratic behavior.
-    ///
-    /// A threshold on absolute time is useless, and this has been
-    /// verified: a time-bounded version of this test passes in 0.26 s
-    /// against a 2 s budget on quadratic code. So
-    /// what's checked is the complexity CLASS — the ratio of times under a
-    /// fourfold growth in input. Linearity predicts ~4×, quadratic behavior
-    /// ~16×; an 8× threshold leaves headroom for scheduler noise while
-    /// still separating one class from the other.
-    ///
-    /// Runs in its own CI job (`sse-complexity-guard`, `ci.yml`), NOT
-    /// sharing a runner with the whole-workspace test job — this
-    /// is the primary defense against flakiness. Sustained runner
-    /// overcommit (several heavy test processes at once) has been measured
-    /// to break best-of-N as the main antidote: the long "large" measurement has no structural way to
-    /// dodge preemption in any of its attempts, while the short "small" one
-    /// does, so the minimum over five attempts converged to the same
-    /// inflated ratio (up to 18.9× against an 8.0× threshold) as a single
-    /// measurement, rather than filtering it out — best-of-N amplified the
-    /// bias instead of damping it. Isolation eliminates specifically
-    /// sustained overcommit; `best_of_three` below is a secondary defense
-    /// ONLY against one-off scheduler noise (a GC pause, a random neighbor
-    /// on a shared cloud runner's hypervisor), which isolation alone
-    /// doesn't rule out. The 8× threshold is untouched: it's the one part
-    /// that already worked, and it's exactly what separates linearity from
-    /// O(n²) — widening the threshold doesn't work: under that same
-    /// sustained overcommit, known-linear code reached 18.9×, so a
-    /// threshold robust to that kind of noise would let a genuine quadratic
-    /// regression through too.
-    ///
-    /// Calibration (a 30 ms threshold, not 1 ms) is a separate fix on top
-    /// of isolation: isolation removes the overcommit noise and exposes a
-    /// DIFFERENT noise the overcommit was masking. At a 1 ms
-    /// calibration threshold, the test would stop at n on the order of
-    /// 8–16 thousand lines, where the measurement itself lands at 1–7 ms —
-    /// deep in timer/allocator/cache noise: 8 runs of the isolated job with
-    /// a deliberately reintroduced quadratic `next_line` (before the fix on
-    /// `start`, character-by-character `drain`/`remove(0)`) gave 5 honest
-    /// failures and 3 false passes, with ratios of 7.7–7.9 against the 8.0
-    /// threshold — the test was confusing measurement noise with signal.
-    /// Measured separately: the same quadratic mutation at n from 50k to
-    /// 400k gives a steady ~4× time per input doubling (not ~2×, as for
-    /// linear code) — the signal itself is real, only the measurement's
-    /// size was insufficient. At a 30 ms threshold, calibration on this
-    /// machine stops at n=400,000 (small ≈ 47–53 ms, large ≈ 195–197 ms,
-    /// ratio 3.7–4.16 on linear code across 10 consecutive runs, without a
-    /// single miss) — the same order of magnitude as the quadratic
-    /// implementation's own numbers (50k/100k/200k lines — 51/225/925 ms).
-    /// The linear one over that input range puts the signal well clear of
-    /// the noise rather than just touching it. The whole test's cost, on
-    /// the same order of fractions of a second, is acceptable precisely
-    /// because it does not share a runner with anything else.
-    #[test]
-    fn parsing_scales_linearly_not_quadratically() {
-        fn parse_millis(lines: usize) -> f64 {
-            let mut input = Vec::with_capacity(lines * 8);
-            for _ in 0..lines {
-                input.extend_from_slice(b"data: x\n");
+            // Minimum of three attempts — secondary defense, see the test's
+            // doc comment for why this isn't the primary defense.
+            fn best_of_three(lines: usize) -> f64 {
+                (0..3)
+                    .map(|_| parse_millis(lines))
+                    .fold(f64::INFINITY, f64::min)
             }
-            let start = std::time::Instant::now();
-            let got = collect(&[&input]);
-            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-            assert_eq!(got.len(), lines);
-            elapsed
-        }
 
-        // Minimum of three attempts — secondary defense, see the test's
-        // doc comment for why this isn't the primary defense.
-        fn best_of_three(lines: usize) -> f64 {
-            (0..3)
-                .map(|_| parse_millis(lines))
-                .fold(f64::INFINITY, f64::min)
-        }
+            // Warm-up: the first run pays for the allocator and cache warming.
+            let _ = parse_millis(2_000);
 
-        // Warm-up: the first run pays for the allocator and cache warming.
-        let _ = parse_millis(2_000);
+            // Raise the base size while the measurement is drowning in timer
+            // resolution: the ratio of two noises means nothing. Calibration
+            // uses a single measurement: only a rough order-of-magnitude
+            // estimate is needed here, not a fight against noise (that only
+            // starts with the real measurement below). The 30 ms threshold
+            // (not 1 ms) and the 4,000,000 ceiling (not 64,000) — see the
+            // test's doc comment on the misses at the previous threshold.
+            let mut n = 50_000;
+            while parse_millis(n) < 30.0 && n < 4_000_000 {
+                n *= 2;
+            }
 
-        // Raise the base size while the measurement is drowning in timer
-        // resolution: the ratio of two noises means nothing. Calibration
-        // uses a single measurement: only a rough order-of-magnitude
-        // estimate is needed here, not a fight against noise (that only
-        // starts with the real measurement below). The 30 ms threshold
-        // (not 1 ms) and the 4,000,000 ceiling (not 64,000) — see the
-        // test's doc comment on the misses at the previous threshold.
-        let mut n = 50_000;
-        while parse_millis(n) < 30.0 && n < 4_000_000 {
-            n *= 2;
-        }
+            let small = best_of_three(n);
+            let large = best_of_three(n * 4);
 
-        let small = best_of_three(n);
-        let large = best_of_three(n * 4);
-
-        let ratio = large / small.max(0.001);
-        assert!(
-            ratio < 8.0,
-            "input grew 4×, time grew {ratio:.1}× ({small:.2} ms -> {large:.2} ms \
+            let ratio = large / small.max(0.001);
+            assert!(
+                ratio < 8.0,
+                "input grew 4×, time grew {ratio:.1}× ({small:.2} ms -> {large:.2} ms \
              at n={n}): looks like O(n^2)"
-        );
+            );
+        }
     }
 }

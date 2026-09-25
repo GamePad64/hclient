@@ -48,7 +48,7 @@
 
 use core::time::Duration;
 
-use crate::backoff::Backoff;
+use crate::sansio::backoff::Backoff;
 
 /// Which response statuses a caller is willing to have repeated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -630,7 +630,7 @@ pub type BoxRetryPolicy = Box<dyn RetryPolicy + Send + Sync>; // send-bound-exce
 //
 // It was `pub Vec<Box<dyn ..>>`, which made **both** the `Vec` and the
 // `Box` part of the promise — see
-// [`redirect::All`](crate::redirect::All) for the argument, which is
+// [`redirect::All`](crate::sansio::redirect::All) for the argument, which is
 // this type's verbatim. Nothing outside this crate constructed one,
 // measured before the change, so closing the field cost no consumer.
 

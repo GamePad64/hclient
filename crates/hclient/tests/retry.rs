@@ -1,7 +1,7 @@
 //! `ClientBuilder::retry`, wired.
 //!
 //! The rules themselves are pure and tested in
-//! `hclient-proto/tests/retry_policy.rs`. What only this level can say is
+//! `tests/retry_policy.rs`. What only this level can say is
 //! that the loop **sends again** — the request reaches the transport a
 //! second time, carrying the same body, inside the same operation.
 

@@ -670,7 +670,7 @@ fn a_build_with_no_list_refuses_every_domain_scoped_record() {
                 .is_none(),
             "host-only, so no subdomain sees it"
         );
-    })
+    });
 }
 
 /// Every accessor on [`Cookie`] read once, against a `Set-Cookie` that

@@ -269,6 +269,6 @@ mod sys;
 mod websocket;
 
 pub use body::WinHttpBody;
-pub use error::WinHttpError;
+pub use error::{MalformedHead, Win32Error, WinHttpError};
 pub use session::{Protocols, WinHttp};
 pub use websocket::WinHttpWebSocket;

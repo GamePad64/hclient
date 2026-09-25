@@ -10,8 +10,8 @@
 //!
 //! **And a caller could not extend it.** Every other extension point in
 //! this workspace — `Resolve`, [`CacheStore`](crate::cache::CacheStore),
-//! [`RetryPolicy`](hclient_proto::retry::RetryPolicy),
-//! [`RedirectPolicy`](hclient_proto::redirect::RedirectPolicy),
+//! [`RetryPolicy`](crate::sansio::retry::RetryPolicy),
+//! [`RedirectPolicy`](crate::sansio::redirect::RedirectPolicy),
 //! [`Auth`](crate::auth::Auth) — is a trait whose implementor may live
 //! outside this crate. Content codings were the one closed set, and
 //! nothing about them earned the exception: a deployment with an internal
@@ -299,7 +299,7 @@ pub(crate) fn accept_encoding(codings: &[SharedContentCoding]) -> Option<http::H
 /// `HeaderValue`: a `HeaderValue` accepts a space and a comma, which are
 /// exactly the two characters that would let one coding's token be read
 /// as two, and `HeaderName` lower-cases and would answer about a name
-/// where this is a value. `hclient_proto`'s parsers are the other
+/// where this is a value. The header-field parsers are the other
 /// candidate and the wrong direction — this validates a value this crate
 /// is about to *write*, which is a check rather than a parse.
 fn is_token(s: &str) -> bool {

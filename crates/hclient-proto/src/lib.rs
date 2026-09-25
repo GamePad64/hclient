@@ -1,91 +1,56 @@
-//! Pure state machines for hclient's protocol layers.
+//! Internal: the sans-io pieces hclient's transports share. **Not a public
+//! API** — depend on `hclient`, `hclient-native` or `hclient-proxy` instead.
 //!
-//! Everything in here is **sans-io**: bytes, URIs and durations go in,
-//! decisions come out, and no function opens a socket, reads a clock or
-//! draws entropy. `hclient` and its transports drive these machines over
-//! real connections; you can drive them over anything, and test them with
-//! nothing at all.
+//! This crate is published only because the crates above depend on it and
+//! crates.io needs every dependency to be there. Its API carries no
+//! stability promise: it changes whenever the transports need it to, and
+//! it moves its minor version each time. No other hclient crate
+//! re-exports anything from it, and a check enforces that.
 //!
-//! Crate invariant: no `async fn`, no runtime dependency, anywhere. Anything
-//! that depends on time takes `now` as a parameter. Enforced in CI.
+//! Everything in here is **sans-io**: bytes and durations go in, decisions
+//! come out, and no function opens a socket, reads a clock or draws
+//! entropy.
 //!
 //! ```
-//! use hclient_proto::sse::{SseDecoder, SseEvent};
-//! use hclient_proto::uri;
+//! use hclient_proto::head;
 //!
-//! // A `text/event-stream` body, in whatever pieces the network cut it into.
-//! let mut sse = SseDecoder::new(64 * 1024);
-//! sse.push(b"event: tick\ndata: 1\n").unwrap();
-//! assert_eq!(sse.next(), None); // no blank line yet, so no event
-//! sse.push(b"\n").unwrap();
-//! assert_eq!(
-//!     sse.next(),
-//!     Some(SseEvent::Message { event: Some("tick".into()), data: "1".into(), id: None }),
-//! );
-//!
-//! // A relative `Location:` resolved against the URL that answered with it.
-//! let base: http::Uri = "https://example.com/a/b".parse().unwrap();
-//! let next = uri::resolve_reference(&base, "../c?x=1").unwrap();
-//! assert_eq!(next.to_string(), "https://example.com/c?x=1");
+//! let (head, len) = head::parse_response(b"HTTP/1.1 200 Connection established\r\n\r\n")
+//!     .unwrap()
+//!     .expect("a complete head");
+//! assert_eq!(head.status, http::StatusCode::OK);
+//! assert_eq!(len, 39);
 //! ```
 //!
 //! # What is here
 //!
-//! - [`redirect`] — whether to follow a redirect: the
-//!   [`RedirectPolicy`](redirect::RedirectPolicy) trait, the stock
-//!   policies ([`Limit`](redirect::Limit),
-//!   [`SameOriginOnly`](redirect::SameOriginOnly),
-//!   [`HttpsOnly`](redirect::HttpsOnly)), and the RFC 9110 mechanism
-//!   around them — method rewriting, credentials across origins.
-//! - [`retry`] and [`backoff`] — whether to send a request again and how
-//!   long to wait: [`retry::Standard`] decides from one outcome,
-//!   [`backoff::Backoff`] is exponential with full jitter, the jitter
-//!   handed in rather than drawn.
+//! - [`head`] — an RFC 9112 response head parsed from bytes, for a
+//!   `CONNECT` tunnel or anything else that reads HTTP/1 by hand.
 //! - [`happy_eyeballs`] — the RFC 8305 connection-racing
 //!   [`Scheduler`](happy_eyeballs::Scheduler), with elapsed time as a
 //!   parameter.
-//! - [`sse`] and [`lines`] — the WHATWG `EventSource` decoder, and a line
-//!   splitter for NDJSON and logs; both hold a partial line across chunks.
-//! - [`uri`] — the one place a string becomes an [`http::Uri`], and RFC
-//!   3986 reference resolution.
-//! - [`head`] — an RFC 9112 response head parsed from bytes, for a
-//!   `CONNECT` tunnel or anything else that reads HTTP/1 by hand.
-//! - [`link`] — RFC 8288 `Link:` headers, for paginated APIs.
 //! - [`encode`] — base64 and `application/x-www-form-urlencoded`,
 //!   encode only.
-//!
-//! # Features
-//!
-//! - `idn` (default) — non-ASCII host names are converted to their ASCII
-//!   form through `hclient-idn`. Without it such a host is refused as
-//!   [`UriError::NonAsciiHost`](uri::UriError::NonAsciiHost), naming the
-//!   A-label to send instead, and the Unicode tables leave the build.
-//!
-//! # Where to go next
-//!
-//! Most callers meet these machines through `hclient`, which re-exports
-//! the policy types a caller configures (`hclient::redirect`,
-//! `hclient::retry`). `hclient-core` holds the traits the transports
-//! implement.
+
+// Maintainer notes (not rendered):
+//
+// Crate invariant: no `async fn`, no runtime dependency, anywhere. Anything
+// that depends on time takes `now` as a parameter. Enforced in CI.
+//
+// This crate used to hold the redirect and retry policies, `Backoff`, the
+// SSE and line decoders, `Link`, the header-field grammar and the URI
+// parser as well, and `hclient` re-exported the policy types from here.
+// The owner's rule is that this crate is internal and nothing is
+// re-exported from it, so those modules moved into `hclient`, the only
+// crate that used them; they live under `hclient::sansio`, still pure and
+// still tested with no socket. What stayed is what more than one transport
+// needs: `head` (`hclient-native`, `hclient-proxy`, `hclient-winhttp`),
+// `happy_eyeballs` (`hclient-native`) and `encode` (`hclient`,
+// `hclient-proxy`).
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod error;
 
-pub mod backoff;
 pub mod encode;
-// `#[doc(hidden)]` and not a promise — the reason is the module's own
-// first paragraph. A `///` here rather than a `//` would resolve that
-// module's `//!` links in *this* scope instead of its own, which is the
-// defect this workspace already paid for once when the jar and the cache
-// became modules.
-#[doc(hidden)]
-pub mod field;
 pub mod happy_eyeballs;
 pub mod head;
-pub mod lines;
-pub mod link;
-pub mod redirect;
-pub mod retry;
-pub mod sse;
-pub mod uri;
