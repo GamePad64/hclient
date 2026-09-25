@@ -61,6 +61,10 @@
 //! `hclient-tls-rustls` uses is not available here, and what the port
 //! bought besides — this backend reports ALPN now.
 #![deny(unsafe_code)]
+// docs.rs builds with every feature and passes `--cfg docsrs`, so an item
+// behind a feature or a platform is shown with a badge naming it rather
+// than looking unconditional.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod stream;
 

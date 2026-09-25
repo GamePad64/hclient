@@ -1,9 +1,9 @@
 [package]
 name = "hclient-tls-native-tls"
 version = "0.1.0-alpha.14"
-description = "hclient's native-tls TLS backend — the platform's own TLS stack behind the same `futures-io` seam"
+description = "The platform's own TLS stack (SChannel, Security.framework, OpenSSL) as an hclient TLS backend"
 keywords     = ["hclient", "tls", "native-tls", "schannel"]
-categories   = ["cryptography"]
+categories   = ["cryptography", "network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
