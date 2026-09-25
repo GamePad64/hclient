@@ -1328,6 +1328,23 @@ msrv:
     echo "msrv: $checked crate(s) with a floor of their own, each checked on it"
 
 # the compatibility promise, for the one crate that is in a position to make one
+# A stable crate must not move the major of a dependency whose types it
+# exposes without a major step of its own. `cargo semver-checks` cannot see
+# it (a re-exported trait keeps its shape while becoming another trait),
+# and release-plz proposed patch bumps for three crates when core 0.3 was
+# on the table. Needs nightly for rustdoc's JSON and the network for the
+# published manifests; scripts/exposed-majors.py says how it decides.
+# Checked in the failing direction: core at 0.3.0 with its five dependents
+# untouched names all five.
+exposed-majors:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +nightly --version >/dev/null 2>&1 || {
+      echo "::error::exposed-majors needs a nightly toolchain (rustdoc --output-format json)"
+      exit 1
+    }
+    python3 scripts/exposed-majors.py
+
 semver rev="":
     #!/usr/bin/env bash
     set -euo pipefail

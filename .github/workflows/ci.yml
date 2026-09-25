@@ -241,6 +241,21 @@ jobs:
           HCLIENT_REQUIRE_WASMTIME: "1"
         run: just test-wasip3
 
+  # A stable crate that moves the major of a dependency it exposes, without
+  # a major step of its own, breaks every caller holding both. Nothing else
+  # here sees it: `cargo semver-checks` compares a crate's own shape.
+  exposed-majors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: nightly
+          bins: just
+      - name: stable crates keep the majors they expose
+        shell: bash
+        run: just exposed-majors
+
   browser:
     strategy:
       # Engine-specific behaviour is the point of running both, so a Chrome
