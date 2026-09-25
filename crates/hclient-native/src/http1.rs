@@ -58,7 +58,7 @@
 //! there's simply nothing that can wait for socket readiness other than
 //! polling again. But that exact same [`exchange`]/[`H1Body`] code,
 //! run through a real reactor (tokio, smol), costs ~0 CPU for the same
-//! wall time: neither `TokioIo` nor `SmolSocket` calls `wake_by_ref`
+//! wall time: neither `TokioIo` nor `SmolIo` calls `wake_by_ref`
 //! itself — they return `Pending` and rely on the reactor to wake the
 //! task once the socket is actually ready, and `poll_fn` in [`exchange`]
 //! and `poll_frame` in [`H1Body`] simply AREN'T CALLED until they're

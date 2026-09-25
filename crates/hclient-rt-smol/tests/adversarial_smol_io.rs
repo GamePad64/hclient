@@ -1,7 +1,7 @@
-//! Reviewer-written adversarial test suite for `hclient_rt_smol::SmolSocket`
+//! Reviewer-written adversarial test suite for `hclient_rt_smol::SmolIo`
 //! driven through the real `Smol` runtime. The sibling suite for `TokioIo`
 //! is `crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`. This drives
-//! `SmolSocket` against a real loopback
+//! `SmolIo` against a real loopback
 //! TCP pair through `Smol::connect`/`Smol::adopt`, so a bug that only shows
 //! up against a genuine socket (partial reads, real EOF, a real RST) is
 //! covered on the smol side the same way it already is on the tokio side.
@@ -14,7 +14,7 @@
 //! **One claim here has outlived its subject.** This header recorded the
 //! suite as confirmed non-vacuous by dropping a `.min(self.scratch.len())`
 //! from `hclient-rt`'s `FuturesIo::poll_read`. That adapter was deleted when
-//! the byte-stream seam moved to `futures-io`, and `SmolSocket` reads
+//! the byte-stream seam moved to `futures-io`, and `SmolIo` reads
 //! straight into the caller's buffer with no scratch at all — so
 //! `cursor_one_byte_larger_than_scratch_buffer` now asserts that a read
 //! larger than a buffer nobody has still succeeds, which is true and no
@@ -76,7 +76,7 @@ fn test_waker() -> Waker {
     Waker::from(Arc::new(RecordingWaker(Mutex::new(false))))
 }
 
-async fn connected_pair() -> (hclient_rt_smol::SmolSocket, std::net::TcpStream) {
+async fn connected_pair() -> (hclient_rt_smol::SmolIo, std::net::TcpStream) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || listener.accept().unwrap().0);
@@ -241,7 +241,7 @@ fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_eof() {
 // ---------------------------------------------------------------------
 
 async fn read_exactly(
-    client: &mut hclient_rt_smol::SmolSocket,
+    client: &mut hclient_rt_smol::SmolIo,
     dest_len: usize,
     expected_len: usize,
 ) -> Vec<u8> {
@@ -321,7 +321,7 @@ fn cursor_one_byte_larger_than_scratch_buffer() {
     });
 }
 
-// adopt() hands back the same `SmolSocket` connect() does, so it inherits
+// adopt() hands back the same `SmolIo` connect() does, so it inherits
 // the same read behaviour - spot check with TcpAdoptStd.
 #[test]
 fn adopted_stream_reads_correctly_too() {

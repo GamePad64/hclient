@@ -151,63 +151,86 @@ impl Blocking for Smol {
     }
 }
 
-/// What a [`Smol`] connection is actually over.
+/// A [`Smol`] connection: what [`TcpConnect::connect`],
+/// [`TcpAdoptStd::adopt`] and
+/// [`IpcConnect::connect_ipc`](hclient_rt::IpcConnect::connect_ipc) hand
+/// back.
 ///
-/// An enum rather than a type parameter on the stream, because
-/// `TcpConnect::Stream` is one associated type and both connects must
-/// produce it — `IpcConnect` extends `TcpConnect` for exactly that, and
-/// this is the same shape `hclient-rt-tokio`'s `Socket` has.
+/// **Opaque, like `hclient-rt-tokio`'s `TokioIo`, so that `async-net` is not
+/// in this crate's public API.** It was a public enum with a variant per
+/// socket kind, each carrying an `async_net` stream, plus a `tcp()` accessor
+/// returning one. That made `async-net`'s major version part of this
+/// crate's promise, and the variants let anyone build one from any stream.
 ///
-/// **`#[non_exhaustive]`, because this crate hands it back and a caller only
-/// reads it.** A new endpoint kind — `hclient_rt::IpcAddr` is itself
-/// non-exhaustive, and named pipes are the next one — is a new variant
-/// here. The attribute also keeps a caller's `match` portable: `Unix` exists
-/// only on `cfg(unix)`, so an exhaustive match written on Linux would not
-/// compile on Windows, where a wildcard arm is required anyway.
+/// What a caller legitimately wants from it is the socket itself, to read
+/// options back or to hand it to `socket2`. `std::os::fd::AsFd` (on
+/// unix) and `std::os::windows::io::AsSocket` (on Windows) give
+/// that through the standard library: `socket2::SockRef::from(&io)` reaches
+/// every option this runtime sets. On Windows only TCP exists, so it is the
+/// only socket the handle can name.
+///
+/// An enum inside rather than a type parameter, because `TcpConnect::Stream`
+/// is one associated type and both connects must produce it; `IpcConnect`
+/// extends `TcpConnect` for exactly that.
 #[derive(Debug)]
-#[non_exhaustive]
-pub enum SmolSocket {
-    /// A TCP connection, from [`TcpConnect::connect`] or
-    /// [`TcpAdoptStd::adopt`].
+pub struct SmolIo {
+    inner: Socket,
+}
+
+#[derive(Debug)]
+enum Socket {
     Tcp(async_net::TcpStream),
-    /// A Unix-domain connection, from
-    /// [`IpcConnect::connect_ipc`](hclient_rt::IpcConnect::connect_ipc).
     #[cfg(unix)]
     Unix(async_net::unix::UnixStream),
+}
+
+impl SmolIo {
+    fn tcp(stream: async_net::TcpStream) -> Self {
+        Self {
+            inner: Socket::Tcp(stream),
+        }
+    }
+
+    #[cfg(unix)]
+    fn unix(stream: async_net::unix::UnixStream) -> Self {
+        Self {
+            inner: Socket::Unix(stream),
+        }
+    }
 }
 
 /// Delegates one poll to whichever socket is underneath — a macro for the
 /// reason the tokio adapter's is one: the arms differ only in the name.
 macro_rules! either {
     ($self:expr, $io:ident => $call:expr) => {
-        match $self.get_mut() {
-            SmolSocket::Tcp($io) => $call,
+        match &mut $self.get_mut().inner {
+            Socket::Tcp($io) => $call,
             #[cfg(unix)]
-            SmolSocket::Unix($io) => $call,
+            Socket::Unix($io) => $call,
         }
     };
 }
 
-impl SmolSocket {
-    /// The TCP stream underneath, for reading applied [`TcpOpts`] back in
-    /// tests and diagnostics.
-    ///
-    /// # Panics
-    ///
-    /// On a Unix-domain stream, where there is no TCP stream and every
-    /// option this exists to read has no meaning — `hclient-rt-tokio`'s
-    /// `TokioIo::get_ref` has the same shape and the same argument for
-    /// why it is not a `Result`.
-    pub fn tcp(&self) -> &async_net::TcpStream {
-        match self {
-            SmolSocket::Tcp(s) => s,
-            #[cfg(unix)]
-            SmolSocket::Unix(_) => panic!("tcp() on a Unix-domain stream: there is none"),
+#[cfg(unix)]
+impl std::os::fd::AsFd for SmolIo {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        match &self.inner {
+            Socket::Tcp(s) => s.as_fd(),
+            Socket::Unix(s) => s.as_fd(),
         }
     }
 }
 
-impl futures_lite::io::AsyncRead for SmolSocket {
+#[cfg(windows)]
+impl std::os::windows::io::AsSocket for SmolIo {
+    fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
+        match &self.inner {
+            Socket::Tcp(s) => s.as_socket(),
+        }
+    }
+}
+
+impl futures_lite::io::AsyncRead for SmolIo {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -257,13 +280,13 @@ fn shutdown_is_done(r: std::io::Result<()>) -> std::io::Result<()> {
 /// `futures-io` to `hyper::rt` and, on the way, to map `poll_shutdown`
 /// onto `poll_close`. With the seam typed on `futures-io` the socket is
 /// the stream, and the mapping is this impl.
-impl hclient_rt::Shutdown for SmolSocket {
+impl hclient_rt::Shutdown for SmolIo {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         futures_lite::io::AsyncWrite::poll_close(self, cx)
     }
 }
 
-impl futures_lite::io::AsyncWrite for SmolSocket {
+impl futures_lite::io::AsyncWrite for SmolIo {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -288,7 +311,7 @@ impl futures_lite::io::AsyncWrite for SmolSocket {
 }
 
 impl TcpConnect for Smol {
-    type Stream = SmolSocket;
+    type Stream = SmolIo;
 
     /// What `build_socket` below applies on this target — stated rather
     /// than left to the trait's `NONE` default, which would understate
@@ -385,7 +408,7 @@ impl TcpConnect for Smol {
                 return Err(err);
             }
 
-            Ok(SmolSocket::Tcp(async_net::TcpStream::from(async_stream)))
+            Ok(SmolIo::tcp(async_net::TcpStream::from(async_stream)))
         })
     }
 }
@@ -401,7 +424,7 @@ impl hclient_rt::IpcConnect for Smol {
         Self: 'a;
 
     // One type on every target, for the reason `hclient-rt-tokio`'s says:
-    // `SmolSocket::Unix` is `#[cfg(unix)]`, so the arm that builds one is
+    // `Socket::Unix` is `#[cfg(unix)]`, so the arm that builds one is
     // too. The refusal everywhere else is `reject_unsupported` on entry;
     // the wildcard `IpcAddr`'s `#[non_exhaustive]` requires is only ever
     // reached by a kind `IPC_SUPPORT` claims and no arm dials.
@@ -419,7 +442,7 @@ impl hclient_rt::IpcConnect for Smol {
                 // `socket2` dance: there is nothing to set before the
                 // connect.
                 #[cfg(unix)]
-                hclient_rt::IpcAddr::Unix(path) => Ok(SmolSocket::Unix(
+                hclient_rt::IpcAddr::Unix(path) => Ok(SmolIo::unix(
                     async_net::unix::UnixStream::connect(&path).await?,
                 )),
                 // Reached only by a kind `IPC_SUPPORT` claims and no arm
@@ -437,7 +460,7 @@ impl hclient_rt::IpcConnect for Smol {
 impl TcpAdoptStd for Smol {
     fn adopt(&self, std: std::net::TcpStream) -> std::io::Result<Self::Stream> {
         std.set_nonblocking(true)?;
-        Ok(SmolSocket::Tcp(async_net::TcpStream::try_from(std)?))
+        Ok(SmolIo::tcp(async_net::TcpStream::try_from(std)?))
     }
 }
 
@@ -602,7 +625,9 @@ mod tests {
             // `build_socket` silently ignored `opts`), but that
             // `nodelay: true` actually reached the socket: read the option
             // back, rather than relying on the call having happened.
-            let applied = s.tcp().nodelay().expect("nodelay query");
+            let applied = socket2::SockRef::from(&s)
+                .tcp_nodelay()
+                .expect("nodelay query");
             assert!(
                 applied,
                 "TcpOpts::nodelay was not applied to the connected socket"
@@ -635,7 +660,7 @@ mod tests {
                 )
                 .await
                 .expect("connect");
-            let enabled = socket2::SockRef::from(s.tcp())
+            let enabled = socket2::SockRef::from(&s)
                 .keepalive()
                 .expect("keepalive query");
             assert!(

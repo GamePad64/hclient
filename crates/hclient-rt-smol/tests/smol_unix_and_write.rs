@@ -1,4 +1,4 @@
-//! The two halves of `SmolSocket` that nothing in this crate reached: the
+//! The two halves of `SmolIo` that nothing in this crate reached: the
 //! Unix-domain arm, and the write side of `AsyncWrite`.
 //!
 //! Both were whole-method mutation survivors. `connect_ipc` — `connect_unix`
@@ -8,19 +8,19 @@
 //! could be replaced by a success that moves no bytes with the suite
 //! staying green, because `adversarial_smol_io.rs` is a **read**-side
 //! suite: it writes to the socket from the plain `std` end and reads
-//! through `SmolSocket`, so the socket's own write path is never driven.
+//! through `SmolIo`, so the socket's own write path is never driven.
 //!
 //! The two live in one file because the Unix arm is what makes the write
 //! tests discriminate the `either!` macro as well: a `poll_write` that
 //! only ever saw a TCP stream would pass for a macro that routed both
-//! variants to `SmolSocket::Tcp`, and `tcp()` panics on a Unix stream, so
-//! the arms cannot be confused silently.
+//! variants to its TCP arm, so the Unix tests are what tell the arms
+//! apart.
 use futures_lite::io::AsyncWrite as _;
 #[cfg(unix)]
 use hclient_rt::IpcConnect;
 use hclient_rt::Shutdown as _;
 use hclient_rt::{TcpConnect, TcpOpts};
-use hclient_rt_smol::{Smol, SmolSocket};
+use hclient_rt_smol::{Smol, SmolIo};
 use std::future::poll_fn;
 use std::io::Read as _;
 use std::pin::Pin;
@@ -51,7 +51,7 @@ async fn bounded<T>(
 /// kernel's socket buffer rather than the wrapper. Looping is what makes
 /// the assertion *the bytes arrive* — which is the thing a `Poll::Ready(Ok(0))`
 /// or `Ok(1)` mutant breaks.
-async fn write_all(s: &mut SmolSocket, mut buf: &[u8]) -> std::io::Result<()> {
+async fn write_all(s: &mut SmolIo, mut buf: &[u8]) -> std::io::Result<()> {
     let mut guard = 0;
     while !buf.is_empty() {
         let n = poll_fn(|cx| Pin::new(&mut *s).poll_write(cx, buf)).await?;
@@ -65,7 +65,7 @@ async fn write_all(s: &mut SmolSocket, mut buf: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The bytes a caller writes through `SmolSocket` are the bytes
+/// The bytes a caller writes through `SmolIo` are the bytes
 /// the peer reads.
 ///
 /// This is the floor under `poll_write` and `poll_flush`. Measured with
@@ -177,7 +177,7 @@ fn poll_close_half_closes_so_the_peer_sees_eof() {
 /// `shutdown(Both)` in its place loses it.
 ///
 /// Re-applied by hand: `poll_shutdown` replaced with
-/// `self.tcp().shutdown(std::net::Shutdown::Both)` fails here and passes
+/// a `shutdown(std::net::Shutdown::Both)` on the TCP stream fails here and passes
 /// every other test in this file.
 #[test]
 fn after_the_half_close_the_peers_answer_still_arrives() {
@@ -288,7 +288,7 @@ fn a_vectored_write_carries_every_buffer_in_order() {
 ///
 /// `connect_ipc` refuses whatever `IPC_SUPPORT` does not claim, so the
 /// whole of the Unix arm is a thing that can be removed with nothing local
-/// noticing. `SmolSocket::Unix` is also the second `either!`
+/// noticing. The Unix socket is also the second `either!`
 /// arm, so this is what says the macro routes it rather than falling
 /// through to the TCP one.
 ///
