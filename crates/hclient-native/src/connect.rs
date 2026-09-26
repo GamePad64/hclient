@@ -1044,6 +1044,46 @@ where
     Ok((Conn::tls(tls_stream), Some(info), attempted))
 }
 
+/// Where one request's connection goes: straight to the origin, through a
+/// proxy, or over the transport's Unix socket.
+///
+/// Decided in one place and asked by both stacks. The connector asks it
+/// before it resolves anything; the routing between TCP and QUIC asks it
+/// before it looks for an HTTPS record or reads the `Alt-Svc` cache,
+/// because QUIC can only take a [`Egress::Direct`] request — a proxy and a
+/// Unix socket carry a byte stream, and a request sent over UDP instead
+/// leaves the path the transport was configured with.
+pub(crate) enum Egress<'a, R: TcpConnect, P> {
+    /// Nothing configured stands between this request and its origin.
+    Direct,
+    /// This proxy serves the request — the first in the list that does.
+    Proxy(&'a crate::proxy::Proxy<P>),
+    /// Every request goes over this socket.
+    Unix(&'a crate::IpcRoute<R>),
+}
+
+/// See [`Egress`]. A Unix socket and a proxy are never both configured —
+/// `Native::unix_socket` and `Native::with_proxies` refuse the pair — so
+/// the order of the two checks decides nothing.
+pub(crate) fn egress<'a, R: TcpConnect, P>(
+    unix_socket: Option<&'a crate::IpcRoute<R>>,
+    proxies: &'a [crate::proxy::Proxy<P>],
+    use_tls: bool,
+    host: &str,
+    port: u16,
+) -> Egress<'a, R, P>
+where
+    P: crate::proxy::Handshake,
+{
+    if let Some(route) = unix_socket {
+        return Egress::Unix(route);
+    }
+    match crate::proxy::Proxy::choose(proxies, use_tls, host, port) {
+        Some(proxy) => Egress::Proxy(proxy),
+        None => Egress::Direct,
+    }
+}
+
 pub(crate) async fn connect<R, D, L, P, H>(
     rt: &R,
     dns: &D,
@@ -1081,41 +1121,34 @@ where
     let use_tls = wants_tls(uri)?;
     let port = port(uri, use_tls);
 
-    // Before the resolver and before discovery, because a proxy replaces
-    // both rather than layering over them. `prefetched` is not consulted
-    // and `discovery_cache` is not touched: whatever either says is about
-    // an origin this connection will not dial.
-    // `serves` is asked here rather than at `Native::proxy`, because a
-    // bypassed origin must take the ordinary path in full — its resolver,
-    // its discovery, its Happy Eyeballs — rather than a proxied path with
-    // the proxy removed.
-    // **Before the proxy and before everything else**, because a Unix
-    // socket replaces the whole resolve → discovery → Happy Eyeballs →
-    // connect block rather than layering over it: there is no name to
-    // resolve, no family to race and no port. `Native::unix_socket`
-    // refuses to coexist with a proxy, so the order between these two is a
-    // statement about reading rather than a precedence anybody has to
-    // learn.
+    // Before the resolver and before discovery, because a Unix socket and
+    // a proxy each replace the whole resolve → discovery → Happy Eyeballs
+    // → connect block rather than layering over it. `prefetched` is not
+    // consulted and `discovery_cache` is not touched on either: whatever
+    // they say is about an origin this connection will not dial.
     //
-    // There is no bypass list here and there should not be: a bypassed
-    // origin would have nowhere to go, since the whole point is that this
-    // process reaches the service only through this socket.
-    if let Some(route) = unix_socket {
-        let stream = (route.dial)(rt, &route.addr)
-            .await
-            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
-        return finish_unix::<R, L, H>(rt, tls, stream, host, use_tls, alpn, identity, began).await;
-    }
-
-    // The list is walked here rather than by the caller, and the bypass
-    // with it, so a bypassed origin takes the ordinary path *in full* —
-    // its resolver, its discovery, its Happy Eyeballs — rather than a
-    // proxied path with the proxy removed.
-    if let Some(proxy) = crate::proxy::Proxy::choose(proxies, use_tls, host, port) {
-        return through_proxy::<R, L, P, H>(
-            rt, dns, tls, proxy, host, use_tls, port, opts, alpn, identity, began,
-        )
-        .await;
+    // The decision is `egress`'s, shared with the routing between the two
+    // stacks, so the connector and the QUIC arm cannot disagree about where
+    // a request goes. A bypassed origin is `Direct` and takes the ordinary
+    // path *in full* — its resolver, its discovery, its Happy Eyeballs —
+    // rather than a proxied path with the proxy removed. A Unix socket has
+    // no bypass list and should not: the whole point is that this process
+    // reaches the service only through it.
+    match egress(unix_socket, proxies, use_tls, host, port) {
+        Egress::Unix(route) => {
+            let stream = (route.dial)(rt, &route.addr)
+                .await
+                .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+            return finish_unix::<R, L, H>(rt, tls, stream, host, use_tls, alpn, identity, began)
+                .await;
+        }
+        Egress::Proxy(proxy) => {
+            return through_proxy::<R, L, P, H>(
+                rt, dns, tls, proxy, host, use_tls, port, opts, alpn, identity, began,
+            )
+            .await;
+        }
+        Egress::Direct => {}
     }
 
     // Both families are started here, at the top, rather than inside

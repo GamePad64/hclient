@@ -202,6 +202,29 @@ pub(crate) struct UnknownClientIdentity(pub(crate) String);
 #[error("this transport has no QUIC arm; see `Native::http3`")]
 pub struct NoQuicArm;
 
+/// `RequireVersion(HTTP_3)` for a request this transport sends somewhere
+/// other than straight to the origin.
+///
+/// A proxy and a Unix socket each carry a byte stream, and HTTP/3 runs
+/// over QUIC datagrams, so neither can carry it. Sending the request
+/// directly instead would leave the path the transport was configured
+/// with, which is the one thing the refusal exists to prevent.
+#[cfg(feature = "http3")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum Http3NotDirect {
+    /// A proxy serves this request.
+    #[error(
+        "HTTP/3 was required, and this request goes through a proxy, which carries a byte stream and cannot carry QUIC"
+    )]
+    Proxy,
+    /// This transport sends every request over a Unix socket.
+    #[error(
+        "HTTP/3 was required, and this transport sends every request over a Unix socket, which cannot carry QUIC"
+    )]
+    UnixSocket,
+}
+
 // ---------------------------------------------------------------------
 // The connection was never made. "No silent no-ops": none of the sites
 // that raise these collapse a failure into `AllAttemptsFailed`/

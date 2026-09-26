@@ -102,14 +102,20 @@ pub(crate) fn combine(
     // The rest follow without a second argument. `response_trailers:
     // false` costs a caller the trailers it would not have looked for;
     // `true` would have it look for trailers on a connection that cannot
-    // carry them. `client_certs`, `proxy`, `informational_1xx`,
+    // carry them. `client_certs`, `informational_1xx`,
     // `streaming_request_body` and `request_trailers` are the same shape.
     c.streaming_request_body = tcp.streaming_request_body && quic.streaming_request_body;
     c.full_duplex = tcp.full_duplex && quic.full_duplex;
     c.request_trailers = tcp.request_trailers && quic.request_trailers;
     c.response_trailers = tcp.response_trailers && quic.response_trailers;
     c.client_certs = tcp.client_certs && quic.client_certs;
-    c.proxy = tcp.proxy && quic.proxy;
+    // `proxy` is the TCP member's, and not the conjunction: it holds the
+    // proxy list, and the routing asks that list (`connect::egress`)
+    // before the QUIC arm is ever chosen, so every request a proxy serves
+    // goes through it whichever stack would otherwise have answered. The
+    // conjunction read `false` for a transport that proxies everything the
+    // list covers.
+    c.proxy = tcp.proxy;
     c.informational_1xx = tcp.informational_1xx && quic.informational_1xx;
     // `version_select: false` makes `Client` refuse a `RequireVersion` at
     // the `UnsupportedCapability` gate, and `version_reported: false` tells
@@ -345,7 +351,6 @@ mod tests {
             "request_trailers",
             "response_trailers",
             "client_certs",
-            "proxy",
             "informational_1xx",
             "version_select",
             "version_reported",
@@ -436,6 +441,20 @@ mod tests {
         assert!(combine(&none, &supported).unwrap().early_data);
         assert!(combine(&supported, &none).unwrap().early_data);
         assert!(!combine(&none, &none).unwrap().early_data);
+    }
+
+    /// `proxy` is the TCP member's answer, in both directions — the one
+    /// `bool` that is not a conjunction, because the TCP member holds the
+    /// proxy list and the routing consults it before QUIC can be chosen.
+    /// A proxied TCP member makes a proxied pair, and a QUIC member cannot
+    /// make a pair proxied on its own.
+    #[test]
+    fn the_pair_proxies_exactly_when_the_tcp_member_does() {
+        let (mut on, off) = (Capabilities::default(), Capabilities::default());
+        on.proxy = true;
+
+        assert!(combine(&on, &off).unwrap().proxy);
+        assert!(!combine(&off, &on).unwrap().proxy);
     }
 
     // --- the tripwire for a field nobody decided about ----------------------

@@ -2437,6 +2437,51 @@ first run of them scored every one as survived and was wrong, which is why
 `.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### The QUIC arm could leave the proxy, and the fix was one decision rather than a check
+
+With a proxy **and** the HTTP/3 arm on one `Native`, the routing between
+the stacks never asked where the request was meant to go. An origin whose
+`Alt-Svc` arrived through the proxy had its **next** request sent over
+UDP from this host, straight to the origin; a record offering `h3` did
+the same on the first request; and choosing at all meant asking the
+**local** resolver for the origin's HTTPS record, which names it to the
+very resolver a proxy user is often there to avoid. A Unix socket had the
+identical hole. `capabilities().proxy` said `false` in one order of
+construction and `true` in the other — the second while the leak was
+live. `hclient::Client::new` builds in that second order, so the
+`http3` feature plus an `HTTPS_PROXY` on the machine was the whole
+recipe. Reproduced before anything changed: six of seven tests red, the
+bypass control green.
+
+**The repair is `connect::egress`, asked by both stacks.** It answers
+*direct, through this proxy, or over the socket* for one request, and the
+connector already made exactly that decision inline — unix, then
+`Proxy::choose`, then resolve. Moving it into a function and asking it
+first in `route` means the QUIC arm is reachable only from `Direct`, and
+the record lookup and the `Alt-Svc` cache are never consulted for a
+request that is not direct. `RequireVersion(HTTP_3)` for such a request
+is refused as `Http3NotDirect` under `ErrorKind::Unsupported`, before
+anything is dialled: sending it direct would answer a question nobody
+asked. In `caps::combine`, `proxy` is now the TCP member's value rather
+than the conjunction, because that member holds the list the routing
+consults.
+
+**Tearing the runtime seams apart was proposed and declined.**
+`TcpConnect` and `UdpBind` already *are* the stream seam and the datagram
+seam, named for their protocols; renaming them is a major version of the
+stable `hclient-rt` for nothing but names, and a seqpacket seam has no
+consumer anywhere in this stack. What was missing was never a seam below
+the transport — it was one decision inside it. The datagram half of
+proxying, when it comes, is a `UdpBind` wrapper (SOCKS5 UDP ASSOCIATE
+fits; MASQUE does not, since it needs an HTTP client to the proxy) and a
+fourth `Egress` variant that the QUIC arm may take.
+
+Five mutations, five kills, in `tests/proxy_and_quic.rs`: the check
+removed (five tests), a Unix socket treated as direct (one), the demand
+sent over TCP (one), the conjunction restored (one), and QUIC refused for
+any configured proxy regardless of bypass — which only the control kills,
+and is the reason it exists.
+
 ### A seam review, and what a scan of thirty-five traits found
 
 Asked to review the architecture and the seams. The inventory is

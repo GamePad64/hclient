@@ -31,12 +31,12 @@
 use crate::altsvc_cache::{self as altsvc, Origin};
 use crate::connect::HTTPS_DEFAULT_PORT;
 use crate::discovery::Discovered;
-use crate::error::NoQuicArm;
+use crate::error::{Http3NotDirect, NoQuicArm};
 use crate::established::NativeBody as EstablishedBody;
 use crate::{ALPN_H3, Native, Prepared, Protocol, spoken_version};
 use futures_util::StreamExt as _;
 use hclient_core::body::RequestBody;
-use hclient_core::error::Error;
+use hclient_core::error::{Error, ErrorKind};
 use hclient_core::req::check_version;
 use hclient_core::req::{RequireVersion, Timeouts};
 use hclient_dns::{Resolve, rtype};
@@ -295,6 +295,26 @@ where
     /// extra query, and the cache's lock is not taken on a path a record
     /// settled.
     async fn route(&self, req: http::Request<RequestBody>) -> Route {
+        // **First, and before anything is asked of DNS**: a request this
+        // transport sends through a proxy or its Unix socket is the TCP
+        // stack's, whatever the record, the cache or the caller says. QUIC
+        // is datagrams and both of those carry a byte stream, so choosing
+        // QUIC here would send the request from this host, over UDP, past
+        // the path the transport was configured with — and asking for the
+        // origin's HTTPS record would name it to the local resolver, the
+        // leak a proxy user is often there to avoid. The connector reaches
+        // the same answer from the same function, `connect::egress`.
+        if let Some(path) = self.not_direct(req.uri()) {
+            let demanded_h3 = req
+                .extensions()
+                .get::<RequireVersion>()
+                .is_some_and(|RequireVersion(v)| *v == http::Version::HTTP_3);
+            return if demanded_h3 {
+                Route::Refuse(Error::new(ErrorKind::Unsupported, path))
+            } else {
+                Route::Tcp(Prepared::new(req))
+            };
+        }
         if let Some(RequireVersion(v)) = req.extensions().get::<RequireVersion>() {
             return if *v == http::Version::HTTP_3 {
                 // A demand this transport has no arm for is refused with
@@ -361,6 +381,32 @@ where
             Some(true) => self.quic_unless_it_failed(prepared, &host, port),
             Some(false) => Route::Tcp(prepared),
             None => self.by_advertisement(prepared, &host, port).await,
+        }
+    }
+
+    /// Why this request cannot go straight to its origin, or `None` when
+    /// it can — [`connect::egress`](crate::connect::egress) asked with the
+    /// request's own authority.
+    ///
+    /// A URI with no host or with a scheme this transport refuses is
+    /// `None`: the TCP stack raises that error where it always did, and a
+    /// request that cannot be sent anywhere has no path to leave.
+    fn not_direct(&self, uri: &http::Uri) -> Option<Http3NotDirect> {
+        let (Ok(host), Ok(use_tls)) = (crate::connect::host(uri), crate::connect::wants_tls(uri))
+        else {
+            return None;
+        };
+        let port = crate::connect::port(uri, use_tls);
+        match crate::connect::egress(
+            self.unix_socket.as_ref(),
+            &self.proxies,
+            use_tls,
+            host,
+            port,
+        ) {
+            crate::connect::Egress::Direct => None,
+            crate::connect::Egress::Proxy(_) => Some(Http3NotDirect::Proxy),
+            crate::connect::Egress::Unix(_) => Some(Http3NotDirect::UnixSocket),
         }
     }
 
