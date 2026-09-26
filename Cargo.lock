@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-proxy"
-version = "0.1.0"
+version = "0.1.0-alpha.15"
 dependencies = [
  "bytes",
  "core-foundation 0.10.1",

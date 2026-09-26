@@ -8270,16 +8270,6 @@ exposes its types, so a step costs its dependents a requirement bump
 and a patch release, and `just exposed-majors` fails the day one of
 them starts exposing it.
 
-**`hclient-proxy` is `0.1.0` now, the sixth to leave the series.** Its
-graph holds no pre-release once `hclient-proto` went stable, its public
-API reaches `bytes`, `http` and `hclient-core` and nothing internal, and
-`-W unnameable_types` is silent on Linux, Windows, Apple and Android. As
-with `hclient-mock`, `just semver` enrols it on publish rather than on
-the commit: until the index moves it lists the crate among the
-pre-release baselines, and that is not a defect. `hclient-native` is the
-next, and what it promises with a stable number is written two
-paragraphs up.
-
 ### `hclient-proto` is internal, and what it held for `hclient` moved into `hclient`
 
 The owner's rule: **`hclient-proto` is an internal crate, and nothing is
