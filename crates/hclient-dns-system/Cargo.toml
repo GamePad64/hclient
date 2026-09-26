@@ -38,7 +38,7 @@ all-features = true
 # Windows 69 to 105, putting back the Unicode machinery `hclient-idn`
 # exists to keep off that platform. `domain` costs three crates, brings no
 # `url` and no ICU, and is `no_std`-capable.
-domain = { version = "0.12", default-features = false }
+domain = { version = "0.12.3", default-features = false }
 futures-core = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core = { workspace = true }

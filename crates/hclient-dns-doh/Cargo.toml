@@ -64,7 +64,7 @@ bytes          = { workspace = true }
 # `icu_properties(_data)`, `icu_collections`, `icu_provider`,
 # `icu_locale_core` and `form_urlencoded` — about 60 crates, and exactly
 # the Unicode tables `hclient-idn` exists to keep off Windows and Android.
-domain         = { version = "0.12", default-features = false, features = ["alloc"] }
+domain         = { version = "0.12.3", default-features = false, features = ["alloc"] }
 futures-core   = { workspace = true }
 futures-util   = { version = "0.3", default-features = false, features = ["std"] }
 http           = { workspace = true }

@@ -69,6 +69,10 @@ windows-sys = { workspace = true, features = [
 # future with.
 [dev-dependencies]
 static_assertions = { workspace = true }
+# The crate doc's example hands this transport to `hclient::Client`, which
+# is the reason a caller wants it; without the dev-dependency that doctest
+# does not build on Windows, the one target it is compiled for.
+hclient = { workspace = true }
 hclient-core = { workspace = true }
 bytes = { workspace = true }
 http-body = { workspace = true }

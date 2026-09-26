@@ -629,8 +629,11 @@ mod tests {
     async fn the_handle_dials_a_unix_socket_and_claims_what_tokio_claims() {
         use hclient_rt::IpcConnect;
 
+        // A short prefix, because macOS's `$TMPDIR` is ~50 bytes on its
+        // own and `sun_path` holds 104: the longer name failed `bind` there
+        // with "path must be shorter than SUN_LEN".
         let dir = std::env::temp_dir().join(format!(
-            "hclient-tokio-handle-unix-{}-{}",
+            "hc-handle-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

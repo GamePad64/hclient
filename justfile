@@ -541,6 +541,19 @@ check-targets:
     # The WinHTTP backend, whose every line is Windows-only: no line of it
     # has ever been run, so compiling it here is the only gate it has.
     check -p hclient-winhttp --target x86_64-pc-windows-msvc --all-targets
+    # And its doctests, and `hclient-urlsession`'s, compiled for their own
+    # target. `--all-targets` does not build a doctest, so the crate doc's
+    # example — `hclient::Client::builder(WinHttp::new()?)` — went on naming
+    # a crate that was not a dev-dependency, and only the Windows CI leg
+    # noticed. `rustdoc` compiles a `no_run` fence without linking, so this
+    # is checkable from here while every fence in both crates is `no_run`.
+    doc() {
+      echo "==> test --doc $*"
+      ran=$((ran+1))
+      cargo test --doc "$@" --color never || failed+=("test --doc $*")
+    }
+    doc -p hclient-winhttp --target x86_64-pc-windows-msvc
+    doc -p hclient-urlsession --target aarch64-apple-darwin
     # The two runtimes, on Windows, because both carry a `cfg(unix)` split
     # and neither was covered here. `Tokio` and `Smol` each gate an
     # associated type on `cfg(unix)` and each has a `connect_unix` that
