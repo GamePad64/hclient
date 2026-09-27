@@ -125,8 +125,8 @@ pub use connect::HttpConnect;
 pub use drive::{drive, drive_exact};
 pub use egress::{
     Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, Decision, Dial, DynDial, EgressFilter,
-    FilterSupport, Io, Opened, RequestForm, SendEgressFilter, SharedDial, SharedFilter, Target,
-    erase,
+    FilterSupport, Io, Opened, ProxyTls, RequestForm, SendEgressFilter, SharedDial, SharedFilter,
+    Target, erase,
 };
 pub use error::{
     ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,

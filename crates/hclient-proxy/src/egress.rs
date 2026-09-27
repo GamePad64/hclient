@@ -15,9 +15,63 @@ use std::time::Duration;
 
 use futures_io::{AsyncRead, AsyncWrite};
 use hclient_core::error::Error;
-#[cfg(test)]
 use hclient_core::error::ErrorKind;
 use hclient_rt::Shutdown;
+
+/// What a filter asks of a TLS handshake it has the transport run over one
+/// of the transport's own streams — see [`Dial::connect_tls`].
+///
+/// The certificate is checked by the transport's TLS backend against the
+/// transport's trust, exactly as an origin's is; nothing here carries a
+/// root store or a verifier. `#[non_exhaustive]` because a field added
+/// later must not break an implementor; build one with [`ProxyTls::new`].
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct ProxyTls<'a> {
+    /// The name the certificate is checked against, and sent as SNI.
+    pub server_name: &'a str,
+    /// ALPN protocols to offer. Empty by default: an HTTP proxy spoken to
+    /// without ALPN speaks HTTP/1.1.
+    pub alpn: &'a [&'a [u8]],
+    /// A client identity, by the label the backend knows it by. `None` by
+    /// default. A label the backend does not know is refused, never
+    /// replaced by the default identity.
+    pub identity: Option<&'a str>,
+}
+
+impl<'a> ProxyTls<'a> {
+    /// A handshake checked against `server_name`, offering no ALPN and no
+    /// client certificate.
+    #[must_use]
+    pub const fn new(server_name: &'a str) -> Self {
+        Self {
+            server_name,
+            alpn: &[],
+            identity: None,
+        }
+    }
+
+    /// Offer these ALPN protocols.
+    #[must_use]
+    pub const fn alpn(mut self, alpn: &'a [&'a [u8]]) -> Self {
+        self.alpn = alpn;
+        self
+    }
+
+    /// Present the client identity the backend knows by `label`.
+    #[must_use]
+    pub const fn identity(mut self, label: Option<&'a str>) -> Self {
+        self.identity = label;
+        self
+    }
+}
+
+fn lends_no_tls() -> Error {
+    Error::new(
+        ErrorKind::Unsupported,
+        std::io::Error::other("this transport lends no TLS to egress filters"),
+    )
+}
 
 /// What a transport lends a filter: its own way of opening a connection.
 ///
@@ -52,6 +106,23 @@ pub trait Dial {
     /// What is left of the request's connect bound, if it has one. A
     /// filter spends it; it is never handed a fresh one.
     fn remaining(&self) -> Option<Duration>;
+
+    /// Run TLS over `stream`, with the transport's own backend and trust,
+    /// and hand back the same stream type — so a filter can layer it again
+    /// (TLS to a proxy, then a tunnel, then TLS to the origin) without
+    /// naming a TLS type.
+    ///
+    /// Refuses with [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// by default, for a transport that lends no TLS. A handshake that
+    /// fails is the backend's error, [`ErrorKind::Tls`](hclient_core::error::ErrorKind::Tls).
+    fn connect_tls<'a>(
+        &'a self,
+        stream: Self::Stream,
+        req: ProxyTls<'a>,
+    ) -> impl Future<Output = Result<Self::Stream, Error>> + 'a {
+        let _ = (stream, req);
+        std::future::ready(Err(lends_no_tls()))
+    }
 }
 
 /// The origin a request is for.
@@ -314,6 +385,11 @@ pub trait DynDial {
     fn connect_ipc_boxed<'a>(&'a self, addr: &'a hclient_rt::IpcAddr) -> BoxDialing<'a>;
     /// [`Dial::remaining`].
     fn remaining(&self) -> Option<Duration>;
+    /// [`Dial::connect_tls`], erased. Refuses by default.
+    fn connect_tls_boxed<'a>(&'a self, stream: BoxIo, req: ProxyTls<'a>) -> BoxDialing<'a> {
+        let _ = (stream, req);
+        Box::pin(std::future::ready(Err(lends_no_tls())))
+    }
 }
 
 /// A [`DynDial`] that can cross threads — what [`BoxDial`] holds.
@@ -350,6 +426,14 @@ impl Dial for BoxDial<'_> {
 
     fn remaining(&self) -> Option<Duration> {
         self.0.remaining()
+    }
+
+    fn connect_tls<'b>(
+        &'b self,
+        stream: BoxIo,
+        req: ProxyTls<'b>,
+    ) -> impl Future<Output = Result<BoxIo, Error>> + 'b {
+        self.0.connect_tls_boxed(stream, req)
     }
 }
 
@@ -412,6 +496,130 @@ pub trait SendEgressFilter: EgressFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `Dial` that lends no TLS: `connect_tls` is left to its default.
+    struct Bare;
+    impl Dial for Bare {
+        type Stream = BoxIo;
+        fn connect(&self, _: &str, _: u16) -> impl Future<Output = Result<BoxIo, Error>> + '_ {
+            std::future::ready(Err(Error::new(
+                ErrorKind::Connect,
+                std::io::Error::other("no"),
+            )))
+        }
+        fn connect_ipc(
+            &self,
+            _: &hclient_rt::IpcAddr,
+        ) -> impl Future<Output = Result<BoxIo, Error>> + '_ {
+            std::future::ready(Err(Error::new(
+                ErrorKind::Connect,
+                std::io::Error::other("no"),
+            )))
+        }
+        fn remaining(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    /// A stream that reads nothing and swallows writes — enough to hand
+    /// `connect_tls` something to refuse or forward.
+    struct Empty;
+    impl AsyncRead for Empty {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(0))
+        }
+    }
+    impl AsyncWrite for Empty {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            b: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(b.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+    impl Shutdown for Empty {
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn empty_io() -> BoxIo {
+        BoxIo::new(Empty)
+    }
+
+    #[test]
+    fn a_dial_that_lends_no_tls_refuses_it_as_unsupported() {
+        let Err(err) = futures_executor::block_on(Bare.connect_tls(empty_io(), ProxyTls::new("p")))
+        else {
+            panic!("a transport that lends no TLS must refuse it");
+        };
+        assert_eq!(*err.kind(), ErrorKind::Unsupported);
+    }
+
+    type Asked = (String, Vec<Vec<u8>>, Option<String>);
+
+    /// Records what an erased `connect_tls` was asked.
+    #[derive(Default)]
+    struct Recorded(std::sync::Mutex<Vec<Asked>>);
+    impl DynDial for Recorded {
+        fn connect_boxed<'a>(&'a self, _: &'a str, _: u16) -> BoxDialing<'a> {
+            Box::pin(async { Ok(empty_io()) })
+        }
+        fn connect_ipc_boxed<'a>(&'a self, _: &'a hclient_rt::IpcAddr) -> BoxDialing<'a> {
+            Box::pin(async { Ok(empty_io()) })
+        }
+        fn connect_tls_boxed<'a>(&'a self, s: BoxIo, req: ProxyTls<'a>) -> BoxDialing<'a> {
+            self.0.lock().unwrap().push((
+                req.server_name.to_owned(),
+                req.alpn.iter().map(|a| a.to_vec()).collect(),
+                req.identity.map(ToOwned::to_owned),
+            ));
+            Box::pin(async move { Ok(s) })
+        }
+        fn remaining(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    #[test]
+    fn the_erased_dial_forwards_connect_tls_with_every_field() {
+        let rec = Recorded::default();
+        let shared: &SharedDial<'_> = &rec;
+        let dial = BoxDial(shared);
+        let alpn: &[&[u8]] = &[b"http/1.1"];
+        futures_executor::block_on(dial.connect_tls(
+            empty_io(),
+            ProxyTls::new("proxy.test").alpn(alpn).identity(Some("t1")),
+        ))
+        .expect("forwarded");
+        assert_eq!(
+            *rec.0.lock().unwrap(),
+            [(
+                "proxy.test".to_owned(),
+                vec![b"http/1.1".to_vec()],
+                Some("t1".to_owned())
+            )]
+        );
+    }
+
+    #[test]
+    fn a_proxy_tls_request_defaults_to_understating() {
+        let r = ProxyTls::new("p");
+        assert_eq!(r.server_name, "p");
+        assert!(r.alpn.is_empty());
+        assert_eq!(r.identity, None);
+    }
 
     #[test]
     fn only_unsupported_permits_a_switch() {
