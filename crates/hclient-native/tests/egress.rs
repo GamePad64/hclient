@@ -769,7 +769,7 @@ mod tunnel {
 #[test]
 fn an_external_filter_carries_https() {
     let (origin, cert, sni) = tls_origin();
-    let (proxy, _asked) = tunnelling_proxy(origin);
+    let (proxy, asked) = tunnelling_proxy(origin);
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert).expect("a DER certificate");
     let tls = hclient_tls_rustls::Rustls::from_config(Arc::new(
@@ -799,6 +799,51 @@ fn an_external_filter_carries_https() {
     });
     assert_eq!(status, 200);
     assert_eq!(sni.recv_timeout(BOUND).expect("greeted"), "localhost");
+    assert_eq!(
+        asked.recv_timeout(BOUND).expect("asked"),
+        format!("localhost:{}", origin.port())
+    );
+}
+
+/// A proxy that grants the tunnel and speaks first: the `200` and some
+/// bytes of its own arrive in one write.
+fn chatty_proxy() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for conn in listener.incoming() {
+            let Ok(mut client) = conn else { break };
+            let _ = read_head(&mut client);
+            let _ = client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nextra");
+            held.push(client);
+        }
+    });
+    addr
+}
+
+/// **Bytes a proxy sends past its handshake are refused through an
+/// external filter too** — `drive_exact` names them rather than handing
+/// them to HTTP as if the origin had sent them.
+#[test]
+fn an_external_filter_refuses_bytes_past_the_handshake() {
+    let proxy = chatty_proxy();
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly).egress(tunnel::Tunnel {
+        proxy: (proxy.ip().to_string(), proxy.port()),
+        absolute: None,
+    });
+    let rt = rt();
+    let err = get(&t, &rt, "http://chatty.test/").expect_err("the proxy spoke first");
+    assert_eq!(*err.kind(), ErrorKind::Connect, "{err:?}");
+    let mut source = std::error::Error::source(&err);
+    let mut spoke = None;
+    while let Some(s) = source {
+        if let Some(p) = s.downcast_ref::<hclient_proxy::ProxySpokeFirst>() {
+            spoke = Some(p.0);
+        }
+        source = s.source();
+    }
+    assert_eq!(spoke, Some(5), "{err:?}");
 }
 
 #[derive(Clone, Default)]

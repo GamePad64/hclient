@@ -2453,7 +2453,9 @@ live. `hclient::Client::new` builds in that second order, so the
 recipe. Reproduced before anything changed: six of seven tests red, the
 bypass control green.
 
-**The repair is `connect::egress`, asked by both stacks.** It answers
+**The repair was `connect::egress`, asked by both stacks** — a function
+that no longer exists: the section after this one made the same decision
+a seam, `EgressFilter`, and moved the proxies out of `Native`. It answered
 *direct, through this proxy, or over the socket* for one request, and the
 connector already made exactly that decision inline — unix, then
 `Proxy::choose`, then resolve. Moving it into a function and asking it

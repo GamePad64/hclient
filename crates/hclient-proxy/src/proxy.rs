@@ -31,7 +31,9 @@ pub enum Reach {
         /// The proxy's port.
         port: u16,
     },
-    /// Over a same-machine socket — built only by [`IpcProxy::new`].
+    /// Over a same-machine socket. A [`Proxy`] holds this only when it was
+    /// made from an [`IpcProxy`]; nothing public puts a `Reach` into a
+    /// `Proxy`, so building the variant yourself changes nothing.
     Ipc(std::sync::Arc<hclient_rt::IpcAddr>),
 }
 
@@ -286,40 +288,67 @@ impl<P> Proxy<P> {
 /// one in the method that accepts this type; a `Proxy` goes wherever a
 /// dialler by name can.
 #[derive(Debug, Clone)]
-pub struct IpcProxy<P>(pub(crate) Proxy<P>);
+pub struct IpcProxy<P> {
+    addr: std::sync::Arc<hclient_rt::IpcAddr>,
+    // Everything but where the proxy is: `reach` stays the placeholder
+    // `Proxy::new` gave it until `into_proxy` sets it from `addr`, so the
+    // address is held once.
+    inner: Proxy<P>,
+}
 
 impl<P> IpcProxy<P> {
     /// `protocol`, spoken to a proxy listening on `addr`.
     pub fn new(protocol: P, addr: hclient_rt::IpcAddr) -> Self {
-        let mut inner = Proxy::new(protocol, "", 0);
-        inner.reach = Reach::Ipc(std::sync::Arc::new(addr));
-        Self(inner)
+        Self {
+            addr: std::sync::Arc::new(addr),
+            inner: Proxy::new(protocol, "", 0),
+        }
     }
 
     /// See [`Proxy::bypass`].
     #[must_use]
-    pub fn bypass<S: Into<Box<str>>>(self, patterns: impl IntoIterator<Item = S>) -> Self {
-        Self(self.0.bypass(patterns))
+    pub fn bypass<S: Into<Box<str>>>(mut self, patterns: impl IntoIterator<Item = S>) -> Self {
+        self.inner = self.inner.bypass(patterns);
+        self
     }
 
     /// See [`Proxy::bypass_local`].
     #[must_use]
-    pub fn bypass_local(self) -> Self {
-        Self(self.0.bypass_local())
+    pub fn bypass_local(mut self) -> Self {
+        self.inner = self.inner.bypass_local();
+        self
     }
 
     /// See [`Proxy::only_for`].
     #[must_use]
-    pub fn only_for(self, scheme: ProxyScheme) -> Self {
-        Self(self.0.only_for(scheme))
+    pub fn only_for(mut self, scheme: ProxyScheme) -> Self {
+        self.inner = self.inner.only_for(scheme);
+        self
     }
 
     /// Where the proxy listens.
     pub fn addr(&self) -> &hclient_rt::IpcAddr {
-        match &self.0.reach {
-            Reach::Ipc(addr) => addr,
-            Reach::Tcp { .. } => unreachable!("an IpcProxy is built only by IpcProxy::new"),
+        &self.addr
+    }
+
+    /// The protocol, as configured.
+    pub fn protocol(&self) -> &P {
+        self.inner.protocol()
+    }
+
+    /// The same proxy speaking `f(protocol)`.
+    #[must_use]
+    pub fn map_protocol<Q>(self, f: impl FnOnce(P) -> Q) -> IpcProxy<Q> {
+        IpcProxy {
+            addr: self.addr,
+            inner: self.inner.map_protocol(f),
         }
+    }
+
+    pub(crate) fn into_proxy(self) -> Proxy<P> {
+        let mut inner = self.inner;
+        inner.reach = Reach::Ipc(self.addr);
+        inner
     }
 }
 

@@ -90,12 +90,19 @@ impl Rules {
     }
 
     /// Append a rule for a proxy reached over a same-machine socket.
+    ///
+    /// Reaching it needs a same-machine dialler, and nothing here can check
+    /// that one exists: [`Dial::connect_ipc`](crate::Dial::connect_ipc)
+    /// answers `Unsupported` on a runtime that has none, so every request
+    /// this rule serves fails. A transport that proves the dialler at
+    /// configuration — `hclient_native::Native::proxy_over_ipc` — is the
+    /// way to install one where that should be a compile error instead.
     #[must_use]
     pub fn push_ipc<P>(self, proxy: crate::IpcProxy<P>) -> Self
     where
         P: Handshake + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C16
     {
-        self.push(proxy.0)
+        self.push(proxy.into_proxy())
     }
 
     /// Append the Unix-socket policy: every request not served by an

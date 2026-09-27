@@ -64,13 +64,17 @@ where
     }
 }
 
-/// [`drive`], refusing whatever the proxy sent past its own handshake.
+/// [`drive`], refusing bytes that arrived with the handshake's final read.
 ///
 /// Nothing the origin might say can have arrived before anything was
 /// written to it, so those bytes are the proxy's; carrying them on would
 /// feed them to TLS or to HTTP as if the origin had sent them. This is the
 /// check every filter owes and the one easiest to forget, so it is the
 /// default here and [`drive`] is for a caller who decides otherwise.
+///
+/// Only what was read while driving the handshake can be seen: bytes the
+/// proxy sends in a later segment are read by whatever runs over the
+/// stream next, and are indistinguishable there from the origin's.
 ///
 /// # Errors
 ///
