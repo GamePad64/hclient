@@ -44,6 +44,12 @@ http          = { workspace = true }
 # rather than minting a second one is what makes this a refactor: every
 # message a caller sees is the one they saw before the protocols moved.
 hclient-core  = { workspace = true }
+# The stream seam's traits, so the egress seam can name a stream type:
+# `futures-io` plus `hclient_rt::Shutdown` is exactly what a transport's
+# connection is bounded on. `hclient-rt` is stable, so this is a promise
+# this crate can make.
+hclient-rt    = { path = "../hclient-rt", version = "0.1.1" }
+futures-io    = { version = "0.3", default-features = false, features = ["std"] }
 # For `head`: RFC 9112 §4's response head, which is the whole of what
 # `CONNECT` needed hyper for.
 hclient-proto = { workspace = true }
