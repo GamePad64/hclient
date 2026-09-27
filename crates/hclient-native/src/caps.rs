@@ -110,7 +110,7 @@ pub(crate) fn combine(
     c.response_trailers = tcp.response_trailers && quic.response_trailers;
     c.client_certs = tcp.client_certs && quic.client_certs;
     // `proxy` is the TCP member's, and not the conjunction: it holds the
-    // proxy list, and the routing asks that list (`connect::egress`)
+    // proxy list, and the routing asks that list (`Native::egress_route`)
     // before the QUIC arm is ever chosen, so every request a proxy serves
     // goes through it whichever stack would otherwise have answered. The
     // conjunction read `false` for a transport that proxies everything the

@@ -2542,6 +2542,21 @@ tunnel reused, the connect bound through a black-holed proxy, and an
 external filter that wraps the stream (XOR) and is asked before the
 rules. Every one was killed by its own mutation.
 
+**Two things the first external filter would have tripped on are now
+refused by construction.** A proxy reached over a socket is `IpcProxy`,
+which only `Native::proxy_over_ipc` takes — installed through `proxy()`
+it used to be accepted and fail every request, against the
+refuse-at-configuration rule `unix_socket` and `tcp_opts` keep; it is a
+compile error now, pinned by a `compile_fail` doctest whose error was
+read under `no_run` to be the right one (E0308, `Proxy` expected). And
+`hclient_proxy::drive_exact` refuses bytes a proxy sends past its
+handshake, the check every filter owes and the witness had written by
+hand. Writing its test found the old one had never pinned the
+classification: `bytes_past_the_handshake_are_refused` read only the
+error's source, so leftover bytes turning `Unreachable` survived it.
+`Conn` is `!Sync` since the erased side arrived, which nothing needs
+and is said on the type.
+
 **What it cost, measured.** Stripped release binaries against the commit
 before the work: `hc` 6,241,128 → 6,293,616 bytes (+52 KiB, +0.84%);
 `hclient-native`'s `minimal` example 518,776 → 525,304 (+6.4 KiB,

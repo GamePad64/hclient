@@ -302,7 +302,7 @@ where
         // the path the transport was configured with — and asking for the
         // origin's HTTPS record would name it to the local resolver, the
         // leak a proxy user is often there to avoid. The connector reaches
-        // the same answer from the same function, `connect::egress`.
+        // the same answer from the same filter, through `egress_route`.
         if let Some(path) = self.not_direct(req.uri()) {
             let demanded_h3 = req
                 .extensions()
@@ -384,8 +384,8 @@ where
     }
 
     /// Why this request cannot go straight to its origin, or `None` when
-    /// it can — [`connect::egress`](crate::connect::egress) asked with the
-    /// request's own authority.
+    /// it can — `Native::egress_route` asked with the request's own
+    /// authority.
     ///
     /// A URI with no host or with a scheme this transport refuses is
     /// `None`: the TCP stack raises that error where it always did, and a

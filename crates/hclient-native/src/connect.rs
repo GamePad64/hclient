@@ -166,6 +166,10 @@ use std::time::Duration;
 /// does, to borrow a connection after a `101`. What a caller does with
 /// one is the byte-stream seam: `futures_io::{AsyncRead, AsyncWrite}` and
 /// `hclient_rt::Shutdown`, forwarded to whichever stream it holds.
+///
+/// It is not `Sync`: a connection an external egress filter opened is an
+/// erased stream that promises `Send` and nothing more. Nothing reads a
+/// connection from two threads at once, so nothing here needs it.
 #[derive(Debug)]
 pub struct Conn<P, T>(pub(crate) Side<P, T>);
 
@@ -816,96 +820,6 @@ where
     .await
 }
 
-/// DNS-consuming connector: consults the origin's HTTPS record where one
-/// is to be had (see [`crate::discovery`]), resolves `uri`, runs Happy
-/// Eyeballs (feeding [`Scheduler`] as results arrive — see the module doc
-/// comment), then optionally runs a TLS handshake with the negotiated ALPN
-/// offer. `uri`'s scheme decides whether TLS is needed at all (`https` —
-/// yes, `http` — no); any other scheme is `ErrorKind::Unsupported`, not a
-/// silent treatment as `http`.
-///
-/// # The record and the addresses are asked at once
-///
-/// RFC 9460 §10.3, and it is where this function's cost hides: awaiting
-/// the HTTPS query *in front of* the address queries makes every new
-/// connection pay one round trip before it starts resolving, on a resolver
-/// that answers SVCB — `SystemDns` on Linux does.
-///
-/// Nothing about an address depends on the record. This connector does not
-/// resolve a record's target name (`discovery::lookup` says why), so the
-/// origin's own A/AAAA answers are the same answers whatever comes back;
-/// what *does* depend on the record — the port, the hints, the ALPN offer,
-/// the ECH slot — is needed when a socket is opened, not when a name is
-/// resolved. So all three queries go out together and this function waits
-/// for whichever it actually needs next.
-///
-/// The two halves are not merely constructed together, they are **polled**
-/// together — see [`Answers`] for why that distinction is the whole
-/// mechanism — and neither is spawned, so a dropped connect drops all
-/// three.
-///
-/// # The record may already have been fetched, and then it is not fetched
-/// again
-///
-/// `prefetched` is [`Prefetched::NotConsulted`] for every caller that has
-/// not asked, which is the behaviour this function had before the
-/// parameter existed. A caller that *has* asked — through
-/// [`crate::Native::prepare`], for **this request's own authority**, with
-/// this transport's own resolver and this transport's own negative cache —
-/// hands the answer over instead, and no query goes out here.
-///
-/// The two states of "already asked" are both carried: `Looked(Some(..))`
-/// and `Looked(None)` are different instructions, and conflating the
-/// second with "not asked" would re-query precisely the origins that
-/// publish nothing (see [`Prefetched`]).
-///
-/// # The record is consulted once, and its failure is paid for once
-///
-/// A discovered endpoint moves the connection: a different port, a
-/// different set of addresses to start from. If that connection fails,
-/// this function tries again **on the origin's own terms** — no port
-/// override, no hints, no ALPN restriction, no ECH — and marks the origin
-/// in `discovery` so the next request skips discovery altogether for
-/// [`crate::SVCB_FAILURE_TTL`]. Without the retry an origin with a stale
-/// record would be unreachable rather than slow; without the mark, every
-/// request would pay the failed attempt again.
-///
-/// **Both attempts share one `Timeouts::connect` budget**, because that
-/// deadline wraps this whole future exactly once (`crate::
-/// with_connect_timeout`). A retry that could double a caller's bound
-/// would not be a bound.
-///
-/// **The error the caller sees is the second attempt's**, and that is the
-/// one about the origin: the first attempt went to an endpoint the caller
-/// never named, chosen by this transport from a DNS record, and its
-/// failure is recorded in the cache rather than reported as the answer to
-/// a request that was still able to proceed. When there was no record, or
-/// when it contributed nothing, there is only ever one attempt and one
-/// error.
-///
-/// # The two attempts do not share a DNS figure
-///
-/// `began` below is taken once and given to the first attempt, whose
-/// `dns` therefore covers the HTTPS record *and* the address answers —
-/// which is the wait the caller actually experienced. The retry gets a
-/// fresh mark, because its addresses are already in hand ([`Answers`]
-/// replays them) and measuring its `dns` from the top would report the
-/// whole of the failed first attempt as time spent in DNS. Neither
-/// figure is a share of a total: see
-/// [`ConnectTiming`](hclient_core::hooks::ConnectTiming), which
-/// says so where a caller reads it.
-/// Everything a proxy changes, in one place.
-///
-/// The origin's **name** goes to the proxy and its addresses are never
-/// looked up here — an HTTP proxy resolves it from the `CONNECT` target, a
-/// SOCKS5 one from `ATYP=0x03 DOMAINNAME`. Happy Eyeballs still runs, over
-/// the proxy's own addresses, so a dual-stack proxy is reached the same
-/// way a dual-stack origin is.
-///
-/// Discovery does not run at all: an HTTPS record's address hints name an
-/// address nobody will dial, and its port would move the connection
-/// somewhere the proxy was not asked about. `Prefetched` is not a
-/// parameter here for that reason — there is nothing for it to be.
 /// Resolve `host` with the transport's resolver and race its addresses
 /// with Happy Eyeballs under `opts` — how the transport reaches anything by
 /// name. A proxy is reached this way, and so is whatever a filter asks
@@ -1004,6 +918,13 @@ fn no_stream(via: Box<str>) -> Error {
 /// The connection for a request an egress filter carries, or `None` for
 /// one it does not — the external filter first, then the built-in rules,
 /// the order `Native::egress_route` answers in.
+///
+/// What a filter changes, in one place: the origin's **name** goes to the
+/// filter and its addresses are never looked up here; Happy Eyeballs still
+/// runs, over whatever the filter asks [`crate::dial::NativeDial`] to
+/// reach; and discovery does not run at all, because an HTTPS record's
+/// hints and port describe a connection nobody will open. `Prefetched` is
+/// not a parameter here for that reason.
 #[allow(
     clippy::too_many_arguments,
     reason = "every argument is one of `connect`'s, handed on unchanged"
@@ -1095,6 +1016,89 @@ where
     )
 }
 
+/// Where the connection for one request comes from: an egress filter
+/// first — the external one, then the built-in rules, see
+/// [`through_filter`] — and, where both answer direct, the ordinary path
+/// below.
+///
+/// DNS-consuming connector: consults the origin's HTTPS record where one
+/// is to be had (see [`crate::discovery`]), resolves `uri`, runs Happy
+/// Eyeballs (feeding [`Scheduler`] as results arrive — see the module doc
+/// comment), then optionally runs a TLS handshake with the negotiated ALPN
+/// offer. `uri`'s scheme decides whether TLS is needed at all (`https` —
+/// yes, `http` — no); any other scheme is `ErrorKind::Unsupported`, not a
+/// silent treatment as `http`.
+///
+/// # The record and the addresses are asked at once
+///
+/// RFC 9460 §10.3, and it is where this function's cost hides: awaiting
+/// the HTTPS query *in front of* the address queries makes every new
+/// connection pay one round trip before it starts resolving, on a resolver
+/// that answers SVCB — `SystemDns` on Linux does.
+///
+/// Nothing about an address depends on the record. This connector does not
+/// resolve a record's target name (`discovery::lookup` says why), so the
+/// origin's own A/AAAA answers are the same answers whatever comes back;
+/// what *does* depend on the record — the port, the hints, the ALPN offer,
+/// the ECH slot — is needed when a socket is opened, not when a name is
+/// resolved. So all three queries go out together and this function waits
+/// for whichever it actually needs next.
+///
+/// The two halves are not merely constructed together, they are **polled**
+/// together — see [`Answers`] for why that distinction is the whole
+/// mechanism — and neither is spawned, so a dropped connect drops all
+/// three.
+///
+/// # The record may already have been fetched, and then it is not fetched
+/// again
+///
+/// `prefetched` is [`Prefetched::NotConsulted`] for every caller that has
+/// not asked, which is the behaviour this function had before the
+/// parameter existed. A caller that *has* asked — through
+/// [`crate::Native::prepare`], for **this request's own authority**, with
+/// this transport's own resolver and this transport's own negative cache —
+/// hands the answer over instead, and no query goes out here.
+///
+/// The two states of "already asked" are both carried: `Looked(Some(..))`
+/// and `Looked(None)` are different instructions, and conflating the
+/// second with "not asked" would re-query precisely the origins that
+/// publish nothing (see [`Prefetched`]).
+///
+/// # The record is consulted once, and its failure is paid for once
+///
+/// A discovered endpoint moves the connection: a different port, a
+/// different set of addresses to start from. If that connection fails,
+/// this function tries again **on the origin's own terms** — no port
+/// override, no hints, no ALPN restriction, no ECH — and marks the origin
+/// in `discovery` so the next request skips discovery altogether for
+/// [`crate::SVCB_FAILURE_TTL`]. Without the retry an origin with a stale
+/// record would be unreachable rather than slow; without the mark, every
+/// request would pay the failed attempt again.
+///
+/// **Both attempts share one `Timeouts::connect` budget**, because that
+/// deadline wraps this whole future exactly once (`crate::
+/// with_connect_timeout`). A retry that could double a caller's bound
+/// would not be a bound.
+///
+/// **The error the caller sees is the second attempt's**, and that is the
+/// one about the origin: the first attempt went to an endpoint the caller
+/// never named, chosen by this transport from a DNS record, and its
+/// failure is recorded in the cache rather than reported as the answer to
+/// a request that was still able to proceed. When there was no record, or
+/// when it contributed nothing, there is only ever one attempt and one
+/// error.
+///
+/// # The two attempts do not share a DNS figure
+///
+/// `began` below is taken once and given to the first attempt, whose
+/// `dns` therefore covers the HTTPS record *and* the address answers —
+/// which is the wait the caller actually experienced. The retry gets a
+/// fresh mark, because its addresses are already in hand ([`Answers`]
+/// replays them) and measuring its `dns` from the top would report the
+/// whole of the failed first attempt as time spent in DNS. Neither
+/// figure is a share of a total: see
+/// [`ConnectTiming`](hclient_core::hooks::ConnectTiming), which
+/// says so where a caller reads it.
 pub(crate) async fn connect<R, D, L, H>(
     rt: &R,
     dns: &D,
