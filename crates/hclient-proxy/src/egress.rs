@@ -664,4 +664,85 @@ mod tests {
             }
         );
     }
+
+    /// A stream whose every answer is distinguishable from a default, so a
+    /// wrapper that forwards nothing is caught by the value it hands back.
+    struct Marked;
+    impl AsyncRead for Marked {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            buf[..3].copy_from_slice(b"abc");
+            Poll::Ready(Ok(3))
+        }
+    }
+    fn marked(what: &str) -> std::io::Error {
+        std::io::Error::other(what.to_owned())
+    }
+    impl AsyncWrite for Marked {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            b: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(b.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(marked("flush")))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(marked("close")))
+        }
+    }
+    impl Shutdown for Marked {
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(marked("shutdown")))
+        }
+    }
+
+    #[test]
+    fn a_boxed_stream_forwards_every_call_to_the_stream_inside() {
+        let mut io = BoxIo::new(Marked);
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut buf = [0u8; 8];
+        let Poll::Ready(Ok(n)) = Pin::new(&mut io).poll_read(&mut cx, &mut buf) else {
+            panic!("read")
+        };
+        assert_eq!(&buf[..n], b"abc");
+        let Poll::Ready(Ok(n)) = Pin::new(&mut io).poll_write(&mut cx, b"hello") else {
+            panic!("write")
+        };
+        assert_eq!(n, 5);
+        let err = |p: Poll<std::io::Result<()>>| match p {
+            Poll::Ready(Err(e)) => e.to_string(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(err(Pin::new(&mut io).poll_flush(&mut cx)), "flush");
+        assert_eq!(err(Pin::new(&mut io).poll_close(&mut cx)), "close");
+        assert_eq!(err(Pin::new(&mut io).poll_shutdown(&mut cx)), "shutdown");
+    }
+
+    #[test]
+    fn the_erased_dial_reports_the_budget_it_was_lent() {
+        struct Budget;
+        impl DynDial for Budget {
+            fn connect_boxed<'a>(&'a self, _: &'a str, _: u16) -> BoxDialing<'a> {
+                unreachable!()
+            }
+            fn connect_ipc_boxed<'a>(&'a self, _: &'a hclient_rt::IpcAddr) -> BoxDialing<'a> {
+                unreachable!()
+            }
+            fn remaining(&self) -> Option<Duration> {
+                Some(Duration::from_millis(7))
+            }
+        }
+        let shared: &SharedDial<'_> = &Budget;
+        assert_eq!(
+            Dial::remaining(&BoxDial(shared)),
+            Some(Duration::from_millis(7))
+        );
+    }
 }

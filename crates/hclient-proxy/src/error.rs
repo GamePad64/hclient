@@ -69,13 +69,19 @@ pub enum ConnectError {
     /// authority — the host, and the port.
     #[error("`{0}:{1}` cannot be written as an authority")]
     BadAuthority(Box<str>, u16),
+    /// A Basic-auth username with a `:` in it. RFC 7617 §2 makes the colon
+    /// the separator, so `a:b` with password `c` and `a` with password
+    /// `b:c` would put the same bytes on the wire.
+    #[error("a Basic-auth username may not contain a colon")]
+    ColonInUsername,
 }
 
 // Maintainer notes (not rendered):
 // A newtype rather than `hclient_proto::head::HeadError` itself, because
-// that crate is a pre-release and a public field naming its type would make
-// this crate's stable promise depend on one it does not own — the rule
-// `just exposed-majors` checks. The parser's own error is still the
+// that crate is internal — it promises no stable interface — and a public
+// field naming its type would make this crate's stable promise depend on
+// one it does not own: the rule `just internal-crates-stay-internal`
+// checks. The parser's own error is still the
 // `source()`, so nothing a log prints is lost.
 /// Why a `CONNECT` response head did not parse. Its [`Display`](std::fmt::Display)
 /// names the defect; there is nothing to match on.
@@ -88,11 +94,10 @@ impl std::fmt::Display for MalformedHead {
     }
 }
 
-impl std::error::Error for MalformedHead {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.source()
-    }
-}
+// No `source`: the display is the parser error's own, so naming that
+// error again as the source would print it twice in a chain, and the
+// parser's error has no source of its own to pass on.
+impl std::error::Error for MalformedHead {}
 
 /// What a `USERID` or a host name cannot be.
 ///
@@ -188,6 +193,10 @@ pub enum Socks5HandshakeError {
     /// The proxy's reply carries a protocol version other than `5`.
     #[error("the SOCKS5 proxy answered version {0} rather than 5")]
     BadVersion(u8),
+    /// The proxy's reply names an address type (`ATYP`) RFC 1928 §5 does
+    /// not define, so the reply cannot be framed.
+    #[error("the SOCKS5 proxy's reply names address type {0:#04x}, which RFC 1928 does not define")]
+    BadAddressType(u8),
     /// A destination host name is longer than the 255 bytes SOCKS5's
     /// length-prefixed `DOMAINNAME` field can carry.
     #[error("a SOCKS5 host name must be at most 255 bytes, this one is {0}")]

@@ -54,14 +54,19 @@ impl HttpConnect {
     ///
     /// # Errors
     ///
-    /// Returns `Err` when the base64-encoded credential cannot become a
-    /// valid HTTP header value — `http::HeaderValue::from_str` refusing
-    /// it, which base64 output does not do in practice but which this
+    /// Returns [`ConnectError::ColonInUsername`](crate::ConnectError::ColonInUsername)
+    /// when `user` contains a `:` — RFC 7617 §2's separator, so the pair
+    /// could not be read back as the one the caller meant. Also `Err` when
+    /// the base64-encoded credential cannot become a valid HTTP header
+    /// value, which base64 output does not do in practice but which this
     /// call surfaces rather than assumes.
     pub fn basic_auth(mut self, user: &str, password: &str) -> Result<Self, Error> {
+        if user.contains(':') {
+            return Err(Error::new(ErrorKind::Other, ConnectError::ColonInUsername));
+        }
         let raw = hclient_proto::encode::base64(format!("{user}:{password}").as_bytes());
         let mut v = http::HeaderValue::from_str(&format!("Basic {raw}"))
-            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+            .map_err(|e| Error::new(ErrorKind::Other, e))?;
         v.set_sensitive(true);
         self.auth = Some(v);
         Ok(self)
@@ -190,6 +195,37 @@ mod tests {
             "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
         );
         assert!(leftover.is_empty());
+    }
+
+    #[test]
+    fn a_colon_in_the_username_is_refused_rather_than_encoded() {
+        // RFC 7617 §2: the colon is the separator, so these two would put
+        // identical bytes on the wire and one caller would be wrong.
+        let err = HttpConnect::new().basic_auth("a:b", "c").unwrap_err();
+        assert!(
+            matches!(
+                std::error::Error::source(&err).and_then(|s| s.downcast_ref::<ConnectError>()),
+                Some(ConnectError::ColonInUsername)
+            ),
+            "{err:?}"
+        );
+        assert!(HttpConnect::new().basic_auth("a", "b:c").is_ok());
+    }
+
+    #[test]
+    fn a_malformed_answer_names_the_defect_the_parser_found() {
+        let mut h = HttpConnect::new();
+        let err = drive_for_test(
+            &mut h,
+            "example.com",
+            443,
+            answering(b"SSH-2.0-OpenSSH\r\n\r\n"),
+        )
+        .expect_err("not HTTP");
+        let text = std::error::Error::source(&err)
+            .expect("a source")
+            .to_string();
+        assert!(text.contains("status line"), "{text}");
     }
 
     #[test]

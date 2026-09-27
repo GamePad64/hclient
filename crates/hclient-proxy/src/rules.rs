@@ -495,6 +495,43 @@ mod tests {
     }
 
     #[test]
+    fn absolute_form_carries_the_proxys_own_credential() {
+        // The rule list holds the handshake erased, and the header is read
+        // back through the erasure: a `BoxHandshake` that forgot to forward
+        // it would send every request to an authenticating proxy without
+        // one, and the proxy's `407` would be the first anybody heard.
+        let http = HttpConnect::new().basic_auth("alice", "hunter2").unwrap();
+        let want = http.proxy_authorization().cloned();
+        assert!(want.is_some());
+        let r = Rules::new().push(Proxy::new(http, "p", 1));
+        let Decision::Filtered {
+            form: RequestForm::Absolute {
+                proxy_authorization,
+            },
+            ..
+        } = r.route(&t("example.com", 80, false))
+        else {
+            panic!("expected absolute-form");
+        };
+        assert_eq!(proxy_authorization, want);
+    }
+
+    #[test]
+    fn a_list_is_empty_until_a_rule_is_pushed() {
+        assert!(Rules::new().is_empty());
+        assert!(
+            !Rules::new()
+                .push(Proxy::new(Socks5::new(), "p", 1))
+                .is_empty()
+        );
+        assert!(
+            !Rules::new()
+                .unix(hclient_rt::IpcAddr::Unix("/s".into()))
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn a_bypassed_origin_is_direct() {
         let r = Rules::new().push(Proxy::new(HttpConnect::new(), "p", 1).bypass(["example.com"]));
         assert_eq!(r.route(&t("example.com", 443, true)), Decision::Direct);

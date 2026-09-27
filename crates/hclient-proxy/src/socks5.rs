@@ -248,7 +248,7 @@ impl Handshake for Socks5 {
                         usize::from(from_peer[4]) + 1
                     }
                     other => {
-                        return Err(Error::new(ErrorKind::Connect, Socks5Refused { rep: other }));
+                        return Err(handshake(Socks5HandshakeError::BadAddressType(other)));
                     }
                 };
                 let total = 4 + addr_len + 2;
@@ -595,6 +595,30 @@ mod tests {
         // than borrowing the name of one that is next to it.
         let rendered = Socks5Refused { rep: 0x09 }.to_string();
         assert!(rendered.contains("unassigned"), "{rendered}");
+    }
+
+    #[test]
+    fn an_address_type_the_rfc_does_not_define_is_a_malformed_reply_not_a_refusal() {
+        // `REP=0`, so the proxy granted the tunnel; `ATYP=5` names no
+        // address type. Reporting that as `Socks5Refused { rep: 5 }` would
+        // tell the caller *connection refused* — a reason the proxy never
+        // gave.
+        let mut h = Socks5::new();
+        let err = drive_for_test(
+            &mut h,
+            "example.com",
+            443,
+            scripted(vec![vec![0x05, 0x00], vec![0x05, 0x00, 0x00, 0x05, 0, 0]]),
+        )
+        .expect_err("malformed");
+        let source = std::error::Error::source(&err).expect("a source");
+        assert!(
+            matches!(
+                source.downcast_ref::<Socks5HandshakeError>(),
+                Some(Socks5HandshakeError::BadAddressType(0x05))
+            ),
+            "{err:?}"
+        );
     }
 
     #[test]
