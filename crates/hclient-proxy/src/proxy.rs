@@ -31,7 +31,7 @@ pub enum Reach {
         /// The proxy's port.
         port: u16,
     },
-    /// Over a same-machine socket.
+    /// Over a same-machine socket — built only by [`IpcProxy::new`].
     Ipc(std::sync::Arc<hclient_rt::IpcAddr>),
 }
 
@@ -243,14 +243,6 @@ impl<P> Proxy<P> {
         &self.protocol
     }
 
-    /// A proxy reached over a same-machine socket rather than TCP — Tor's
-    /// `SocksPort unix:/path` shape.
-    pub fn over_ipc(protocol: P, addr: hclient_rt::IpcAddr) -> Self {
-        let mut proxy = Self::new(protocol, "", 0);
-        proxy.reach = Reach::Ipc(std::sync::Arc::new(addr));
-        proxy
-    }
-
     /// How this proxy itself is reached.
     pub fn reach(&self) -> &Reach {
         &self.reach
@@ -282,6 +274,51 @@ impl<P> Proxy<P> {
         match &self.reach {
             Reach::Tcp { port, .. } => *port,
             Reach::Ipc(_) => 0,
+        }
+    }
+}
+
+/// A proxy reached over a same-machine socket rather than TCP — Tor's
+/// `SocksPort unix:/path` shape.
+///
+/// Its own type rather than a [`Proxy`] with an address kind, because a
+/// transport needs a same-machine dialler to reach it and proves it has
+/// one in the method that accepts this type; a `Proxy` goes wherever a
+/// dialler by name can.
+#[derive(Debug, Clone)]
+pub struct IpcProxy<P>(pub(crate) Proxy<P>);
+
+impl<P> IpcProxy<P> {
+    /// `protocol`, spoken to a proxy listening on `addr`.
+    pub fn new(protocol: P, addr: hclient_rt::IpcAddr) -> Self {
+        let mut inner = Proxy::new(protocol, "", 0);
+        inner.reach = Reach::Ipc(std::sync::Arc::new(addr));
+        Self(inner)
+    }
+
+    /// See [`Proxy::bypass`].
+    #[must_use]
+    pub fn bypass<S: Into<Box<str>>>(self, patterns: impl IntoIterator<Item = S>) -> Self {
+        Self(self.0.bypass(patterns))
+    }
+
+    /// See [`Proxy::bypass_local`].
+    #[must_use]
+    pub fn bypass_local(self) -> Self {
+        Self(self.0.bypass_local())
+    }
+
+    /// See [`Proxy::only_for`].
+    #[must_use]
+    pub fn only_for(self, scheme: ProxyScheme) -> Self {
+        Self(self.0.only_for(scheme))
+    }
+
+    /// Where the proxy listens.
+    pub fn addr(&self) -> &hclient_rt::IpcAddr {
+        match &self.0.reach {
+            Reach::Ipc(addr) => addr,
+            Reach::Tcp { .. } => unreachable!("an IpcProxy is built only by IpcProxy::new"),
         }
     }
 }

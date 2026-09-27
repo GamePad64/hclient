@@ -229,7 +229,7 @@ fn socks5_on_a_unix_socket_reaches_the_origin() {
     });
 
     let t = Native::new(Tokio, NoTls, IpLiteralOnly)
-        .proxy_over_ipc(Proxy::over_ipc(
+        .proxy_over_ipc(hclient_native::proxy::IpcProxy::new(
             Socks5::new(),
             hclient_rt::IpcAddr::unix(&path),
         ))

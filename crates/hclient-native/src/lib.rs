@@ -2621,8 +2621,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     }
 
     /// Reach origins through `proxy`, a proxy itself reached over a
-    /// same-machine socket ([`Proxy::over_ipc`](crate::proxy::Proxy::over_ipc)) —
-    /// Tor's `SocksPort unix:/path` shape.
+    /// same-machine socket ([`IpcProxy`](crate::proxy::IpcProxy)) — Tor's
+    /// `SocksPort unix:/path` shape.
     ///
     /// A method of its own, rather than [`proxy`](Self::proxy), because it
     /// needs the runtime to open same-machine connections and says so in
@@ -2632,18 +2632,32 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     ///
     /// [`ErrorKind::Unsupported`] when the runtime cannot open the proxy's
     /// kind of address.
-    pub fn proxy_over_ipc<P>(mut self, proxy: crate::proxy::Proxy<P>) -> Result<Self, Error>
+    ///
+    /// A socket-reached proxy is its own type, so the method that needs no
+    /// same-machine dialler cannot be handed one:
+    ///
+    #[cfg_attr(feature = "proxy", doc = "```compile_fail,E0308")]
+    #[cfg_attr(not(feature = "proxy"), doc = "```text")]
+    /// # use hclient_native::Native;
+    /// # use hclient_native::proxy::{IpcProxy, Socks5};
+    /// # fn f(t: Native<hclient_rt_tokio::Tokio, hclient_tls::NoTls, hclient_dns::IpLiteralOnly>) {
+    /// let _ = t.proxy(IpcProxy::new(Socks5::new(), hclient_rt::IpcAddr::unix("/run/tor/socks")));
+    /// # }
+    /// ```
+    pub fn proxy_over_ipc<P>(mut self, proxy: crate::proxy::IpcProxy<P>) -> Result<Self, Error>
     where
         R: hclient_rt::IpcConnect,
         for<'a> R::ConnectingIpc<'a>: Send, // send-bound-exception: amendment-C15
         P: crate::proxy::Handshake + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C16
     {
-        if let crate::proxy::Reach::Ipc(addr) = proxy.reach() {
-            addr.reject_unsupported(<R as hclient_rt::IpcConnect>::IPC_SUPPORT)
-                .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
-        }
+        proxy
+            .addr()
+            .reject_unsupported(<R as hclient_rt::IpcConnect>::IPC_SUPPORT)
+            .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         self.ipc = Some(dial_ipc::<R>);
-        Ok(self.and_proxy(proxy))
+        self.rules = std::mem::take(&mut self.rules).push_ipc(proxy);
+        self.caps.proxy = true;
+        Ok(self)
     }
 
     /// What this client accepts in an HTTP/1 **response head** — the

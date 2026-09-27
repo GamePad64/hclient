@@ -89,6 +89,15 @@ impl Rules {
         self
     }
 
+    /// Append a rule for a proxy reached over a same-machine socket.
+    #[must_use]
+    pub fn push_ipc<P>(self, proxy: crate::IpcProxy<P>) -> Self
+    where
+        P: Handshake + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C16
+    {
+        self.push(proxy.0)
+    }
+
     /// Append the Unix-socket policy: every request not served by an
     /// earlier rule goes over `addr`.
     #[must_use]
@@ -432,7 +441,7 @@ mod tests {
             reply,
             ..Default::default()
         };
-        let r = Rules::new().push(Proxy::over_ipc(
+        let r = Rules::new().push_ipc(crate::IpcProxy::new(
             Socks5::new(),
             hclient_rt::IpcAddr::unix("/run/tor/socks"),
         ));
