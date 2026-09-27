@@ -64,6 +64,35 @@ where
     }
 }
 
+/// [`drive`], refusing whatever the proxy sent past its own handshake.
+///
+/// Nothing the origin might say can have arrived before anything was
+/// written to it, so those bytes are the proxy's; carrying them on would
+/// feed them to TLS or to HTTP as if the origin had sent them. This is the
+/// check every filter owes and the one easiest to forget, so it is the
+/// default here and [`drive`] is for a caller who decides otherwise.
+///
+/// # Errors
+///
+/// [`drive`]'s errors, and [`ErrorKind::Connect`] with a
+/// [`ProxySpokeFirst`](crate::ProxySpokeFirst) source when bytes followed
+/// the handshake.
+pub async fn drive_exact<S, H>(io: &mut S, h: &mut H, host: &str, port: u16) -> Result<(), Error>
+where
+    S: Read + Write + Unpin,
+    H: Handshake + ?Sized,
+{
+    let left = drive(io, h, host, port).await?;
+    if left.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ErrorKind::Connect,
+            crate::ProxySpokeFirst(left.len()),
+        ))
+    }
+}
+
 // --- byte IO over hyper's traits ---------------------------------------
 //
 // Written here rather than reached for: `hclient-tls-native-tls`'s
@@ -246,6 +275,37 @@ mod tests {
         // The greeting, then the CONNECT-by-name.
         assert_eq!(&io.written[..3], &[0x05, 0x01, 0x00]);
         assert!(io.written.windows(11).any(|w| w == b"example.com"));
+    }
+
+    #[test]
+    fn drive_exact_refuses_bytes_past_the_handshake() {
+        let mut io = ScriptIo::one_flight(b"HTTP/1.1 200 OK\r\n\r\nextra");
+        let err = futures_executor::block_on(super::drive_exact(
+            &mut io,
+            &mut HttpConnect::new(),
+            "example.com",
+            443,
+        ))
+        .unwrap_err();
+        assert_eq!(*err.kind(), ErrorKind::Connect);
+        assert_eq!(
+            std::error::Error::source(&err)
+                .and_then(|s| s.downcast_ref::<crate::ProxySpokeFirst>())
+                .map(|p| p.0),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn drive_exact_accepts_a_clean_handshake() {
+        let mut io = ScriptIo::one_flight(b"HTTP/1.1 200 OK\r\n\r\n");
+        futures_executor::block_on(super::drive_exact(
+            &mut io,
+            &mut HttpConnect::new(),
+            "example.com",
+            443,
+        ))
+        .expect("nothing followed the handshake");
     }
 
     #[test]

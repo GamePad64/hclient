@@ -127,6 +127,7 @@ fn is_refusal(e: &Error) -> bool {
         s.is::<crate::ProxyRefused>()
             || s.is::<crate::Socks5Refused>()
             || s.is::<crate::Socks4Refused>()
+            || s.is::<ProxySpokeFirst>()
     })
 }
 
@@ -199,21 +200,18 @@ impl EgressFilter for Rules {
             return Ok(Opened::Raw(stream));
         }
         let mut h = proxy.protocol().fresh();
-        let left = crate::drive(&mut stream, &mut h, t.host, t.port)
+        crate::drive_exact(&mut stream, &mut h, t.host, t.port)
             .await
             .map_err(|e| {
+                // A protocol's own refusal, or bytes past the handshake, is
+                // the proxy declining this target; anything else is the
+                // proxy being unusable.
                 if is_refusal(&e) {
                     Attempt::Refused(e)
                 } else {
                     Attempt::Unreachable(e)
                 }
             })?;
-        if !left.is_empty() {
-            return Err(Attempt::Refused(Error::new(
-                hclient_core::error::ErrorKind::Connect,
-                ProxySpokeFirst(left.len()),
-            )));
-        }
         Ok(Opened::Raw(stream))
     }
 }
@@ -499,9 +497,12 @@ mod tests {
             ..Default::default()
         };
         let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy", 8080));
-        let err = block(r.open_stream(t("example.com", 443, true), &dials))
-            .unwrap_err()
-            .into_error();
+        // `Refused`, not `Unreachable`: the proxy answered, and what it said
+        // is a reason to refuse this target rather than proof it is down.
+        let Err(Attempt::Refused(err)) = block(r.open_stream(t("example.com", 443, true), &dials))
+        else {
+            panic!("leftover bytes are a refusal");
+        };
         assert!(
             std::error::Error::source(&err)
                 .and_then(|s| s.downcast_ref::<ProxySpokeFirst>())

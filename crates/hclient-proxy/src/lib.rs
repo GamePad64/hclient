@@ -122,7 +122,7 @@ mod socks5;
 pub mod system;
 
 pub use connect::HttpConnect;
-pub use drive::drive;
+pub use drive::{drive, drive_exact};
 pub use egress::{
     Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, Decision, Dial, DynDial, EgressFilter,
     FilterSupport, Io, Opened, RequestForm, SendEgressFilter, SharedDial, SharedFilter, Target,
