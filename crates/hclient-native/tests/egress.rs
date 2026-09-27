@@ -18,7 +18,7 @@ use hclient_native::proxy::{HttpConnect, Proxy, Socks5};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -96,7 +96,7 @@ fn socks5_tcp() -> (SocketAddr, mpsc::Receiver<String>, Arc<AtomicUsize>) {
 }
 
 /// An HTTP proxy answering absolute-form requests itself; reports each
-/// request line.
+/// request head.
 fn http_proxy() -> (SocketAddr, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -105,7 +105,7 @@ fn http_proxy() -> (SocketAddr, mpsc::Receiver<String>) {
         for conn in listener.incoming() {
             let Ok(mut s) = conn else { break };
             let head = read_head(&mut s);
-            let _ = tx.send(head.lines().next().unwrap_or_default().to_owned());
+            let _ = tx.send(head);
             let _ =
                 s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi");
             let _ = s.flush();
@@ -186,7 +186,10 @@ fn http_and_socks5_rules_serve_one_transport() {
     assert_eq!(
         http_seen
             .recv_timeout(BOUND)
-            .expect("the HTTP proxy saw it"),
+            .expect("the HTTP proxy saw it")
+            .lines()
+            .next()
+            .unwrap_or_default(),
         "GET http://a.test/one HTTP/1.1",
         "absolute-form, to the HTTP proxy"
     );
@@ -585,4 +588,323 @@ fn a_filter_that_declares_no_stream_is_refused_before_dialling() {
         0,
         "open_stream was never asked"
     );
+}
+
+// --- the external path, beyond wrapping ----------------------------------
+//
+// Copied from `tests/proxy.rs`: integration tests share no modules here.
+
+fn ok_response() -> &'static [u8] {
+    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi"
+}
+
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+fn identity() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+        .expect("rcgen can always make a self-signed cert");
+    (
+        CertificateDer::from(cert.cert.der().to_vec()),
+        PrivateKeyDer::try_from(cert.signing_key.serialize_der()).expect("pkcs8 from rcgen"),
+    )
+}
+
+/// A TLS origin that reports **the server name it was greeted with**.
+///
+/// That is the whole assertion: over a tunnel the certificate is still the
+/// origin's, so a client that sent the proxy's name would fail the
+/// handshake — but it would also fail if it sent nothing, and the two are
+/// different defects. The name is read off the accepted connection rather
+/// than inferred from the request succeeding.
+fn tls_origin() -> (SocketAddr, CertificateDer<'static>, mpsc::Receiver<String>) {
+    let (cert_der, key_der) = identity();
+    let mut cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .expect("the cert and key were made together");
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async move {
+            listener.set_nonblocking(true).expect("nonblocking");
+            let listener = tokio::net::TcpListener::from_std(listener).expect("adopt");
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let sni = tls.get_ref().1.server_name().unwrap_or("<none>").to_owned();
+                    let _ = tx.send(sni);
+                    let mut buf = [0u8; 1024];
+                    let _ = tls.read(&mut buf).await;
+                    let _ = tls.write_all(ok_response()).await;
+                    let _ = tls.flush().await;
+                });
+            }
+        });
+    });
+    (addr, cert_der, rx)
+}
+
+/// An HTTP proxy that tunnels: `200`, then bytes both ways, and it reports
+/// the authority it was asked for.
+fn tunnelling_proxy(origin: SocketAddr) -> (SocketAddr, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut client) = conn else { break };
+            let head = read_head(&mut client);
+            let target = head
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or_default()
+                .to_owned();
+            let _ = tx.send(target);
+            let Ok(mut upstream) = TcpStream::connect(origin) else {
+                continue;
+            };
+            if client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .is_err()
+            {
+                continue;
+            }
+            let (mut c2, mut u2) = (
+                client.try_clone().expect("clone"),
+                upstream.try_clone().expect("clone"),
+            );
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut c2, &mut u2);
+            });
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut upstream, &mut client);
+            });
+        }
+    });
+    (addr, rx)
+}
+
+mod tunnel {
+    //! An external filter that reaches an HTTP proxy through the lent
+    //! connect path and opens a `CONNECT` tunnel — the built-in behaviour,
+    //! written from outside, so the external path is exercised on its own.
+
+    use hclient_proxy::{
+        Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, HttpConnect, Io,
+        Opened, RequestForm, SendEgressFilter, Target,
+    };
+
+    pub struct Tunnel {
+        pub proxy: (String, u16),
+        /// When set, `http://` requests are written absolute-form with this
+        /// header instead of tunnelled.
+        pub absolute: Option<http::HeaderValue>,
+    }
+
+    impl EgressFilter for Tunnel {
+        type Wrapped<S: Io> = S;
+
+        fn route(&self, t: &Target<'_>) -> Decision {
+            let form = match (&self.absolute, t.use_tls) {
+                (Some(auth), false) => RequestForm::Absolute {
+                    proxy_authorization: Some(auth.clone()),
+                },
+                _ => RequestForm::Origin,
+            };
+            Decision::Filtered {
+                support: FilterSupport::STREAM,
+                pool_key: format!("tunnel:{}:{}", self.proxy.0, self.proxy.1).into(),
+                form,
+            }
+        }
+
+        async fn open_stream<'a, C: Dial + 'a>(
+            &'a self,
+            t: Target<'a>,
+            ctx: &'a C,
+        ) -> Result<Opened<C::Stream, C::Stream>, Attempt>
+        where
+            Self: Sized,
+        {
+            let mut s = ctx
+                .connect(&self.proxy.0, self.proxy.1)
+                .await
+                .map_err(Attempt::Unreachable)?;
+            if self.absolute.is_some() && !t.use_tls {
+                return Ok(Opened::Raw(s));
+            }
+            hclient_proxy::drive_exact(&mut s, &mut HttpConnect::new(), t.host, t.port)
+                .await
+                .map_err(Attempt::Refused)?;
+            Ok(Opened::Raw(s))
+        }
+    }
+
+    impl SendEgressFilter for Tunnel {
+        fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
+            Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+        }
+    }
+}
+
+/// **TLS to the origin over an external filter's stream**, with the
+/// origin's own name as SNI: the certificate is `localhost`'s and the
+/// proxy is `127.0.0.1`, so a handshake that used the proxy's name, or
+/// none, fails.
+#[test]
+fn an_external_filter_carries_https() {
+    let (origin, cert, sni) = tls_origin();
+    let (proxy, _asked) = tunnelling_proxy(origin);
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert).expect("a DER certificate");
+    let tls = hclient_tls_rustls::Rustls::from_config(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ));
+    let t = Native::new(Tokio, tls, IpLiteralOnly).egress(tunnel::Tunnel {
+        proxy: (proxy.ip().to_string(), proxy.port()),
+        absolute: None,
+    });
+    let rt = rt();
+    let status = rt.block_on(async {
+        tokio::time::timeout(
+            BOUND,
+            t.execute(
+                http::Request::builder()
+                    .uri(format!("https://localhost:{}/x", origin.port()))
+                    .body(RequestBody::Empty)
+                    .expect("request"),
+            ),
+        )
+        .await
+        .expect("must not hang")
+        .expect("the tunnelled https request")
+        .status()
+    });
+    assert_eq!(status, 200);
+    assert_eq!(sni.recv_timeout(BOUND).expect("greeted"), "localhost");
+}
+
+#[derive(Clone, Default)]
+struct Remotes(Arc<std::sync::Mutex<Vec<Option<SocketAddr>>>>);
+
+impl hclient_core::hooks::Hooks for Remotes {
+    fn on(&self, event: &hclient_core::hooks::Event<'_>) {
+        if let hclient_core::hooks::Event::Connected(c) = event {
+            self.0.lock().expect("hook log").push(c.remote);
+        }
+    }
+}
+
+/// **A hook sees the address an external filter dialled** — the relay,
+/// the first hop — whatever the filter wrapped around it.
+#[test]
+fn a_hook_sees_the_first_hop_of_an_external_filter() {
+    let key = 0x21;
+    let (relay, _served) = xor_origin(key);
+    let hooks = Remotes::default();
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly)
+        .hooks(hooks.clone())
+        .egress(xor::Xor {
+            relay: (relay.ip().to_string(), relay.port()),
+            key,
+            only: "wrapped.test",
+        });
+    let rt = rt();
+    let status = rt.block_on(async {
+        tokio::time::timeout(
+            BOUND,
+            t.execute(
+                http::Request::builder()
+                    .uri("http://wrapped.test/")
+                    .body(RequestBody::Empty)
+                    .expect("request"),
+            ),
+        )
+        .await
+        .expect("must not hang")
+        .expect("through the relay")
+        .status()
+    });
+    assert_eq!(status, 200);
+    assert_eq!(*hooks.0.lock().expect("hook log"), [Some(relay)]);
+}
+
+/// **An external filter may ask for absolute-form**, and the request line
+/// and its `Proxy-Authorization` reach the proxy as the filter said.
+#[test]
+fn an_external_filter_may_answer_absolute_form() {
+    let (proxy, seen) = http_proxy();
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly).egress(tunnel::Tunnel {
+        proxy: (proxy.ip().to_string(), proxy.port()),
+        absolute: Some(http::HeaderValue::from_static("Basic dTpw")),
+    });
+    let rt = rt();
+    assert_eq!(
+        get(&t, &rt, "http://abs.test/p").expect("via the proxy"),
+        200
+    );
+    let head = seen.recv_timeout(BOUND).expect("seen");
+    assert_eq!(
+        head.lines().next().unwrap_or_default(),
+        "GET http://abs.test/p HTTP/1.1"
+    );
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("proxy-authorization: basic dtpw"),
+        "{head}"
+    );
+}
+
+/// **The caller's connect bound holds through an external filter whose
+/// proxy never answers**: its `CONNECT` waits for a reply that never comes,
+/// inside the connect phase.
+#[test]
+fn a_black_holed_external_relay_times_out_at_the_callers_bound() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        // Held open and never answered.
+        for s in listener.incoming().flatten() {
+            held.push(s);
+        }
+    });
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly).egress(tunnel::Tunnel {
+        proxy: (addr.ip().to_string(), addr.port()),
+        absolute: None,
+    });
+    let rt = rt();
+    let began = std::time::Instant::now();
+    let err = get_with(
+        &t,
+        &rt,
+        "http://silent.test/",
+        Some(Duration::from_millis(300)),
+    )
+    .expect_err("the relay never answers");
+    assert!(
+        matches!(
+            *err.kind(),
+            ErrorKind::Timeout(hclient_core::error::Phase::Connect)
+        ),
+        "{err:?}"
+    );
+    assert!(began.elapsed() < Duration::from_secs(5));
 }
