@@ -27,6 +27,10 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, H> {
     opts: &'a TcpOpts,
     ipc: Option<DialIpc<R>>,
     budget: Option<Duration>,
+    /// When the context was lent, on the transport's clock — what
+    /// [`remaining`](hclient_proxy::Dial::remaining) counts the budget down
+    /// from.
+    lent: R::Instant,
     began: Option<R::Instant>,
     /// What the last [`connect`](hclient_proxy::Dial::connect) reported
     /// for the hooks, taken by the caller that emits `Connected`. A
@@ -51,6 +55,7 @@ impl<'a, R: TcpConnect + Timer, D: ?Sized, H> NativeDial<'a, R, D, H> {
             opts,
             ipc,
             budget,
+            lent: rt.now(),
             began,
             attempted: Mutex::new(None),
             _h: PhantomData,
@@ -117,6 +122,7 @@ where
 
     fn remaining(&self) -> Option<Duration> {
         self.budget
+            .map(|b| b.saturating_sub(self.rt.elapsed_since(self.lent)))
     }
 }
 
@@ -153,7 +159,7 @@ where
     }
 
     fn remaining(&self) -> Option<Duration> {
-        self.budget
+        hclient_proxy::Dial::remaining(self)
     }
 }
 
@@ -223,8 +229,10 @@ mod tests {
         assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Unsupported);
     }
 
-    #[test]
-    fn remaining_is_what_it_was_given() {
+    /// What is left, not what was given: a filter chaining two hops must
+    /// see the first hop's cost taken out of the bound before the second.
+    #[tokio::test]
+    async fn remaining_counts_down_from_what_it_was_given() {
         let rt = hclient_rt_tokio::Tokio;
         let opts = opts();
         let d = std::time::Duration::from_millis(250);
@@ -236,6 +244,27 @@ mod tests {
             Some(d),
             None,
         );
-        assert_eq!(dial.remaining(), Some(d));
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let left = dial.remaining().expect("a bound was given");
+        assert!(
+            left <= std::time::Duration::from_millis(200),
+            "{left:?} left of {d:?} after 60 ms"
+        );
+        assert!(left > std::time::Duration::ZERO, "{left:?}");
+    }
+
+    #[test]
+    fn no_bound_is_no_bound() {
+        let rt = hclient_rt_tokio::Tokio;
+        let opts = opts();
+        let dial = NativeDial::<_, _, NoHooks>::new(
+            &rt,
+            &hclient_dns::IpLiteralOnly,
+            &opts,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(dial.remaining(), None);
     }
 }

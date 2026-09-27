@@ -263,7 +263,17 @@ pub trait EgressFilter {
     where
         Self: Sized;
 
-    /// Asked once per request, before anything is resolved.
+    /// Where a request to `target` goes, asked before anything is resolved.
+    ///
+    /// **It must be a pure function of `target`.** A transport may ask it
+    /// several times for one request — for the pool key, for how the
+    /// request line is written, for whether HTTP/3 is possible, and again
+    /// when it connects — and acts on each answer as though they were the
+    /// same. A filter whose answer changed between those calls would have a
+    /// request keyed for one proxy and dialled through another, or kept
+    /// off HTTP/3 as filtered and then sent direct. Rotation, health checks
+    /// and failover belong inside [`open_stream`](Self::open_stream), behind
+    /// a key that names the pool they share.
     fn route(&self, target: &Target<'_>) -> Decision;
 
     /// Open a byte stream to `target`, for a request [`route`](Self::route)

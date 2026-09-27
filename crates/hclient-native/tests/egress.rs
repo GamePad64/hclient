@@ -513,3 +513,76 @@ fn an_external_filter_is_asked_before_the_built_in_rules() {
         "the filtered host never reached SOCKS5"
     );
 }
+
+mod deny {
+    //! A filter that carries its target by *refusing* it: it answers
+    //! `Filtered` with no support at all, the natural shape of a deny list.
+
+    use hclient_proxy::{
+        Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Io, Opened,
+        RequestForm, SendEgressFilter, Target,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub struct Deny {
+        pub opened: Arc<AtomicUsize>,
+    }
+
+    impl EgressFilter for Deny {
+        type Wrapped<S: Io> = S;
+
+        fn route(&self, _t: &Target<'_>) -> Decision {
+            Decision::Filtered {
+                support: FilterSupport::NONE,
+                pool_key: "deny".into(),
+                form: RequestForm::Origin,
+            }
+        }
+
+        fn open_stream<'a, C: Dial + 'a>(
+            &'a self,
+            _t: Target<'a>,
+            _ctx: &'a C,
+        ) -> impl std::future::Future<Output = Result<Opened<C::Stream, C::Stream>, Attempt>> + 'a
+        where
+            Self: Sized,
+        {
+            self.opened.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err(Attempt::Refused(hclient_core::error::Error::new(
+                hclient_core::error::ErrorKind::Connect,
+                std::io::Error::other("should never have been asked"),
+            ))))
+        }
+    }
+
+    impl SendEgressFilter for Deny {
+        fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
+            Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+        }
+    }
+}
+
+/// **A filter that declares no stream is refused before it is asked to
+/// open one**, with a typed error naming it — the capability is read, so a
+/// deny list is a thing a filter can say rather than a thing it must
+/// implement by failing.
+#[test]
+fn a_filter_that_declares_no_stream_is_refused_before_dialling() {
+    let opened = Arc::new(AtomicUsize::new(0));
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly).egress(deny::Deny {
+        opened: opened.clone(),
+    });
+    let rt = rt();
+    let err = get(&t, &rt, "http://denied.test/").expect_err("the filter carries no stream");
+    assert_eq!(*err.kind(), ErrorKind::Unsupported, "{err:?}");
+    let refusal = std::error::Error::source(&err)
+        .and_then(|s| s.downcast_ref::<hclient_native::error::NoStreamPath>())
+        .unwrap_or_else(|| panic!("a typed refusal: {err:?}"));
+    assert_eq!(&*refusal.via, "deny");
+    assert_eq!(
+        opened.load(Ordering::SeqCst),
+        0,
+        "open_stream was never asked"
+    );
+}

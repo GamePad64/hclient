@@ -94,13 +94,13 @@ flowchart TB
         NAT --> RT{{"<b>TcpConnect · Timer</b><br/><b>Blocking · Spawn · UdpBind</b><br/>hclient-rt"}}
         NAT --> TLS{{"<b>TlsConnect · TlsIdentity</b><br/>hclient-tls<br/><b>QuicTlsConnect</b>, feature <i>quic</i>"}}
         NAT --> DNS{{"<b>Resolve</b><br/>hclient-dns"}}
-        NAT --> PXY{{"<b>Handshake</b><br/>hclient-proxy"}}
+        NAT --> PXY{{"<b>EgressFilter</b><br/>hclient-proxy"}}
         NAT --> ALT{{"<b>AltSvcStore</b><br/>hclient-native"}}
         ALT --> ALI["MemoryStore<br/><i>or yours</i>"]
         RT --> RTI["hclient-rt-tokio<br/>hclient-rt-smol<br/>hclient-rt-embassy"]
         TLS --> TLI["hclient-tls-rustls<br/>hclient-tls-native-tls<br/>NoTls"]
         DNS --> DNI["hclient-dns-system<br/>hclient-dns-hickory<br/>hclient-dns-doh<br/>IpLiteralOnly"]
-        PXY --> PXI["HTTP CONNECT<br/>SOCKS5 · SOCKS4a<br/>NoProxy"]
+        PXY --> PXI["HTTP CONNECT<br/>SOCKS5 · SOCKS4a<br/><i>or yours</i>"]
     end
 
     subgraph MEM["what the client remembers between requests — one seam each"]

@@ -453,11 +453,12 @@ pub mod proxy {
 /// The asymmetry is deliberate and it is about what comes next. This is
 /// the seam for *configuring* the transport, and a configuration step
 /// that silently installed a proxy would change what the following calls
-/// do: `unix_socket` **refuses** when a proxy is configured, so
-/// `default_transport()?.unix_socket(path)` would start failing on
-/// machines that happen to have an `HTTP_PROXY` and not on others. An
-/// environment-dependent failure in a builder chain is worse than an
-/// explicit line.
+/// do: proxies and a Unix socket are rules in one ordered list, so a
+/// catch-all proxy read from the environment would shadow a later
+/// `unix_socket` rule, and `default_transport()?.unix_socket(path)` would
+/// send its requests somewhere else on machines that happen to have an
+/// `HTTP_PROXY` and not on others. An environment-dependent destination in
+/// a builder chain is worse than an explicit line.
 ///
 /// So the convenience constructor is the good citizen and the seam does
 /// exactly what it is told. A caller who wants both writes the line:

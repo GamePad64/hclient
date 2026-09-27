@@ -995,6 +995,12 @@ where
     Ok((Conn::tls(tls_stream), Some(info), attempted))
 }
 
+/// A filter carries the request and declares no stream to it: refused
+/// before anything is dialled, never sent direct instead.
+fn no_stream(via: Box<str>) -> Error {
+    Error::new(ErrorKind::Unsupported, crate::error::NoStreamPath { via })
+}
+
 /// The connection for a request an egress filter carries, or `None` for
 /// one it does not — the external filter first, then the built-in rules,
 /// the order `Native::egress_route` answers in.
@@ -1033,8 +1039,13 @@ where
     H: Hooks,
 {
     if let Some(ext) = external
-        && let hclient_proxy::Decision::Filtered { .. } = ext.filter.route(&target)
+        && let hclient_proxy::Decision::Filtered {
+            support, pool_key, ..
+        } = ext.filter.route(&target)
     {
+        if !support.stream {
+            return Some(Err(no_stream(pool_key)));
+        }
         return Some(
             (ext.open)(
                 &*ext.filter,
@@ -1054,8 +1065,12 @@ where
             .await,
         );
     }
-    if let hclient_proxy::Decision::Direct = hclient_proxy::EgressFilter::route(rules, &target) {
-        return None;
+    match hclient_proxy::EgressFilter::route(rules, &target) {
+        hclient_proxy::Decision::Direct => return None,
+        hclient_proxy::Decision::Filtered {
+            support, pool_key, ..
+        } if !support.stream => return Some(Err(no_stream(pool_key))),
+        hclient_proxy::Decision::Filtered { .. } => {}
     }
     let dial = crate::dial::NativeDial::<R, D, H>::new(rt, dns, opts, ipc, budget, began);
     let opened = match hclient_proxy::EgressFilter::open_stream(rules, target, &dial).await {

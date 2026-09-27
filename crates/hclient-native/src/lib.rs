@@ -1264,11 +1264,6 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// [`SystemProxies`](crate::proxy::system::SystemProxies) and builds
     /// the proxies by hand — this method is the convenience, not the only
     /// road.
-    ///
-    /// # Panics
-    ///
-    /// If a Unix socket is already configured, for
-    /// [`proxy`](Self::proxy)'s reason and by way of it.
     #[cfg(feature = "system-proxy")]
     pub fn system_proxy(self) -> Result<Native<R, T, D, H>, hclient_core::error::Error> {
         self.system_proxies_from(&crate::proxy::system::SystemProxies::detect())
@@ -2593,9 +2588,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// [`unix_socket`](Self::unix_socket), and only what both decline goes
     /// direct. A later call replaces an earlier filter.
     ///
-    /// A request a filter carries never uses HTTP/3, and its
-    /// `Connected` event reports no remote address when the filter's stream
-    /// is not the runtime's own.
+    /// A request a filter carries never uses HTTP/3. Its `Connected` event
+    /// reports the address the filter dialled through the lent connect path
+    /// — the first hop's — whatever the filter wrapped around it, and none
+    /// when it dialled nothing by address.
     ///
     /// The bounds are the ones this transport's `SendTransport` impl
     /// carries, plus the TLS backend's over an erased stream: the filter's
@@ -2767,10 +2763,12 @@ where
             // different places must never be interchangeable, and a tunnel
             // reused through a *different* proxy would be a security
             // defect rather than a redundancy — the argument the TLS
-            // identity is in this key for. The route is a pure function of
-            // `(use_tls, host, port)`, which the key already carries, so
-            // within one transport this is structurally redundant; it is
-            // written for the moment a pool is shared between transports.
+            // identity is in this key for. `EgressFilter::route` must be a
+            // pure function of `(use_tls, host, port)` — its contract, which
+            // the key already carries — so within one transport this is
+            // redundant for a filter that keeps it; it is written for a
+            // filter that does not, and for the moment a pool is shared
+            // between transports.
             proxy: match self.egress_route(matches!(security, Security::Tls(_)), host, port) {
                 hclient_proxy::Decision::Filtered { pool_key, .. } => Some(pool_key),
                 hclient_proxy::Decision::Direct => None,
@@ -3760,7 +3758,10 @@ where
             self.external.as_ref(),
             &self.rules,
             self.ipc,
-            timeouts.connect,
+            // The bound `with_connect_timeout` enforces below, not the
+            // request's own: on the shared-h2 path it is what is left after
+            // waiting on another request's connect.
+            budget,
             &uri,
             &self.opts,
             alpn,

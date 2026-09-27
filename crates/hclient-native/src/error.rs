@@ -194,6 +194,18 @@ pub(crate) struct UnknownClientIdentity(pub(crate) String);
 #[error("this transport has no QUIC arm; see `Native::http3`")]
 pub struct NoQuicArm;
 
+/// An egress filter carries this request and declares no byte stream to
+/// it — [`hclient_proxy::FilterSupport::stream`] is `false` — so it is
+/// refused before anything is dialled. Sending it direct instead would be
+/// going around the filter.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("an egress filter carries this request through `{via}` and declares no stream to it")]
+#[non_exhaustive]
+pub struct NoStreamPath {
+    /// The filter's key for this request.
+    pub via: Box<str>,
+}
+
 /// `RequireVersion(HTTP_3)` for a request this transport's egress filter
 /// carries — through a proxy, or over a Unix socket.
 ///
