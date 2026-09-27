@@ -46,7 +46,7 @@
 #[cfg(feature = "system-proxy")]
 #[doc(inline)]
 pub use hclient_proxy::system;
-pub use hclient_proxy::{Approach, Handshake, IpcProxy, Proxy, ProxyScheme, Reach, Step};
+pub use hclient_proxy::{Approach, Handshake, IpcProxy, Proxy, ProxyScheme, Step};
 // Maintainer notes (not rendered):
 // The three protocols, behind the `proxy` feature exactly as they were
 // before they moved. The seam above is unconditional because `Native`'s

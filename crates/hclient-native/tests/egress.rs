@@ -839,7 +839,7 @@ fn an_external_filter_refuses_bytes_past_the_handshake() {
     let mut spoke = None;
     while let Some(s) = source {
         if let Some(p) = s.downcast_ref::<hclient_proxy::ProxySpokeFirst>() {
-            spoke = Some(p.0);
+            spoke = Some(p.bytes);
         }
         source = s.source();
     }

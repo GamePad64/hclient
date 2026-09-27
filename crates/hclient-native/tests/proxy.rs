@@ -488,13 +488,13 @@ async fn a_proxy_that_speaks_first_is_refused() {
         .expect("must not hang")
         .expect_err("the tunnel must be refused");
     assert_eq!(*err.kind(), hclient_core::error::ErrorKind::Connect);
-    // The source type, not the message: `ProxySpokeFirst(8)` names both
+    // The source type, not the message: `ProxySpokeFirst { bytes: 8 }` names both
     // the defect and how many bytes were invented, and a test reading the
     // rendered string would pass for any wording.
     let spoke = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<hclient_native::error::ProxySpokeFirst>())
         .expect("the defect must be readable off the error");
-    assert_eq!(spoke.0, 8, "the eight bytes the fixture invented");
+    assert_eq!(spoke.bytes, 8, "the eight bytes the fixture invented");
 }
 
 /// A SOCKS5 proxy that really connects and really pipes, unlike

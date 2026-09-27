@@ -142,7 +142,7 @@ where
     let began = mark::<H, R>(c.rt);
     let dial = NativeDial::<R, D, L, H>::new(c.rt, c.dns, c.tls, c.opts, c.ipc, c.budget, began);
     let erased: &SharedDial<'_> = &dial;
-    let boxed = BoxDial(erased);
+    let boxed = BoxDial::new(erased);
     let opened = filter
         .open_stream_send(c.target, &boxed)
         .await

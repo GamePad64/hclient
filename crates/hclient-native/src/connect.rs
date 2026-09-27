@@ -1158,11 +1158,7 @@ where
         rules,
         ipc,
         budget,
-        hclient_proxy::Target {
-            host,
-            port,
-            use_tls,
-        },
+        hclient_proxy::Target::new(host, port, use_tls),
         opts,
         alpn,
         identity,

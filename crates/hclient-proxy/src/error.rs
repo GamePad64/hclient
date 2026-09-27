@@ -312,5 +312,11 @@ pub enum ParseError {
 /// would feed them to the TLS handshake, or to hyper, as if the origin had
 /// sent them. The connection is refused.
 #[derive(Debug, thiserror::Error)]
-#[error("the proxy sent {0} bytes past its own handshake, before anything was sent to the origin")]
-pub struct ProxySpokeFirst(pub usize);
+#[error(
+    "the proxy sent {bytes} bytes past its own handshake, before anything was sent to the origin"
+)]
+#[non_exhaustive]
+pub struct ProxySpokeFirst {
+    /// How many bytes arrived past the handshake.
+    pub bytes: usize,
+}

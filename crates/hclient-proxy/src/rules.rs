@@ -371,11 +371,7 @@ mod tests {
     }
 
     fn t(host: &str, port: u16, use_tls: bool) -> Target<'_> {
-        Target {
-            host,
-            port,
-            use_tls,
-        }
+        Target::new(host, port, use_tls)
     }
 
     fn block<F: Future>(f: F) -> F::Output {

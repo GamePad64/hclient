@@ -20,9 +20,13 @@ pub enum ProxyScheme {
     Https,
 }
 
+// Private: a public `Proxy` is always reached over TCP — a same-machine
+// proxy is an `IpcProxy`, and only `Rules` turns one into a `Proxy` with
+// `Reach::Ipc` inside. Public, it froze that representation (an `Arc` and
+// all) and made `host()` answer `""` for a value no caller could hold.
 /// How a proxy itself is reached.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reach {
+pub(crate) enum Reach {
     /// By name or literal and port, dialled by the transport exactly as a
     /// direct connection would be.
     Tcp {
@@ -31,9 +35,7 @@ pub enum Reach {
         /// The proxy's port.
         port: u16,
     },
-    /// Over a same-machine socket. A [`Proxy`] holds this only when it was
-    /// made from an [`IpcProxy`]; nothing public puts a `Reach` into a
-    /// `Proxy`, so building the variant yourself changes nothing.
+    /// Over a same-machine socket, for a rule made from an [`IpcProxy`].
     Ipc(std::sync::Arc<hclient_rt::IpcAddr>),
 }
 
@@ -223,7 +225,7 @@ impl<P> Proxy<P> {
     /// next proxy*, where a bypassed host means *go direct* — and the
     /// caller of this function collapses them only because a list that
     /// runs out is itself "go direct".
-    pub fn serves(&self, use_tls: bool, host: &str, port: u16) -> bool {
+    pub(crate) fn serves(&self, use_tls: bool, host: &str, port: u16) -> bool {
         let wanted = if use_tls {
             ProxyScheme::Https
         } else {
@@ -255,7 +257,8 @@ impl<P> Proxy<P> {
     /// builder chain that wrote it. `NO_PROXY` implementations that invent
     /// a precedence are exactly what [`bypass`](Self::bypass)'s doc
     /// refuses to imitate.
-    pub fn choose<'a>(
+    #[cfg(test)]
+    pub(crate) fn choose<'a>(
         list: &'a [Proxy<P>],
         use_tls: bool,
         host: &str,
@@ -271,7 +274,7 @@ impl<P> Proxy<P> {
     }
 
     /// How this proxy itself is reached.
-    pub fn reach(&self) -> &Reach {
+    pub(crate) fn reach(&self) -> &Reach {
         &self.reach
     }
 
@@ -288,8 +291,7 @@ impl<P> Proxy<P> {
         }
     }
 
-    /// The proxy's host, as configured, or `""` for one reached over a
-    /// same-machine socket — see [`reach`](Self::reach).
+    /// The proxy's host, as configured.
     pub fn host(&self) -> &str {
         match &self.reach {
             Reach::Tcp { host, .. } => host,

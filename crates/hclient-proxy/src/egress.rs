@@ -126,7 +126,12 @@ pub trait Dial {
 }
 
 /// The origin a request is for.
+///
+/// Built by the transport and only read by a filter, so a field added
+/// later must not break one: `#[non_exhaustive]`, and [`Target::new`] for
+/// a filter's own tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Target<'a> {
     /// The origin's host, as the request names it.
     pub host: &'a str,
@@ -134,6 +139,18 @@ pub struct Target<'a> {
     pub port: u16,
     /// Whether the request is `https`.
     pub use_tls: bool,
+}
+
+impl<'a> Target<'a> {
+    /// The origin `host:port`, over TLS when `use_tls`.
+    #[must_use]
+    pub const fn new(host: &'a str, port: u16, use_tls: bool) -> Self {
+        Self {
+            host,
+            port,
+            use_tls,
+        }
+    }
 }
 
 /// A filter's answer for one target.
@@ -168,13 +185,15 @@ pub enum RequestForm {
 
 /// What a filter can carry for a target, declared by the filter itself.
 ///
-/// Built by the filter, so — like `hclient_rt::TcpSupport` — it is not
-/// `#[non_exhaustive]`; start from [`NONE`](Self::NONE) or
-/// [`STREAM`](Self::STREAM).
+/// Start from [`NONE`](Self::NONE) or [`STREAM`](Self::STREAM).
+/// `#[non_exhaustive]` so that a way through a filter added later is a new
+/// field rather than a break of every filter: built from the constants,
+/// the attribute costs a filter nothing.
 ///
 /// `datagrams: true` is honoured by no transport yet: a transport that
 /// cannot carry QUIC over a filter treats it as `false`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FilterSupport {
     /// The filter can open a byte stream to the target.
     pub stream: bool,
@@ -193,6 +212,13 @@ impl FilterSupport {
         stream: true,
         datagrams: false,
     };
+
+    /// The same claim, plus a datagram path to the target.
+    #[must_use]
+    pub const fn with_datagrams(mut self) -> Self {
+        self.datagrams = true;
+        self
+    }
 }
 
 /// A byte stream the seam can carry, erased.
@@ -397,7 +423,15 @@ pub type SharedDial<'a> = dyn DynDial + Send + Sync + 'a; // send-bound-exceptio
 
 /// The concrete [`Dial`] an erased filter is handed.
 #[derive(Clone, Copy)]
-pub struct BoxDial<'a>(pub &'a SharedDial<'a>);
+pub struct BoxDial<'a>(&'a SharedDial<'a>);
+
+impl<'a> BoxDial<'a> {
+    /// Lend `dial` to an erased filter.
+    #[must_use]
+    pub const fn new(dial: &'a SharedDial<'a>) -> Self {
+        Self(dial)
+    }
+}
 
 impl std::fmt::Debug for BoxDial<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -596,7 +630,7 @@ mod tests {
     fn the_erased_dial_forwards_connect_tls_with_every_field() {
         let rec = Recorded::default();
         let shared: &SharedDial<'_> = &rec;
-        let dial = BoxDial(shared);
+        let dial = BoxDial::new(shared);
         let alpn: &[&[u8]] = &[b"http/1.1"];
         futures_executor::block_on(dial.connect_tls(
             empty_io(),
@@ -663,6 +697,14 @@ mod tests {
                 datagrams: false
             }
         );
+    }
+
+    #[test]
+    fn with_datagrams_adds_the_claim_and_keeps_the_rest() {
+        let s = FilterSupport::STREAM.with_datagrams();
+        assert!(s.stream && s.datagrams);
+        let n = FilterSupport::NONE.with_datagrams();
+        assert!(!n.stream && n.datagrams);
     }
 
     /// A stream whose every answer is distinguishable from a default, so a
@@ -741,7 +783,7 @@ mod tests {
         }
         let shared: &SharedDial<'_> = &Budget;
         assert_eq!(
-            Dial::remaining(&BoxDial(shared)),
+            Dial::remaining(&BoxDial::new(shared)),
             Some(Duration::from_millis(7))
         );
     }

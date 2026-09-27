@@ -1341,11 +1341,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         host: &str,
         port: u16,
     ) -> hclient_proxy::Decision {
-        let target = hclient_proxy::Target {
-            host,
-            port,
-            use_tls,
-        };
+        let target = hclient_proxy::Target::new(host, port, use_tls);
         // The external filter first; what it declines goes to the rules —
         // the order the connector follows too.
         if let Some(ext) = &self.external

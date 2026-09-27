@@ -92,7 +92,7 @@ where
     } else {
         Err(Error::new(
             ErrorKind::Connect,
-            crate::ProxySpokeFirst(left.len()),
+            crate::ProxySpokeFirst { bytes: left.len() },
         ))
     }
 }
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(
             std::error::Error::source(&err)
                 .and_then(|s| s.downcast_ref::<crate::ProxySpokeFirst>())
-                .map(|p| p.0),
+                .map(|p| p.bytes),
             Some(5)
         );
     }
