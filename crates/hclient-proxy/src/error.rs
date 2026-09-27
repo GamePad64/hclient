@@ -101,8 +101,7 @@ impl std::error::Error for MalformedHead {}
 
 /// What a `USERID` or a host name cannot be.
 ///
-/// `PartialEq` because `userid` hands one straight back rather than
-/// wrapping it, so a caller — and this crate's own tests — compares it.
+/// `PartialEq`, so a caller that has downcast the source can compare it.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Socks4HandshakeError {
@@ -307,10 +306,12 @@ pub enum ParseError {
 // one.
 /// The proxy sent bytes past the end of its own handshake.
 ///
-/// Nothing the origin might say can have arrived yet — the client has not
-/// written to it — so these bytes are the proxy's, and carrying them on
-/// would feed them to the TLS handshake, or to hyper, as if the origin had
-/// sent them. The connection is refused.
+/// For HTTP, which speaks first, nothing the origin might say can have
+/// arrived yet — the client has not written to it — so these bytes are the
+/// proxy's, and carrying them on would feed them to the TLS handshake, or
+/// to hyper, as if the origin had sent them. The connection is refused.
+/// See [`drive_exact`](crate::drive_exact) for the protocols this does not
+/// hold of.
 #[derive(Debug, thiserror::Error)]
 #[error(
     "the proxy sent {bytes} bytes past its own handshake, before anything was sent to the origin"

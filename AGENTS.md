@@ -2620,7 +2620,7 @@ removed, because deleting it left every test green.
 `ParseError::TlsToProxyUnsupported` is gone, the default port for the
 scheme is 443, and a TLS proxy's pool key is prefixed `tls:` so it never
 shares a connection with a plaintext one at the same address. A TLS
-failure to the proxy is `Attempt::Unreachable` with the backend's
+failure to the proxy is `Attempt::Failed` with the backend's
 `ErrorKind::Tls`. `connect_tls` is defaulted, so a third-party engine
 with no TLS implements `Dial` as before and refuses honestly.
 
@@ -7481,8 +7481,8 @@ the other question, and is pinned by `tests/proxy_default.rs` rather than
 described.
 
 That split needed a second translation rather than a second policy.
-`http_proxies` **refuses** a configuration this client cannot express in
-full, and `http_proxies_lossy` **installs what it can and reports the
+`system::rules` **refuses** a configuration this client cannot express
+in full, and `rules_lossy` **installs what it can and reports the
 rest** — because a refusal is only useful to somebody who can act on it,
 and `Client::new()` did not ask. A constructor that refused would be a
 client that will not start on a network with WPAD. Nothing is silent at
@@ -7664,7 +7664,7 @@ towards `true` for the reason `SystemProxyRefused::PacScript` exists:
 reporting a PAC machine as unproxied is the *silently direct* answer. A
 `*` bypass is checked first and answers `false` even beside a script,
 which is the under-claiming reading of a corner nothing documents. A
-SOCKS entry answers `true` although `http_proxies` refuses to install one
+SOCKS entry answers `true` although `rules` refuses to install one
 — the report is read off the machine, not off what this client could do
 with it.
 
@@ -8436,6 +8436,68 @@ measurement for it lives.
 exposes its types, so a step costs its dependents a requirement bump
 and a patch release, and `just exposed-majors` fails the day one of
 them starts exposing it.
+
+### `hclient-proxy` was audited a second time, and three of its distinctions had no reader
+
+The first audit predates the egress seam, so the surface it cleared was
+half of what a stable number would now promise. The second one used the
+same instruments — a mutation sweep, the rustdoc surface, the two
+outside witnesses — and the defects it found were small; the surface
+changes were not.
+
+**Two defects, both a wrong answer where an honest one was cheap.**
+`HttpConnect::basic_auth` took a `:` in the username, which `hclient`'s
+own `basic_auth` refuses (RFC 7617 §2: `a:b`/`c` and `a`/`b:c` are the
+same bytes). And a SOCKS5 reply naming an address type RFC 1928 does not
+define came back as `Socks5Refused { rep: atyp }` — for `ATYP=5`,
+*connection refused*, a reason no proxy gave. It is
+`Socks5HandshakeError::BadAddressType` now.
+
+**The sweep: 434 mutants, 36 missed, and the real gaps were the
+erasures.** Most survivors are the platform readers this host never
+compiles, or equivalents (`<` for `<=` where the next check subsumes it;
+`MalformedHead::source`, whose parser error never has one — the impl is
+gone). What was real is that nothing in this crate exercised its own
+erased path: `BoxHandshake` could drop `Proxy-Authorization` from an
+absolute-form request, and `BoxIo` could forward nothing, with the whole
+suite green. `hclient-native`'s tests reach both, and a crate whose own
+suite does not is one `just mutants` cannot vouch for. After the
+repair the same sweep is 427 mutants and 25 missed, every one of them a
+platform reader this host does not compile, an equivalent, or a `Debug`
+impl.
+
+**Three distinctions were taken out because nothing read them — the
+`UpgradeSupport` rule applied before a freeze rather than after.**
+
+- `Attempt::{Unreachable, Refused}` is one `Failed`. Neither permits a
+  switch, the transport reads only `into_error`, and the rules could tell
+  a refusal from an outage only for their own three protocols, so a
+  third-party handshake's refusal arrived as `Unreachable`. Why an
+  attempt failed is the error's source, for every protocol alike.
+- `Reach` is private, with `Proxy::reach`: since `IpcProxy` a public
+  `Proxy` is always TCP, and `host()` answered `""` for a value no caller
+  could hold.
+- `Proxy::choose` is gone and `serves` is crate-private: first-match-wins
+  is `Rules`' rule, and the translation's tests had been routing through
+  a chooser no transport called.
+
+**And the rest was the three-answer rule, type by type.** `Target` is
+built by the transport and read by a filter, so it is
+`#[non_exhaustive]` with `Target::new` — which a filter's own tests
+need. `Decision::Filtered` carries a `#[non_exhaustive]` `Route`, and
+`FilterSupport` is `#[non_exhaustive]` with `with_datagrams`: both are
+built by filters, but from a constructor or a constant, so the attribute
+costs nobody anything and the datagram path's next field stops being a
+break of every filter. `ProxySpokeFirst { bytes }` took `ProxyRefused`'s
+repair. The setters now fail the same way — `userid`,
+`password_auth` and `basic_auth` all answer `hclient_core::Error`, of
+kind `Other`, with the specific error as its source.
+
+**`system::rules` replaces `http_proxies`**, returning the `Rules` a
+transport installs. The old name and its `Vec<Proxy<HttpConnect>>` would
+have frozen *HTTP only* into the signature, so installing a machine's
+SOCKS entry — still refused, and still the owner's decision — would have
+needed new functions; behind `Rules` it is a refusal fewer.
 
 ### `hclient-proto` is internal, and what it held for `hclient` moved into `hclient`
 

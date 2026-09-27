@@ -66,11 +66,16 @@ where
 
 /// [`drive`], refusing bytes that arrived with the handshake's final read.
 ///
-/// Nothing the origin might say can have arrived before anything was
+/// Over a protocol whose client speaks first — HTTP and TLS both do —
+/// nothing the origin might say can have arrived before anything was
 /// written to it, so those bytes are the proxy's; carrying them on would
 /// feed them to TLS or to HTTP as if the origin had sent them. This is the
-/// check every filter owes and the one easiest to forget, so it is the
-/// default here and [`drive`] is for a caller who decides otherwise.
+/// check every such filter owes and the one easiest to forget.
+///
+/// A protocol whose *server* speaks first (SMTP, SSH) is the exception: a
+/// SOCKS proxy connects to the origin before it answers, so the origin's
+/// greeting can arrive in the same read as the proxy's final reply. A
+/// caller carrying one uses [`drive`] and hands those bytes on.
 ///
 /// Only what was read while driving the handshake can be seen: bytes the
 /// proxy sends in a later segment are read by whatever runs over the

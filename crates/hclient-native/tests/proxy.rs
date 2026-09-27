@@ -1191,9 +1191,12 @@ async fn a_reply_version_of_four_is_refused_rather_than_read_as_a_grant() {
 #[test]
 fn a_nul_in_the_userid_is_refused_where_it_is_written() {
     use hclient_native::proxy::Socks4HandshakeError;
+    let err = Socks4::new()
+        .userid("al\0ice")
+        .expect_err("a NUL ends the field");
     assert_eq!(
-        Socks4::new().userid("al\0ice").map(|_| ()),
-        Err(Socks4HandshakeError::NulInUserid)
+        StdError::source(&err).and_then(|s| s.downcast_ref::<Socks4HandshakeError>()),
+        Some(&Socks4HandshakeError::NulInUserid)
     );
     assert!(Socks4::new().userid("alice").is_ok());
 }

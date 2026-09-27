@@ -71,7 +71,12 @@ impl Socks5 {
     /// `password` is longer than 255 bytes.
     pub fn password_auth(mut self, user: &str, password: &str) -> Result<Self, Error> {
         if user.len() > 255 || password.len() > 255 {
-            return Err(handshake(Socks5HandshakeError::CredentialTooLong));
+            // A configuration error, like every setter's here, rather than
+            // a failure to connect: nothing has been dialled yet.
+            return Err(Error::new(
+                ErrorKind::Other,
+                Socks5HandshakeError::CredentialTooLong,
+            ));
         }
         self.auth = Some((user.into(), password.into()));
         Ok(self)

@@ -42,13 +42,16 @@ impl Socks4 {
     ///
     /// # Errors
     ///
-    /// Returns [`Socks4HandshakeError::NulInUserid`] when `userid`
-    /// contains a NUL byte — the wire form is NUL-terminated, so one
-    /// inside the value would end the field early.
-    pub fn userid(mut self, userid: impl Into<Box<str>>) -> Result<Self, Socks4HandshakeError> {
+    /// An error whose source is [`Socks4HandshakeError::NulInUserid`] when
+    /// `userid` contains a NUL byte — the wire form is NUL-terminated, so
+    /// one inside the value would end the field early.
+    pub fn userid(mut self, userid: impl Into<Box<str>>) -> Result<Self, Error> {
         let userid = userid.into();
         if userid.as_bytes().contains(&0) {
-            return Err(Socks4HandshakeError::NulInUserid);
+            return Err(Error::new(
+                ErrorKind::Other,
+                Socks4HandshakeError::NulInUserid,
+            ));
         }
         self.userid = userid;
         Ok(self)
