@@ -1,11 +1,13 @@
-//! Internal: the sans-io pieces hclient's transports share. **Not a public
-//! API** — depend on `hclient`, `hclient-native` or `hclient-proxy` instead.
+//! The sans-io pieces hclient's transports share.
 //!
-//! This crate is published only because the crates above depend on it and
-//! crates.io needs every dependency to be there. Its API carries no
-//! stability promise: it changes whenever the transports need it to, and
-//! it moves its minor version each time. No other hclient crate
-//! re-exports anything from it, and a check enforces that.
+//! **Usable from other crates, with no stable interface.** This crate
+//! follows semver, but any `0.x` minor release may break its API: it
+//! changes whenever the transports need it to. Depend on a specific minor
+//! and take a breaking release when you choose — the `windows-sys` model.
+//! For a stable surface, depend on `hclient`, `hclient-native` or
+//! `hclient-proxy` instead. No other hclient crate re-exports anything
+//! from here, and a check enforces that, so upgrading this crate never
+//! forces an upgrade of anything else.
 //!
 //! Everything in here is **sans-io**: bytes and durations go in, decisions
 //! come out, and no function opens a socket, reads a clock or draws

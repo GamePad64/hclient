@@ -8274,9 +8274,17 @@ them starts exposing it.
 
 The owner's rule: **`hclient-proto` is an internal crate, and nothing is
 re-exported from it.** It is published because its dependents need it on
-crates.io, promises nothing, and moves its minor version whenever they
-need it to. That is safe exactly as long as no crate hands a caller one of
-its types, and at the time of the rule three did.
+crates.io, promises no stable interface, and moves its minor version
+whenever they need it to. That is safe exactly as long as no crate hands a
+caller one of its types, and at the time of the rule three did.
+
+**"Internal" means *no stable interface*, not *not for use*** — the
+owner's clarification, and the `windows-sys` model. The crate follows
+semver, so an outside crate may depend on it at a pinned minor and take a
+breaking release when it chooses; a third-party HTTP engine reusing the
+RFC 8305 scheduler is the expected case. What stays forbidden is an
+hclient crate *exposing* its types, because that would turn every
+breaking release of it into a breaking release of the exposer.
 
 **`hclient` re-exported it in seven places** — the redirect and retry
 policy seams, `Backoff`, `Link`/`Links`, `SseEvent` and its size default,

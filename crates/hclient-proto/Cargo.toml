@@ -1,7 +1,7 @@
 [package]
 name = "hclient-proto"
 version = "0.1.0"
-description = "Internal to hclient: the sans-io response-head parser, Happy Eyeballs scheduler and encoders its transports share. Not a public API"
+description = "The sans-io response-head parser, Happy Eyeballs scheduler and encoders hclient's transports share; semver-respecting, but any 0.x minor may break"
 keywords     = ["hclient", "http", "sans-io"]
 categories   = ["web-programming::http-client", "parser-implementations"]
 edition.workspace = true
@@ -10,8 +10,8 @@ license.workspace = true
 repository.workspace = true
 
 # See the root Cargo.toml: `default` is near-empty here by design.
-# Internal: published because its dependents need it on crates.io, and
-# promising nothing. No other crate may expose its types —
+# Internal to the family: usable from outside under semver, but any 0.x
+# minor may break it, so no other hclient crate may expose its types —
 # `just internal-crates-stay-internal` reads this key.
 [package.metadata.hclient]
 internal = true
