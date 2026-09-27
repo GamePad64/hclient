@@ -220,7 +220,9 @@ impl EgressFilter for Rules {
                     // The proxy was not reached if its handshake failed — a
                     // certificate this transport does not trust is not the
                     // proxy declining the target.
-                    ctx.connect_tls(s, crate::ProxyTls::new(host))
+                    // The certificate is checked against the address itself, which a
+                    // bracketed v6 host names only inside its brackets.
+                    ctx.connect_tls(s, crate::ProxyTls::new(hclient_core::url::bare_host(host)))
                         .await
                         .map_err(Attempt::Unreachable)?
                 } else {
@@ -411,6 +413,14 @@ mod tests {
                 .unwrap()
                 .starts_with(b"<tls>CONNECT origin.test:443")
         );
+    }
+
+    #[test]
+    fn a_bracketed_v6_proxy_is_greeted_by_its_bare_address() {
+        let dials = Dials::default();
+        let r = Rules::new().push(Proxy::new(HttpConnect::new(), "[::1]", 8443).tls());
+        block(r.open_stream(t("origin.test", 80, false), &dials)).expect("connection");
+        assert_eq!(*dials.tls.lock().unwrap(), ["::1"]);
     }
 
     #[test]

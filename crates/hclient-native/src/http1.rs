@@ -1157,10 +1157,62 @@ mod tests {
         };
         let fut = exchange(est, get_request(), None, NoHooks, ConnectionId::UNWATCHED);
         let mut fut = std::pin::pin!(fut);
-        match poll_to_completion(fut.as_mut()) {
-            Ok(r) => assert_eq!(r.status(), 200),
+        let resp = match poll_to_completion(fut.as_mut()) {
+            Ok(r) => r,
             Err(e) => panic!("the response was complete: {}", e.into_error()),
+        };
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            drain(resp.into_body()),
+            Ok(b"hi".to_vec()),
+            "and so was its body"
+        );
+    }
+
+    /// The other half: a body the failure *truncated* still fails, rather
+    /// than coming back complete and short.
+    #[test]
+    fn a_body_cut_by_the_connection_failing_still_fails() {
+        let io = ScriptIo::new(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nhi");
+        io.0.borrow_mut().fail_after = Some(io::ErrorKind::UnexpectedEof);
+        let est = {
+            let fut = handshake(io, ConnectionId::UNWATCHED, H1Opts::default());
+            let mut fut = std::pin::pin!(fut);
+            poll_to_completion(fut.as_mut()).expect("handshake must succeed")
+        };
+        let fut = exchange(est, get_request(), None, NoHooks, ConnectionId::UNWATCHED);
+        let mut fut = std::pin::pin!(fut);
+        // Either the exchange fails outright or the body does; what must
+        // never happen is two bytes handed back as the whole of four.
+        if let Ok(resp) = poll_to_completion(fut.as_mut()) {
+            assert!(
+                drain(resp.into_body()).is_err(),
+                "a truncated body must not read as complete"
+            );
         }
+    }
+
+    /// Every data frame of `body`, or the first error, polled to the end.
+    fn drain<B>(body: B) -> Result<Vec<u8>, ()>
+    where
+        B: http_body::Body<Data = bytes::Bytes>,
+    {
+        let mut body = std::pin::pin!(body);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut out = Vec::new();
+        for _ in 0..64 {
+            match body.as_mut().poll_frame(&mut cx) {
+                Poll::Ready(None) => return Ok(out),
+                Poll::Ready(Some(Ok(f))) => {
+                    if let Ok(d) = f.into_data() {
+                        out.extend_from_slice(&d);
+                    }
+                }
+                Poll::Ready(Some(Err(_))) => return Err(()),
+                Poll::Pending => {}
+            }
+        }
+        panic!("the body did not finish within 64 polls of a scripted connection");
     }
 
     /// A `101` never reaches the pool, and the reason is not the pool's.

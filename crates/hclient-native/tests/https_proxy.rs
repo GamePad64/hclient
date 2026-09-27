@@ -2,6 +2,8 @@
 //! checked with the transport's own trust, and everything a plain proxy
 //! does happens inside it.
 
+#![cfg(all(feature = "proxy", not(target_family = "wasm")))]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -200,8 +202,14 @@ fn get<T: Transport<Error = hclient_core::error::Error>>(
         .await
         .expect("must not hang")?;
         let status = resp.status();
-        // Drained, so a keep-alive connection goes back to the pool.
-        let _ = http_body_util::BodyExt::collect(resp.into_body()).await;
+        // Drained, so a keep-alive connection goes back to the pool — and
+        // read, because every fixture here answers `hi`, and a status with
+        // a lost body is not a response.
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap_or_else(|_| panic!("the body reads to its end"))
+            .to_bytes();
+        assert_eq!(&body[..], b"hi");
         Ok(status)
     })
 }
