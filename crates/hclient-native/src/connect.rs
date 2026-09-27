@@ -960,12 +960,10 @@ where
     H: Hooks,
 {
     if let Some(ext) = external
-        && let hclient_proxy::Decision::Filtered {
-            support, pool_key, ..
-        } = ext.filter.route(&target)
+        && let hclient_proxy::Decision::Filtered(route) = ext.filter.route(&target)
     {
-        if !support.stream {
-            return Some(Err(no_stream(pool_key)));
+        if !route.support.stream {
+            return Some(Err(no_stream(route.pool_key)));
         }
         return Some(
             (ext.open)(
@@ -988,10 +986,10 @@ where
     }
     match hclient_proxy::EgressFilter::route(rules, &target) {
         hclient_proxy::Decision::Direct => return None,
-        hclient_proxy::Decision::Filtered {
-            support, pool_key, ..
-        } if !support.stream => return Some(Err(no_stream(pool_key))),
-        hclient_proxy::Decision::Filtered { .. } => {}
+        hclient_proxy::Decision::Filtered(route) if !route.support.stream => {
+            return Some(Err(no_stream(route.pool_key)));
+        }
+        hclient_proxy::Decision::Filtered(_) => {}
     }
     let dial = crate::dial::NativeDial::<R, D, L, H>::new(rt, dns, tls, opts, ipc, budget, began);
     let opened = match hclient_proxy::EgressFilter::open_stream(rules, target, &dial).await {

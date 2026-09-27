@@ -326,7 +326,7 @@ mod xor {
     use futures_io::{AsyncRead, AsyncWrite};
     use hclient_proxy::{
         Attempt, BoxDial, BoxIo, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Io,
-        Opened, RequestForm, SendEgressFilter, Target,
+        Opened, RequestForm, Route, SendEgressFilter, Target,
     };
     use std::pin::Pin;
     use std::task::{Context, Poll};
@@ -394,11 +394,11 @@ mod xor {
 
         fn route(&self, t: &Target<'_>) -> Decision {
             if t.host == self.only {
-                Decision::Filtered {
-                    support: FilterSupport::STREAM,
-                    pool_key: format!("xor:{}:{}", self.relay.0, self.relay.1).into(),
-                    form: RequestForm::Origin,
-                }
+                Decision::Filtered(Route::new(
+                    FilterSupport::STREAM,
+                    format!("xor:{}:{}", self.relay.0, self.relay.1),
+                    RequestForm::Origin,
+                ))
             } else {
                 Decision::Direct
             }
@@ -415,7 +415,7 @@ mod xor {
             let inner = ctx
                 .connect(&self.relay.0, self.relay.1)
                 .await
-                .map_err(Attempt::Unreachable)?;
+                .map_err(Attempt::Failed)?;
             Ok(Opened::Wrapped(XorStream {
                 inner,
                 key: self.key,
@@ -523,7 +523,7 @@ mod deny {
 
     use hclient_proxy::{
         Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Io, Opened,
-        RequestForm, SendEgressFilter, Target,
+        RequestForm, Route, SendEgressFilter, Target,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -536,11 +536,7 @@ mod deny {
         type Wrapped<S: Io> = S;
 
         fn route(&self, _t: &Target<'_>) -> Decision {
-            Decision::Filtered {
-                support: FilterSupport::NONE,
-                pool_key: "deny".into(),
-                form: RequestForm::Origin,
-            }
+            Decision::Filtered(Route::new(FilterSupport::NONE, "deny", RequestForm::Origin))
         }
 
         fn open_stream<'a, C: Dial + 'a>(
@@ -552,7 +548,7 @@ mod deny {
             Self: Sized,
         {
             self.opened.fetch_add(1, Ordering::SeqCst);
-            std::future::ready(Err(Attempt::Refused(hclient_core::error::Error::new(
+            std::future::ready(Err(Attempt::Failed(hclient_core::error::Error::new(
                 hclient_core::error::ErrorKind::Connect,
                 std::io::Error::other("should never have been asked"),
             ))))
@@ -706,7 +702,7 @@ mod tunnel {
 
     use hclient_proxy::{
         Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, HttpConnect, Io,
-        Opened, RequestForm, SendEgressFilter, Target,
+        Opened, RequestForm, Route, SendEgressFilter, Target,
     };
 
     pub struct Tunnel {
@@ -726,11 +722,11 @@ mod tunnel {
                 },
                 _ => RequestForm::Origin,
             };
-            Decision::Filtered {
-                support: FilterSupport::STREAM,
-                pool_key: format!("tunnel:{}:{}", self.proxy.0, self.proxy.1).into(),
+            Decision::Filtered(Route::new(
+                FilterSupport::STREAM,
+                format!("tunnel:{}:{}", self.proxy.0, self.proxy.1),
                 form,
-            }
+            ))
         }
 
         async fn open_stream<'a, C: Dial + 'a>(
@@ -744,13 +740,13 @@ mod tunnel {
             let mut s = ctx
                 .connect(&self.proxy.0, self.proxy.1)
                 .await
-                .map_err(Attempt::Unreachable)?;
+                .map_err(Attempt::Failed)?;
             if self.absolute.is_some() && !t.use_tls {
                 return Ok(Opened::Raw(s));
             }
             hclient_proxy::drive_exact(&mut s, &mut HttpConnect::new(), t.host, t.port)
                 .await
-                .map_err(Attempt::Refused)?;
+                .map_err(Attempt::Failed)?;
             Ok(Opened::Raw(s))
         }
     }

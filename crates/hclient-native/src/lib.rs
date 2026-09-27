@@ -1345,7 +1345,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         // The external filter first; what it declines goes to the rules —
         // the order the connector follows too.
         if let Some(ext) = &self.external
-            && let d @ hclient_proxy::Decision::Filtered { .. } = ext.filter.route(&target)
+            && let d @ hclient_proxy::Decision::Filtered(_) = ext.filter.route(&target)
         {
             return d;
         }
@@ -2786,7 +2786,7 @@ where
             // filter that does not, and for the moment a pool is shared
             // between transports.
             proxy: match self.egress_route(matches!(security, Security::Tls(_)), host, port) {
-                hclient_proxy::Decision::Filtered { pool_key, .. } => Some(pool_key),
+                hclient_proxy::Decision::Filtered(route) => Some(route.pool_key),
                 hclient_proxy::Decision::Direct => None,
             },
         })
@@ -3217,13 +3217,13 @@ where
         // that should have been absolute-form reaches an origin server that
         // never agreed to act as a proxy, and nothing about the failure says
         // which of the two forms went out.
-        if let hclient_proxy::Decision::Filtered {
+        if let hclient_proxy::Decision::Filtered(hclient_proxy::Route {
             form:
                 hclient_proxy::RequestForm::Absolute {
                     proxy_authorization,
                 },
             ..
-        } = self.egress_route(use_tls, host, port)
+        }) = self.egress_route(use_tls, host, port)
         {
             tracing::trace!("native: {}:{} written absolute-form to a proxy", host, port);
             crate::proxy::Via::AbsoluteForm(proxy_authorization)
@@ -4234,7 +4234,7 @@ pub mod testing {
         T: hclient_tls::TlsConnect,
     {
         match native.egress_route(use_tls, host, port) {
-            hclient_proxy::Decision::Filtered { pool_key, .. } => Some(pool_key),
+            hclient_proxy::Decision::Filtered(route) => Some(route.pool_key),
             hclient_proxy::Decision::Direct => None,
         }
     }

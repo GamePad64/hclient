@@ -318,7 +318,7 @@ mod erased {
 
     use hclient_proxy::{
         Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, HttpConnect, Io,
-        Opened, ProxyTls, RequestForm, SendEgressFilter, Target,
+        Opened, ProxyTls, RequestForm, Route, SendEgressFilter, Target,
     };
 
     pub struct TlsTunnel {
@@ -329,11 +329,11 @@ mod erased {
         type Wrapped<S: Io> = S;
 
         fn route(&self, _: &Target<'_>) -> Decision {
-            Decision::Filtered {
-                support: FilterSupport::STREAM,
-                pool_key: format!("tls-tunnel:{}:{}", self.proxy.0, self.proxy.1).into(),
-                form: RequestForm::Origin,
-            }
+            Decision::Filtered(Route::new(
+                FilterSupport::STREAM,
+                format!("tls-tunnel:{}:{}", self.proxy.0, self.proxy.1),
+                RequestForm::Origin,
+            ))
         }
 
         async fn open_stream<'a, C: Dial + 'a>(
@@ -347,14 +347,14 @@ mod erased {
             let s = ctx
                 .connect(&self.proxy.0, self.proxy.1)
                 .await
-                .map_err(Attempt::Unreachable)?;
+                .map_err(Attempt::Failed)?;
             let mut s = ctx
                 .connect_tls(s, ProxyTls::new(&self.proxy.0))
                 .await
-                .map_err(Attempt::Unreachable)?;
+                .map_err(Attempt::Failed)?;
             hclient_proxy::drive_exact(&mut s, &mut HttpConnect::new(), t.host, t.port)
                 .await
-                .map_err(Attempt::Refused)?;
+                .map_err(Attempt::Failed)?;
             Ok(Opened::Raw(s))
         }
     }

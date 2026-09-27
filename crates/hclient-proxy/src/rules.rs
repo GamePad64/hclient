@@ -8,9 +8,9 @@ use hclient_core::error::Error;
 
 use crate::egress::{
     Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Io, Opened,
-    RequestForm, SendEgressFilter, Target,
+    RequestForm, Route, SendEgressFilter, Target,
 };
-use crate::{Approach, Handshake, Proxy, ProxySpokeFirst, Reach, Step};
+use crate::{Approach, Handshake, Proxy, Reach, Step};
 
 /// A [`Handshake`] whose protocol is chosen at run time, so one list can
 /// hold HTTP and SOCKS rules together.
@@ -136,17 +136,6 @@ fn ipc_key(addr: &hclient_rt::IpcAddr) -> Box<str> {
     .into_boxed_str()
 }
 
-/// A protocol's own refusal — the proxy declining this target — as
-/// opposed to a failure that says the proxy is unusable.
-fn is_refusal(e: &Error) -> bool {
-    std::error::Error::source(e).is_some_and(|s| {
-        s.is::<crate::ProxyRefused>()
-            || s.is::<crate::Socks5Refused>()
-            || s.is::<crate::Socks4Refused>()
-            || s.is::<ProxySpokeFirst>()
-    })
-}
-
 impl EgressFilter for Rules {
     /// The built-in protocols only run handshakes over the stream they are
     /// lent; they never wrap it.
@@ -155,11 +144,11 @@ impl EgressFilter for Rules {
     fn route(&self, t: &Target<'_>) -> Decision {
         match self.first(t) {
             None => Decision::Direct,
-            Some(Rule::Unix(addr)) => Decision::Filtered {
-                support: FilterSupport::STREAM,
-                pool_key: ipc_key(addr),
-                form: RequestForm::Origin,
-            },
+            Some(Rule::Unix(addr)) => Decision::Filtered(Route::new(
+                FilterSupport::STREAM,
+                ipc_key(addr),
+                RequestForm::Origin,
+            )),
             Some(Rule::Proxy(p)) => {
                 let pool_key = match p.reach() {
                     Reach::Tcp { host, port } if p.is_tls() => {
@@ -174,11 +163,7 @@ impl EgressFilter for Rules {
                     },
                     Approach::Tunnel => RequestForm::Origin,
                 };
-                Decision::Filtered {
-                    support: FilterSupport::STREAM,
-                    pool_key,
-                    form,
-                }
+                Decision::Filtered(Route::new(FilterSupport::STREAM, pool_key, form))
             }
         }
     }
@@ -195,7 +180,7 @@ impl EgressFilter for Rules {
             // The transport only opens what `route` filtered, so this
             // is a transport that did not ask first. Refused rather than
             // opened direct: never around the filter.
-            return Err(Attempt::Refused(Error::new(
+            return Err(Attempt::Failed(Error::new(
                 hclient_core::error::ErrorKind::Connect,
                 std::io::Error::other("no rule serves this target; route answered Direct"),
             )));
@@ -206,16 +191,13 @@ impl EgressFilter for Rules {
                     .connect_ipc(addr)
                     .await
                     .map(Opened::Raw)
-                    .map_err(Attempt::Unreachable);
+                    .map_err(Attempt::Failed);
             }
             Rule::Proxy(p) => p,
         };
         let mut stream = match proxy.reach() {
             Reach::Tcp { host, port } => {
-                let s = ctx
-                    .connect(host, *port)
-                    .await
-                    .map_err(Attempt::Unreachable)?;
+                let s = ctx.connect(host, *port).await.map_err(Attempt::Failed)?;
                 if proxy.is_tls() {
                     // The proxy was not reached if its handshake failed — a
                     // certificate this transport does not trust is not the
@@ -224,12 +206,12 @@ impl EgressFilter for Rules {
                     // bracketed v6 host names only inside its brackets.
                     ctx.connect_tls(s, crate::ProxyTls::new(hclient_core::url::bare_host(host)))
                         .await
-                        .map_err(Attempt::Unreachable)?
+                        .map_err(Attempt::Failed)?
                 } else {
                     s
                 }
             }
-            Reach::Ipc(addr) => ctx.connect_ipc(addr).await.map_err(Attempt::Unreachable)?,
+            Reach::Ipc(addr) => ctx.connect_ipc(addr).await.map_err(Attempt::Failed)?,
         };
         if proxy.protocol().approach(t.use_tls) == Approach::Absolute {
             return Ok(Opened::Raw(stream));
@@ -237,16 +219,7 @@ impl EgressFilter for Rules {
         let mut h = proxy.protocol().fresh();
         crate::drive_exact(&mut stream, &mut h, t.host, t.port)
             .await
-            .map_err(|e| {
-                // A protocol's own refusal, or bytes past the handshake, is
-                // the proxy declining this target; anything else is the
-                // proxy being unusable.
-                if is_refusal(&e) {
-                    Attempt::Refused(e)
-                } else {
-                    Attempt::Unreachable(e)
-                }
-            })?;
+            .map_err(Attempt::Failed)?;
         Ok(Opened::Raw(stream))
     }
 }
@@ -263,7 +236,7 @@ impl SendEgressFilter for Rules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HttpConnect, ProxyScheme, Socks5};
+    use crate::{HttpConnect, ProxyScheme, ProxySpokeFirst, Socks5};
     use std::io;
     use std::pin::Pin;
     use std::sync::Mutex;
@@ -380,7 +353,7 @@ mod tests {
 
     fn key(d: &Decision) -> &str {
         match d {
-            Decision::Filtered { pool_key, .. } => pool_key,
+            Decision::Filtered(route) => &route.pool_key,
             Decision::Direct => panic!("expected Filtered, got Direct"),
         }
     }
@@ -440,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tls_failure_to_the_proxy_is_unreachable_not_refused() {
+    fn a_tls_failure_to_the_proxy_fails_with_the_backends_error() {
         let dials = Dials {
             tls_fails: true,
             ..Default::default()
@@ -450,10 +423,10 @@ mod tests {
             panic!("the handshake failed");
         };
         match err {
-            Attempt::Unreachable(e) => {
+            Attempt::Failed(e) => {
                 assert_eq!(*e.kind(), hclient_core::error::ErrorKind::Tls);
             }
-            other => panic!("expected Unreachable, got {other:?}"),
+            other @ Attempt::Unsupported(_) => panic!("expected Failed, got {other:?}"),
         }
     }
 
@@ -470,11 +443,11 @@ mod tests {
         let r = Rules::new().push(Proxy::new(HttpConnect::new(), "Proxy.Corp", 8080));
         assert_eq!(
             r.route(&t("example.com", 443, true)),
-            Decision::Filtered {
-                support: FilterSupport::STREAM,
-                pool_key: "Proxy.Corp:8080".into(),
-                form: RequestForm::Origin,
-            }
+            Decision::Filtered(Route::new(
+                FilterSupport::STREAM,
+                "Proxy.Corp:8080",
+                RequestForm::Origin
+            ))
         );
     }
 
@@ -483,10 +456,10 @@ mod tests {
         let r = Rules::new().push(Proxy::new(HttpConnect::new(), "p", 1));
         assert!(matches!(
             r.route(&t("example.com", 80, false)),
-            Decision::Filtered {
+            Decision::Filtered(Route {
                 form: RequestForm::Absolute { .. },
                 ..
-            }
+            })
         ));
     }
 
@@ -500,12 +473,12 @@ mod tests {
         let want = http.proxy_authorization().cloned();
         assert!(want.is_some());
         let r = Rules::new().push(Proxy::new(http, "p", 1));
-        let Decision::Filtered {
+        let Decision::Filtered(Route {
             form: RequestForm::Absolute {
                 proxy_authorization,
             },
             ..
-        } = r.route(&t("example.com", 80, false))
+        }) = r.route(&t("example.com", 80, false))
         else {
             panic!("expected absolute-form");
         };
@@ -606,21 +579,32 @@ mod tests {
         assert!(dials.tcp.lock().unwrap().is_empty());
     }
 
+    /// The source of a failed attempt, which is where *why* travels now
+    /// that `Attempt` no longer sorts refusals from outages.
+    fn failure(r: &Rules, dials: &Dials) -> Error {
+        match block(r.open_stream(t("example.com", 443, true), dials)) {
+            Err(Attempt::Failed(e)) => e,
+            Err(other @ Attempt::Unsupported(_)) => panic!("expected Failed, got {other:?}"),
+            Ok(_) => panic!("expected a failure"),
+        }
+    }
+
     #[test]
-    fn a_refusing_proxy_is_refused_not_unreachable() {
+    fn a_refusing_proxy_fails_with_its_status_on_the_error() {
         let dials = Dials {
             reply: b"HTTP/1.1 403 Forbidden\r\n\r\n".to_vec(),
             ..Default::default()
         };
         let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy", 8080));
-        assert!(matches!(
-            block(r.open_stream(t("example.com", 443, true), &dials)),
-            Err(Attempt::Refused(_))
-        ));
+        let e = failure(&r, &dials);
+        let refused = std::error::Error::source(&e)
+            .and_then(|s| s.downcast_ref::<crate::ProxyRefused>())
+            .expect("the refusal is readable off the error");
+        assert_eq!(refused.status, http::StatusCode::FORBIDDEN);
     }
 
     #[test]
-    fn a_socks5_refusal_is_refused_too() {
+    fn a_socks5_refusal_carries_its_rep() {
         // Greeting accepted, then `REP = 5`, connection refused.
         let reply = [
             &[0x05u8, 0x00][..],
@@ -632,38 +616,38 @@ mod tests {
             ..Default::default()
         };
         let r = Rules::new().push(Proxy::new(Socks5::new(), "socks", 1080));
-        assert!(matches!(
-            block(r.open_stream(t("example.com", 443, true), &dials)),
-            Err(Attempt::Refused(_))
-        ));
+        let e = failure(&r, &dials);
+        let refused = std::error::Error::source(&e)
+            .and_then(|s| s.downcast_ref::<crate::Socks5Refused>())
+            .expect("the refusal is readable off the error");
+        assert_eq!(refused.rep, 0x05);
     }
 
     #[test]
-    fn a_proxy_that_hangs_up_mid_handshake_is_unreachable() {
+    fn a_proxy_that_hangs_up_mid_handshake_fails_as_a_connect_error() {
         let dials = Dials {
             reply: b"HTTP/1.1 2".to_vec(),
             ..Default::default()
         };
         let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy", 8080));
-        assert!(matches!(
-            block(r.open_stream(t("example.com", 443, true), &dials)),
-            Err(Attempt::Unreachable(_))
-        ));
+        let e = failure(&r, &dials);
+        assert_eq!(*e.kind(), hclient_core::error::ErrorKind::Connect);
+        assert!(
+            std::error::Error::source(&e)
+                .and_then(|s| s.downcast_ref::<crate::ProxyRefused>())
+                .is_none(),
+            "a hang-up is not a refusal: {e:?}"
+        );
     }
 
     #[test]
-    fn bytes_past_the_handshake_are_refused() {
+    fn bytes_past_the_handshake_fail_the_attempt() {
         let dials = Dials {
             reply: b"HTTP/1.1 200 OK\r\n\r\nextra".to_vec(),
             ..Default::default()
         };
         let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy", 8080));
-        // `Refused`, not `Unreachable`: the proxy answered, and what it said
-        // is a reason to refuse this target rather than proof it is down.
-        let Err(Attempt::Refused(err)) = block(r.open_stream(t("example.com", 443, true), &dials))
-        else {
-            panic!("leftover bytes are a refusal");
-        };
+        let err = failure(&r, &dials);
         assert!(
             std::error::Error::source(&err)
                 .and_then(|s| s.downcast_ref::<ProxySpokeFirst>())

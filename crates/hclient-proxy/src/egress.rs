@@ -158,16 +158,41 @@ impl<'a> Target<'a> {
 pub enum Decision {
     /// The transport's ordinary path, in full.
     Direct,
-    /// This filter carries the request.
-    Filtered {
-        /// What this filter can carry for this target.
-        support: FilterSupport,
-        /// This filter's part of the pool key. Two requests whose keys
-        /// differ never share a connection.
-        pool_key: Box<str>,
-        /// How the request head is written on the stream the filter opens.
-        form: RequestForm,
-    },
+    /// This filter carries the request, this way.
+    Filtered(Route),
+}
+
+// Maintainer notes (not rendered):
+// A struct rather than the variant's own fields: the filter builds it and
+// the transport reads it, and a field the datagram path will want (a key
+// of its own, say) would otherwise break every filter written against the
+// three named here.
+/// How a filter carries one request — [`Decision::Filtered`]'s answer.
+///
+/// `#[non_exhaustive]`, so build one with [`Route::new`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Route {
+    /// What this filter can carry for this target.
+    pub support: FilterSupport,
+    /// This filter's part of the pool key. Two requests whose keys differ
+    /// never share a connection.
+    pub pool_key: Box<str>,
+    /// How the request head is written on the stream the filter opens.
+    pub form: RequestForm,
+}
+
+impl Route {
+    /// A route carrying what `support` claims, pooled under `pool_key`,
+    /// with the request head written as `form` says.
+    #[must_use]
+    pub fn new(support: FilterSupport, pool_key: impl Into<Box<str>>, form: RequestForm) -> Self {
+        Self {
+            support,
+            pool_key: pool_key.into(),
+            form,
+        }
+    }
 }
 
 /// How the request head is written once the filter's stream is open.
@@ -316,18 +341,29 @@ where
     }
 }
 
+// Maintainer notes (not rendered):
+// It had three variants — `Unreachable` and `Refused` beside
+// `Unsupported` — and nothing could tell the first two apart: neither
+// permits a switch, `hclient-native` reads only `into_error`, and the
+// built-in rules could sort a refusal from an outage only for their own
+// three protocols, so a third-party handshake's refusal came back as
+// `Unreachable`. A distinction with one reachable side, taken out before a
+// stable version would have promised it. A filter that fails over between
+// proxies reads *why* off the error's source, which carries it for every
+// protocol alike.
 /// How an attempt through a filter failed.
 ///
-/// Three outcomes because only one of them permits trying another way
-/// through the same filter: a proxy that is unreachable, or that refused
-/// this target, will not do better by being asked for a stream instead of
-/// datagrams, and a proxy that does not support datagrams might.
+/// Two outcomes because only one of them permits trying another way
+/// through the same filter: a proxy that could not be reached, or that
+/// declined this target, will not do better by being asked for a stream
+/// instead of datagrams, and a proxy that does not support datagrams
+/// might. Which of those it was — and which proxy — is the error's
+/// source.
 #[derive(Debug)]
 pub enum Attempt {
-    /// The filter could not reach its proxy.
-    Unreachable(Error),
-    /// The proxy refused this target.
-    Refused(Error),
+    /// The attempt failed: the proxy could not be reached, its handshake
+    /// failed, or it declined this target.
+    Failed(Error),
     /// The proxy does not support what was asked of it.
     Unsupported(Error),
 }
@@ -341,7 +377,7 @@ impl Attempt {
     /// The error a caller sees.
     pub fn into_error(self) -> Error {
         match self {
-            Self::Unreachable(e) | Self::Refused(e) | Self::Unsupported(e) => e,
+            Self::Failed(e) | Self::Unsupported(e) => e,
         }
     }
 }
@@ -658,16 +694,14 @@ mod tests {
     #[test]
     fn only_unsupported_permits_a_switch() {
         let e = || Error::new(ErrorKind::Connect, std::io::Error::other("x"));
-        assert!(!Attempt::Unreachable(e()).permits_switch());
-        assert!(!Attempt::Refused(e()).permits_switch());
+        assert!(!Attempt::Failed(e()).permits_switch());
         assert!(Attempt::Unsupported(e()).permits_switch());
     }
 
     #[test]
     fn every_outcome_keeps_its_error() {
         for a in [
-            Attempt::Unreachable(Error::new(ErrorKind::Connect, std::io::Error::other("u"))),
-            Attempt::Refused(Error::new(ErrorKind::Connect, std::io::Error::other("r"))),
+            Attempt::Failed(Error::new(ErrorKind::Connect, std::io::Error::other("f"))),
             Attempt::Unsupported(Error::new(
                 ErrorKind::Unsupported,
                 std::io::Error::other("s"),
@@ -675,7 +709,7 @@ mod tests {
         ] {
             let expected = match &a {
                 Attempt::Unsupported(_) => ErrorKind::Unsupported,
-                _ => ErrorKind::Connect,
+                Attempt::Failed(_) => ErrorKind::Connect,
             };
             assert_eq!(*a.into_error().kind(), expected);
         }
