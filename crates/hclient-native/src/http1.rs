@@ -710,6 +710,16 @@ where
                         conn_done = true;
                         let e = from_hyper_error(e, ErrorKind::Connect);
                         hooks.on(&Event::Closed(Closed::new(id, CloseReason::Failed(&e))));
+                        // A response hyper already read in this same poll
+                        // is the answer: a TLS server that closes without
+                        // `close_notify` right behind a complete response
+                        // fails the connection *after* delivering it, and
+                        // the connection is polled first. The connection
+                        // is over either way — `conn_done` keeps it out of
+                        // the pool.
+                        if let Poll::Ready(Ok(r)) = send.as_mut().poll(cx) {
+                            return Poll::Ready(Ok(Ok(r)));
+                        }
                         // Not a verdict, a cause. Whether this is `Sent`
                         // or `NotSent` is hyper's to say and is asked in
                         // [`claim_back`]; what travels out here is the
@@ -1027,6 +1037,10 @@ mod tests {
         /// Once `to_read` runs out: `None` — `Pending` for ever; `Some(n)`
         /// — `n` more `Pending`s and then EOF.
         eof_after: Option<usize>,
+        /// Once `to_read` runs out, answer this error instead of EOF — what
+        /// a TLS stream reports for a peer that closed without
+        /// `close_notify`.
+        fail_after: Option<io::ErrorKind>,
         wrote: bool,
     }
 
@@ -1035,6 +1049,7 @@ mod tests {
             Self(std::rc::Rc::new(std::cell::RefCell::new(Script {
                 to_read: response.to_vec(),
                 eof_after: None,
+                fail_after: None,
                 wrote: false,
             })))
         }
@@ -1059,6 +1074,12 @@ mod tests {
                     *slot = byte;
                 }
                 return Poll::Ready(Ok(n));
+            }
+            if let Some(kind) = s.fail_after {
+                return Poll::Ready(Err(io::Error::new(
+                    kind,
+                    "peer closed without close_notify",
+                )));
             }
             match s.eof_after {
                 None => Poll::Pending,
@@ -1117,6 +1138,29 @@ mod tests {
             .header("host", "example.invalid")
             .body(OutgoingBody::from_request_body(RequestBody::Empty).expect("Empty nests nothing"))
             .unwrap()
+    }
+
+    /// A complete response is the answer even when the connection fails
+    /// right behind it — a TLS server that closes without `close_notify`
+    /// straight after a `Content-Length` response, which many do. hyper
+    /// reads the response and the failure in one poll of the connection,
+    /// and the connection is polled first, so its error must not be
+    /// allowed to replace a response already waiting.
+    #[test]
+    fn a_response_already_read_wins_over_the_connection_failing_behind_it() {
+        let io = ScriptIo::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+        io.0.borrow_mut().fail_after = Some(io::ErrorKind::UnexpectedEof);
+        let est = {
+            let fut = handshake(io, ConnectionId::UNWATCHED, H1Opts::default());
+            let mut fut = std::pin::pin!(fut);
+            poll_to_completion(fut.as_mut()).expect("handshake must succeed")
+        };
+        let fut = exchange(est, get_request(), None, NoHooks, ConnectionId::UNWATCHED);
+        let mut fut = std::pin::pin!(fut);
+        match poll_to_completion(fut.as_mut()) {
+            Ok(r) => assert_eq!(r.status(), 200),
+            Err(e) => panic!("the response was complete: {}", e.into_error()),
+        }
     }
 
     /// A `101` never reaches the pool, and the reason is not the pool's.
