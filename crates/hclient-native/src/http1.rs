@@ -716,7 +716,10 @@ where
                         // fails the connection *after* delivering it, and
                         // the connection is polled first. The connection
                         // is over either way — `conn_done` keeps it out of
-                        // the pool.
+                        // the pool. So a hook sees this `Closed(Failed)`
+                        // *before* the `Head` of the response that
+                        // connection delivered: true of the connection,
+                        // and the one order in which both events exist.
                         if let Poll::Ready(Ok(r)) = send.as_mut().poll(cx) {
                             return Poll::Ready(Ok(Ok(r)));
                         }

@@ -4458,7 +4458,7 @@ hclient_core::transport::send_transport!(
         for<'a> R::Connecting<'a>: Send,             // send-bound-exception: amendment-C16
         T: TlsConnect + Sync + Send,                 // send-bound-exception: amendment-C16
         T: 'static,
-        T::Stream<crate::DialStream<R::Stream, T>>: 'static + Send,        // send-bound-exception: amendment-C16
+        T::Stream<crate::DialStream<R::Stream, T>>: 'static + Send, // send-bound-exception: amendment-C16
         for<'a> T::Handshake<'a, crate::DialStream<R::Stream, T>>: Send, // send-bound-exception: amendment-C16
         D: Resolve + Sync + Send,                    // send-bound-exception: amendment-C16
         for<'a> D::Records<'a>: Send,                // send-bound-exception: amendment-C16

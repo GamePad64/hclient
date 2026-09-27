@@ -49,8 +49,10 @@
 //!
 //! # What it costs, stated where somebody will look for it
 //!
-//! A protocol that has to **wrap** the IO cannot be written against this
-//! seam — TLS to the proxy itself is the real example.
+//! A protocol that has to **wrap** the IO cannot be written against
+//! [`Handshake`] — TLS to the proxy itself is the real example. That one
+//! is the transport's job instead: [`Proxy::tls`] for the built-in rules,
+//! and [`Dial::connect_tls`] for a filter of your own.
 
 // Maintainer notes (not rendered):
 // Three ship — HTTP `CONNECT`, SOCKS5 and `SOCKS4a` — and they share no

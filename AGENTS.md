@@ -7419,9 +7419,10 @@ IO, is gone: the driver does it once for all three.
 stated.** A protocol that has to **wrap** the IO cannot be written against
 `Handshake` — TLS to the proxy itself is the real example — where the old
 `ProxyProtocol::tunnel` took the stream and could have. That is not a
-regression: it was unsupported before, and it is where
-`system::ParseError::TlsToProxyUnsupported` already refuses. Lifting it is
-a change to the driver's thirty lines, not to the seam.
+regression: it was unsupported before. **It is lifted now, and not in
+the driver**: TLS to the proxy is `Dial::connect_tls`, run by the
+transport before the handshake, so a `Handshake` still never sees
+anything but a stream and `ParseError::TlsToProxyUnsupported` is gone.
 
 **One knob turned out to have one setting and was deleted.**
 `upgrade::exchange` took the accepted status as a parameter *because there

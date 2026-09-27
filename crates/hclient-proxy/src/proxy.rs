@@ -77,6 +77,10 @@ impl<P> Proxy<P> {
     /// Any protocol may be spoken over it. A proxy reached over a socket
     /// has no such method: there is no name to check a certificate
     /// against.
+    ///
+    /// The backend is the transport's own, configuration included: a
+    /// client certificate it presents by default is presented to a proxy
+    /// that asks for one, exactly as to an origin that does.
     #[must_use]
     pub fn tls(mut self) -> Self {
         self.tls = true;
