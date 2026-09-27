@@ -2482,6 +2482,91 @@ sent over TCP (one), the conjunction restored (one), and QUIC refused for
 any configured proxy regardless of bypass — which only the control kills,
 and is the reason it exists.
 
+### Where a connection goes is one filter, and the proxies left `Native`
+
+The section above made *where does this request go* one function inside
+`Native`. This one made it a seam, and moved everything that answers it
+out of the transport. `hclient-proxy` carries the seam — `Dial`, what a
+transport lends; `EgressFilter`, which routes a target and opens it
+through that loan; `SendEgressFilter`, its erasable sibling — and the
+default filter, `Rules`: the proxy list and the Unix-socket policy,
+first match wins. `Native` keeps the question and the machinery to act
+on the answer: Happy Eyeballs behind `Dial::connect`, the routing between
+the stacks, the pool key. `P` is gone from `Native`, and with it the
+mutual exclusion of a proxy and a Unix socket, the panic in
+`with_proxies`, and `NoProxy`, which existed only to be `P`'s default.
+`.notes/superpowers/specs/2026-09-27-egress-filters-design.md` is the
+design, and its rulings ledger is the record of what the plan got wrong.
+
+**The seam returns `impl Future`, and erasure goes through a concrete
+type.** The built-in filter is called concretely with `NativeDial`, so
+its futures' auto traits are inferred — the default path is unboxed, and
+`Native<Embassy, ..>` is asked for nothing. An external filter is erased
+at `Native::egress`, where the runtime's, resolver's and TLS backend's
+futures can be proven `Send`, into a function pointer (`src/external.rs`)
+— the arrangement the IPC dialler and `SpawnH2` already had — and is lent
+the transport's connect path as a concrete `BoxDial`. So
+`open_stream_send` is written where every type is concrete, which is
+`SendTransport`'s shape one seam over, and nothing else in the transport
+names those bounds.
+
+**A filter that wraps the stream names its wrapper**, `type Wrapped<S>`,
+and that was found by executing the plan rather than by reading it: a
+generic `open_stream<C: Dial>` cannot box `C::Stream` into a `Send` box,
+and putting `Send` on `Dial::Stream` would have taken the proxies away
+from embassy. An associated type lets each filter answer for its own
+wrapper — amendment C15's principle, met from the side where the thing
+being named is a stream rather than a future. `hclient_proxy::erase` boxes
+it at the filter's own concrete impl. The GAT and `open_stream` carry
+`where Self: Sized`, which is what keeps `dyn SendEgressFilter` possible.
+
+**An external filter is asked first, and what it declines goes to the
+built-in rules.** Replacing them would have been a silent drop of
+settings made on the same transport, and refusing the pair a return of
+the mutual exclusion this change removed. Every setter appends for the
+same reason: `proxy` is `and_proxy`, and a `unix_socket` rule serves
+everything and shadows the rules after it, which is ordinary list
+semantics where the old code refused.
+
+**What an outside crate can now write, checked from outside.**
+`.notes/witnesses/egress-preproxy` is curl's `--preproxy` — SOCKS5, then
+an HTTP `CONNECT` through it — as an `EgressFilter` in a crate that is
+not a workspace member, driven through `hclient::Client` against a
+forwarding SOCKS5 fixture, a tunnelling proxy and an origin. It passed on
+its first build with no edit under `crates/`, and fails with its second
+hop removed. `cd .notes/witnesses/egress-preproxy && cargo nextest run`.
+In-tree, `tests/egress.rs` pins what the old parameter could not say:
+HTTP and SOCKS5 rules on one transport, SOCKS5 on a Unix socket
+(`Native::proxy_over_ipc`, Tor's `SocksPort unix:` shape), a pooled
+tunnel reused, the connect bound through a black-holed proxy, and an
+external filter that wraps the stream (XOR) and is asked before the
+rules. Every one was killed by its own mutation.
+
+**What it cost, measured.** Stripped release binaries against the commit
+before the work: `hc` 6,241,128 → 6,293,616 bytes (+52 KiB, +0.84%);
+`hclient-native`'s `minimal` example 518,776 → 525,304 (+6.4 KiB,
++1.26%). The `minimal` figure is a program that builds a transport and
+sends nothing, and a symbol diff says what it is: about 0.6 KiB of new
+drop glue (`Rules`, `Arc<Proxy<BoxHandshake>>`, against the old
+`Vec<Proxy<NoProxy>>`), and the rest LLVM moving hyper's and tokio's
+drop glue in both directions. `Native::execute`'s future grew by 96 bytes
+(20,240 → 20,336 with every feature, 13,104 → 13,200 with none), under
+its 24 KiB ceiling. The old `P = NoProxy` was an empty enum, which let
+the compiler delete the proxy path from a direct build outright; a list
+decided at run time cannot be deleted, and that is the whole of the
+trade.
+
+**What is deliberately not done.** Datagrams through a filter:
+`FilterSupport::datagrams` is in the seam and honoured by nothing, so a
+filtered request never uses HTTP/3 and `RequireVersion(HTTP_3)` for one
+is `NoDatagramPath { via }`. The system-proxy translation still installs
+HTTP proxies only and refuses a machine naming SOCKS as well; its stated
+reason (*a transport holds one `P`*) was corrected, and installing SOCKS
+entries is now possible and an owner's decision. The dial context lends
+no TLS backend, so a filter that speaks TLS to its proxy brings its own —
+a method added to `Dial` later is a breaking change to its implementors,
+which is why `hclient-proxy` stays a pre-release until that is decided.
+
 ### A seam review, and what a scan of thirty-five traits found
 
 Asked to review the architecture and the seams. The inventory is
