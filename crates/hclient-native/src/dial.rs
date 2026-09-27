@@ -2,7 +2,6 @@
 //! reaching a host by name, a same-machine socket, and what is left of
 //! the request's connect bound.
 
-use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -124,29 +123,17 @@ where
 {
     type Stream = crate::DialStream<R::Stream, L>;
 
-    fn connect(
-        &self,
-        host: &str,
-        port: u16,
-    ) -> impl Future<Output = Result<Self::Stream, Error>> + '_ {
-        let host = host.to_owned();
-        async move {
-            self.connect_raw(&host, port)
-                .await
-                .map(crate::DialStream::raw)
-        }
+    async fn connect<'a>(&'a self, host: &'a str, port: u16) -> Result<Self::Stream, Error> {
+        self.connect_raw(host, port)
+            .await
+            .map(crate::DialStream::raw)
     }
 
-    fn connect_ipc(
-        &self,
-        addr: &hclient_rt::IpcAddr,
-    ) -> impl Future<Output = Result<Self::Stream, Error>> + '_ {
-        let addr = addr.clone();
-        async move {
-            self.connect_ipc_raw(&addr)
-                .await
-                .map(crate::DialStream::raw)
-        }
+    async fn connect_ipc<'a>(
+        &'a self,
+        addr: &'a hclient_rt::IpcAddr,
+    ) -> Result<Self::Stream, Error> {
+        self.connect_ipc_raw(addr).await.map(crate::DialStream::raw)
     }
 
     fn remaining(&self) -> Option<Duration> {

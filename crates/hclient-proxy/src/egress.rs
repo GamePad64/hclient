@@ -88,20 +88,23 @@ pub trait Dial {
     /// for a direct request — its resolver, Happy Eyeballs, its socket
     /// options, its hooks' timing. A filter that must not resolve a name
     /// locally never passes that name here.
-    fn connect(
-        &self,
-        host: &str,
+    ///
+    /// The future may borrow `host`, as [`connect_tls`](Self::connect_tls)'s
+    /// may borrow its request, so an implementor need not copy it.
+    fn connect<'a>(
+        &'a self,
+        host: &'a str,
         port: u16,
-    ) -> impl Future<Output = Result<Self::Stream, Error>> + '_;
+    ) -> impl Future<Output = Result<Self::Stream, Error>> + 'a;
 
     /// Open a same-machine connection.
     ///
     /// Refuses with [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
     /// when the transport cannot open this kind of address.
-    fn connect_ipc(
-        &self,
-        addr: &hclient_rt::IpcAddr,
-    ) -> impl Future<Output = Result<Self::Stream, Error>> + '_;
+    fn connect_ipc<'a>(
+        &'a self,
+        addr: &'a hclient_rt::IpcAddr,
+    ) -> impl Future<Output = Result<Self::Stream, Error>> + 'a;
 
     /// What is left of the request's connect bound, if it has one. A
     /// filter spends it; it is never handed a fresh one.
@@ -478,20 +481,19 @@ impl std::fmt::Debug for BoxDial<'_> {
 impl Dial for BoxDial<'_> {
     type Stream = BoxIo;
 
-    fn connect(&self, host: &str, port: u16) -> impl Future<Output = Result<BoxIo, Error>> + '_ {
-        // Owned, because `connect_boxed` ties the host's lifetime to its
-        // future and this signature does not: one allocation per connect,
-        // on the erased path only.
-        let host = host.to_owned();
-        async move { self.0.connect_boxed(&host, port).await }
+    fn connect<'b>(
+        &'b self,
+        host: &'b str,
+        port: u16,
+    ) -> impl Future<Output = Result<BoxIo, Error>> + 'b {
+        self.0.connect_boxed(host, port)
     }
 
-    fn connect_ipc(
-        &self,
-        addr: &hclient_rt::IpcAddr,
-    ) -> impl Future<Output = Result<BoxIo, Error>> + '_ {
-        let addr = addr.clone();
-        async move { self.0.connect_ipc_boxed(&addr).await }
+    fn connect_ipc<'b>(
+        &'b self,
+        addr: &'b hclient_rt::IpcAddr,
+    ) -> impl Future<Output = Result<BoxIo, Error>> + 'b {
+        self.0.connect_ipc_boxed(addr)
     }
 
     fn remaining(&self) -> Option<Duration> {
@@ -571,16 +573,20 @@ mod tests {
     struct Bare;
     impl Dial for Bare {
         type Stream = BoxIo;
-        fn connect(&self, _: &str, _: u16) -> impl Future<Output = Result<BoxIo, Error>> + '_ {
+        fn connect<'a>(
+            &'a self,
+            _: &'a str,
+            _: u16,
+        ) -> impl Future<Output = Result<BoxIo, Error>> + 'a {
             std::future::ready(Err(Error::new(
                 ErrorKind::Connect,
                 std::io::Error::other("no"),
             )))
         }
-        fn connect_ipc(
-            &self,
-            _: &hclient_rt::IpcAddr,
-        ) -> impl Future<Output = Result<BoxIo, Error>> + '_ {
+        fn connect_ipc<'a>(
+            &'a self,
+            _: &'a hclient_rt::IpcAddr,
+        ) -> impl Future<Output = Result<BoxIo, Error>> + 'a {
             std::future::ready(Err(Error::new(
                 ErrorKind::Connect,
                 std::io::Error::other("no"),

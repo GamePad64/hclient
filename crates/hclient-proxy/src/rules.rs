@@ -318,18 +318,18 @@ mod tests {
     }
     impl Dial for Dials {
         type Stream = Script;
-        fn connect(
-            &self,
-            host: &str,
+        fn connect<'a>(
+            &'a self,
+            host: &'a str,
             port: u16,
-        ) -> impl Future<Output = Result<Script, Error>> + '_ {
+        ) -> impl Future<Output = Result<Script, Error>> + 'a {
             self.tcp.lock().unwrap().push((host.to_owned(), port));
             std::future::ready(Ok(self.script()))
         }
-        fn connect_ipc(
-            &self,
-            _: &hclient_rt::IpcAddr,
-        ) -> impl Future<Output = Result<Script, Error>> + '_ {
+        fn connect_ipc<'a>(
+            &'a self,
+            _: &'a hclient_rt::IpcAddr,
+        ) -> impl Future<Output = Result<Script, Error>> + 'a {
             *self.ipc.lock().unwrap() += 1;
             std::future::ready(Ok(self.script()))
         }
