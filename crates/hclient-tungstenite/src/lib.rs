@@ -1039,7 +1039,7 @@ where
 /// # -> Result<(), Box<dyn std::error::Error>>
 /// # where R: hclient_rt::TcpConnect + hclient_rt::Timer + Clone + Send + Sync + 'static,
 /// #       R::Stream: Send + 'static, R::Instant: Send + Sync, R::Sleep: Send + 'static,
-/// #       T: hclient_tls::TlsConnect + Send + Sync + 'static, T::Stream<R::Stream>: Send + 'static,
+/// #       T: hclient_tls::TlsConnect + Send + Sync + 'static, T::Stream<hclient_native::DialStream<R::Stream, T>>: Send + 'static,
 /// #       D: hclient_dns::Resolve + Send + Sync + 'static {
 /// use hclient_core::websocket::WebSocketConnect;
 /// use hclient_tungstenite::Tungstenite;
@@ -1200,7 +1200,8 @@ where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
-    T::Stream<R::Stream>: 'static,
+    T: 'static,
+    T::Stream<hclient_native::DialStream<R::Stream, T>>: 'static,
     D: Resolve,
 {
     type WebSocket = TungsteniteWebSocket<NativeIo<R, T>, R>;

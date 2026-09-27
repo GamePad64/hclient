@@ -30,10 +30,7 @@ pub(crate) type Opening<'a, R, L> = Pin<
         dyn Future<
                 Output = Result<
                     (
-                        Conn<
-                            <R as TcpConnect>::Stream,
-                            <L as TlsConnect>::Stream<<R as TcpConnect>::Stream>,
-                        >,
+                        crate::NativeIo<R, L>,
                         Option<TlsInfo>,
                         Option<Box<Attempted>>,
                     ),
@@ -123,26 +120,27 @@ async fn run<'a, R, D, L, H>(
     c: Call<'a, R, D, L>,
 ) -> Result<
     (
-        Conn<R::Stream, L::Stream<R::Stream>>,
+        crate::NativeIo<R, L>,
         Option<TlsInfo>,
         Option<Box<Attempted>>,
     ),
     Error,
 >
 where
-    R: TcpConnect + Timer + Sync,    // send-bound-exception: amendment-C15
-    R::Stream: Send + 'static,       // send-bound-exception: amendment-C15
-    R::Instant: Send + Sync,         // send-bound-exception: amendment-C15
-    R::Sleep: Send,                  // send-bound-exception: amendment-C15
-    for<'x> R::Connecting<'x>: Send, // send-bound-exception: amendment-C15
-    D: Resolve + Sync,               // send-bound-exception: amendment-C15
-    for<'x> D::Records<'x>: Send,    // send-bound-exception: amendment-C15
-    L: TlsConnect,
+    R: TcpConnect + Timer + Sync,     // send-bound-exception: amendment-C15
+    R::Stream: Send + 'static,        // send-bound-exception: amendment-C15
+    R::Instant: Send + Sync,          // send-bound-exception: amendment-C15
+    R::Sleep: Send,                   // send-bound-exception: amendment-C15
+    for<'x> R::Connecting<'x>: Send,  // send-bound-exception: amendment-C15
+    D: Resolve + Sync,                // send-bound-exception: amendment-C15
+    for<'x> D::Records<'x>: Send,     // send-bound-exception: amendment-C15
+    L: TlsConnect + Sync,             // send-bound-exception: amendment-C15
     L::Stream<BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
+    for<'x> L::Handshake<'x, BoxIo>: Send, // send-bound-exception: amendment-C15
     H: Hooks,
 {
     let began = mark::<H, R>(c.rt);
-    let dial = NativeDial::<R, D, H>::new(c.rt, c.dns, c.opts, c.ipc, c.budget, began);
+    let dial = NativeDial::<R, D, L, H>::new(c.rt, c.dns, c.tls, c.opts, c.ipc, c.budget, began);
     let erased: &SharedDial<'_> = &dial;
     let boxed = BoxDial(erased);
     let opened = filter

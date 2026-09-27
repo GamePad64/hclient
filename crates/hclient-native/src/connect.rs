@@ -853,7 +853,7 @@ where
 async fn finish_filtered<R, L, H>(
     rt: &R,
     tls: &L,
-    stream: R::Stream,
+    stream: crate::DialStream<R::Stream, L>,
     // What `NativeDial::connect` reported for a proxy reached by name;
     // `None` for one reached over a socket, which is synthesised below.
     dialled: Option<Box<Attempted>>,
@@ -866,7 +866,7 @@ async fn finish_filtered<R, L, H>(
     began: Option<R::Instant>,
 ) -> Result<
     (
-        Conn<R::Stream, L::Stream<R::Stream>>,
+        crate::NativeIo<R, L>,
         Option<TlsInfo>,
         Option<Box<Attempted>>,
     ),
@@ -945,7 +945,7 @@ async fn through_filter<R, D, L, H>(
 ) -> Option<
     Result<
         (
-            Conn<R::Stream, L::Stream<R::Stream>>,
+            crate::NativeIo<R, L>,
             Option<TlsInfo>,
             Option<Box<Attempted>>,
         ),
@@ -993,7 +993,7 @@ where
         } if !support.stream => return Some(Err(no_stream(pool_key))),
         hclient_proxy::Decision::Filtered { .. } => {}
     }
-    let dial = crate::dial::NativeDial::<R, D, H>::new(rt, dns, opts, ipc, budget, began);
+    let dial = crate::dial::NativeDial::<R, D, L, H>::new(rt, dns, tls, opts, ipc, budget, began);
     let opened = match hclient_proxy::EgressFilter::open_stream(rules, target, &dial).await {
         Ok(o) => o,
         Err(e) => return Some(Err(e.into_error())),
@@ -1119,7 +1119,7 @@ pub(crate) async fn connect<R, D, L, H>(
     resolve: Option<Duration>,
 ) -> Result<
     (
-        Conn<R::Stream, L::Stream<R::Stream>>,
+        crate::NativeIo<R, L>,
         Option<TlsInfo>,
         Option<Box<Attempted>>,
     ),
@@ -1426,7 +1426,7 @@ async fn attempt<R, L, H, S6, S4>(
     began: Option<R::Instant>,
 ) -> Result<
     (
-        Conn<R::Stream, L::Stream<R::Stream>>,
+        crate::NativeIo<R, L>,
         Option<TlsInfo>,
         Option<Box<Attempted>>,
     ),
@@ -1493,7 +1493,7 @@ where
         // stream it wraps is already connected, and whatever the caller
         // does with the result afterwards is not TLS.
         let handshake_began = mark::<H, R>(rt);
-        let (stream, info) = tls.connect(tcp, req).await?;
+        let (stream, info) = tls.connect(crate::DialStream::raw(tcp), req).await?;
         if let Some(a) = attempted.as_mut() {
             a.tls = Some(since::<R>(rt, handshake_began));
         }
@@ -1501,7 +1501,7 @@ where
     } else {
         // `tls` stays `None`, which is not `Some(Duration::ZERO)`: there
         // was no handshake, and a zero would read as an instant one.
-        Ok((Conn::plain(tcp), None, attempted))
+        Ok((Conn::plain(crate::DialStream::raw(tcp)), None, attempted))
     }
 }
 

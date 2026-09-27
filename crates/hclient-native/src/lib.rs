@@ -111,6 +111,7 @@
 mod body;
 mod connect;
 mod dial;
+mod dial_stream;
 mod discovery;
 pub mod error;
 mod external;
@@ -186,6 +187,7 @@ pub mod staged;
 mod upgrade;
 
 pub use connect::Conn;
+pub use dial_stream::DialStream;
 pub(crate) use discovery::Prepared;
 use error::{ConnectTimedOut, UnknownClientIdentity};
 // Private: the public path for each is `error::`, and these keep the
@@ -342,13 +344,16 @@ fn install_1xx<H>(
 }
 
 /// The IO a [`Native`] speaks HTTP over, for the runtime `R` and the TLS
-/// backend `T`: a [`Conn`] over their two streams.
+/// backend `T`: a [`Conn`] over the stream this transport dials — a
+/// [`DialStream`] — and the TLS backend's stream over it.
 ///
 /// A public alias rather than an anonymous type in a signature, because it
 /// is what `Native`'s `Transport::Body` is generic over, and a caller who
 /// has to name that body should not have to spell this out themselves.
-pub type NativeIo<R, T> =
-    Conn<<R as TcpConnect>::Stream, <T as TlsConnect>::Stream<<R as TcpConnect>::Stream>>;
+pub type NativeIo<R, T> = Conn<
+    DialStream<<R as TcpConnect>::Stream, T>,
+    <T as TlsConnect>::Stream<DialStream<<R as TcpConnect>::Stream, T>>,
+>;
 
 /// What [`Native::bound_body`] needs to count a response body.
 ///
@@ -2719,7 +2724,8 @@ where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
-    T::Stream<R::Stream>: 'static,
+    T: 'static,
+    T::Stream<crate::DialStream<R::Stream, T>>: 'static,
     // `H: Unpin` is not a taste: the response body holds the hook, and
     // `H1Body::poll_frame` reaches its fields through a safe projection
     // (`Pin<&mut Self>` -> `&mut Self`), which this workspace's
@@ -3426,7 +3432,8 @@ where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
-    T::Stream<R::Stream>: 'static,
+    T: 'static,
+    T::Stream<crate::DialStream<R::Stream, T>>: 'static,
     H: Hooks + Clone + Unpin,
 {
     /// The whole of an exchange, from a request that may or may not have
@@ -3975,7 +3982,8 @@ where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
-    T::Stream<R::Stream>: 'static,
+    T: 'static,
+    T::Stream<crate::DialStream<R::Stream, T>>: 'static,
     D: Resolve,
     // `H: Clone` for the same reason `R: Clone` is here: the response
     // body outlives `execute` and reports the connection's end from
@@ -4053,7 +4061,8 @@ where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
-    T::Stream<R::Stream>: 'static,
+    T: 'static,
+    T::Stream<crate::DialStream<R::Stream, T>>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
 {
@@ -4448,8 +4457,9 @@ hclient_core::transport::send_transport!(
         R::Sleep: Send,                              // send-bound-exception: amendment-C16
         for<'a> R::Connecting<'a>: Send,             // send-bound-exception: amendment-C16
         T: TlsConnect + Sync + Send,                 // send-bound-exception: amendment-C16
-        T::Stream<R::Stream>: 'static + Send,        // send-bound-exception: amendment-C16
-        for<'a> T::Handshake<'a, R::Stream>: Send,   // send-bound-exception: amendment-C16
+        T: 'static,
+        T::Stream<crate::DialStream<R::Stream, T>>: 'static + Send,        // send-bound-exception: amendment-C16
+        for<'a> T::Handshake<'a, crate::DialStream<R::Stream, T>>: Send, // send-bound-exception: amendment-C16
         D: Resolve + Sync + Send,                    // send-bound-exception: amendment-C16
         for<'a> D::Records<'a>: Send,                // send-bound-exception: amendment-C16
         H: Hooks + Clone + Unpin + Sync + Send,      // send-bound-exception: amendment-C16

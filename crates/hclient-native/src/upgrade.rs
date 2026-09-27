@@ -198,7 +198,8 @@ where
     R: TcpConnect + Timer,
     R::Stream: 'static,
     T: TlsConnect,
-    T::Stream<R::Stream>: 'static,
+    T: 'static,
+    T::Stream<crate::DialStream<R::Stream, T>>: 'static,
     D: Resolve,
 {
     // Maintainer notes (not rendered):

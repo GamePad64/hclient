@@ -37,6 +37,7 @@ fn auto_traits_reach_the_transport_and_its_body() {
     type Dns = hclient_dns_system::SystemDns<Rt>;
 
     assert_impl_all!(hclient_native::Native<Rt, Tls, Dns>: Send, Sync);
+    assert_impl_all!(hclient_native::DialStream<hclient_rt_tokio::TokioIo, Tls>: Send, Unpin);
     assert_impl_all!(hclient_native::testing::NativeBody<hclient_native::NativeIo<Rt, Tls>>: Send);
 }
 

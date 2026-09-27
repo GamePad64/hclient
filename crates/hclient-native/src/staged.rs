@@ -350,7 +350,8 @@ where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
-    T::Stream<R::Stream>: 'static,
+    T: 'static,
+    T::Stream<crate::DialStream<R::Stream, T>>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
 {
@@ -478,7 +479,8 @@ where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
-    T::Stream<R::Stream>: 'static,
+    T: 'static,
+    T::Stream<crate::DialStream<R::Stream, T>>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
 {
