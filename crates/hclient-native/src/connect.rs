@@ -947,7 +947,7 @@ where
             // running a handshake mutates it.
             let mut handshake = proxy.handshake();
             let mut stream = tcp;
-            let read_buf = crate::proxy::drive(&mut stream, &mut handshake, host, port).await?;
+            let read_buf = hclient_proxy::drive(&mut stream, &mut handshake, host, port).await?;
             // **It must be empty, and this is a check rather than a
             // rewind.** We have not written a byte to the origin, so
             // nothing it might answer can have arrived; anything past the

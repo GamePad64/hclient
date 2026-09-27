@@ -326,25 +326,7 @@ impl ResolveErrors {
     }
 }
 
-// Maintainer notes (not rendered):
-// **The transport's rule rather than any protocol's**, which is why it
-// lives here and not in `hclient-proxy`: a handshake reports faithfully
-// how much of the buffer was its own, and what to make of the rest is a
-// question about what happens next. Nothing the origin might say can have
-// arrived yet — the client has not written to it — so these bytes are the
-// proxy's, and carrying them on would feed them to the TLS handshake, or
-// to hyper, as if the origin had sent them. A refusal to connect rather
-// than a rewind, because the rewind is the quieter failure and the worse
-// one.
-/// The proxy sent bytes past the end of its own handshake.
-///
-/// Nothing the origin might say can have arrived yet — the client has not
-/// written to it — so these bytes are the proxy's, and carrying them on
-/// would feed them to the TLS handshake, or to hyper, as if the origin had
-/// sent them. The connection is refused.
-#[derive(Debug, thiserror::Error)]
-#[error("the proxy sent {0} bytes past its own handshake, before anything was sent to the origin")]
-pub struct ProxySpokeFirst(pub usize);
+pub use hclient_proxy::ProxySpokeFirst;
 
 // ---------------------------------------------------------------------
 // The clock won. Four types rather than one with a `Phase` field,

@@ -100,6 +100,9 @@ system-configuration = { version = "0.8", optional = true }
 
 [dev-dependencies]
 rstest = { workspace = true }
+# A bare executor for the driver and filter tests: they need to poll a
+# future once, not a runtime.
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 
 # NOT `[lints] workspace = true`, for the reason `hclient-urlsession`'s
 # manifest gives: the workspace sets `unsafe_code = "forbid"`, and `forbid`

@@ -1564,6 +1564,7 @@ dependencies = [
  "bytes",
  "core-foundation 0.10.1",
  "core-foundation-sys",
+ "futures-executor",
  "futures-io",
  "hclient-core",
  "hclient-proto",

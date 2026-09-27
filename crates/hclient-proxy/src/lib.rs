@@ -111,6 +111,7 @@
 use bytes::{Bytes, BytesMut};
 
 mod connect;
+mod drive;
 mod egress;
 mod error;
 mod proxy;
@@ -120,13 +121,14 @@ mod socks5;
 pub mod system;
 
 pub use connect::HttpConnect;
+pub use drive::drive;
 pub use egress::{
     Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, Decision, Dial, DynDial, EgressFilter,
     FilterSupport, Io, Opened, RequestForm, SendEgressFilter, SharedDial, SharedFilter, Target,
 };
 pub use error::{
-    ConnectError, MalformedHead, ProxyRefused, Socks4HandshakeError, Socks4Refused,
-    Socks5HandshakeError, Socks5Refused,
+    ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
+    Socks4Refused, Socks5HandshakeError, Socks5Refused,
 };
 pub use proxy::{NoProxy, Proxy, ProxyScheme};
 pub use socks4::Socks4;
