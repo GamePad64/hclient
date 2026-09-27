@@ -115,6 +115,7 @@ mod drive;
 mod egress;
 mod error;
 mod proxy;
+mod rules;
 mod socks4;
 mod socks5;
 #[cfg(feature = "system")]
@@ -130,7 +131,8 @@ pub use error::{
     ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
     Socks4Refused, Socks5HandshakeError, Socks5Refused,
 };
-pub use proxy::{NoProxy, Proxy, ProxyScheme};
+pub use proxy::{NoProxy, Proxy, ProxyScheme, Reach};
+pub use rules::{BoxHandshake, DynHandshake, Rules};
 pub use socks4::Socks4;
 pub use socks5::Socks5;
 

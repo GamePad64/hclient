@@ -42,9 +42,9 @@ impl Handshake for NoProxy {
 /// one.
 ///
 /// The distinction that motivates it is the ordinary corporate one — an
-/// `HTTP_PROXY` and an `HTTPS_PROXY` pointing at different hosts — not two
-/// different proxy *protocols*: a transport has one `P`, so every proxy on
-/// one transport speaks the same one.
+/// `HTTP_PROXY` and an `HTTPS_PROXY` pointing at different hosts. The two
+/// may speak different protocols: a [`Rules`](crate::Rules) list holds any
+/// mix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProxyScheme {
     /// Plain `http://` requests.
@@ -53,12 +53,26 @@ pub enum ProxyScheme {
     Https,
 }
 
+/// How a proxy itself is reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reach {
+    /// By name or literal and port, dialled by the transport exactly as a
+    /// direct connection would be.
+    Tcp {
+        /// The proxy's host.
+        host: Box<str>,
+        /// The proxy's port.
+        port: u16,
+    },
+    /// Over a same-machine socket.
+    Ipc(std::sync::Arc<hclient_rt::IpcAddr>),
+}
+
 /// Where a proxy lives, and which protocol it speaks.
 #[derive(Debug, Clone)]
 pub struct Proxy<P> {
     protocol: P,
-    host: Box<str>,
-    port: u16,
+    reach: Reach,
     bypass: Vec<Box<str>>,
     /// The `<local>` rule — see [`Proxy::bypass_local`]. A flag rather
     /// than a pattern because it is a rule about the shape of a name.
@@ -74,8 +88,10 @@ impl<P> Proxy<P> {
     pub fn new(protocol: P, host: impl Into<Box<str>>, port: u16) -> Self {
         Self {
             protocol,
-            host: host.into(),
-            port,
+            reach: Reach::Tcp {
+                host: host.into(),
+                port,
+            },
             bypass: Vec::new(),
             bypass_local: false,
             only: None,
@@ -260,14 +276,46 @@ impl<P> Proxy<P> {
         &self.protocol
     }
 
-    /// The proxy's host, as configured.
+    /// A proxy reached over a same-machine socket rather than TCP — Tor's
+    /// `SocksPort unix:/path` shape.
+    pub fn over_ipc(protocol: P, addr: hclient_rt::IpcAddr) -> Self {
+        let mut proxy = Self::new(protocol, "", 0);
+        proxy.reach = Reach::Ipc(std::sync::Arc::new(addr));
+        proxy
+    }
+
+    /// How this proxy itself is reached.
+    pub fn reach(&self) -> &Reach {
+        &self.reach
+    }
+
+    /// The same proxy with its protocol converted — how a list of mixed
+    /// protocols is built without re-stating every other setting.
+    pub fn map_protocol<Q>(self, f: impl FnOnce(P) -> Q) -> Proxy<Q> {
+        Proxy {
+            protocol: f(self.protocol),
+            reach: self.reach,
+            bypass: self.bypass,
+            bypass_local: self.bypass_local,
+            only: self.only,
+        }
+    }
+
+    /// The proxy's host, as configured, or `""` for one reached over a
+    /// same-machine socket — see [`reach`](Self::reach).
     pub fn host(&self) -> &str {
-        &self.host
+        match &self.reach {
+            Reach::Tcp { host, .. } => host,
+            Reach::Ipc(_) => "",
+        }
     }
 
     /// The proxy's port, as configured.
     pub fn port(&self) -> u16 {
-        self.port
+        match &self.reach {
+            Reach::Tcp { port, .. } => *port,
+            Reach::Ipc(_) => 0,
+        }
     }
 }
 

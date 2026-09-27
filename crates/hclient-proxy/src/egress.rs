@@ -322,11 +322,38 @@ pub type BoxOpening<'a, S> = Pin<Box<dyn Future<Output = Result<Opened<S>, Attem
 ///
 /// The one method is written where every type is concrete — `Self` and
 /// [`BoxDial`] — so `Send` is inferred rather than proven, the shape of
-/// `hclient_core::transport::SendTransport`. Every implementation is:
+/// `hclient_core::transport::SendTransport`. Every implementation is the
+/// one line below:
 ///
-/// ```text
-/// fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a, BoxIo> {
-///     Box::pin(self.open_stream(t, ctx))
+/// ```no_run
+/// use hclient_proxy::{
+///     Attempt, BoxDial, BoxIo, BoxOpening, Decision, Dial, EgressFilter, Opened, Rules,
+///     SendEgressFilter, Target,
+/// };
+///
+/// /// A filter that adds nothing to the built-in rules.
+/// struct Mine(Rules);
+///
+/// impl EgressFilter for Mine {
+///     fn route(&self, t: &Target<'_>) -> Decision {
+///         self.0.route(t)
+///     }
+///     async fn open_stream<'a, C: Dial + 'a>(
+///         &'a self,
+///         t: Target<'a>,
+///         ctx: &'a C,
+///     ) -> Result<Opened<C::Stream>, Attempt>
+///     where
+///         Self: Sized,
+///     {
+///         self.0.open_stream(t, ctx).await
+///     }
+/// }
+///
+/// impl SendEgressFilter for Mine {
+///     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a, BoxIo> {
+///         Box::pin(self.open_stream(t, ctx))
+///     }
 /// }
 /// ```
 ///
