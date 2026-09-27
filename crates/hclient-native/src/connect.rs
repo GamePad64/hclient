@@ -963,7 +963,7 @@ where
         && let hclient_proxy::Decision::Filtered(route) = ext.filter.route(&target)
     {
         if !route.support.stream {
-            return Some(Err(no_stream(route.pool_key)));
+            return Some(Err(no_stream(route.pool_key.into())));
         }
         return Some(
             (ext.open)(
@@ -987,7 +987,7 @@ where
     match hclient_proxy::EgressFilter::route(rules, &target) {
         hclient_proxy::Decision::Direct => return None,
         hclient_proxy::Decision::Filtered(route) if !route.support.stream => {
-            return Some(Err(no_stream(route.pool_key)));
+            return Some(Err(no_stream(route.pool_key.into())));
         }
         hclient_proxy::Decision::Filtered(_) => {}
     }

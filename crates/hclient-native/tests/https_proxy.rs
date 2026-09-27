@@ -328,7 +328,7 @@ mod erased {
     impl EgressFilter for TlsTunnel {
         type Wrapped<S: Io> = S;
 
-        fn route(&self, _: &Target<'_>) -> Decision {
+        fn route(&self, _: &Target<'_>) -> Decision<'_> {
             Decision::Filtered(Route::new(
                 FilterSupport::STREAM,
                 format!("tls-tunnel:{}:{}", self.proxy.0, self.proxy.1),

@@ -8,6 +8,7 @@
 //! connections — for the filter to use. Nothing a filter answers ever
 //! sends a filtered request direct.
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -158,11 +159,11 @@ impl<'a> Target<'a> {
 
 /// A filter's answer for one target.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
+pub enum Decision<'a> {
     /// The transport's ordinary path, in full.
     Direct,
     /// This filter carries the request, this way.
-    Filtered(Route),
+    Filtered(Route<'a>),
 }
 
 // Maintainer notes (not rendered):
@@ -175,21 +176,29 @@ pub enum Decision {
 /// `#[non_exhaustive]`, so build one with [`Route::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct Route {
+pub struct Route<'a> {
     /// What this filter can carry for this target.
     pub support: FilterSupport,
     /// This filter's part of the pool key. Two requests whose keys differ
     /// never share a connection.
-    pub pool_key: Box<str>,
+    ///
+    /// Borrowed from the filter where it can be — a transport asks
+    /// [`route`](EgressFilter::route) several times per request, and a key
+    /// the filter computed once need not be allocated again each time.
+    pub pool_key: Cow<'a, str>,
     /// How the request head is written on the stream the filter opens.
     pub form: RequestForm,
 }
 
-impl Route {
+impl<'a> Route<'a> {
     /// A route carrying what `support` claims, pooled under `pool_key`,
     /// with the request head written as `form` says.
     #[must_use]
-    pub fn new(support: FilterSupport, pool_key: impl Into<Box<str>>, form: RequestForm) -> Self {
+    pub fn new(
+        support: FilterSupport,
+        pool_key: impl Into<Cow<'a, str>>,
+        form: RequestForm,
+    ) -> Self {
         Self {
             support,
             pool_key: pool_key.into(),
@@ -204,11 +213,26 @@ pub enum RequestForm {
     /// As to the origin — a tunnel, or no proxy at all.
     Origin,
     /// RFC 9112 §3.2.2 absolute-form, to an HTTP proxy acting as the
-    /// origin server for an `http://` request.
+    /// origin server for an `http://` request. Build one with
+    /// [`RequestForm::absolute`].
+    // `#[non_exhaustive]` because this is where a hop's other headers
+    // would go (curl's `--proxy-header`), and an enum variant cannot gain
+    // a field otherwise without breaking every filter that builds one.
+    #[non_exhaustive]
     Absolute {
         /// `Proxy-Authorization` for the proxy, if it wants one.
         proxy_authorization: Option<http::HeaderValue>,
     },
+}
+
+impl RequestForm {
+    /// Absolute-form, carrying `proxy_authorization` to the proxy if given.
+    #[must_use]
+    pub fn absolute(proxy_authorization: Option<http::HeaderValue>) -> Self {
+        Self::Absolute {
+            proxy_authorization,
+        }
+    }
 }
 
 /// What a filter can carry for a target, declared by the filter itself.
@@ -410,7 +434,7 @@ pub trait EgressFilter {
     /// off HTTP/3 as filtered and then sent direct. Rotation, health checks
     /// and failover belong inside [`open_stream`](Self::open_stream), behind
     /// a key that names the pool they share.
-    fn route(&self, target: &Target<'_>) -> Decision;
+    fn route(&self, target: &Target<'_>) -> Decision<'_>;
 
     /// Open a byte stream to `target`, for a request [`route`](Self::route)
     /// answered `Filtered` with `support.stream`.
@@ -537,7 +561,7 @@ pub type BoxOpening<'a> =
 /// impl EgressFilter for Mine {
 ///     type Wrapped<S: Io> = S;
 ///
-///     fn route(&self, t: &Target<'_>) -> Decision {
+///     fn route(&self, t: &Target<'_>) -> Decision<'_> {
 ///         self.0.route(t)
 ///     }
 ///     async fn open_stream<'a, C: Dial + 'a>(

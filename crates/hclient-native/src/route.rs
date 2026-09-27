@@ -402,7 +402,7 @@ where
             // `datagrams: true` is not honoured yet: no path exists for
             // QUIC through a filter, whatever the filter declares.
             hclient_proxy::Decision::Filtered(route) => Some(NoDatagramPath {
-                via: route.pool_key,
+                via: route.pool_key.into(),
             }),
         }
     }

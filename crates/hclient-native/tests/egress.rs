@@ -393,7 +393,7 @@ mod xor {
     impl EgressFilter for Xor {
         type Wrapped<S: Io> = XorStream<S>;
 
-        fn route(&self, t: &Target<'_>) -> Decision {
+        fn route(&self, t: &Target<'_>) -> Decision<'_> {
             if t.host == self.only {
                 Decision::Filtered(Route::new(
                     FilterSupport::STREAM,
@@ -536,7 +536,7 @@ mod deny {
     impl EgressFilter for Deny {
         type Wrapped<S: Io> = S;
 
-        fn route(&self, _t: &Target<'_>) -> Decision {
+        fn route(&self, _t: &Target<'_>) -> Decision<'_> {
             Decision::Filtered(Route::new(FilterSupport::NONE, "deny", RequestForm::Origin))
         }
 
@@ -716,11 +716,9 @@ mod tunnel {
     impl EgressFilter for Tunnel {
         type Wrapped<S: Io> = S;
 
-        fn route(&self, t: &Target<'_>) -> Decision {
+        fn route(&self, t: &Target<'_>) -> Decision<'_> {
             let form = match (&self.absolute, t.use_tls) {
-                (Some(auth), false) => RequestForm::Absolute {
-                    proxy_authorization: Some(auth.clone()),
-                },
+                (Some(auth), false) => RequestForm::absolute(Some(auth.clone())),
                 _ => RequestForm::Origin,
             };
             Decision::Filtered(Route::new(

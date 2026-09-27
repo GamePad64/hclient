@@ -1337,7 +1337,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         use_tls: bool,
         host: &str,
         port: u16,
-    ) -> hclient_proxy::Decision {
+    ) -> hclient_proxy::Decision<'_> {
         let target = hclient_proxy::Target::new(host, port, use_tls);
         // The external filter first; what it declines goes to the rules —
         // the order the connector follows too.
@@ -2783,7 +2783,7 @@ where
             // filter that does not, and for the moment a pool is shared
             // between transports.
             proxy: match self.egress_route(matches!(security, Security::Tls(_)), host, port) {
-                hclient_proxy::Decision::Filtered(route) => Some(route.pool_key),
+                hclient_proxy::Decision::Filtered(route) => Some(route.pool_key.into()),
                 hclient_proxy::Decision::Direct => None,
             },
         })
@@ -3218,6 +3218,7 @@ where
             form:
                 hclient_proxy::RequestForm::Absolute {
                     proxy_authorization,
+                    ..
                 },
             ..
         }) = self.egress_route(use_tls, host, port)
@@ -4231,7 +4232,7 @@ pub mod testing {
         T: hclient_tls::TlsConnect,
     {
         match native.egress_route(use_tls, host, port) {
-            hclient_proxy::Decision::Filtered(route) => Some(route.pool_key),
+            hclient_proxy::Decision::Filtered(route) => Some(route.pool_key.into()),
             hclient_proxy::Decision::Direct => None,
         }
     }

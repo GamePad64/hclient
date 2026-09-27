@@ -49,9 +49,12 @@ impl Handshake for BoxHandshake {
 }
 
 #[derive(Clone)]
+// Each rule carries its pool key, computed once when it is pushed:
+// `route` is asked several times per request and lends the key out as a
+// borrow rather than formatting it again.
 enum Rule {
-    Proxy(Arc<Proxy<BoxHandshake>>),
-    Unix(Arc<hclient_rt::IpcAddr>),
+    Proxy(Arc<Proxy<BoxHandshake>>, Box<str>),
+    Unix(Arc<hclient_rt::IpcAddr>, Box<str>),
 }
 
 /// The default [`EgressFilter`]: proxy rules in order, the first that
@@ -90,7 +93,12 @@ impl Rules {
         P: Handshake + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C16
     {
         let proxy = proxy.map_protocol(|p| Box::new(p) as BoxHandshake);
-        self.rules.push(Rule::Proxy(Arc::new(proxy)));
+        let key = match proxy.reach() {
+            Reach::Tcp { host, port } if proxy.is_tls() => format!("tls:{host}:{port}").into(),
+            Reach::Tcp { host, port } => format!("{host}:{port}").into(),
+            Reach::Ipc(addr) => ipc_key(addr),
+        };
+        self.rules.push(Rule::Proxy(Arc::new(proxy), key));
         self
     }
 
@@ -114,7 +122,8 @@ impl Rules {
     /// earlier rule goes over `addr`.
     #[must_use]
     pub fn unix(mut self, addr: hclient_rt::IpcAddr) -> Self {
-        self.rules.push(Rule::Unix(Arc::new(addr)));
+        let key = ipc_key(&addr);
+        self.rules.push(Rule::Unix(Arc::new(addr), key));
         self
     }
 
@@ -133,8 +142,8 @@ impl Rules {
 
     fn first(&self, t: &Target<'_>) -> Option<&Rule> {
         self.rules.iter().find(|r| match r {
-            Rule::Proxy(p) => p.serves(t.use_tls, t.host, t.port),
-            Rule::Unix(_) => true,
+            Rule::Proxy(p, _) => p.serves(t.use_tls, t.host, t.port),
+            Rule::Unix(..) => true,
         })
     }
 }
@@ -154,29 +163,22 @@ impl EgressFilter for Rules {
     /// lent; they never wrap it.
     type Wrapped<S: Io> = S;
 
-    fn route(&self, t: &Target<'_>) -> Decision {
+    fn route(&self, t: &Target<'_>) -> Decision<'_> {
         match self.first(t) {
             None => Decision::Direct,
-            Some(Rule::Unix(addr)) => Decision::Filtered(Route::new(
+            Some(Rule::Unix(_, key)) => Decision::Filtered(Route::new(
                 FilterSupport::STREAM,
-                ipc_key(addr),
+                &**key,
                 RequestForm::Origin,
             )),
-            Some(Rule::Proxy(p)) => {
-                let pool_key = match p.reach() {
-                    Reach::Tcp { host, port } if p.is_tls() => {
-                        format!("tls:{host}:{port}").into_boxed_str()
-                    }
-                    Reach::Tcp { host, port } => format!("{host}:{port}").into_boxed_str(),
-                    Reach::Ipc(addr) => ipc_key(addr),
-                };
+            Some(Rule::Proxy(p, key)) => {
                 let form = match p.protocol().approach(t.use_tls) {
-                    Approach::Absolute => RequestForm::Absolute {
-                        proxy_authorization: p.protocol().proxy_authorization().cloned(),
-                    },
+                    Approach::Absolute => {
+                        RequestForm::absolute(p.protocol().proxy_authorization().cloned())
+                    }
                     Approach::Tunnel => RequestForm::Origin,
                 };
-                Decision::Filtered(Route::new(FilterSupport::STREAM, pool_key, form))
+                Decision::Filtered(Route::new(FilterSupport::STREAM, &**key, form))
             }
         }
     }
@@ -199,14 +201,14 @@ impl EgressFilter for Rules {
             )));
         };
         let proxy = match rule {
-            Rule::Unix(addr) => {
+            Rule::Unix(addr, _) => {
                 return ctx
                     .connect_ipc(addr)
                     .await
                     .map(Opened::Raw)
                     .map_err(Attempt::Failed);
             }
-            Rule::Proxy(p) => p,
+            Rule::Proxy(p, _) => p,
         };
         let mut stream = match proxy.reach() {
             Reach::Tcp { host, port } => {
@@ -364,7 +366,7 @@ mod tests {
         futures_executor::block_on(f)
     }
 
-    fn key(d: &Decision) -> &str {
+    fn key<'a>(d: &'a Decision<'a>) -> &'a str {
         match d {
             Decision::Filtered(route) => &route.pool_key,
             Decision::Direct => panic!("expected Filtered, got Direct"),
@@ -462,6 +464,30 @@ mod tests {
                 RequestForm::Origin
             ))
         );
+    }
+
+    #[test]
+    fn a_rules_pool_key_is_lent_rather_than_formatted_per_call() {
+        // A transport asks `route` several times per request; the key was
+        // formatted once, when the rule was pushed, and is lent from there.
+        let r = Rules::new()
+            .push(Proxy::new(HttpConnect::new(), "p", 1).tls())
+            .unix(hclient_rt::IpcAddr::Unix("/s".into()));
+        let Decision::Filtered(route) = r.route(&t("example.com", 443, true)) else {
+            panic!("filtered");
+        };
+        assert!(matches!(
+            route.pool_key,
+            std::borrow::Cow::Borrowed("tls:p:1")
+        ));
+        let only_unix = Rules::new().unix(hclient_rt::IpcAddr::Unix("/s".into()));
+        let Decision::Filtered(route) = only_unix.route(&t("example.com", 443, true)) else {
+            panic!("filtered");
+        };
+        assert!(matches!(
+            route.pool_key,
+            std::borrow::Cow::Borrowed("unix:/s")
+        ));
     }
 
     #[test]
