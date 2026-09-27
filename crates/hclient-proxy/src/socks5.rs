@@ -29,7 +29,7 @@ use crate::{Approach, Handshake, Step, take};
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Socks5 {
     auth: Option<(Box<str>, Box<str>)>,
     state: State,
@@ -38,6 +38,21 @@ pub struct Socks5 {
     /// and no state machine can tell them apart without remembering.
     offered: Vec<u8>,
     request: Bytes,
+}
+
+// Written by hand because the derived one printed the password: RFC 1929
+// credentials sit in `auth` as plain strings, and a `{:?}` of a `Proxy` —
+// in a log, in a panic message — would carry them. `Credentials` in
+// `system` and `HttpConnect`'s sensitive header already hide theirs.
+/// Never prints the password.
+impl std::fmt::Debug for Socks5 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Socks5")
+            .field("user", &self.auth.as_ref().map(|(user, _)| user))
+            .field("password", &self.auth.as_ref().map(|_| "<redacted>"))
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Where the exchange has got to. `Default` is the state a fresh
@@ -292,6 +307,14 @@ fn expect_version(v: u8) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_never_prints_the_password() {
+        let s = Socks5::new().password_auth("alice", "hunter2").unwrap();
+        let shown = format!("{:?}", crate::Proxy::new(s, "px", 1080));
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("alice"), "the user is not a secret: {shown}");
+    }
     use crate::drive_for_test;
 
     /// `REP=0`, `ATYP=1`, `0.0.0.0:0` — the reply a proxy sends when the
