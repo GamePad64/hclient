@@ -662,8 +662,11 @@ async fn a_bypassed_origin_goes_direct_and_in_origin_form() {
     let (origin, direct) = http_proxy("200");
 
     let client = Client::builder(
-        Native::new(Tokio, hclient_tls::NoTls, IpLiteralOnly)
-            .proxy(Proxy::new(HttpConnect::new(), "127.0.0.1", proxy.port()).bypass(["127.0.0.1"])),
+        Native::new(Tokio, hclient_tls::NoTls, IpLiteralOnly).proxy(
+            Proxy::new(HttpConnect::new(), "127.0.0.1", proxy.port())
+                .bypass(["127.0.0.1"])
+                .unwrap(),
+        ),
     )
     .build()
     .expect("build");
@@ -968,7 +971,9 @@ async fn a_bypass_belongs_to_its_own_proxy_and_falls_through_to_the_next() {
     let (second, second_seen) = http_proxy("200");
 
     let bypassing = |addr: SocketAddr| {
-        Proxy::new(HttpConnect::new(), addr.ip().to_string(), addr.port()).bypass(["198.51.100.7"])
+        Proxy::new(HttpConnect::new(), addr.ip().to_string(), addr.port())
+            .bypass(["198.51.100.7"])
+            .unwrap()
     };
 
     let client = Client::builder(

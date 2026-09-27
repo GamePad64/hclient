@@ -259,7 +259,9 @@ async fn a_bypassed_origin_is_direct_and_may_still_take_quic() {
     let t = h3_then_proxy(
         &pair,
         &dns,
-        Proxy::new(HttpConnect::new(), PROXY, port).bypass([ORIGIN]),
+        Proxy::new(HttpConnect::new(), PROXY, port)
+            .bypass([ORIGIN])
+            .unwrap(),
     );
 
     assert_eq!(send(&t, &pair).await, "h3");

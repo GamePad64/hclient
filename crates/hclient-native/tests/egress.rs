@@ -170,7 +170,8 @@ fn http_and_socks5_rules_serve_one_transport() {
                 http_addr.ip().to_string(),
                 http_addr.port(),
             )
-            .bypass(["b.test"]),
+            .bypass(["b.test"])
+            .unwrap(),
         )
         .and_proxy(Proxy::new(
             Socks5::new(),

@@ -136,8 +136,11 @@ impl<P> Proxy<P> {
     ///   every Mac, so a dialect without it would refuse the platform's
     ///   own default configuration.
     ///
-    /// No wildcard. A pattern in no accepted shape matches nothing rather
-    /// than approximately something.
+    /// No wildcard, with one exception every platform writes:
+    /// `*.example.com` is read as `.example.com`. Anything else is refused
+    /// by name rather than kept as a pattern that never matches — a list
+    /// that silently ignored a typo would proxy a request the caller asked
+    /// to send direct.
     ///
     /// **A subnet never matches a name**, not even one that resolves into
     /// it. Matching would mean resolving the host to decide whether to
@@ -158,13 +161,33 @@ impl<P> Proxy<P> {
     /// request direct, past an `http` proxy that was never in the running
     /// and never mentioned it. A caller who wants the global rule writes
     /// the list on each proxy, which is honest because they wrote it.
-    #[must_use]
-    pub fn bypass<S: Into<Box<str>>>(mut self, patterns: impl IntoIterator<Item = S>) -> Self {
-        self.bypass.extend(
-            patterns
-                .into_iter()
-                .map(|p| p.into().to_ascii_lowercase().into_boxed_str()),
-        );
+    ///
+    /// # Errors
+    ///
+    /// [`UnsupportedBypass`](crate::UnsupportedBypass), naming the first
+    /// pattern in none of the forms above: a wildcard anywhere but a
+    /// leading `*.`, or a pattern that is malformed.
+    pub fn bypass<S: AsRef<str>>(
+        mut self,
+        patterns: impl IntoIterator<Item = S>,
+    ) -> Result<Self, crate::UnsupportedBypass> {
+        for p in patterns {
+            let p = p.as_ref();
+            let normal =
+                normalize_bypass(p).map_err(|reason| crate::UnsupportedBypass::new(p, reason))?;
+            self.bypass.push(normal);
+        }
+        Ok(self)
+    }
+
+    /// Patterns already through [`normalize_bypass`] — the system reader's,
+    /// which it checked and reported on as it read them.
+    #[cfg(feature = "system")]
+    pub(crate) fn bypass_normalized(
+        mut self,
+        patterns: impl IntoIterator<Item = Box<str>>,
+    ) -> Self {
+        self.bypass.extend(patterns);
         self
     }
 
@@ -316,10 +339,16 @@ impl<P> IpcProxy<P> {
     }
 
     /// See [`Proxy::bypass`].
-    #[must_use]
-    pub fn bypass<S: Into<Box<str>>>(mut self, patterns: impl IntoIterator<Item = S>) -> Self {
-        self.inner = self.inner.bypass(patterns);
-        self
+    ///
+    /// # Errors
+    ///
+    /// [`Proxy::bypass`]'s.
+    pub fn bypass<S: AsRef<str>>(
+        mut self,
+        patterns: impl IntoIterator<Item = S>,
+    ) -> Result<Self, crate::UnsupportedBypass> {
+        self.inner = self.inner.bypass(patterns)?;
+        Ok(self)
     }
 
     /// See [`Proxy::bypass_local`].
@@ -371,6 +400,76 @@ impl<P: Clone> Proxy<P> {
     pub fn handshake(&self) -> P {
         self.protocol.clone()
     }
+}
+
+/// A bypass pattern in this crate's dialect, lower-cased, or why it is
+/// not one — the one statement of the dialect, shared by
+/// [`Proxy::bypass`] and the system reader.
+pub(crate) fn normalize_bypass(pattern: &str) -> Result<Box<str>, crate::BypassReason> {
+    let p = pattern.to_ascii_lowercase();
+    // Windows's and macOS's spelling of what this dialect writes
+    // `.example.com`: that host and everything under it.
+    let p = match p.strip_prefix("*.") {
+        Some(rest) => format!(".{rest}"),
+        None => p,
+    };
+    if p.contains('*') {
+        return Err(crate::BypassReason::Wildcard);
+    }
+    let well_formed = match p.split_once('/') {
+        Some((addr, len)) => subnet_is_well_formed(addr, len),
+        None => host_pattern_is_well_formed(&p),
+    };
+    if well_formed {
+        Ok(p.into_boxed_str())
+    } else {
+        Err(crate::BypassReason::Malformed)
+    }
+}
+
+fn digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn subnet_is_well_formed(addr: &str, len: &str) -> bool {
+    let Some(len) = digits(len).then(|| len.parse::<u32>().ok()).flatten() else {
+        return false;
+    };
+    match parse_prefix(addr) {
+        Some(std::net::IpAddr::V4(_)) => len <= 32,
+        Some(std::net::IpAddr::V6(_)) => len <= 128,
+        None => false,
+    }
+}
+
+fn host_pattern_is_well_formed(p: &str) -> bool {
+    let port_ok = |port: &str| digits(port) && port.parse::<u16>().is_ok();
+    if p.is_empty()
+        || p.bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control() || b"<>".contains(&b))
+    {
+        return false;
+    }
+    if let Some(rest) = p.strip_prefix('[') {
+        return match rest.split_once(']') {
+            Some((host, tail)) => {
+                host.parse::<std::net::Ipv6Addr>().is_ok()
+                    && (tail.is_empty() || tail.strip_prefix(':').is_some_and(port_ok))
+            }
+            None => false,
+        };
+    }
+    // Two colons or more is a bare v6 literal, which carries no port.
+    if p.matches(':').count() > 1 {
+        return p.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    let host = match p.rsplit_once(':') {
+        Some((host, port)) if port_ok(port) => host,
+        Some(_) => return false,
+        None => p,
+    };
+    let host = host.strip_prefix('.').unwrap_or(host);
+    !host.is_empty() && !host.contains(['[', ']'])
 }
 
 /// One pattern against one origin. Separate from [`Proxy::serves`] so the
@@ -515,6 +614,20 @@ fn host_matches(pattern: &str, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BypassReason;
+
+    /// Why `pat` is refused — it must be.
+    fn refused(pat: &str) -> BypassReason {
+        let err = Proxy::new(Socks5::new(), "px", 1080)
+            .bypass([pat])
+            .expect_err("a pattern in no accepted shape");
+        assert_eq!(
+            err.pattern(),
+            pat,
+            "the refusal names the pattern as written"
+        );
+        err.reason()
+    }
     use crate::{Approach, Handshake, HttpConnect, Socks5};
 
     #[test]
@@ -545,7 +658,11 @@ mod tests {
     /// that the caller asked to be proxied.
     #[test]
     fn the_bypass_forms_match_what_they_say_and_nothing_beside_it() {
-        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+        let p = |pat: &str| {
+            Proxy::new(Socks5::new(), "px", 1080)
+                .bypass([pat])
+                .expect("an accepted pattern")
+        };
 
         // Exact host, at any port, case-insensitively.
         assert!(!p("example.com").serves(true, "example.com", 443));
@@ -572,9 +689,13 @@ mod tests {
         assert!(!p("[::1]:8080").serves(true, "[::1]", 8080));
         assert!(p("[::1]:8080").serves(true, "[::1]", 80));
 
-        // No wildcard: a pattern in no accepted shape matches nothing
-        // rather than approximately something.
-        assert!(p("*.example.com").serves(true, "api.example.com", 80));
+        // The one wildcard every platform writes is read as the domain
+        // form; any other is refused rather than kept as a pattern that
+        // never matches.
+        assert!(!p("*.example.com").serves(true, "api.example.com", 80));
+        assert!(!p("*.example.com").serves(true, "example.com", 80));
+        assert_eq!(refused("192.168.1.*"), BypassReason::Wildcard);
+        assert_eq!(refused("*.*.example.com"), BypassReason::Wildcard);
     }
 
     /// Empty by default, which is the decision rather than an oversight:
@@ -589,7 +710,11 @@ mod tests {
 
     #[test]
     fn a_subnet_matches_an_address_in_it_and_nothing_else() {
-        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+        let p = |pat: &str| {
+            Proxy::new(Socks5::new(), "px", 1080)
+                .bypass([pat])
+                .expect("an accepted pattern")
+        };
 
         assert!(!p("10.0.0.0/8").serves(true, "10.1.2.3", 80));
         assert!(p("10.0.0.0/8").serves(true, "11.1.2.3", 80));
@@ -621,7 +746,11 @@ mod tests {
         // before the partial byte is reached. The host here **agrees on
         // every octet**, which is the only input that gets as far as the
         // out-of-range read.
-        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+        let p = |pat: &str| {
+            Proxy::new(Socks5::new(), "px", 1080)
+                .bypass([pat])
+                .expect("an accepted pattern")
+        };
 
         // **One bit past the family and a whole byte past it, because
         // they are two different panics** — measured on `same_prefix`
@@ -631,11 +760,15 @@ mod tests {
         // so neither is kept for the kill; they are kept because a
         // guard that came back for only one of the two shapes would
         // leave the other reachable.
-        assert!(p("10.0.0.0/33").serves(true, "10.0.0.0", 80));
-        assert!(p("10.0.0.0/40").serves(true, "10.0.0.0", 80));
+        assert!(!matches_bypass("10.0.0.0/33", "10.0.0.0", 80));
+        assert_eq!(refused("10.0.0.0/33"), BypassReason::Malformed);
+        assert!(!matches_bypass("10.0.0.0/40", "10.0.0.0", 80));
+        assert_eq!(refused("10.0.0.0/40"), BypassReason::Malformed);
         // v6, the same pair, whose guard is a separate match arm.
-        assert!(p("fd00::/129").serves(true, "fd00::", 80));
-        assert!(p("fd00::/136").serves(true, "fd00::", 80));
+        assert!(!matches_bypass("fd00::/129", "fd00::", 80));
+        assert_eq!(refused("fd00::/129"), BypassReason::Malformed);
+        assert!(!matches_bypass("fd00::/136", "fd00::", 80));
+        assert_eq!(refused("fd00::/136"), BypassReason::Malformed);
         // The control, at the widest length each family really has: an
         // exact address still matches, so the guards refuse what is out
         // of range and nothing else.
@@ -661,14 +794,20 @@ mod tests {
         // octet parse takes digits without a leading zero now, and with
         // that every four-label survivor already returned above — the
         // leading-zero test below is the one that pins the guard.)
-        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+        let p = |pat: &str| {
+            Proxy::new(Socks5::new(), "px", 1080)
+                .bypass([pat])
+                .expect("an accepted pattern")
+        };
         // The host the truncation would produce, and a host inside the
         // `/8` it would produce. Either alone kills the mutation; both
         // are here because the refusal is *total* — a pattern in no
         // accepted shape matches nothing, rather than matching the
         // prefix that happens to be left after the labels it dropped.
-        assert!(p("1.2.3.4.5/8").serves(true, "1.2.3.4", 80));
-        assert!(p("1.2.3.4.5/8").serves(true, "1.0.0.1", 80));
+        assert!(!matches_bypass("1.2.3.4.5/8", "1.2.3.4", 80));
+        assert_eq!(refused("1.2.3.4.5/8"), BypassReason::Malformed);
+        assert!(!matches_bypass("1.2.3.4.5/8", "1.0.0.1", 80));
+        assert_eq!(refused("1.2.3.4.5/8"), BypassReason::Malformed);
         // The control, one label shorter, which is a subnet and does
         // match — so the refusal above is about the count and not about
         // the pattern being odd.
@@ -683,7 +822,11 @@ mod tests {
         // abbreviated-form fallback must not quietly accept what the
         // strict parser refused: a pattern in no accepted shape matches
         // nothing.
-        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+        let p = |pat: &str| {
+            Proxy::new(Socks5::new(), "px", 1080)
+                .bypass([pat])
+                .expect("an accepted pattern")
+        };
         for pat in [
             "010.0.0.0/8",
             "010/8",
@@ -692,8 +835,9 @@ mod tests {
             "+10/8",
         ] {
             for host in ["10.1.2.3", "8.1.2.3", "169.254.1.1", "169.172.1.1"] {
-                assert!(p(pat).serves(true, host, 80), "{pat} bypassed {host}");
+                assert!(!matches_bypass(pat, host, 80), "{pat} bypassed {host}");
             }
+            assert_eq!(refused(pat), BypassReason::Malformed, "{pat}");
         }
         // The controls: the same networks written without the zero.
         assert!(!p("10.0.0.0/8").serves(true, "10.1.2.3", 80));
@@ -705,23 +849,60 @@ mod tests {
     }
 
     #[test]
+    fn a_host_pattern_in_no_accepted_shape_is_refused_naming_it() {
+        for pat in [
+            "",
+            ".",
+            "example.com:http",
+            "example.com:70000",
+            "[::1",
+            "[::1]:",
+            "[example.com]",
+            "::not-v6",
+            "<local>",
+            "exa mple.com",
+        ] {
+            assert_eq!(refused(pat), BypassReason::Malformed, "{pat:?}");
+        }
+        // Every refusal is of the whole call: nothing before the bad
+        // pattern is kept either.
+        assert!(
+            Proxy::new(Socks5::new(), "px", 1080)
+                .bypass(["example.com", "bad:port"])
+                .is_err()
+        );
+        // And a same-machine proxy refuses by the same rule.
+        let ipc = IpcProxy::new(Socks5::new(), hclient_rt::IpcAddr::Unix("/s".into()));
+        assert_eq!(
+            ipc.bypass(["*.x.*"]).expect_err("a wildcard").reason(),
+            BypassReason::Wildcard
+        );
+    }
+
+    #[test]
     fn a_subnet_never_matches_a_name() {
         // Matching would mean resolving the host to decide whether to
         // proxy it — an extra lookup, and on a proxied request the DNS
         // leak a proxy user is often there to avoid.
-        let p = Proxy::new(Socks5::new(), "px", 1080).bypass(["10.0.0.0/8"]);
+        let p = Proxy::new(Socks5::new(), "px", 1080)
+            .bypass(["10.0.0.0/8"])
+            .unwrap();
         assert!(p.serves(true, "internal.example.com", 80));
     }
 
     #[test]
-    fn a_pattern_that_is_not_a_subnet_but_has_a_slash_matches_nothing() {
-        // The dialect's rule everywhere else, kept here: approximately
-        // something is worse than nothing.
-        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
-        assert!(p("example.com/8").serves(true, "example.com", 80));
-        assert!(p("10.0.0.0/many").serves(true, "10.0.0.1", 80));
-        assert!(p("10.0.0.0/33").serves(true, "10.0.0.1", 80));
-        assert!(p("/8").serves(true, "10.0.0.1", 80));
+    fn a_pattern_that_is_not_a_subnet_but_has_a_slash_is_refused() {
+        // Refused at the setter, and — the matcher's own guard, kept for a
+        // pattern that reached it some other way — matching nothing, since
+        // approximately something is worse than nothing.
+        assert!(!matches_bypass("example.com/8", "example.com", 80));
+        assert_eq!(refused("example.com/8"), BypassReason::Malformed);
+        assert!(!matches_bypass("10.0.0.0/many", "10.0.0.1", 80));
+        assert_eq!(refused("10.0.0.0/many"), BypassReason::Malformed);
+        assert!(!matches_bypass("10.0.0.0/33", "10.0.0.1", 80));
+        assert_eq!(refused("10.0.0.0/33"), BypassReason::Malformed);
+        assert!(!matches_bypass("/8", "10.0.0.1", 80));
+        assert_eq!(refused("/8"), BypassReason::Malformed);
     }
 
     #[test]

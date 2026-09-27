@@ -130,7 +130,7 @@ pub(crate) fn http_proxies(
             })?;
         }
         let mut proxy = Proxy::new(protocol, entry.host(), entry.port())
-            .bypass(sys.bypass().iter().map(ToString::to_string));
+            .bypass_normalized(sys.bypass().iter().cloned());
         if sys.bypass_local() {
             proxy = proxy.bypass_local();
         }
@@ -190,7 +190,7 @@ pub(crate) fn http_proxies_lossy(
             }
         }
         let mut proxy = Proxy::new(protocol, entry.host(), entry.port())
-            .bypass(sys.bypass().iter().map(ToString::to_string));
+            .bypass_normalized(sys.bypass().iter().cloned());
         if sys.bypass_local() {
             proxy = proxy.bypass_local();
         }

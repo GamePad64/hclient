@@ -8,11 +8,12 @@
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let proxy = Proxy::new(HttpConnect::new(), "proxy.corp", 8080)
-//!     .bypass([".internal", "localhost"])
+//!     .bypass([".internal", "localhost"])?
 //!     .bypass_local();
 //!
-//! // A handshake is a state machine, fresh per connection.
-//! let mut handshake = proxy.handshake();
+//! // A handshake is a state machine, fresh per connection: the configured
+//! // protocol is its template.
+//! let mut handshake = proxy.protocol().clone();
 //! let to_send = handshake.begin("example.com", 443)?;
 //! assert!(to_send.starts_with(b"CONNECT example.com:443"));
 //!
@@ -128,8 +129,8 @@ pub use egress::{
     SharedFilter, Target, erase,
 };
 pub use error::{
-    ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
-    Socks4Refused, Socks5HandshakeError, Socks5Refused,
+    BypassReason, ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
+    Socks4Refused, Socks5HandshakeError, Socks5Refused, UnsupportedBypass,
 };
 pub(crate) use proxy::Reach;
 pub use proxy::{IpcProxy, Proxy, ProxyScheme};

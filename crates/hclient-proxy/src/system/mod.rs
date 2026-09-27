@@ -53,7 +53,7 @@ mod parse;
 mod read;
 mod translate;
 
-pub use crate::error::{ParseError, SystemProxyRefused};
+pub use crate::error::{BypassReason, ParseError, SystemProxyRefused, UnsupportedBypass};
 #[cfg(test)]
 use translate::http_proxies;
 pub use translate::{rules, rules_lossy};
@@ -179,64 +179,6 @@ impl ProxyEntry {
     /// The credentials carried in the proxy URL's userinfo, if any.
     pub fn credentials(&self) -> Option<&Credentials> {
         self.credentials.as_ref()
-    }
-}
-
-// Maintainer notes (not rendered):
-//
-// A bypass pattern the system named that this workspace's matcher cannot
-// express.
-/// A bypass pattern the system named that this crate's matcher cannot
-/// express.
-///
-/// It exists so that such a pattern is **visible rather than dropped**.
-/// Dropping one silently sends traffic through a proxy that the machine's
-/// owner said should go direct, which is a privacy change made on their
-/// behalf and without their knowledge — the mirror of the rule that keeps
-/// a bypass list from being invented in the first place.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnsupportedBypass {
-    pattern: Box<str>,
-    reason: BypassReason,
-}
-
-impl UnsupportedBypass {
-    /// The pattern as the system wrote it, lower-cased.
-    pub fn pattern(&self) -> &str {
-        &self.pattern
-    }
-
-    /// Why this pattern could not be translated.
-    pub fn reason(&self) -> BypassReason {
-        self.reason
-    }
-}
-
-impl fmt::Display for UnsupportedBypass {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "`{}` ({})", self.pattern, self.reason)
-    }
-}
-
-// Maintainer notes (not rendered):
-//
-// One variant, and it stays an enum rather than becoming a unit struct:
-// `Cidr` was the second until subnets became statable, and the shape
-// that admitted a second reason is the shape that will admit the next.
-/// Why a bypass pattern could not be translated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum BypassReason {
-    /// `192.168.1.*`, `10.*.*.*` — a wildcard anywhere but as a leading
-    /// `*.` label.
-    Wildcard,
-}
-
-impl fmt::Display for BypassReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Wildcard => f.write_str("a wildcard that is not a leading `*.`"),
-        }
     }
 }
 
@@ -528,10 +470,8 @@ impl SystemProxies {
                 parse::Bypass::Everything => out.bypass_everything = true,
                 parse::Bypass::AlreadyTrue => {}
                 parse::Bypass::Unsupported(reason) => {
-                    out.unsupported_bypass.push(UnsupportedBypass {
-                        pattern: pattern.into_boxed_str(),
-                        reason,
-                    });
+                    out.unsupported_bypass
+                        .push(UnsupportedBypass::new(&pattern, reason));
                 }
             }
         }

@@ -512,7 +512,11 @@ mod tests {
         // A bypass on the first rule falls through to the next, which is
         // what makes a per-proxy list right and a global `NO_PROXY` wrong.
         let r = Rules::new()
-            .push(Proxy::new(Socks5::new(), "first", 1080).bypass(["example.com"]))
+            .push(
+                Proxy::new(Socks5::new(), "first", 1080)
+                    .bypass(["example.com"])
+                    .unwrap(),
+            )
             .push(Proxy::new(Socks5::new(), "second", 1080));
         assert_eq!(key(&r.route(&t("example.com", 443, true))), "second:1080");
     }
@@ -547,7 +551,11 @@ mod tests {
 
     #[test]
     fn a_bypassed_origin_is_direct() {
-        let r = Rules::new().push(Proxy::new(HttpConnect::new(), "p", 1).bypass(["example.com"]));
+        let r = Rules::new().push(
+            Proxy::new(HttpConnect::new(), "p", 1)
+                .bypass(["example.com"])
+                .unwrap(),
+        );
         assert_eq!(r.route(&t("example.com", 443, true)), Decision::Direct);
     }
 

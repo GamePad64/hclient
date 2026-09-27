@@ -195,21 +195,15 @@ pub(crate) fn bypass(pattern: &str) -> Bypass {
     // `Proxy::bypass`. It was a refusal until macOS was looked at: every
     // Mac ships `169.254/16` in its default exceptions list, so refusing
     // on a subnet would have refused the platform's own default.
-    // `*.example.com` is Windows's and macOS's spelling of what
-    // `hclient-native` writes `.example.com`: that host and everything
-    // under it. Anywhere else, a `*` is a wildcard this workspace does
-    // not have.
-    if let Some(rest) = p.strip_prefix("*.") {
-        return if rest.contains('*') {
-            Bypass::Unsupported(BypassReason::Wildcard)
-        } else {
-            Bypass::Pattern(format!(".{rest}").into_boxed_str())
-        };
+    // The rest is `Proxy::bypass`'s dialect, stated once: `*.example.com`
+    // read as `.example.com`, any other `*` a wildcard this workspace does
+    // not have, and a pattern in no accepted shape — `10.0.0.0/33`, a port
+    // that is not a number — refused rather than kept as one that never
+    // matches.
+    match crate::proxy::normalize_bypass(&p) {
+        Ok(pattern) => Bypass::Pattern(pattern),
+        Err(reason) => Bypass::Unsupported(reason),
     }
-    if p.contains('*') {
-        return Bypass::Unsupported(BypassReason::Wildcard);
-    }
-    Bypass::Pattern(p.into_boxed_str())
 }
 
 #[cfg(test)]

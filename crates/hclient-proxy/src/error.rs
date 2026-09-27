@@ -321,3 +321,78 @@ pub struct ProxySpokeFirst {
     /// How many bytes arrived past the handshake.
     pub bytes: usize,
 }
+
+// Maintainer notes (not rendered):
+//
+// A bypass pattern the system named that this workspace's matcher cannot
+// express. It lived in `system` until `Proxy::bypass` became fallible:
+// a caller's own list is refused with the same value the machine's is
+// reported with, so the two dialects cannot drift apart.
+/// A bypass pattern this crate's matcher cannot express — refused by
+/// [`Proxy::bypass`](crate::Proxy::bypass), or reported by the system
+/// reader.
+///
+/// It exists so that such a pattern is **visible rather than dropped**.
+/// Dropping one silently sends traffic through a proxy that the machine's
+/// owner said should go direct, which is a privacy change made on their
+/// behalf and without their knowledge — the mirror of the rule that keeps
+/// a bypass list from being invented in the first place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedBypass {
+    pattern: Box<str>,
+    reason: BypassReason,
+}
+
+impl UnsupportedBypass {
+    pub(crate) fn new(pattern: &str, reason: BypassReason) -> Self {
+        Self {
+            pattern: pattern.into(),
+            reason,
+        }
+    }
+
+    /// The pattern as it was written.
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    /// Why this pattern could not be translated.
+    pub fn reason(&self) -> BypassReason {
+        self.reason
+    }
+}
+
+impl std::error::Error for UnsupportedBypass {}
+
+impl std::fmt::Display for UnsupportedBypass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "`{}` ({})", self.pattern, self.reason)
+    }
+}
+
+// Maintainer notes (not rendered):
+//
+// One variant, and it stays an enum rather than becoming a unit struct:
+// `Cidr` was the second until subnets became statable, and the shape
+// that admitted a second reason is the shape that will admit the next.
+/// Why a bypass pattern could not be translated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BypassReason {
+    /// `192.168.1.*`, `10.*.*.*` — a wildcard anywhere but as a leading
+    /// `*.` label.
+    Wildcard,
+    /// In none of the accepted forms: an empty pattern, a port that is not
+    /// a number, an unclosed bracket, a subnet whose prefix is not an
+    /// address or is longer than its family.
+    Malformed,
+}
+
+impl std::fmt::Display for BypassReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Wildcard => f.write_str("a wildcard that is not a leading `*.`"),
+            Self::Malformed => f.write_str("in none of the forms a bypass accepts"),
+        }
+    }
+}

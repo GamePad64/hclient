@@ -395,7 +395,7 @@ pub mod redirect {
 /// use hclient::proxy::{HttpConnect, Proxy};
 ///
 /// let transport = hclient::default_transport()?
-///     .proxy(Proxy::new(HttpConnect::new(), "proxy.corp", 8080).bypass([".internal"]));
+///     .proxy(Proxy::new(HttpConnect::new(), "proxy.corp", 8080).bypass([".internal"])?);
 /// let client = hclient::Client::builder(transport).build()?;
 /// # Ok(()) }
 /// ```
