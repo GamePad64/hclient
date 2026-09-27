@@ -311,3 +311,205 @@ fn a_black_holed_proxy_times_out_at_the_callers_bound() {
         "ended by the caller's bound"
     );
 }
+
+// --- a filter written outside this crate ---------------------------------
+
+mod xor {
+    //! A filter this crate did not write: it reaches a relay by name
+    //! through the transport's own connect path and XORs every byte on the
+    //! way, so the stream it hands back is a *different type* from the
+    //! runtime's — the case `Opened::Wrapped` exists for.
+
+    use futures_io::{AsyncRead, AsyncWrite};
+    use hclient_proxy::{
+        Attempt, BoxDial, BoxIo, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Io,
+        Opened, RequestForm, SendEgressFilter, Target,
+    };
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    pub struct XorStream<S> {
+        inner: S,
+        key: u8,
+    }
+    impl<S: AsyncRead + Unpin> AsyncRead for XorStream<S> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let key = self.key;
+            let r = Pin::new(&mut self.inner).poll_read(cx, buf);
+            if let Poll::Ready(Ok(n)) = r {
+                for b in &mut buf[..n] {
+                    *b ^= key;
+                }
+            }
+            r
+        }
+    }
+    impl<S: AsyncWrite + Unpin> AsyncWrite for XorStream<S> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            // One byte at a time keeps a short write from desynchronising
+            // the key stream, which is all a test double needs.
+            let Some(&first) = buf.first() else {
+                return Poll::Ready(Ok(0));
+            };
+            let key = self.key;
+            Pin::new(&mut self.inner).poll_write(cx, &[first ^ key])
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_close(cx)
+        }
+    }
+    impl<S: hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown for XorStream<S> {
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    /// Carries requests for `only` through an XOR relay; everything else is
+    /// direct.
+    pub struct Xor {
+        pub relay: (String, u16),
+        pub key: u8,
+        pub only: &'static str,
+    }
+
+    impl EgressFilter for Xor {
+        type Wrapped<S: Io> = XorStream<S>;
+
+        fn route(&self, t: &Target<'_>) -> Decision {
+            if t.host == self.only {
+                Decision::Filtered {
+                    support: FilterSupport::STREAM,
+                    pool_key: format!("xor:{}:{}", self.relay.0, self.relay.1).into(),
+                    form: RequestForm::Origin,
+                }
+            } else {
+                Decision::Direct
+            }
+        }
+
+        async fn open_stream<'a, C: Dial + 'a>(
+            &'a self,
+            _t: Target<'a>,
+            ctx: &'a C,
+        ) -> Result<Opened<C::Stream, XorStream<C::Stream>>, Attempt>
+        where
+            Self: Sized,
+        {
+            let inner = ctx
+                .connect(&self.relay.0, self.relay.1)
+                .await
+                .map_err(Attempt::Unreachable)?;
+            Ok(Opened::Wrapped(XorStream {
+                inner,
+                key: self.key,
+            }))
+        }
+    }
+
+    impl SendEgressFilter for Xor {
+        fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
+            Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+        }
+    }
+
+    #[allow(dead_code, reason = "names the type the filter hands back")]
+    type _Check = BoxIo;
+}
+
+/// An origin that answers every request, over a connection whose bytes
+/// are `XOR`ed with `key` in both directions.
+fn xor_origin(key: u8) -> (SocketAddr, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::new(AtomicUsize::new(0));
+    let count = served.clone();
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let count = count.clone();
+            std::thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match s.read(&mut byte) {
+                        Ok(1) => head.push(byte[0] ^ key),
+                        _ => return,
+                    }
+                }
+                count.fetch_add(1, Ordering::SeqCst);
+                let reply: Vec<u8> = KEEP_ALIVE.iter().map(|b| b ^ key).collect();
+                let _ = s.write_all(&reply);
+            });
+        }
+    });
+    (addr, served)
+}
+
+/// **A filter from outside the crate wraps the stream**, and the transport
+/// speaks HTTP through the wrapper: the origin only understands `XOR`ed
+/// bytes, so a `200` is the proof the wrapper carried the request.
+#[test]
+fn an_external_filter_may_wrap_the_stream() {
+    let key = 0x5a;
+    let (relay, served) = xor_origin(key);
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly).egress(xor::Xor {
+        relay: (relay.ip().to_string(), relay.port()),
+        key,
+        only: "wrapped.test",
+    });
+    let rt = rt();
+    assert_eq!(
+        get(&t, &rt, "http://wrapped.test/").expect("through the XOR relay"),
+        200
+    );
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+}
+
+/// **What an external filter declines goes to the built-in rules**, and
+/// only what both decline is direct: the filter serves one host, a SOCKS5
+/// rule serves the rest.
+#[test]
+fn an_external_filter_is_asked_before_the_built_in_rules() {
+    let key = 0x33;
+    let (relay, served) = xor_origin(key);
+    let (socks_addr, socks_seen, _) = socks5_tcp();
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly)
+        .proxy(Proxy::new(
+            Socks5::new(),
+            socks_addr.ip().to_string(),
+            socks_addr.port(),
+        ))
+        .egress(xor::Xor {
+            relay: (relay.ip().to_string(), relay.port()),
+            key,
+            only: "wrapped.test",
+        });
+    let rt = rt();
+    assert_eq!(
+        get(&t, &rt, "http://wrapped.test/").expect("the filter's"),
+        200
+    );
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+    assert_eq!(get(&t, &rt, "http://other.test/").expect("the rules'"), 200);
+    assert_eq!(
+        socks_seen.recv_timeout(BOUND).expect("SOCKS5 saw it"),
+        "other.test"
+    );
+    assert!(
+        socks_seen.try_recv().is_err(),
+        "the filtered host never reached SOCKS5"
+    );
+}

@@ -120,6 +120,43 @@ where
     }
 }
 
+// Erased for an external filter, where the runtime's and the resolver's
+// futures have been proven `Send` — see `crate::external`.
+impl<R, D, H> hclient_proxy::DynDial for NativeDial<'_, R, D, H>
+where
+    R: TcpConnect + Timer + Sync,    // send-bound-exception: amendment-C15
+    R::Stream: Send + 'static,       // send-bound-exception: amendment-C15
+    R::Instant: Send + Sync,         // send-bound-exception: amendment-C15
+    R::Sleep: Send,                  // send-bound-exception: amendment-C15
+    for<'x> R::Connecting<'x>: Send, // send-bound-exception: amendment-C15
+    D: Resolve + Sync,               // send-bound-exception: amendment-C15
+    for<'x> D::Records<'x>: Send,    // send-bound-exception: amendment-C15
+    H: Hooks,
+{
+    fn connect_boxed<'a>(&'a self, host: &'a str, port: u16) -> hclient_proxy::BoxDialing<'a> {
+        Box::pin(async move {
+            hclient_proxy::Dial::connect(self, host, port)
+                .await
+                .map(hclient_proxy::BoxIo::new)
+        })
+    }
+
+    fn connect_ipc_boxed<'a>(
+        &'a self,
+        addr: &'a hclient_rt::IpcAddr,
+    ) -> hclient_proxy::BoxDialing<'a> {
+        Box::pin(async move {
+            hclient_proxy::Dial::connect_ipc(self, addr)
+                .await
+                .map(hclient_proxy::BoxIo::new)
+        })
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.budget
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

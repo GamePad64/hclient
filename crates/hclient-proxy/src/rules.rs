@@ -7,7 +7,7 @@ use bytes::BytesMut;
 use hclient_core::error::Error;
 
 use crate::egress::{
-    Attempt, BoxDial, BoxIo, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Opened,
+    Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Io, Opened,
     RequestForm, SendEgressFilter, Target,
 };
 use crate::{Approach, Handshake, Proxy, ProxySpokeFirst, Reach, Step};
@@ -131,6 +131,10 @@ fn is_refusal(e: &Error) -> bool {
 }
 
 impl EgressFilter for Rules {
+    /// The built-in protocols only run handshakes over the stream they are
+    /// lent; they never wrap it.
+    type Wrapped<S: Io> = S;
+
     fn route(&self, t: &Target<'_>) -> Decision {
         match self.first(t) {
             None => Decision::Direct,
@@ -163,7 +167,7 @@ impl EgressFilter for Rules {
         &'a self,
         t: Target<'a>,
         ctx: &'a C,
-    ) -> Result<Opened<C::Stream>, Attempt>
+    ) -> Result<Opened<C::Stream, C::Stream>, Attempt>
     where
         Self: Sized,
     {
@@ -218,12 +222,8 @@ impl EgressFilter for Rules {
 // can hold it too. `Native` never uses this impl: it calls `open_stream` on
 // `Rules` concretely, which is what keeps the default path unboxed.
 impl SendEgressFilter for Rules {
-    fn open_stream_send<'a>(
-        &'a self,
-        t: Target<'a>,
-        ctx: &'a BoxDial<'a>,
-    ) -> BoxOpening<'a, BoxIo> {
-        Box::pin(self.open_stream(t, ctx))
+    fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
+        Box::pin(async move { self.open_stream(t, ctx).await.map(crate::erase) })
     }
 }
 

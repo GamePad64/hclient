@@ -113,6 +113,7 @@ mod connect;
 mod dial;
 mod discovery;
 pub mod error;
+mod external;
 /// RFC 9114's ALPN identifier, and the one string that decides whether an
 /// origin's HTTPS record or `Alt-Svc` advertisement is about HTTP/3.
 #[cfg(feature = "http3")]
@@ -701,6 +702,8 @@ where
     /// serves a request carries it, and no match is direct. The default
     /// egress filter, called concretely so the default path is unboxed.
     rules: hclient_proxy::Rules,
+    /// A filter installed by [`Native::egress`], asked before [`rules`](Self::rules).
+    external: Option<external::External<R, D, T>>,
     rt: R,
     tls: T,
     dns: D,
@@ -1069,6 +1072,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // No rules: every request is direct until a proxy or a Unix
             // socket is added.
             rules: hclient_proxy::Rules::new(),
+            external: None,
             epoch: rt.now(),
             rt,
             tls,
@@ -1337,14 +1341,19 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         host: &str,
         port: u16,
     ) -> hclient_proxy::Decision {
-        hclient_proxy::EgressFilter::route(
-            &self.rules,
-            &hclient_proxy::Target {
-                host,
-                port,
-                use_tls,
-            },
-        )
+        let target = hclient_proxy::Target {
+            host,
+            port,
+            use_tls,
+        };
+        // The external filter first; what it declines goes to the rules —
+        // the order the connector follows too.
+        if let Some(ext) = &self.external
+            && let d @ hclient_proxy::Decision::Filtered { .. } = ext.filter.route(&target)
+        {
+            return d;
+        }
+        hclient_proxy::EgressFilter::route(&self.rules, &target)
     }
 
     /// A second proxy, and a third — **the first that serves a request
@@ -1549,6 +1558,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             // Carried, unlike the two above: the rules are named by
             // neither `H` nor the driver.
             rules: self.rules,
+            external: self.external,
             rt: self.rt,
             tls: self.tls,
             dns: self.dns,
@@ -2569,6 +2579,49 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         self.ipc = Some(dial_ipc::<R>);
         self.rules = std::mem::take(&mut self.rules).unix(addr);
         Ok(self)
+    }
+
+    /// Install an egress filter of your own, asked before the built-in
+    /// proxy rules.
+    ///
+    /// For every request the filter answers first. What it carries, it
+    /// opens — through this transport's own connect path, which it is lent
+    /// as an [`hclient_proxy::Dial`] — and this transport finishes TLS to
+    /// the origin over whatever stream it hands back. What it answers
+    /// [`Direct`](hclient_proxy::Decision::Direct) for is offered to the
+    /// rules added by [`proxy`](Self::proxy) and
+    /// [`unix_socket`](Self::unix_socket), and only what both decline goes
+    /// direct. A later call replaces an earlier filter.
+    ///
+    /// A request a filter carries never uses HTTP/3, and its
+    /// `Connected` event reports no remote address when the filter's stream
+    /// is not the runtime's own.
+    ///
+    /// The bounds are the ones this transport's `SendTransport` impl
+    /// carries, plus the TLS backend's over an erased stream: the filter's
+    /// connect path is monomorphised here, where they can be proven, so that
+    /// nothing else in this transport has to name them.
+    #[must_use]
+    pub fn egress<F>(mut self, filter: F) -> Self
+    where
+        F: hclient_proxy::SendEgressFilter + Send + Sync + 'static, // send-bound-exception: amendment-C16
+        R: Sync,                         // send-bound-exception: amendment-C15
+        R::Stream: Send + 'static,       // send-bound-exception: amendment-C15
+        R::Instant: Send + Sync,         // send-bound-exception: amendment-C15
+        R::Sleep: Send,                  // send-bound-exception: amendment-C15
+        for<'a> R::Connecting<'a>: Send, // send-bound-exception: amendment-C15
+        D: Resolve + Sync,               // send-bound-exception: amendment-C15
+        for<'a> D::Records<'a>: Send,    // send-bound-exception: amendment-C15
+        T: Sync,                         // send-bound-exception: amendment-C15
+        T::Stream<hclient_proxy::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> T::Handshake<'a, hclient_proxy::BoxIo>: Send, // send-bound-exception: amendment-C15
+    {
+        self.external = Some(external::External {
+            filter: Arc::new(filter),
+            open: external::open::<R, D, T>,
+        });
+        self.caps.proxy = true;
+        self
     }
 
     /// Reach origins through `proxy`, a proxy itself reached over a
@@ -3704,6 +3757,7 @@ where
             &self.rt,
             &self.dns,
             &self.tls,
+            self.external.as_ref(),
             &self.rules,
             self.ipc,
             timeouts.connect,

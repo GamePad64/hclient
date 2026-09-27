@@ -174,6 +174,10 @@ pub struct Conn<P, T>(pub(crate) Side<P, T>);
 pub(crate) enum Side<P, T> {
     Plain(P),
     Tls(T),
+    /// A connection an external egress filter opened: its stream's type
+    /// grew with the filter's layers, so it is erased — TLS included, when
+    /// the request is `https`.
+    Boxed(hclient_proxy::BoxIo),
 }
 
 impl<P, T> Conn<P, T> {
@@ -182,6 +186,9 @@ impl<P, T> Conn<P, T> {
     }
     pub(crate) fn tls(t: T) -> Self {
         Self(Side::Tls(t))
+    }
+    pub(crate) fn boxed(b: hclient_proxy::BoxIo) -> Self {
+        Self(Side::Boxed(b))
     }
 }
 
@@ -194,6 +201,7 @@ impl<P: Read + Unpin, T: Read + Unpin> Read for Conn<P, T> {
         match &mut self.get_mut().0 {
             Side::Plain(p) => Pin::new(p).poll_read(cx, buf),
             Side::Tls(t) => Pin::new(t).poll_read(cx, buf),
+            Side::Boxed(b) => Pin::new(b).poll_read(cx, buf),
         }
     }
 }
@@ -207,18 +215,21 @@ impl<P: Write + Unpin, T: Write + Unpin> Write for Conn<P, T> {
         match &mut self.get_mut().0 {
             Side::Plain(p) => Pin::new(p).poll_write(cx, b),
             Side::Tls(t) => Pin::new(t).poll_write(cx, b),
+            Side::Boxed(x) => Pin::new(x).poll_write(cx, b),
         }
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match &mut self.get_mut().0 {
             Side::Plain(p) => Pin::new(p).poll_flush(cx),
             Side::Tls(t) => Pin::new(t).poll_flush(cx),
+            Side::Boxed(b) => Pin::new(b).poll_flush(cx),
         }
     }
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match &mut self.get_mut().0 {
             Side::Plain(p) => Pin::new(p).poll_close(cx),
             Side::Tls(t) => Pin::new(t).poll_close(cx),
+            Side::Boxed(b) => Pin::new(b).poll_close(cx),
         }
     }
 
@@ -230,6 +241,7 @@ impl<P: Write + Unpin, T: Write + Unpin> Write for Conn<P, T> {
         match &mut self.get_mut().0 {
             Side::Plain(p) => Pin::new(p).poll_write_vectored(cx, bufs),
             Side::Tls(t) => Pin::new(t).poll_write_vectored(cx, bufs),
+            Side::Boxed(b) => Pin::new(b).poll_write_vectored(cx, bufs),
         }
     }
 }
@@ -242,6 +254,7 @@ impl<P: Shutdown + Unpin, T: Shutdown + Unpin> Shutdown for Conn<P, T> {
         match &mut self.get_mut().0 {
             Side::Plain(p) => Pin::new(p).poll_shutdown(cx),
             Side::Tls(t) => Pin::new(t).poll_shutdown(cx),
+            Side::Boxed(b) => Pin::new(b).poll_shutdown(cx),
         }
     }
 }
@@ -982,10 +995,96 @@ where
     Ok((Conn::tls(tls_stream), Some(info), attempted))
 }
 
+/// The connection for a request an egress filter carries, or `None` for
+/// one it does not — the external filter first, then the built-in rules,
+/// the order `Native::egress_route` answers in.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is one of `connect`'s, handed on unchanged"
+)]
+async fn through_filter<R, D, L, H>(
+    rt: &R,
+    dns: &D,
+    tls: &L,
+    external: Option<&crate::external::External<R, D, L>>,
+    rules: &hclient_proxy::Rules,
+    ipc: Option<crate::DialIpc<R>>,
+    budget: Option<Duration>,
+    target: hclient_proxy::Target<'_>,
+    opts: &TcpOpts,
+    alpn: &[&[u8]],
+    identity: Option<&str>,
+    began: Option<R::Instant>,
+) -> Option<
+    Result<
+        (
+            Conn<R::Stream, L::Stream<R::Stream>>,
+            Option<TlsInfo>,
+            Option<Box<Attempted>>,
+        ),
+        Error,
+    >,
+>
+where
+    R: TcpConnect + Timer,
+    D: Resolve,
+    L: TlsConnect,
+    R::Stream: 'static,
+    H: Hooks,
+{
+    if let Some(ext) = external
+        && let hclient_proxy::Decision::Filtered { .. } = ext.filter.route(&target)
+    {
+        return Some(
+            (ext.open)(
+                &*ext.filter,
+                crate::external::Call {
+                    rt,
+                    dns,
+                    tls,
+                    opts,
+                    ipc,
+                    budget,
+                    watching: H::WATCHING,
+                    target,
+                    alpn,
+                    identity,
+                },
+            )
+            .await,
+        );
+    }
+    if let hclient_proxy::Decision::Direct = hclient_proxy::EgressFilter::route(rules, &target) {
+        return None;
+    }
+    let dial = crate::dial::NativeDial::<R, D, H>::new(rt, dns, opts, ipc, budget, began);
+    let opened = match hclient_proxy::EgressFilter::open_stream(rules, target, &dial).await {
+        Ok(o) => o,
+        Err(e) => return Some(Err(e.into_error())),
+    };
+    // `Rules` never wraps: its `Wrapped` is the stream itself.
+    let (hclient_proxy::Opened::Raw(stream) | hclient_proxy::Opened::Wrapped(stream)) = opened;
+    Some(
+        finish_filtered::<R, L, H>(
+            rt,
+            tls,
+            stream,
+            dial.take_attempted(),
+            target.host,
+            target.use_tls,
+            alpn,
+            identity,
+            began,
+        )
+        .await,
+    )
+}
+
 pub(crate) async fn connect<R, D, L, H>(
     rt: &R,
     dns: &D,
     tls: &L,
+    external: Option<&crate::external::External<R, D, L>>,
     rules: &hclient_proxy::Rules,
     ipc: Option<crate::DialIpc<R>>,
     budget: Option<Duration>,
@@ -1032,39 +1131,27 @@ where
     // rather than a proxied path with the proxy removed. A Unix socket has
     // no bypass list and should not: the whole point is that this process
     // reaches the service only through it.
-    let target = hclient_proxy::Target {
-        host,
-        port,
-        use_tls,
-    };
-    if let hclient_proxy::Decision::Filtered { .. } =
-        hclient_proxy::EgressFilter::route(rules, &target)
-    {
-        let dial = crate::dial::NativeDial::<R, D, H>::new(rt, dns, opts, ipc, budget, began);
-        let opened = hclient_proxy::EgressFilter::open_stream(rules, target, &dial)
-            .await
-            .map_err(hclient_proxy::Attempt::into_error)?;
-        let stream = match opened {
-            hclient_proxy::Opened::Raw(s) => s,
-            hclient_proxy::Opened::Boxed(_) => {
-                return Err(Error::new(
-                    ErrorKind::Unsupported,
-                    std::io::Error::other("the default egress filter never wraps a stream"),
-                ));
-            }
-        };
-        return finish_filtered::<R, L, H>(
-            rt,
-            tls,
-            stream,
-            dial.take_attempted(),
+    if let Some(done) = through_filter::<R, D, L, H>(
+        rt,
+        dns,
+        tls,
+        external,
+        rules,
+        ipc,
+        budget,
+        hclient_proxy::Target {
             host,
+            port,
             use_tls,
-            alpn,
-            identity,
-            began,
-        )
-        .await;
+        },
+        opts,
+        alpn,
+        identity,
+        began,
+    )
+    .await
+    {
+        return done;
     }
 
     // Both families are started here, at the top, rather than inside
@@ -2357,6 +2444,7 @@ mod tests {
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -2410,6 +2498,7 @@ mod tests {
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -2602,6 +2691,7 @@ mod tests {
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -2663,6 +2753,7 @@ mod tests {
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -2802,6 +2893,7 @@ mod tests {
                 &rt,
                 &dns,
                 &NoOpTls,
+                None,
                 &rules,
                 None,
                 None,
@@ -2910,6 +3002,7 @@ mod tests {
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -2982,6 +3075,7 @@ mod tests {
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -3019,6 +3113,7 @@ mod tests {
             &FakeRt::new([(addr.ip(), true)]),
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -3051,6 +3146,7 @@ mod tests {
             &FakeRt::new([(addr.ip(), true)]),
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -3079,6 +3175,7 @@ mod tests {
             &FakeRt::new([]),
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -3114,6 +3211,7 @@ mod tests {
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,
@@ -3143,6 +3241,7 @@ mod tests {
             &FakeRt::new([]),
             &dns,
             &NoOpTls,
+            None,
             &hclient_proxy::Rules::new(),
             None,
             None,

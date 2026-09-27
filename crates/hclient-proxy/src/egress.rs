@@ -185,20 +185,37 @@ impl Shutdown for BoxIo {
 }
 
 /// A stream a filter opened.
-pub enum Opened<S> {
+pub enum Opened<S, W> {
     /// The context's own stream type: a handshake changes bytes, not the
     /// type, so the transport keeps its concrete connection.
     Raw(S),
-    /// A stream a filter wrapped (TLS to a proxy, a custom layer).
-    Boxed(BoxIo),
+    /// A stream the filter wrapped — TLS to a proxy, a custom layer — of
+    /// the filter's own [`EgressFilter::Wrapped`] type.
+    Wrapped(W),
 }
 
-impl<S> std::fmt::Debug for Opened<S> {
+impl<S, W> std::fmt::Debug for Opened<S, W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Raw(_) => "Opened::Raw",
-            Self::Boxed(_) => "Opened::Boxed",
+            Self::Wrapped(_) => "Opened::Wrapped",
         })
+    }
+}
+
+/// An [`Opened`] over an erased context, with its wrapper erased too —
+/// what [`SendEgressFilter::open_stream_send`] hands back.
+///
+/// Generic over the wrapper so it is called where the wrapper's type is
+/// known and its `Send` is inferred: in a filter's own
+/// `open_stream_send`.
+pub fn erase<W>(opened: Opened<BoxIo, W>) -> Opened<BoxIo, BoxIo>
+where
+    W: Io + Send + 'static, // send-bound-exception: amendment-C16
+{
+    match opened {
+        Opened::Raw(s) => Opened::Raw(s),
+        Opened::Wrapped(w) => Opened::Wrapped(BoxIo::new(w)),
     }
 }
 
@@ -234,6 +251,18 @@ impl Attempt {
 
 /// Decides where each request's connection goes, and opens it.
 pub trait EgressFilter {
+    /// The stream this filter hands back when it wraps the one it was
+    /// lent — a TLS session to a proxy, a custom layer. A filter that only
+    /// runs handshakes over the transport's stream (the built-in proxies)
+    /// sets it to `S` and never builds [`Opened::Wrapped`].
+    ///
+    /// An associated type rather than an erased box so that whether the
+    /// wrapper is `Send` is answered by the concrete filter and the
+    /// concrete stream, not demanded of every transport.
+    type Wrapped<S: Io>: Io
+    where
+        Self: Sized;
+
     /// Asked once per request, before anything is resolved.
     fn route(&self, target: &Target<'_>) -> Decision;
 
@@ -247,11 +276,15 @@ pub trait EgressFilter {
     /// # Errors
     ///
     /// An [`Attempt`] saying which of the three ways it failed.
+    #[allow(
+        clippy::type_complexity,
+        reason = "the return type is the seam: a stream of the context's type or of this filter's own wrapper type, and naming it through an alias would hide which is which"
+    )]
     fn open_stream<'a, C: Dial + 'a>(
         &'a self,
         target: Target<'a>,
         ctx: &'a C,
-    ) -> impl Future<Output = Result<Opened<C::Stream>, Attempt>> + 'a
+    ) -> impl Future<Output = Result<Opened<C::Stream, Self::Wrapped<C::Stream>>, Attempt>> + 'a
     where
         Self: Sized;
 }
@@ -274,11 +307,11 @@ pub trait DynDial {
 }
 
 /// A [`DynDial`] that can cross threads — what [`BoxDial`] holds.
-pub type SharedDial = dyn DynDial + Send + Sync; // send-bound-exception: amendment-C16
+pub type SharedDial<'a> = dyn DynDial + Send + Sync + 'a; // send-bound-exception: amendment-C16
 
 /// The concrete [`Dial`] an erased filter is handed.
 #[derive(Clone, Copy)]
-pub struct BoxDial<'a>(pub &'a SharedDial);
+pub struct BoxDial<'a>(pub &'a SharedDial<'a>);
 
 impl std::fmt::Debug for BoxDial<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -314,7 +347,8 @@ impl Dial for BoxDial<'_> {
 pub type SharedFilter = dyn SendEgressFilter + Send + Sync; // send-bound-exception: amendment-C16
 
 /// [`SendEgressFilter::open_stream_send`]'s future.
-pub type BoxOpening<'a, S> = Pin<Box<dyn Future<Output = Result<Opened<S>, Attempt>> + Send + 'a>>; // send-bound-exception: amendment-C16
+pub type BoxOpening<'a> =
+    Pin<Box<dyn Future<Output = Result<Opened<BoxIo, BoxIo>, Attempt>> + Send + 'a>>; // send-bound-exception: amendment-C16
 
 // Maintainer notes (not rendered):
 // The `Transport`/`SendTransport` split, amendment C16.
@@ -323,11 +357,11 @@ pub type BoxOpening<'a, S> = Pin<Box<dyn Future<Output = Result<Opened<S>, Attem
 /// The one method is written where every type is concrete — `Self` and
 /// [`BoxDial`] — so `Send` is inferred rather than proven, the shape of
 /// `hclient_core::transport::SendTransport`. Every implementation is the
-/// one line below:
+/// few lines below:
 ///
 /// ```no_run
 /// use hclient_proxy::{
-///     Attempt, BoxDial, BoxIo, BoxOpening, Decision, Dial, EgressFilter, Opened, Rules,
+///     Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, Io, Opened, Rules,
 ///     SendEgressFilter, Target,
 /// };
 ///
@@ -335,6 +369,8 @@ pub type BoxOpening<'a, S> = Pin<Box<dyn Future<Output = Result<Opened<S>, Attem
 /// struct Mine(Rules);
 ///
 /// impl EgressFilter for Mine {
+///     type Wrapped<S: Io> = S;
+///
 ///     fn route(&self, t: &Target<'_>) -> Decision {
 ///         self.0.route(t)
 ///     }
@@ -342,7 +378,7 @@ pub type BoxOpening<'a, S> = Pin<Box<dyn Future<Output = Result<Opened<S>, Attem
 ///         &'a self,
 ///         t: Target<'a>,
 ///         ctx: &'a C,
-///     ) -> Result<Opened<C::Stream>, Attempt>
+///     ) -> Result<Opened<C::Stream, C::Stream>, Attempt>
 ///     where
 ///         Self: Sized,
 ///     {
@@ -351,8 +387,8 @@ pub type BoxOpening<'a, S> = Pin<Box<dyn Future<Output = Result<Opened<S>, Attem
 /// }
 ///
 /// impl SendEgressFilter for Mine {
-///     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a, BoxIo> {
-///         Box::pin(self.open_stream(t, ctx))
+///     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
+///         Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
 ///     }
 /// }
 /// ```
@@ -360,11 +396,7 @@ pub type BoxOpening<'a, S> = Pin<Box<dyn Future<Output = Result<Opened<S>, Attem
 /// Declares no auto traits; a transport stores one as [`SharedFilter`].
 pub trait SendEgressFilter: EgressFilter {
     /// [`EgressFilter::open_stream`], over an erased context, boxed.
-    fn open_stream_send<'a>(
-        &'a self,
-        target: Target<'a>,
-        ctx: &'a BoxDial<'a>,
-    ) -> BoxOpening<'a, BoxIo>;
+    fn open_stream_send<'a>(&'a self, target: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a>;
 }
 
 #[cfg(test)]

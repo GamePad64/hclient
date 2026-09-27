@@ -254,6 +254,7 @@ where
             &self.rt,
             &self.dns,
             &self.tls,
+            self.external.as_ref(),
             &self.rules,
             self.ipc,
             timeouts.connect,

@@ -126,6 +126,7 @@ pub use drive::drive;
 pub use egress::{
     Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, Decision, Dial, DynDial, EgressFilter,
     FilterSupport, Io, Opened, RequestForm, SendEgressFilter, SharedDial, SharedFilter, Target,
+    erase,
 };
 pub use error::{
     ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
