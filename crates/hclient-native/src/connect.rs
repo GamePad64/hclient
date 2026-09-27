@@ -893,6 +893,29 @@ where
 /// address nobody will dial, and its port would move the connection
 /// somewhere the proxy was not asked about. `Prefetched` is not a
 /// parameter here for that reason — there is nothing for it to be.
+/// Resolve `host` with the transport's resolver and race its addresses
+/// with Happy Eyeballs under `opts` — how the transport reaches anything by
+/// name. A proxy is reached this way, and so is whatever a filter asks
+/// [`crate::dial::NativeDial`] for.
+pub(crate) async fn dial_by_name<R, D, H>(
+    rt: &R,
+    dns: &D,
+    host: &str,
+    port: u16,
+    opts: &TcpOpts,
+    began: Option<R::Instant>,
+) -> Result<(R::Stream, Option<Box<Attempted>>), Error>
+where
+    R: TcpConnect + Timer,
+    D: Resolve + ?Sized,
+    H: Hooks,
+{
+    let mut v6 = Answers::new(dns.lookup(host, rtype::AAAA));
+    let mut v4 = Answers::new(dns.lookup(host, rtype::A));
+    let sched = build_scheduler(HeConfig::default())?;
+    drive::<_, _, _, H>(rt, sched, v6.replay(), v4.replay(), port, opts, began).await
+}
+
 async fn through_proxy<R, L, P, H>(
     rt: &R,
     dns: &(impl Resolve + ?Sized),
@@ -922,19 +945,8 @@ where
     R::Stream: 'static,
     H: Hooks,
 {
-    let mut v6 = Answers::new(dns.lookup(proxy.host(), rtype::AAAA));
-    let mut v4 = Answers::new(dns.lookup(proxy.host(), rtype::A));
-    let sched = build_scheduler(HeConfig::default())?;
-    let (tcp, mut attempted) = drive::<_, _, _, H>(
-        rt,
-        sched,
-        v6.replay(),
-        v4.replay(),
-        proxy.port(),
-        opts,
-        began,
-    )
-    .await?;
+    let (tcp, mut attempted) =
+        dial_by_name::<R, _, H>(rt, dns, proxy.host(), proxy.port(), opts, began).await?;
 
     let tcp = match proxy.protocol().approach(use_tls) {
         // Nothing to negotiate: an HTTP proxy serving `http://` is an

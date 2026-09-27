@@ -110,6 +110,7 @@
 
 mod body;
 mod connect;
+mod dial;
 mod discovery;
 pub mod error;
 /// RFC 9114's ALPN identifier, and the one string that decides whether an
@@ -285,9 +286,10 @@ impl<R: TcpConnect> std::fmt::Debug for IpcRoute<R> {
     }
 }
 
-type DialIpc<R> =
+pub(crate) type DialIpc<R> =
     for<'a, 'b> fn(&'a R, &'b hclient_rt::IpcAddr) -> IpcDialing<'a, <R as TcpConnect>::Stream>;
-type IpcDialing<'a, S> = std::pin::Pin<Box<dyn Future<Output = std::io::Result<S>> + Send + 'a>>; // send-bound-exception: amendment-C15
+pub(crate) type IpcDialing<'a, S> =
+    std::pin::Pin<Box<dyn Future<Output = std::io::Result<S>> + Send + 'a>>; // send-bound-exception: amendment-C15
 
 /// [`DialIpc`]'s one body, instantiated in [`Native::unix_socket`].
 fn dial_ipc<'a, R>(rt: &'a R, addr: &hclient_rt::IpcAddr) -> IpcDialing<'a, R::Stream>
