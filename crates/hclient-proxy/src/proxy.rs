@@ -49,6 +49,8 @@ pub struct Proxy<P> {
     /// `None` — the default — means both schemes, which is what a caller
     /// with one proxy wants and what `Proxy::new` gives them.
     only: Option<ProxyScheme>,
+    /// Whether the hop to the proxy itself is TLS — see [`Proxy::tls`].
+    tls: bool,
 }
 
 impl<P> Proxy<P> {
@@ -64,7 +66,26 @@ impl<P> Proxy<P> {
             bypass: Vec::new(),
             bypass_local: false,
             only: None,
+            tls: false,
         }
+    }
+
+    /// Reach the proxy over TLS: the connection to the proxy itself is
+    /// encrypted, checked against the proxy's `host` with the transport's
+    /// own TLS backend and trust — an `https://` proxy URL.
+    ///
+    /// Any protocol may be spoken over it. A proxy reached over a socket
+    /// has no such method: there is no name to check a certificate
+    /// against.
+    #[must_use]
+    pub fn tls(mut self) -> Self {
+        self.tls = true;
+        self
+    }
+
+    /// Whether this proxy is reached over TLS.
+    pub fn is_tls(&self) -> bool {
+        self.tls
     }
 
     // Maintainer notes (not rendered):
@@ -259,6 +280,7 @@ impl<P> Proxy<P> {
             bypass: self.bypass,
             bypass_local: self.bypass_local,
             only: self.only,
+            tls: self.tls,
         }
     }
 

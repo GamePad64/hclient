@@ -145,9 +145,15 @@ pub struct ProxyEntry {
     port: u16,
     applies_to: Option<ProxyScheme>,
     credentials: Option<Credentials>,
+    tls: bool,
 }
 
 impl ProxyEntry {
+    /// Whether the proxy itself is reached over TLS — an `https://` value.
+    pub fn tls(&self) -> bool {
+        self.tls
+    }
+
     /// The protocol this proxy speaks.
     pub fn kind(&self) -> ProxyKind {
         self.kind
@@ -632,9 +638,9 @@ mod tests {
         // The control for the test above: a *refused* value must not be
         // indistinguishable from no value, which is what an early
         // `continue` would have made it.
-        let sys = cfg(&[("http", "https://tls-to-the-proxy:8080")], &[], false);
+        let sys = cfg(&[("http", "gopher://unknown-scheme:8080")], &[], false);
         assert!(sys.entries().is_empty());
-        assert!(sys.ignored()[0].starts_with("http=https://tls-to-the-proxy:8080 ("));
+        assert!(sys.ignored()[0].starts_with("http=gopher://unknown-scheme:8080 ("));
     }
 
     #[test]

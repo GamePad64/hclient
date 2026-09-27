@@ -74,12 +74,9 @@
 //   [`hclient_proto::head`], because a `CONNECT` response is the one
 //   HTTP message with no body under any framing rule (RFC 9110 §9.3.6).
 //
-// That is not a
-// regression: it was unsupported before this crate existed, and
-// `system::ParseError::TlsToProxyUnsupported` is where the refusal is
-// already written down. Lifting it means a driver that can hand a
-// handshake an upgraded stream, which is a change to
-// `hclient-native`'s thirty lines rather than to this seam.
+// TLS to the proxy itself is `Dial::connect_tls` — the transport runs
+// it and hands back its own stream type, so a handshake never sees
+// anything but a stream.
 //
 // # Why this is a crate and not a module of `hclient-native`
 //

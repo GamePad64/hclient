@@ -86,6 +86,9 @@ pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, Syst
         if let Some(scheme) = entry.applies_to() {
             proxy = proxy.only_for(scheme);
         }
+        if entry.tls() {
+            proxy = proxy.tls();
+        }
         out.push(proxy);
     }
     Ok(out)
@@ -179,6 +182,9 @@ pub fn http_proxies_lossy(
         if let Some(scheme) = entry.applies_to() {
             proxy = proxy.only_for(scheme);
         }
+        if entry.tls() {
+            proxy = proxy.tls();
+        }
         out.push(proxy);
     }
     (out, dropped)
@@ -195,6 +201,17 @@ mod tests {
     /// that reads fields and fail every request.
     fn route(list: &[Proxy<HttpConnect>], use_tls: bool, host: &str, port: u16) -> Option<String> {
         Proxy::choose(list, use_tls, host, port).map(|p| format!("{}:{}", p.host(), p.port()))
+    }
+
+    #[test]
+    fn an_https_proxy_url_is_installed_over_tls() {
+        let sys = system_proxies(&[("https", "https://proxy.corp:8443")], &[], false);
+        let strict = http_proxies(&sys).expect("installable");
+        assert_eq!(strict.len(), 1);
+        assert!(strict[0].is_tls());
+        let (lossy, dropped) = http_proxies_lossy(&sys);
+        assert!(dropped.is_empty(), "{dropped:?}");
+        assert!(lossy[0].is_tls());
     }
 
     #[test]

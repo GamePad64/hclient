@@ -162,6 +162,9 @@ impl EgressFilter for Rules {
             },
             Some(Rule::Proxy(p)) => {
                 let pool_key = match p.reach() {
+                    Reach::Tcp { host, port } if p.is_tls() => {
+                        format!("tls:{host}:{port}").into_boxed_str()
+                    }
                     Reach::Tcp { host, port } => format!("{host}:{port}").into_boxed_str(),
                     Reach::Ipc(addr) => ipc_key(addr),
                 };
@@ -208,10 +211,24 @@ impl EgressFilter for Rules {
             Rule::Proxy(p) => p,
         };
         let mut stream = match proxy.reach() {
-            Reach::Tcp { host, port } => ctx.connect(host, *port).await,
-            Reach::Ipc(addr) => ctx.connect_ipc(addr).await,
-        }
-        .map_err(Attempt::Unreachable)?;
+            Reach::Tcp { host, port } => {
+                let s = ctx
+                    .connect(host, *port)
+                    .await
+                    .map_err(Attempt::Unreachable)?;
+                if proxy.is_tls() {
+                    // The proxy was not reached if its handshake failed — a
+                    // certificate this transport does not trust is not the
+                    // proxy declining the target.
+                    ctx.connect_tls(s, crate::ProxyTls::new(host))
+                        .await
+                        .map_err(Attempt::Unreachable)?
+                } else {
+                    s
+                }
+            }
+            Reach::Ipc(addr) => ctx.connect_ipc(addr).await.map_err(Attempt::Unreachable)?,
+        };
         if proxy.protocol().approach(t.use_tls) == Approach::Absolute {
             return Ok(Opened::Raw(stream));
         }
@@ -298,6 +315,9 @@ mod tests {
         tcp: Mutex<Vec<(String, u16)>>,
         ipc: Mutex<usize>,
         written: Arc<Mutex<Vec<u8>>>,
+        /// Server names `connect_tls` was asked for, in order.
+        tls: Mutex<Vec<String>>,
+        tls_fails: bool,
     }
     impl Dials {
         fn script(&self) -> Script {
@@ -328,6 +348,24 @@ mod tests {
         fn remaining(&self) -> Option<std::time::Duration> {
             None
         }
+        fn connect_tls<'a>(
+            &'a self,
+            stream: Script,
+            req: crate::ProxyTls<'a>,
+        ) -> impl Future<Output = Result<Script, Error>> + 'a {
+            self.tls.lock().unwrap().push(req.server_name.to_owned());
+            // A marker in the write log, so a test can see TLS ran before
+            // anything the protocol wrote.
+            self.written.lock().unwrap().extend_from_slice(b"<tls>");
+            std::future::ready(if self.tls_fails {
+                Err(Error::new(
+                    hclient_core::error::ErrorKind::Tls,
+                    io::Error::other("bad certificate"),
+                ))
+            } else {
+                Ok(stream)
+            })
+        }
     }
 
     fn t(host: &str, port: u16, use_tls: bool) -> Target<'_> {
@@ -346,6 +384,70 @@ mod tests {
         match d {
             Decision::Filtered { pool_key, .. } => pool_key,
             Decision::Direct => panic!("expected Filtered, got Direct"),
+        }
+    }
+
+    #[test]
+    fn a_tls_proxy_is_keyed_apart_from_a_plain_one_at_the_same_address() {
+        let plain = Rules::new().push(Proxy::new(HttpConnect::new(), "p", 1));
+        let tls = Rules::new().push(Proxy::new(HttpConnect::new(), "p", 1).tls());
+        assert_eq!(key(&plain.route(&t("a", 443, true))), "p:1");
+        assert_eq!(key(&tls.route(&t("a", 443, true))), "tls:p:1");
+    }
+
+    #[test]
+    fn a_tls_proxy_is_greeted_by_its_own_name_before_the_handshake() {
+        let dials = Dials {
+            reply: b"HTTP/1.1 200 OK\r\n\r\n".to_vec(),
+            ..Default::default()
+        };
+        let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy.test", 8443).tls());
+        block(r.open_stream(t("origin.test", 443, true), &dials)).expect("tunnel open");
+        assert_eq!(*dials.tls.lock().unwrap(), ["proxy.test"]);
+        assert!(
+            dials
+                .written
+                .lock()
+                .unwrap()
+                .starts_with(b"<tls>CONNECT origin.test:443")
+        );
+    }
+
+    #[test]
+    fn absolute_form_through_a_tls_proxy_still_runs_tls() {
+        let dials = Dials::default();
+        let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy.test", 8443).tls());
+        block(r.open_stream(t("origin.test", 80, false), &dials)).expect("connection");
+        assert_eq!(*dials.tls.lock().unwrap(), ["proxy.test"]);
+        assert_eq!(*dials.written.lock().unwrap(), b"<tls>");
+    }
+
+    #[test]
+    fn a_plain_proxy_runs_no_tls() {
+        let dials = Dials {
+            reply: b"HTTP/1.1 200 OK\r\n\r\n".to_vec(),
+            ..Default::default()
+        };
+        let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy.test", 8080));
+        block(r.open_stream(t("origin.test", 443, true), &dials)).expect("tunnel open");
+        assert!(dials.tls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tls_failure_to_the_proxy_is_unreachable_not_refused() {
+        let dials = Dials {
+            tls_fails: true,
+            ..Default::default()
+        };
+        let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy.test", 8443).tls());
+        let Err(err) = block(r.open_stream(t("origin.test", 443, true), &dials)) else {
+            panic!("the handshake failed");
+        };
+        match err {
+            Attempt::Unreachable(e) => {
+                assert_eq!(*e.kind(), hclient_core::error::ErrorKind::Tls);
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
         }
     }
 

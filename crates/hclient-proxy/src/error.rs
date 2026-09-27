@@ -272,20 +272,6 @@ pub enum SystemProxyRefused {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParseError {
-    /// `https://proxy:8443` — TLS *to the proxy*, which is not the same
-    /// thing as an `HTTPS_PROXY` (that one names the proxy for `https://`
-    /// requests, and the hop to it is ordinary HTTP).
-    ///
-    /// **Refused rather than downgraded**, and this is the one refusal
-    /// here that is about safety rather than tidiness: reading it as
-    /// plaintext would send the `CONNECT` line, and any
-    /// `Proxy-Authorization` with it, in the clear to a proxy whose owner
-    /// configured TLS precisely so that it would not be.
-    #[error(
-        "an `https://` proxy URL means TLS to the proxy itself, which this client cannot speak; \
-         for a proxy that serves `https://` requests, name it as `http://`"
-    )]
-    TlsToProxyUnsupported,
     /// A scheme this crate does not know — `quic://`, a typo, a `.pac`
     /// URL that landed in a proxy variable.
     #[error("unknown proxy scheme `{0}`")]

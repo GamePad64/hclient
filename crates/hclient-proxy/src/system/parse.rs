@@ -31,24 +31,25 @@ pub(crate) fn entry(
         None => (None, value),
     };
 
-    let kind = match scheme.as_deref() {
-        Some("http") => ProxyKind::Http,
-        Some("https") => return Err(ParseError::TlsToProxyUnsupported),
-        Some("socks5" | "socks5h") => ProxyKind::Socks5,
+    let (kind, tls) = match scheme.as_deref() {
+        Some("http") => (ProxyKind::Http, false),
+        // TLS to the proxy itself, checked with the transport's own trust.
+        Some("https") => (ProxyKind::Http, true),
+        Some("socks5" | "socks5h") => (ProxyKind::Socks5, false),
         // `socks4a` is `socks4` with a hostname, which is the only form
         // `hclient-native`'s `Socks4` sends anyway, so the two spellings
         // are one kind here rather than a distinction with no consequence.
-        Some("socks" | "socks4" | "socks4a") => ProxyKind::Socks4,
+        Some("socks" | "socks4" | "socks4a") => (ProxyKind::Socks4, false),
         Some(other) => return Err(ParseError::UnknownScheme(other.into())),
         // No scheme. `socks=host:port` is Windows's own spelling for a
         // SOCKS proxy inside `ProxyServer`, and the version it means is
         // argued in `ProxyKind::Socks4`'s doc.
-        None if key == "socks" => ProxyKind::Socks4,
+        None if key == "socks" => (ProxyKind::Socks4, false),
         // macOS's SOCKS is SOCKS5 — its own dialog's word, and what
         // Chromium and Firefox both read it as — which is why `read.rs`
         // gives it a different key from Windows's unversioned `socks=`.
-        None if key == "socks5" => ProxyKind::Socks5,
-        None => ProxyKind::Http,
+        None if key == "socks5" => (ProxyKind::Socks5, false),
+        None => (ProxyKind::Http, false),
     };
 
     // A path on a proxy URL means nothing to any client; a trailing `/`
@@ -69,12 +70,13 @@ pub(crate) fn entry(
         kind,
         host: host.to_ascii_lowercase().into_boxed_str(),
         port: port.unwrap_or(match kind {
-            // Plain HTTP to the proxy, so 80 — never 443, which would be
-            // the port of the thing this client refuses to speak to.
+            // 80 for plain HTTP to the proxy, 443 for TLS to it.
+            ProxyKind::Http if tls => 443,
             ProxyKind::Http => 80,
             ProxyKind::Socks5 | ProxyKind::Socks4 => 1080,
         }),
         applies_to,
+        tls,
         credentials: credentials.map(|u| {
             let (user, password) = u.split_once(':').unwrap_or((u, ""));
             Credentials {
@@ -253,11 +255,16 @@ mod tests {
     }
 
     #[test]
-    fn tls_to_the_proxy_is_refused_rather_than_downgraded() {
+    fn an_https_proxy_url_means_tls_to_the_proxy() {
+        let e = parse("https://proxy.corp:8443").expect("an https proxy");
         assert_eq!(
-            parse("https://proxy.corp:8443"),
-            Err(ParseError::TlsToProxyUnsupported)
+            (e.kind(), e.host(), e.port(), e.tls()),
+            (ProxyKind::Http, "proxy.corp", 8443, true)
         );
+        let e = parse("https://proxy.corp").expect("an https proxy, default port");
+        assert_eq!((e.port(), e.tls()), (443, true));
+        let e = parse("http://proxy.corp").expect("a plain one");
+        assert_eq!((e.port(), e.tls()), (80, false));
     }
 
     #[rstest]
