@@ -57,6 +57,11 @@ enum Rule {
 /// The default [`EgressFilter`]: proxy rules in order, the first that
 /// serves a target carries it, and a target no rule serves is direct.
 ///
+/// First-match-wins rather than most-specific-wins: a precedence rule
+/// would have to be learned, where an ordered list is read off the builder
+/// chain that wrote it. A bypass belongs to the rule that carries it, so a
+/// bypassed target falls through to the next rule rather than going direct.
+///
 /// A Unix-socket rule ([`unix`](Self::unix)) serves every target, so rules
 /// after it are never reached.
 #[derive(Clone, Default)]
@@ -110,6 +115,14 @@ impl Rules {
     #[must_use]
     pub fn unix(mut self, addr: hclient_rt::IpcAddr) -> Self {
         self.rules.push(Rule::Unix(Arc::new(addr)));
+        self
+    }
+
+    /// Append every rule of `other`, in its order, after this list's own —
+    /// so a rule here is still asked first.
+    #[must_use]
+    pub fn append(mut self, other: Rules) -> Self {
+        self.rules.extend(other.rules);
         self
     }
 
@@ -483,6 +496,38 @@ mod tests {
             panic!("expected absolute-form");
         };
         assert_eq!(proxy_authorization, want);
+    }
+
+    #[test]
+    fn the_first_rule_that_serves_wins_and_a_bypass_falls_through() {
+        let r = Rules::new()
+            .push(Proxy::new(Socks5::new(), "specific", 1080).only_for(ProxyScheme::Https))
+            .push(Proxy::new(Socks5::new(), "catch-all", 1080));
+        assert_eq!(key(&r.route(&t("example.com", 443, true))), "specific:1080");
+        assert_eq!(
+            key(&r.route(&t("example.com", 80, false))),
+            "catch-all:1080"
+        );
+
+        // A bypass on the first rule falls through to the next, which is
+        // what makes a per-proxy list right and a global `NO_PROXY` wrong.
+        let r = Rules::new()
+            .push(Proxy::new(Socks5::new(), "first", 1080).bypass(["example.com"]))
+            .push(Proxy::new(Socks5::new(), "second", 1080));
+        assert_eq!(key(&r.route(&t("example.com", 443, true))), "second:1080");
+    }
+
+    #[test]
+    fn an_appended_list_is_asked_after_this_one_and_in_its_own_order() {
+        let first = Rules::new()
+            .push(Proxy::new(HttpConnect::new(), "https-only", 1).only_for(ProxyScheme::Https));
+        let second = Rules::new()
+            .push(Proxy::new(HttpConnect::new(), "everything", 2))
+            .push(Proxy::new(HttpConnect::new(), "never", 3));
+        let r = first.append(second);
+        assert_eq!(key(&r.route(&t("example.com", 443, true))), "https-only:1");
+        assert_eq!(key(&r.route(&t("example.com", 80, false))), "everything:2");
+        assert!(Rules::new().append(Rules::new()).is_empty());
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //!
 //! What comes out of here is a list of hosts and a bypass list — no
 //! socket, no connector, nothing from any transport — so any transport
-//! can read the same settings. [`http_proxies`] is the translation into this crate's own
+//! can read the same settings. [`rules`] is the translation into this crate's own
 //! [`Proxy`](crate::Proxy) values, and it is the only part that knows
 //! what a proxy protocol is.
 //!
@@ -54,7 +54,9 @@ mod read;
 mod translate;
 
 pub use crate::error::{ParseError, SystemProxyRefused};
-pub use translate::{http_proxies, http_proxies_lossy};
+#[cfg(test)]
+use translate::http_proxies;
+pub use translate::{rules, rules_lossy};
 
 // Maintainer notes (not rendered):
 //
@@ -384,7 +386,7 @@ impl SystemProxies {
     /// than acted on: a `.pac` file is a JavaScript program whose
     /// `FindProxyForURL` decides per request, which needs an interpreter
     /// this client has no business carrying. What the value is for is
-    /// [`http_proxies`], which refuses rather than going direct — because
+    /// [`rules`], which refuses rather than going direct — because
     /// a machine that answers *ask the script* has not answered *no
     /// proxy*, and silently reading it as one is the failure a caller
     /// cannot diagnose from the outside.
@@ -442,7 +444,7 @@ impl SystemProxies {
     ///   layer down. A script that returns `DIRECT` for every URL makes
     ///   this an over-claim, and that is the one over-claim in here.
     /// - **Any entry answers `true`**, whatever its protocol. A SOCKS
-    ///   proxy is one this crate's own [`http_proxies`] refuses to
+    ///   proxy is one this crate's own [`rules`] refuses to
     ///   install, and the OS installs it perfectly well — so a value read
     ///   off *what this client could do with them* would be wrong for the
     ///   transport that does not need this client to do anything.

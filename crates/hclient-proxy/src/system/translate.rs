@@ -1,4 +1,4 @@
-//! The machine's settings, turned into [`Proxy`] values.
+//! The machine's settings, turned into a [`Rules`] list.
 //!
 //! # What can go wrong, and why it is an error rather than a shrug
 //!
@@ -24,9 +24,10 @@
 use crate::error::SystemProxyRefused;
 
 use super::{ProxyKind, SystemProxies};
-use crate::{HttpConnect, Proxy};
+use crate::{HttpConnect, Proxy, Rules};
 
-/// The HTTP proxies in `sys`, in the order they should be tried.
+/// The proxies in `sys` as a [`Rules`] list, in the order they should be
+/// tried — the built-in filter, ready for a transport to install.
 ///
 /// Empty is an ordinary answer: most machines have no proxy, and a
 /// transport that installs an empty list proxies nothing, which is what
@@ -42,7 +43,57 @@ use crate::{HttpConnect, Proxy};
 /// proxy protocol; [`SystemProxyRefused::UnusableCredential`] when an
 /// entry's credentials cannot become a `Basic` header (a `:` in the
 /// username).
-pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, SystemProxyRefused> {
+pub fn rules(sys: &SystemProxies) -> Result<Rules, SystemProxyRefused> {
+    http_proxies(sys).map(|list| list.into_iter().fold(Rules::new(), Rules::push))
+}
+
+/// The same, for a caller who must not fail — and it hands back what it
+/// could not install rather than swallowing it.
+///
+/// # Why there are two of these
+///
+/// Because a refusal is only useful to somebody who can act on it, and
+/// that is not everybody. [`rules`] refuses because its caller
+/// **asked** for the machine's configuration and can decide what to do
+/// about a part of it this client cannot express. `Client::new` did not
+/// ask — it is a convenience constructor that reads the settings so that
+/// a client is a good citizen by default — and a refusal there would mean
+/// **a client that will not construct** on a network with WPAD, or on a
+/// machine whose owner also configured a SOCKS proxy. That is a worse
+/// answer than proxying what we can.
+///
+/// So: the explicit call refuses, the implicit one degrades and reports.
+/// Nothing is silent at the API level; what a caller does with the report
+/// is theirs.
+///
+/// # What it does with each awkward configuration
+///
+/// - **A PAC script and static entries beside it.** The static ones are
+///   installed, which is not a fallback of ours but the machine's own:
+///   `WinINET` keeps `ProxyServer` as exactly that when a script is
+///   configured. Better than direct, and better than what a client that
+///   cannot see the script at all would do.
+/// - **A PAC script alone.** Direct — which is what curl and reqwest do
+///   on the same machine, neither of them being able to see it. The
+///   difference is that this one can, and says so in the report.
+/// - **A SOCKS proxy.** Dropped, because this call installs HTTP proxies
+///   only. Where SOCKS was the *only* proxy this means going direct
+///   on a machine that wanted a proxy, which is the one degradation here
+///   that loses something real — and is why the strict call exists.
+/// - **A bypass pattern this matcher cannot state** — a wildcard that is
+///   not a leading `*.`. The pattern is dropped and the proxy is kept,
+///   which is what every other implementation does; dropping the *proxy*
+///   over one odd exclusion would be the larger surprise.
+pub fn rules_lossy(sys: &SystemProxies) -> (Rules, Vec<SystemProxyRefused>) {
+    let (list, dropped) = http_proxies_lossy(sys);
+    (list.into_iter().fold(Rules::new(), Rules::push), dropped)
+}
+
+// The list `rules` installs, kept apart so the translation's own tests
+// can read a proxy back field by field.
+pub(crate) fn http_proxies(
+    sys: &SystemProxies,
+) -> Result<Vec<Proxy<HttpConnect>>, SystemProxyRefused> {
     // Asked first, because it is the one that makes every other answer
     // beside the point: where a script decides, the static entries are
     // WinINET's *fallback* rather than the configuration.
@@ -94,44 +145,8 @@ pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, Syst
     Ok(out)
 }
 
-/// The same, for a caller who must not fail — and it hands back what it
-/// could not install rather than swallowing it.
-///
-/// # Why there are two of these
-///
-/// Because a refusal is only useful to somebody who can act on it, and
-/// that is not everybody. [`http_proxies`] refuses because its caller
-/// **asked** for the machine's configuration and can decide what to do
-/// about a part of it this client cannot express. `Client::new` did not
-/// ask — it is a convenience constructor that reads the settings so that
-/// a client is a good citizen by default — and a refusal there would mean
-/// **a client that will not construct** on a network with WPAD, or on a
-/// machine whose owner also configured a SOCKS proxy. That is a worse
-/// answer than proxying what we can.
-///
-/// So: the explicit call refuses, the implicit one degrades and reports.
-/// Nothing is silent at the API level; what a caller does with the report
-/// is theirs.
-///
-/// # What it does with each awkward configuration
-///
-/// - **A PAC script and static entries beside it.** The static ones are
-///   installed, which is not a fallback of ours but the machine's own:
-///   `WinINET` keeps `ProxyServer` as exactly that when a script is
-///   configured. Better than direct, and better than what a client that
-///   cannot see the script at all would do.
-/// - **A PAC script alone.** Direct — which is what curl and reqwest do
-///   on the same machine, neither of them being able to see it. The
-///   difference is that this one can, and says so in the report.
-/// - **A SOCKS proxy.** Dropped, because this call installs HTTP proxies
-///   only. Where SOCKS was the *only* proxy this means going direct
-///   on a machine that wanted a proxy, which is the one degradation here
-///   that loses something real — and is why the strict call exists.
-/// - **A bypass pattern this matcher cannot state** — a wildcard that is
-///   not a leading `*.`. The pattern is dropped and the proxy is kept,
-///   which is what every other implementation does; dropping the *proxy*
-///   over one odd exclusion would be the larger surprise.
-pub fn http_proxies_lossy(
+// The list `rules_lossy` installs.
+pub(crate) fn http_proxies_lossy(
     sys: &SystemProxies,
 ) -> (Vec<Proxy<HttpConnect>>, Vec<SystemProxyRefused>) {
     let mut dropped = Vec::new();
@@ -195,12 +210,54 @@ mod tests {
     use super::*;
     use crate::system::testing::system_proxies;
 
-    /// Where a request to `host` under `use_tls` would go, asked through
-    /// the chooser a transport uses rather than by reading fields back: a
+    /// Where a request to `host` under `use_tls` would go, asked of the
+    /// [`Rules`] a transport installs rather than by reading fields back: a
     /// proxy installed but never *chosen* would satisfy every assertion
-    /// that reads fields and fail every request.
+    /// that reads fields and fail every request. A TLS proxy's `tls:` key
+    /// prefix is dropped, so the answer is the proxy's own address.
     fn route(list: &[Proxy<HttpConnect>], use_tls: bool, host: &str, port: u16) -> Option<String> {
-        Proxy::choose(list, use_tls, host, port).map(|p| format!("{}:{}", p.host(), p.port()))
+        use crate::{Decision, EgressFilter, Target};
+        let rules = list.iter().cloned().fold(Rules::new(), Rules::push);
+        match rules.route(&Target::new(host, port, use_tls)) {
+            Decision::Filtered(route) => Some(route.pool_key.trim_start_matches("tls:").to_owned()),
+            Decision::Direct => None,
+        }
+    }
+
+    #[test]
+    fn the_machines_settings_arrive_as_rules_a_transport_asks() {
+        use crate::{Decision, EgressFilter, Target};
+        let sys = system_proxies(
+            &[
+                ("http", "plain.corp:8080"),
+                ("https", "https://secure.corp:8443"),
+            ],
+            &[],
+            false,
+        );
+        let key =
+            |r: &Rules, use_tls, port| match r.route(&Target::new("example.com", port, use_tls)) {
+                Decision::Filtered(route) => route.pool_key.to_string(),
+                Decision::Direct => "direct".to_owned(),
+            };
+        let strict = rules(&sys).expect("installable");
+        assert_eq!(key(&strict, false, 80), "plain.corp:8080");
+        assert_eq!(key(&strict, true, 443), "tls:secure.corp:8443");
+
+        let socks = system_proxies(
+            &[("http", "plain.corp:8080"), ("socks", "socks.corp:1080")],
+            &[],
+            false,
+        );
+        assert!(rules(&socks).is_err());
+        let (lossy, dropped) = rules_lossy(&socks);
+        assert_eq!(key(&lossy, false, 80), "plain.corp:8080");
+        assert_eq!(dropped.len(), 1);
+        assert!(
+            rules(&system_proxies(&[], &[], false))
+                .expect("nothing")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -237,7 +294,7 @@ mod tests {
 
     #[test]
     fn a_catch_all_proxy_does_not_shadow_a_scheme_specific_one() {
-        // `choose` is first-match-wins and the platform hands its settings
+        // `Rules` is first-match-wins and the platform hands its settings
         // over as an unordered map, so if the ordering imposed by
         // `SystemProxies` were lost, every `https://` request would go to
         // the wrong host. This is that ordering asserted where it has a

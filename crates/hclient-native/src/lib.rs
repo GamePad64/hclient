@@ -1186,21 +1186,6 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
 
     /// A whole list at once — [`proxy`](Self::proxy)'s plural, appended in
     /// order. An empty list adds nothing and claims nothing.
-    ///
-    /// It is also the strict system path in one line, for a caller who
-    /// wants the refusal rather than the degradation
-    /// [`Client::new`](https://docs.rs/hclient) takes:
-    ///
-    /// ```no_run
-    /// # #[cfg(feature = "system-proxy")]
-    /// # fn f<R: hclient_rt::TcpConnect + hclient_rt::Timer, T: hclient_tls::TlsConnect, D>(
-    /// #     t: hclient_native::Native<R, T, D>,
-    /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// use hclient_native::proxy::system::{SystemProxies, http_proxies};
-    ///
-    /// let t = t.with_proxies(http_proxies(&SystemProxies::detect())?);
-    /// # let _ = t; Ok(()) }
-    /// ```
     #[must_use]
     pub fn with_proxies<P>(self, proxies: Vec<crate::proxy::Proxy<P>>) -> Self
     where
@@ -1285,7 +1270,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// SOCKS proxy — a worse answer than proxying what we can.
     ///
     /// What each degradation costs is argued where it happens, in
-    /// `hclient_proxy::system::http_proxies_lossy`. Nothing is silent at
+    /// `hclient_proxy::system::rules_lossy`. Nothing is silent at
     /// this level: the second half of the pair is the report.
     #[cfg(feature = "system-proxy")]
     pub fn system_proxies_from_lossy(
@@ -1295,8 +1280,20 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         Native<R, T, D, H>,
         Vec<crate::proxy::system::SystemProxyRefused>,
     ) {
-        let (proxies, dropped) = crate::proxy::system::http_proxies_lossy(sys);
-        (self.with_proxies(proxies), dropped)
+        let (rules, dropped) = crate::proxy::system::rules_lossy(sys);
+        (self.with_rules(rules), dropped)
+    }
+
+    /// Append a whole rule list, claiming a proxy only if it holds a rule —
+    /// an empty list adds nothing and claims nothing, as
+    /// [`with_proxies`](Self::with_proxies) does.
+    #[cfg(feature = "system-proxy")]
+    fn with_rules(mut self, rules: hclient_proxy::Rules) -> Self {
+        if !rules.is_empty() {
+            self.rules = std::mem::take(&mut self.rules).append(rules);
+            self.caps.proxy = true;
+        }
+        self
     }
 
     // Maintainer notes (not rendered):
@@ -1317,7 +1314,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     ///
     /// # Errors
     ///
-    /// Whatever [`crate::proxy::system::http_proxies`] refuses: a
+    /// Whatever [`crate::proxy::system::rules`] refuses: a
     /// configuration this client cannot express in full — more than one
     /// proxy protocol named at once, a bypass pattern the matcher cannot
     /// state exactly, or a proxy credential that cannot become a header.
@@ -1326,10 +1323,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         self,
         sys: &crate::proxy::system::SystemProxies,
     ) -> Result<Native<R, T, D, H>, hclient_core::error::Error> {
-        let proxies = crate::proxy::system::http_proxies(sys).map_err(|e| {
+        let rules = crate::proxy::system::rules(sys).map_err(|e| {
             hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e)
         })?;
-        Ok(self.with_proxies(proxies))
+        Ok(self.with_rules(rules))
     }
 
     /// Where this transport sends one request — its egress filter's

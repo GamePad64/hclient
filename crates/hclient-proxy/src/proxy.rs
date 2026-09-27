@@ -249,24 +249,6 @@ impl<P> Proxy<P> {
         self.only
     }
 
-    /// The first proxy in `list` that serves this request, or `None` for
-    /// direct.
-    ///
-    /// First-match-wins rather than most-specific-wins: a precedence rule
-    /// would have to be learned, where an ordered list is read off the
-    /// builder chain that wrote it. `NO_PROXY` implementations that invent
-    /// a precedence are exactly what [`bypass`](Self::bypass)'s doc
-    /// refuses to imitate.
-    #[cfg(test)]
-    pub(crate) fn choose<'a>(
-        list: &'a [Proxy<P>],
-        use_tls: bool,
-        host: &str,
-        port: u16,
-    ) -> Option<&'a Proxy<P>> {
-        list.iter().find(|p| p.serves(use_tls, host, port))
-    }
-
     /// The configured protocol, as a template — not the per-connection
     /// state machine. See [`Self::handshake`] for one of those.
     pub fn protocol(&self) -> &P {
@@ -760,40 +742,6 @@ mod tests {
         let only_https = Proxy::new(Socks5::new(), "px", 1080).only_for(ProxyScheme::Https);
         assert!(!only_https.serves(false, "example.com", 80));
         assert!(only_https.serves(true, "example.com", 443));
-    }
-
-    #[test]
-    fn choose_takes_the_first_entry_that_serves() {
-        let list = vec![
-            Proxy::new(Socks5::new(), "specific", 1080).only_for(ProxyScheme::Https),
-            Proxy::new(Socks5::new(), "catch-all", 1080),
-        ];
-        assert_eq!(
-            Proxy::choose(&list, true, "example.com", 443)
-                .unwrap()
-                .host(),
-            "specific"
-        );
-        assert_eq!(
-            Proxy::choose(&list, false, "example.com", 80)
-                .unwrap()
-                .host(),
-            "catch-all"
-        );
-
-        // A bypass on the first entry falls through to the next, which is
-        // the rule that makes a per-proxy list right and a global one
-        // wrong.
-        let list = vec![
-            Proxy::new(Socks5::new(), "first", 1080).bypass(["example.com"]),
-            Proxy::new(Socks5::new(), "second", 1080),
-        ];
-        assert_eq!(
-            Proxy::choose(&list, true, "example.com", 443)
-                .unwrap()
-                .host(),
-            "second"
-        );
     }
 
     #[test]
