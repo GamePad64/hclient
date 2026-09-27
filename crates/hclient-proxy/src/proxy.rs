@@ -273,7 +273,8 @@ impl<P> Proxy<P> {
     }
 
     /// The configured protocol, as a template — not the per-connection
-    /// state machine. See [`Self::handshake`] for one of those.
+    /// state machine: clone it for one of those, since every connection
+    /// needs its own.
     pub fn protocol(&self) -> &P {
         &self.protocol
     }
@@ -365,6 +366,11 @@ impl<P> IpcProxy<P> {
         self
     }
 
+    /// The scheme this proxy is restricted to, if any.
+    pub fn scheme(&self) -> Option<ProxyScheme> {
+        self.inner.scheme()
+    }
+
     /// Where the proxy listens.
     pub fn addr(&self) -> &hclient_rt::IpcAddr {
         &self.addr
@@ -388,17 +394,6 @@ impl<P> IpcProxy<P> {
         let mut inner = self.inner;
         inner.reach = Reach::Ipc(self.addr);
         inner
-    }
-}
-
-impl<P: Clone> Proxy<P> {
-    /// A fresh handshake for one connection.
-    ///
-    /// `Clone` rather than `&mut`: the configured protocol is a template —
-    /// credentials and options — and every connection needs its own state
-    /// machine. Cloning one is cloning two `Box<str>`s at most.
-    pub fn handshake(&self) -> P {
-        self.protocol.clone()
     }
 }
 
@@ -923,6 +918,18 @@ mod tests {
         let only_https = Proxy::new(Socks5::new(), "px", 1080).only_for(ProxyScheme::Https);
         assert!(!only_https.serves(false, "example.com", 80));
         assert!(only_https.serves(true, "example.com", 443));
+    }
+
+    #[test]
+    fn a_same_machine_proxy_reports_its_scheme_restriction_too() {
+        let addr = || hclient_rt::IpcAddr::Unix("/s".into());
+        assert_eq!(IpcProxy::new(Socks5::new(), addr()).scheme(), None);
+        assert_eq!(
+            IpcProxy::new(Socks5::new(), addr())
+                .only_for(ProxyScheme::Https)
+                .scheme(),
+            Some(ProxyScheme::Https)
+        );
     }
 
     #[test]

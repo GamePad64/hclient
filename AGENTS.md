@@ -7750,7 +7750,10 @@ about the corners: exact host at any port, `.example.com` for a domain and
 everything under it, `host:port` for one port, and an address literal —
 a v6 one taking RFC 3986 brackets to carry a port. No CIDR, no wildcard,
 and a pattern in no accepted shape matches **nothing** rather than
-approximately something. **Nothing is bypassed by default, loopback
+approximately something. *(Both have since moved: subnets are accepted,
+`*.x` is read as `.x`, and a pattern in no accepted shape is now
+**refused** at `Proxy::bypass` rather than kept as one that never matches
+— see the third pass over this crate's surface.)* **Nothing is bypassed by default, loopback
 included**: excluding it would change what goes on the wire for a caller
 who asked to proxy everything, which is what `TcpOpts`' every-field-off
 default exists to avoid. The list is asked in two places — `connect`, so a
@@ -8498,6 +8501,37 @@ transport installs. The old name and its `Vec<Proxy<HttpConnect>>` would
 have frozen *HTTP only* into the signature, so installing a machine's
 SOCKS entry — still refused, and still the owner's decision — would have
 needed new functions; behind `Rules` it is a refusal fewer.
+
+**A third pass read every public item off rustdoc's JSON rather than off
+the modules, and found what the first two had walked past.** Forty-nine
+items, and five findings:
+
+- **`Socks5`'s derived `Debug` printed the password** — RFC 1929
+  credentials sit in it as plain strings, so a `{:?}` of a
+  `Proxy<Socks5>` carried them into a log. `Credentials` and
+  `HttpConnect`'s sensitive header had each been guarded; the one
+  protocol whose credential is not a header had not.
+- **`Proxy::bypass` kept a pattern it could never match**, so
+  `*.corp.com` — the spelling a person types — silently left a caller's
+  exclusion unapplied, while the system reader reported the same
+  pattern. `bypass` is fallible now, naming the pattern; `*.x` reads as
+  `.x`; the setter and the reader share one `normalize_bypass`, so the
+  two dialects cannot drift; and `BypassReason::Malformed` makes the
+  reader report `10.0.0.0/33` where it used to install it.
+- **`Dial::connect` and `connect_ipc` could not borrow their
+  arguments** — `+ '_` on `&self` alone — so both in-tree implementors
+  copied the host; `connect_tls` beside them already took one `'a`.
+- **`RequestForm::Absolute` was a closed variant** where a hop's other
+  headers would go; it is `#[non_exhaustive]` with
+  `RequestForm::absolute`.
+- **`Route::pool_key` is a `Cow` borrowed from the filter**, the
+  owner's suggestion over an `Arc<str>`: `route` is asked several times
+  per request, and `Rules` now computes each key once and lends it —
+  no allocation and no reference count — at the cost of a lifetime on
+  `Decision`.
+
+`Proxy::handshake` went too, being `protocol().clone()`, and `IpcProxy`
+gained the `scheme()` its sibling had.
 
 ### `hclient-proto` is internal, and what it held for `hclient` moved into `hclient`
 

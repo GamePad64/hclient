@@ -62,10 +62,11 @@ pub use translate::{rules, rules_lossy};
 //
 // **Deliberately not `#[non_exhaustive]`**, unlike every error type in
 // this crate, and the discriminator is who stands on the other side:
-// this enum crosses a seam into a **translator** — `hclient-native`
-// matches it to pick a `ProxyProtocol` — where a `_` arm would be a
-// *mapping* rather than an *unknown*, and a variant added later would
-// quietly acquire whichever protocol the wildcard happened to name.
+// this enum is **translated** — `translate.rs` matches it to pick a
+// handshake, and so does any caller building rules of its own from a
+// `SystemProxies` — where a `_` arm would be a *mapping* rather than an
+// *unknown*, and a variant added later would quietly acquire whichever
+// protocol the wildcard happened to name.
 // A compile error in every translator is the point. Same rule, same
 // reason as `SvcbRecordError` in `hclient-dns`.
 /// Which protocol a proxy speaks.

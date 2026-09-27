@@ -35,8 +35,8 @@
 //! # Key concepts
 //!
 //! - [`Proxy<P>`] — where a proxy lives and which requests it serves: a
-//!   scheme restriction, a bypass list, and [`Proxy::handshake`] for a
-//!   fresh state machine per connection.
+//!   scheme restriction, a bypass list, and [`Proxy::protocol`], which a
+//!   connection clones for a fresh state machine of its own.
 //! - [`Handshake`] — the trait the three protocols implement; see its own
 //!   doc for the contract a driver depends on.
 //! - [`Step`] — what a handshake wants to happen next.
