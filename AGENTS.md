@@ -2579,10 +2579,74 @@ filtered request never uses HTTP/3 and `RequireVersion(HTTP_3)` for one
 is `NoDatagramPath { via }`. The system-proxy translation still installs
 HTTP proxies only and refuses a machine naming SOCKS as well; its stated
 reason (*a transport holds one `P`*) was corrected, and installing SOCKS
-entries is now possible and an owner's decision. The dial context lends
-no TLS backend, so a filter that speaks TLS to its proxy brings its own —
-a method added to `Dial` later is a breaking change to its implementors,
-which is why `hclient-proxy` stays a pre-release until that is decided.
+entries is now possible and an owner's decision. TLS to a proxy is the
+next section.
+
+### A filter can ask the transport for TLS, and the stream it gets back is the one it gave
+
+`Dial::connect_tls` runs TLS over one of the transport's own streams,
+with the transport's backend and trust, and hands back the same type.
+That one choice is the whole design: a filter never names a TLS stream,
+so `EgressFilter::Wrapped<S>` stays a function of `S`, and layers
+compose — TLS to a proxy, a tunnel, TLS to the origin, and a chain such
+as SOCKS5 → TLS → `CONNECT` written outside the workspace
+(`.notes/witnesses/egress-tls-chain`), which passed on its first build
+with no edit under `crates/` and fails with the `connect_tls` line
+removed.
+
+**`hclient-native` lends a recursive `DialStream<S, L>`** — the socket,
+or TLS over another `DialStream` — and the `Box` in it exists for the
+recursion rather than for erasure, so no `Send` is demanded and
+`Native<Embassy, ..>` is still a `Transport`. The two rejected shapes
+are why: an erased `connect_tls(BoxIo) -> BoxIo` needs `Send` and would
+have cut the `!Send` runtimes off; a GAT `type Tls<S>` forces
+`Wrapped` to take the dial as a parameter. The recursion was probed on
+a scratch crate before the plan relied on it: it compiles once the
+struct carries `S: Io`, and a stream holding an `Rc` makes it `!Send`.
+The cost it did bring is a `T: 'static` beside every bound that named
+`T::Stream<R::Stream>: 'static`, because a type is `'static` only if its
+parameters are.
+
+**The proxy's certificate is checked like an origin's.** One backend,
+one trust store — an MDM-pushed root works because the store is the
+system's. A separate configuration for proxies (curl's
+`--proxy-cacert`) is a field of the `#[non_exhaustive]` `ProxyTls` when
+somebody needs it, not a new method. An unknown client-identity label is
+refused by the backend, naming it, which `TlsIdentity`'s contract
+already owes; an up-front check in `connect_tls` was written and
+removed, because deleting it left every test green.
+
+**`https://` in `HTTPS_PROXY` is a TLS proxy now**, not a refusal:
+`ParseError::TlsToProxyUnsupported` is gone, the default port for the
+scheme is 443, and a TLS proxy's pool key is prefixed `tls:` so it never
+shares a connection with a plaintext one at the same address. A TLS
+failure to the proxy is `Attempt::Unreachable` with the backend's
+`ErrorKind::Tls`. `connect_tls` is defaulted, so a third-party engine
+with no TLS implements `Dial` as before and refuses honestly.
+
+**Its acceptance test found a defect that predates it.**
+`http1::exchange` polls hyper's connection before the request, and a
+TLS server that closes without `close_notify` right behind a complete
+`Content-Length` response fails that connection in the same poll that
+delivered the response — so `UnexpectedEof` replaced a response already
+read. TLS in TLS made it land four runs in five, because the proxy's
+`close_notify` arrives in the same read as the origin's last record;
+direct TLS reaches it only when the FIN is that prompt. The exchange
+now asks the request once before surfacing the connection's error, and
+`a_response_already_read_wins_over_the_connection_failing_behind_it`
+reproduces it with a scripted stream, poll by poll.
+
+**What it cost, measured.** `Native::execute`'s future is unchanged at
+20,336 bytes with every feature and 13,200 with none. Stripped release
+binaries: `minimal` 525,304 → 525,432 (+128 bytes), `hc` 6,308,424 →
+6,377,416 (+68,992, +1.1%) — the TLS backend monomorphised over
+`DialStream` beside the socket.
+
+**Still not done**: h2 or ALPN to a proxy, and MASQUE; a separate trust
+store for proxies; a client-certificate setter on `Proxy` (the field is
+in `ProxyTls`); TLS over a filter's own wrapper. The `Dial` blocker on
+stabilising `hclient-proxy` is removed; the stabilisation itself is a
+separate decision.
 
 ### A seam review, and what a scan of thirty-five traits found
 
