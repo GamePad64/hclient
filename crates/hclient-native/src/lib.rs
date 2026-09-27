@@ -191,9 +191,7 @@ use error::{ConnectTimedOut, UnknownClientIdentity};
 // crate's own code reading `crate::X` as it did when they were at the root.
 #[cfg(feature = "http3")]
 use error::Disagreement;
-use error::{
-    FirstByteTimedOut, Http2NotCompiledIn, NoVersionsLeft, PlaintextNeedsHttp1, ProxyAndUnixSocket,
-};
+use error::{FirstByteTimedOut, Http2NotCompiledIn, NoVersionsLeft, PlaintextNeedsHttp1};
 pub use http1::H1Opts;
 #[cfg(feature = "http2")]
 pub use http2::{H2KeepAlive, H2Opts};
@@ -257,35 +255,16 @@ type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H, R>);
 // objection to this shape missed. It said a stored pointer returning a
 // boxed future drops the future's auto traits (amendment C1); it does if
 // the box declares none, and a box that declares `Send` has its proof
-// owed where the runtime is concrete — the bound on `unix_socket`, which
-// is `Native::http3`'s arrangement (amendment C15).
-/// Where [`Native::unix_socket`] sends every request, and how it gets there.
+// owed where the runtime is concrete — the bounds on `unix_socket` and
+// `proxy_over_ipc`, which is `Native::http3`'s arrangement (amendment C15).
+/// How [`Native`] opens a same-machine connection.
 ///
-/// **A pointer, for [`SpawnH2`]'s reason**: `dial` is monomorphised in
-/// `unix_socket`, where `R: IpcConnect` is known, and called from the
-/// connector, where it is not — so no signature a runtime without
-/// same-machine endpoints meets names [`hclient_rt::IpcConnect`], and
-/// `hclient-rt-embassy` or a NAL stack implements nothing for it.
-pub(crate) struct IpcRoute<R: TcpConnect> {
-    pub(crate) addr: Arc<hclient_rt::IpcAddr>,
-    pub(crate) dial: DialIpc<R>,
-}
-
-impl<R: TcpConnect> Clone for IpcRoute<R> {
-    fn clone(&self) -> Self {
-        Self {
-            addr: Arc::clone(&self.addr),
-            dial: self.dial,
-        }
-    }
-}
-
-impl<R: TcpConnect> std::fmt::Debug for IpcRoute<R> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("IpcRoute").field(&self.addr).finish()
-    }
-}
-
+/// **A pointer, for [`SpawnH2`]'s reason**: it is monomorphised in
+/// [`Native::unix_socket`] and [`Native::proxy_over_ipc`], where
+/// `R: IpcConnect` is known, and called from the dial context, where it is
+/// not — so no signature a runtime without same-machine endpoints meets
+/// names [`hclient_rt::IpcConnect`], and `hclient-rt-embassy` or a NAL
+/// stack implements nothing for it.
 pub(crate) type DialIpc<R> =
     for<'a, 'b> fn(&'a R, &'b hclient_rt::IpcAddr) -> IpcDialing<'a, <R as TcpConnect>::Stream>;
 pub(crate) type IpcDialing<'a, S> =
@@ -650,7 +629,7 @@ impl Default for Versions {
 /// assert_send(t.execute(http::Request::new(RequestBody::Empty)));
 /// ```
 #[derive(Debug)]
-pub struct Native<R, T, D, H = NoHooks, P = crate::proxy::NoProxy>
+pub struct Native<R, T, D, H = NoHooks>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,
@@ -717,20 +696,11 @@ where
     /// behalf, what to spend on a network that blocks UDP/443.
     #[cfg(feature = "http3")]
     hedge: Option<Duration>,
-    /// How the origin is reached, when it is not reached directly.
-    ///
-    /// `P` is defaulted to [`NoProxy`](crate::proxy::NoProxy), which is an
-    /// **empty enum** — so a transport nobody configured a proxy on holds
-    /// an `Option` that cannot be `Some`, by construction rather than by
-    /// discipline, and the field costs it one word. It is a type parameter
-    /// rather than a `Box<dyn ..>` because erasing the protocol erases the
-    /// IO with it, and that needs a `Send` this crate does not declare.
-    /// The proxies this transport may use, in the order the caller wrote
-    /// them; the first that serves a request wins, and an empty list is
-    /// direct. A `Vec` rather than an `Option` since v0.4: a caller with
-    /// separate `http` and `https` proxies is the ordinary corporate
-    /// setup, and one `Option` cannot hold two.
-    proxies: Vec<crate::proxy::Proxy<P>>,
+    /// Where each request's connection goes: proxy rules and the
+    /// Unix-socket policy, in the order they were added; the first that
+    /// serves a request carries it, and no match is direct. The default
+    /// egress filter, called concretely so the default path is unboxed.
+    rules: hclient_proxy::Rules,
     rt: R,
     tls: T,
     dns: D,
@@ -742,9 +712,11 @@ where
     /// not want `h2`'s default. Constant within a `Native` and therefore
     /// within its pool, which is why it is not in `PoolKey` — the
     /// argument the TLS identity and the proxy already carry there.
-    /// Send every request over this Unix-domain socket instead of
-    /// resolving and dialling the origin — see [`Native::unix_socket`].
-    unix_socket: Option<IpcRoute<R>>,
+    /// How this transport opens a same-machine connection, stored once a
+    /// runtime has been proven `IpcConnect` — by [`Native::unix_socket`] or
+    /// [`Native::proxy_over_ipc`]. `None` means a rule that needs one is
+    /// refused at connect, naming those two methods.
+    ipc: Option<DialIpc<R>>,
     /// What this client accepts in an HTTP/1 response head — see
     /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
     /// the HTTP/1 path is the one every build has.
@@ -1090,14 +1062,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             h3_failures: failures::H3Failures::default(),
             #[cfg(feature = "http3")]
             hedge: None,
-            unix_socket: None,
+            ipc: None,
             h1_opts: crate::http1::H1Opts::default(),
             #[cfg(feature = "http2")]
             h2_opts: crate::http2::H2Opts::default(),
-            // `P` is `NoProxy` here, an empty enum, so this is the only
-            // value this field can hold on a transport built by `new` —
-            // `.proxy(..)` is what changes the type.
-            proxies: Vec::new(),
+            // No rules: every request is direct until a proxy or a Unix
+            // socket is added.
+            rules: hclient_proxy::Rules::new(),
             epoch: rt.now(),
             rt,
             tls,
@@ -1174,55 +1145,38 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
 /// method that names a *particular* `H` ([`NoHooks`]), and putting it in
 /// this block would make `Native::<_, _, _, MyHook>::new` a thing a
 /// caller could write and get a hookless transport from.
-impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
-    /// Reach every origin through `proxy` instead of directly.
+impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
+    /// Reach origins through `proxy` instead of directly.
     ///
-    /// Changes `P`, the way [`Native::hooks`] changes `H`, because the
-    /// protocol is a type: see `proxy`'s module doc for why it is not a
-    /// `Box<dyn ..>`. There is no per-origin routing and no `NO_PROXY`
-    /// here — one proxy for everything this transport sends, which is
-    /// stated rather than implied because the absence is the surprising
-    /// half.
+    /// Appends a rule: rules are tried in the order they were added, and
+    /// the first that serves a request carries it — so this and
+    /// [`and_proxy`](Self::and_proxy) are the same call, and rules of
+    /// different protocols share one list.
     ///
-    /// What this changes beyond which socket is opened, each of which is
+    /// What a proxy changes beyond which socket is opened, each of which is
     /// somewhere else in this crate agreeing:
     ///
     /// - **The resolver is not consulted for the origin.** The proxy
     ///   resolves it — an HTTP proxy from the `CONNECT` target, SOCKS5
     ///   from `ATYP=0x03 DOMAINNAME`. Happy Eyeballs still runs, over the
     ///   *proxy's* addresses.
-    /// - **No HTTPS/SVCB discovery for the origin** — the lookup reports
-    ///   that it did not consult rather than that it found nothing:
-    ///   address hints for an address nobody will dial, and a record port
-    ///   we would not honour, are worse than no answer.
+    /// - **No HTTPS/SVCB discovery and no HTTP/3 for the origin**: the
+    ///   request goes where the proxy takes it, and nothing is looked up
+    ///   locally that would name the origin.
     /// - **The pool key names the proxy**, so a tunnel is never reused
     ///   through a different one.
     /// - **A `407` is a connect error, never a response.** It is the
     ///   proxy's answer to us, not the origin's to the caller.
-    ///
-    /// # Panics
-    ///
-    /// If a Unix socket is already configured. The mirror of
-    /// [`unix_socket`](Self::unix_socket)'s refusal, and a panic rather
-    /// than a `Result` because this method already changes `P` and cannot
-    /// return `Result<Native<.., P2>, Error>` without making every caller
-    /// who never touches Unix sockets write a `?`. The two orders are not
-    /// symmetrical and the asymmetry is stated rather than hidden: put
-    /// `.proxy(..)` first and `unix_socket` refuses politely.
-    pub fn proxy<P2>(self, proxy: crate::proxy::Proxy<P2>) -> Native<R, T, D, H, P2> {
-        self.with_proxies(vec![proxy])
+    #[must_use]
+    pub fn proxy<P>(self, proxy: crate::proxy::Proxy<P>) -> Self
+    where
+        P: crate::proxy::Handshake + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C16
+    {
+        self.and_proxy(proxy)
     }
 
-    /// A whole list at once — [`proxy`](Self::proxy)'s plural, and the
-    /// one place the `P`-changing struct literal is written.
-    ///
-    /// **Including an empty list**, which is why it takes a `Vec` rather
-    /// than a first-plus-rest: a machine with no proxy still has to come
-    /// out of `system_proxies_from` with the
-    /// `P` its return type promises, and there is no `Proxy` to pass
-    /// through the singular method to get there. An empty list proxies
-    /// nothing and claims nothing — `capabilities().proxy` reads the
-    /// list, not the fact that this was called.
+    /// A whole list at once — [`proxy`](Self::proxy)'s plural, appended in
+    /// order. An empty list adds nothing and claims nothing.
     ///
     /// It is also the strict system path in one line, for a caller who
     /// wants the refusal rather than the degradation
@@ -1238,66 +1192,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// let t = t.with_proxies(http_proxies(&SystemProxies::detect())?);
     /// # let _ = t; Ok(()) }
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// If a Unix socket is configured and the list is non-empty, for
-    /// [`proxy`](Self::proxy)'s reason and by way of it. An **empty** list
-    /// does not panic: it configures no proxy, so the two settings that
-    /// cannot coexist are not both present.
-    pub fn with_proxies<P2>(self, proxies: Vec<crate::proxy::Proxy<P2>>) -> Native<R, T, D, H, P2> {
-        assert!(
-            self.unix_socket.is_none() || proxies.is_empty(),
-            "a proxy and a Unix socket both answer `where does this connection go`; \
-             configure at most one"
-        );
-        let mut caps = self.caps;
-        // Read from the thing that knows, `client_certs`' lesson one field
-        // over: this transport applies a proxy configuration of its own,
-        // which is exactly what the field says. Mutated rather than
-        // written as a literal because `Capabilities` is
-        // `#[non_exhaustive]` — a field added later must arrive here as
-        // whatever it already was, not as a compile error somebody
-        // silences by copying its neighbour.
-        // Read off the list rather than written as `true`: the empty
-        // list is reachable now (a machine with no proxy configured),
-        // and a transport reporting `proxy` while proxying nothing would
-        // be a capability that lies — the defect `Native::hooks` was
-        // found to have one field over.
-        caps.proxy = !proxies.is_empty();
-        Native {
-            // Carried: the installer's type names `H`, which this method
-            // does not change.
-            watch_1xx: self.watch_1xx,
-            expect_continue: self.expect_continue,
-            versions: self.versions,
-            #[cfg(feature = "http3")]
-            h3: self.h3.clone(),
-            #[cfg(feature = "http3")]
-            alt_svc: self.alt_svc.clone(),
-            #[cfg(feature = "http3")]
-            h3_failures: self.h3_failures.clone(),
-            #[cfg(feature = "http3")]
-            hedge: self.hedge,
-            unix_socket: self.unix_socket.clone(),
-            h1_opts: self.h1_opts,
-            #[cfg(feature = "http2")]
-            h2_opts: self.h2_opts,
-            proxies,
-            rt: self.rt,
-            tls: self.tls,
-            dns: self.dns,
-            hooks: self.hooks,
-            opts: self.opts,
-            caps,
-            epoch: self.epoch,
-            pool: self.pool,
-            svcb_failures: self.svcb_failures,
-            #[cfg(feature = "http2")]
-            share_h2: self.share_h2,
-            #[cfg(feature = "http2")]
-            h2_keep_alive: self.h2_keep_alive,
-        }
+    #[must_use]
+    pub fn with_proxies<P>(self, proxies: Vec<crate::proxy::Proxy<P>>) -> Self
+    where
+        P: crate::proxy::Handshake + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C16
+    {
+        proxies.into_iter().fold(self, Self::and_proxy)
     }
 
     // Maintainer notes (not rendered):
@@ -1346,7 +1246,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// It **refuses rather than narrowing**, and the refusal names what
     /// it could not honour: a SOCKS proxy when this call installs HTTP
-    /// ones (`Native` holds one proxy protocol — see
+    /// ones (see
     /// [`SystemProxyRefused`](crate::proxy::system::SystemProxyRefused)), or a
     /// bypass pattern in a shape this client's matcher cannot state
     /// exactly, such as a subnet.
@@ -1366,9 +1266,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// If a Unix socket is already configured, for
     /// [`proxy`](Self::proxy)'s reason and by way of it.
     #[cfg(feature = "system-proxy")]
-    pub fn system_proxy(
-        self,
-    ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::error::Error> {
+    pub fn system_proxy(self) -> Result<Native<R, T, D, H>, hclient_core::error::Error> {
         self.system_proxies_from(&crate::proxy::system::SystemProxies::detect())
     }
 
@@ -1390,7 +1288,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self,
         sys: &crate::proxy::system::SystemProxies,
     ) -> (
-        Native<R, T, D, H, crate::proxy::HttpConnect>,
+        Native<R, T, D, H>,
         Vec<crate::proxy::system::SystemProxyRefused>,
     ) {
         let (proxies, dropped) = crate::proxy::system::http_proxies_lossy(sys);
@@ -1423,66 +1321,60 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     pub fn system_proxies_from(
         self,
         sys: &crate::proxy::system::SystemProxies,
-    ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::error::Error> {
+    ) -> Result<Native<R, T, D, H>, hclient_core::error::Error> {
         let proxies = crate::proxy::system::http_proxies(sys).map_err(|e| {
             hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e)
         })?;
         Ok(self.with_proxies(proxies))
     }
 
-    /// The proxy this transport would use for one request, or `None` for
-    /// direct — `Proxy::choose` over the list this transport is holding.
-    ///
-    /// `pub(crate)` and reached from `testing::chosen_proxy`: routing is
-    /// not a caller's question, but it is the only question a test of the
-    /// routing has.
-    #[cfg(feature = "proxy")]
-    pub(crate) fn chosen_proxy(
+    /// Where this transport sends one request — its egress filter's
+    /// answer. `pub(crate)`, reached from routing, the pool key, the
+    /// request-line form and `testing::chosen_proxy`.
+    pub(crate) fn egress_route(
         &self,
         use_tls: bool,
         host: &str,
         port: u16,
-    ) -> Option<&crate::proxy::Proxy<P>> {
-        crate::proxy::Proxy::choose(&self.proxies, use_tls, host, port)
+    ) -> hclient_proxy::Decision {
+        hclient_proxy::EgressFilter::route(
+            &self.rules,
+            &hclient_proxy::Target {
+                host,
+                port,
+                use_tls,
+            },
+        )
     }
 
     /// A second proxy, and a third — **the first that serves a request
     /// wins**.
     ///
     /// The case this exists for is the ordinary corporate one, an
-    /// `HTTP_PROXY` and an `HTTPS_PROXY` at different hosts:
+    /// `HTTP_PROXY` and an `HTTPS_PROXY` at different hosts — which may
+    /// speak different protocols:
     ///
     // `HttpConnect` exists only with the `proxy` feature, so the example is
     // compiled where the feature is on and shown as text where it is not.
     #[cfg_attr(feature = "proxy", doc = "```no_run")]
     #[cfg_attr(not(feature = "proxy"), doc = "```text")]
     /// # use hclient_native::Native;
-    /// # use hclient_native::proxy::{HttpConnect, Proxy, ProxyScheme};
+    /// # use hclient_native::proxy::{HttpConnect, Proxy, ProxyScheme, Socks5};
     /// # use hclient_rt::{TcpConnect, Timer};
     /// # use hclient_tls::TlsConnect;
-    /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
-    /// # -> Native<R, T, D, hclient_core::hooks::NoHooks, HttpConnect> {
-    /// t.proxy(Proxy::new(HttpConnect::new(), "secure-proxy.corp", 8443)
+    /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>) -> Native<R, T, D> {
+    /// t.proxy(Proxy::new(Socks5::new(), "socks.corp", 1080)
     ///         .only_for(ProxyScheme::Https))
     ///  .and_proxy(Proxy::new(HttpConnect::new(), "proxy.corp", 8080))
     /// # }
     /// ```
-    ///
-    /// **It does not change `P`**, unlike [`proxy`](Self::proxy), and that
-    /// is the limit rather than an oversight: `Native` has one proxy
-    /// protocol, so every proxy on one transport speaks the same one. A
-    /// caller wanting SOCKS5 for `https` and an HTTP proxy for `http`
-    /// cannot say so here — lifting that would mean erasing `P`, and
-    /// erasing `P` erases the IO with it, which is the objection
-    /// `crate::proxy`'s module doc records against `Box<dyn
-    /// ProxyProtocol>`.
-    ///
-    /// Uncallable before `proxy` for free rather than by a check: without
-    /// it `P` is [`NoProxy`](crate::proxy::NoProxy), an empty enum, so there is
-    /// no `Proxy<NoProxy>` to pass.
     #[must_use]
-    pub fn and_proxy(mut self, proxy: crate::proxy::Proxy<P>) -> Self {
-        self.proxies.push(proxy);
+    pub fn and_proxy<P>(mut self, proxy: crate::proxy::Proxy<P>) -> Self
+    where
+        P: crate::proxy::Handshake + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C16
+    {
+        self.rules = std::mem::take(&mut self.rules).push(proxy);
+        self.caps.proxy = true;
         self
     }
 
@@ -1623,7 +1515,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `.multiplexed()` last; the other order compiles and shares no
     /// connections, which is the same cost, stated the same way, as
     /// [`Native::tcp_opts`] replacing the whole option set.
-    pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2, P> {
+    pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2> {
         // The capability must go with the pointer. Dropping one and
         // carrying the other left this transport saying it reports `1xx`
         // while nothing did — a capability lying, which is worse than the
@@ -1650,13 +1542,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             h3_failures: self.h3_failures.clone(),
             #[cfg(feature = "http3")]
             hedge: self.hedge,
-            unix_socket: self.unix_socket.clone(),
+            ipc: self.ipc,
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
-            // Carried, unlike the two above: the proxy is named by
+            // Carried, unlike the two above: the rules are named by
             // neither `H` nor the driver.
-            proxies: self.proxies,
+            rules: self.rules,
             rt: self.rt,
             tls: self.tls,
             dns: self.dns,
@@ -2636,12 +2528,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `connect` block, which is [`Proxy`](crate::proxy::Proxy)'s slot exactly:
     /// there is no name to resolve, no address family to race and no port.
     /// It is **not** a proxy — nothing is tunnelled and the request head is
-    /// written origin-form — which is why it is a setting rather than a
-    /// `ProxyProtocol`.
+    /// written origin-form.
     ///
-    /// A proxy and a Unix socket together is a refusal rather than an
-    /// order of precedence: both answer *where does this connection go*,
-    /// and a rule about which wins would be a rule nobody could guess.
+    /// It is appended to the same ordered rule list as the proxies, and it
+    /// serves every request: proxy rules added before it still serve the
+    /// requests they match, and rules added after it are never reached.
+    /// To reach a proxy that itself listens on a socket, see
+    /// [`proxy_over_ipc`](Self::proxy_over_ipc).
     ///
     /// # `https://` still works, and `TcpOpts` still does not
     ///
@@ -2664,8 +2557,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// [`hclient_rt::IpcAddr::reject_unsupported`] builds, with
     /// [`hclient_rt::UnsupportedIpc`] inside, when the runtime cannot
     /// dial one, per "It is refused where the runtime says it cannot"
-    /// above; [`ProxyAndUnixSocket`] when a proxy is already configured,
-    /// per "What it replaces" above.
+    /// above.
     pub fn unix_socket(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, Error>
     where
         R: hclient_rt::IpcConnect,
@@ -2674,14 +2566,35 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         let addr = hclient_rt::IpcAddr::unix(path.as_ref());
         addr.reject_unsupported(<R as hclient_rt::IpcConnect>::IPC_SUPPORT)
             .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
-        if !self.proxies.is_empty() {
-            return Err(Error::new(ErrorKind::Unsupported, ProxyAndUnixSocket));
-        }
-        self.unix_socket = Some(IpcRoute {
-            addr: Arc::new(addr),
-            dial: dial_ipc::<R>,
-        });
+        self.ipc = Some(dial_ipc::<R>);
+        self.rules = std::mem::take(&mut self.rules).unix(addr);
         Ok(self)
+    }
+
+    /// Reach origins through `proxy`, a proxy itself reached over a
+    /// same-machine socket ([`Proxy::over_ipc`](crate::proxy::Proxy::over_ipc)) —
+    /// Tor's `SocksPort unix:/path` shape.
+    ///
+    /// A method of its own, rather than [`proxy`](Self::proxy), because it
+    /// needs the runtime to open same-machine connections and says so in
+    /// its bounds; `proxy` asks nothing of the runtime.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Unsupported`] when the runtime cannot open the proxy's
+    /// kind of address.
+    pub fn proxy_over_ipc<P>(mut self, proxy: crate::proxy::Proxy<P>) -> Result<Self, Error>
+    where
+        R: hclient_rt::IpcConnect,
+        for<'a> R::ConnectingIpc<'a>: Send, // send-bound-exception: amendment-C15
+        P: crate::proxy::Handshake + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C16
+    {
+        if let crate::proxy::Reach::Ipc(addr) = proxy.reach() {
+            addr.reject_unsupported(<R as hclient_rt::IpcConnect>::IPC_SUPPORT)
+                .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
+        }
+        self.ipc = Some(dial_ipc::<R>);
+        Ok(self.and_proxy(proxy))
     }
 
     /// What this client accepts in an HTTP/1 **response head** — the
@@ -2738,7 +2651,7 @@ where
 /// `Transport` needs anyway (`'static` on the two stream types is what
 /// hyper's handshake requires), kept in a separate block so `new` and the
 /// builder methods above don't inherit them.
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -2751,7 +2664,6 @@ where
     // worth writing is `Unpin` already — `Rc`, `Arc`, an atomic, a
     // closure that captures them.
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::Handshake + Clone,
 {
     /// Everything about a pool key except the protocol — and, as a side
     /// effect the rest of `execute` relies on, the point at which an
@@ -2797,55 +2709,19 @@ where
             security,
             host: host.into(),
             port,
-            // **The proxy that will actually serve this request**, not
-            // "the proxy": with a list, two schemes can route to two
-            // different proxies, and a key naming the wrong one would let
-            // a tunnel through proxy A be reused for a request routed to
-            // proxy B — the security defect `Proxy::key`'s own doc names.
-            //
-            // **Unreachable today, and structurally so**, which is this
-            // change's mutation control: replacing this with
-            // `self.proxies.first()` passes the whole suite. `choose` is a
-            // pure function of `(use_tls, host, port)` and the key already
-            // carries all three — `security` encodes the first — so two
-            // requests that agree on the key cannot disagree on the proxy.
-            // It is written correctly anyway for the reason the `proxy`
-            // field is in `PoolKey` at all: the moment a pool is shared
-            // between transports, the two stop being the same question.
-            // **The socket path shares `proxy`'s slot in the key**, and it
-            // is the same argument: two connections that go to different
-            // places must not be interchangeable. They share one field
-            // because `Native::unix_socket` refuses to coexist with a
-            // proxy, so at most one is ever `Some` — a second field would
-            // be a state the constructor forbids.
-            //
-            // **Unreachable today, like the proxy beside it**, and for the
-            // same structural reason: `unix_socket` is constant within one
-            // `Native`, so two requests through one transport cannot
-            // disagree about it, and two transports have two pools.
-            // Removing it passes the whole suite — this work's second
-            // mutation control. Written correctly anyway for the moment a
-            // pool is shared between transports.
-            proxy: self
-                .unix_socket
-                .as_ref()
-                // `Debug` rather than a path: it names the kind as well as
-                // the address, so a named pipe and a socket that happened to
-                // share a spelling could not share a slot.
-                .map(|r| format!("{:?}", r.addr).into_boxed_str())
-                .or_else(|| {
-                    crate::proxy::Proxy::choose(
-                        &self.proxies,
-                        matches!(security, Security::Tls(_)),
-                        host,
-                        port,
-                    )
-                    // Two proxies to one origin are two connections, and a
-                    // tunnel reused through a *different* proxy would be a
-                    // security defect rather than a redundancy — the same
-                    // argument the TLS-identity field of this key is kept for.
-                    .map(|p| format!("{}:{}", p.host(), p.port()).into_boxed_str())
-                }),
+            // **The filter's own key for this request**, which covers a
+            // proxy and the Unix socket alike: two connections that go to
+            // different places must never be interchangeable, and a tunnel
+            // reused through a *different* proxy would be a security
+            // defect rather than a redundancy — the argument the TLS
+            // identity is in this key for. The route is a pure function of
+            // `(use_tls, host, port)`, which the key already carries, so
+            // within one transport this is structurally redundant; it is
+            // written for the moment a pool is shared between transports.
+            proxy: match self.egress_route(matches!(security, Security::Tls(_)), host, port) {
+                hclient_proxy::Decision::Filtered { pool_key, .. } => Some(pool_key),
+                hclient_proxy::Decision::Direct => None,
+            },
         })
     }
 
@@ -3258,42 +3134,40 @@ where
     }
 }
 
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,
-    P: crate::proxy::Handshake + Clone,
 {
     /// How this request's head must be written, which a tunnel does not
     /// change — see [`crate::proxy::Via`].
-    fn via(&self, uri: &http::Uri) -> crate::proxy::Via<'_> {
+    fn via(&self, uri: &http::Uri) -> crate::proxy::Via {
         let use_tls = uri.scheme_str() == Some("https");
         let port = uri.port_u16().unwrap_or(if use_tls { 443 } else { 80 });
         let host = uri.host().unwrap_or_default();
-        // The list and its bypasses are asked here too, and they must be:
-        // a request that went direct — because it was bypassed, or because
-        // no proxy in the list serves its scheme — would otherwise still
-        // be written in absolute-form, to an origin that never agreed to
-        // be a proxy.
-        match crate::proxy::Proxy::choose(&self.proxies, use_tls, host, port) {
-            Some(p) if p.protocol().approach(use_tls) == crate::proxy::Approach::Absolute => {
-                // Wire-visible and decided by first-match-wins over a list
-                // the caller wrote: an origin-form request that should
-                // have been absolute-form reaches an origin server that
-                // never agreed to act as a proxy, and nothing about the
-                // failure says which of the two forms went out.
-                tracing::trace!("native: {}:{} written absolute-form to a proxy", host, port);
-                crate::proxy::Via::AbsoluteForm(p.protocol().proxy_authorization())
-            }
-            _ => {
-                tracing::trace!("native: {}:{} written origin-form", host, port);
-                crate::proxy::Via::Direct
-            }
+        // The filter decides, so a request that goes direct — bypassed, or
+        // served by no rule — is written origin-form: an origin-form request
+        // that should have been absolute-form reaches an origin server that
+        // never agreed to act as a proxy, and nothing about the failure says
+        // which of the two forms went out.
+        if let hclient_proxy::Decision::Filtered {
+            form:
+                hclient_proxy::RequestForm::Absolute {
+                    proxy_authorization,
+                },
+            ..
+        } = self.egress_route(use_tls, host, port)
+        {
+            tracing::trace!("native: {}:{} written absolute-form to a proxy", host, port);
+            crate::proxy::Via::AbsoluteForm(proxy_authorization)
+        } else {
+            tracing::trace!("native: {}:{} written origin-form", host, port);
+            crate::proxy::Via::Direct
         }
     }
 }
 
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,
@@ -3324,10 +3198,9 @@ struct KeyParts {
     security: Security,
     host: Box<str>,
     port: u16,
-    /// Carried from the transport that built these parts, so that a
-    /// pooled tunnel is never handed to a request routed through a
-    /// different proxy. `None` on every direct transport, which is every
-    /// transport whose `P` is `NoProxy`.
+    /// The egress filter's key for this request, so that a pooled tunnel
+    /// is never handed to a request routed through a different proxy or
+    /// socket. `None` for a direct request.
     proxy: Option<Box<str>>,
 }
 
@@ -3483,14 +3356,13 @@ fn is_h2(protocol: Option<Protocol>) -> bool {
 ///
 /// The bounds are the [`Transport`] impl's below, repeated because an
 /// inherent method cannot inherit them.
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::Handshake + Clone,
 {
     /// The whole of an exchange, from a request that may or may not have
     /// been prepared.
@@ -3828,12 +3700,13 @@ where
         // negative cache's window and a connection's idle deadline are
         // measured from one epoch on one clock, and two reads a
         // microsecond apart would be two facts where there is one.
-        let connect_fut = connect::connect::<R, D, T, P, H>(
+        let connect_fut = connect::connect::<R, D, T, H>(
             &self.rt,
             &self.dns,
             &self.tls,
-            &self.proxies,
-            self.unix_socket.as_ref(),
+            &self.rules,
+            self.ipc,
+            timeouts.connect,
             &uri,
             &self.opts,
             alpn,
@@ -4028,7 +3901,7 @@ where
 /// `R: Clone` because `between_bytes` is enforced by a sleep held
 /// **inside the response body**, which outlives `execute` and therefore
 /// needs a clock of its own.
-impl<R, T, D, H, P> Transport for Native<R, T, D, H, P>
+impl<R, T, D, H> Transport for Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -4041,7 +3914,6 @@ where
     // this transport's. `H: Unpin` is argued where the sibling impl
     // above declares it.
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::Handshake + Clone,
 {
     /// The pooled body, with the `between_bytes` bound wrapped round it.
     ///
@@ -4107,7 +3979,7 @@ where
 /// needed a public door back into the exchange. What is left is one
 /// crate-private method, behind `http3` because the router is.
 #[cfg(feature = "http3")]
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -4115,7 +3987,6 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::Handshake + Clone,
 {
     /// Do now the lookup `Transport::execute` would otherwise do inside
     /// its connect, and hand the request back with the answer attached.
@@ -4274,18 +4145,24 @@ pub mod testing {
     /// is the one question a proxy test actually has: an installed proxy
     /// that is never *chosen* would satisfy every assertion that reads
     /// fields back, and fail every request.
+    ///
+    /// The answer is the filter's pool key for the request — a proxy's
+    /// `host:port`, or `unix:<path>` — or `None` for direct.
     #[cfg(feature = "proxy")]
-    pub fn chosen_proxy<'a, R, T, D, H, P>(
-        native: &'a crate::Native<R, T, D, H, P>,
+    pub fn chosen_proxy<R, T, D, H>(
+        native: &crate::Native<R, T, D, H>,
         use_tls: bool,
         host: &str,
         port: u16,
-    ) -> Option<&'a crate::proxy::Proxy<P>>
+    ) -> Option<Box<str>>
     where
         R: hclient_rt::TcpConnect + hclient_rt::Timer,
         T: hclient_tls::TlsConnect,
     {
-        native.chosen_proxy(use_tls, host, port)
+        match native.egress_route(use_tls, host, port) {
+            hclient_proxy::Decision::Filtered { pool_key, .. } => Some(pool_key),
+            hclient_proxy::Decision::Direct => None,
+        }
     }
 
     pub use crate::body::OutgoingBody;
@@ -4494,7 +4371,7 @@ pub mod testing {
 // cannot promise `Send` it is still a `Transport`, and what it is not is
 // a `SendTransport`.
 hclient_core::transport::send_transport!(
-    for<R, T, D, H, P> Native<R, T, D, H, P>
+    for<R, T, D, H> Native<R, T, D, H>
     where
         R: TcpConnect + Timer + Clone + Sync + Send, // send-bound-exception: amendment-C16
         R::Stream: 'static + Send,                   // send-bound-exception: amendment-C16
@@ -4507,7 +4384,6 @@ hclient_core::transport::send_transport!(
         D: Resolve + Sync + Send,                    // send-bound-exception: amendment-C16
         for<'a> D::Records<'a>: Send,                // send-bound-exception: amendment-C16
         H: Hooks + Clone + Unpin + Sync + Send,      // send-bound-exception: amendment-C16
-        P: crate::proxy::Handshake + Clone + Sync + Send, // send-bound-exception: amendment-C16
 );
 
 /// Whether [`Native::http2`] must refuse, as a pure function of the three

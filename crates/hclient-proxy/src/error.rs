@@ -207,14 +207,15 @@ pub enum SystemProxyRefused {
     /// The machine names a proxy whose protocol is not the one this call
     /// installs.
     ///
-    /// A transport holds one `P`, so a configuration naming both an HTTP
-    /// and a SOCKS proxy has no faithful reading here. Build the one you
-    /// want by hand — `Proxy::new(Socks5::new(), host, port)` — which
+    /// This call installs HTTP proxies only, so a configuration naming a
+    /// SOCKS proxy as well has no faithful reading here: installing half
+    /// of it would send some traffic direct. Build the one you want by
+    /// hand — `Proxy::new(Socks5::new(), host, port)` — which
     /// also makes the choice visible at the call site, where a rule of
     /// ours would not be.
     #[error(
         "the system names a {kind:?} proxy at {host}:{port}, and this call installs HTTP proxies; \
-         a transport holds one proxy protocol, so build that one with `Proxy::new(..)`"
+         build that one with `Proxy::new(..)`"
     )]
     MixedProtocols {
         /// The protocol the system names for this proxy.

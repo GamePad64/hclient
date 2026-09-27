@@ -358,7 +358,7 @@ enum Raced {
     Failed(Error),
 }
 
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -366,7 +366,6 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: hclient_core::hooks::Hooks + Clone + Unpin,
-    P: crate::proxy::Handshake + Clone,
 {
     /// Everything the QUIC arm of `Transport::execute` does, hedged or not.
     ///

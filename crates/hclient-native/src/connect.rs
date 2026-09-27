@@ -916,96 +916,20 @@ where
     drive::<_, _, _, H>(rt, sched, v6.replay(), v4.replay(), port, opts, began).await
 }
 
-async fn through_proxy<R, L, P, H>(
-    rt: &R,
-    dns: &(impl Resolve + ?Sized),
-    tls: &L,
-    proxy: &crate::proxy::Proxy<P>,
-    host: &str,
-    use_tls: bool,
-    port: u16,
-    opts: &TcpOpts,
-    alpn: &[&[u8]],
-    // The client identity the caller named, threaded beside `alpn`
-    // because it travels the same path and reaches the same `TlsRequest`.
-    identity: Option<&str>,
-    began: Option<R::Instant>,
-) -> Result<
-    (
-        Conn<R::Stream, L::Stream<R::Stream>>,
-        Option<TlsInfo>,
-        Option<Box<Attempted>>,
-    ),
-    Error,
->
-where
-    R: TcpConnect + Timer,
-    L: TlsConnect,
-    P: crate::proxy::Handshake + Clone,
-    R::Stream: 'static,
-    H: Hooks,
-{
-    let (tcp, mut attempted) =
-        dial_by_name::<R, _, H>(rt, dns, proxy.host(), proxy.port(), opts, began).await?;
-
-    let tcp = match proxy.protocol().approach(use_tls) {
-        // Nothing to negotiate: an HTTP proxy serving `http://` is an
-        // origin server for this request, and what changes is the request
-        // line, one layer up.
-        crate::proxy::Approach::Absolute => tcp,
-        crate::proxy::Approach::Tunnel => {
-            // A fresh state machine per connection: the configured
-            // protocol is a template — credentials and options — and
-            // running a handshake mutates it.
-            let mut handshake = proxy.handshake();
-            let mut stream = tcp;
-            let read_buf = hclient_proxy::drive(&mut stream, &mut handshake, host, port).await?;
-            // **It must be empty, and this is a check rather than a
-            // rewind.** We have not written a byte to the origin, so
-            // nothing it might answer can have arrived; anything past the
-            // end of the tunnel handshake was invented by the proxy. A
-            // `Rewind`-shaped wrapper would carry those bytes into the TLS
-            // handshake or into hyper as if the origin had sent them,
-            // which is the quieter of the two failures and the worse one.
-            if !read_buf.is_empty() {
-                return Err(Error::new(
-                    ErrorKind::Connect,
-                    crate::error::ProxySpokeFirst(read_buf.len()),
-                ));
-            }
-            stream
-        }
-    };
-
-    if !use_tls {
-        return Ok((Conn::plain(tcp), None, attempted));
-    }
-
-    // The **origin's** name, never the proxy's: the tunnel is transport,
-    // and a certificate is checked against who the caller asked for. No
-    // ECH: no record was consulted, so there is nothing to apply — see
-    // this function's doc comment.
-    let req = TlsRequest::new(hclient_core::url::bare_host(host), alpn).identity(identity);
-    let handshake_began = mark::<H, R>(rt);
-    let (stream, info) = tls.connect(tcp, req).await?;
-    if let Some(a) = attempted.as_mut() {
-        a.tls = Some(since::<R>(rt, handshake_began));
-    }
-    Ok((Conn::tls(stream), Some(info), attempted))
-}
-
-/// The TLS half of a Unix-domain connect, which is
-/// [`through_proxy`]'s tail and nothing else.
+/// The TLS half of a connection an egress filter opened — to a proxy, a
+/// tunnel through one, or a Unix socket.
 ///
-/// Split out rather than inlined so the two paths that reach TLS without
-/// Happy Eyeballs cannot drift: both must use the **origin's** name, and
-/// both hand back an `Attempted` with no address in it — there is no
-/// address, which is exactly what the caller should see rather than a
-/// fabricated one.
-async fn finish_unix<R, L, H>(
+/// TLS uses the **origin's** name whatever carried the bytes, because the
+/// certificate is checked against who the caller asked for. A connection
+/// with no address (a socket) hands back an `Attempted` with none in it,
+/// which is what the caller should see rather than a fabricated one.
+async fn finish_filtered<R, L, H>(
     rt: &R,
     tls: &L,
     stream: R::Stream,
+    // What `NativeDial::connect` reported for a proxy reached by name;
+    // `None` for one reached over a socket, which is synthesised below.
+    dialled: Option<Box<Attempted>>,
     host: &str,
     use_tls: bool,
     alpn: &[&[u8]],
@@ -1033,12 +957,14 @@ where
     // inside it, which is the honest absence: there is no address. `dns`
     // is zero because nothing was resolved, and `tcp` is the whole of the
     // connect, since `connect_ipc` is the only thing that dialled.
-    let mut attempted = began.map(|b| {
-        Box::new(Attempted {
-            remote: None,
-            dns: Duration::ZERO,
-            tcp: since::<R>(rt, Some(b)),
-            tls: None,
+    let mut attempted = dialled.or_else(|| {
+        began.map(|b| {
+            Box::new(Attempted {
+                remote: None,
+                dns: Duration::ZERO,
+                tcp: since::<R>(rt, Some(b)),
+                tls: None,
+            })
         })
     });
     if !use_tls {
@@ -1056,52 +982,13 @@ where
     Ok((Conn::tls(tls_stream), Some(info), attempted))
 }
 
-/// Where one request's connection goes: straight to the origin, through a
-/// proxy, or over the transport's Unix socket.
-///
-/// Decided in one place and asked by both stacks. The connector asks it
-/// before it resolves anything; the routing between TCP and QUIC asks it
-/// before it looks for an HTTPS record or reads the `Alt-Svc` cache,
-/// because QUIC can only take a [`Egress::Direct`] request — a proxy and a
-/// Unix socket carry a byte stream, and a request sent over UDP instead
-/// leaves the path the transport was configured with.
-pub(crate) enum Egress<'a, R: TcpConnect, P> {
-    /// Nothing configured stands between this request and its origin.
-    Direct,
-    /// This proxy serves the request — the first in the list that does.
-    Proxy(&'a crate::proxy::Proxy<P>),
-    /// Every request goes over this socket.
-    Unix(&'a crate::IpcRoute<R>),
-}
-
-/// See [`Egress`]. A Unix socket and a proxy are never both configured —
-/// `Native::unix_socket` and `Native::with_proxies` refuse the pair — so
-/// the order of the two checks decides nothing.
-pub(crate) fn egress<'a, R: TcpConnect, P>(
-    unix_socket: Option<&'a crate::IpcRoute<R>>,
-    proxies: &'a [crate::proxy::Proxy<P>],
-    use_tls: bool,
-    host: &str,
-    port: u16,
-) -> Egress<'a, R, P>
-where
-    P: crate::proxy::Handshake,
-{
-    if let Some(route) = unix_socket {
-        return Egress::Unix(route);
-    }
-    match crate::proxy::Proxy::choose(proxies, use_tls, host, port) {
-        Some(proxy) => Egress::Proxy(proxy),
-        None => Egress::Direct,
-    }
-}
-
-pub(crate) async fn connect<R, D, L, P, H>(
+pub(crate) async fn connect<R, D, L, H>(
     rt: &R,
     dns: &D,
     tls: &L,
-    proxies: &[crate::proxy::Proxy<P>],
-    unix_socket: Option<&crate::IpcRoute<R>>,
+    rules: &hclient_proxy::Rules,
+    ipc: Option<crate::DialIpc<R>>,
+    budget: Option<Duration>,
     uri: &Uri,
     opts: &TcpOpts,
     alpn: &[&[u8]],
@@ -1124,7 +1011,6 @@ where
     R: TcpConnect + Timer,
     D: Resolve,
     L: TlsConnect,
-    P: crate::proxy::Handshake + Clone,
     R::Stream: 'static,
     H: Hooks,
 {
@@ -1146,21 +1032,39 @@ where
     // rather than a proxied path with the proxy removed. A Unix socket has
     // no bypass list and should not: the whole point is that this process
     // reaches the service only through it.
-    match egress(unix_socket, proxies, use_tls, host, port) {
-        Egress::Unix(route) => {
-            let stream = (route.dial)(rt, &route.addr)
-                .await
-                .map_err(|e| Error::new(ErrorKind::Connect, e))?;
-            return finish_unix::<R, L, H>(rt, tls, stream, host, use_tls, alpn, identity, began)
-                .await;
-        }
-        Egress::Proxy(proxy) => {
-            return through_proxy::<R, L, P, H>(
-                rt, dns, tls, proxy, host, use_tls, port, opts, alpn, identity, began,
-            )
-            .await;
-        }
-        Egress::Direct => {}
+    let target = hclient_proxy::Target {
+        host,
+        port,
+        use_tls,
+    };
+    if let hclient_proxy::Decision::Filtered { .. } =
+        hclient_proxy::EgressFilter::route(rules, &target)
+    {
+        let dial = crate::dial::NativeDial::<R, D, H>::new(rt, dns, opts, ipc, budget, began);
+        let opened = hclient_proxy::EgressFilter::open_stream(rules, target, &dial)
+            .await
+            .map_err(hclient_proxy::Attempt::into_error)?;
+        let stream = match opened {
+            hclient_proxy::Opened::Raw(s) => s,
+            hclient_proxy::Opened::Boxed(_) => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    std::io::Error::other("the default egress filter never wraps a stream"),
+                ));
+            }
+        };
+        return finish_filtered::<R, L, H>(
+            rt,
+            tls,
+            stream,
+            dial.take_attempted(),
+            host,
+            use_tls,
+            alpn,
+            identity,
+            began,
+        )
+        .await;
     }
 
     // Both families are started here, at the top, rather than inside
@@ -2449,11 +2353,12 @@ mod tests {
         let uri: Uri = "https://example.invalid/".parse().unwrap();
         let cache = NegativeCache::default();
 
-        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
-            &[],
+            &hclient_proxy::Rules::new(),
+            None,
             None,
             &uri,
             &TcpOpts::default(),
@@ -2501,11 +2406,12 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
-            &[],
+            &hclient_proxy::Rules::new(),
+            None,
             None,
             &uri,
             &TcpOpts::default(),
@@ -2692,11 +2598,12 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
-            &[],
+            &hclient_proxy::Rules::new(),
+            None,
             None,
             &uri,
             &TcpOpts::default(),
@@ -2752,11 +2659,12 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
-            &[],
+            &hclient_proxy::Rules::new(),
+            None,
             None,
             &uri,
             &TcpOpts::default(),
@@ -2888,23 +2796,24 @@ mod tests {
         let cache = NegativeCache::default();
         let opts = TcpOpts::default();
 
+        let rules = hclient_proxy::Rules::new();
         {
-            let mut fut =
-                std::pin::pin!(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
-                    &rt,
-                    &dns,
-                    &NoOpTls,
-                    &[],
-                    None,
-                    &uri,
-                    &opts,
-                    &[],
-                    None,
-                    &cache,
-                    Duration::ZERO,
-                    Prefetched::NotConsulted,
-                    None,
-                ));
+            let mut fut = std::pin::pin!(super::connect::<_, _, _, NoHooks>(
+                &rt,
+                &dns,
+                &NoOpTls,
+                &rules,
+                None,
+                None,
+                &uri,
+                &opts,
+                &[],
+                None,
+                &cache,
+                Duration::ZERO,
+                Prefetched::NotConsulted,
+                None,
+            ));
             let mut cx = Context::from_waker(std::task::Waker::noop());
             assert!(
                 fut.as_mut().poll(&mut cx).is_pending(),
@@ -2997,23 +2906,23 @@ mod tests {
             .parse()
             .unwrap();
         let rt = FakeRt::new([(live.ip(), true)]);
-        let (conn, _info, _facts) =
-            bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
-                &rt,
-                &dns,
-                &NoOpTls,
-                &[],
-                None,
-                &uri,
-                &TcpOpts::default(),
-                &[],
-                None,
-                &NegativeCache::default(),
-                Duration::ZERO,
-                Prefetched::NotConsulted,
-                None,
-            ))
-            .expect("the v4 address must win the race");
+        let (conn, _info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &hclient_proxy::Rules::new(),
+            None,
+            None,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            None,
+            &NegativeCache::default(),
+            Duration::ZERO,
+            Prefetched::NotConsulted,
+            None,
+        ))
+        .expect("the v4 address must win the race");
         assert!(matches!(conn.0, Side::Plain(_)));
         // v6(2) never got its turn — the race stopped as soon as v4 won.
         assert_eq!(
@@ -3069,11 +2978,12 @@ mod tests {
             .parse()
             .unwrap();
         let rt = FakeRt::new([(live.ip(), true)]);
-        let err = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+        let err = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
-            &[],
+            &hclient_proxy::Rules::new(),
+            None,
             None,
             &uri,
             &TcpOpts::default(),
@@ -3105,23 +3015,23 @@ mod tests {
         let uri: Uri = format!("http://example.invalid:{}/", addr.port())
             .parse()
             .unwrap();
-        let (conn, info, _facts) =
-            bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
-                &FakeRt::new([(addr.ip(), true)]),
-                &dns,
-                &NoOpTls,
-                &[],
-                None,
-                &uri,
-                &TcpOpts::default(),
-                &[],
-                None,
-                &NegativeCache::default(),
-                Duration::ZERO,
-                Prefetched::NotConsulted,
-                None,
-            ))
-            .expect("connect");
+        let (conn, info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+            &FakeRt::new([(addr.ip(), true)]),
+            &dns,
+            &NoOpTls,
+            &hclient_proxy::Rules::new(),
+            None,
+            None,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            None,
+            &NegativeCache::default(),
+            Duration::ZERO,
+            Prefetched::NotConsulted,
+            None,
+        ))
+        .expect("connect");
         assert!(matches!(conn.0, Side::Plain(_)));
         assert!(info.is_none());
     }
@@ -3137,23 +3047,23 @@ mod tests {
             .parse()
             .unwrap();
         let alpn: [&[u8]; 1] = [b"h2"];
-        let (conn, info, _facts) =
-            bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
-                &FakeRt::new([(addr.ip(), true)]),
-                &dns,
-                &NoOpTls,
-                &[],
-                None,
-                &uri,
-                &TcpOpts::default(),
-                &alpn,
-                None,
-                &NegativeCache::default(),
-                Duration::ZERO,
-                Prefetched::NotConsulted,
-                None,
-            ))
-            .expect("connect");
+        let (conn, info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+            &FakeRt::new([(addr.ip(), true)]),
+            &dns,
+            &NoOpTls,
+            &hclient_proxy::Rules::new(),
+            None,
+            None,
+            &uri,
+            &TcpOpts::default(),
+            &alpn,
+            None,
+            &NegativeCache::default(),
+            Duration::ZERO,
+            Prefetched::NotConsulted,
+            None,
+        ))
+        .expect("connect");
         assert!(matches!(conn.0, Side::Tls(_)));
         assert_eq!(info.unwrap().alpn.as_deref(), Some(b"h2".as_slice()));
     }
@@ -3165,11 +3075,12 @@ mod tests {
             v4: vec![],
         };
         let uri: Uri = "ftp://example.invalid/".parse().unwrap();
-        let err = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+        let err = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &FakeRt::new([]),
             &dns,
             &NoOpTls,
-            &[],
+            &hclient_proxy::Rules::new(),
+            None,
             None,
             &uri,
             &TcpOpts::default(),
@@ -3199,11 +3110,12 @@ mod tests {
         };
         let uri: Uri = "https://example.invalid/".parse().unwrap();
         let rt = FakeRt::new([]);
-        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
-            &[],
+            &hclient_proxy::Rules::new(),
+            None,
             None,
             &uri,
             &TcpOpts::default(),
@@ -3227,11 +3139,12 @@ mod tests {
         };
         // An `http::Uri` with no authority at all (origin-form).
         let uri: Uri = "/just/a/path".parse().unwrap();
-        let err = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+        let err = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &FakeRt::new([]),
             &dns,
             &NoOpTls,
-            &[],
+            &hclient_proxy::Rules::new(),
+            None,
             None,
             &uri,
             &TcpOpts::default(),

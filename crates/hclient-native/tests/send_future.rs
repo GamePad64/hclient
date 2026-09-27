@@ -111,3 +111,21 @@ async fn a_spawned_exchange_answers() {
         .expect("the exchange must succeed");
     assert_eq!(joined.status(), 200);
 }
+
+/// The same with proxies of two protocols installed. The built-in proxies run through the
+/// egress filter's concrete `open_stream` and `NativeDial`'s `impl Future`
+/// methods, so their `Send` is inferred from the runtime's; nothing boxes
+/// the default path, and nothing may make it `!Send`.
+#[cfg(feature = "proxy")]
+#[test]
+fn the_exchange_future_crosses_a_thread_through_a_proxy() {
+    use hclient_native::proxy::{HttpConnect, Proxy, Socks5};
+    let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio))
+        .proxy(Proxy::new(HttpConnect::new(), "192.0.2.2", 3128))
+        .and_proxy(Proxy::new(Socks5::new(), "192.0.2.3", 1080));
+    let req = http::Request::builder()
+        .uri("https://192.0.2.1/")
+        .body(hclient_core::body::RequestBody::Empty)
+        .unwrap();
+    assert_send(t.execute(req));
+}

@@ -345,7 +345,7 @@ where
 // resolution over the trait's, so a caller with the trait in scope would
 // silently get the other function.
 /// The one implementation, and the contract is on the trait.
-impl<R, T, D, H, P> StagedConnect for Native<R, T, D, H, P>
+impl<R, T, D, H> StagedConnect for Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -353,7 +353,6 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::Handshake + Clone,
 {
     type Staged = Staged<R, T, H>;
 
@@ -474,7 +473,7 @@ where
     }
 }
 
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -482,7 +481,6 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::Handshake + Clone,
 {
     /// The body of [`StagedConnect::connect`], written where the `Refused`
     /// packing is not, so that each failure arm is a pair rather than a
@@ -585,12 +583,13 @@ where
         } else {
             &[b"http/1.1"]
         };
-        let connect_fut = connect::connect::<R, D, T, P, H>(
+        let connect_fut = connect::connect::<R, D, T, H>(
             &self.rt,
             &self.dns,
             &self.tls,
-            &self.proxies,
-            self.unix_socket.as_ref(),
+            &self.rules,
+            self.ipc,
+            timeouts.connect,
             &uri,
             &self.opts,
             alpn,

@@ -112,13 +112,8 @@ impl TryClone for std::os::unix::net::UnixStream {
     }
 }
 
-type Proxied = Native<
-    TokioHandle,
-    hclient_tls_rustls::Rustls,
-    FakeDns,
-    hclient_core::hooks::NoHooks,
-    HttpConnect,
->;
+type Proxied =
+    Native<TokioHandle, hclient_tls_rustls::Rustls, FakeDns, hclient_core::hooks::NoHooks>;
 
 fn quic(pair: &Pair, dns: &FakeDns) -> H3<TokioHandle, hclient_tls_rustls::Rustls, FakeDns> {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
@@ -292,12 +287,10 @@ async fn demanding_http_3_through_a_proxy_is_refused_by_name() {
         .expect("inside the bound")
         .expect_err("HTTP/3 cannot go through a proxy");
     assert_eq!(*err.kind(), ErrorKind::Unsupported);
-    assert_eq!(
-        std::error::Error::source(&err)
-            .and_then(|s| s.downcast_ref::<hclient_native::error::Http3NotDirect>()),
-        Some(&hclient_native::error::Http3NotDirect::Proxy),
-        "{err}"
-    );
+    let refusal = std::error::Error::source(&err)
+        .and_then(|s| s.downcast_ref::<hclient_native::error::NoDatagramPath>())
+        .unwrap_or_else(|| panic!("a typed refusal: {err}"));
+    assert_eq!(&*refusal.via, format!("{PROXY}:{port}"), "names the proxy");
     assert_eq!(tunnels.load(Ordering::SeqCst), 0);
     assert_eq!(pair.quic_attempted(), 0);
 }

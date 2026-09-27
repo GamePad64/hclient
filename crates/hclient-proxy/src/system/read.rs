@@ -593,8 +593,8 @@ mod tests {
 
     /// **`socksProxyHost` is read and named**, not dropped.
     ///
-    /// A transport holds one proxy protocol, so a device naming both is
-    /// refused by name in `from_parts` — and a SOCKS entry that never
+    /// The translation installs HTTP proxies only, so a device naming both
+    /// is refused by name in `from_parts` — and a SOCKS entry that never
     /// reached it could not be refused. This is the reader's half of
     /// `SystemProxyRefused::MixedProtocols`.
     #[test]

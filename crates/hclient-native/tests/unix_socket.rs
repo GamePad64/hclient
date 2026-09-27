@@ -13,8 +13,6 @@ use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
-#[cfg(feature = "proxy")]
-use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -110,46 +108,63 @@ fn a_request_goes_over_the_socket_and_the_head_is_ordinary() {
     );
 }
 
-/// **A proxy and a Unix socket are refused together**, in both orders,
-/// because both answer *where does this connection go* and a precedence
-/// rule between them would be one nobody could guess.
+/// **A proxy and a Unix socket are rules in one ordered list**, and the
+/// first that serves a request carries it — in both orders, because the
+/// order is the whole of the rule.
+///
+/// The proxy here serves every request and listens nowhere (port 1), so a
+/// request it carries fails to connect; the socket's server is the witness
+/// that the socket was, or was not, used.
 #[cfg(feature = "proxy")]
 #[test]
-fn a_proxy_and_a_socket_cannot_both_be_configured() {
+fn a_proxy_and_a_socket_are_tried_in_the_order_they_were_added() {
     use hclient_native::proxy::{HttpConnect, Proxy};
 
-    let (path, _seen) = unix_server();
-    let err = Native::new(Tokio, NoTls, IpLiteralOnly)
+    let send = |t: Native<Tokio, NoTls, IpLiteralOnly>| {
+        rt().block_on(async move {
+            tokio::time::timeout(
+                BOUND,
+                t.execute(
+                    http::Request::builder()
+                        .uri("http://not-a-real-host.invalid:9/order")
+                        .body(RequestBody::Empty)
+                        .expect("request"),
+                ),
+            )
+            .await
+            .expect("must not hang")
+            .map(|r| r.status())
+        })
+    };
+
+    // The socket first: it serves everything, so the proxy after it is
+    // never reached and the request arrives at the socket.
+    let (path, seen) = unix_server();
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly)
+        .unix_socket(&path)
+        .expect("tokio on unix supports this")
+        .proxy(Proxy::new(HttpConnect::new(), "127.0.0.1", 1));
+    assert_eq!(send(t).expect("the socket answers"), 200);
+    assert!(seen.recv_timeout(BOUND).is_ok(), "the socket carried it");
+
+    // The proxy first: it serves everything, so the socket after it is
+    // never reached — and the request fails at the proxy rather than
+    // reaching the socket.
+    let (path, seen) = unix_server();
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly)
         .proxy(Proxy::new(HttpConnect::new(), "127.0.0.1", 1))
         .unix_socket(&path)
-        .map(|_| ())
-        .expect_err("both decide where the connection goes");
+        .expect("tokio on unix supports this");
+    let err = send(t).expect_err("nothing listens on the proxy's port");
     assert_eq!(
         *err.kind(),
-        hclient_core::error::ErrorKind::Unsupported,
+        hclient_core::error::ErrorKind::Connect,
         "{err:?}"
     );
     assert!(
-        StdError::source(&err)
-            .and_then(|s| s.downcast_ref::<hclient_native::error::ProxyAndUnixSocket>())
-            .is_some(),
-        "the typed refusal: {err:?}"
-    );
-
-    // The other order panics rather than returning, and that asymmetry is
-    // documented on `proxy` — it changes `P`, so it cannot hand back a
-    // `Result` without costing every caller who never touches a socket a
-    // `?`. Asserted so the panic is a decision rather than a surprise.
-    let (path2, _s2) = unix_server();
-    let hit = std::panic::catch_unwind(move || {
-        let _ = Native::new(Tokio, NoTls, IpLiteralOnly)
-            .unix_socket(&path2)
-            .expect("supported")
-            .proxy(Proxy::new(HttpConnect::new(), "127.0.0.1", 1));
-    });
-    assert!(
-        hit.is_err(),
-        "`.unix_socket(..).proxy(..)` must not be silent"
+        seen.recv_timeout(std::time::Duration::from_millis(200))
+            .is_err(),
+        "the socket must not have been used"
     );
 }
 

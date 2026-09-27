@@ -193,14 +193,13 @@ where
 }
 
 /// The clock and the upgrade: what a framing crate needs from this one.
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
-    P: crate::proxy::Handshake + Clone,
 {
     // Maintainer notes (not rendered):
     // is the HTTP/2 answer to upgrades and this is not it. The pool is
@@ -251,12 +250,13 @@ where
         // and its end is the framing layer's business, which the caller
         // sees directly. Reporting `Connected` alone would put an id into
         // a caller's log that no later event ever mentions again.
-        let connect_fut = connect::connect::<_, _, _, _, NoHooks>(
+        let connect_fut = connect::connect::<_, _, _, NoHooks>(
             &self.rt,
             &self.dns,
             &self.tls,
-            &self.proxies,
-            self.unix_socket.as_ref(),
+            &self.rules,
+            self.ipc,
+            timeouts.connect,
             &uri,
             &self.opts,
             &[b"http/1.1"],

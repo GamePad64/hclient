@@ -428,8 +428,8 @@ pub mod proxy {
     // `default_transport()?.proxy(..)`, plus the refusals they meet
     // through `Error::source`.
     pub use hclient_native::proxy::{
-        ConnectError, HttpConnect, NoProxy, Proxy, ProxyRefused, ProxyScheme, Socks4,
-        Socks4HandshakeError, Socks4Refused, Socks5, Socks5HandshakeError, Socks5Refused,
+        ConnectError, HttpConnect, Proxy, ProxyRefused, ProxyScheme, Socks4, Socks4HandshakeError,
+        Socks4Refused, Socks5, Socks5HandshakeError, Socks5Refused,
     };
 }
 
@@ -732,16 +732,10 @@ pub type DefaultTransport = hclient_native::Native<
     hclient_rt_tokio::Tokio,
     hclient_tls_rustls::Rustls,
     hclient_dns_system::SystemDns<hclient_rt_tokio::Tokio>,
+    // No proxy type: proxies are data in the transport's egress filter,
+    // so a proxied machine and an unproxied one build the same type and
+    // `transport_as::<DefaultTransport>()` works on both.
     hclient_core::hooks::NoHooks,
-    // **It names `HttpConnect` even where no proxy is configured**, and
-    // that is what keeps it one type. `Client::new` reads the machine's
-    // settings, so on a proxied machine the transport it builds holds
-    // HTTP proxies and on every other machine it holds an empty list of
-    // them. Naming `NoProxy` here would have made `Client::new`'s
-    // transport a *different type* from `default_transport()`'s, and
-    // `transport_as::<DefaultTransport>()` — the documented way past the
-    // facade — would work on one machine and not on the next.
-    hclient_native::proxy::HttpConnect,
 >;
 
 // Maintainer notes (not rendered):

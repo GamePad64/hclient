@@ -99,14 +99,6 @@ pub struct MaxBufSizeTooSmall {
     pub asked: usize,
 }
 
-/// A proxy and a Unix socket both answer *where does this connection go*,
-/// and a precedence rule between them would be one nobody could guess.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "a proxy and a Unix socket both answer `where does this connection go`; configure at most one"
-)]
-pub struct ProxyAndUnixSocket;
-
 /// The requested `HeConfig`'s `attempt_delay` is outside the RFC 8305
 /// recommended range. `Scheduler::new` silently clamps such a
 /// value, because its signature is fixed by the task's interface — `Self`,
@@ -202,27 +194,23 @@ pub(crate) struct UnknownClientIdentity(pub(crate) String);
 #[error("this transport has no QUIC arm; see `Native::http3`")]
 pub struct NoQuicArm;
 
-/// `RequireVersion(HTTP_3)` for a request this transport sends somewhere
-/// other than straight to the origin.
+/// `RequireVersion(HTTP_3)` for a request this transport's egress filter
+/// carries — through a proxy, or over a Unix socket.
 ///
-/// A proxy and a Unix socket each carry a byte stream, and HTTP/3 runs
-/// over QUIC datagrams, so neither can carry it. Sending the request
-/// directly instead would leave the path the transport was configured
-/// with, which is the one thing the refusal exists to prevent.
+/// HTTP/3 runs over QUIC datagrams, and no path through a filter carries
+/// datagrams yet. Sending the request directly instead would leave the
+/// path the transport was configured with, which is the one thing the
+/// refusal exists to prevent.
 #[cfg(feature = "http3")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "HTTP/3 was required, and this request goes through `{via}`, which carries a byte stream and cannot carry QUIC"
+)]
 #[non_exhaustive]
-pub enum Http3NotDirect {
-    /// A proxy serves this request.
-    #[error(
-        "HTTP/3 was required, and this request goes through a proxy, which carries a byte stream and cannot carry QUIC"
-    )]
-    Proxy,
-    /// This transport sends every request over a Unix socket.
-    #[error(
-        "HTTP/3 was required, and this transport sends every request over a Unix socket, which cannot carry QUIC"
-    )]
-    UnixSocket,
+pub struct NoDatagramPath {
+    /// Where the filter sends this request — a proxy's `host:port`, or
+    /// `unix:<path>`.
+    pub via: Box<str>,
 }
 
 // ---------------------------------------------------------------------

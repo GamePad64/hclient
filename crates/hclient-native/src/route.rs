@@ -31,7 +31,7 @@
 use crate::altsvc_cache::{self as altsvc, Origin};
 use crate::connect::HTTPS_DEFAULT_PORT;
 use crate::discovery::Discovered;
-use crate::error::{Http3NotDirect, NoQuicArm};
+use crate::error::{NoDatagramPath, NoQuicArm};
 use crate::established::NativeBody as EstablishedBody;
 use crate::{ALPN_H3, Native, Prepared, Protocol, spoken_version};
 use futures_util::StreamExt as _;
@@ -140,7 +140,7 @@ pub(crate) fn spend_connect_budget(req: &mut http::Request<RequestBody>, spent: 
     !left.is_zero()
 }
 
-impl<R, T, D, H, P> Native<R, T, D, H, P>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -148,7 +148,6 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: hclient_core::hooks::Hooks + Clone + Unpin,
-    P: crate::proxy::Handshake + Clone,
 {
     /// [`Transport::execute`], with the choice in front of it.
     ///
@@ -391,22 +390,19 @@ where
     /// A URI with no host or with a scheme this transport refuses is
     /// `None`: the TCP stack raises that error where it always did, and a
     /// request that cannot be sent anywhere has no path to leave.
-    fn not_direct(&self, uri: &http::Uri) -> Option<Http3NotDirect> {
+    fn not_direct(&self, uri: &http::Uri) -> Option<NoDatagramPath> {
         let (Ok(host), Ok(use_tls)) = (crate::connect::host(uri), crate::connect::wants_tls(uri))
         else {
             return None;
         };
         let port = crate::connect::port(uri, use_tls);
-        match crate::connect::egress(
-            self.unix_socket.as_ref(),
-            &self.proxies,
-            use_tls,
-            host,
-            port,
-        ) {
-            crate::connect::Egress::Direct => None,
-            crate::connect::Egress::Proxy(_) => Some(Http3NotDirect::Proxy),
-            crate::connect::Egress::Unix(_) => Some(Http3NotDirect::UnixSocket),
+        match self.egress_route(use_tls, host, port) {
+            hclient_proxy::Decision::Direct => None,
+            // `datagrams: true` is not honoured yet: no path exists for
+            // QUIC through a filter, whatever the filter declares.
+            hclient_proxy::Decision::Filtered { pool_key, .. } => {
+                Some(NoDatagramPath { via: pool_key })
+            }
         }
     }
 

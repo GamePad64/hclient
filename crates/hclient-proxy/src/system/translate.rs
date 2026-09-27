@@ -2,11 +2,10 @@
 //!
 //! # What can go wrong, and why it is an error rather than a shrug
 //!
-//! A transport holds **one** proxy protocol `P`, which is the limit this
-//! crate's root doc records against `Box<dyn Handshake>`. A machine can
-//! name a SOCKS proxy and an HTTP one at once, and one transport cannot
-//! hold both. Two more things can arrive that no [`Proxy`] can state
-//! exactly: a subnet in the bypass list, and a wildcard in the middle of
+//! These functions install **HTTP** proxies only. A machine can name a
+//! SOCKS proxy and an HTTP one at once, and installing only the HTTP half
+//! would send the rest direct. Two more things can arrive that no
+//! [`Proxy`] can state exactly: a subnet in the bypass list, and a wildcard in the middle of
 //! a pattern.
 //!
 //! Every one of them is a **named refusal**, never a quiet narrowing, and
@@ -121,8 +120,8 @@ pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, Syst
 /// - **A PAC script alone.** Direct — which is what curl and reqwest do
 ///   on the same machine, neither of them being able to see it. The
 ///   difference is that this one can, and says so in the report.
-/// - **A SOCKS proxy.** Dropped, because a transport holds one proxy
-///   protocol. Where SOCKS was the *only* proxy this means going direct
+/// - **A SOCKS proxy.** Dropped, because this call installs HTTP proxies
+///   only. Where SOCKS was the *only* proxy this means going direct
 ///   on a machine that wanted a proxy, which is the one degradation here
 ///   that loses something real — and is why the strict call exists.
 /// - **A bypass pattern this matcher cannot state** — a wildcard that is

@@ -21,10 +21,6 @@ use crate::connect::Attempted;
 /// whatever auto traits the runtime's and resolver's futures have: a
 /// `Send` runtime gives a `Send` connect, and a `!Send` one (embassy) is
 /// asked for nothing.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the connect path adopts it in the next commit")
-)]
 pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, H> {
     rt: &'a R,
     dns: &'a D,
@@ -40,10 +36,6 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, H> {
     _h: PhantomData<fn() -> H>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the connect path adopts it in the next commit")
-)]
 impl<'a, R: TcpConnect + Timer, D: ?Sized, H> NativeDial<'a, R, D, H> {
     pub(crate) fn new(
         rt: &'a R,
@@ -66,10 +58,6 @@ impl<'a, R: TcpConnect + Timer, D: ?Sized, H> NativeDial<'a, R, D, H> {
     }
 
     /// What the last connect by name reported for the hooks, if anything.
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "the connect path adopts it in the next commit")
-    )]
     pub(crate) fn take_attempted(&self) -> Option<Box<Attempted>> {
         self.attempted
             .lock()

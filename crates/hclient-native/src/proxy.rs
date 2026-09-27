@@ -46,14 +46,13 @@
 #[cfg(feature = "system-proxy")]
 #[doc(inline)]
 pub use hclient_proxy::system;
-pub use hclient_proxy::{Approach, Handshake, NoProxy, Proxy, ProxyScheme, Step};
+pub use hclient_proxy::{Approach, Handshake, Proxy, ProxyScheme, Reach, Step};
 // Maintainer notes (not rendered):
 // The three protocols, behind the `proxy` feature exactly as they were
-// before they moved: the seam above is unconditional because `Native`'s
-// own `P = NoProxy` default names one of its types.
+// before they moved. The seam above is unconditional because `Native`'s
+// proxy constructors name `Proxy` and `Handshake` whatever the features.
 /// The three protocols, behind the `proxy` feature. The seam above is
-/// unconditional because `Native`'s own `P = NoProxy` default names one of
-/// its types.
+/// unconditional because `Native`'s proxy constructors name it.
 #[cfg(feature = "proxy")]
 pub use hclient_proxy::{
     ConnectError, HttpConnect, MalformedHead, ProxyRefused, Socks4, Socks4HandshakeError,
@@ -66,8 +65,8 @@ pub use hclient_proxy::{
 /// [`AbsoluteForm`](Via::AbsoluteForm) is only ever the answer for an
 /// HTTP proxy carrying an `http://` request, where the proxy is an origin
 /// server for this request — RFC 9112 §3.2.2's absolute-form.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Via<'a> {
+#[derive(Debug, Clone)]
+pub(crate) enum Via {
     Direct,
-    AbsoluteForm(Option<&'a http::HeaderValue>),
+    AbsoluteForm(Option<http::HeaderValue>),
 }

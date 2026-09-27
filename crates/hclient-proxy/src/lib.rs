@@ -131,7 +131,7 @@ pub use error::{
     ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
     Socks4Refused, Socks5HandshakeError, Socks5Refused,
 };
-pub use proxy::{NoProxy, Proxy, ProxyScheme, Reach};
+pub use proxy::{Proxy, ProxyScheme, Reach};
 pub use rules::{BoxHandshake, DynHandshake, Rules};
 pub use socks4::Socks4;
 pub use socks5::Socks5;

@@ -2631,13 +2631,13 @@ impl Client {
     -> Result<crate::DefaultTransport, hclient_core::error::Error> {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
-        // `.with_proxies(Vec::new())` names the `P` the alias promises
-        // without configuring anything: this seam stays inert, and
-        // `Client::new` is what fills the list. See `DefaultTransport`.
-        Ok(
-            hclient_native::Native::new(rt, tls, hclient_dns_system::SystemDns::new(rt))
-                .with_proxies(Vec::new()),
-        )
+        // No proxy here: `Client::new` is what reads the machine's settings
+        // and adds them. See `DefaultTransport`.
+        Ok(hclient_native::Native::new(
+            rt,
+            tls,
+            hclient_dns_system::SystemDns::new(rt),
+        ))
     }
 
     /// The `http3` sibling of the function above, forked on the same single
@@ -2671,14 +2671,9 @@ impl Client {
         let tcp =
             hclient_native::Native::new(rt, tls.clone(), hclient_dns_system::SystemDns::new(rt));
         let quic = hclient_native::H3::new(rt, tls, hclient_dns_system::SystemDns::new(rt))?;
-        // `.proxies(Vec::new())` for the reason the other fork gives:
-        // the alias names the `P` a proxied machine will need, and this
-        // seam stays inert either way.
-        tcp.http3(quic)
-            .map(|t| t.with_proxies(Vec::new()))
-            .map_err(|e| {
-                hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e)
-            })
+        tcp.http3(quic).map_err(|e| {
+            hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e)
+        })
     }
 }
 

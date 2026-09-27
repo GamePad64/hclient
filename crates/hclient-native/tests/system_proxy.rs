@@ -13,7 +13,6 @@ use hclient::Client;
 use hclient_core::transport::Transport;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
-use hclient_native::proxy::HttpConnect;
 use hclient_native::proxy::system::testing::system_proxies;
 use hclient_native::testing::chosen_proxy;
 use hclient_rt_tokio::Tokio;
@@ -23,12 +22,12 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-type Installed = Native<Tokio, NoTls, IpLiteralOnly, hclient_core::hooks::NoHooks, HttpConnect>;
+type Installed = Native<Tokio, NoTls, IpLiteralOnly>;
 
 /// Where a request would go, asked through the chooser a request uses
 /// rather than by reading fields back.
 fn route(t: &Installed, use_tls: bool, host: &str, port: u16) -> Option<String> {
-    chosen_proxy(t, use_tls, host, port).map(|p| format!("{}:{}", p.host(), p.port()))
+    chosen_proxy(t, use_tls, host, port).map(String::from)
 }
 
 fn transport() -> Native<Tokio, NoTls, IpLiteralOnly> {

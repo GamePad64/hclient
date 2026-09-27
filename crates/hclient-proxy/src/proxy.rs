@@ -5,39 +5,6 @@
 //! Nothing in this file knows what a socket is, which is why the whole of
 //! it is testable with `assert!`.
 
-use crate::{Approach, Handshake, Step};
-use bytes::{Bytes, BytesMut};
-use hclient_core::error::Error;
-
-// Maintainer notes (not rendered):
-// A unit struct with `unreachable!()` bodies
-// would be a value that exists only to be absent, which is the shape
-// this workspace deleted `UpgradeSupport`'s spare variants for.
-/// No proxy — and it is an **empty enum**, so `Proxy<NoProxy>` cannot be
-/// constructed and the `Option` holding one is `None` by construction
-/// rather than by discipline.
-#[derive(Debug, Clone, Copy)]
-pub enum NoProxy {}
-
-impl Handshake for NoProxy {
-    fn approach(&self, _: bool) -> Approach {
-        match *self {}
-    }
-
-    fn begin(&mut self, _: &str, _: u16) -> Result<Bytes, Error> {
-        match *self {}
-    }
-
-    fn advance(&mut self, _: &mut BytesMut) -> Result<Step, Error> {
-        match *self {}
-    }
-}
-
-// Maintainer notes (not rendered):
-// That is a real limit and it is
-// stated rather than worked around, because erasing `P` to lift it would
-// erase the IO with it, which is the objection this crate's own root doc
-// records against `Box<dyn Handshake>`.
 /// Which request scheme a proxy serves, for a caller who has more than
 /// one.
 ///
@@ -472,7 +439,7 @@ fn host_matches(pattern: &str, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HttpConnect, Socks5};
+    use crate::{Approach, Handshake, HttpConnect, Socks5};
 
     #[test]
     fn only_an_http_proxy_treats_the_two_schemes_differently() {

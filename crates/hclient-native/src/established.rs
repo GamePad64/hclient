@@ -253,7 +253,7 @@ pub(crate) async fn exchange<I, H>(
     checkin: Option<CheckIn<I>>,
     canonical: &http::Uri,
     hooks: H,
-    how: Dispatch<'_, H>,
+    how: Dispatch<H>,
 ) -> Result<http::Response<NativeBody<I, H>>, Failed>
 where
     I: Read + Write + Shutdown + Unpin + 'static,
@@ -359,8 +359,8 @@ where
 /// the request line, `watch_1xx` and `gate` are the two readers of the
 /// **one** `hyper::ext::on_informational` callback a request may carry.
 #[derive(Clone)]
-pub(crate) struct Dispatch<'a, H> {
-    pub(crate) via: crate::proxy::Via<'a>,
+pub(crate) struct Dispatch<H> {
+    pub(crate) via: crate::proxy::Via,
     pub(crate) watch_1xx: Option<crate::Watch1xx<H>>,
     /// An owned handle rather than a borrow: the same gate is held by the
     /// race in `Native::within_first_byte_gated`, and one of the two would
@@ -406,7 +406,7 @@ impl Rewritten {
     /// meaning its checks (`connect::host`, `connect::wants_tls`) passed,
     /// so `req.uri()` is guaranteed to carry a host and a supported
     /// (`http`/`https`) scheme; this function doesn't recheck them.
-    fn for_http1(req: &mut http::Request<OutgoingBody>, via: crate::proxy::Via<'_>) -> Self {
+    fn for_http1(req: &mut http::Request<OutgoingBody>, via: crate::proxy::Via) -> Self {
         let uri = req.uri().clone();
         let https = uri.scheme_str() == Some("https");
         let default_port = if https { 443 } else { 80 };
@@ -441,7 +441,7 @@ impl Rewritten {
             crate::proxy::Via::AbsoluteForm(auth) => {
                 if let Some(auth) = auth {
                     req.headers_mut()
-                        .insert(http::header::PROXY_AUTHORIZATION, auth.clone());
+                        .insert(http::header::PROXY_AUTHORIZATION, auth);
                 }
             }
             crate::proxy::Via::Direct => {
