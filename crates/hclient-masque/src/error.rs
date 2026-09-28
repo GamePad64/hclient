@@ -31,3 +31,12 @@ pub enum CapsuleError {
     #[error("capsule length does not fit in usize")]
     TooLarge,
 }
+
+/// The proxy answered a CONNECT or CONNECT-UDP with something other than
+/// `2xx`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the MASQUE proxy refused the tunnel with {status}")]
+pub struct Refused {
+    /// The status it answered.
+    pub status: http::StatusCode,
+}

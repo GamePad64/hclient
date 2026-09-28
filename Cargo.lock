@@ -1474,11 +1474,24 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "futures-io",
+ "h2",
+ "h3",
+ "h3-quinn",
+ "hclient",
  "hclient-core",
+ "hclient-dns-system",
+ "hclient-native",
  "hclient-proxy",
  "hclient-rt",
+ "hclient-rt-tokio",
+ "hclient-tls-rustls",
  "http",
+ "quinn",
+ "rcgen",
+ "rustls",
  "thiserror",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
