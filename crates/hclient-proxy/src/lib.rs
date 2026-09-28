@@ -111,6 +111,7 @@
 use bytes::{Bytes, BytesMut};
 
 mod connect;
+mod datagram;
 mod drive;
 mod egress;
 mod error;
@@ -122,6 +123,9 @@ mod socks5;
 pub mod system;
 
 pub use connect::HttpConnect;
+#[doc(hidden)]
+pub use datagram::testing;
+pub use datagram::{BoxPath, BoxUdp, DatagramPath};
 pub use drive::{drive, drive_exact};
 pub use egress::{
     Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, Decision, Dial, DynDial, EgressFilter,
