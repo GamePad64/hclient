@@ -335,6 +335,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn udp_is_off_until_asked_for() {
+        assert!(!Socks5::new().udp());
+        assert!(Socks5::new().with_udp().udp());
+    }
+
+    #[test]
     fn debug_never_prints_the_password() {
         let s = Socks5::new().password_auth("alice", "hunter2").unwrap();
         let shown = format!("{:?}", crate::Proxy::new(s, "px", 1080));

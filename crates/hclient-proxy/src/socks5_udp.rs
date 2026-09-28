@@ -529,6 +529,8 @@ pub(crate) mod fake {
     pub(crate) struct FakeUdp {
         inner: Arc<Inner>,
         segments: usize,
+        /// Whether `poll_writable` pends rather than answering at once.
+        blocked: bool,
     }
 
     impl FakeUdp {
@@ -536,6 +538,14 @@ pub(crate) mod fake {
         pub(crate) fn with_gro(segments: usize) -> Self {
             Self {
                 segments,
+                ..Self::default()
+            }
+        }
+
+        /// A socket that is never writable.
+        pub(crate) fn blocked() -> Self {
+            Self {
+                blocked: true,
                 ..Self::default()
             }
         }
@@ -579,7 +589,11 @@ pub(crate) mod fake {
             Ok(())
         }
         fn poll_writable(&self, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
+            if self.blocked {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
         }
         fn poll_recv(
             &self,
@@ -779,6 +793,60 @@ mod tests {
     #[test]
     fn a_host_too_long_for_the_length_byte_is_refused() {
         assert!(header_for(&"a".repeat(256), 1).is_err());
+        // The control: the longest name the byte can hold is accepted.
+        let h = header_for(&"a".repeat(255), 1).unwrap();
+        assert_eq!(h[4], 255);
+    }
+
+    #[test]
+    fn a_datagram_with_either_reserved_byte_set_or_too_short_to_hold_one_is_dropped() {
+        let ok = [0, 0, 0, 0x01, 1, 2, 3, 4, 0, 80, b'x'];
+        assert_eq!(decode_datagram(&ok), Some(&b"x"[..]));
+        let mut rsv0 = ok;
+        rsv0[0] = 1;
+        assert_eq!(decode_datagram(&rsv0), None);
+        let mut rsv1 = ok;
+        rsv1[1] = 1;
+        assert_eq!(decode_datagram(&rsv1), None);
+        for short in [&[][..], &[0][..], &[0, 0][..], &[0, 0, 0][..]] {
+            assert_eq!(decode_datagram(short), None, "{short:?}");
+        }
+    }
+
+    fn method_error(chosen: u8) -> Socks5HandshakeError {
+        let mut a = assoc(false);
+        a.begin();
+        let err = a
+            .advance(&mut BytesMut::from(&[0x05, chosen][..]))
+            .expect_err("a method this client cannot use is a refusal");
+        let AssociateError::Failed(e) = err else {
+            panic!("a method refusal is not `Unsupported`: {err:?}")
+        };
+        let source = std::error::Error::source(&e).expect("a source");
+        match source.downcast_ref::<Socks5HandshakeError>() {
+            Some(Socks5HandshakeError::NoAcceptableMethods) => {
+                Socks5HandshakeError::NoAcceptableMethods
+            }
+            Some(Socks5HandshakeError::UnofferedMethod(m)) => {
+                Socks5HandshakeError::UnofferedMethod(*m)
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_acceptable_method_is_named_as_such_and_an_unoffered_one_by_its_number() {
+        assert!(matches!(
+            method_error(0xFF),
+            Socks5HandshakeError::NoAcceptableMethods
+        ));
+        // Password was not offered — no credentials — so a proxy choosing
+        // it is refused, not answered with credentials this client has not
+        // got.
+        assert!(matches!(
+            method_error(0x02),
+            Socks5HandshakeError::UnofferedMethod(0x02)
+        ));
     }
 
     #[test]
@@ -881,6 +949,34 @@ mod tests {
                 path.try_send(&vec![0; max + 1]).unwrap_err().kind(),
                 std::io::ErrorKind::InvalidInput
             );
+            // The control: exactly the size it declares is carried.
+            path.try_send(&vec![0; max]).unwrap();
+        }
+
+        #[test]
+        fn a_path_waits_on_its_socket_to_be_writable() {
+            let (path, _udp) = over("10.0.0.7:8080", open_control(), FakeUdp::blocked());
+            assert!(path.poll_writable(&mut cx()).is_pending());
+            let (open, _) = path_over_fake("10.0.0.7:8080", open_control());
+            assert!(matches!(open.poll_writable(&mut cx()), Poll::Ready(Ok(()))));
+        }
+
+        #[test]
+        fn a_full_datagram_behind_the_longest_header_is_received_whole() {
+            // RSV FRAG, ATYP=3, a 255-byte name, a port — the longest §7
+            // header — then a full 1452-byte payload: the most a relay can
+            // send, and exactly what the receive buffer is sized for.
+            let (path, udp) = path_over_fake("10.0.0.7:8080", open_control());
+            let mut d = vec![0, 0, 0, 0x03, 255];
+            d.extend(std::iter::repeat_n(b'a', 255));
+            d.extend_from_slice(&443u16.to_be_bytes());
+            d.extend(std::iter::repeat_n(7u8, 1452));
+            udp.push_from("10.0.0.7:8080", &d);
+            let mut buf = vec![0u8; 4096];
+            let Poll::Ready(Ok(n)) = path.poll_recv(&mut cx(), &mut buf) else {
+                panic!("the datagram")
+            };
+            assert_eq!(n, 1452);
         }
 
         #[test]

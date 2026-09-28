@@ -141,6 +141,9 @@ async fn a_capsule_path_refuses_what_it_cannot_carry_and_ends_with_its_stream() 
         path.try_send(&too_big).unwrap_err().kind(),
         io::ErrorKind::InvalidInput
     );
+    // The control: exactly the size it declares is accepted.
+    path.try_send(&vec![0u8; hclient_masque::CAPSULE_MAX])
+        .unwrap();
     drop(far);
     let mut buf = [0u8; 16];
     let e = std::future::poll_fn(|cx| path.poll_recv(cx, &mut buf))

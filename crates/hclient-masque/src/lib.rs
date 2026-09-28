@@ -208,3 +208,93 @@ impl SendEgressFilter for Masque {
         Box::pin(self.open_datagrams(target, ctx))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::path::tests::Never;
+
+    fn tunnel(status: u16) -> Tunnel {
+        let (parts, ()) = http::Response::builder()
+            .status(status)
+            .body(())
+            .unwrap()
+            .into_parts();
+        Tunnel::new(parts, BoxIo::new(Never), None)
+    }
+
+    #[test]
+    fn a_non_2xx_answer_is_refused_naming_its_status() {
+        assert!(accepted(&tunnel(200)).is_ok());
+        let e = accepted(&tunnel(501)).unwrap_err();
+        assert_eq!(*e.kind(), ErrorKind::Connect);
+        let source = std::error::Error::source(&e).expect("a source");
+        assert_eq!(
+            source.downcast_ref::<Refused>().map(|r| r.status),
+            Some(http::StatusCode::NOT_IMPLEMENTED)
+        );
+    }
+
+    #[test]
+    fn only_a_bare_ipv6_literal_is_bracketed() {
+        assert_eq!(authority("::1", 443), "[::1]:443");
+        assert_eq!(authority("[::1]", 443), "[::1]:443");
+        assert_eq!(authority("origin.test", 8443), "origin.test:8443");
+    }
+
+    /// A context whose only answer is a tunnel refused with `kind`.
+    struct Refusing(ErrorKind);
+
+    impl Dial for Refusing {
+        type Stream = BoxIo;
+        fn connect<'a>(
+            &'a self,
+            _: &'a str,
+            _: u16,
+        ) -> impl std::future::Future<Output = Result<BoxIo, Error>> + 'a {
+            std::future::ready(Err(Error::new(
+                ErrorKind::Other,
+                std::io::Error::other("no streams"),
+            )))
+        }
+        fn connect_ipc<'a>(
+            &'a self,
+            _: &'a hclient_rt::IpcAddr,
+        ) -> impl std::future::Future<Output = Result<BoxIo, Error>> + 'a {
+            std::future::ready(Err(Error::new(
+                ErrorKind::Other,
+                std::io::Error::other("no streams"),
+            )))
+        }
+        fn remaining(&self) -> Option<std::time::Duration> {
+            None
+        }
+        fn connect_tunnel<'a>(
+            &'a self,
+            _: TunnelRequest<'a>,
+        ) -> impl std::future::Future<Output = Result<Tunnel, Error>> + 'a {
+            std::future::ready(Err(Error::new(
+                self.0.clone(),
+                std::io::Error::other("refused"),
+            )))
+        }
+    }
+
+    fn opened(kind: ErrorKind) -> Attempt {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let masque = Masque::new("proxy.test", 443);
+        let dial = Refusing(kind);
+        match rt.block_on(masque.open_datagrams(Target::new("origin.test", 443, true), &dial)) {
+            Ok(_) => panic!("a refused tunnel opens no path"),
+            Err(a) => a,
+        }
+    }
+
+    #[test]
+    fn a_transport_that_cannot_tunnel_switches_and_any_other_failure_is_final() {
+        assert!(opened(ErrorKind::Unsupported).permits_switch());
+        assert!(!opened(ErrorKind::Connect).permits_switch());
+    }
+}

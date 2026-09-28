@@ -856,6 +856,9 @@ mod tests {
             "::not-v6",
             "<local>",
             "exa mple.com",
+            // A sign is not a digit, though `str::parse` would take it.
+            "example.com:+80",
+            "10.0.0.0/+8",
         ] {
             assert_eq!(refused(pat), BypassReason::Malformed, "{pat:?}");
         }

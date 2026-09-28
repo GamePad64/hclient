@@ -264,6 +264,56 @@ mod tests {
         assert!(a.poll_recv(&mut cx(), &mut buf).is_pending());
     }
 
+    /// A path whose every answer is one no default would give: not
+    /// writable, and a receive of seven bytes.
+    #[derive(Debug)]
+    struct Distinct;
+
+    impl DatagramPath for Distinct {
+        fn try_send(&self, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn poll_writable(&self, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+        fn poll_recv(&self, _: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
+            buf[..7].copy_from_slice(b"seven!!");
+            Poll::Ready(Ok(7))
+        }
+        fn max_datagram_size(&self) -> usize {
+            1200
+        }
+    }
+
+    #[test]
+    fn a_boxed_path_forwards_writability_and_receives() {
+        let boxed = BoxPath::new(Distinct);
+        assert!(boxed.poll_writable(&mut cx()).is_pending());
+        let mut buf = [0u8; 16];
+        let Poll::Ready(Ok(n)) = boxed.poll_recv(&mut cx(), &mut buf) else {
+            panic!("the inner path's answer")
+        };
+        assert_eq!(&buf[..n], b"seven!!");
+    }
+
+    #[test]
+    fn a_boxed_socket_forwards_a_receive_and_its_metadata() {
+        use hclient_rt::{RecvMeta, UdpDatagrams};
+        let udp = crate::socks5_udp::fake::FakeUdp::default();
+        udp.push_from("10.0.0.7:8080", b"hello");
+        let boxed = BoxUdp::new(udp);
+        let mut raw = [0u8; 16];
+        let mut meta = [RecvMeta::default()];
+        let mut bufs = [std::io::IoSliceMut::new(&mut raw)];
+        let Poll::Ready(Ok(n)) = boxed.poll_recv(&mut cx(), &mut bufs, &mut meta) else {
+            panic!("the inner socket's answer")
+        };
+        assert_eq!(n, 1);
+        assert_eq!(meta[0].len, 5);
+        assert_eq!(meta[0].addr, "10.0.0.7:8080".parse().unwrap());
+        assert_eq!(&raw[..5], b"hello");
+    }
+
     #[test]
     fn a_boxed_path_forwards_its_size() {
         let (a, _b) = testing::channel_pair(1337);

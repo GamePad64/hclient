@@ -302,7 +302,7 @@ impl DatagramPath for CapsulePath {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use hclient_proxy::testing::channel_pair;
 
@@ -334,6 +334,57 @@ mod tests {
         assert_eq!(&buf[..n], b"mine");
     }
 
+    #[test]
+    fn a_context_path_carries_exactly_the_size_it_declares() {
+        let (a, _b) = channel_pair(1300);
+        let path = ContextPath::new(BoxPath::new(a), BoxIo::new(Never));
+        path.try_send(&vec![0u8; path.max_datagram_size()]).unwrap();
+    }
+
+    /// A path that is never writable.
+    #[derive(Debug)]
+    struct Stuck;
+    impl DatagramPath for Stuck {
+        fn try_send(&self, _: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+        fn poll_writable(&self, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+        fn poll_recv(&self, _: &mut Context<'_>, _: &mut [u8]) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+        fn max_datagram_size(&self) -> usize {
+            1300
+        }
+    }
+
+    #[test]
+    fn a_context_path_waits_for_its_tunnel_to_be_writable() {
+        let path = ContextPath::new(BoxPath::new(Stuck), BoxIo::new(Never));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(path.poll_writable(&mut cx).is_pending());
+    }
+
+    /// Counts its wakes.
+    struct Count(std::sync::atomic::AtomicUsize);
+    impl Wake for Count {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_waiter_registered_from_another_task_replaces_the_first() {
+        let (first, second) = (Arc::new(Count(0.into())), Arc::new(Count(0.into())));
+        let waiters = Arc::new(Waiters::default());
+        Waiters::register(&waiters.receiver, &Waker::from(first.clone()));
+        Waiters::register(&waiters.receiver, &Waker::from(second.clone()));
+        Waker::from(waiters).wake();
+        let load = |c: &Count| c.0.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!((load(&first), load(&second)), (0, 1));
+    }
+
     fn poll_now<T>(mut f: impl FnMut(&mut Context<'_>) -> Poll<T>) -> T {
         let mut cx = Context::from_waker(Waker::noop());
         match f(&mut cx) {
@@ -343,7 +394,7 @@ mod tests {
     }
 
     /// A stream that never answers, for a path whose stream is only held.
-    struct Never;
+    pub(crate) struct Never;
     impl AsyncRead for Never {
         fn poll_read(
             self: Pin<&mut Self>,
