@@ -20,7 +20,7 @@ use hclient_core::error::Error;
 use hclient_core::error::ErrorKind;
 use hclient_rt::Shutdown;
 
-use crate::{BoxUdp, Tunnel, TunnelRequest};
+use crate::{BoxPath, BoxUdp, Tunnel, TunnelRequest};
 
 /// What a filter asks of a TLS handshake it has the transport run over one
 /// of the transport's own streams — see [`Dial::connect_tls`].
@@ -286,8 +286,8 @@ impl RequestForm {
 /// field rather than a break of every filter: built from the constants,
 /// the attribute costs a filter nothing.
 ///
-/// `datagrams: true` is honoured by no transport yet: a transport that
-/// cannot carry QUIC over a filter treats it as `false`.
+/// `datagrams: true` promises [`EgressFilter::open_datagrams`]; a transport
+/// asks it only where it would otherwise carry the request over QUIC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FilterSupport {
@@ -501,7 +501,45 @@ pub trait EgressFilter {
     ) -> impl Future<Output = Result<Opened<C::Stream, Self::Wrapped<C::Stream>>, Attempt>> + 'a
     where
         Self: Sized;
+
+    /// Open a datagram path to `target`, for a request [`route`](Self::route)
+    /// answered `Filtered` with `support.datagrams`.
+    ///
+    /// Refuses with [`Attempt::Unsupported`] by default — the one answer that
+    /// lets a transport send the request over [`open_stream`](Self::open_stream)
+    /// instead.
+    ///
+    /// # Errors
+    ///
+    /// [`Attempt::Unsupported`] when this filter or its proxy carries no
+    /// datagrams to `target`; [`Attempt::Failed`] when the proxy could not be
+    /// reached or refused.
+    fn open_datagrams<'a, C: Dial + 'a>(
+        &'a self,
+        target: Target<'a>,
+        ctx: &'a C,
+    ) -> impl Future<Output = Result<BoxPath, Attempt>> + 'a
+    where
+        Self: Sized,
+        // A path is `Send + Sync` because its one consumer is a QUIC
+        // stack, and a path that holds the proxy's control connection (a
+        // SOCKS5 association does) holds it for the path's life.
+        C::Stream: Send + 'static, // send-bound-exception: amendment-C16
+    {
+        let _ = (target, ctx);
+        std::future::ready(Err(no_datagrams()))
+    }
 }
+
+fn no_datagrams() -> Attempt {
+    Attempt::Unsupported(Error::new(
+        ErrorKind::Unsupported,
+        std::io::Error::other("this filter opens no datagram path"),
+    ))
+}
+
+/// [`SendEgressFilter::open_datagrams_send`]'s future.
+pub type BoxPathOpening<'a> = Pin<Box<dyn Future<Output = Result<BoxPath, Attempt>> + Send + 'a>>; // send-bound-exception: amendment-C16
 
 /// [`DynDial`]'s futures.
 pub type BoxDialing<'a> = Pin<Box<dyn Future<Output = Result<BoxIo, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
@@ -674,6 +712,17 @@ pub type BoxOpening<'a> =
 pub trait SendEgressFilter: EgressFilter {
     /// [`EgressFilter::open_stream`], over an erased context, boxed.
     fn open_stream_send<'a>(&'a self, target: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a>;
+
+    /// [`EgressFilter::open_datagrams`], over an erased context, boxed.
+    /// Refuses by default, as `open_datagrams` does.
+    fn open_datagrams_send<'a>(
+        &'a self,
+        target: Target<'a>,
+        ctx: &'a BoxDial<'a>,
+    ) -> BoxPathOpening<'a> {
+        let _ = (target, ctx);
+        Box::pin(std::future::ready(Err(no_datagrams())))
+    }
 }
 
 #[cfg(test)]
@@ -921,7 +970,7 @@ mod tests {
 
     #[test]
     fn a_dial_that_lends_no_datagrams_refuses_all_three_as_unsupported() {
-        let udp = Bare.bind_udp("0.0.0.0:0".parse().unwrap()).unwrap_err();
+        let udp = Dial::bind_udp(&Bare, "0.0.0.0:0".parse().unwrap()).unwrap_err();
         assert_eq!(*udp.kind(), ErrorKind::Unsupported);
         let res = futures_executor::block_on(Bare.resolve("p", 1)).unwrap_err();
         assert_eq!(*res.kind(), ErrorKind::Unsupported);
@@ -1000,6 +1049,55 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(t.response.status, 200);
+    }
+
+    impl DynDial for Bare {
+        fn connect_boxed<'a>(&'a self, _: &'a str, _: u16) -> BoxDialing<'a> {
+            unreachable!()
+        }
+        fn connect_ipc_boxed<'a>(&'a self, _: &'a hclient_rt::IpcAddr) -> BoxDialing<'a> {
+            unreachable!()
+        }
+        fn remaining(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_filter_that_declares_no_datagrams_refuses_them_as_unsupported() {
+        struct StreamOnly;
+        impl EgressFilter for StreamOnly {
+            type Wrapped<S: Io> = S;
+            fn route(&self, _: &Target<'_>) -> Decision<'_> {
+                Decision::Direct
+            }
+            #[allow(
+                clippy::unused_async_trait_impl,
+                reason = "open_stream returns `impl Future` (an RPITIT), and `async fn` is the idiomatic way to implement one; this test never calls it, so the body needs no `.await`"
+            )]
+            async fn open_stream<'a, C: Dial + 'a>(
+                &'a self,
+                _: Target<'a>,
+                _: &'a C,
+            ) -> Result<Opened<C::Stream, C::Stream>, Attempt>
+            where
+                Self: Sized,
+            {
+                unreachable!()
+            }
+        }
+        impl SendEgressFilter for StreamOnly {
+            fn open_stream_send<'a>(&'a self, _: Target<'a>, _: &'a BoxDial<'a>) -> BoxOpening<'a> {
+                unreachable!()
+            }
+        }
+        let t = Target::new("o", 443, true);
+        let a = futures_executor::block_on(StreamOnly.open_datagrams(t, &Bare)).unwrap_err();
+        assert!(a.permits_switch());
+        let shared: &SharedDial<'_> = &Bare;
+        let erased = BoxDial::new(shared);
+        let a = futures_executor::block_on(StreamOnly.open_datagrams_send(t, &erased)).unwrap_err();
+        assert_eq!(*a.into_error().kind(), ErrorKind::Unsupported);
     }
 
     #[test]

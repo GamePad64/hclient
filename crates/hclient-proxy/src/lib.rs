@@ -129,8 +129,8 @@ pub use datagram::testing;
 pub use datagram::{BoxPath, BoxUdp, DatagramPath};
 pub use drive::{drive, drive_exact};
 pub use egress::{
-    Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, BoxResolving, BoxTunnelling, Decision, Dial,
-    DynDial, EgressFilter, FilterSupport, Io, Opened, ProxyTls, RequestForm, Route,
+    Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, BoxPathOpening, BoxResolving, BoxTunnelling,
+    Decision, Dial, DynDial, EgressFilter, FilterSupport, Io, Opened, ProxyTls, RequestForm, Route,
     SendEgressFilter, SharedDial, SharedFilter, Target, erase,
 };
 pub use error::{
