@@ -15,6 +15,16 @@ use hclient_tls::TlsConnect;
 use crate::DialIpc;
 use crate::connect::Attempted;
 
+/// How long an HTTP/3 tunnel attempt may take before HTTP/2 is tried in
+/// its place, where the request will take either.
+///
+/// A proxy that does not speak QUIC gives no answer at all, so this is a
+/// guess at how long a proxy that does would take: the earliest honest
+/// sign of a lost first flight is the probe timeout off QUIC's guessed
+/// 333 ms initial round trip, about a second, and half a second more lets
+/// a retransmitted handshake finish on an ordinary path.
+const H3_TUNNEL_BEFORE_H2: Duration = Duration::from_millis(1500);
+
 /// What stands in for the QUIC arm without the `http3` feature: nothing,
 /// and nothing can be made of it.
 #[cfg(not(feature = "http3"))]
@@ -165,6 +175,14 @@ where
     /// and an HTTP/2 tunnel is lent — no tunnel was handed out, so nothing
     /// the filter sends is sent twice — and the HTTP/3 error stands when it
     /// is not. Refusals that need no socket come before one is opened.
+    ///
+    /// Where HTTP/2 can follow, the HTTP/3 attempt is bounded so HTTP/2
+    /// keeps a real share: [`H3_TUNNEL_BEFORE_H2`] with no connect bound,
+    /// and the lesser of that and half of what is left with one. A proxy
+    /// with nothing listening on UDP answers QUIC with silence, not a
+    /// refusal, so without this bound the fallback would wait for QUIC's
+    /// idle timeout — or spend the whole connect bound — first. Where
+    /// HTTP/3 is all the request will take, it gets everything that is left.
     async fn connect_tunnel_raw<'b>(
         &'b self,
         req: hclient_proxy::TunnelRequest<'b>,
@@ -179,7 +197,12 @@ where
         if h3 {
             match self.h3_arm() {
                 Some(arm) => {
-                    let budget = hclient_proxy::Dial::remaining(self);
+                    let left = hclient_proxy::Dial::remaining(self);
+                    let budget = if h2 && self.tunnel_h2.is_some() {
+                        Some(left.map_or(H3_TUNNEL_BEFORE_H2, |d| (d / 2).min(H3_TUNNEL_BEFORE_H2)))
+                    } else {
+                        left
+                    };
                     match arm.tunnel_boxed(req.clone(), budget).await {
                         Ok(t) => return Ok(t),
                         Err(e) => h3_failed = Some(e),

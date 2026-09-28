@@ -483,11 +483,13 @@ mod over_h3 {
         assert_eq!(proxy.accepted(), 0);
     }
 
-    /// The default version is HTTP/3 then HTTP/2, and a plain CONNECT goes
-    /// over HTTP/2.
+    /// The default version is HTTP/3 then HTTP/2, and a plain CONNECT —
+    /// which HTTP/3 here cannot write — goes straight to HTTP/2, with no
+    /// QUIC packet sent: a UDP socket on the proxy's port hears nothing.
     #[tokio::test(flavor = "multi_thread")]
-    async fn http3_then_http2_falls_back_when_the_proxy_has_no_h3() {
+    async fn a_plain_connect_goes_straight_to_h2() {
         let proxy = h2_proxy::h2_proxy(h2_proxy::H2Proxy::Echo { extended: true });
+        let udp_ear = std::net::UdpSocket::bind(("127.0.0.1", proxy.port())).ok();
         let native = native(&h3_proxy::trusting(&[proxy.cert()]));
         let dial = hclient_native::testing::dial_for(&native);
         let t = bounded(dial.connect_tunnel(TunnelRequest::new(
@@ -500,6 +502,42 @@ mod over_h3 {
         .unwrap();
         assert!(t.datagrams.is_none(), "the tunnel came over h2");
         assert_eq!(proxy.last_request().authority, "o:443");
+        if let Some(ear) = udp_ear {
+            ear.set_nonblocking(true).unwrap();
+            let e = ear.recv(&mut [0u8; 2048]).unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::WouldBlock, "QUIC was dialled");
+        }
+    }
+
+    /// An extended CONNECT with HTTP/3 then HTTP/2, to a proxy whose UDP
+    /// port swallows every packet: HTTP/3 gets a bounded share, and the
+    /// tunnel comes up over HTTP/2 in seconds rather than after QUIC's idle
+    /// timeout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_h3_attempt_into_silence_leaves_time_for_h2() {
+        let proxy = h2_proxy::h2_proxy(h2_proxy::H2Proxy::Echo { extended: true });
+        let Ok(hole) = std::net::UdpSocket::bind(("127.0.0.1", proxy.port())) else {
+            return;
+        };
+        let native = native(&h3_proxy::trusting(&[proxy.cert()]));
+        let dial = hclient_native::testing::dial_for(&native);
+        let t = tokio::time::timeout(
+            Duration::from_secs(5),
+            dial.connect_tunnel(udp(proxy.port()).version(TunnelVersion::Http3ThenHttp2)),
+        )
+        .await
+        .expect("HTTP/2 was reached within seconds")
+        .unwrap();
+        assert!(t.datagrams.is_none(), "the tunnel came over h2");
+        assert_eq!(
+            proxy.last_request().protocol.as_deref(),
+            Some("connect-udp")
+        );
+        hole.set_nonblocking(true).unwrap();
+        assert!(
+            hole.recv(&mut [0u8; 2048]).is_ok(),
+            "HTTP/3 was tried first"
+        );
     }
 
     /// Two proxies behind one authority, an HTTP/3 one on UDP that refuses
