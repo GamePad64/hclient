@@ -380,3 +380,52 @@ async fn opening_the_path_and_the_quic_handshake_spend_one_connect_bound() {
     );
     drop(hole);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fallback_to_the_stream_after_quic_over_a_slow_path_gets_what_is_left_once() {
+    // The path takes `OPEN` to open and is too small for QUIC, so QUIC over
+    // it fails at once; the stream then takes `STREAM` to open. Both fit
+    // inside one bound together — the stream is handed `BOUND_C - OPEN`
+    // — and they do not fit if the path's time is taken off twice.
+    const BOUND_C: std::time::Duration = std::time::Duration::from_millis(1500);
+    const OPEN: std::time::Duration = std::time::Duration::from_millis(400);
+    const STREAM: std::time::Duration = std::time::Duration::from_millis(900);
+    let pair = servers::start();
+    let filter = ForwardFilter::new(Mode::SlowSmallPathSlowStream(OPEN, STREAM), pair.addr());
+    let t = native(&pair, &NameLog::default(), filter.clone());
+    seed_alt_svc_h3(&t, &pair).await;
+    let mut req = request(&literal(&pair), false);
+    req.extensions_mut()
+        .insert(hclient_core::req::Timeouts::new().with_connect(BOUND_C));
+    let resp = tokio::time::timeout(BOUND, t.execute(req))
+        .await
+        .expect("the request finished inside the guard")
+        .expect("the stream fits inside what is left of one bound");
+    assert_eq!(resp.version(), http::Version::HTTP_11);
+    assert_eq!(filter.datagram_attempts(), 1, "the path was tried first");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filtered_demand_for_http_1_1_takes_the_stream_and_teaches_the_memory_nothing() {
+    let pair = servers::start();
+    let filter = ForwardFilter::new(Mode::Both, pair.addr());
+    let t = native(&pair, &NameLog::default(), filter.clone());
+    seed_alt_svc_h3(&t, &pair).await;
+    let mut req = request(&literal(&pair), false);
+    req.extensions_mut()
+        .insert(RequireVersion(http::Version::HTTP_11));
+    let resp = tokio::time::timeout(BOUND, t.execute(req))
+        .await
+        .expect("the request finished inside the guard")
+        .expect("served over the stream");
+    assert_eq!(resp.version(), http::Version::HTTP_11);
+    assert_eq!(filter.datagram_attempts(), 0, "no QUIC attempt");
+    assert_eq!(pair.quic_attempted(), 0);
+    // Nothing was learned about the origin: the advertisement still moves
+    // an unconstrained request onto the path.
+    let v = send(&t, &literal(&pair), false)
+        .await
+        .expect("request three");
+    assert_eq!(v, http::Version::HTTP_3);
+    assert_eq!(filter.datagram_attempts(), 1);
+}

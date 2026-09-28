@@ -363,10 +363,18 @@ where
         // not a way around the filter: QUIC then goes over a path the
         // filter opens, never from this host to the origin.
         if let Egress::Filtered { via, datagrams } = self.egress_of(req.uri()) {
-            let demanded_h3 = req
+            let demand = req
                 .extensions()
                 .get::<RequireVersion>()
-                .is_some_and(|RequireVersion(v)| *v == http::Version::HTTP_3);
+                .map(|RequireVersion(v)| *v);
+            // A demand for any other version is the stream's, as on the
+            // direct path: QUIC could not answer it, and a refusal from the
+            // arm would teach the failure memory about the origin what is
+            // only true of the request.
+            if demand.is_some_and(|v| v != http::Version::HTTP_3) {
+                return Route::Tcp(Prepared::new(req));
+            }
+            let demanded_h3 = demand.is_some();
             let has_arm = self.h3.is_some() && self.versions.h3;
             if !datagrams || !has_arm {
                 return if demanded_h3 {
@@ -901,13 +909,25 @@ where
             // The only error the wrapper raises is its own timeout.
             Err(_) => return Err(ViaFailed::Switch(connect_spent(bound), req)),
         };
+        // The handshake is handed the narrowed bound, and a request that
+        // comes back is handed the caller's again: the caller of this
+        // function takes everything spent since `began` off it, and a
+        // request still carrying the narrowed bound would pay for the
+        // path's opening twice.
+        let caller = req.extensions().get::<Timeouts>().copied();
+        let restore = move |mut req: http::Request<RequestBody>| {
+            if let Some(t) = caller {
+                req.extensions_mut().insert(t);
+            }
+            req
+        };
         let mut req = req;
         if !spend_connect_budget(&mut req, self.now().saturating_sub(began)) {
-            return Err(ViaFailed::Switch(connect_spent(bound), req));
+            return Err(ViaFailed::Switch(connect_spent(bound), restore(req)));
         }
         match arm.connect_via_boxed(req, via, Some(path)).await {
             Ok(staged) => Ok(staged),
-            Err(ViaRefused::Refused(e, req)) => Err(ViaFailed::Switch(e, req)),
+            Err(ViaRefused::Refused(e, req)) => Err(ViaFailed::Switch(e, restore(req))),
             // Unreachable: a path was offered. Answered rather than
             // asserted, because being wrong costs this request and not
             // the caller's process.
@@ -916,7 +936,7 @@ where
                     ErrorKind::Connect,
                     std::io::Error::other("the QUIC arm asked for a path it was given"),
                 ),
-                req,
+                restore(req),
             )),
         }
     }

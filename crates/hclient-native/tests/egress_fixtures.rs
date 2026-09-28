@@ -95,6 +95,13 @@ pub enum Mode {
     /// path it opens goes to its peer — which a test makes a bound, silent
     /// socket, so the QUIC handshake over it is never answered.
     Slow(std::time::Duration),
+    /// Declares both, and carries each to its peer.
+    Both,
+    /// Declares both; takes `.0` to open a path too small for QUIC, and
+    /// `.1` to open each stream to its peer — so a switch to the stream
+    /// after QUIC over the path failed spends a measurable share of the
+    /// caller's connect bound on each side.
+    SlowSmallPathSlowStream(std::time::Duration, std::time::Duration),
 }
 
 /// Every request is filtered under the key `"fwd"`, and whatever the filter
@@ -140,9 +147,11 @@ impl ForwardFilter {
         match self.mode {
             Mode::DatagramsOnly | Mode::Slow(_) => FilterSupport::NONE.with_datagrams(),
             Mode::StreamOnly => FilterSupport::STREAM,
-            Mode::RefusingDatagramsWithStream | Mode::Failing | Mode::SmallPathWithStream => {
-                FilterSupport::STREAM.with_datagrams()
-            }
+            Mode::RefusingDatagramsWithStream
+            | Mode::Failing
+            | Mode::SmallPathWithStream
+            | Mode::SlowSmallPathSlowStream(..)
+            | Mode::Both => FilterSupport::STREAM.with_datagrams(),
         }
     }
 }
@@ -175,6 +184,9 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
     {
         self.stream_opens
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Mode::SlowSmallPathSlowStream(_, delay) = self.mode {
+            tokio::time::sleep(delay).await;
+        }
         // By address: the peer is a literal, so nothing here names the
         // origin to a resolver either.
         let stream = ctx
@@ -198,12 +210,16 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
         let (mode, peer) = (self.mode, self.peer);
         async move {
             match mode {
-                Mode::DatagramsOnly => Ok(udp_bridge(peer)),
+                Mode::DatagramsOnly | Mode::Both => Ok(udp_bridge(peer)),
                 Mode::Slow(delay) => {
                     tokio::time::sleep(delay).await;
                     Ok(udp_bridge(peer))
                 }
                 Mode::SmallPathWithStream => Ok(udp_bridge_of(peer, 1199)),
+                Mode::SlowSmallPathSlowStream(delay, _) => {
+                    tokio::time::sleep(delay).await;
+                    Ok(udp_bridge_of(peer, 1199))
+                }
                 Mode::RefusingDatagramsWithStream | Mode::StreamOnly => Err(
                     hclient_proxy::Attempt::Unsupported(hclient_core::error::Error::new(
                         hclient_core::error::ErrorKind::Unsupported,
