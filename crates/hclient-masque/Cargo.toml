@@ -1,0 +1,21 @@
+[package]
+name = "hclient-masque"
+version = "0.0.0"
+description = "An unpublished experiment: MASQUE (RFC 9298 CONNECT-UDP, and CONNECT over h2/h3) as an hclient egress filter, proving the proxy seams"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+hclient-proxy = { path = "../hclient-proxy", version = "0.1.0-alpha.15" }
+hclient-core  = { workspace = true }
+hclient-rt    = { path = "../hclient-rt", version = "0.1.1" }
+bytes         = { workspace = true }
+http          = { workspace = true }
+thiserror     = { workspace = true }
+futures-io    = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

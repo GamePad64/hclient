@@ -1469,6 +1469,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hclient-masque"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "futures-io",
+ "hclient-core",
+ "hclient-proxy",
+ "hclient-rt",
+ "http",
+ "thiserror",
+]
+
+[[package]]
 name = "hclient-mock"
 version = "0.1.2"
 dependencies = [
