@@ -67,7 +67,10 @@
 //! for a lookup done ahead to save and nothing for
 //! [`StagedConnect::connect`] to take but the request.
 
-use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
+use crate::http3::{
+    CheckedOut, Checkout, H3, H3Runtime, PoolKey, SendRequest, ViaRefused, ZeroRtt,
+    hooks::ConnState,
+};
 use hclient_core::body::RequestBody;
 use hclient_core::error::{Error, ErrorKind};
 use hclient_core::hooks::{ConnectTiming, Connected, Event, Hooks, Reused};
@@ -269,6 +272,37 @@ where
     }
 }
 
+/// Through a filter, for the routing in this crate — see
+/// [`crate::http3::arm::ViaConnect`]. The bounds are
+/// [`StagedConnect for H3`](StagedConnect)'s, and for the same reason: the
+/// future's `Send` is inferred here, at the concrete type.
+impl<R, T, D, H> crate::http3::arm::ViaConnect for H3<R, T, D, H>
+where
+    R: H3Runtime,
+    R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+    R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
+    T: QuicTlsConnect<Session = std::sync::Arc<dyn quinn_proto::crypto::ClientConfig>>,
+    D: hclient_dns::Resolve,
+    Self: Sync,                   // send-bound-exception: amendment-C15
+    Staged<R, H>: Send,           // send-bound-exception: amendment-C15
+    H: Send + Sync,               // send-bound-exception: amendment-C15
+    R::Instant: Send + Sync,      // send-bound-exception: amendment-C15
+    for<'a> D::Records<'a>: Send, // send-bound-exception: amendment-C15
+    H: Hooks + Clone + Unpin,
+{
+    fn connect_via<'a>(
+        &'a self,
+        req: http::Request<RequestBody>,
+        via: &'a str,
+        path: Option<hclient_proxy::BoxPath>,
+    ) -> impl Future<Output = Result<Self::Staged, ViaRefused>> + 'a {
+        // No `Send` written here: the trait declares it, and an opaque type
+        // leaks its auto traits, so the compiler checks this future against
+        // that declaration at this concrete type.
+        self.stage_via(req, via, path)
+    }
+}
+
 /// What the checks before the connect establish, so that the connect itself
 /// has no `?` that could take the request with it.
 pub(crate) struct Admitted {
@@ -403,6 +437,59 @@ where
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<Staged<R, H>, (Error, http::Request<RequestBody>)> {
+        match self.stage_with(req, None).await {
+            Ok(staged) => Ok(staged),
+            Err(ViaRefused::Refused(e, req)) => Err((e, req)),
+            // A direct key never asks for a path: `checkout` answers
+            // `NeedsPath` only for a key whose `via` is set, and `None`
+            // here builds one whose `via` is not.
+            Err(ViaRefused::NeedsPath(req)) => Err((
+                Error::new(
+                    ErrorKind::Connect,
+                    std::io::Error::other("a direct connection asked for a datagram path"),
+                ),
+                req,
+            )),
+        }
+    }
+
+    /// [`Self::stage`] through a filter, keyed by the filter's pool key
+    /// `via`.
+    ///
+    /// A connection this transport already made through the same filter
+    /// is found and `path` is dropped unused. Otherwise, with no `path`,
+    /// the answer is [`ViaRefused::NeedsPath`] and nothing has happened —
+    /// no lookup, no packet — so the caller may ask the filter for a path
+    /// and stage again. With a path, the connection is dialled over it.
+    ///
+    /// The origin's name is never resolved here: it goes to QUIC as the
+    /// server name and nowhere else, and the path's peer is a stand-in
+    /// address quinn needs and never sends to.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the request comes back whole, which is the contract: `stage`'s measurement — 264 of the bytes are `http::Request<RequestBody>` — applies here unchanged"
+    )]
+    pub(crate) async fn stage_via(
+        &self,
+        req: http::Request<RequestBody>,
+        via: &str,
+        path: Option<hclient_proxy::BoxPath>,
+    ) -> Result<Staged<R, H>, ViaRefused> {
+        let mut path = path;
+        self.stage_with(req, Some((via, &mut path))).await
+    }
+
+    /// The one sequencing both entry points share; `via` is `None` for a
+    /// direct connection.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the request comes back whole, which is the contract: `stage`'s measurement — 264 of the bytes are `http::Request<RequestBody>` — applies here unchanged"
+    )]
+    async fn stage_with(
+        &self,
+        req: http::Request<RequestBody>,
+        via: Option<(&str, &mut Option<hclient_proxy::BoxPath>)>,
+    ) -> Result<Staged<R, H>, ViaRefused> {
         let Admitted {
             host,
             port,
@@ -412,7 +499,7 @@ where
             identity_id,
         } = match self.admit(&req) {
             Ok(a) => a,
-            Err(e) => return Err((e, req)),
+            Err(e) => return Err(ViaRefused::Refused(e, req)),
         };
         let uri = req.uri().clone();
 
@@ -436,7 +523,18 @@ where
         // for want of a reason to write a second path rather than because
         // it needs one.
         let connect = async {
-            let addr = self.resolve(&host, port).await?;
+            let (via, path) = match via {
+                Some((k, p)) => (Some(Box::<str>::from(k)), Some(p)),
+                None => (None, None),
+            };
+            // Through a filter the origin's name is **not** resolved here:
+            // naming it to the local resolver is what a filtered request
+            // must never do. The address is the stand-in the path's socket
+            // reports for its one peer.
+            let addr = match via {
+                None => self.resolve(&host, port).await?,
+                Some(_) => std::net::SocketAddr::new(crate::http3::path::STAND_IN, port),
+            };
             let dns = crate::http3::since::<R>(&self.rt, began);
             // The identity is resolved before the key is built, so a
             // name this backend has not got refuses here rather than
@@ -447,8 +545,9 @@ where
                 tls: identity_id.unwrap_or_else(|| self.tls.config_id()),
                 early_data: wants_early,
                 identity: identity.clone(),
+                via,
             };
-            self.checkout(&key, addr, dns).await
+            self.checkout(&key, addr, dns, path).await
         };
         let checked = match timeouts.connect {
             Some(d) => crate::http3::within_connect(&self.rt, d, connect).await,
@@ -461,8 +560,9 @@ where
             state,
             made,
         } = match checked {
-            Ok(c) => c,
-            Err(e) => return Err((e, req)),
+            Ok(Checkout::Out(c)) => c,
+            Ok(Checkout::NeedsPath) => return Err(ViaRefused::NeedsPath(req)),
+            Err(e) => return Err(ViaRefused::Refused(e, req)),
         };
 
         // Emitted here, outside `checkout`, because the pool's mutex is
@@ -485,7 +585,7 @@ where
             Some(m) => self.hooks.on(&Event::Connected(
                 Connected::new(id, &uri, http::Version::HTTP_3)
                     .request(request)
-                    .remote(Some(m.remote))
+                    .remote(m.remote)
                     .timing(
                         ConnectTiming::new()
                             .dns(m.dns)

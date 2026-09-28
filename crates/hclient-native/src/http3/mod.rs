@@ -141,6 +141,10 @@ struct PoolKey {
     /// the *name* to hand to `QuicTlsRequest`, and the key is what `dial`
     /// is given.
     identity: Option<hclient_core::tls::ClientIdentity>,
+    /// The filter this connection was made through, by its pool key;
+    /// `None` for a direct one. A direct connection and one made through a
+    /// proxy to the same origin are different connections.
+    via: Option<Box<str>>,
 }
 
 type SendRequest = h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>;
@@ -175,6 +179,11 @@ struct Pooled {
     /// is watching. It lives with the connection rather than with a
     /// request because the connection is what outlives both.
     state: Option<Arc<ConnState>>,
+    /// The endpoint over a filter's datagram path, for a connection made
+    /// through one — held so it lives exactly as long as the connection it
+    /// carries. `None` for a direct connection, which shares this
+    /// transport's per-family endpoints instead.
+    _endpoint: Option<quinn::Endpoint>,
 }
 
 /// What a checkout did, carried **out of the pool's mutex** so the events
@@ -197,9 +206,40 @@ struct CheckedOut {
 /// happen. `total` is not here: it ends after `checkout` returns, and is
 /// stamped by `execute` from the same mark `Head::elapsed` uses.
 struct Made {
-    remote: SocketAddr,
+    /// The address that answered — `None` for a connection over a
+    /// filter's path, whose only address is the stand-in quinn needed.
+    remote: Option<SocketAddr>,
     dns: Duration,
     handshake: Duration,
+}
+
+/// What a checkout answered: a connection, or — for a connection through a
+/// filter that the pool did not have and no path was offered for — a
+/// request to be asked again with one.
+///
+/// An enum rather than a sentinel error, so the second arm cannot be
+/// mistaken for a failure by a `?` on the way out.
+enum Checkout {
+    Out(CheckedOut),
+    NeedsPath,
+}
+
+/// A filter's path, opened into an endpoint of its own, and the ceiling
+/// its transport config is built from.
+struct Over {
+    endpoint: quinn::Endpoint,
+    max: usize,
+}
+
+/// Why [`H3::stage_via`] produced no connection, with the request back.
+pub(crate) enum ViaRefused {
+    /// The pool has no connection for this origin through this filter, and
+    /// no path was offered to make one. Nothing was sent and nothing was
+    /// resolved: ask the filter for a path, then stage again with it.
+    NeedsPath(http::Request<RequestBody>),
+    /// A connection could not be made, or the request was refused before
+    /// one was attempted.
+    Refused(Error, http::Request<RequestBody>),
 }
 
 struct Shared {
@@ -664,6 +704,14 @@ where
     /// It is reported here rather than carried out to `execute`, because a
     /// connect that then fails or times out must not swallow the fact that
     /// the pooled connection really was found dead.
+    ///
+    /// # Through a filter
+    ///
+    /// For a key with `via` set, `path` is where the filter's datagram
+    /// path is carried: a pool hit leaves it untouched, and a miss with
+    /// nothing in it answers [`Checkout::NeedsPath`] before anything is
+    /// dialled — the caller asks the filter and comes back. A miss with a
+    /// path takes it and makes the connection over it.
     #[allow(
         clippy::similar_names,
         reason = "`stale` (a removed dead entry) and `state` (a new connection's `ConnState`) are this codebase's own vocabulary"
@@ -673,7 +721,8 @@ where
         key: &PoolKey,
         addr: SocketAddr,
         dns: Duration,
-    ) -> Result<CheckedOut, Error> {
+        path: Option<&mut Option<hclient_proxy::BoxPath>>,
+    ) -> Result<Checkout, Error> {
         let stale = {
             let mut pool = self.shared.conns.lock().expect("pool mutex poisoned");
             if let Some(p) = pool.get(key)
@@ -691,24 +740,49 @@ where
                 // else already made is being used again" — stay true; what
                 // changes is that a caller must not read two `Reused` events
                 // as two consecutive uses.
-                return Ok(CheckedOut {
+                return Ok(Checkout::Out(CheckedOut {
                     send: p.send.clone(),
                     zero_rtt: p.zero_rtt.clone(),
                     conn: p.conn.clone(),
                     state: p.state.clone(),
                     made: None,
-                });
+                }));
             }
             pool.remove(key).and_then(|p| p.state)
         };
         if let Some(dead) = stale {
             dead.closed(&self.hooks, CloseReason::Stale);
         }
-        let (send, conn, zero_rtt, handshake) = self.connect(key, addr).await?;
+        // A filtered key dials only over the filter's path, and the path is
+        // asked for only once the pool has said it needs one — so a request
+        // that finds a pooled connection costs the filter nothing.
+        let over = match (key.via.is_some(), path) {
+            (false, _) => None,
+            (true, None) => return Ok(Checkout::NeedsPath),
+            (true, Some(slot)) => {
+                let Some(p) = slot.take() else {
+                    return Ok(Checkout::NeedsPath);
+                };
+                let max = hclient_proxy::DatagramPath::max_datagram_size(&p);
+                let endpoint = crate::http3::path::endpoint_over(&self.rt, p, addr.port())
+                    .map_err(|e| {
+                        let kind = if e.kind() == std::io::ErrorKind::Unsupported {
+                            ErrorKind::Unsupported
+                        } else {
+                            ErrorKind::Connect
+                        };
+                        Error::new(kind, e)
+                    })?;
+                Some(Over { endpoint, max })
+            }
+        };
+        let (send, conn, zero_rtt, handshake) = self.connect(key, addr, over.as_ref()).await?;
         let state = ConnState::new::<H>();
         // quinn's own answer rather than the address that was dialled: the
-        // seam asks for "the address that answered".
-        let remote = conn.remote_address();
+        // seam asks for "the address that answered". Over a path there is
+        // no such address — quinn's is the stand-in it was handed — so the
+        // honest answer is none.
+        let remote = over.is_none().then(|| conn.remote_address());
         self.shared
             .conns
             .lock()
@@ -720,9 +794,10 @@ where
                     conn: conn.clone(),
                     zero_rtt: zero_rtt.clone(),
                     state: state.clone(),
+                    _endpoint: over.map(|o| o.endpoint),
                 },
             );
-        Ok(CheckedOut {
+        Ok(Checkout::Out(CheckedOut {
             send,
             zero_rtt,
             conn,
@@ -732,7 +807,7 @@ where
                 dns,
                 handshake,
             }),
-        })
+        }))
     }
 
     /// Make one — with the **one fallback the early-data path owes**.
@@ -789,22 +864,27 @@ where
     ///   attempt", and an attempt that spent a discarded early-data
     ///   connection spent it. Re-marking would report the fallback's
     ///   handshake as the whole cost.
+    ///
+    /// `over` is the endpoint a filtered connection is dialled from, made
+    /// once by the caller rather than per attempt, so the early-data
+    /// fallback's second dial goes over the same path as its first.
     async fn connect(
         &self,
         key: &PoolKey,
         addr: SocketAddr,
+        over: Option<&Over>,
     ) -> Result<(SendRequest, quinn::Connection, Option<ZeroRtt>, Duration), Error> {
         // The attempt's launch — see this function's doc comment. Under
         // `NoHooks` this is a compile-time `None` and no clock is read.
         let launched = mark::<H, R>(&self.rt);
         if key.early_data {
-            match self.dial(key, addr, launched, true).await {
+            match self.dial(key, addr, over, launched, true).await {
                 Ok(made) => return Ok(made),
                 Err(DialFailed::EarlyDataLost(_)) => {}
                 Err(DialFailed::Fatal(e)) => return Err(e),
             }
         }
-        self.dial(key, addr, launched, false)
+        self.dial(key, addr, over, launched, false)
             .await
             .map_err(DialFailed::into_error)
     }
@@ -823,6 +903,7 @@ where
         &self,
         key: &PoolKey,
         addr: SocketAddr,
+        over: Option<&Over>,
         launched: Option<R::Instant>,
         early: bool,
     ) -> Result<(SendRequest, quinn::Connection, Option<ZeroRtt>, Duration), DialFailed> {
@@ -841,7 +922,10 @@ where
                         .map(hclient_core::tls::ClientIdentity::name),
                 ),
         )?;
-        let endpoint = self.endpoint(addr)?;
+        let endpoint = match over {
+            Some(o) => o.endpoint.clone(),
+            None => self.endpoint(addr)?,
+        };
         // **The backend builds its own stack's session, and this is the
         // one line that asks for it.** `crypto` is a declaration — an
         // ALPN list, two flags and an identity *label* — and turning one
@@ -849,7 +933,15 @@ where
         // trust roots and the certificate resolver, which live inside
         // the backend and never cross the seam.
         let mut cfg = quinn::ClientConfig::new(self.tls.quic_session(&crypto)?);
-        if let Some(d) = self.keep_alive {
+        if let Some(o) = over {
+            // A path states its own size, so the MTU is set from it rather
+            // than discovered; the keep-alive is the same one a direct
+            // connection gets.
+            cfg.transport_config(Arc::new(crate::http3::path::transport_for(
+                o.max,
+                self.keep_alive,
+            )));
+        } else if let Some(d) = self.keep_alive {
             let mut transport = quinn::TransportConfig::default();
             transport.keep_alive_interval(Some(d));
             cfg.transport_config(Arc::new(transport));

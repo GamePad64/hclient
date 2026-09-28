@@ -34,7 +34,7 @@
 //! the contract `StagedConnect` already has and the reason this is safe
 //! to erase at all.
 
-use crate::http3::{Refused, StagedConnect};
+use crate::http3::{Refused, StagedConnect, ViaRefused};
 use bytes::Bytes;
 use hclient_core::body::RequestBody;
 use hclient_core::error::Error as CoreError;
@@ -85,6 +85,32 @@ type Staging<'a> = Pin<
     Box<dyn Future<Output = Result<SendHandle<'a>, Refused>> + Send + 'a>, // send-bound-exception: amendment-C15
 >; // send-bound-exception: amendment-C15
 
+/// What [`DynStagedConnect::connect_via_boxed`] hands back: a staged
+/// connection through a filter, or the request back with why not.
+type ViaStaging<'a> = Pin<
+    Box<dyn Future<Output = Result<SendHandle<'a>, ViaRefused>> + Send + 'a>, // send-bound-exception: amendment-C15
+>; // send-bound-exception: amendment-C15
+
+/// A staged connect through a filter's datagram path.
+///
+/// Its own trait rather than a method on [`StagedConnect`], because that
+/// trait is public and this is a question only the routing in this crate
+/// asks: which connection to an origin, through which filter, over which
+/// path. The future is declared `Send` here so the blanket impl below can
+/// box it without naming it — at the concrete `H3` it is inferred, as
+/// [`StagedConnect::connect`]'s is.
+pub(crate) trait ViaConnect: StagedConnect {
+    /// [`crate::http3::H3::stage_via`]: the pool first, then — only with a
+    /// `path` — a connection over it; no path and no pooled connection is
+    /// [`ViaRefused::NeedsPath`], with nothing done.
+    fn connect_via<'a>(
+        &'a self,
+        req: http::Request<RequestBody>,
+        via: &'a str,
+        path: Option<hclient_proxy::BoxPath>,
+    ) -> impl Future<Output = Result<Self::Staged, ViaRefused>> + Send + 'a; // send-bound-exception: amendment-C15
+}
+
 /// A staged connect whose transport type is gone.
 ///
 /// `Debug` is a supertrait because `Native` derives it and a field this
@@ -103,6 +129,20 @@ pub(crate) trait DynStagedConnect: Debug {
     /// that fails must leave the request available to be sent over TCP,
     /// and a request already handed to a stream is not.
     fn connect_boxed(&self, req: http::Request<RequestBody>) -> Staging<'_>;
+
+    /// [`ViaConnect::connect_via`], boxed: a connection to the request's
+    /// origin through the filter whose pool key is `via`, over `path` if
+    /// the pool has none.
+    #[allow(
+        dead_code,
+        reason = "the routing that sends a filtered request over QUIC is its only caller, and arrives in the next change"
+    )]
+    fn connect_via_boxed<'a>(
+        &'a self,
+        req: http::Request<RequestBody>,
+        via: &'a str,
+        path: Option<hclient_proxy::BoxPath>,
+    ) -> ViaStaging<'a>;
 }
 
 /// A connection staged by a [`DynStagedConnect`], with one thing left to
@@ -128,7 +168,7 @@ struct StagedOver<'a, T: StagedConnect> {
 
 impl<T> DynStagedConnect for T
 where
-    T: StagedConnect<Error = CoreError> + Debug + Sync + 'static, // send-bound-exception: amendment-C15
+    T: StagedConnect<Error = CoreError> + ViaConnect + Debug + Sync + 'static, // send-bound-exception: amendment-C15
     for<'a> T::Connecting<'a>: Send, // send-bound-exception: amendment-C15
     for<'a> T::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
     T::Body: 'static,
@@ -138,6 +178,22 @@ where
     fn connect_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> Staging<'a> {
         Box::pin(async move {
             let staged = self.connect(req).await?;
+            let handle: SendHandle<'a> = Box::new(StagedOver {
+                transport: self,
+                staged,
+            });
+            Ok(handle)
+        })
+    }
+
+    fn connect_via_boxed<'a>(
+        &'a self,
+        req: http::Request<RequestBody>,
+        via: &'a str,
+        path: Option<hclient_proxy::BoxPath>,
+    ) -> ViaStaging<'a> {
+        Box::pin(async move {
+            let staged = self.connect_via(req, via, path).await?;
             let handle: SendHandle<'a> = Box::new(StagedOver {
                 transport: self,
                 staged,

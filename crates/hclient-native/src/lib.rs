@@ -1966,6 +1966,18 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         // again here so `bind_udp_erased::<R>` can be monomorphised.
         R: crate::http3::H3Runtime,
         R::Socket: Send + Sync + 'static, // send-bound-exception: amendment-C10
+        // What the arm's staging through a filter's path needs of the
+        // concrete `H3`: the bounds its own impl carries, stated here
+        // because the ones above are about `StagedConnect`'s projections
+        // and a compiler does not read an impl's where-clause back out of
+        // a trait bound.
+        R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+        R::Socket: Debug,
+        R::Instant: Send + Sync, // send-bound-exception: amendment-C15
+        T: hclient_tls::quic::QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>>,
+        D: hclient_dns::Resolve,
+        for<'a> D::Records<'a>: Send, // send-bound-exception: amendment-C15
+        crate::http3::Staged<R, hclient_core::hooks::NoHooks>: Send, // send-bound-exception: amendment-C15
     {
         // **The stored value must be true whichever path serves the
         // request**, and `capabilities()` hands back a reference computed
@@ -4299,6 +4311,105 @@ pub mod testing {
     }
 
     pub use crate::discovery::SVCB_FAILURE_TTL;
+
+    /// What [`crate::H3::stage_via_for_test`] answered when it made no
+    /// connection — the crate-private refusal, without the request it
+    /// carries back.
+    #[cfg(feature = "http3")]
+    #[derive(Debug)]
+    pub enum ViaOutcome {
+        /// No pooled connection through this filter and no path offered:
+        /// nothing was done.
+        NeedsPath,
+        /// Refused, or a connection could not be made.
+        Refused(hclient_core::error::Error),
+    }
+
+    /// The QUIC arm's staging through a filter's datagram path, reachable
+    /// from `tests/*.rs` — the arm's own entry point is crate-private,
+    /// because only this crate's routing sends a filtered request.
+    #[cfg(feature = "http3")]
+    impl<R, T, D, H> crate::H3<R, T, D, H>
+    where
+        R: crate::http3::H3Runtime,
+        R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+        R::Socket: std::fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
+        T: hclient_tls::quic::QuicTlsConnect<
+                Session = std::sync::Arc<dyn quinn_proto::crypto::ClientConfig>,
+            >,
+        D: hclient_dns::Resolve,
+        H: hclient_core::hooks::Hooks + Clone + Unpin,
+    {
+        /// Stage a connection to `req`'s origin through the filter whose
+        /// pool key is `via`, over `path` if the pool has none.
+        ///
+        /// # Errors
+        ///
+        /// [`ViaOutcome::NeedsPath`] for a pool miss with no path, and
+        /// [`ViaOutcome::Refused`] for everything else that made no
+        /// connection.
+        #[doc(hidden)]
+        pub async fn stage_via_for_test(
+            &self,
+            req: http::Request<hclient_core::body::RequestBody>,
+            via: &str,
+            path: Option<hclient_proxy::BoxPath>,
+        ) -> Result<crate::http3::Staged<R, H>, ViaOutcome> {
+            self.stage_via(req, via, path).await.map_err(|r| match r {
+                crate::http3::ViaRefused::NeedsPath(_) => ViaOutcome::NeedsPath,
+                crate::http3::ViaRefused::Refused(e, _) => ViaOutcome::Refused(e),
+            })
+        }
+
+        /// One request through the filter whose pool key is `via`: staged
+        /// over `path` (or a pooled connection), then exchanged.
+        ///
+        /// # Errors
+        ///
+        /// Whatever the staging or the exchange answers; a pool miss with a
+        /// path never asks for one.
+        #[doc(hidden)]
+        pub async fn execute_via_for_test(
+            &self,
+            req: http::Request<hclient_core::body::RequestBody>,
+            via: &str,
+            path: hclient_proxy::BoxPath,
+        ) -> Result<
+            http::Response<hclient_core::hooks::Counting<crate::http3::H3Body<H>, H>>,
+            hclient_core::error::Error,
+        > {
+            let staged = self
+                .stage_via(req, via, Some(path))
+                .await
+                .map_err(|r| match r {
+                    crate::http3::ViaRefused::NeedsPath(_) => hclient_core::error::Error::new(
+                        hclient_core::error::ErrorKind::Connect,
+                        std::io::Error::other("asked for a path it was handed"),
+                    ),
+                    crate::http3::ViaRefused::Refused(e, _) => e,
+                })?;
+            self.finish(staged).await
+        }
+
+        /// One direct request, through the same two halves — for a test
+        /// that sets a direct connection beside a filtered one.
+        ///
+        /// # Errors
+        ///
+        /// Whatever the staging or the exchange answers.
+        #[doc(hidden)]
+        pub async fn execute_for_test(
+            &self,
+            req: http::Request<hclient_core::body::RequestBody>,
+        ) -> Result<
+            http::Response<hclient_core::hooks::Counting<crate::http3::H3Body<H>, H>>,
+            hclient_core::error::Error,
+        > {
+            let staged = self.stage(req).await.map_err(|(e, _)| e)?;
+            self.finish(staged).await
+        }
+    }
+
     /// The memory of failed HTTP/3 connects, and how long it and the
     /// HTTPS-record negative cache suppress an origin.
     #[cfg(feature = "http3")]

@@ -20,18 +20,10 @@ use crate::http3::runtime::SeamRuntime;
 // is what makes it safe to report every datagram as coming from it.
 /// The address a path's peer is known by. Never dialled: every datagram
 /// goes to the path, whatever quinn addresses it to.
-#[allow(
-    dead_code,
-    reason = "used by the QUIC arm's path staging, which the next change adds"
-)]
 pub(crate) const STAND_IN: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
 
 /// QUIC's floor (RFC 9000 §14): a path that cannot carry this cannot carry
 /// QUIC at all.
-#[allow(
-    dead_code,
-    reason = "used by the QUIC arm's path staging, which the next change adds"
-)]
 pub(crate) const MIN_PATH: usize = 1200;
 
 /// A [`DatagramPath`], dressed as a `quinn::AsyncUdpSocket`.
@@ -40,20 +32,12 @@ pub(crate) const MIN_PATH: usize = 1200;
 /// path in quinn's shape, matching [`DatagramPath`]'s own contract rather
 /// than adding anything to it.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "used by the QUIC arm's path staging, which the next change adds"
-)]
 pub(crate) struct PathSocket {
     path: BoxPath,
     peer: SocketAddr,
 }
 
 impl PathSocket {
-    #[allow(
-        dead_code,
-        reason = "used by the QUIC arm's path staging, which the next change adds"
-    )]
     pub(crate) fn new(path: BoxPath, port: u16) -> Self {
         Self {
             path,
@@ -122,10 +106,6 @@ impl quinn::AsyncUdpSocket for PathSocket {
 /// [`crate::http3::runtime::SeamSocket`]'s poller does for a socket shared
 /// by many connections.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "used by the QUIC arm's path staging, which the next change adds"
-)]
 struct PathPoller(Arc<PathSocket>);
 
 impl quinn::UdpPoller for PathPoller {
@@ -141,10 +121,6 @@ impl quinn::UdpPoller for PathPoller {
 /// `mtu_discovery_config(None)` turns discovery off for the same reason —
 /// probing a path that already states its size finds nothing and risks a
 /// probe the path refuses as too large.
-#[allow(
-    dead_code,
-    reason = "used by the QUIC arm's path staging, which the next change adds"
-)]
 pub(crate) fn transport_for(
     path_max: usize,
     keep_alive: Option<Duration>,
@@ -172,10 +148,6 @@ pub(crate) fn transport_for(
 /// [`quinn::Endpoint::new_with_abstract_socket`] answers for a socket
 /// whose [`quinn::AsyncUdpSocket::local_addr`] fails (it never does, for
 /// [`PathSocket`]).
-#[allow(
-    dead_code,
-    reason = "used by the QUIC arm's path staging, which the next change adds"
-)]
 pub(crate) fn endpoint_over<R>(rt: &R, path: BoxPath, port: u16) -> io::Result<quinn::Endpoint>
 where
     R: H3Runtime,
