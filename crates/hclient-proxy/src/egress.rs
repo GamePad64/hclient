@@ -140,6 +140,15 @@ pub trait Dial {
 
     /// Bind a UDP socket of the transport's runtime at `local`.
     ///
+    /// **A receive may be several datagrams.** Where the runtime does GRO, one
+    /// `poll_recv` can hand over a run of datagrams coalesced into one buffer,
+    /// [`RecvMeta::stride`](hclient_rt::RecvMeta::stride) bytes apart, up to
+    /// [`UdpSupport::max_recv_segments`](hclient_rt::UdpSupport::max_recv_segments)
+    /// of them. A path built on this socket must split each receive by its
+    /// stride before reading a datagram out of it, as the built-in SOCKS5
+    /// path does — reading the buffer as one datagram loses every one after
+    /// the first.
+    ///
     /// # Errors
     ///
     /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)

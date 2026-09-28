@@ -484,7 +484,12 @@ where
             }
         }
         let mut raw = self.raw.lock().expect("receive buffer mutex");
+        let mut discarded = 0;
         loop {
+            if discarded == MAX_DISCARDS_PER_POLL {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
             let mut meta = [hclient_rt::RecvMeta::default()];
             let n = {
                 let mut bufs = [io::IoSliceMut::new(&mut raw)];
@@ -492,6 +497,7 @@ where
             };
             let m = &meta[0];
             if n == 0 || m.addr != self.relay {
+                discarded += 1;
                 continue;
             }
             // A GRO receive is several datagrams `stride` apart; `0`, or a
@@ -510,6 +516,7 @@ where
             if let Some(p) = queued.pop_front() {
                 return Poll::Ready(Ok(copy_out(&p, buf)));
             }
+            discarded += 1;
         }
     }
 
@@ -517,6 +524,13 @@ where
         self.max
     }
 }
+
+/// How many receives [`Socks5Path::poll_recv`] may discard — not from the
+/// relay, or carrying nothing a §7 header lets through — before it yields
+/// the task with a wake rather than looping on: a flood of off-path
+/// datagrams would otherwise hold the executor's thread for as long as it
+/// lasted.
+const MAX_DISCARDS_PER_POLL: usize = 64;
 
 /// Copy a payload into the caller's buffer, truncating where it is short.
 fn copy_out(p: &[u8], buf: &mut [u8]) -> usize {
@@ -950,6 +964,37 @@ mod tests {
             let mut buf = [0u8; 8];
             let Poll::Ready(Ok(n)) = path.poll_recv(&mut cx(), &mut buf) else {
                 panic!()
+            };
+            assert_eq!(&buf[..n], b"y");
+        }
+
+        #[test]
+        fn a_flood_of_foreign_datagrams_yields_the_task_rather_than_spinning() {
+            // More foreign datagrams than one poll may discard, then one
+            // from the relay: the first poll gives up the thread with a
+            // wake, and a later one finds the relay's datagram.
+            struct Counting(std::sync::atomic::AtomicUsize);
+            impl std::task::Wake for Counting {
+                fn wake(self: std::sync::Arc<Self>) {
+                    self.wake_by_ref();
+                }
+                fn wake_by_ref(self: &std::sync::Arc<Self>) {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let (path, udp) = path_over_fake("10.0.0.7:8080", open_control());
+            for _ in 0..=super::super::MAX_DISCARDS_PER_POLL {
+                udp.push_from("10.0.0.8:8080", &[0, 0, 0, 1, 1, 2, 3, 4, 0, 80, b'x']);
+            }
+            udp.push_from("10.0.0.7:8080", &[0, 0, 0, 1, 1, 2, 3, 4, 0, 80, b'y']);
+            let counter = std::sync::Arc::new(Counting(std::sync::atomic::AtomicUsize::new(0)));
+            let waker = Waker::from(counter.clone());
+            let mut cx = Context::from_waker(&waker);
+            let mut buf = [0u8; 8];
+            assert!(path.poll_recv(&mut cx, &mut buf).is_pending());
+            assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+            let Poll::Ready(Ok(n)) = path.poll_recv(&mut cx, &mut buf) else {
+                panic!("the relay's datagram is next")
             };
             assert_eq!(&buf[..n], b"y");
         }

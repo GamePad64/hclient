@@ -94,6 +94,15 @@ impl DatagramPath for BoxPath {
 
 /// A runtime's UDP socket, erased — what [`Dial::bind_udp`](crate::Dial::bind_udp)
 /// lends.
+///
+/// **A receive may be several datagrams.** Where the runtime does GRO, one
+/// `poll_recv` can hand over a run of datagrams coalesced into one buffer,
+/// [`RecvMeta::stride`](hclient_rt::RecvMeta::stride) bytes apart, up to
+/// [`UdpSupport::max_recv_segments`](hclient_rt::UdpSupport::max_recv_segments)
+/// of them. A path built on this socket must split each receive by its
+/// stride before reading a datagram out of it, as the built-in SOCKS5
+/// path does — reading the buffer as one datagram loses every one after
+/// the first.
 pub struct BoxUdp(Box<dyn UdpDatagrams + Send + Sync>); // send-bound-exception: amendment-C16
 
 impl BoxUdp {
