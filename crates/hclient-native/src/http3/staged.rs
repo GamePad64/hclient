@@ -301,6 +301,14 @@ where
         // that declaration at this concrete type.
         self.stage_via(req, via, path)
     }
+
+    fn tunnel<'a>(
+        &'a self,
+        req: hclient_proxy::TunnelRequest<'a>,
+        budget: Option<std::time::Duration>,
+    ) -> impl Future<Output = Result<hclient_proxy::Tunnel, Error>> + 'a {
+        H3::tunnel(self, req, budget)
+    }
 }
 
 /// What the checks before the connect establish, so that the connect itself

@@ -119,6 +119,10 @@ use std::time::Duration;
 /// error, which is why the QUIC TLS seam has no `reports_alpn`.
 const ALPN_H3: &[u8] = b"h3";
 
+/// The MTU a tunnel's connection to a proxy starts at — see
+/// [`H3::tunnel_connection`].
+const TUNNEL_INITIAL_MTU: u16 = 1280;
+
 /// What a pooled connection is interchangeable for.
 ///
 /// `early_data` is part of the key, not a property looked up afterwards:
@@ -1235,6 +1239,181 @@ where
             std::io::Error::other(format!("no address for {host}")),
         ))
     }
+
+    /// A connection of its own to a proxy, for one tunnel — never the
+    /// pool's, and never offered to it.
+    ///
+    /// Its h3 client announces extended CONNECT (RFC 9220) and HTTP
+    /// datagrams (RFC 9297), which no ordinary connection does: a setting
+    /// is a promise about the whole connection, so the tunnel's are made on
+    /// a connection that carries nothing else. The proxy's own SETTINGS are
+    /// waited for before this returns, because until they arrive `h3`
+    /// answers every question about them with its default — which says no
+    /// — and an extended CONNECT may be sent only once they have said yes.
+    ///
+    /// The ALPN is `h3` whatever `tls` offers: nothing else can carry an
+    /// extended CONNECT over QUIC.
+    pub(crate) async fn tunnel_connection(
+        &self,
+        host: &str,
+        port: u16,
+        tls: hclient_proxy::ProxyTls<'_>,
+    ) -> Result<(quinn::Connection, SendRequest), Error> {
+        let addr = self.resolve(host, port).await?;
+        let crypto = self
+            .tls
+            .quic_client_config(QuicTlsRequest::new(&[ALPN_H3]).identity(tls.identity))?;
+        let endpoint = self.endpoint(addr)?;
+        let mut cfg = quinn::ClientConfig::new(self.tls.quic_session(&crypto)?);
+        let mut transport = quinn::TransportConfig::default();
+        transport.keep_alive_interval(self.keep_alive);
+        // The IPv6 minimum, which every path that carries IPv6 carries: from
+        // the first packet, a datagram leaves room for a whole QUIC packet
+        // of 1200 bytes behind its quarter stream id, which is what a
+        // tunnel's datagrams are asked to carry. Discovery may raise it.
+        transport.initial_mtu(TUNNEL_INITIAL_MTU);
+        cfg.transport_config(Arc::new(transport));
+        let conn = endpoint
+            .connect_with(cfg, addr, hclient_core::url::bare_host(tls.server_name))
+            .map_err(|e| Error::new(ErrorKind::Connect, e))?
+            .await
+            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+        let (mut driver, send) = h3::client::builder()
+            .enable_extended_connect(true)
+            .enable_datagram(true)
+            .build::<_, _, Bytes>(h3_quinn::Connection::new(conn.clone()))
+            .await
+            .map_err(|e| Error::new(ErrorKind::Connect, std::io::Error::other(e.to_string())))?;
+        // The frame's arrival, not its content: `settings()` reads the
+        // same before the frame as after one that said no, and `h3` has
+        // stored the frame by the time `poll_control` hands it over. It is
+        // the first frame on the proxy's control stream or the connection
+        // is already an error.
+        match poll_fn(|cx| driver.inner.poll_control(cx)).await {
+            Ok(h3::proto::frame::Frame::Settings(_)) => {}
+            Ok(other) => {
+                return Err(Error::new(
+                    ErrorKind::Connect,
+                    std::io::Error::other(format!(
+                        "the proxy's first control frame was {other:?}, not SETTINGS"
+                    )),
+                ));
+            }
+            Err(e) => {
+                return Err(Error::new(
+                    ErrorKind::Connect,
+                    std::io::Error::other(e.to_string()),
+                ));
+            }
+        }
+        self.rt.spawn(Box::pin(async move {
+            let _ = poll_fn(|cx| driver.poll_close(cx)).await;
+        }) as QuinnTask);
+        Ok((conn, send))
+    }
+
+    /// An extended CONNECT to a proxy over HTTP/3, on a connection of its
+    /// own, with the stream's HTTP datagrams — what a filter's
+    /// [`hclient_proxy::Dial::connect_tunnel`] is lent. `budget` bounds the
+    /// whole of it, the connection and the proxy's answer.
+    ///
+    /// Refused as [`ErrorKind::Unsupported`] before a packet is sent: a
+    /// plain CONNECT, which `h3` would write with the `:scheme` and
+    /// `:path` RFC 9114 §4.4 forbids on one, and a `:protocol` `h3` has no
+    /// value for. Refused as `Unsupported` once the proxy's SETTINGS are
+    /// in: a proxy that announces no extended CONNECT, or no HTTP
+    /// datagrams — an HTTP/3 tunnel is asked for exactly those.
+    pub(crate) async fn tunnel(
+        &self,
+        req: hclient_proxy::TunnelRequest<'_>,
+        budget: Option<Duration>,
+    ) -> Result<hclient_proxy::Tunnel, Error> {
+        let Some(p) = req.protocol else {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                std::io::Error::other(
+                    "a plain CONNECT is not lent over HTTP/3: the HTTP/3 stack writes \
+                     `:scheme` and `:path` on every request, which RFC 9114 forbids on one",
+                ),
+            ));
+        };
+        let protocol: h3::ext::Protocol = p.parse().map_err(|_| {
+            Error::new(
+                ErrorKind::Unsupported,
+                std::io::Error::other(format!(
+                    "the HTTP/3 stack cannot send `:protocol: {p}`; it knows `connect-udp` \
+                     and `webtransport`"
+                )),
+            )
+        })?;
+        let open = async {
+            let (conn, send) = self
+                .tunnel_connection(req.proxy_host, req.proxy_port, req.tls)
+                .await?;
+            open_tunnel(conn, send, protocol, req).await
+        };
+        match budget {
+            Some(d) => within_connect(&self.rt, d, open).await,
+            None => open.await,
+        }
+    }
+}
+
+/// Send the extended CONNECT on a tunnel's own connection, once its
+/// SETTINGS are in, and hand back what it opened.
+async fn open_tunnel(
+    conn: quinn::Connection,
+    mut send: SendRequest,
+    protocol: h3::ext::Protocol,
+    req: hclient_proxy::TunnelRequest<'_>,
+) -> Result<hclient_proxy::Tunnel, Error> {
+    use h3::ConnectionState as _;
+    let settings = send.settings();
+    if !settings.enable_extended_connect() || !settings.enable_datagram() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            std::io::Error::other(format!(
+                "the proxy announces extended CONNECT: {}, HTTP datagrams: {}; \
+                 an HTTP/3 tunnel needs both",
+                settings.enable_extended_connect(),
+                settings.enable_datagram()
+            )),
+        ));
+    }
+    // quinn's own half of RFC 9297: the peer's QUIC transport parameters
+    // must admit DATAGRAM frames at all, which the h3 setting does not
+    // imply.
+    if conn.max_datagram_size().is_none() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            std::io::Error::other("the proxy's QUIC connection carries no datagrams"),
+        ));
+    }
+    let mut head = http::Request::builder()
+        .method(http::Method::CONNECT)
+        .uri(format!(
+            "https://{}{}",
+            req.authority,
+            req.path.unwrap_or("/")
+        ))
+        .extension(protocol)
+        .body(())
+        .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+    head.headers_mut().extend(req.headers);
+    let connect_error = |e: h3::error::StreamError| {
+        Error::new(ErrorKind::Connect, std::io::Error::other(e.to_string()))
+    };
+    let mut stream = send.send_request(head).await.map_err(connect_error)?;
+    let resp = stream.recv_response().await.map_err(connect_error)?;
+    let (parts, ()) = resp.into_parts();
+    let id = stream.id().into_inner();
+    Ok(hclient_proxy::Tunnel::new(
+        parts,
+        hclient_proxy::BoxIo::new(crate::tunnel::h3::H3Stream::new(stream, send.clone())),
+        Some(hclient_proxy::BoxPath::new(
+            crate::tunnel::h3::H3Datagrams::new(conn, id, send),
+        )),
+    ))
 }
 
 /// A write on the request stream **after the head is on the wire**, and the

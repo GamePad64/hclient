@@ -15,6 +15,23 @@ use hclient_tls::TlsConnect;
 use crate::DialIpc;
 use crate::connect::Attempted;
 
+/// What stands in for the QUIC arm without the `http3` feature: nothing,
+/// and nothing can be made of it.
+#[cfg(not(feature = "http3"))]
+enum NoArm {}
+
+#[cfg(not(feature = "http3"))]
+impl NoArm {
+    /// The `http3` arm's signature, with a body that cannot run.
+    fn tunnel_boxed(
+        &self,
+        _req: hclient_proxy::TunnelRequest<'_>,
+        _budget: Option<Duration>,
+    ) -> std::future::Ready<Result<hclient_proxy::Tunnel, Error>> {
+        match *self {}
+    }
+}
+
 /// `Native`'s [`hclient_proxy::Dial`], built per connection.
 ///
 /// Its futures are `impl Future`, so a filter called concretely keeps
@@ -41,6 +58,13 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, L, H> {
     /// [`connect_tunnel`](hclient_proxy::Dial::connect_tunnel) before any
     /// socket is opened.
     tunnel_h2: Option<crate::TunnelH2<R, L>>,
+    /// The QUIC arm an HTTP/3 tunnel to a proxy is opened through, when
+    /// [`Native::http3`](crate::Native::http3) installed one and the filter
+    /// this context is lent was installed with [`Native::egress`](crate::Native::egress).
+    /// `None` refuses a tunnel that will take HTTP/3 alone before any
+    /// packet is sent.
+    #[cfg(feature = "http3")]
+    tunnel_h3: Option<&'a crate::http3::arm::Arm>,
     budget: Option<Duration>,
     /// When the context was lent, on the transport's clock — what
     /// [`remaining`](hclient_proxy::Dial::remaining) counts the budget down
@@ -78,6 +102,8 @@ impl<'a, R: TcpConnect + Timer, D: ?Sized, L, H> NativeDial<'a, R, D, L, H> {
             ipc,
             udp,
             tunnel_h2: None,
+            #[cfg(feature = "http3")]
+            tunnel_h3: None,
             budget,
             lent: rt.now(),
             began,
@@ -89,6 +115,13 @@ impl<'a, R: TcpConnect + Timer, D: ?Sized, L, H> NativeDial<'a, R, D, L, H> {
     /// Lend HTTP/2 tunnels through `open`, or none.
     pub(crate) fn with_tunnel_h2(mut self, open: Option<crate::TunnelH2<R, L>>) -> Self {
         self.tunnel_h2 = open;
+        self
+    }
+
+    /// Lend HTTP/3 tunnels through `arm`, or none.
+    #[cfg(feature = "http3")]
+    pub(crate) fn with_tunnel_h3(mut self, arm: Option<&'a crate::http3::arm::Arm>) -> Self {
+        self.tunnel_h3 = arm;
         self
     }
 
@@ -125,35 +158,74 @@ where
     /// [`Dial::connect_tunnel`](hclient_proxy::Dial::connect_tunnel), for
     /// both the concrete and the erased context.
     ///
-    /// HTTP/2 only, for now: a request that will take nothing else is
-    /// refused rather than sent somewhere it did not ask to go, and one that
-    /// prefers HTTP/3 is sent over HTTP/2. Both refusals come before a
-    /// socket is opened.
+    /// HTTP/3 through the QUIC arm where the request will take it and the
+    /// arm is lent; HTTP/2 over a connection this context opens where the
+    /// request will take that. A request that prefers HTTP/3 and will take
+    /// HTTP/2 goes over HTTP/2 when the HTTP/3 attempt fails for any reason
+    /// and an HTTP/2 tunnel is lent — no tunnel was handed out, so nothing
+    /// the filter sends is sent twice — and the HTTP/3 error stands when it
+    /// is not. Refusals that need no socket come before one is opened.
     async fn connect_tunnel_raw<'b>(
         &'b self,
         req: hclient_proxy::TunnelRequest<'b>,
     ) -> Result<hclient_proxy::Tunnel, Error> {
         use hclient_proxy::TunnelVersion;
-        match req.version {
-            TunnelVersion::Http2 | TunnelVersion::Http3ThenHttp2 => {}
-            _ => {
-                return Err(Error::new(
-                    ErrorKind::Unsupported,
-                    std::io::Error::other("this transport lends no tunnels over HTTP/3"),
-                ));
+        let (h3, h2) = match req.version {
+            TunnelVersion::Http3 => (true, false),
+            TunnelVersion::Http2 => (false, true),
+            _ => (true, true),
+        };
+        let mut h3_failed = None;
+        if h3 {
+            match self.h3_arm() {
+                Some(arm) => {
+                    let budget = hclient_proxy::Dial::remaining(self);
+                    match arm.tunnel_boxed(req.clone(), budget).await {
+                        Ok(t) => return Ok(t),
+                        Err(e) => h3_failed = Some(e),
+                    }
+                }
+                None if !h2 => {
+                    return Err(Error::new(
+                        ErrorKind::Unsupported,
+                        std::io::Error::other(
+                            "this transport lends HTTP/3 tunnels only with an HTTP/3 arm \
+                             (`Native::http3`) and to a filter installed with `Native::egress`",
+                        ),
+                    ));
+                }
+                None => {}
             }
         }
-        let Some(open) = self.tunnel_h2 else {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                std::io::Error::other(
-                    "this transport lends HTTP/2 tunnels only to a filter installed \
-                     with `Native::egress`, and only with the `http2` feature",
-                ),
-            ));
+        let Some(open) = self.tunnel_h2.filter(|_| h2) else {
+            return Err(h3_failed.unwrap_or_else(|| {
+                Error::new(
+                    ErrorKind::Unsupported,
+                    std::io::Error::other(
+                        "this transport lends HTTP/2 tunnels only to a filter installed \
+                         with `Native::egress`, and only with the `http2` feature",
+                    ),
+                )
+            }));
         };
         let raw = self.connect_raw(req.proxy_host, req.proxy_port).await?;
         open(self.tls, raw, req).await
+    }
+
+    /// The QUIC arm HTTP/3 tunnels are opened through, if one is lent.
+    #[cfg(feature = "http3")]
+    fn h3_arm(&self) -> Option<&crate::http3::arm::Arm> {
+        self.tunnel_h3
+    }
+
+    /// No HTTP/3 tunnels without the `http3` feature.
+    #[cfg(not(feature = "http3"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "the `http3` twin reads `self`, and the call site stays free of a `#[cfg]`"
+    )]
+    fn h3_arm(&self) -> Option<&NoArm> {
+        None
     }
 
     /// [`Dial::connect_ipc`](hclient_proxy::Dial::connect_ipc)'s socket,

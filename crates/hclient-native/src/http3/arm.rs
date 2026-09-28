@@ -109,6 +109,14 @@ pub(crate) trait ViaConnect: StagedConnect {
         via: &'a str,
         path: Option<hclient_proxy::BoxPath>,
     ) -> impl Future<Output = Result<Self::Staged, ViaRefused>> + Send + 'a; // send-bound-exception: amendment-C15
+
+    /// [`crate::http3::H3::tunnel`]: an extended CONNECT to a proxy on a
+    /// connection of its own, bounded by `budget`.
+    fn tunnel<'a>(
+        &'a self,
+        req: hclient_proxy::TunnelRequest<'a>,
+        budget: Option<std::time::Duration>,
+    ) -> impl Future<Output = Result<hclient_proxy::Tunnel, CoreError>> + Send + 'a; // send-bound-exception: amendment-C15
 }
 
 /// A staged connect whose transport type is gone.
@@ -139,6 +147,16 @@ pub(crate) trait DynStagedConnect: Debug {
         via: &'a str,
         path: Option<hclient_proxy::BoxPath>,
     ) -> ViaStaging<'a>;
+
+    /// [`ViaConnect::tunnel`], boxed — what a filter's
+    /// [`hclient_proxy::Dial::connect_tunnel`] is lent over HTTP/3, so the
+    /// dial context reaches the QUIC stack through the arm and names none
+    /// of its bounds.
+    fn tunnel_boxed<'a>(
+        &'a self,
+        req: hclient_proxy::TunnelRequest<'a>,
+        budget: Option<std::time::Duration>,
+    ) -> hclient_proxy::BoxTunnelling<'a>;
 }
 
 /// A connection staged by a [`DynStagedConnect`], with one thing left to
@@ -196,6 +214,14 @@ where
             });
             Ok(handle)
         })
+    }
+
+    fn tunnel_boxed<'a>(
+        &'a self,
+        req: hclient_proxy::TunnelRequest<'a>,
+        budget: Option<std::time::Duration>,
+    ) -> hclient_proxy::BoxTunnelling<'a> {
+        Box::pin(self.tunnel(req, budget))
     }
 }
 

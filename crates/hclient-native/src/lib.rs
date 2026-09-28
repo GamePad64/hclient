@@ -2026,6 +2026,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         // mistake rather than a contrived one.
         self.caps = caps::combine(&self.caps, quic.capabilities()).map_err(Box::new)?;
         self.h3 = Some(Arc::new(quic));
+        // A filter installed before the arm is lent it too.
+        if let Some(e) = self.external.as_mut() {
+            e.h3.clone_from(&self.h3);
+        }
         self.udp = Some(bind_udp_erased::<R>);
         self.rules_path = Some(external::open_path::<R, D, T, hclient_proxy::Rules>);
         self.versions.h3 = true;
@@ -2687,8 +2691,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// The filter is also lent CONNECT and extended CONNECT tunnels to a
     /// proxy spoken to over HTTP/2 ([`hclient_proxy::Dial::connect_tunnel`]),
     /// with the `http2` feature: one connection per tunnel, reached by name
-    /// through this transport's resolver and TLS backend. A transport with
-    /// no filter installed lends no tunnels.
+    /// through this transport's resolver and TLS backend. With an HTTP/3
+    /// arm as well ([`Native::http3`], before or after this call) it is lent
+    /// extended CONNECT tunnels over HTTP/3 too, each on a QUIC connection
+    /// of its own that announces extended CONNECT and HTTP datagrams — so
+    /// no ordinary connection's SETTINGS change — and each carrying its
+    /// stream's HTTP datagrams. A transport with no filter installed lends
+    /// no tunnels.
     ///
     /// Its `Connected` event reports the address the filter dialled through
     /// the lent connect path — the first hop's — whatever the filter
@@ -2723,6 +2732,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             tunnel_h2: None,
             #[cfg(feature = "http3")]
             open_path: external::open_path::<R, D, T, hclient_proxy::SharedFilter>,
+            #[cfg(feature = "http3")]
+            h3: self.h3.clone(),
         });
         self.caps.proxy = true;
         self
@@ -4357,7 +4368,8 @@ pub mod testing {
 
     /// The connect path this transport lends an installed filter, as the
     /// filter sees it: HTTP/2 tunnels when [`crate::Native::egress`] was
-    /// called, and none otherwise.
+    /// called, HTTP/3 tunnels when [`crate::Native::http3`] was called as
+    /// well, and none otherwise.
     ///
     /// It is both a [`hclient_proxy::Dial`] and, erased, the
     /// [`hclient_proxy::SharedDial`] an installed filter is actually handed
@@ -4376,7 +4388,7 @@ pub mod testing {
         for<'x> T::Handshake<'x, hclient_proxy::BoxIo>: Send, // send-bound-exception: amendment-C15
         H: hclient_core::hooks::Hooks,
     {
-        crate::dial::NativeDial::<R, D, T, H>::new(
+        let dial = crate::dial::NativeDial::<R, D, T, H>::new(
             &native.rt,
             &native.dns,
             &native.tls,
@@ -4386,7 +4398,10 @@ pub mod testing {
             None,
             native.udp,
         )
-        .with_tunnel_h2(native.external.as_ref().and_then(|e| e.tunnel_h2))
+        .with_tunnel_h2(native.external.as_ref().and_then(|e| e.tunnel_h2));
+        #[cfg(feature = "http3")]
+        let dial = dial.with_tunnel_h3(native.external.as_ref().and_then(|e| e.h3.as_deref()));
+        dial
     }
 
     pub use crate::body::OutgoingBody;

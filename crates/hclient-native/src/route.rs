@@ -940,6 +940,7 @@ where
             ipc: self.ipc,
             udp: self.udp,
             tunnel_h2: self.external.as_ref().and_then(|e| e.tunnel_h2),
+            tunnel_h3: self.external.as_ref().and_then(|e| e.h3.as_deref()),
             budget,
             watching: false,
             target,
@@ -957,6 +958,7 @@ where
         // The built-in rules open no tunnels, and are lent none: what
         // `Native::egress` installed is the installed filter's.
         call.tunnel_h2 = None;
+        call.tunnel_h3 = None;
         match self.rules_path {
             Some(open) => open(&self.rules, call).await,
             None => Err(hclient_proxy::Attempt::Unsupported(Error::new(

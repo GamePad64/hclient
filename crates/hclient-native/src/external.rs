@@ -53,6 +53,11 @@ pub(crate) struct Call<'a, R: TcpConnect + Timer, D, L> {
     /// How the lent context opens an HTTP/2 tunnel to a proxy, when the
     /// filter it is lent to was installed with `Native::egress`.
     pub(crate) tunnel_h2: Option<crate::TunnelH2<R, L>>,
+    /// The QUIC arm the lent context opens an HTTP/3 tunnel through, when
+    /// the filter it is lent to was installed with `Native::egress` on a
+    /// transport with one.
+    #[cfg(feature = "http3")]
+    pub(crate) tunnel_h3: Option<&'a crate::http3::arm::Arm>,
     pub(crate) budget: Option<Duration>,
     /// Whether a hook is watching — `H::WATCHING`, carried as a value so
     /// that the stored pointer names no hook type and `Native::hooks` can
@@ -68,7 +73,7 @@ impl<'a, R: TcpConnect + Timer, D, L> Call<'a, R, D, L> {
     /// every pointer here, so a stream and a datagram path are opened
     /// through the same context.
     fn dial<H>(&self, began: Option<R::Instant>) -> NativeDial<'a, R, D, L, H> {
-        NativeDial::new(
+        let dial = NativeDial::new(
             self.rt,
             self.dns,
             self.tls,
@@ -78,7 +83,10 @@ impl<'a, R: TcpConnect + Timer, D, L> Call<'a, R, D, L> {
             began,
             self.udp,
         )
-        .with_tunnel_h2(self.tunnel_h2)
+        .with_tunnel_h2(self.tunnel_h2);
+        #[cfg(feature = "http3")]
+        let dial = dial.with_tunnel_h3(self.tunnel_h3);
+        dial
     }
 }
 
@@ -107,6 +115,11 @@ pub(crate) struct External<R: TcpConnect + Timer, D, L: TlsConnect> {
     /// How the context this filter is lent opens an HTTP/2 tunnel; `None`
     /// without the `http2` feature.
     pub(crate) tunnel_h2: Option<crate::TunnelH2<R, L>>,
+    /// The QUIC arm the context this filter is lent opens HTTP/3 tunnels
+    /// through: set by whichever of `Native::egress` and `Native::http3`
+    /// comes second, so neither order loses it.
+    #[cfg(feature = "http3")]
+    pub(crate) h3: Option<Arc<crate::http3::arm::Arm>>,
 }
 
 impl<R: TcpConnect + Timer, D, L: TlsConnect> Clone for External<R, D, L> {
@@ -117,6 +130,8 @@ impl<R: TcpConnect + Timer, D, L: TlsConnect> Clone for External<R, D, L> {
             #[cfg(feature = "http3")]
             open_path: self.open_path,
             tunnel_h2: self.tunnel_h2,
+            #[cfg(feature = "http3")]
+            h3: self.h3.clone(),
         }
     }
 }

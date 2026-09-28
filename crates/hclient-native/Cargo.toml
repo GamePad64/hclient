@@ -118,7 +118,18 @@ hclient-tls    = { path = "../hclient-tls", version = "0.1.1" }
 # `runtime-*` — the runtime is `mod quinn`. No `rustls-*` — the crypto
 # arrives already built, as an `Arc<dyn quinn_proto::crypto::ClientConfig>`
 # from `hclient-tls`'s `quic` seam, so nothing here picks a TLS provider.
-h3               = { version = "0.0.8",  optional = true }
+# `i-implement-a-third-party-backend-and-opt-into-breaking-changes` for
+# the tunnels a filter is lent over HTTP/3: an extended CONNECT may be sent
+# only once the proxy's SETTINGS have arrived and said yes, and `h3`'s
+# ordinary client API surfaces neither the frame's arrival
+# (`ConnectionInner::poll_control`) nor what it said
+# (`ConnectionState::settings`). In 0.0.8 the feature changes what can be
+# named and relaxes `non_exhaustive` on two error enums, and turns on no
+# branch — `hclient-webtransport`'s manifest counts the 27 uses — so no
+# ordinary connection behaves differently for it.
+h3               = { version = "0.0.8",  optional = true, features = [
+  "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
+] }
 pin-project-lite = "0.2"
 h3-quinn         = { version = "0.0.10", optional = true }
 quinn            = { version = "0.11", default-features = false, features = ["ring", "futures-io"], optional = true }

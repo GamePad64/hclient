@@ -7,3 +7,5 @@
 
 #[cfg(feature = "http2")]
 pub(crate) mod h2;
+#[cfg(feature = "http3")]
+pub(crate) mod h3;
