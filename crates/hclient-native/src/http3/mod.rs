@@ -77,10 +77,15 @@ mod body;
 mod early;
 mod error;
 mod hooks;
+/// A QUIC endpoint over a filter's datagram path rather than over a real
+/// socket — the egress route's own arm, beside [`runtime`]'s socket-bound
+/// one. Names `quinn` for the same reason `runtime` does; the boundary
+/// `just quinn-stays-in-its-module` holds is this directory against the
+/// rest of the crate, not this one file against the rest of the
+/// directory.
+pub(crate) mod path;
 mod pump;
-/// quinn's `Runtime` over this workspace's own seams — and **the one
-/// module in this crate that names `quinn`**, which
-/// `just quinn-stays-in-its-module` asserts.
+/// quinn's `Runtime` over this workspace's own seams.
 pub(crate) mod runtime;
 mod staged;
 
