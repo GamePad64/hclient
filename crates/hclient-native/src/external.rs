@@ -49,6 +49,7 @@ pub(crate) struct Call<'a, R: TcpConnect + Timer, D, L> {
     pub(crate) tls: &'a L,
     pub(crate) opts: &'a TcpOpts,
     pub(crate) ipc: Option<DialIpc<R>>,
+    pub(crate) udp: Option<crate::BindUdp<R>>,
     pub(crate) budget: Option<Duration>,
     /// Whether a hook is watching — `H::WATCHING`, carried as a value so
     /// that the stored pointer names no hook type and `Native::hooks` can
@@ -140,7 +141,8 @@ where
     H: Hooks,
 {
     let began = mark::<H, R>(c.rt);
-    let dial = NativeDial::<R, D, L, H>::new(c.rt, c.dns, c.tls, c.opts, c.ipc, c.budget, began);
+    let dial =
+        NativeDial::<R, D, L, H>::new(c.rt, c.dns, c.tls, c.opts, c.ipc, c.budget, began, c.udp);
     let erased: &SharedDial<'_> = &dial;
     let boxed = BoxDial::new(erased);
     let opened = filter

@@ -29,6 +29,12 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, L, H> {
     tls: &'a L,
     opts: &'a TcpOpts,
     ipc: Option<DialIpc<R>>,
+    /// How this transport binds a UDP socket of its own runtime, when
+    /// [`Native::http3`](crate::Native::http3) has installed one. `None`
+    /// refuses [`bind_udp`](hclient_proxy::Dial::bind_udp) naming that
+    /// constructor, exactly as a missing `ipc` refuses
+    /// [`connect_ipc`](hclient_proxy::Dial::connect_ipc).
+    udp: Option<crate::BindUdp<R>>,
     budget: Option<Duration>,
     /// When the context was lent, on the transport's clock — what
     /// [`remaining`](hclient_proxy::Dial::remaining) counts the budget down
@@ -44,6 +50,10 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, L, H> {
 }
 
 impl<'a, R: TcpConnect + Timer, D: ?Sized, L, H> NativeDial<'a, R, D, L, H> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every argument is one of what `Native` lends a connection; splitting the context into a second type would only move the count"
+    )]
     pub(crate) fn new(
         rt: &'a R,
         dns: &'a D,
@@ -52,6 +62,7 @@ impl<'a, R: TcpConnect + Timer, D: ?Sized, L, H> NativeDial<'a, R, D, L, H> {
         ipc: Option<DialIpc<R>>,
         budget: Option<Duration>,
         began: Option<R::Instant>,
+        udp: Option<crate::BindUdp<R>>,
     ) -> Self {
         Self {
             rt,
@@ -59,6 +70,7 @@ impl<'a, R: TcpConnect + Timer, D: ?Sized, L, H> NativeDial<'a, R, D, L, H> {
             tls,
             opts,
             ipc,
+            udp,
             budget,
             lent: rt.now(),
             began,
@@ -159,6 +171,53 @@ where
         let (s, _info) = self.tls.connect(stream, tls_req).await?;
         Ok(crate::DialStream::tls(s))
     }
+
+    fn bind_udp(&self, local: std::net::SocketAddr) -> Result<hclient_proxy::BoxUdp, Error> {
+        let Some(bind) = self.udp else {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                std::io::Error::other(
+                    "this transport lends UDP only with an HTTP/3 arm; see `Native::http3`",
+                ),
+            ));
+        };
+        bind(self.rt, local).map_err(|e| Error::new(ErrorKind::Connect, e))
+    }
+
+    // Maintainer notes (not rendered):
+    // The proxy's own name, and never the origin's — a filtered path must
+    // not resolve the origin locally, which is exactly the leak a proxy
+    // exists to avoid. Both families are asked, the way `connect::connect`
+    // asks them, so a caller racing the addresses this hands back gets the
+    // same Happy Eyeballs shape a direct connect would.
+    async fn resolve<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> Result<Vec<std::net::SocketAddr>, Error> {
+        use futures_util::StreamExt as _;
+        use hclient_dns::rtype;
+
+        if let Ok(ip) = hclient_core::url::bare_host(host).parse::<std::net::IpAddr>() {
+            return Ok(vec![std::net::SocketAddr::new(ip, port)]);
+        }
+        let mut out = Vec::new();
+        for t in [rtype::AAAA, rtype::A] {
+            let mut s = std::pin::pin!(self.dns.lookup(host, t));
+            while let Some(r) = s.next().await {
+                if let Ok(Some(ip)) = r.map(|rec| rec.rdata.addr()) {
+                    out.push(std::net::SocketAddr::new(ip, port));
+                }
+            }
+        }
+        if out.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Resolve,
+                std::io::Error::other(format!("no address for {host}")),
+            ));
+        }
+        Ok(out)
+    }
 }
 
 // Erased for an external filter, where the runtime's and the resolver's
@@ -212,6 +271,14 @@ where
             Ok(hclient_proxy::BoxIo::new(s))
         })
     }
+
+    fn bind_udp(&self, local: std::net::SocketAddr) -> Result<hclient_proxy::BoxUdp, Error> {
+        hclient_proxy::Dial::bind_udp(self, local)
+    }
+
+    fn resolve_boxed<'a>(&'a self, host: &'a str, port: u16) -> hclient_proxy::BoxResolving<'a> {
+        Box::pin(hclient_proxy::Dial::resolve(self, host, port))
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +289,48 @@ mod tests {
 
     fn opts() -> hclient_rt::TcpOpts {
         hclient_rt::TcpOpts::default()
+    }
+
+    /// A resolver answering a fixed set of addresses, split by family per
+    /// `rtype` the way a real backend would — so a caller asking both
+    /// families back to back gets each address exactly once.
+    struct Fixed(Vec<std::net::IpAddr>);
+
+    impl hclient_dns::Resolve for Fixed {
+        type Records<'a>
+            = std::pin::Pin<
+            Box<dyn futures_core::Stream<Item = Result<hclient_dns::Record, Error>> + 'a>,
+        >
+        where
+            Self: 'a;
+
+        fn supports(&self, rtype: u16) -> bool {
+            matches!(rtype, hclient_dns::rtype::A | hclient_dns::rtype::AAAA)
+        }
+
+        fn lookup<'a>(&'a self, _name: &str, rtype: u16) -> Self::Records<'a> {
+            let want_v6 = rtype == hclient_dns::rtype::AAAA;
+            let want_v4 = rtype == hclient_dns::rtype::A;
+            Box::pin(futures_util::stream::iter(
+                self.0
+                    .iter()
+                    .copied()
+                    .filter(move |a| a.is_ipv6() == want_v6 && (want_v4 || want_v6))
+                    .map(|addr| Ok(hclient_dns::Record::new(hclient_dns::RData::from(addr)))),
+            ))
+        }
+    }
+
+    /// A minimal executor for a future that must not need tokio's own
+    /// `#[tokio::test]` machinery — [`hclient_proxy::Dial::resolve`] and
+    /// [`hclient_proxy::Dial::bind_udp`] are plain trait methods, and this
+    /// is enough to drive the one `await` `resolve` needs.
+    fn tokio_test_block_on<F: Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut)
     }
 
     /// The context runs TLS with the transport's own backend: `NoTls`
@@ -239,6 +348,7 @@ mod tests {
             &hclient_dns::IpLiteralOnly,
             &tls,
             &opts,
+            None,
             None,
             None,
             None,
@@ -271,6 +381,7 @@ mod tests {
             &hclient_dns::IpLiteralOnly,
             &tls,
             &opts,
+            None,
             None,
             None,
             None,
@@ -308,6 +419,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let _s = dial.connect("127.0.0.1", port).await.expect("connected");
         assert!(l.accept().is_ok());
@@ -327,6 +439,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(dial.connect("proxy.test", 1).await.is_err());
     }
@@ -340,6 +453,7 @@ mod tests {
             &hclient_dns::IpLiteralOnly,
             &hclient_tls::NoTls,
             &opts,
+            None,
             None,
             None,
             None,
@@ -366,6 +480,7 @@ mod tests {
             None,
             Some(d),
             None,
+            None,
         );
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         let left = dial.remaining().expect("a bound was given");
@@ -388,7 +503,56 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(dial.remaining(), None);
+    }
+
+    /// The proxy's own name, resolved through the transport's resolver —
+    /// never the origin's, which a filtered path must not look up locally.
+    #[test]
+    fn resolve_answers_both_families_from_the_transports_resolver() {
+        let dns = Fixed(vec![
+            "192.0.2.1".parse().unwrap(),
+            "2001:db8::1".parse().unwrap(),
+        ]);
+        let rt = hclient_rt_tokio::Tokio;
+        let opts = opts();
+        let dial = NativeDial::<_, _, hclient_tls::NoTls, NoHooks>::new(
+            &rt,
+            &dns,
+            &hclient_tls::NoTls,
+            &opts,
+            None,
+            None,
+            None,
+            None,
+        );
+        let got =
+            tokio_test_block_on(hclient_proxy::Dial::resolve(&dial, "proxy.test", 1080)).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|a| a.port() == 1080));
+    }
+
+    /// No binder was ever installed — [`Native::http3`] is the only
+    /// constructor that installs one — so the request is refused rather
+    /// than silently ignored.
+    #[test]
+    fn bind_udp_refuses_without_an_installed_binder() {
+        let rt = hclient_rt_tokio::Tokio;
+        let dns = Fixed(vec![]);
+        let opts = opts();
+        let dial = NativeDial::<_, _, hclient_tls::NoTls, NoHooks>::new(
+            &rt,
+            &dns,
+            &hclient_tls::NoTls,
+            &opts,
+            None,
+            None,
+            None,
+            None,
+        );
+        let e = hclient_proxy::Dial::bind_udp(&dial, "0.0.0.0:0".parse().unwrap()).unwrap_err();
+        assert_eq!(*e.kind(), ErrorKind::Unsupported);
     }
 }

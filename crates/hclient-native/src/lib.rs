@@ -282,6 +282,34 @@ where
     Box::pin(rt.connect_ipc(addr))
 }
 
+/// How [`Native`] binds a UDP socket of its own runtime for a filter —
+/// [`hclient_proxy::Dial::bind_udp`].
+///
+/// A pointer for [`DialIpc`]'s reason: it is monomorphised in
+/// [`Native::http3`], where `R: crate::http3::H3Runtime` is known, and
+/// called from the dial context, where it is not — so a runtime with no
+/// UDP of its own meets no signature naming [`hclient_rt::UdpBind`], and
+/// `Native::http3` is the only constructor that ever installs one.
+pub(crate) type BindUdp<R> = fn(&R, std::net::SocketAddr) -> std::io::Result<hclient_proxy::BoxUdp>;
+
+/// [`BindUdp`]'s one body, instantiated in [`Native::http3`].
+///
+/// `R::Socket: Send + Sync` is restated rather than inherited: it is a
+/// precondition of [`crate::http3::H3Runtime`]'s blanket `impl`, not a
+/// supertrait bound, so a generic function that only knows `R: H3Runtime`
+/// does not get to assume it — the same restatement `H3`'s own `impl`
+/// block carries for the same reason.
+#[cfg(feature = "http3")]
+fn bind_udp_erased<R>(rt: &R, local: std::net::SocketAddr) -> std::io::Result<hclient_proxy::BoxUdp>
+where
+    R: crate::http3::H3Runtime,
+    R::Socket: Send + Sync + 'static, // send-bound-exception: amendment-C10
+{
+    Ok(hclient_proxy::BoxUdp::new(hclient_rt::UdpBind::bind(
+        rt, local,
+    )?))
+}
+
 /// Monomorphised where `H: Clone + Send + Sync + 'static` is known, called
 /// where it is not.
 type Watch1xx<H> = fn(
@@ -725,6 +753,12 @@ where
     /// [`Native::proxy_over_ipc`]. `None` means a rule that needs one is
     /// refused at connect, naming those two methods.
     ipc: Option<DialIpc<R>>,
+    /// How this transport binds a UDP socket of its own runtime for a
+    /// filter, stored once [`Native::http3`] has proven `R:
+    /// crate::http3::H3Runtime`. `None` means [`hclient_proxy::Dial::bind_udp`]
+    /// is refused, naming that constructor — the same shape as a missing
+    /// [`ipc`](Self::ipc).
+    udp: Option<BindUdp<R>>,
     /// What this client accepts in an HTTP/1 response head — see
     /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
     /// the HTTP/1 path is the one every build has.
@@ -1071,6 +1105,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             #[cfg(feature = "http3")]
             hedge: None,
             ipc: None,
+            udp: None,
             h1_opts: crate::http1::H1Opts::default(),
             #[cfg(feature = "http2")]
             h2_opts: crate::http2::H2Opts::default(),
@@ -1545,6 +1580,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             #[cfg(feature = "http3")]
             hedge: self.hedge,
             ipc: self.ipc,
+            udp: self.udp,
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
@@ -1925,6 +1961,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         R: Send + Sync + 'static,        // send-bound-exception: amendment-C12
         T: Send + Sync + 'static,        // send-bound-exception: amendment-C12
         D: Send + Sync + 'static,        // send-bound-exception: amendment-C12
+        // What lets a filter lend this runtime's own UDP: `H3Runtime` is
+        // already what a `quic: H3<R, T, D>` demanded to be built, named
+        // again here so `bind_udp_erased::<R>` can be monomorphised.
+        R: crate::http3::H3Runtime,
+        R::Socket: Send + Sync + 'static, // send-bound-exception: amendment-C10
     {
         // **The stored value must be true whichever path serves the
         // request**, and `capabilities()` hands back a reference computed
@@ -1939,6 +1980,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         // mistake rather than a contrived one.
         self.caps = caps::combine(&self.caps, quic.capabilities()).map_err(Box::new)?;
         self.h3 = Some(Arc::new(quic));
+        self.udp = Some(bind_udp_erased::<R>);
         self.versions.h3 = true;
         Ok(self)
     }
@@ -3773,6 +3815,7 @@ where
             self.external.as_ref(),
             &self.rules,
             self.ipc,
+            self.udp,
             // The bound `with_connect_timeout` enforces below, not the
             // request's own: on the shared-h2 path it is what is left after
             // waiting on another request's connect.

@@ -592,6 +592,7 @@ where
             self.external.as_ref(),
             &self.rules,
             self.ipc,
+            self.udp,
             timeouts.connect,
             &uri,
             &self.opts,
