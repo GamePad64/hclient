@@ -2476,7 +2476,11 @@ consumer anywhere in this stack. What was missing was never a seam below
 the transport — it was one decision inside it. The datagram half of
 proxying, when it comes, is a `UdpBind` wrapper (SOCKS5 UDP ASSOCIATE
 fits; MASQUE does not, since it needs an HTTP client to the proxy) and a
-fourth `Egress` variant that the QUIC arm may take.
+fourth `Egress` variant that the QUIC arm may take. *(It came as neither:
+the datagram half is a `DatagramPath` a filter opens, not a `UdpBind`
+wrapper, and MASQUE got its HTTP client by the transport lending the
+filter `Dial::connect_tunnel` — see "HTTP/3 leaves through a filter"
+below.)*
 
 Five mutations, five kills, in `tests/proxy_and_quic.rs`: the check
 removed (five tests), a Unix socket treated as direct (one), the demand
@@ -2580,7 +2584,10 @@ is `NoDatagramPath { via }`. The system-proxy translation still installs
 HTTP proxies only and refuses a machine naming SOCKS as well; its stated
 reason (*a transport holds one `P`*) was corrected, and installing SOCKS
 entries is now possible and an owner's decision. TLS to a proxy is the
-next section.
+next section. *(The datagram half is done: a filter declaring `datagrams`
+opens a path and HTTP/3 goes over it, and `NoDatagramPath` is now the
+answer only for a filter that declares none — see "HTTP/3 leaves through
+a filter" below. The system-proxy refusal of SOCKS entries is unchanged.)*
 
 ### A filter can ask the transport for TLS, and the stream it gets back is the one it gave
 
@@ -2646,7 +2653,358 @@ binaries: `minimal` 525,304 → 525,432 (+128 bytes), `hc` 6,308,424 →
 store for proxies; a client-certificate setter on `Proxy` (the field is
 in `ProxyTls`); TLS over a filter's own wrapper. The `Dial` blocker on
 stabilising `hclient-proxy` is removed; the stabilisation itself is a
-separate decision.
+separate decision. *(h2 to a proxy and MASQUE have since arrived, as
+tunnels a filter is lent rather than as `Proxy` rules — the next
+section. `Dial` grew three methods doing it, all defaulted, which is the
+shape a stable seam can grow in.)*
+
+### HTTP/3 leaves through a filter, and the path is quinn's own shape
+
+A request an egress filter carries can now go over HTTP/3. The filter
+opens a **datagram path** to the origin — through a SOCKS5 relay, or
+through a MASQUE proxy over HTTP/3 or HTTP/2 — and the QUIC arm runs its
+handshake over that path instead of a socket. Before this, a filtered
+request was TCP-only by construction. The design is
+`.notes/superpowers/specs/2026-09-28-egress-datagrams-design.md`. The
+ledger of what the plan got wrong is
+`.superpowers/sdd/2026-09-28-egress-datagrams/progress.md`, in the
+working copy only.
+
+**`DatagramPath` is `Send + Sync`, and the reason is its only consumer.**
+The seam demands `Send` of nothing a runtime lends unless something here
+needs it. quinn's `AsyncUdpSocket` demands both of every socket, and a
+path exists only to be one. It costs embassy nothing: embassy cannot run
+HTTP/3 at all.
+
+The trait copies quinn's shape: `&self` methods, `try_send` with
+`WouldBlock` as a normal answer, `poll_writable`, `poll_recv`,
+`max_datagram_size`. Adapting in either direction is then a forward.
+The sketch in the design conversation had a `poll_send`, and it was
+amended while planning for exactly this reason. A path is **connected**:
+one peer, whole datagrams, no GSO, no ECN, no addresses. That is what a
+proxy can honestly carry.
+
+**`Dial` lends three more things, and each refuses by default.**
+
+- `bind_udp` — the runtime's UDP, erased as `BoxUdp`.
+- `resolve` — **the proxy's name only**. The origin's name is never
+  resolved locally on a filtered path. That rule is the reason a SOCKS5
+  relay reply of `0.0.0.0` resolves the *proxy's* name, and why nothing
+  else here resolves a name.
+- `connect_tunnel` — CONNECT and extended CONNECT to a proxy, over
+  HTTP/2 or HTTP/3.
+
+Each default is an `ErrorKind::Unsupported` refusal, so a third-party
+`Dial` compiled against the old trait still builds. `EgressFilter` gains
+`open_datagrams`, refusing with `Attempt::Unsupported` by default, and it
+requires `C::Stream: Send + 'static` — a SOCKS5 path holds its control
+connection for the path's whole life, inside a `Send + Sync` value.
+`TunnelRequest` is `#[non_exhaustive]` with a builder, by the
+three-answer rule: the filter builds it and the transport reads it.
+`FilterSupport::datagrams` was a flag nothing read. It is now the switch
+the routing asks.
+
+**In `Native`, the path is a per-connection endpoint over a stand-in
+peer.** `PathSocket` wraps a `BoxPath` as a `quinn::AsyncUdpSocket`,
+declaring one segment, no ECN and `may_fragment = false`. Each
+connection gets its own `quinn::Endpoint`, and its peer is
+`192.0.2.1:<port>`. quinn refuses port 0 and unspecified addresses, and
+the path ignores the address anyway. TEST-NET-1 can never be a real peer,
+which is what makes it safe to report every datagram as coming from it. `initial_mtu` is the path's
+own `max_datagram_size`, with MTU discovery off, because only the proxy
+knows the ceiling. A path under 1200 bytes is `Unsupported`, since QUIC
+cannot run on it.
+
+**What a filtered HTTP/3 connection does differently:**
+
+- The pool key carries the filter's key as `via`, so a direct and a
+  filtered connection to one origin never share.
+- The origin's HTTPS record is **not** looked up. Looking it up is a
+  local query naming the origin. QUIC is chosen through a filter only on
+  a `RequireVersion(HTTP_3)` demand or an `Alt-Svc` heard through that
+  filter.
+- `Connected::remote` is `None`. The stand-in is not an address, and
+  reporting it would be the `0.0.0.0:0` answer `Head::version` already
+  refused.
+
+**Opening the path and the QUIC handshake spend one `Timeouts::connect`,
+and the first build spent it twice.** Review caught it. The new test
+`opening_the_path_and_the_quic_handshake_spend_one_connect_bound`
+measured **1.80 s against a 1 s bound** before the fix. The path's
+opening now runs under what is left of the bound, and the handshake under
+what is left after that — the stream path's rule.
+
+**The switch to a stream is remembered, and it reuses `over_quic`'s TCP
+tail.** Three things switch the same unsent request to the filter's
+stream and record the origin in `H3Failures` with its TTL:
+
+- `Attempt::Unsupported` from `open_datagrams`;
+- a QUIC connect over the path that fails;
+- a path too small for QUIC.
+
+The switch goes through `after_quic_failed`, the function the direct
+fallback and the race already share. So there is one spelling of the
+budget rule, not three. Nothing was sent, so this is not a retry in
+`RetryKind`'s sense. `RequireVersion(HTTP_3)` does not switch.
+`Attempt::Failed` is final: a proxy that could not be reached will not be
+reached by asking for a stream instead.
+
+The memory is keyed by origin alone, where the spec wrote `(filter key,
+origin)`. That is equivalent, because `route` is a pure function of the
+target, so an origin always takes the same filter. The seam's contract
+already forbids the case where it would not be.
+
+**The built-in `Rules` reach their path through the erased route, and
+that put sixteen predicates on `Native::http3`.** The plan had `Native`
+call `Rules::open_datagrams` concretely with `NativeDial`. That needs
+`DialStream<R::Stream, T>: Send + 'static`, proven inside `Native`'s
+generic route impl. A generic impl cannot prove it (ruling P1). So the
+rules go the way an external filter goes: through `BoxDial` and
+`SendEgressFilter::open_datagrams_send`, behind an `open_path` function
+pointer that `http3()` installs. `http3()` therefore restates what
+`egress()` already carried, plus what the arm's staging needs of the
+concrete `H3`:
+
+- `R: H3Runtime`, `R::Socket: Send + Sync + 'static + Debug`,
+  `R::Sleep: Send + 'static`, `R::Instant: Send + Sync`;
+- `T: QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>>`;
+- `D: Resolve`, `for<'a> D::Records<'a>: Send`;
+- `Staged<R, NoHooks>: Send`;
+- `R::Stream: Send + 'static`, `for<'a> R::Connecting<'a>: Send`;
+- `T::Stream<BoxIo>: Send + 'static`,
+  `for<'a> T::Handshake<'a, BoxIo>: Send`.
+
+Every combination this workspace ships already satisfied `egress()`'s
+set, so nothing that built stopped building. The cost is a public
+signature that is noisier than what it needs to say.
+
+**SOCKS5 UDP ASSOCIATE is opt-in per proxy, with `Socks5::new().with_udp()`.**
+`hclient_proxy::system` never turns it on. A rule without it declares
+`STREAM` and behaves exactly as before. A rule learns of UDP through
+`Handshake::associate`, defaulting to `None`, so a foreign protocol owes
+nothing. The association is sans-io like the rest of the crate: greeting,
+RFC 1929 auth, then `CMD=0x03`.
+
+- `REP=0x07` (command not supported) is `Attempt::Unsupported`, which
+  switches to TCP and is remembered. Other codes are `Failed`.
+- An unspecified relay address in the reply means *the proxy's own*. It
+  resolves the proxy's name through `Dial::resolve`; a proxy given as a
+  literal skips the lookup.
+- End of file on the control connection ends the path. `poll_recv` polls
+  the control stream beside the socket, because a SOCKS5 proxy ends an
+  association by closing it, and without that a request would wait on a
+  dead association until its bound. A test pins this against a real
+  relay: the request **errors** within 10 s of the close rather than
+  hanging.
+- A GRO receive is split by its stride. The runtime's UDP may hand over
+  several datagrams as one, noticed while wiring the first path — and the
+  `egress-datagram` witness's own path still ignores it, which a
+  loopback run does not show.
+- A datagram not from the relay's address is dropped. So is one with
+  `FRAG != 0`, since fragmentation is deliberately not done.
+
+Against a real relay fixture and a quinn origin, the origin sees only the
+relay, and the relay is handed the origin **by name**. The test's
+resolver is never asked for the origin at all.
+
+**HTTP/2 tunnels are driven inline, and one waker was not enough.** The
+plan had `multiplexed()` spawn the tunnel's h2 connection. Its spawner
+is typed to the request driver, `H2Driver<NativeIo<R, T>, H, R>`, and
+cannot spawn anything else (ruling T11). So the tunnel's stream owns its
+`h2::client::Connection` and polls it from every read and write. The
+opener is installed by `egress()`, whose where-clause already proves what
+it needs, so **no new bounds**.
+
+That first build parked the connection's socket waker on whichever task
+polled last. A reader in one task then stalled for good once a writer in
+another went idle — and quinn reads and writes a capsule path from
+different tasks, which is exactly that shape. Review found it. The new
+test hung at **5 s** before the fix and passes in 0.26 s after. The fix
+is a `Fanout` waker that holds the last reader's and the last writer's
+wakers and wakes both.
+
+Waiting for the proxy's SETTINGS is a PING. In h2 0.4.19, `poll_ready`
+resolves before SETTINGS arrive, so it would read extended CONNECT as
+off. A PONG follows the peer's SETTINGS, which makes the wait causal.
+
+**HTTP/3 tunnels get QUIC connections of their own, so ordinary
+SETTINGS do not change.** Each tunnel dials a fresh connection with its
+own builder, announcing extended CONNECT and HTTP datagrams, and waits
+for the proxy's SETTINGS before sending. Ordinary connections announce
+neither, and
+`an_h3_tunnel_does_not_change_what_ordinary_h3_connections_announce`
+pins that against the same server.
+
+Reading the peer's SETTINGS took `h3`'s
+`i-implement-a-third-party-backend-and-opt-into-breaking-changes`
+feature. The ordinary client API exposes neither the frame's arrival nor
+what it said. In 0.0.8 the feature changes what can be named, relaxes
+`non_exhaustive` on two error enums, and turns on no branch. The
+dependency is pinned to `0.0.8`, so the breaking changes it opts into
+cannot arrive by drift.
+
+**A plain CONNECT over HTTP/3 is impossible with `h3` 0.0.8**, and it is
+refused rather than worked around (ruling T14). `ext::Protocol` accepts
+only `webtransport` and `connect-udp`. The client also always writes
+`:scheme` and `:path`, which RFC 9114 forbids on a plain CONNECT. So a
+CONNECT-TCP tunnel is HTTP/2 only. `Http3` alone is `Unsupported` before
+a packet is sent, and `Http3ThenHttp2` goes straight to HTTP/2.
+
+**When HTTP/2 can take over, the HTTP/3 attempt is capped at 1.5 s, and
+the first build starved the fallback.** Review found an `Http3ThenHttp2`
+tunnel to a proxy with no UDP listener spending quinn's whole 30 s idle
+timeout on QUIC, or the whole connect bound, which left HTTP/2 nothing.
+The cap is `H3_TUNNEL_BEFORE_H2`: about one first PTO off QUIC's guessed
+333 ms initial RTT, plus room for one retransmission. Under a connect
+bound it is `min(1.5 s, remaining / 2)`. The new test against a
+black-holed UDP port failed at its **5 s** guard before the fix and
+passes in **1.57 s** after — **30 s to about 1.5 s**. An HTTP/3-only
+request still gets everything that is left.
+
+**`hclient-masque` is an experiment, and it exists to shape the seams
+rather than to ship.** It is `publish = false` and nothing published
+names it. A `Masque` filter speaks RFC 9298 CONNECT-UDP (URI template,
+context-id 0 on QUIC datagrams, DATAGRAM capsules on an HTTP/2 stream)
+and a plain CONNECT for streams, using only `Dial::connect_tunnel`. The
+codecs — template, varint, capsules — are its own. It does not reuse
+`hclient-webtransport`'s. Proven end to end through `hclient::Client`,
+against real h3 and h2 proxy fixtures:
+
+- HTTP/3 inside HTTP/3;
+- HTTP/3 over HTTP/2 capsules;
+- CONNECT-TCP over HTTP/2, under both `Http2` and the default
+  `Http3ThenHttp2`;
+- a proxy refusing CONNECT-UDP falls back to a TCP tunnel, and the
+  fallback is remembered.
+
+CONNECT-TCP over HTTP/3 alone is asserted to be `Unsupported` with **0**
+QUIC connections accepted, for the `h3` reason above. **No defect turned
+up in `hclient-native` or `hclient-proxy`** — every path passed against
+the transport unchanged. That is the result the experiment was for.
+
+**One seam gap it did surface: `hclient_proxy::ProxyRefused` cannot be
+built outside its crate.** It is `#[non_exhaustive]` with no constructor,
+so a third-party filter that wants to report a proxy's status has to mint
+its own error, which `hclient-masque`'s `Refused { status }` does. A
+constructor would be the three-answer rule applied once more. It is not
+added here.
+
+**Two `CapsulePath` liveness bugs were invisible to an echoing
+fixture.** A capsule path writes DATAGRAM capsules into a stream that may
+take them only in part. What is left is kept as a tail, and somebody has
+to own writing it.
+
+1. The first build drained the tail only on send. quinn asks for
+   writability only when it has more to send, so the last capsule of a
+   burst — often a final ACK — sat there forever. A cross-task test
+   caught it as "sent 300 recv 299".
+2. The fix registered the receiver only when it happened to see a tail.
+   A receiver parked while the tail was still empty then owned nothing,
+   and a later partial send was stranded until an unrelated wake. Review
+   found it. The cross-task test could not, because its far end
+   **echoed**, and the returning bytes woke the receiver every time.
+   `the_last_capsule_of_a_burst_reaches_a_proxy_that_only_reads` has a
+   far end that never writes back. It failed with the capsule stranded,
+   and the fix — the receiver always owns the tail's write interest —
+   passes.
+
+The rule to carry: **an echoing fixture hides a stranded write**, because
+every reply is a wake nobody earned.
+
+**An outside witness wrote a datagram filter with no edit under
+`crates/`.** `.notes/witnesses/egress-datagram` sends a request that
+demands HTTP/3 through its own `Forward` filter. With `open_datagrams`
+removed, it fails with the seam's default refusal: `Unsupported`, *this
+filter opens no datagram path*. It is not `NoDatagramPath`, because the
+filter still declares datagrams, and that distinction is exactly the one
+the two answers draw. All three egress witnesses pass on the finished
+tree.
+
+**The mutation sweep found twenty-nine gaps, all in the new code's edges
+rather than in its routing.** Each one was closed by a test, and each
+kill was re-applied by hand before it was believed.
+
+- `just mutants hclient-proxy`: 618 tested, 393 caught, 167 unviable, 6
+  timeouts, 52 missed.
+  - 19 are the platform readers under `system/`, never type-checked on
+    this host. On Linux, `detect_platform` already *is* the default.
+  - 11 are equivalent: six `Debug` impls, the test double's
+    `poll_writable`, a `<=` where no reply is ever five bytes long, a
+    short-datagram `<=` that the next check subsumes, and two mutants that
+    only make the receive buffer larger.
+  - 22 were gaps. Neither `BoxPath` nor `BoxUdp` was ever asked to
+    forward a poll: nothing in the crate exercised its own erasure, the
+    finding the second audit made about `BoxHandshake`. Nothing pinned
+    `Socks5::udp`. The association's refusal of `0xFF` came back under
+    the wrong name, and a method it never offered reached an `expect`.
+  - The rest were boundaries: a 255-byte name, a path's exact
+    `max_datagram_size`, a reserved byte set alone, a datagram shorter
+    than a header, which the `==` mutant indexed past. One was the
+    receive buffer sized for the longest §7 header in front of a full
+    1452-byte payload: five mutants shrank it and truncated that
+    datagram, and nothing noticed.
+  - The one gap older than this work: `10.0.0.0/+8` and `example.com:+80`
+    were refused only by `digits`, since `str::parse` accepts a sign.
+  - The timeouts are hangs: `read_some` answering without reading, and
+    `percent_decode`'s index running backwards. The two `BoxUdp` ones now
+    fail fast on a direct test.
+- `just mutants hclient-masque`: 117 tested, 63 caught, 28 unviable, 10
+  timeouts, 16 missed.
+  - 9 are equivalent: four varint `|` to `^` over disjoint bits, two
+    `Debug` impls, a resize `<=`, a size check whose inner path refuses
+    the same datagram with the same kind, and a waker slot that clones
+    when it need not.
+  - 7 were gaps:
+    - `accepted` returning `Ok` for a `501`, which end to end is
+      indistinguishable, because a capsule path over a refused stream
+      fails its QUIC handshake and switches anyway;
+    - a bare IPv6 literal left unbracketed;
+    - a transport's `Unsupported` read as final;
+    - both paths refusing their exact size;
+    - `ContextPath` not forwarding writability;
+    - a waiter from a second task never replacing the first's.
+  - All 10 timeouts are in `CapsulePath`'s liveness code, and each hangs
+    a test against its own guard. Those are the hangs the section above
+    was about.
+
+**What it cost, measured.** Almost nothing, and the absences are the
+point:
+
+- `Native::execute`'s future is **unchanged** at 20,336 bytes with every
+  feature and 13,200 with none. The whole datagram route sits behind the
+  arm's erasure and a function pointer.
+- `hclient-proxy`'s graph is **30 crates** before and after, and its
+  manifest did not change.
+- `hclient-native`'s is **50** by default and **90** with every feature,
+  before and after. The `h3` feature adds code, not crates.
+- `hclient-masque` is 32, and it is in no published graph.
+
+(Before-counts were taken from `git archive 11e09836`, never a checkout.)
+
+**Deliberately not done**, from the design:
+
+- a pool of proxy connections for tunnels — one connection per tunnel;
+- chaining filters;
+- CONNECT-IP;
+- UDP through a SOCKS proxy reached over a Unix socket;
+- SOCKS5 fragmentation.
+
+**And the real limits that remain, found and not closed:**
+
+- Nothing is remembered between tunnels to a proxy with no HTTP/3, so
+  each `Http3ThenHttp2` tunnel pays up to its 1.5 s cap.
+- A flood of off-path datagrams keeps one `Socks5Path::poll_recv`
+  looping, since there is no per-poll budget.
+- An unspecified relay behind a named proxy resolves the name fresh, and
+  may land on a different address from the one the control connection
+  reached.
+- `ProxyTls::alpn` is overridden to `h2` for an HTTP/2 tunnel, and the
+  negotiated ALPN is not checked. A proxy without h2 fails as an opaque
+  `Connect` error.
+- Tunnel setup is bounded only by what the filter reads off
+  `remaining()`, as the other `Dial` methods are.
+- `ConnectTiming::dns` reports about zero for a path connection that did
+  no lookup.
 
 ### A seam review, and what a scan of thirty-five traits found
 

@@ -41,6 +41,13 @@
 //!   doc for the contract a driver depends on.
 //! - [`Step`] — what a handshake wants to happen next.
 //! - [`HttpConnect`], [`Socks5`], [`Socks4`] — the three implementations.
+//! - [`EgressFilter`] and [`Dial`] — where a connection goes, and what a
+//!   transport lends a filter to open it: a stream, TLS over one, the
+//!   runtime's UDP, the proxy's own addresses, and CONNECT tunnels.
+//! - [`DatagramPath`] — one peer and whole datagrams, which a filter opens
+//!   with [`EgressFilter::open_datagrams`] for a transport to run QUIC
+//!   over. [`Socks5::with_udp`] makes the built-in SOCKS5 rule open one
+//!   through the proxy's UDP ASSOCIATE; nothing turns that on by default.
 //!
 //! # Features
 //!

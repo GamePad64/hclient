@@ -125,8 +125,9 @@ pub(crate) trait ViaConnect: StagedConnect {
 /// one sits in cannot opt out — the alternative is a hand-written `Debug`
 /// for a struct with a dozen fields, which drifts. `H3` derives it.
 ///
-/// Blanket-implemented over every [`StagedConnect`], so `hclient-h3`
-/// implements nothing for it — the same arrangement
+/// Blanket-implemented over every [`StagedConnect`] that is also a
+/// [`ViaConnect`], so `H3` implements nothing for it beyond those two —
+/// the same arrangement
 /// `hclient_core::transport::DynTransport` has, and for the
 /// same reason: a seam a backend has to opt into is a seam backends forget.
 pub(crate) trait DynStagedConnect: Debug {

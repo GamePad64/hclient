@@ -1267,10 +1267,13 @@ where
         let mut cfg = quinn::ClientConfig::new(self.tls.quic_session(&crypto)?);
         let mut transport = quinn::TransportConfig::default();
         transport.keep_alive_interval(self.keep_alive);
-        // The IPv6 minimum, which every path that carries IPv6 carries: from
-        // the first packet, a datagram leaves room for a whole QUIC packet
-        // of 1200 bytes behind its quarter stream id, which is what a
-        // tunnel's datagrams are asked to carry. Discovery may raise it.
+        // quinn's `initial_mtu` is a UDP payload size, so this is 48 bytes
+        // more than a minimum-MTU IPv6 path carries (1232 after the IPv6
+        // and UDP headers). It is taken anyway: a tunnel's datagrams are
+        // asked to carry whole 1200-byte QUIC packets, and one of those
+        // behind its quarter stream id and inside this connection's own
+        // packet does not fit in 1232 — a path that small could not carry
+        // the tunnel's datagrams at any MTU. Discovery may raise it.
         transport.initial_mtu(TUNNEL_INITIAL_MTU);
         cfg.transport_config(Arc::new(transport));
         let conn = endpoint
