@@ -121,6 +121,7 @@ mod socks4;
 mod socks5;
 #[cfg(feature = "system")]
 pub mod system;
+mod tunnel;
 
 pub use connect::HttpConnect;
 #[doc(hidden)]
@@ -128,9 +129,9 @@ pub use datagram::testing;
 pub use datagram::{BoxPath, BoxUdp, DatagramPath};
 pub use drive::{drive, drive_exact};
 pub use egress::{
-    Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, Decision, Dial, DynDial, EgressFilter,
-    FilterSupport, Io, Opened, ProxyTls, RequestForm, Route, SendEgressFilter, SharedDial,
-    SharedFilter, Target, erase,
+    Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, BoxResolving, BoxTunnelling, Decision, Dial,
+    DynDial, EgressFilter, FilterSupport, Io, Opened, ProxyTls, RequestForm, Route,
+    SendEgressFilter, SharedDial, SharedFilter, Target, erase,
 };
 pub use error::{
     BypassReason, ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
@@ -141,6 +142,7 @@ pub use proxy::{IpcProxy, Proxy, ProxyScheme};
 pub use rules::{BoxHandshake, DynHandshake, Rules};
 pub use socks4::Socks4;
 pub use socks5::Socks5;
+pub use tunnel::{Tunnel, TunnelRequest, TunnelVersion};
 
 /// What a proxy does for one origin, which is not the same question for
 /// the three protocols here.

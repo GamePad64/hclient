@@ -10,6 +10,7 @@
 
 use std::borrow::Cow;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -18,6 +19,8 @@ use futures_io::{AsyncRead, AsyncWrite};
 use hclient_core::error::Error;
 use hclient_core::error::ErrorKind;
 use hclient_rt::Shutdown;
+
+use crate::{BoxUdp, Tunnel, TunnelRequest};
 
 /// What a filter asks of a TLS handshake it has the transport run over one
 /// of the transport's own streams — see [`Dial::connect_tls`].
@@ -74,6 +77,13 @@ fn lends_no_tls() -> Error {
     )
 }
 
+fn lends_nothing(what: &str) -> Error {
+    Error::new(
+        ErrorKind::Unsupported,
+        std::io::Error::other(format!("this transport lends no {what} to egress filters")),
+    )
+}
+
 /// What a transport lends a filter: its own way of opening a connection.
 ///
 /// `impl Future` rather than named associated types, and on purpose: a
@@ -126,6 +136,40 @@ pub trait Dial {
     ) -> impl Future<Output = Result<Self::Stream, Error>> + 'a {
         let _ = (stream, req);
         std::future::ready(Err(lends_no_tls()))
+    }
+
+    /// Bind a UDP socket of the transport's runtime at `local`.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// by default, for a transport that lends no UDP; otherwise whatever
+    /// the bind answers.
+    fn bind_udp(&self, local: SocketAddr) -> Result<BoxUdp, Error> {
+        let _ = local;
+        Err(lends_nothing("UDP"))
+    }
+
+    /// Resolve a **proxy's** name with the transport's resolver. Never the
+    /// origin's: a filter resolving the target locally would name it to the
+    /// resolver a proxy is often there to avoid.
+    fn resolve<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> impl Future<Output = Result<Vec<SocketAddr>, Error>> + 'a {
+        let _ = (host, port);
+        std::future::ready(Err(lends_nothing("name resolution")))
+    }
+
+    /// Open a CONNECT or extended CONNECT tunnel through a proxy spoken to
+    /// over HTTP/2 or HTTP/3.
+    fn connect_tunnel<'a>(
+        &'a self,
+        req: TunnelRequest<'a>,
+    ) -> impl Future<Output = Result<Tunnel, Error>> + 'a {
+        let _ = req;
+        std::future::ready(Err(lends_nothing("HTTP tunnels")))
     }
 }
 
@@ -461,6 +505,11 @@ pub trait EgressFilter {
 
 /// [`DynDial`]'s futures.
 pub type BoxDialing<'a> = Pin<Box<dyn Future<Output = Result<BoxIo, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
+/// [`DynDial::resolve_boxed`]'s future.
+pub type BoxResolving<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<SocketAddr>, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
+/// [`DynDial::connect_tunnel_boxed`]'s future.
+pub type BoxTunnelling<'a> = Pin<Box<dyn Future<Output = Result<Tunnel, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
 
 /// An object-safe [`Dial`] whose streams and futures are erased and
 /// `Send`, for a transport to lend an erased filter.
@@ -478,6 +527,25 @@ pub trait DynDial {
     fn connect_tls_boxed<'a>(&'a self, stream: BoxIo, req: ProxyTls<'a>) -> BoxDialing<'a> {
         let _ = (stream, req);
         Box::pin(std::future::ready(Err(lends_no_tls())))
+    }
+    /// [`Dial::bind_udp`]. Refuses by default.
+    ///
+    /// # Errors
+    ///
+    /// See [`Dial::bind_udp`].
+    fn bind_udp(&self, local: SocketAddr) -> Result<BoxUdp, Error> {
+        let _ = local;
+        Err(lends_nothing("UDP"))
+    }
+    /// [`Dial::resolve`], erased. Refuses by default.
+    fn resolve_boxed<'a>(&'a self, host: &'a str, port: u16) -> BoxResolving<'a> {
+        let _ = (host, port);
+        Box::pin(std::future::ready(Err(lends_nothing("name resolution"))))
+    }
+    /// [`Dial::connect_tunnel`], erased. Refuses by default.
+    fn connect_tunnel_boxed<'a>(&'a self, req: TunnelRequest<'a>) -> BoxTunnelling<'a> {
+        let _ = req;
+        Box::pin(std::future::ready(Err(lends_nothing("HTTP tunnels"))))
     }
 }
 
@@ -530,6 +598,25 @@ impl Dial for BoxDial<'_> {
         req: ProxyTls<'b>,
     ) -> impl Future<Output = Result<BoxIo, Error>> + 'b {
         self.0.connect_tls_boxed(stream, req)
+    }
+
+    fn bind_udp(&self, local: SocketAddr) -> Result<BoxUdp, Error> {
+        DynDial::bind_udp(self.0, local)
+    }
+
+    fn resolve<'b>(
+        &'b self,
+        host: &'b str,
+        port: u16,
+    ) -> impl Future<Output = Result<Vec<SocketAddr>, Error>> + 'b {
+        self.0.resolve_boxed(host, port)
+    }
+
+    fn connect_tunnel<'b>(
+        &'b self,
+        req: TunnelRequest<'b>,
+    ) -> impl Future<Output = Result<Tunnel, Error>> + 'b {
+        self.0.connect_tunnel_boxed(req)
     }
 }
 
@@ -592,6 +679,7 @@ pub trait SendEgressFilter: EgressFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TunnelVersion;
 
     /// A `Dial` that lends no TLS: `connect_tls` is left to its default.
     struct Bare;
@@ -829,6 +917,89 @@ mod tests {
         assert_eq!(err(Pin::new(&mut io).poll_flush(&mut cx)), "flush");
         assert_eq!(err(Pin::new(&mut io).poll_close(&mut cx)), "close");
         assert_eq!(err(Pin::new(&mut io).poll_shutdown(&mut cx)), "shutdown");
+    }
+
+    #[test]
+    fn a_dial_that_lends_no_datagrams_refuses_all_three_as_unsupported() {
+        let udp = Bare.bind_udp("0.0.0.0:0".parse().unwrap()).unwrap_err();
+        assert_eq!(*udp.kind(), ErrorKind::Unsupported);
+        let res = futures_executor::block_on(Bare.resolve("p", 1)).unwrap_err();
+        assert_eq!(*res.kind(), ErrorKind::Unsupported);
+        let tun = futures_executor::block_on(Bare.connect_tunnel(TunnelRequest::new(
+            "p",
+            443,
+            ProxyTls::new("p"),
+            "o:443",
+        )))
+        .unwrap_err();
+        assert_eq!(*tun.kind(), ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn a_tunnel_request_defaults_to_plain_connect_over_h3_then_h2() {
+        let r = TunnelRequest::new("p", 443, ProxyTls::new("p"), "o:443");
+        assert_eq!(
+            (r.proxy_host, r.proxy_port, r.authority),
+            ("p", 443, "o:443")
+        );
+        assert_eq!(r.path, None);
+        assert_eq!(r.protocol, None);
+        assert!(r.headers.is_empty());
+        assert_eq!(r.version, TunnelVersion::Http3ThenHttp2);
+        let r = r
+            .path(Some("/x"))
+            .protocol(Some("connect-udp"))
+            .version(TunnelVersion::Http2)
+            .header(
+                http::header::HeaderName::from_static("capsule-protocol"),
+                http::HeaderValue::from_static("?1"),
+            );
+        assert_eq!(
+            (r.path, r.protocol, r.version),
+            (Some("/x"), Some("connect-udp"), TunnelVersion::Http2)
+        );
+        assert_eq!(r.headers["capsule-protocol"], "?1");
+    }
+
+    #[test]
+    fn the_erased_dial_forwards_resolve_and_tunnel() {
+        struct Lends;
+        impl DynDial for Lends {
+            fn connect_boxed<'a>(&'a self, _: &'a str, _: u16) -> BoxDialing<'a> {
+                unreachable!()
+            }
+            fn connect_ipc_boxed<'a>(&'a self, _: &'a hclient_rt::IpcAddr) -> BoxDialing<'a> {
+                unreachable!()
+            }
+            fn remaining(&self) -> Option<Duration> {
+                None
+            }
+            fn resolve_boxed<'a>(&'a self, host: &'a str, port: u16) -> BoxResolving<'a> {
+                assert_eq!((host, port), ("proxy.test", 1080));
+                Box::pin(async { Ok(vec!["192.0.2.7:1080".parse().unwrap()]) })
+            }
+            fn connect_tunnel_boxed<'a>(&'a self, req: TunnelRequest<'a>) -> BoxTunnelling<'a> {
+                assert_eq!(req.protocol, Some("connect-udp"));
+                Box::pin(async {
+                    let head = http::Response::builder()
+                        .status(200)
+                        .body(())
+                        .unwrap()
+                        .into_parts()
+                        .0;
+                    Ok(Tunnel::new(head, empty_io(), None))
+                })
+            }
+        }
+        let shared: &SharedDial<'_> = &Lends;
+        let dial = BoxDial::new(shared);
+        let got = futures_executor::block_on(dial.resolve("proxy.test", 1080)).unwrap();
+        assert_eq!(got, ["192.0.2.7:1080".parse().unwrap()]);
+        let t = futures_executor::block_on(dial.connect_tunnel(
+            TunnelRequest::new("p", 443, ProxyTls::new("p"), "o:443").protocol(Some("connect-udp")),
+        ))
+        .unwrap();
+        assert_eq!(t.response.status, 200);
     }
 
     #[test]

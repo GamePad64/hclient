@@ -92,8 +92,8 @@ impl DatagramPath for BoxPath {
     }
 }
 
-/// A runtime's UDP socket, erased — what a filter's UDP entry point will
-/// lend.
+/// A runtime's UDP socket, erased — what [`Dial::bind_udp`](crate::Dial::bind_udp)
+/// lends.
 pub struct BoxUdp(Box<dyn UdpDatagrams + Send + Sync>); // send-bound-exception: amendment-C16
 
 impl BoxUdp {
