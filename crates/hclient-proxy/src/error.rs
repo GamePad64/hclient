@@ -204,6 +204,18 @@ pub enum Socks5HandshakeError {
     /// length-prefixed fields can carry.
     #[error("a SOCKS5 username and password must each be at most 255 bytes")]
     CredentialTooLong,
+    /// A `DOMAINNAME` (`ATYP=0x03`) that is complete — the length byte and
+    /// every byte it named have arrived — and is not valid UTF-8, so it
+    /// cannot be handed back as a host name.
+    ///
+    /// This is a different failure from [`BadAddressType`](Self::BadAddressType):
+    /// the address type is one RFC 1928 defines, and the reply is simply
+    /// not framed the way a client can read a name from. Reporting it as
+    /// an unknown address type would name `0x03`, which is defined —
+    /// answering it as `NeedMore` instead would stall forever, since no
+    /// further bytes make an already-complete name valid.
+    #[error("the SOCKS5 proxy's reply names a DOMAINNAME that is not valid UTF-8")]
+    NonUtf8Name,
 }
 
 #[cfg(feature = "system")]

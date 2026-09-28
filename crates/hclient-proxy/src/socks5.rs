@@ -38,6 +38,10 @@ pub struct Socks5 {
     /// and no state machine can tell them apart without remembering.
     offered: Vec<u8>,
     request: Bytes,
+    /// Whether [`Handshake::associate`] answers `Some` — §4's UDP
+    /// ASSOCIATE, opt-in per proxy rather than assumed from CONNECT
+    /// support.
+    udp: bool,
 }
 
 // Written by hand because the derived one printed the password: RFC 1929
@@ -51,6 +55,7 @@ impl std::fmt::Debug for Socks5 {
             .field("user", &self.auth.as_ref().map(|(user, _)| user))
             .field("password", &self.auth.as_ref().map(|_| "<redacted>"))
             .field("state", &self.state)
+            .field("udp", &self.udp)
             .finish_non_exhaustive()
     }
 }
@@ -96,12 +101,26 @@ impl Socks5 {
         self.auth = Some((user.into(), password.into()));
         Ok(self)
     }
+
+    /// Offer §4's UDP ASSOCIATE beside CONNECT: [`Handshake::associate`]
+    /// answers `Some` once this is set, and never otherwise — UDP through
+    /// SOCKS5 is opt-in per proxy, not assumed from a CONNECT capability.
+    #[must_use]
+    pub fn with_udp(mut self) -> Self {
+        self.udp = true;
+        self
+    }
+
+    /// Whether [`with_udp`](Self::with_udp) was called.
+    pub fn udp(&self) -> bool {
+        self.udp
+    }
 }
 
-const SOCKS5_VERSION: u8 = 0x05;
-const METHOD_NONE: u8 = 0x00;
-const METHOD_PASSWORD: u8 = 0x02;
-const METHOD_UNACCEPTABLE: u8 = 0xFF;
+pub(crate) const SOCKS5_VERSION: u8 = 0x05;
+pub(crate) const METHOD_NONE: u8 = 0x00;
+pub(crate) const METHOD_PASSWORD: u8 = 0x02;
+pub(crate) const METHOD_UNACCEPTABLE: u8 = 0xFF;
 
 impl Handshake for Socks5 {
     /// Always. SOCKS5 is a byte tunnel with no idea that HTTP exists, so
@@ -289,6 +308,13 @@ impl Handshake for Socks5 {
                 Ok(Step::Done)
             }
         }
+    }
+
+    fn associate(&self) -> Option<Box<dyn crate::Associate>> {
+        self.udp.then(|| {
+            Box::new(crate::socks5_udp::Socks5Associate::new(self.auth.clone()))
+                as Box<dyn crate::Associate>
+        })
     }
 }
 
