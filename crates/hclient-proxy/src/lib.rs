@@ -142,15 +142,15 @@ pub use egress::{
     SendEgressFilter, SharedDial, SharedFilter, Target, erase,
 };
 pub use error::{
-    BypassReason, ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
-    Socks4Refused, Socks5HandshakeError, Socks5Refused, UnsupportedBypass,
+    AssociateError, BypassReason, ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst,
+    Socks4HandshakeError, Socks4Refused, Socks5HandshakeError, Socks5Refused, UnsupportedBypass,
 };
 pub(crate) use proxy::Reach;
 pub use proxy::{IpcProxy, Proxy, ProxyScheme};
 pub use rules::{BoxHandshake, DynHandshake, Rules};
 pub use socks4::Socks4;
 pub use socks5::Socks5;
-pub use socks5_udp::{Associate, AssociateError, AssociateStep, RelayAddr};
+pub use socks5_udp::{Associate, AssociateStep, RelayAddr};
 pub use tunnel::{Tunnel, TunnelRequest, TunnelVersion};
 
 /// What a proxy does for one origin, which is not the same question for
@@ -245,8 +245,13 @@ pub trait Handshake {
         None
     }
 
-    /// A UDP association with this proxy, for a protocol that has one and
-    /// was configured to use it. `None` by default.
+    /// A SOCKS5 UDP ASSOCIATE with this proxy, where the protocol is
+    /// [`Socks5`] configured with [`Socks5::with_udp`]. `None` by default.
+    ///
+    /// SOCKS5's only: [`Associate`] is sealed, because the path an
+    /// association opens is framed with RFC 1928 §7's datagram header. A
+    /// protocol outside this crate answers `None` — or forwards the answer
+    /// of a SOCKS5 handshake it wraps, as [`BoxHandshake`] does.
     fn associate(&self) -> Option<Box<dyn Associate>> {
         None
     }

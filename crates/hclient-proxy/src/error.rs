@@ -35,6 +35,7 @@
 //! re-export, so a build without the feature has no way to reach a type
 //! whose module does not exist.
 
+use hclient_core::error::Error;
 use hclient_proto::head;
 
 #[cfg(feature = "system")]
@@ -98,6 +99,22 @@ impl std::fmt::Display for MalformedHead {
 // error again as the source would print it twice in a chain, and the
 // parser's error has no source of its own to pass on.
 impl std::error::Error for MalformedHead {}
+
+/// How a SOCKS5 UDP association failed.
+///
+/// Two answers because they call for two different things: a proxy that
+/// does not relay UDP still carries streams, so a request may switch to
+/// one, where any other failure means the proxy could not be used at all.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum AssociateError {
+    /// The proxy does not relay UDP (`REP=0x07`, command not supported).
+    #[error("the SOCKS5 proxy does not relay UDP")]
+    Unsupported(#[source] Error),
+    /// Any other failure: a malformed reply, a refusal, bad credentials.
+    #[error("the SOCKS5 UDP association failed")]
+    Failed(#[source] Error),
+}
 
 /// What a `USERID` or a host name cannot be.
 ///

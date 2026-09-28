@@ -20,12 +20,13 @@ use hclient_rt::UdpDatagrams as _;
 use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::error::{Error, ErrorKind};
 
-use crate::error::{Socks5HandshakeError, Socks5Refused};
+use crate::error::{AssociateError, Socks5HandshakeError, Socks5Refused};
 use crate::socks5::{METHOD_NONE, METHOD_PASSWORD, METHOD_UNACCEPTABLE, SOCKS5_VERSION};
 use crate::take;
 
 /// Where a SOCKS5 proxy relays datagrams.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RelayAddr {
     /// An address to send to.
     Ip(SocketAddr),
@@ -39,6 +40,7 @@ pub enum RelayAddr {
 
 /// What an association wants next.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AssociateStep {
     /// Send these bytes, then ask again.
     Write(Bytes),
@@ -48,19 +50,33 @@ pub enum AssociateStep {
     Associated(RelayAddr),
 }
 
-/// How an association failed.
-#[derive(Debug)]
-pub enum AssociateError {
-    /// The proxy does not relay UDP (`REP=0x07`, command not supported).
-    Unsupported(Error),
-    /// Any other failure: a malformed reply, a refusal, bad credentials.
-    Failed(Error),
-}
-
-/// A UDP association as a state machine, the same contract as
-/// [`Handshake`](crate::Handshake): `advance` consumes only complete
-/// frames and answers `NeedMore` without consuming a partial one.
-pub trait Associate: Send // send-bound-exception: amendment-C16
+/// A SOCKS5 UDP ASSOCIATE (RFC 1928 §4) as a state machine, the same
+/// contract as [`Handshake`](crate::Handshake): `advance` consumes only
+/// complete frames and answers `NeedMore` without consuming a partial one.
+///
+/// **SOCKS5's alone, and sealed.** What an association opens is read with
+/// §7's datagram header, which the built-in rules write and strip
+/// themselves, so an association for any other protocol would open a path
+/// framed wrongly. The only implementation is the one
+/// [`Socks5::with_udp`](crate::Socks5::with_udp) returns through
+/// [`Handshake::associate`](crate::Handshake::associate); a type outside
+/// this crate cannot implement the trait:
+///
+/// ```compile_fail,E0277
+/// struct Mine;
+/// impl hclient_proxy::Associate for Mine {
+///     fn begin(&mut self) -> bytes::Bytes {
+///         bytes::Bytes::new()
+///     }
+///     fn advance(
+///         &mut self,
+///         _: &mut bytes::BytesMut,
+///     ) -> Result<hclient_proxy::AssociateStep, hclient_proxy::AssociateError> {
+///         Ok(hclient_proxy::AssociateStep::NeedMore)
+///     }
+/// }
+/// ```
+pub trait Associate: sealed::Sealed + Send // send-bound-exception: amendment-C16
 {
     /// The first bytes to send.
     fn begin(&mut self) -> Bytes;
@@ -71,6 +87,13 @@ pub trait Associate: Send // send-bound-exception: amendment-C16
     ///
     /// [`AssociateError`], saying whether the proxy lacks UDP or failed.
     fn advance(&mut self, from_peer: &mut BytesMut) -> Result<AssociateStep, AssociateError>;
+}
+
+/// What keeps [`Associate`] this crate's: public so it may be named in a
+/// public bound, in a module nothing outside the crate can reach.
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Socks5Associate {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
