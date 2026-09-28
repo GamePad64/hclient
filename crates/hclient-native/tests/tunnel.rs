@@ -199,3 +199,36 @@ async fn http3_then_http2_falls_to_http2() {
     .unwrap();
     assert_eq!(t.response.status, 200);
 }
+
+/// A reader parked in one task must be woken by what arrives after a
+/// writer in another task polled the connection last and went idle — the
+/// shape a datagram path over this stream has, where receiving and sending
+/// happen on different tasks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reader_in_one_task_wakes_after_a_writer_in_another_goes_idle() {
+    let proxy = h2_proxy(H2Proxy::Echo { extended: true });
+    let native = native_with_egress_trusting(&proxy);
+    let dial = hclient_native::testing::dial_for(&native);
+    let t = bounded(dial.connect_tunnel(req(proxy.port(), "origin.test:443")))
+        .await
+        .unwrap();
+    let (mut r, mut w) = t.stream.split();
+    let reader = tokio::spawn(async move {
+        let mut got = [0u8; 4];
+        r.read_exact(&mut got).await.map(|()| got)
+    });
+    // Long enough for the reader to have parked in its read.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::spawn(async move {
+        w.write_all(b"ping").await.unwrap();
+        w.flush().await.unwrap();
+        // Idle from here on, holding the half so the stream stays open.
+        std::future::pending::<()>().await;
+    });
+    let got = tokio::time::timeout(Duration::from_secs(5), reader)
+        .await
+        .expect("the reader was woken by the echo")
+        .unwrap()
+        .unwrap();
+    assert_eq!(&got, b"ping");
+}

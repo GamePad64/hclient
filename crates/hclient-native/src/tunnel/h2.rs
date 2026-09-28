@@ -8,11 +8,17 @@
 //! `Spawn` lends tunnels as well as one with it, and a tunnel nobody polls
 //! is a connection nobody drives — which, for a connection that carries
 //! exactly one stream, is the caller's own choice.
+//!
+//! The stream may be read in one task and written in another. The
+//! connection is polled with a waker of its own that wakes both the last
+//! reader and the last writer, so whichever of them is parked hears what
+//! arrives on the socket, whoever polled the connection last.
 
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
-use std::task::{Context, Poll, ready};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll, Wake, Waker, ready};
 
 use bytes::{Buf as _, Bytes};
 use hclient_core::error::{Error, ErrorKind};
@@ -112,10 +118,13 @@ where
     })
     .await?;
     let (parts, recv) = response.into_parts();
+    let fanout = Arc::new(Fanout::default());
     Ok(Tunnel::new(
         parts,
         BoxIo::new(H2Stream {
             conn,
+            fanout: Arc::clone(&fanout),
+            waker: Waker::from(fanout),
             conn_done: false,
             _client: client,
             send,
@@ -176,6 +185,62 @@ fn io_error(e: h2::Error) -> io::Error {
     }
 }
 
+/// Which side of the stream is polling the connection.
+#[derive(Clone, Copy)]
+enum Side {
+    Read,
+    Write,
+}
+
+/// The waker the connection is polled with: it wakes the last reader and
+/// the last writer, so a task parked on one side is not left waiting on a
+/// socket whose readiness was registered by a task on the other side that
+/// has since gone idle.
+#[derive(Default)]
+struct Fanout {
+    read: Mutex<Option<Waker>>,
+    write: Mutex<Option<Waker>>,
+}
+
+impl Fanout {
+    fn slot(&self, side: Side) -> &Mutex<Option<Waker>> {
+        match side {
+            Side::Read => &self.read,
+            Side::Write => &self.write,
+        }
+    }
+
+    fn register(&self, side: Side, waker: &Waker) {
+        let mut slot = self
+            .slot(side)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match slot.as_ref() {
+            Some(w) if w.will_wake(waker) => {}
+            _ => *slot = Some(waker.clone()),
+        }
+    }
+}
+
+impl Wake for Fanout {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        for side in [Side::Read, Side::Write] {
+            let taken = self
+                .slot(side)
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(w) = taken {
+                w.wake();
+            }
+        }
+    }
+}
+
 /// One CONNECT stream as a byte stream: the request body is what is
 /// written, the response body what is read, and a half-close is
 /// `END_STREAM`.
@@ -185,6 +250,9 @@ where
 {
     /// The connection, polled before every operation on the stream.
     conn: Connection<S>,
+    /// Who is waiting on the connection, and the waker that wakes them.
+    fanout: Arc<Fanout>,
+    waker: Waker,
     /// Whether the connection has finished, after which it is not polled
     /// again; the stream's own operations report why.
     conn_done: bool,
@@ -203,11 +271,13 @@ impl<S> H2Stream<S>
 where
     S: hclient_rt::Io,
 {
-    fn drive(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+    fn drive(&mut self, side: Side, cx: &Context<'_>) -> io::Result<()> {
         if self.conn_done {
             return Ok(());
         }
-        match Pin::new(&mut self.conn).poll(cx) {
+        self.fanout.register(side, cx.waker());
+        let mut conn_cx = Context::from_waker(&self.waker);
+        match Pin::new(&mut self.conn).poll(&mut conn_cx) {
             Poll::Pending => Ok(()),
             Poll::Ready(Ok(())) => {
                 self.conn_done = true;
@@ -221,11 +291,11 @@ where
     }
 
     fn end(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.drive(cx)?;
+        self.drive(Side::Write, cx)?;
         if !self.shut {
             self.send.send_data(Bytes::new(), true).map_err(io_error)?;
             self.shut = true;
-            self.drive(cx)?;
+            self.drive(Side::Write, cx)?;
         }
         Poll::Ready(Ok(()))
     }
@@ -241,7 +311,7 @@ where
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
-        this.drive(cx)?;
+        this.drive(Side::Read, cx)?;
         if buf.is_empty() {
             return Poll::Ready(Ok(0));
         }
@@ -283,7 +353,7 @@ where
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
-        this.drive(cx)?;
+        this.drive(Side::Write, cx)?;
         if buf.is_empty() {
             return Poll::Ready(Ok(0));
         }
@@ -306,12 +376,12 @@ where
             .map_err(io_error)?;
         // Once more, so the frame just queued reaches the socket now
         // rather than on the next call.
-        this.drive(cx)?;
+        this.drive(Side::Write, cx)?;
         Poll::Ready(Ok(n))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.get_mut().drive(cx)?;
+        self.get_mut().drive(Side::Write, cx)?;
         Poll::Ready(Ok(()))
     }
 
