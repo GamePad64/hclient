@@ -976,6 +976,7 @@ where
                     opts,
                     ipc,
                     udp,
+                    tunnel_h2: ext.tunnel_h2,
                     budget,
                     watching: H::WATCHING,
                     target,

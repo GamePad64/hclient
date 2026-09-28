@@ -35,6 +35,12 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, L, H> {
     /// constructor, exactly as a missing `ipc` refuses
     /// [`connect_ipc`](hclient_proxy::Dial::connect_ipc).
     udp: Option<crate::BindUdp<R>>,
+    /// How this transport opens an HTTP/2 tunnel to a proxy over a
+    /// connection this context opened, when [`Native::egress`](crate::Native::egress)
+    /// installed the filter it is lent to. `None` refuses
+    /// [`connect_tunnel`](hclient_proxy::Dial::connect_tunnel) before any
+    /// socket is opened.
+    tunnel_h2: Option<crate::TunnelH2<R, L>>,
     budget: Option<Duration>,
     /// When the context was lent, on the transport's clock — what
     /// [`remaining`](hclient_proxy::Dial::remaining) counts the budget down
@@ -71,12 +77,19 @@ impl<'a, R: TcpConnect + Timer, D: ?Sized, L, H> NativeDial<'a, R, D, L, H> {
             opts,
             ipc,
             udp,
+            tunnel_h2: None,
             budget,
             lent: rt.now(),
             began,
             attempted: Mutex::new(None),
             _h: PhantomData,
         }
+    }
+
+    /// Lend HTTP/2 tunnels through `open`, or none.
+    pub(crate) fn with_tunnel_h2(mut self, open: Option<crate::TunnelH2<R, L>>) -> Self {
+        self.tunnel_h2 = open;
+        self
     }
 
     /// What the last connect by name reported for the hooks, if anything.
@@ -92,6 +105,7 @@ impl<R, D, L, H> NativeDial<'_, R, D, L, H>
 where
     R: TcpConnect + Timer,
     D: Resolve + ?Sized,
+    L: TlsConnect,
     H: Hooks,
 {
     /// [`Dial::connect`](hclient_proxy::Dial::connect)'s socket, before it
@@ -106,6 +120,40 @@ where
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = attempted;
         Ok(stream)
+    }
+
+    /// [`Dial::connect_tunnel`](hclient_proxy::Dial::connect_tunnel), for
+    /// both the concrete and the erased context.
+    ///
+    /// HTTP/2 only, for now: a request that will take nothing else is
+    /// refused rather than sent somewhere it did not ask to go, and one that
+    /// prefers HTTP/3 is sent over HTTP/2. Both refusals come before a
+    /// socket is opened.
+    async fn connect_tunnel_raw<'b>(
+        &'b self,
+        req: hclient_proxy::TunnelRequest<'b>,
+    ) -> Result<hclient_proxy::Tunnel, Error> {
+        use hclient_proxy::TunnelVersion;
+        match req.version {
+            TunnelVersion::Http2 | TunnelVersion::Http3ThenHttp2 => {}
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    std::io::Error::other("this transport lends no tunnels over HTTP/3"),
+                ));
+            }
+        }
+        let Some(open) = self.tunnel_h2 else {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                std::io::Error::other(
+                    "this transport lends HTTP/2 tunnels only to a filter installed \
+                     with `Native::egress`, and only with the `http2` feature",
+                ),
+            ));
+        };
+        let raw = self.connect_raw(req.proxy_host, req.proxy_port).await?;
+        open(self.tls, raw, req).await
     }
 
     /// [`Dial::connect_ipc`](hclient_proxy::Dial::connect_ipc)'s socket,
@@ -218,6 +266,13 @@ where
         }
         Ok(out)
     }
+
+    async fn connect_tunnel<'a>(
+        &'a self,
+        req: hclient_proxy::TunnelRequest<'a>,
+    ) -> Result<hclient_proxy::Tunnel, Error> {
+        self.connect_tunnel_raw(req).await
+    }
 }
 
 // Erased for an external filter, where the runtime's and the resolver's
@@ -278,6 +333,13 @@ where
 
     fn resolve_boxed<'a>(&'a self, host: &'a str, port: u16) -> hclient_proxy::BoxResolving<'a> {
         Box::pin(hclient_proxy::Dial::resolve(self, host, port))
+    }
+
+    fn connect_tunnel_boxed<'a>(
+        &'a self,
+        req: hclient_proxy::TunnelRequest<'a>,
+    ) -> hclient_proxy::BoxTunnelling<'a> {
+        Box::pin(self.connect_tunnel_raw(req))
     }
 }
 

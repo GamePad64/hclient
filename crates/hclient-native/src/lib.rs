@@ -184,6 +184,7 @@ mod idle;
 mod pool;
 pub mod proxy;
 pub mod staged;
+mod tunnel;
 mod upgrade;
 
 pub use connect::Conn;
@@ -291,6 +292,22 @@ where
 /// UDP of its own meets no signature naming [`hclient_rt::UdpBind`], and
 /// `Native::http3` is the only constructor that ever installs one.
 pub(crate) type BindUdp<R> = fn(&R, std::net::SocketAddr) -> std::io::Result<hclient_proxy::BoxUdp>;
+
+/// How [`Native`] opens a CONNECT or extended CONNECT tunnel to a proxy
+/// over HTTP/2 for a filter — [`hclient_proxy::Dial::connect_tunnel`] —
+/// over a connection to the proxy the dial context already opened.
+///
+/// A pointer for [`DialIpc`]'s reason: it is monomorphised in
+/// [`Native::egress`], where the runtime's stream and the TLS backend over
+/// an erased stream are proven `Send`, and called from the dial context,
+/// where they are not. `Native::egress` is the only constructor that
+/// installs one, because an installed filter is the only thing lent a
+/// context that could ask for a tunnel.
+pub(crate) type TunnelH2<R, L> = for<'a> fn(
+    &'a L,
+    <R as TcpConnect>::Stream,
+    hclient_proxy::TunnelRequest<'a>,
+) -> hclient_proxy::BoxTunnelling<'a>;
 
 /// [`BindUdp`]'s one body, instantiated in [`Native::http3`].
 ///
@@ -2667,6 +2684,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// while; a proxy that could not be reached does not switch. Never
     /// directly, and the origin's HTTPS record is never looked up.
     ///
+    /// The filter is also lent CONNECT and extended CONNECT tunnels to a
+    /// proxy spoken to over HTTP/2 ([`hclient_proxy::Dial::connect_tunnel`]),
+    /// with the `http2` feature: one connection per tunnel, reached by name
+    /// through this transport's resolver and TLS backend. A transport with
+    /// no filter installed lends no tunnels.
+    ///
     /// Its `Connected` event reports the address the filter dialled through
     /// the lent connect path — the first hop's — whatever the filter
     /// wrapped around it, and none when it dialled nothing by address or
@@ -2694,6 +2717,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         self.external = Some(external::External {
             filter: Arc::new(filter),
             open: external::open::<R, D, T>,
+            #[cfg(feature = "http2")]
+            tunnel_h2: Some(crate::tunnel::h2::open::<R, T>),
+            #[cfg(not(feature = "http2"))]
+            tunnel_h2: None,
             #[cfg(feature = "http3")]
             open_path: external::open_path::<R, D, T, hclient_proxy::SharedFilter>,
         });
@@ -4266,6 +4293,7 @@ where
 /// `tests/dual_runtime.rs`, `tests/h1.rs`) and for nothing else.
 #[doc(hidden)]
 pub mod testing {
+    use hclient_proxy::{Dial, DynDial};
     use std::pin::Pin;
     use std::task::Context;
     use std::task::Poll;
@@ -4319,6 +4347,46 @@ pub mod testing {
             hclient_proxy::Decision::Filtered(route) => Some(route.pool_key.into()),
             hclient_proxy::Decision::Direct => None,
         }
+    }
+
+    /// What [`dial_for`] hands back: a context both as itself and as the
+    /// erased one an installed filter is lent.
+    pub trait LentDial: Dial + DynDial + Send + Sync {} // send-bound-exception: amendment-C15
+
+    impl<X: Dial + DynDial + Send + Sync> LentDial for X {} // send-bound-exception: amendment-C15
+
+    /// The connect path this transport lends an installed filter, as the
+    /// filter sees it: HTTP/2 tunnels when [`crate::Native::egress`] was
+    /// called, and none otherwise.
+    ///
+    /// It is both a [`hclient_proxy::Dial`] and, erased, the
+    /// [`hclient_proxy::SharedDial`] an installed filter is actually handed
+    /// — so a test can ask either.
+    pub fn dial_for<R, T, D, H>(native: &crate::Native<R, T, D, H>) -> impl LentDial + '_
+    where
+        R: hclient_rt::TcpConnect + hclient_rt::Timer + Sync, // send-bound-exception: amendment-C15
+        R::Stream: Send + 'static,                            // send-bound-exception: amendment-C15
+        R::Instant: Send + Sync,                              // send-bound-exception: amendment-C15
+        R::Sleep: Send,                                       // send-bound-exception: amendment-C15
+        for<'x> R::Connecting<'x>: Send,                      // send-bound-exception: amendment-C15
+        D: hclient_dns::Resolve + Sync,                       // send-bound-exception: amendment-C15
+        for<'x> D::Records<'x>: Send,                         // send-bound-exception: amendment-C15
+        T: hclient_tls::TlsConnect + Sync,                    // send-bound-exception: amendment-C15
+        T::Stream<hclient_proxy::BoxIo>: Send + 'static,      // send-bound-exception: amendment-C15
+        for<'x> T::Handshake<'x, hclient_proxy::BoxIo>: Send, // send-bound-exception: amendment-C15
+        H: hclient_core::hooks::Hooks,
+    {
+        crate::dial::NativeDial::<R, D, T, H>::new(
+            &native.rt,
+            &native.dns,
+            &native.tls,
+            &native.opts,
+            native.ipc,
+            None,
+            None,
+            native.udp,
+        )
+        .with_tunnel_h2(native.external.as_ref().and_then(|e| e.tunnel_h2))
     }
 
     pub use crate::body::OutgoingBody;

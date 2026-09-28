@@ -932,13 +932,14 @@ where
     ) -> Result<hclient_proxy::BoxPath, hclient_proxy::Attempt> {
         let host = crate::connect::host(uri).map_err(hclient_proxy::Attempt::Failed)?;
         let target = hclient_proxy::Target::new(host, crate::connect::port(uri, true), true);
-        let call = crate::external::Call {
+        let mut call = crate::external::Call {
             rt: &self.rt,
             dns: &self.dns,
             tls: &self.tls,
             opts: &self.opts,
             ipc: self.ipc,
             udp: self.udp,
+            tunnel_h2: self.external.as_ref().and_then(|e| e.tunnel_h2),
             budget,
             watching: false,
             target,
@@ -953,6 +954,9 @@ where
         {
             return (ext.open_path)(&*ext.filter, call).await;
         }
+        // The built-in rules open no tunnels, and are lent none: what
+        // `Native::egress` installed is the installed filter's.
+        call.tunnel_h2 = None;
         match self.rules_path {
             Some(open) => open(&self.rules, call).await,
             None => Err(hclient_proxy::Attempt::Unsupported(Error::new(

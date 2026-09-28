@@ -50,6 +50,9 @@ pub(crate) struct Call<'a, R: TcpConnect + Timer, D, L> {
     pub(crate) opts: &'a TcpOpts,
     pub(crate) ipc: Option<DialIpc<R>>,
     pub(crate) udp: Option<crate::BindUdp<R>>,
+    /// How the lent context opens an HTTP/2 tunnel to a proxy, when the
+    /// filter it is lent to was installed with `Native::egress`.
+    pub(crate) tunnel_h2: Option<crate::TunnelH2<R, L>>,
     pub(crate) budget: Option<Duration>,
     /// Whether a hook is watching — `H::WATCHING`, carried as a value so
     /// that the stored pointer names no hook type and `Native::hooks` can
@@ -75,6 +78,7 @@ impl<'a, R: TcpConnect + Timer, D, L> Call<'a, R, D, L> {
             began,
             self.udp,
         )
+        .with_tunnel_h2(self.tunnel_h2)
     }
 }
 
@@ -100,6 +104,9 @@ pub(crate) struct External<R: TcpConnect + Timer, D, L: TlsConnect> {
     pub(crate) open: Open<R, D, L>,
     #[cfg(feature = "http3")]
     pub(crate) open_path: OpenPath<R, D, L, SharedFilter>,
+    /// How the context this filter is lent opens an HTTP/2 tunnel; `None`
+    /// without the `http2` feature.
+    pub(crate) tunnel_h2: Option<crate::TunnelH2<R, L>>,
 }
 
 impl<R: TcpConnect + Timer, D, L: TlsConnect> Clone for External<R, D, L> {
@@ -109,6 +116,7 @@ impl<R: TcpConnect + Timer, D, L: TlsConnect> Clone for External<R, D, L> {
             open: self.open,
             #[cfg(feature = "http3")]
             open_path: self.open_path,
+            tunnel_h2: self.tunnel_h2,
         }
     }
 }
