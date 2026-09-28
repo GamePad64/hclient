@@ -256,11 +256,14 @@ impl DatagramPath for CapsulePath {
             // A kept tail is pushed on from here too: a QUIC stack asks for
             // writability only when it has something more to send, so the
             // last capsule of a burst would otherwise wait for a send that
-            // may never come. Its error, if any, is the next send's to
-            // report.
+            // may never come. The receiver registers every time, before
+            // looking at the tail, so it always owns the tail's write
+            // interest — a tail a send leaves behind after this poll has
+            // someone to wake, and waking a receiver costs one re-poll of a
+            // pending read. Its error, if any, is the next send's to report.
+            Waiters::register(&self.waiters.receiver, cx.waker());
             let mut tail = self.tail.lock().unwrap_or_else(PoisonError::into_inner);
             if !tail.is_empty() {
-                Waiters::register(&self.waiters.receiver, cx.waker());
                 let _ = self.drain(&mut tail);
             }
         }

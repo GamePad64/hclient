@@ -148,3 +148,73 @@ async fn a_capsule_path_refuses_what_it_cannot_carry_and_ends_with_its_stream() 
         .unwrap_err();
     assert_eq!(e.kind(), io::ErrorKind::ConnectionAborted);
 }
+
+/// A proxy does not echo, so nothing inbound wakes the receiver. The
+/// sender writes a burst and stops — as a QUIC stack does after the last
+/// packet of a flight — while the receiver is parked waiting for a reply
+/// that never comes. The last capsule, only partly taken by a 64-byte
+/// stream, must still reach the far end whole: the receiver owns the kept
+/// tail's write interest, and nothing else is going to push it on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_last_capsule_of_a_burst_reaches_a_proxy_that_only_reads() {
+    use tokio::io::AsyncReadExt as _;
+    const BURST: usize = 5;
+    let (near, mut far) = tokio::io::duplex(64);
+    let path = Arc::new(CapsulePath::new(BoxIo::new(Duplex(near))));
+
+    // Parked first, while there is no tail at all.
+    let receiver = {
+        let path = Arc::clone(&path);
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            let _ = std::future::poll_fn(|cx| path.poll_recv(cx, &mut buf)).await;
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Counts complete capsules, and reads — nothing is ever written back.
+    let counted = tokio::spawn(async move {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        let mut complete = 0usize;
+        while complete < BURST {
+            let n = far.read(&mut buf).await.unwrap();
+            assert_ne!(n, 0, "the near end closed");
+            got.extend_from_slice(&buf[..n]);
+            // Each capsule: type 0x00, a two-byte length varint, context 0,
+            // then the payload.
+            while got.len() >= 3 {
+                let len = usize::from(u16::from_be_bytes([got[1] & 0x3f, got[2]]));
+                if got.len() < 3 + len {
+                    break;
+                }
+                assert_eq!(got[3], 0, "context id 0");
+                got.drain(..3 + len);
+                complete += 1;
+            }
+        }
+        complete
+    });
+
+    for i in 0..BURST {
+        let d = vec![u8::try_from(i).unwrap(); 500];
+        loop {
+            std::future::poll_fn(|cx| path.poll_writable(cx))
+                .await
+                .unwrap();
+            match path.try_send(&d) {
+                Ok(()) => break,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+    // The sender is done: nothing calls `poll_writable` or `try_send` again.
+
+    let complete = tokio::time::timeout(Duration::from_secs(5), counted)
+        .await
+        .expect("the last capsule was stranded in the path")
+        .unwrap();
+    assert_eq!(complete, BURST);
+    receiver.abort();
+}
