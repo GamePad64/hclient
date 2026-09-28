@@ -60,13 +60,46 @@ pub(crate) struct Call<'a, R: TcpConnect + Timer, D, L> {
     pub(crate) identity: Option<&'a str>,
 }
 
+impl<'a, R: TcpConnect + Timer, D, L> Call<'a, R, D, L> {
+    /// The connect path this call lends a filter — one construction for
+    /// every pointer here, so a stream and a datagram path are opened
+    /// through the same context.
+    fn dial<H>(&self, began: Option<R::Instant>) -> NativeDial<'a, R, D, L, H> {
+        NativeDial::new(
+            self.rt,
+            self.dns,
+            self.tls,
+            self.opts,
+            self.ipc,
+            self.budget,
+            began,
+            self.udp,
+        )
+    }
+}
+
 pub(crate) type Open<R, D, L> =
     for<'a> fn(&'a SharedFilter, Call<'a, R, D, L>) -> Opening<'a, R, L>;
 
-/// The installed filter and its monomorphised connect path.
+/// A filter's datagram path, opened through the transport's lent connect
+/// path — `F` is an installed filter ([`SharedFilter`]) or the built-in
+/// rules.
+///
+/// A pointer for [`Open`]'s reason: the context the filter is lent is
+/// erased where its futures can be proven `Send`, which is where this is
+/// monomorphised, so the routing that calls it names none of those bounds.
+/// Only `alpn`, `identity` and `watching` of the [`Call`] go unread: a path
+/// carries datagrams, and TLS to the origin is QUIC's.
+#[cfg(feature = "http3")]
+pub(crate) type OpenPath<R, D, L, F> =
+    for<'a> fn(&'a F, Call<'a, R, D, L>) -> hclient_proxy::BoxPathOpening<'a>;
+
+/// The installed filter and its monomorphised connect paths.
 pub(crate) struct External<R: TcpConnect + Timer, D, L: TlsConnect> {
     pub(crate) filter: Arc<SharedFilter>,
     pub(crate) open: Open<R, D, L>,
+    #[cfg(feature = "http3")]
+    pub(crate) open_path: OpenPath<R, D, L, SharedFilter>,
 }
 
 impl<R: TcpConnect + Timer, D, L: TlsConnect> Clone for External<R, D, L> {
@@ -74,6 +107,8 @@ impl<R: TcpConnect + Timer, D, L: TlsConnect> Clone for External<R, D, L> {
         Self {
             filter: Arc::clone(&self.filter),
             open: self.open,
+            #[cfg(feature = "http3")]
+            open_path: self.open_path,
         }
     }
 }
@@ -141,8 +176,7 @@ where
     H: Hooks,
 {
     let began = mark::<H, R>(c.rt);
-    let dial =
-        NativeDial::<R, D, L, H>::new(c.rt, c.dns, c.tls, c.opts, c.ipc, c.budget, began, c.udp);
+    let dial = c.dial::<H>(began);
     let erased: &SharedDial<'_> = &dial;
     let boxed = BoxDial::new(erased);
     let opened = filter
@@ -175,4 +209,39 @@ where
         a.tls = Some(since::<R>(c.rt, handshake_began));
     }
     Ok((Conn::boxed(BoxIo::new(tls_stream)), Some(info), attempted))
+}
+
+/// [`OpenPath`]'s one body, instantiated in `Native::egress` for an
+/// installed filter and in `Native::http3` for the built-in rules.
+///
+/// The rules go through the erased context too, rather than being called
+/// concretely as their streams are: `open_datagrams` demands a `Send`
+/// stream of the context it is lent, and the concrete context's stream is
+/// generic over the runtime and cannot be proven one there.
+#[cfg(feature = "http3")]
+pub(crate) fn open_path<'a, R, D, L, F>(
+    filter: &'a F,
+    c: Call<'a, R, D, L>,
+) -> hclient_proxy::BoxPathOpening<'a>
+where
+    F: hclient_proxy::SendEgressFilter + Sync + ?Sized, // send-bound-exception: amendment-C15
+    R: TcpConnect + Timer + Sync,                       // send-bound-exception: amendment-C15
+    R::Stream: Send + 'static,                          // send-bound-exception: amendment-C15
+    R::Instant: Send + Sync,                            // send-bound-exception: amendment-C15
+    R::Sleep: Send,                                     // send-bound-exception: amendment-C15
+    for<'x> R::Connecting<'x>: Send,                    // send-bound-exception: amendment-C15
+    D: Resolve + Sync,                                  // send-bound-exception: amendment-C15
+    for<'x> D::Records<'x>: Send,                       // send-bound-exception: amendment-C15
+    L: TlsConnect + Sync,                               // send-bound-exception: amendment-C15
+    L::Stream<BoxIo>: Send + 'static,                   // send-bound-exception: amendment-C15
+    for<'x> L::Handshake<'x, BoxIo>: Send,              // send-bound-exception: amendment-C15
+{
+    Box::pin(async move {
+        // No hook watches a path's opening: the connection it carries is
+        // reported by the QUIC arm, with no remote address.
+        let dial = c.dial::<NoHooks>(None);
+        let erased: &SharedDial<'_> = &dial;
+        let boxed = BoxDial::new(erased);
+        filter.open_datagrams_send(c.target, &boxed).await
+    })
 }

@@ -206,17 +206,17 @@ pub struct NoStreamPath {
     pub via: Box<str>,
 }
 
-/// `RequireVersion(HTTP_3)` for a request this transport's egress filter
-/// carries — through a proxy, or over a Unix socket.
+/// The request was demanded over HTTP/3 (`RequireVersion(HTTP_3)`) and the
+/// egress filter carrying it declares no datagram path, or the transport
+/// has no HTTP/3 arm.
 ///
-/// HTTP/3 runs over QUIC datagrams, and no path through a filter carries
-/// datagrams yet. Sending the request directly instead would leave the
-/// path the transport was configured with, which is the one thing the
-/// refusal exists to prevent.
+/// HTTP/3 runs over QUIC datagrams. Sending the request directly instead
+/// would leave the path the transport was configured with, which is the
+/// one thing the refusal exists to prevent.
 #[cfg(feature = "http3")]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "HTTP/3 was required, and this request goes through `{via}`, which carries a byte stream and cannot carry QUIC"
+    "HTTP/3 was required, and this request goes through `{via}`, which carries no datagram path this transport can use"
 )]
 #[non_exhaustive]
 pub struct NoDatagramPath {

@@ -133,10 +133,6 @@ pub(crate) trait DynStagedConnect: Debug {
     /// [`ViaConnect::connect_via`], boxed: a connection to the request's
     /// origin through the filter whose pool key is `via`, over `path` if
     /// the pool has none.
-    #[allow(
-        dead_code,
-        reason = "the routing that sends a filtered request over QUIC is its only caller, and arrives in the next change"
-    )]
     fn connect_via_boxed<'a>(
         &'a self,
         req: http::Request<RequestBody>,

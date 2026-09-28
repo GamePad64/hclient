@@ -25,14 +25,15 @@ pub const BRIDGE_MAX: usize = 1452;
 #[derive(Debug)]
 pub struct UdpBridge {
     sock: tokio::net::UdpSocket,
+    max: usize,
 }
 
 impl DatagramPath for UdpBridge {
     fn try_send(&self, datagram: &[u8]) -> io::Result<()> {
-        if datagram.len() > BRIDGE_MAX {
+        if datagram.len() > self.max {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("{} bytes over a {BRIDGE_MAX}-byte path", datagram.len()),
+                format!("{} bytes over a {}-byte path", datagram.len(), self.max),
             ));
         }
         self.sock.try_send(datagram).map(|_| ())
@@ -49,7 +50,7 @@ impl DatagramPath for UdpBridge {
     }
 
     fn max_datagram_size(&self) -> usize {
-        BRIDGE_MAX
+        self.max
     }
 }
 
@@ -59,9 +60,221 @@ impl DatagramPath for UdpBridge {
 ///
 /// Outside a tokio runtime, or if loopback cannot bind a socket.
 pub fn udp_bridge(peer: SocketAddr) -> BoxPath {
+    udp_bridge_of(peer, BRIDGE_MAX)
+}
+
+/// [`udp_bridge`] claiming `max` bytes per datagram.
+///
+/// # Panics
+///
+/// As [`udp_bridge`].
+pub fn udp_bridge_of(peer: SocketAddr, max: usize) -> BoxPath {
     let std = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind a loopback UDP socket");
     std.connect(peer).expect("connect the bridge to its peer");
     std.set_nonblocking(true).expect("non-blocking");
     let sock = tokio::net::UdpSocket::from_std(std).expect("inside a tokio runtime");
-    BoxPath::new(UdpBridge { sock })
+    BoxPath::new(UdpBridge { sock, max })
+}
+
+/// How a [`ForwardFilter`] answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Declares datagrams and no stream; opens a path to its peer.
+    DatagramsOnly,
+    /// Declares both, refuses every datagram path as unsupported, and
+    /// carries a stream to its peer — the switch a transport may make.
+    RefusingDatagramsWithStream,
+    /// Declares a stream and no datagrams.
+    StreamOnly,
+    /// Declares both, and its proxy cannot be reached for datagrams —
+    /// final, never a switch.
+    Failing,
+    /// Declares both, and opens a path too small for QUIC (1199 bytes).
+    SmallPathWithStream,
+}
+
+/// Every request is filtered under the key `"fwd"`, and whatever the filter
+/// opens goes to one fixed `peer` — so a request that arrives there came
+/// through this filter, and the origin's own name was never needed to get
+/// it there.
+///
+/// The in-tree twin of the outside witness's `Forward`, with modes for the
+/// ways a filter can answer a request for datagrams, and a count of how
+/// often it was asked.
+#[derive(Debug, Clone)]
+pub struct ForwardFilter {
+    mode: Mode,
+    peer: SocketAddr,
+    datagram_attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    stream_opens: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ForwardFilter {
+    /// A filter in `mode` forwarding to `peer`.
+    pub fn new(mode: Mode, peer: SocketAddr) -> Self {
+        Self {
+            mode,
+            peer,
+            datagram_attempts: std::sync::Arc::default(),
+            stream_opens: std::sync::Arc::default(),
+        }
+    }
+
+    /// How often a datagram path was asked for.
+    pub fn datagram_attempts(&self) -> usize {
+        self.datagram_attempts
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How often a stream was asked for.
+    pub fn stream_opens(&self) -> usize {
+        self.stream_opens.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn support(&self) -> hclient_proxy::FilterSupport {
+        use hclient_proxy::FilterSupport;
+        match self.mode {
+            Mode::DatagramsOnly => FilterSupport::NONE.with_datagrams(),
+            Mode::StreamOnly => FilterSupport::STREAM,
+            Mode::RefusingDatagramsWithStream | Mode::Failing | Mode::SmallPathWithStream => {
+                FilterSupport::STREAM.with_datagrams()
+            }
+        }
+    }
+}
+
+fn connect_error(msg: &'static str) -> hclient_core::error::Error {
+    hclient_core::error::Error::new(
+        hclient_core::error::ErrorKind::Connect,
+        io::Error::other(msg),
+    )
+}
+
+impl hclient_proxy::EgressFilter for ForwardFilter {
+    type Wrapped<S: hclient_proxy::Io> = S;
+
+    fn route(&self, _: &hclient_proxy::Target<'_>) -> hclient_proxy::Decision<'_> {
+        hclient_proxy::Decision::Filtered(hclient_proxy::Route::new(
+            self.support(),
+            "fwd",
+            hclient_proxy::RequestForm::Origin,
+        ))
+    }
+
+    async fn open_stream<'a, C: hclient_proxy::Dial + 'a>(
+        &'a self,
+        _: hclient_proxy::Target<'a>,
+        ctx: &'a C,
+    ) -> Result<hclient_proxy::Opened<C::Stream, C::Stream>, hclient_proxy::Attempt>
+    where
+        Self: Sized,
+    {
+        self.stream_opens
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // By address: the peer is a literal, so nothing here names the
+        // origin to a resolver either.
+        let stream = ctx
+            .connect(&self.peer.ip().to_string(), self.peer.port())
+            .await
+            .map_err(hclient_proxy::Attempt::Failed)?;
+        Ok(hclient_proxy::Opened::Raw(stream))
+    }
+
+    fn open_datagrams<'a, C: hclient_proxy::Dial + 'a>(
+        &'a self,
+        _: hclient_proxy::Target<'a>,
+        _: &'a C,
+    ) -> impl std::future::Future<Output = Result<BoxPath, hclient_proxy::Attempt>> + 'a
+    where
+        Self: Sized,
+        C::Stream: Send + 'static, // send-bound-exception: amendment-C16
+    {
+        self.datagram_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::future::ready(match self.mode {
+            Mode::DatagramsOnly => Ok(udp_bridge(self.peer)),
+            Mode::SmallPathWithStream => Ok(udp_bridge_of(self.peer, 1199)),
+            Mode::RefusingDatagramsWithStream | Mode::StreamOnly => Err(
+                hclient_proxy::Attempt::Unsupported(hclient_core::error::Error::new(
+                    hclient_core::error::ErrorKind::Unsupported,
+                    io::Error::other("this proxy relays no datagrams"),
+                )),
+            ),
+            Mode::Failing => Err(hclient_proxy::Attempt::Failed(connect_error(
+                "the proxy could not be reached",
+            ))),
+        })
+    }
+}
+
+impl hclient_proxy::SendEgressFilter for ForwardFilter {
+    fn open_stream_send<'a>(
+        &'a self,
+        t: hclient_proxy::Target<'a>,
+        ctx: &'a hclient_proxy::BoxDial<'a>,
+    ) -> hclient_proxy::BoxOpening<'a> {
+        Box::pin(async move {
+            hclient_proxy::EgressFilter::open_stream(self, t, ctx)
+                .await
+                .map(hclient_proxy::erase)
+        })
+    }
+
+    fn open_datagrams_send<'a>(
+        &'a self,
+        t: hclient_proxy::Target<'a>,
+        ctx: &'a hclient_proxy::BoxDial<'a>,
+    ) -> hclient_proxy::BoxPathOpening<'a> {
+        Box::pin(hclient_proxy::EgressFilter::open_datagrams(self, t, ctx))
+    }
+}
+
+/// A resolver that answers every address question with loopback and
+/// writes down every name it was asked about, whatever the type — so
+/// *"the origin was never resolved"* is read off a log rather than
+/// inferred.
+#[derive(Debug, Clone, Default)]
+pub struct NameLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl NameLog {
+    /// Every name asked about, in order.
+    ///
+    /// # Panics
+    ///
+    /// If the log's mutex is poisoned.
+    pub fn names(&self) -> Vec<String> {
+        self.0.lock().expect("name log").clone()
+    }
+}
+
+impl hclient_dns::Resolve for NameLog {
+    type Records<'a>
+        = std::pin::Pin<
+        Box<
+            dyn futures_core::Stream<Item = Result<hclient_dns::Record, hclient_core::error::Error>>
+                + Send
+                + 'a,
+        >,
+    >
+    where
+        Self: 'a;
+
+    fn supports(&self, rtype: u16) -> bool {
+        matches!(
+            rtype,
+            hclient_dns::rtype::A | hclient_dns::rtype::AAAA | hclient_dns::rtype::HTTPS
+        )
+    }
+
+    fn lookup<'a>(&'a self, name: &str, rtype: u16) -> Self::Records<'a> {
+        self.0.lock().expect("name log").push(name.to_owned());
+        match rtype {
+            hclient_dns::rtype::A => Box::pin(futures_util::stream::iter(vec![Ok(
+                hclient_dns::Record::new(hclient_dns::RData::from(std::net::IpAddr::from([
+                    127, 0, 0, 1,
+                ]))),
+            )])),
+            _ => Box::pin(futures_util::stream::empty()),
+        }
+    }
 }

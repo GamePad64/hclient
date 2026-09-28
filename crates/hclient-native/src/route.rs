@@ -80,6 +80,19 @@ enum Route {
         /// real answer.
         fallback: bool,
     },
+    /// The QUIC stack, through the egress filter whose pool key is `via`,
+    /// over a datagram path that filter opens. Nothing prepared travels
+    /// here either: a filtered request has its HTTPS record looked up by
+    /// nobody.
+    QuicVia {
+        req: http::Request<RequestBody>,
+        via: String,
+        /// Whether a path the filter will not open, or a QUIC connect over
+        /// it that fails, may send this request over the filter's stream
+        /// instead — `false` for a `RequireVersion(HTTP_3)` demand, for
+        /// [`Route::Quic`]'s reason.
+        fallback: bool,
+    },
     /// The TCP stack, with whatever [`Native::prepare`] found for this
     /// request — including "nothing was looked up", for the requests this
     /// transport does not ask about (a `RequireVersion` demand, `http://`,
@@ -100,6 +113,30 @@ fn is_ip_literal(host: &str) -> bool {
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(host);
     bare.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// Where a request's connection goes, as routing needs to know it.
+enum Egress {
+    Direct,
+    Filtered {
+        /// The filter's pool key.
+        via: String,
+        /// Whether the filter declares a datagram path.
+        datagrams: bool,
+    },
+}
+
+/// Why a QUIC connect through a filter produced no connection.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the request comes back whole, which is the contract, and it lives one call: boxing it would allocate on every switch to buy back bytes nobody holds"
+)]
+enum ViaFailed {
+    /// The proxy could not be reached or refused: final, never a switch.
+    Final(Error),
+    /// The filter or its proxy carries no datagrams, or QUIC over the path
+    /// failed; the request is back, unsent, and may take the stream.
+    Switch(Error, http::Request<RequestBody>),
 }
 
 /// Take `spent` off the request's `Timeouts::connect`, and say whether
@@ -178,6 +215,13 @@ where
             // One call site, hedged or not — see [`crate::race::Raced`] for
             // why that is load-bearing rather than tidy.
             Route::Quic { req, fallback } => self.serve_quic(req, fallback, origin.as_ref()).await,
+            // Never hedged: a race would open the filter's stream beside
+            // its path for every request, and the stream is already what
+            // a refused path falls back to.
+            Route::QuicVia { req, via, fallback } => {
+                self.over_quic_via(req, &via, fallback, origin.as_ref())
+                    .await
+            }
         };
         if let (Ok(r), Some(origin)) = (&resp, &origin) {
             self.note_alt_svc(origin, r.headers()).await;
@@ -304,16 +348,37 @@ where
         // origin's HTTPS record would name it to the local resolver, the
         // leak a proxy user is often there to avoid. The connector reaches
         // the same answer from the same filter, through `egress_route`.
-        if let Some(path) = self.not_direct(req.uri()) {
+        //
+        // A filter that declares datagrams is the one exception, and it is
+        // not a way around the filter: QUIC then goes over a path the
+        // filter opens, never from this host to the origin.
+        if let Egress::Filtered { via, datagrams } = self.egress_of(req.uri()) {
             let demanded_h3 = req
                 .extensions()
                 .get::<RequireVersion>()
                 .is_some_and(|RequireVersion(v)| *v == http::Version::HTTP_3);
-            return if demanded_h3 {
-                Route::Refuse(Error::new(ErrorKind::Unsupported, path))
-            } else {
-                Route::Tcp(Prepared::new(req))
-            };
+            let has_arm = self.h3.is_some() && self.versions.h3;
+            if !datagrams || !has_arm {
+                return if demanded_h3 {
+                    Route::Refuse(Error::new(
+                        ErrorKind::Unsupported,
+                        NoDatagramPath { via: via.into() },
+                    ))
+                } else {
+                    Route::Tcp(Prepared::new(req))
+                };
+            }
+            if demanded_h3 {
+                return Route::QuicVia {
+                    req,
+                    via,
+                    fallback: false,
+                };
+            }
+            // No HTTPS record: a local lookup would name the origin to the
+            // resolver a filter is often there to avoid. The advertisement
+            // cache is the only signal.
+            return self.via_by_advertisement(req, via).await;
         }
         if let Some(RequireVersion(v)) = req.extensions().get::<RequireVersion>() {
             return if *v == http::Version::HTTP_3 {
@@ -384,26 +449,55 @@ where
         }
     }
 
-    /// Why this request cannot go straight to its origin, or `None` when
-    /// it can — `Native::egress_route` asked with the request's own
-    /// authority.
+    /// Whether this request goes straight to its origin or through an
+    /// egress filter — `Native::egress_route` asked with the request's own
+    /// authority — and, through one, under which key and whether it
+    /// declares datagrams.
     ///
     /// A URI with no host or with a scheme this transport refuses is
-    /// `None`: the TCP stack raises that error where it always did, and a
+    /// `Direct`: the TCP stack raises that error where it always did, and a
     /// request that cannot be sent anywhere has no path to leave.
-    fn not_direct(&self, uri: &http::Uri) -> Option<NoDatagramPath> {
+    fn egress_of(&self, uri: &http::Uri) -> Egress {
         let (Ok(host), Ok(use_tls)) = (crate::connect::host(uri), crate::connect::wants_tls(uri))
         else {
-            return None;
+            return Egress::Direct;
         };
         let port = crate::connect::port(uri, use_tls);
         match self.egress_route(use_tls, host, port) {
-            hclient_proxy::Decision::Direct => None,
-            // `datagrams: true` is not honoured yet: no path exists for
-            // QUIC through a filter, whatever the filter declares.
-            hclient_proxy::Decision::Filtered(route) => Some(NoDatagramPath {
-                via: route.pool_key.into(),
-            }),
+            hclient_proxy::Decision::Direct => Egress::Direct,
+            hclient_proxy::Decision::Filtered(route) => Egress::Filtered {
+                via: route.pool_key.into_owned(),
+                datagrams: route.support.datagrams,
+            },
+        }
+    }
+
+    /// The slow tier alone, for a request an egress filter carries: QUIC
+    /// over the filter's path where the origin advertised `h3` and the
+    /// failure memory does not veto it, the filter's stream otherwise.
+    ///
+    /// [`Self::by_advertisement`]'s lookup rather than a call to it,
+    /// because that one answers with a direct [`Route::Quic`].
+    async fn via_by_advertisement(&self, req: http::Request<RequestBody>, via: String) -> Route {
+        let Some(origin) = Self::alt_svc_origin(req.uri()) else {
+            return Route::Tcp(Prepared::new(req));
+        };
+        let advertised = self
+            .alt_svc
+            // `web_time` for the reason `by_advertisement` gives.
+            .advertises_h3(&origin, web_time::SystemTime::now())
+            .await;
+        // Keyed by the origin alone, as the direct path's is: which filter
+        // carries an origin is a pure function of it, so within one
+        // transport an origin's failures are always through the same one.
+        if advertised && !self.h3_failures.suppressed(&origin, self.now()) {
+            Route::QuicVia {
+                req,
+                via,
+                fallback: true,
+            }
+        } else {
+            Route::Tcp(Prepared::new(req))
         }
     }
 
@@ -697,6 +791,148 @@ where
         }
         self.after_quic_failed(req, error, now.saturating_sub(began))
             .await
+    }
+
+    /// [`Self::over_quic`] through an egress filter: the pool first, then
+    /// a datagram path from the filter and a connection over it.
+    ///
+    /// **A path the filter will not open, or a QUIC connect over it that
+    /// fails, switches to the filter's stream and is remembered** — the
+    /// same unsent request, so it is not a retry in `RetryKind`'s sense,
+    /// and the same budget, spent once. A proxy that could not be reached
+    /// or refused the target is final: asking it for a stream instead
+    /// would not reach it either.
+    pub(crate) async fn over_quic_via(
+        &self,
+        req: http::Request<RequestBody>,
+        via: &str,
+        fallback: bool,
+        origin: Option<&Origin>,
+    ) -> Result<http::Response<crate::NativeBody<R, T, H>>, Error> {
+        let began = self.now();
+        // Read before the request moves into the arm, for `over_quic`'s
+        // reason.
+        let every = req
+            .extensions()
+            .get::<Timeouts>()
+            .copied()
+            .unwrap_or_default()
+            .between_bytes;
+        let Some(arm) = self.h3.as_ref().filter(|_| self.versions.h3) else {
+            return Err(Error::new(ErrorKind::Unsupported, NoQuicArm));
+        };
+        let (error, req) = match self.stage_via(&**arm, req, via, began).await {
+            Ok(staged) => {
+                return staged.exchange_boxed().await.map(|r| {
+                    // `Counted::already` for `over_quic`'s reason.
+                    self.bound_body(
+                        r.map(EstablishedBody::from_h3),
+                        every,
+                        crate::Counted::already(hclient_core::hooks::ConnectionId::UNWATCHED),
+                    )
+                });
+            }
+            Err(ViaFailed::Final(e)) => return Err(e),
+            Err(ViaFailed::Switch(e, req)) => (e, req),
+        };
+        let now = self.now();
+        if let Some(origin) = origin {
+            self.h3_failures.note(origin, now);
+        }
+        if !fallback {
+            return Err(error);
+        }
+        self.after_quic_failed(req, error, now.saturating_sub(began))
+            .await
+    }
+
+    /// A connection to the request's origin through the filter `via`: a
+    /// pooled one, or one over a path the filter opens now.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the request comes back whole, which is the contract: `stage`'s measurement — 264 of the bytes are `http::Request<RequestBody>` — applies here unchanged"
+    )]
+    async fn stage_via<'a>(
+        &'a self,
+        arm: &'a crate::http3::arm::Arm,
+        req: http::Request<RequestBody>,
+        via: &'a str,
+        began: Duration,
+    ) -> Result<crate::http3::arm::SendHandle<'a>, ViaFailed> {
+        use crate::http3::ViaRefused;
+        let req = match arm.connect_via_boxed(req, via, None).await {
+            Ok(staged) => return Ok(staged),
+            Err(ViaRefused::Refused(e, req)) => return Err(ViaFailed::Switch(e, req)),
+            Err(ViaRefused::NeedsPath(req)) => req,
+        };
+        // What the path needs of the request, taken before the await: a
+        // body is not `Sync`, so a borrow of the request held across it
+        // would make this transport's future `!Send`.
+        let uri = req.uri().clone();
+        let bound = req.extensions().get::<Timeouts>().and_then(|t| t.connect);
+        let path = match self.open_path(&uri, bound, began).await {
+            Ok(path) => path,
+            Err(hclient_proxy::Attempt::Failed(e)) => return Err(ViaFailed::Final(e)),
+            Err(unsupported) => return Err(ViaFailed::Switch(unsupported.into_error(), req)),
+        };
+        match arm.connect_via_boxed(req, via, Some(path)).await {
+            Ok(staged) => Ok(staged),
+            Err(ViaRefused::Refused(e, req)) => Err(ViaFailed::Switch(e, req)),
+            // Unreachable: a path was offered. Answered rather than
+            // asserted, because being wrong costs this request and not
+            // the caller's process.
+            Err(ViaRefused::NeedsPath(req)) => Err(ViaFailed::Switch(
+                Error::new(
+                    ErrorKind::Connect,
+                    std::io::Error::other("the QUIC arm asked for a path it was given"),
+                ),
+                req,
+            )),
+        }
+    }
+
+    /// A datagram path to the request's origin from whichever filter
+    /// carries it — the installed one first, then the built-in rules, the
+    /// order `Native::egress_route` answers in — lent this transport's
+    /// connect path with what is left of `Timeouts::connect`.
+    async fn open_path(
+        &self,
+        uri: &http::Uri,
+        bound: Option<Duration>,
+        began: Duration,
+    ) -> Result<hclient_proxy::BoxPath, hclient_proxy::Attempt> {
+        let host = crate::connect::host(uri).map_err(hclient_proxy::Attempt::Failed)?;
+        let target = hclient_proxy::Target::new(host, crate::connect::port(uri, true), true);
+        // The proxy's handshake and QUIC's spend one bound.
+        let budget = bound.map(|c| c.saturating_sub(self.now().saturating_sub(began)));
+        let call = crate::external::Call {
+            rt: &self.rt,
+            dns: &self.dns,
+            tls: &self.tls,
+            opts: &self.opts,
+            ipc: self.ipc,
+            udp: self.udp,
+            budget,
+            watching: false,
+            target,
+            alpn: &[],
+            identity: None,
+        };
+        if let Some(ext) = &self.external
+            && matches!(
+                ext.filter.route(&target),
+                hclient_proxy::Decision::Filtered(_)
+            )
+        {
+            return (ext.open_path)(&*ext.filter, call).await;
+        }
+        match self.rules_path {
+            Some(open) => open(&self.rules, call).await,
+            None => Err(hclient_proxy::Attempt::Unsupported(Error::new(
+                ErrorKind::Unsupported,
+                std::io::Error::other("this transport lends no datagram path; see `Native::http3`"),
+            ))),
+        }
     }
 
     /// The tail of [`Self::over_quic`], from *"the QUIC connect failed and

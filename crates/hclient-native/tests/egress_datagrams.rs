@@ -11,6 +11,8 @@
 mod fixtures;
 #[path = "h3_server.rs"]
 mod server;
+#[path = "servers.rs"]
+mod servers;
 
 use futures_util::stream;
 use hclient_core::body::RequestBody;
@@ -141,4 +143,205 @@ async fn a_connection_over_a_path_reports_no_remote_address() {
         .await
         .expect("over the path");
     assert_eq!(*seen.0.lock().unwrap(), vec![Some(s.addr), None]);
+}
+
+// --- `Native`: which requests a filter's datagram path carries ----------
+//
+// A [`servers::Pair`] is an HTTP/3 server and an HTTP/1.1 one on the same
+// port, so the version of a response says which stack carried it — and the
+// filter forwards whatever it opens to that pair, so a request that arrived
+// at all came through the filter.
+
+use fixtures::{ForwardFilter, Mode, NameLog};
+use hclient_core::req::RequireVersion;
+use hclient_core::transport::Transport as _;
+use hclient_native::Native;
+
+/// Never an assertion — it turns a mutation that hangs into a red test.
+const BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+type Filtered = Native<TokioHandle, hclient_tls_rustls::Rustls, NameLog>;
+
+/// Both stacks over one resolver, and `filter` in front of them.
+fn native(pair: &servers::Pair, dns: &NameLog, filter: ForwardFilter) -> Filtered {
+    let rt = TokioHandle::current().expect("inside #[tokio::test]");
+    let quic = H3::new(rt.clone(), servers::client_tls(&pair.cert_der), dns.clone())
+        .expect("H3::new does no I/O");
+    Native::new(rt, servers::client_tls(&pair.cert_der), dns.clone())
+        .http3(quic)
+        .expect("the two stacks agree")
+        .egress(filter)
+}
+
+fn request(authority: &str, demand_h3: bool) -> http::Request<RequestBody> {
+    let mut req = http::Request::get(format!("https://{authority}/"))
+        .body(RequestBody::Empty)
+        .unwrap();
+    if demand_h3 {
+        req.extensions_mut()
+            .insert(RequireVersion(http::Version::HTTP_3));
+    }
+    req
+}
+
+/// One request; the response's version, or the error.
+async fn send(t: &Filtered, authority: &str, demand_h3: bool) -> Result<http::Version, Error> {
+    let resp = tokio::time::timeout(BOUND, t.execute(request(authority, demand_h3)))
+        .await
+        .expect("the request finished inside the bound")?;
+    assert_eq!(resp.status(), 200);
+    Ok(resp.version())
+}
+
+fn literal(pair: &servers::Pair) -> String {
+    format!("127.0.0.1:{}", pair.port)
+}
+
+/// Request one goes over the filter's stream and carries `Alt-Svc: h3` back,
+/// so the next request has a signal to act on.
+async fn seed_alt_svc_h3(t: &Filtered, pair: &servers::Pair) {
+    pair.set_alt_svc(Some(&pair.h3_here("; ma=86400")));
+    let v = send(t, &literal(pair), false)
+        .await
+        .expect("the seed request");
+    assert_eq!(v, http::Version::HTTP_11, "no signal yet, so the stream");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filtered_request_with_a_demand_for_h3_goes_over_the_path() {
+    let pair = servers::start();
+    let filter = ForwardFilter::new(Mode::DatagramsOnly, pair.addr());
+    let t = native(&pair, &NameLog::default(), filter.clone());
+    let v = send(&t, &literal(&pair), true)
+        .await
+        .expect("over the path");
+    assert_eq!(v, http::Version::HTTP_3);
+    assert_eq!(pair.quic_answered(), 1);
+    assert_eq!(pair.tcp_accepted(), 0);
+    assert_eq!(filter.datagram_attempts(), 1);
+    // The connection is pooled under the filter's key: a second request
+    // needs no second path.
+    let v = send(&t, &literal(&pair), true).await.expect("pooled");
+    assert_eq!(v, http::Version::HTTP_3);
+    assert_eq!(filter.datagram_attempts(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filtered_h3_request_never_resolves_the_origin() {
+    let pair = servers::start();
+    let dns = NameLog::default();
+    let t = native(
+        &pair,
+        &dns,
+        ForwardFilter::new(Mode::DatagramsOnly, pair.addr()),
+    );
+    let authority = format!("{}:{}", servers::ORIGIN, pair.port);
+    let v = send(&t, &authority, true).await.expect("over the path");
+    assert_eq!(v, http::Version::HTTP_3);
+    assert!(
+        dns.names().iter().all(|n| !n.contains(servers::ORIGIN)),
+        "the origin was named to the local resolver: {:?}",
+        dns.names()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_advertisement_heard_through_a_filter_moves_the_next_request_onto_its_path() {
+    let pair = servers::start();
+    let filter = ForwardFilter::new(Mode::RefusingDatagramsWithStream, pair.addr());
+    let t = native(&pair, &NameLog::default(), filter.clone());
+    seed_alt_svc_h3(&t, &pair).await;
+    // No signal on the first request, so the path was never asked for.
+    assert_eq!(filter.datagram_attempts(), 0);
+    let v = send(&t, &literal(&pair), false).await.expect("request two");
+    assert_eq!(
+        v,
+        http::Version::HTTP_11,
+        "the refusal switched to the stream"
+    );
+    assert_eq!(
+        filter.datagram_attempts(),
+        1,
+        "the advertisement was acted on"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filter_that_refuses_datagrams_sends_the_request_over_its_stream_and_remembers() {
+    let pair = servers::start();
+    let filter = ForwardFilter::new(Mode::RefusingDatagramsWithStream, pair.addr());
+    let t = native(&pair, &NameLog::default(), filter.clone());
+    seed_alt_svc_h3(&t, &pair).await;
+    let r1 = send(&t, &literal(&pair), false).await.expect("request two");
+    assert_eq!(r1, http::Version::HTTP_11);
+    let r2 = send(&t, &literal(&pair), false)
+        .await
+        .expect("request three");
+    assert_eq!(r2, http::Version::HTTP_11);
+    assert_eq!(
+        filter.datagram_attempts(),
+        1,
+        "the second request must not ask again"
+    );
+    assert_eq!(pair.quic_attempted(), 0, "nothing reached the QUIC server");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_path_too_small_for_quic_falls_back_to_the_stream_and_is_remembered() {
+    let pair = servers::start();
+    let filter = ForwardFilter::new(Mode::SmallPathWithStream, pair.addr());
+    let t = native(&pair, &NameLog::default(), filter.clone());
+    seed_alt_svc_h3(&t, &pair).await;
+    let r1 = send(&t, &literal(&pair), false).await.expect("request two");
+    assert_eq!(r1, http::Version::HTTP_11, "a 1199-byte path is refused");
+    let r2 = send(&t, &literal(&pair), false)
+        .await
+        .expect("request three");
+    assert_eq!(r2, http::Version::HTTP_11);
+    assert_eq!(filter.datagram_attempts(), 1, "remembered");
+    assert_eq!(pair.quic_attempted(), 0, "no packet was sent over it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_path_too_small_for_quic_is_unsupported_when_h3_was_demanded() {
+    let pair = servers::start();
+    let filter = ForwardFilter::new(Mode::SmallPathWithStream, pair.addr());
+    let t = native(&pair, &NameLog::default(), filter.clone());
+    let e = send(&t, &literal(&pair), true).await.unwrap_err();
+    assert_eq!(
+        *e.kind(),
+        hclient_core::error::ErrorKind::Unsupported,
+        "{e:?}"
+    );
+    assert_eq!(filter.stream_opens(), 0, "a demand does not switch");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_demand_for_h3_through_a_filter_without_datagrams_is_no_datagram_path() {
+    let pair = servers::start();
+    let t = native(
+        &pair,
+        &NameLog::default(),
+        ForwardFilter::new(Mode::StreamOnly, pair.addr()),
+    );
+    let e = send(&t, &literal(&pair), true).await.unwrap_err();
+    assert!(
+        std::error::Error::source(&e).is_some_and(|s| s
+            .downcast_ref::<hclient_native::error::NoDatagramPath>()
+            .is_some()),
+        "{e:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_proxy_is_final_and_does_not_switch() {
+    let pair = servers::start();
+    let filter = ForwardFilter::new(Mode::Failing, pair.addr());
+    let t = native(&pair, &NameLog::default(), filter.clone());
+    seed_alt_svc_h3(&t, &pair).await;
+    let streams = filter.stream_opens();
+    let e = send(&t, &literal(&pair), false).await.unwrap_err();
+    assert_eq!(*e.kind(), hclient_core::error::ErrorKind::Connect, "{e:?}");
+    assert_eq!(filter.datagram_attempts(), 1);
+    assert_eq!(filter.stream_opens(), streams, "no switch to the stream");
 }

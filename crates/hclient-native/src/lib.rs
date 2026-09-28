@@ -759,6 +759,13 @@ where
     /// is refused, naming that constructor — the same shape as a missing
     /// [`ipc`](Self::ipc).
     udp: Option<BindUdp<R>>,
+    /// How this transport asks the built-in [`rules`](Self::rules) for a
+    /// datagram path, stored once [`Native::http3`] has proven what the
+    /// erased connect path it lends them needs. `None` answers every such
+    /// request as unsupported, which is also all a transport with no QUIC
+    /// arm could do with one.
+    #[cfg(feature = "http3")]
+    rules_path: Option<external::OpenPath<R, D, T, hclient_proxy::Rules>>,
     /// What this client accepts in an HTTP/1 response head — see
     /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
     /// the HTTP/1 path is the one every build has.
@@ -1106,6 +1113,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             hedge: None,
             ipc: None,
             udp: None,
+            #[cfg(feature = "http3")]
+            rules_path: None,
             h1_opts: crate::http1::H1Opts::default(),
             #[cfg(feature = "http2")]
             h2_opts: crate::http2::H2Opts::default(),
@@ -1581,6 +1590,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             hedge: self.hedge,
             ipc: self.ipc,
             udp: self.udp,
+            #[cfg(feature = "http3")]
+            rules_path: self.rules_path,
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
@@ -1978,6 +1989,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         D: hclient_dns::Resolve,
         for<'a> D::Records<'a>: Send, // send-bound-exception: amendment-C15
         crate::http3::Staged<R, hclient_core::hooks::NoHooks>: Send, // send-bound-exception: amendment-C15
+        // What the connect path lent to the built-in rules for a datagram
+        // path needs — `Native::egress`'s set, for the same erasure.
+        R::Stream: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> R::Connecting<'a>: Send, // send-bound-exception: amendment-C15
+        T::Stream<hclient_proxy::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> T::Handshake<'a, hclient_proxy::BoxIo>: Send, // send-bound-exception: amendment-C15
     {
         // **The stored value must be true whichever path serves the
         // request**, and `capabilities()` hands back a reference computed
@@ -1993,6 +2010,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         self.caps = caps::combine(&self.caps, quic.capabilities()).map_err(Box::new)?;
         self.h3 = Some(Arc::new(quic));
         self.udp = Some(bind_udp_erased::<R>);
+        self.rules_path = Some(external::open_path::<R, D, T, hclient_proxy::Rules>);
         self.versions.h3 = true;
         Ok(self)
     }
@@ -2640,10 +2658,19 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// [`unix_socket`](Self::unix_socket), and only what both decline goes
     /// direct. A later call replaces an earlier filter.
     ///
-    /// A request a filter carries never uses HTTP/3. Its `Connected` event
-    /// reports the address the filter dialled through the lent connect path
-    /// — the first hop's — whatever the filter wrapped around it, and none
-    /// when it dialled nothing by address.
+    /// A request a filter carries uses HTTP/3 only over a datagram path the
+    /// filter itself opens — when it declares
+    /// [`datagrams`](hclient_proxy::FilterSupport::datagrams), the transport
+    /// has an HTTP/3 arm, and the request demands HTTP/3 or its origin
+    /// advertised it. A path the filter will not open switches the request
+    /// to the filter's stream, and the origin is not asked again for a
+    /// while; a proxy that could not be reached does not switch. Never
+    /// directly, and the origin's HTTPS record is never looked up.
+    ///
+    /// Its `Connected` event reports the address the filter dialled through
+    /// the lent connect path — the first hop's — whatever the filter
+    /// wrapped around it, and none when it dialled nothing by address or
+    /// carried QUIC over a path.
     ///
     /// The bounds are the ones this transport's `SendTransport` impl
     /// carries, plus the TLS backend's over an erased stream: the filter's
@@ -2667,6 +2694,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         self.external = Some(external::External {
             filter: Arc::new(filter),
             open: external::open::<R, D, T>,
+            #[cfg(feature = "http3")]
+            open_path: external::open_path::<R, D, T, hclient_proxy::SharedFilter>,
         });
         self.caps.proxy = true;
         self
