@@ -91,6 +91,10 @@ pub enum Mode {
     Failing,
     /// Declares both, and opens a path too small for QUIC (1199 bytes).
     SmallPathWithStream,
+    /// Declares datagrams only, takes this long to open a path, and the
+    /// path it opens goes to its peer — which a test makes a bound, silent
+    /// socket, so the QUIC handshake over it is never answered.
+    Slow(std::time::Duration),
 }
 
 /// Every request is filtered under the key `"fwd"`, and whatever the filter
@@ -134,7 +138,7 @@ impl ForwardFilter {
     fn support(&self) -> hclient_proxy::FilterSupport {
         use hclient_proxy::FilterSupport;
         match self.mode {
-            Mode::DatagramsOnly => FilterSupport::NONE.with_datagrams(),
+            Mode::DatagramsOnly | Mode::Slow(_) => FilterSupport::NONE.with_datagrams(),
             Mode::StreamOnly => FilterSupport::STREAM,
             Mode::RefusingDatagramsWithStream | Mode::Failing | Mode::SmallPathWithStream => {
                 FilterSupport::STREAM.with_datagrams()
@@ -191,19 +195,26 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
     {
         self.datagram_attempts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        std::future::ready(match self.mode {
-            Mode::DatagramsOnly => Ok(udp_bridge(self.peer)),
-            Mode::SmallPathWithStream => Ok(udp_bridge_of(self.peer, 1199)),
-            Mode::RefusingDatagramsWithStream | Mode::StreamOnly => Err(
-                hclient_proxy::Attempt::Unsupported(hclient_core::error::Error::new(
-                    hclient_core::error::ErrorKind::Unsupported,
-                    io::Error::other("this proxy relays no datagrams"),
-                )),
-            ),
-            Mode::Failing => Err(hclient_proxy::Attempt::Failed(connect_error(
-                "the proxy could not be reached",
-            ))),
-        })
+        let (mode, peer) = (self.mode, self.peer);
+        async move {
+            match mode {
+                Mode::DatagramsOnly => Ok(udp_bridge(peer)),
+                Mode::Slow(delay) => {
+                    tokio::time::sleep(delay).await;
+                    Ok(udp_bridge(peer))
+                }
+                Mode::SmallPathWithStream => Ok(udp_bridge_of(peer, 1199)),
+                Mode::RefusingDatagramsWithStream | Mode::StreamOnly => Err(
+                    hclient_proxy::Attempt::Unsupported(hclient_core::error::Error::new(
+                        hclient_core::error::ErrorKind::Unsupported,
+                        io::Error::other("this proxy relays no datagrams"),
+                    )),
+                ),
+                Mode::Failing => Err(hclient_proxy::Attempt::Failed(connect_error(
+                    "the proxy could not be reached",
+                ))),
+            }
+        }
     }
 }
 

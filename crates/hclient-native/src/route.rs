@@ -177,6 +177,16 @@ pub(crate) fn spend_connect_budget(req: &mut http::Request<RequestBody>, spent: 
     !left.is_zero()
 }
 
+/// The error for a filtered QUIC connect whose `Timeouts::connect` ran out
+/// while the filter opened its path — the QUIC arm's own timeout, naming
+/// the caller's whole bound, because the path and the handshake share it.
+fn connect_spent(bound: Option<Duration>) -> Error {
+    Error::new(
+        ErrorKind::Timeout(hclient_core::error::Phase::Connect),
+        crate::http3::ConnectTimedOut(bound.unwrap_or_default()),
+    )
+}
+
 impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
@@ -796,12 +806,16 @@ where
     /// [`Self::over_quic`] through an egress filter: the pool first, then
     /// a datagram path from the filter and a connection over it.
     ///
+    /// **One `Timeouts::connect` covers all of it.** Opening the path is
+    /// bounded by what is left of it, the QUIC handshake over the path by
+    /// what is left after that, and a switch to the stream by what is left
+    /// after both; a bound that runs out on the way is a connect timeout.
+    ///
     /// **A path the filter will not open, or a QUIC connect over it that
     /// fails, switches to the filter's stream and is remembered** — the
-    /// same unsent request, so it is not a retry in `RetryKind`'s sense,
-    /// and the same budget, spent once. A proxy that could not be reached
-    /// or refused the target is final: asking it for a stream instead
-    /// would not reach it either.
+    /// same unsent request, so it is not a retry in `RetryKind`'s sense.
+    /// A proxy that could not be reached or refused the target is final:
+    /// asking it for a stream instead would not reach it either.
     pub(crate) async fn over_quic_via(
         &self,
         req: http::Request<RequestBody>,
@@ -870,11 +884,27 @@ where
         // would make this transport's future `!Send`.
         let uri = req.uri().clone();
         let bound = req.extensions().get::<Timeouts>().and_then(|t| t.connect);
-        let path = match self.open_path(&uri, bound, began).await {
-            Ok(path) => path,
-            Err(hclient_proxy::Attempt::Failed(e)) => return Err(ViaFailed::Final(e)),
-            Err(unsupported) => return Err(ViaFailed::Switch(unsupported.into_error(), req)),
+        // The filter's opening is bounded by what is left of the caller's
+        // connect bound, and the QUIC handshake after it by what is left
+        // after that: one bound for both, as the stream path has it.
+        let left = bound.map(|c| c.saturating_sub(self.now().saturating_sub(began)));
+        let opened = crate::with_connect_timeout(&self.rt, left, async {
+            Ok(self.open_path(&uri, left).await)
+        })
+        .await;
+        let path = match opened {
+            Ok(Ok(path)) => path,
+            Ok(Err(hclient_proxy::Attempt::Failed(e))) => return Err(ViaFailed::Final(e)),
+            Ok(Err(unsupported)) => {
+                return Err(ViaFailed::Switch(unsupported.into_error(), req));
+            }
+            // The only error the wrapper raises is its own timeout.
+            Err(_) => return Err(ViaFailed::Switch(connect_spent(bound), req)),
         };
+        let mut req = req;
+        if !spend_connect_budget(&mut req, self.now().saturating_sub(began)) {
+            return Err(ViaFailed::Switch(connect_spent(bound), req));
+        }
         match arm.connect_via_boxed(req, via, Some(path)).await {
             Ok(staged) => Ok(staged),
             Err(ViaRefused::Refused(e, req)) => Err(ViaFailed::Switch(e, req)),
@@ -898,13 +928,10 @@ where
     async fn open_path(
         &self,
         uri: &http::Uri,
-        bound: Option<Duration>,
-        began: Duration,
+        budget: Option<Duration>,
     ) -> Result<hclient_proxy::BoxPath, hclient_proxy::Attempt> {
         let host = crate::connect::host(uri).map_err(hclient_proxy::Attempt::Failed)?;
         let target = hclient_proxy::Target::new(host, crate::connect::port(uri, true), true);
-        // The proxy's handshake and QUIC's spend one bound.
-        let budget = bound.map(|c| c.saturating_sub(self.now().saturating_sub(began)));
         let call = crate::external::Call {
             rt: &self.rt,
             dns: &self.dns,

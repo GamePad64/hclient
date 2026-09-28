@@ -345,3 +345,38 @@ async fn a_failed_proxy_is_final_and_does_not_switch() {
     assert_eq!(filter.datagram_attempts(), 1);
     assert_eq!(filter.stream_opens(), streams, "no switch to the stream");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn opening_the_path_and_the_quic_handshake_spend_one_connect_bound() {
+    // A path that takes most of the bound to open, to a peer that never
+    // answers: the QUIC handshake gets only what is left, so the request
+    // ends inside one bound rather than after the path's time plus a
+    // whole second bound.
+    const BOUND_C: std::time::Duration = std::time::Duration::from_millis(1000);
+    let pair = servers::start();
+    let hole = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind a silent socket");
+    let filter = ForwardFilter::new(
+        Mode::Slow(BOUND_C * 8 / 10),
+        hole.local_addr().expect("addr"),
+    );
+    let t = native(&pair, &NameLog::default(), filter);
+    let mut req = request(&literal(&pair), true);
+    req.extensions_mut()
+        .insert(hclient_core::req::Timeouts::new().with_connect(BOUND_C));
+    let began = std::time::Instant::now();
+    let e = tokio::time::timeout(BOUND, t.execute(req))
+        .await
+        .expect("the request finished inside the guard")
+        .expect_err("nothing answers over the path");
+    let took = began.elapsed();
+    assert_eq!(
+        *e.kind(),
+        hclient_core::error::ErrorKind::Timeout(hclient_core::error::Phase::Connect),
+        "{e:?}"
+    );
+    assert!(
+        took < BOUND_C * 3 / 2,
+        "one connect bound of {BOUND_C:?} took {took:?}"
+    );
+    drop(hole);
+}
