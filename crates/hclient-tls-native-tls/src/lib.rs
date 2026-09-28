@@ -460,7 +460,7 @@ impl<S> Handshaking<S> {
 
 impl<S> std::future::Future for Handshaking<S>
 where
-    S: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin,
+    S: hclient_rt::Io,
 {
     type Output = Result<(crate::stream::TlsStream<S>, TlsInfo), Error>;
 

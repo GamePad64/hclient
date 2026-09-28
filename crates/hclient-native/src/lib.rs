@@ -2703,7 +2703,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
 /// caught four times in this workspace.
 fn reuse_of<I>(pool: &Pool<I>) -> bool
 where
-    I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin,
+    I: hclient_rt::Io,
 {
     pool.config().is_some()
 }
@@ -3333,7 +3333,7 @@ async fn handshake_for<I>(
     h2_opts: crate::http2::H2Opts,
 ) -> Result<established::Established<I>, Error>
 where
-    I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'static,
+    I: hclient_rt::Io + 'static,
 {
     if is_h2(protocol) {
         Ok(established::Established::H2(Box::new(
@@ -3359,7 +3359,7 @@ async fn handshake_for<I>(
     h1_opts: crate::http1::H1Opts,
 ) -> Result<established::Established<I>, Error>
 where
-    I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'static,
+    I: hclient_rt::Io + 'static,
 {
     debug_assert!(!is_h2(protocol));
     Ok(established::Established::H1(
@@ -4405,7 +4405,7 @@ pub mod testing {
         req: http::Request<crate::body::OutgoingBody>,
     ) -> Result<http::Response<crate::established::NativeBody<I>>, hclient_core::error::Error>
     where
-        I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin + 'static,
+        I: hclient_rt::Io + 'static,
     {
         use hclient_core::hooks::{ConnectionId, NoHooks};
         let est =
@@ -4421,7 +4421,7 @@ pub mod testing {
         b: crate::established::NativeBody<I>,
     ) -> Result<bytes::Bytes, hclient_core::error::Error>
     where
-        I: futures_io::AsyncRead + futures_io::AsyncWrite + hclient_rt::Shutdown + Unpin,
+        I: hclient_rt::Io,
     {
         use http_body_util::BodyExt;
         Ok(b.collect().await?.to_bytes())

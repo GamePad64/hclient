@@ -8533,6 +8533,19 @@ items, and five findings:
 `Proxy::handshake` went too, being `protocol().clone()`, and `IpcProxy`
 gained the `scheme()` its sibling had.
 
+**And `Io` moved to `hclient-rt`, beside the `Shutdown` it names.** It is
+`AsyncRead + AsyncWrite + Shutdown + Unpin` under one name with a blanket
+impl, and the proxy crate had minted it only because `Wrapped<S: Io>`
+needed a word — while the same four bounds were spelled out 29 times in
+seven crates. Not `hclient-core`: that would have meant moving `Shutdown`
+and `futures-io` there, which is the move declined when `hclient-rt` went
+stable first. For the stable crate it is an addition (`cargo
+semver-checks`: no update required); `hclient_proxy::Io` stays as a
+re-export so a filter author needs one dependency. The stable seams'
+own bounds keep their spelled-out form — equivalent, and not worth a
+diff in a frozen surface; the internal ones in `native` and the TLS
+backends say `Io`.
+
 ### `hclient-proto` is internal, and what it held for `hclient` moved into `hclient`
 
 The owner's rule: **`hclient-proto` is an internal crate, and nothing is

@@ -397,9 +397,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TlsStream<S> {
 /// stream beneath for its FIN. A transport that cannot half-close says so
 /// there rather than here. The rustls backend's impl is the same shape for
 /// the same reason.
-impl<S: AsyncRead + AsyncWrite + hclient_rt::Shutdown + Unpin> hclient_rt::Shutdown
-    for TlsStream<S>
-{
+impl<S: hclient_rt::Io> hclient_rt::Shutdown for TlsStream<S> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         std::task::ready!(self.poll_close_notify(cx))?;
         hclient_rt::Shutdown::poll_shutdown(Pin::new(&mut self.get_mut().0.get_mut().inner), cx)

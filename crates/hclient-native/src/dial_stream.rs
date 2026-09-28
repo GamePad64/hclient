@@ -5,8 +5,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_io::{AsyncRead, AsyncWrite};
-use hclient_proxy::Io;
-use hclient_rt::Shutdown;
+use hclient_rt::{Io, Shutdown};
 use hclient_tls::TlsConnect;
 
 /// The stream a [`Native`](crate::Native) lends an egress filter: the

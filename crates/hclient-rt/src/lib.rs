@@ -116,7 +116,7 @@ mod tcp;
 mod udp;
 
 pub use error::{Cancelled, UnsupportedIpc, UnsupportedTcp, UnsupportedUdp};
-pub use io::Shutdown;
+pub use io::{Io, Shutdown};
 pub use ipc::{IpcAddr, IpcConnect, IpcSupport};
 pub use spawn::{Blocking, Spawn};
 pub use tcp::{TcpAdoptStd, TcpConnect, TcpOpts, TcpSupport};

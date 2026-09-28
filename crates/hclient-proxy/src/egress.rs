@@ -83,7 +83,7 @@ fn lends_no_tls() -> Error {
 /// concrete `Dial`, and never needs to name these futures.
 pub trait Dial {
     /// The byte stream this transport's runtime produces.
-    type Stream: AsyncRead + AsyncWrite + Shutdown + Unpin;
+    type Stream: Io;
 
     /// Resolve `host` and connect to `port` exactly as the transport would
     /// for a direct request — its resolver, Happy Eyeballs, its socket
@@ -273,9 +273,9 @@ impl FilterSupport {
     }
 }
 
-/// A byte stream the seam can carry, erased.
-pub trait Io: AsyncRead + AsyncWrite + Shutdown + Unpin {}
-impl<T: AsyncRead + AsyncWrite + Shutdown + Unpin> Io for T {}
+/// A byte stream the seam can carry — `hclient-rt`'s, re-exported so a
+/// filter author needs one dependency.
+pub use hclient_rt::Io;
 
 /// A stream whose type grew with a filter's layers, or that crossed an
 /// erased filter.

@@ -123,3 +123,15 @@ pub trait Shutdown {
     /// result.
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>>;
 }
+
+/// A byte stream the seam carries: [`futures_io::AsyncRead`],
+/// [`futures_io::AsyncWrite`], [`Shutdown`] and `Unpin`, under one name.
+///
+/// Implemented for every type that has all four, so nothing implements it
+/// by hand; it exists so a bound can say *a stream this family can drive*
+/// in one word. [`TcpConnect::Stream`](crate::TcpConnect::Stream) is such a
+/// stream, and so is whatever a TLS backend or an egress filter wraps
+/// around one.
+pub trait Io: futures_io::AsyncRead + futures_io::AsyncWrite + Shutdown + Unpin {}
+
+impl<T: futures_io::AsyncRead + futures_io::AsyncWrite + Shutdown + Unpin> Io for T {}
