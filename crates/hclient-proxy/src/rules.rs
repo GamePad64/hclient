@@ -1,6 +1,7 @@
 //! The default filter: an ordered list of proxy rules, first match wins,
 //! plus a Unix-socket policy that matches everything.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -46,14 +47,19 @@ impl Handshake for BoxHandshake {
     fn proxy_authorization(&self) -> Option<&http::HeaderValue> {
         (**self).proxy_authorization()
     }
+    fn associate(&self) -> Option<Box<dyn crate::Associate>> {
+        (**self).associate()
+    }
 }
 
 #[derive(Clone)]
 // Each rule carries its pool key, computed once when it is pushed:
 // `route` is asked several times per request and lends the key out as a
-// borrow rather than formatting it again.
+// borrow rather than formatting it again. A proxy rule also carries
+// whether it relays datagrams, for the same reason: asking the protocol
+// builds an association, which `route` has no business allocating.
 enum Rule {
-    Proxy(Arc<Proxy<BoxHandshake>>, Box<str>),
+    Proxy(Arc<Proxy<BoxHandshake>>, Box<str>, bool),
     Unix(Arc<hclient_rt::IpcAddr>, Box<str>),
 }
 
@@ -98,7 +104,11 @@ impl Rules {
             Reach::Tcp { host, port } => format!("{host}:{port}").into(),
             Reach::Ipc(addr) => ipc_key(addr),
         };
-        self.rules.push(Rule::Proxy(Arc::new(proxy), key));
+        // A relay is a UDP address, so only a proxy reached over the
+        // network can name one this host can send to.
+        let udp =
+            matches!(proxy.reach(), Reach::Tcp { .. }) && proxy.protocol().associate().is_some();
+        self.rules.push(Rule::Proxy(Arc::new(proxy), key, udp));
         self
     }
 
@@ -142,7 +152,7 @@ impl Rules {
 
     fn first(&self, t: &Target<'_>) -> Option<&Rule> {
         self.rules.iter().find(|r| match r {
-            Rule::Proxy(p, _) => p.serves(t.use_tls, t.host, t.port),
+            Rule::Proxy(p, ..) => p.serves(t.use_tls, t.host, t.port),
             Rule::Unix(..) => true,
         })
     }
@@ -171,14 +181,19 @@ impl EgressFilter for Rules {
                 &**key,
                 RequestForm::Origin,
             )),
-            Some(Rule::Proxy(p, key)) => {
+            Some(Rule::Proxy(p, key, udp)) => {
                 let form = match p.protocol().approach(t.use_tls) {
                     Approach::Absolute => {
                         RequestForm::absolute(p.protocol().proxy_authorization().cloned())
                     }
                     Approach::Tunnel => RequestForm::Origin,
                 };
-                Decision::Filtered(Route::new(FilterSupport::STREAM, &**key, form))
+                let support = if *udp {
+                    FilterSupport::STREAM.with_datagrams()
+                } else {
+                    FilterSupport::STREAM
+                };
+                Decision::Filtered(Route::new(support, &**key, form))
             }
         }
     }
@@ -208,24 +223,10 @@ impl EgressFilter for Rules {
                     .map(Opened::Raw)
                     .map_err(Attempt::Failed);
             }
-            Rule::Proxy(p, _) => p,
+            Rule::Proxy(p, ..) => p,
         };
         let mut stream = match proxy.reach() {
-            Reach::Tcp { host, port } => {
-                let s = ctx.connect(host, *port).await.map_err(Attempt::Failed)?;
-                if proxy.is_tls() {
-                    // The proxy was not reached if its handshake failed — a
-                    // certificate this transport does not trust is not the
-                    // proxy declining the target.
-                    // The certificate is checked against the address itself, which a
-                    // bracketed v6 host names only inside its brackets.
-                    ctx.connect_tls(s, crate::ProxyTls::new(hclient_core::url::bare_host(host)))
-                        .await
-                        .map_err(Attempt::Failed)?
-                } else {
-                    s
-                }
-            }
+            Reach::Tcp { host, port } => reach_tcp(proxy, host, *port, ctx).await?,
             Reach::Ipc(addr) => ctx.connect_ipc(addr).await.map_err(Attempt::Failed)?,
         };
         if proxy.protocol().approach(t.use_tls) == Approach::Absolute {
@@ -237,6 +238,93 @@ impl EgressFilter for Rules {
             .map_err(Attempt::Failed)?;
         Ok(Opened::Raw(stream))
     }
+
+    async fn open_datagrams<'a, C: Dial + 'a>(
+        &'a self,
+        t: Target<'a>,
+        ctx: &'a C,
+    ) -> Result<crate::BoxPath, Attempt>
+    where
+        Self: Sized,
+        C::Stream: Send + 'static, // send-bound-exception: amendment-C16
+    {
+        let Some(Rule::Proxy(proxy, _, true)) = self.first(&t) else {
+            return Err(Attempt::Unsupported(Error::new(
+                hclient_core::error::ErrorKind::Unsupported,
+                std::io::Error::other("the rule serving this target carries no datagrams"),
+            )));
+        };
+        let Reach::Tcp { host, port } = proxy.reach() else {
+            unreachable!("a rule is marked for datagrams only when reached over TCP")
+        };
+        let mut control = reach_tcp(proxy, host, *port, ctx).await?;
+        let mut a = proxy
+            .protocol()
+            .associate()
+            .expect("a rule is marked for datagrams only when it associates");
+        let relay = match crate::socks5_udp::drive_associate(&mut control, &mut *a).await {
+            Ok(r) => r,
+            Err(crate::AssociateError::Unsupported(e)) => return Err(Attempt::Unsupported(e)),
+            Err(crate::AssociateError::Failed(e)) => return Err(Attempt::Failed(e)),
+        };
+        let relay = match relay {
+            crate::RelayAddr::Ip(a) => a,
+            // §4: the proxy's own address, which this host already dialled
+            // by name — so the proxy's name, never the origin's.
+            crate::RelayAddr::Unspecified(p) => {
+                let bare = hclient_core::url::bare_host(host);
+                match bare.parse::<std::net::IpAddr>() {
+                    Ok(ip) => SocketAddr::new(ip, p),
+                    Err(_) => first_addr(ctx.resolve(bare, p).await)?,
+                }
+            }
+            crate::RelayAddr::Name(n, p) => first_addr(ctx.resolve(&n, p).await)?,
+        };
+        let local = if relay.is_ipv6() {
+            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0))
+        } else {
+            SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        };
+        let udp = ctx.bind_udp(local).map_err(Attempt::Unsupported)?;
+        let header = crate::socks5_udp::header_for(t.host, t.port).map_err(Attempt::Failed)?;
+        Ok(crate::BoxPath::new(crate::socks5_udp::Socks5Path::new(
+            control, udp, relay, header,
+        )))
+    }
+}
+
+/// Dial a proxy reached over the network, and run TLS to it where it
+/// asks for that.
+async fn reach_tcp<C: Dial>(
+    proxy: &Proxy<BoxHandshake>,
+    host: &str,
+    port: u16,
+    ctx: &C,
+) -> Result<C::Stream, Attempt> {
+    let s = ctx.connect(host, port).await.map_err(Attempt::Failed)?;
+    if !proxy.is_tls() {
+        return Ok(s);
+    }
+    // The proxy was not reached if its handshake failed — a certificate
+    // this transport does not trust is not the proxy declining the target.
+    // The certificate is checked against the address itself, which a
+    // bracketed v6 host names only inside its brackets.
+    ctx.connect_tls(s, crate::ProxyTls::new(hclient_core::url::bare_host(host)))
+        .await
+        .map_err(Attempt::Failed)
+}
+
+/// The first address a resolver answered, or a failure naming none.
+fn first_addr(r: Result<Vec<SocketAddr>, Error>) -> Result<SocketAddr, Attempt> {
+    r.map_err(Attempt::Failed)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            Attempt::Failed(Error::new(
+                hclient_core::error::ErrorKind::Resolve,
+                std::io::Error::other("the SOCKS5 relay's name resolved to no address"),
+            ))
+        })
 }
 
 // `Rules` is a `SendEgressFilter` so that an engine holding filters erased
@@ -245,6 +333,14 @@ impl EgressFilter for Rules {
 impl SendEgressFilter for Rules {
     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
         Box::pin(async move { self.open_stream(t, ctx).await.map(crate::erase) })
+    }
+
+    fn open_datagrams_send<'a>(
+        &'a self,
+        t: Target<'a>,
+        ctx: &'a BoxDial<'a>,
+    ) -> crate::BoxPathOpening<'a> {
+        Box::pin(self.open_datagrams(t, ctx))
     }
 }
 
@@ -732,5 +828,234 @@ mod tests {
                 .and_then(|s| s.downcast_ref::<ProxySpokeFirst>())
                 .is_some()
         );
+    }
+
+    /// A `Dial` for the datagram tests: every connect answers `reply`,
+    /// `bind_udp` records where it bound and lends a [`FakeUdp`], and
+    /// `resolve` records the name and answers `ip` at the port asked for.
+    struct UdpDial {
+        reply: Vec<u8>,
+        ip: std::net::IpAddr,
+        udp: crate::socks5_udp::fake::FakeUdp,
+        bound: Mutex<Vec<std::net::SocketAddr>>,
+        resolved: Mutex<Vec<String>>,
+    }
+    impl UdpDial {
+        fn new(reply: Vec<u8>, resolves_to: &str) -> Self {
+            let a: std::net::SocketAddr = resolves_to.parse().unwrap();
+            Self {
+                reply,
+                ip: a.ip(),
+                udp: crate::socks5_udp::fake::FakeUdp::default(),
+                bound: Mutex::default(),
+                resolved: Mutex::default(),
+            }
+        }
+        fn udp_sent_to(&self) -> Vec<std::net::SocketAddr> {
+            self.udp.sent().into_iter().map(|(to, _)| to).collect()
+        }
+        fn resolved(&self) -> Vec<String> {
+            self.resolved.lock().unwrap().clone()
+        }
+        fn bound(&self) -> Vec<std::net::SocketAddr> {
+            self.bound.lock().unwrap().clone()
+        }
+    }
+    impl Dial for UdpDial {
+        type Stream = Script;
+        fn connect<'a>(
+            &'a self,
+            _: &'a str,
+            _: u16,
+        ) -> impl Future<Output = Result<Script, Error>> + 'a {
+            std::future::ready(Ok(Script {
+                reply: [&[0x05u8, 0x00][..], &self.reply].concat(),
+                at: 0,
+                written: Arc::default(),
+            }))
+        }
+        fn connect_ipc<'a>(
+            &'a self,
+            _: &'a hclient_rt::IpcAddr,
+        ) -> impl Future<Output = Result<Script, Error>> + 'a {
+            std::future::ready(Err(Error::new(
+                hclient_core::error::ErrorKind::Unsupported,
+                io::Error::other("no ipc"),
+            )))
+        }
+        fn remaining(&self) -> Option<std::time::Duration> {
+            None
+        }
+        fn bind_udp(&self, local: std::net::SocketAddr) -> Result<crate::BoxUdp, Error> {
+            self.bound.lock().unwrap().push(local);
+            Ok(crate::BoxUdp::new(self.udp.clone()))
+        }
+        fn resolve<'a>(
+            &'a self,
+            host: &'a str,
+            port: u16,
+        ) -> impl Future<Output = Result<Vec<std::net::SocketAddr>, Error>> + 'a {
+            self.resolved.lock().unwrap().push(host.to_owned());
+            std::future::ready(Ok(vec![std::net::SocketAddr::new(self.ip, port)]))
+        }
+    }
+
+    #[test]
+    fn a_socks5_rule_with_udp_declares_datagrams_and_one_without_does_not() {
+        let t = Target::new("o", 443, true);
+        let with = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "px", 1080));
+        let Decision::Filtered(r) = with.route(&t) else {
+            panic!()
+        };
+        assert!(r.support.datagrams && r.support.stream);
+        let without = Rules::new().push(Proxy::new(Socks5::new(), "px", 1080));
+        let Decision::Filtered(r) = without.route(&t) else {
+            panic!()
+        };
+        assert!(!r.support.datagrams);
+    }
+
+    #[test]
+    fn open_datagrams_associates_binds_and_resolves_an_unspecified_relay_to_the_proxy() {
+        // The greeting reply is `UdpDial`'s own; this is the association's.
+        let dial = UdpDial::new(
+            vec![0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0x1f, 0x90],
+            "192.0.2.50:1080",
+        );
+        let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "px", 1080));
+        let path = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap();
+        crate::DatagramPath::try_send(&path, b"q").unwrap();
+        assert_eq!(
+            dial.udp_sent_to(),
+            ["192.0.2.50:8080".parse::<std::net::SocketAddr>().unwrap()]
+        );
+        assert_eq!(dial.resolved(), ["px"]);
+        assert_eq!(
+            dial.bound(),
+            ["0.0.0.0:0".parse::<std::net::SocketAddr>().unwrap()]
+        );
+    }
+
+    #[test]
+    fn a_proxy_that_does_not_relay_udp_is_unsupported() {
+        let dial = UdpDial::new(
+            vec![0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0],
+            "192.0.2.50:1080",
+        );
+        let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "px", 1080));
+        let a = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap_err();
+        assert!(a.permits_switch());
+        assert!(
+            dial.bound().is_empty(),
+            "no socket is bound for a proxy that refused"
+        );
+    }
+
+    #[test]
+    fn a_proxy_that_fails_the_association_is_failed_not_unsupported() {
+        let dial = UdpDial::new(
+            vec![0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0],
+            "192.0.2.50:1080",
+        );
+        let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "px", 1080));
+        let a = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap_err();
+        assert!(!a.permits_switch());
+    }
+
+    #[test]
+    fn a_named_relay_is_resolved_and_an_ip_relay_is_not() {
+        let named = UdpDial::new(
+            vec![
+                0x05, 0x00, 0x00, 0x03, 5, b'r', b'e', b'l', b'a', b'y', 0x1f, 0x90,
+            ],
+            "192.0.2.51:1",
+        );
+        let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "px", 1080));
+        let path = block(rules.open_datagrams(Target::new("o", 443, true), &named)).unwrap();
+        crate::DatagramPath::try_send(&path, b"q").unwrap();
+        assert_eq!(named.resolved(), ["relay"]);
+        assert_eq!(
+            named.udp_sent_to(),
+            ["192.0.2.51:8080".parse::<std::net::SocketAddr>().unwrap()]
+        );
+
+        let ip = UdpDial::new(
+            vec![
+                0x05, 0x00, 0x00, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x1f, 0x90,
+            ],
+            "192.0.2.51:1",
+        );
+        let path = block(rules.open_datagrams(Target::new("o", 443, true), &ip)).unwrap();
+        crate::DatagramPath::try_send(&path, b"q").unwrap();
+        assert!(ip.resolved().is_empty(), "an address needs no resolver");
+        assert_eq!(
+            ip.bound(),
+            ["[::]:0".parse::<std::net::SocketAddr>().unwrap()],
+            "a v6 relay is sent to from a v6 socket"
+        );
+    }
+
+    #[test]
+    fn an_unspecified_relay_behind_a_literal_proxy_needs_no_resolver() {
+        let dial = UdpDial::new(
+            vec![0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0x1f, 0x90],
+            "192.0.2.50:1",
+        );
+        let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "[2001:db8::1]", 1080));
+        let path = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap();
+        crate::DatagramPath::try_send(&path, b"q").unwrap();
+        assert!(dial.resolved().is_empty());
+        assert_eq!(
+            dial.udp_sent_to(),
+            ["[2001:db8::1]:8080"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()]
+        );
+    }
+
+    #[test]
+    fn a_rule_without_udp_opens_no_datagram_path() {
+        let dial = UdpDial::new(Vec::new(), "192.0.2.50:1080");
+        let rules = Rules::new().push(Proxy::new(Socks5::new(), "px", 1080));
+        let a = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap_err();
+        assert!(a.permits_switch());
+        assert!(dial.bound().is_empty());
+    }
+
+    #[test]
+    fn an_http_proxy_and_a_unix_rule_declare_no_datagrams() {
+        let t = Target::new("o", 443, true);
+        let http = Rules::new().push(Proxy::new(HttpConnect::new(), "px", 3128));
+        let Decision::Filtered(r) = http.route(&t) else {
+            panic!()
+        };
+        assert!(!r.support.datagrams);
+        let unix = Rules::new().unix(hclient_rt::IpcAddr::Unix("/tmp/s".into()));
+        let Decision::Filtered(r) = unix.route(&t) else {
+            panic!()
+        };
+        assert!(!r.support.datagrams);
+    }
+
+    #[test]
+    fn a_socks5_proxy_over_ipc_declares_no_datagrams() {
+        // The association's relay is a UDP address; a proxy reached over
+        // a same-machine socket has none to offer from here.
+        let r = Rules::new().push_ipc(crate::IpcProxy::new(
+            Socks5::new().with_udp(),
+            hclient_rt::IpcAddr::unix("/run/s"),
+        ));
+        let Decision::Filtered(route) = r.route(&t("o", 443, true)) else {
+            panic!()
+        };
+        assert!(!route.support.datagrams);
+    }
+
+    #[test]
+    fn a_boxed_handshake_forwards_its_association() {
+        let h: BoxHandshake = Box::new(Socks5::new().with_udp());
+        assert!(h.associate().is_some());
+        let h: BoxHandshake = Box::new(Socks5::new());
+        assert!(h.associate().is_none());
     }
 }

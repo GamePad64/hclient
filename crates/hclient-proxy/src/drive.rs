@@ -108,7 +108,7 @@ where
 // `HyperIo` would give `futures_util`'s helpers, but it is that crate's
 // private adapter and these two are shorter than moving it would be.
 
-async fn write_all<S: Write + Unpin>(io: &mut S, mut buf: &[u8]) -> Result<(), Error> {
+pub(crate) async fn write_all<S: Write + Unpin>(io: &mut S, mut buf: &[u8]) -> Result<(), Error> {
     while !buf.is_empty() {
         let n = poll_fn(|cx| Pin::new(&mut *io).poll_write(cx, buf))
             .await
@@ -127,7 +127,10 @@ async fn write_all<S: Write + Unpin>(io: &mut S, mut buf: &[u8]) -> Result<(), E
 /// before the protocols became state machines: how many bytes a frame
 /// needs is now the handshake's question, and a driver that decided it
 /// would be a second copy of every protocol's framing.
-async fn read_some<S: Read + Unpin>(io: &mut S, buf: &mut BytesMut) -> Result<(), Error> {
+pub(crate) async fn read_some<S: Read + Unpin>(
+    io: &mut S,
+    buf: &mut BytesMut,
+) -> Result<(), Error> {
     let at = buf.len();
     buf.resize(at + 4096, 0);
     let n = poll_fn(|cx| Pin::new(&mut *io).poll_read(cx, &mut buf[at..]))

@@ -8,7 +8,14 @@
 //! datagrams are actually relayed, which may be the proxy's own address
 //! rather than the one asked for.
 
+use std::collections::VecDeque;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
+
+use hclient_rt::UdpDatagrams as _;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::error::{Error, ErrorKind};
@@ -290,10 +297,6 @@ fn parse_addr(b: &[u8]) -> AddrParse {
 /// `ATYP=0x03`, so the origin's name reaches the proxy rather than being
 /// resolved locally, the same rule [`Socks5::begin`](crate::Socks5::begin)
 /// follows for CONNECT.
-#[allow(
-    dead_code,
-    reason = "used by the SOCKS5 datagram path, which the next change adds"
-)]
 pub(crate) fn header_for(host: &str, port: u16) -> Result<Bytes, Error> {
     let host = hclient_core::url::bare_host(host);
     if host.len() > 255 {
@@ -318,10 +321,6 @@ pub(crate) fn header_for(host: &str, port: u16) -> Result<Bytes, Error> {
 
 /// Write a relayed datagram: `prefix` (a §7 header, from [`header_for`])
 /// followed by `payload`, into `out` — replacing whatever `out` held.
-#[allow(
-    dead_code,
-    reason = "used by the SOCKS5 datagram path, which the next change adds"
-)]
 pub(crate) fn encode_datagram(prefix: &[u8], payload: &[u8], out: &mut Vec<u8>) {
     out.clear();
     out.extend_from_slice(prefix);
@@ -332,10 +331,6 @@ pub(crate) fn encode_datagram(prefix: &[u8], payload: &[u8], out: &mut Vec<u8>) 
 /// drops: a fragment (`FRAG != 0`, which RFC 1928 lets an implementation
 /// refuse), a reserved field that is not zero, or a header that does not
 /// parse.
-#[allow(
-    dead_code,
-    reason = "used by the SOCKS5 datagram path, which the next change adds"
-)]
 pub(crate) fn decode_datagram(d: &[u8]) -> Option<&[u8]> {
     if d.len() < 4 || d[0] != 0 || d[1] != 0 || d[2] != 0 {
         return None;
@@ -343,6 +338,309 @@ pub(crate) fn decode_datagram(d: &[u8]) -> Option<&[u8]> {
     match parse_addr(&d[3..]) {
         AddrParse::Ready(_, n) => d.get(3 + n..),
         AddrParse::NeedMore | AddrParse::Invalid(_) => None,
+    }
+}
+
+/// Run an association over `io`, the control connection, until the proxy
+/// names its relay.
+pub(crate) async fn drive_associate<S: crate::Io>(
+    io: &mut S,
+    a: &mut dyn Associate,
+) -> Result<RelayAddr, AssociateError> {
+    crate::drive::write_all(io, &a.begin())
+        .await
+        .map_err(AssociateError::Failed)?;
+    let mut buf = BytesMut::new();
+    loop {
+        match a.advance(&mut buf)? {
+            AssociateStep::Associated(r) => return Ok(r),
+            AssociateStep::Write(b) => crate::drive::write_all(io, &b)
+                .await
+                .map_err(AssociateError::Failed)?,
+            AssociateStep::NeedMore => crate::drive::read_some(io, &mut buf)
+                .await
+                .map_err(AssociateError::Failed)?,
+        }
+    }
+}
+
+/// A UDP payload that fits an ordinary 1500-byte Ethernet MTU under IPv6.
+const UDP_PAYLOAD: usize = 1452;
+
+/// The longest §7 header a relay can put in front of a payload:
+/// `RSV FRAG ATYP`, a length byte and a 255-byte name, and a port.
+const LONGEST_HEADER: usize = 3 + 1 + 1 + 255 + 2;
+
+/// What one segment of a receive is given room for.
+const SEGMENT: usize = UDP_PAYLOAD + LONGEST_HEADER;
+
+/// A datagram path through a SOCKS5 relay.
+///
+/// Holds the control connection for as long as the association lives:
+/// RFC 1928 ends the association when that connection closes, so the path
+/// watches it and ends too.
+pub(crate) struct Socks5Path<S> {
+    control: Mutex<S>,
+    udp: crate::BoxUdp,
+    relay: SocketAddr,
+    header: Bytes,
+    max: usize,
+    /// The outgoing datagram, header and payload, reused across sends.
+    scratch: Mutex<Vec<u8>>,
+    /// The receive buffer, room for `segments` datagrams, reused.
+    raw: Mutex<Vec<u8>>,
+    /// Payloads already received and decoded but not yet handed over: a
+    /// receive coalesced by GRO carries several, and `poll_recv` hands
+    /// over one.
+    queued: Mutex<VecDeque<Vec<u8>>>,
+}
+
+impl<S> std::fmt::Debug for Socks5Path<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Socks5Path")
+            .field("relay", &self.relay)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S> Socks5Path<S> {
+    pub(crate) fn new(control: S, udp: crate::BoxUdp, relay: SocketAddr, header: Bytes) -> Self {
+        let segments = udp.support().max_recv_segments.max(1);
+        Self {
+            control: Mutex::new(control),
+            max: UDP_PAYLOAD.saturating_sub(header.len()),
+            udp,
+            relay,
+            header,
+            scratch: Mutex::new(Vec::new()),
+            raw: Mutex::new(vec![0; SEGMENT * segments]),
+            queued: Mutex::new(VecDeque::new()),
+        }
+    }
+}
+
+impl<S> crate::DatagramPath for Socks5Path<S>
+where
+    // The path is `Send + Sync`, and the control connection is held in it
+    // for the association's life; `Mutex<S>` is `Sync` for any `Send` `S`.
+    S: crate::Io + Send + 'static, // send-bound-exception: amendment-C16
+{
+    fn try_send(&self, d: &[u8]) -> io::Result<()> {
+        if d.len() > self.max {
+            return Err(crate::datagram::too_big(d.len(), self.max));
+        }
+        let mut out = self.scratch.lock().expect("scratch mutex");
+        encode_datagram(&self.header, d, &mut out);
+        self.udp
+            .try_send(&hclient_rt::Datagrams::new(self.relay, &out))
+    }
+
+    fn poll_writable(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.udp.poll_writable(cx)
+    }
+
+    fn poll_recv(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+        let mut queued = self.queued.lock().expect("queue mutex");
+        if let Some(p) = queued.pop_front() {
+            return Poll::Ready(Ok(copy_out(&p, buf)));
+        }
+        // The control connection first: the proxy ends the association by
+        // closing it, and a path that only watched UDP would wait for the
+        // QUIC stack's idle timeout to learn that. Nothing follows the
+        // proxy's reply on that connection, so a byte is as final as an
+        // end of stream or an error.
+        {
+            let mut c = self.control.lock().expect("control mutex");
+            let mut probe = [0u8; 1];
+            if let Poll::Ready(r) = Pin::new(&mut *c).poll_read(cx, &mut probe) {
+                tracing::trace!("proxy: socks5 association's control connection answered {r:?}");
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "the SOCKS5 proxy closed the association's control connection",
+                )));
+            }
+        }
+        let mut raw = self.raw.lock().expect("receive buffer mutex");
+        loop {
+            let mut meta = [hclient_rt::RecvMeta::default()];
+            let n = {
+                let mut bufs = [io::IoSliceMut::new(&mut raw)];
+                std::task::ready!(self.udp.poll_recv(cx, &mut bufs, &mut meta))?
+            };
+            let m = &meta[0];
+            if n == 0 || m.addr != self.relay {
+                continue;
+            }
+            // A GRO receive is several datagrams `stride` apart; `0`, or a
+            // stride at least `len`, is one.
+            let stride = if m.stride == 0 || m.stride >= m.len {
+                m.len
+            } else {
+                m.stride
+            };
+            queued.extend(
+                raw[..m.len]
+                    .chunks(stride.max(1))
+                    .filter_map(decode_datagram)
+                    .map(<[u8]>::to_vec),
+            );
+            if let Some(p) = queued.pop_front() {
+                return Poll::Ready(Ok(copy_out(&p, buf)));
+            }
+        }
+    }
+
+    fn max_datagram_size(&self) -> usize {
+        self.max
+    }
+}
+
+/// Copy a payload into the caller's buffer, truncating where it is short.
+fn copy_out(p: &[u8], buf: &mut [u8]) -> usize {
+    let k = p.len().min(buf.len());
+    buf[..k].copy_from_slice(&p[..k]);
+    k
+}
+
+/// Test doubles shared with `rules.rs`'s tests: a UDP socket over an
+/// in-memory queue, and a control connection that stays open or is closed.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::collections::VecDeque;
+    use std::io;
+    use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll};
+
+    use hclient_rt::{Datagrams, RecvMeta, UdpDatagrams, UdpSupport};
+
+    #[derive(Debug, Default)]
+    struct Inner {
+        sent: Mutex<Vec<(SocketAddr, Vec<u8>)>>,
+        /// Each receive: who sent it, the bytes, and the GRO stride.
+        inbox: Mutex<VecDeque<(SocketAddr, Vec<u8>, usize)>>,
+    }
+
+    /// A UDP socket whose sends are kept and whose receives are queued in
+    /// advance. Clones share one socket, so a test keeps a handle to what
+    /// a path owns.
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct FakeUdp {
+        inner: Arc<Inner>,
+        segments: usize,
+    }
+
+    impl FakeUdp {
+        /// A socket reporting GRO of up to `segments` datagrams per receive.
+        pub(crate) fn with_gro(segments: usize) -> Self {
+            Self {
+                segments,
+                ..Self::default()
+            }
+        }
+
+        pub(crate) fn sent(&self) -> Vec<(SocketAddr, Vec<u8>)> {
+            self.inner.sent.lock().unwrap().clone()
+        }
+
+        pub(crate) fn push_from(&self, from: &str, d: &[u8]) {
+            self.inner
+                .inbox
+                .lock()
+                .unwrap()
+                .push_back((from.parse().unwrap(), d.to_vec(), 0));
+        }
+
+        /// Several equal-sized datagrams coalesced into one receive, the
+        /// way GRO hands them over.
+        pub(crate) fn push_coalesced(&self, from: &str, segments: &[&[u8]]) {
+            let stride = segments[0].len();
+            assert!(
+                segments[..segments.len() - 1]
+                    .iter()
+                    .all(|s| s.len() == stride)
+            );
+            self.inner.inbox.lock().unwrap().push_back((
+                from.parse().unwrap(),
+                segments.concat(),
+                stride,
+            ));
+        }
+    }
+
+    impl UdpDatagrams for FakeUdp {
+        fn try_send(&self, t: &Datagrams<'_>) -> io::Result<()> {
+            self.inner
+                .sent
+                .lock()
+                .unwrap()
+                .push((t.destination, t.contents.to_vec()));
+            Ok(())
+        }
+        fn poll_writable(&self, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_recv(
+            &self,
+            _: &mut Context<'_>,
+            bufs: &mut [io::IoSliceMut<'_>],
+            meta: &mut [RecvMeta],
+        ) -> Poll<io::Result<usize>> {
+            let Some((from, d, stride)) = self.inner.inbox.lock().unwrap().pop_front() else {
+                return Poll::Pending;
+            };
+            let n = d.len().min(bufs[0].len());
+            bufs[0][..n].copy_from_slice(&d[..n]);
+            meta[0] = RecvMeta::new(from, n, stride);
+            Poll::Ready(Ok(1))
+        }
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok("0.0.0.0:0".parse().unwrap())
+        }
+        fn support(&self) -> UdpSupport {
+            UdpSupport::NONE.max_recv_segments(self.segments.max(1))
+        }
+    }
+
+    /// A control connection: open reads pend, closed reads end.
+    #[derive(Debug)]
+    pub(crate) struct Control {
+        pub(crate) open: bool,
+    }
+
+    impl futures_io::AsyncRead for Control {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            if self.open {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(0))
+            }
+        }
+    }
+    impl futures_io::AsyncWrite for Control {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            b: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(b.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+    impl hclient_rt::Shutdown for Control {
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
     }
 }
 
@@ -508,5 +806,106 @@ mod tests {
             ),
             "{e:?}"
         );
+    }
+
+    mod path {
+        use std::task::{Context, Poll, Waker};
+
+        use super::super::fake::{Control, FakeUdp};
+        use super::super::{Socks5Path, header_for};
+        use crate::{BoxUdp, DatagramPath};
+
+        fn cx() -> Context<'static> {
+            Context::from_waker(Waker::noop())
+        }
+
+        fn open_control() -> Control {
+            Control { open: true }
+        }
+
+        fn closed_control() -> Control {
+            Control { open: false }
+        }
+
+        fn over(relay: &str, control: Control, udp: FakeUdp) -> (Socks5Path<Control>, FakeUdp) {
+            let path = Socks5Path::new(
+                control,
+                BoxUdp::new(udp.clone()),
+                relay.parse().unwrap(),
+                header_for("origin.test", 443).unwrap(),
+            );
+            (path, udp)
+        }
+
+        fn path_over_fake(relay: &str, control: Control) -> (Socks5Path<Control>, FakeUdp) {
+            over(relay, control, FakeUdp::default())
+        }
+
+        #[test]
+        fn a_path_prefixes_the_header_and_sends_to_the_relay() {
+            let (path, udp) = path_over_fake("10.0.0.7:8080", open_control());
+            path.try_send(b"quic").unwrap();
+            let (to, d) = udp.sent()[0].clone();
+            assert_eq!(to, "10.0.0.7:8080".parse().unwrap());
+            assert_eq!(&d[..4], &[0, 0, 0, 0x03]);
+            assert!(d.ends_with(b"quic"));
+        }
+
+        #[test]
+        fn a_datagram_not_from_the_relay_is_dropped() {
+            let (path, udp) = path_over_fake("10.0.0.7:8080", open_control());
+            udp.push_from("10.0.0.8:8080", &[0, 0, 0, 1, 1, 2, 3, 4, 0, 80, b'x']);
+            udp.push_from("10.0.0.7:8080", &[0, 0, 0, 1, 1, 2, 3, 4, 0, 80, b'y']);
+            let mut buf = [0u8; 8];
+            let Poll::Ready(Ok(n)) = path.poll_recv(&mut cx(), &mut buf) else {
+                panic!()
+            };
+            assert_eq!(&buf[..n], b"y");
+        }
+
+        #[test]
+        fn a_closed_control_stream_is_a_path_error() {
+            let (path, _udp) = path_over_fake("10.0.0.7:8080", closed_control());
+            let mut buf = [0u8; 8];
+            let Poll::Ready(Err(e)) = path.poll_recv(&mut cx(), &mut buf) else {
+                panic!("must not pend")
+            };
+            assert_eq!(e.kind(), std::io::ErrorKind::ConnectionAborted);
+        }
+
+        #[test]
+        fn socks5_path_refuses_an_oversized_datagram() {
+            let (path, _udp) = path_over_fake("10.0.0.7:8080", open_control());
+            let max = path.max_datagram_size();
+            assert_eq!(
+                path.try_send(&vec![0; max + 1]).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+
+        #[test]
+        fn a_coalesced_receive_is_handed_over_one_datagram_at_a_time() {
+            // GRO: two relayed datagrams in one buffer, `stride` apart.
+            // Read as one they would be glued together — the second
+            // header inside the first payload.
+            let (path, udp) = over("10.0.0.7:8080", open_control(), FakeUdp::with_gro(4));
+            udp.push_coalesced(
+                "10.0.0.7:8080",
+                &[
+                    &[0, 0, 0, 1, 1, 2, 3, 4, 0, 80, b'a', b'1'],
+                    &[0, 0, 0, 1, 1, 2, 3, 4, 0, 80, b'b', b'2'],
+                ],
+            );
+            let mut buf = [0u8; 64];
+            let Poll::Ready(Ok(n)) = path.poll_recv(&mut cx(), &mut buf) else {
+                panic!("first")
+            };
+            assert_eq!(&buf[..n], b"a1");
+            let Poll::Ready(Ok(n)) = path.poll_recv(&mut cx(), &mut buf) else {
+                panic!("second, from the queue")
+            };
+            assert_eq!(&buf[..n], b"b2");
+            assert!(path.poll_recv(&mut cx(), &mut buf).is_pending());
+        }
     }
 }
