@@ -126,6 +126,10 @@ pub struct Pair {
     /// [`Pair::quic_attempted`] cannot be: a hole has no endpoint, so it
     /// accepts nothing however many `ClientHello`s it swallows.
     quic_datagrams: Arc<AtomicUsize>,
+    /// The source address of every QUIC connection attempt the endpoint
+    /// saw, in order — the only witness of *who* reached the origin, which
+    /// is what a relay test asserts on.
+    quic_peers: Arc<Mutex<Vec<SocketAddr>>>,
     _threads: (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>),
 }
 
@@ -162,6 +166,21 @@ impl Pair {
     }
     pub fn quic_datagrams(&self) -> usize {
         self.quic_datagrams.load(Ordering::SeqCst)
+    }
+    /// Every distinct address a QUIC connection attempt came from, in the
+    /// order they were first seen.
+    ///
+    /// # Panics
+    ///
+    /// If the mutex is poisoned.
+    pub fn quic_peers(&self) -> Vec<SocketAddr> {
+        let mut seen = Vec::new();
+        for p in self.quic_peers.lock().expect("quic peers").iter() {
+            if !seen.contains(p) {
+                seen.push(*p);
+            }
+        }
+        seen
     }
     pub fn addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.port))
@@ -279,6 +298,7 @@ pub fn start_with(quic: Quic, tcp: Tcp) -> Pair {
     let quic_answered = Arc::new(AtomicUsize::new(0));
     let quic_attempted = Arc::new(AtomicUsize::new(0));
     let quic_datagrams = Arc::new(AtomicUsize::new(0));
+    let quic_peers: Arc<Mutex<Vec<SocketAddr>>> = Arc::default();
     let alt_svc: AltSvc = Arc::default();
 
     let tcp_thread = start_tcp(
@@ -320,6 +340,7 @@ pub fn start_with(quic: Quic, tcp: Tcp) -> Pair {
             key_der,
             quic_answered.clone(),
             quic_attempted.clone(),
+            quic_peers.clone(),
             alt_svc.clone(),
             quic,
         ),
@@ -334,6 +355,7 @@ pub fn start_with(quic: Quic, tcp: Tcp) -> Pair {
         quic_answered,
         quic_attempted,
         quic_datagrams,
+        quic_peers,
         _threads: (tcp_thread, quic_thread),
     }
 }
@@ -451,12 +473,17 @@ fn start_tcp(
 /// `Endpoint::new` rather than `Endpoint::server` because the socket was
 /// bound outside — it had to be, since finding a port free on both
 /// protocols means holding both while trying.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a counter or a setting the pair shares with this thread; a struct of them would be one more type for a private helper with one caller"
+)]
 fn start_quic(
     socket: std::net::UdpSocket,
     cert: rustls::pki_types::CertificateDer<'static>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
     answered: Arc<AtomicUsize>,
     attempted: Arc<AtomicUsize>,
+    peers: Arc<Mutex<Vec<SocketAddr>>>,
     alt_svc: AltSvc,
     mode: Quic,
 ) -> std::thread::JoinHandle<()> {
@@ -498,6 +525,10 @@ fn start_quic(
                 // attempt — which is the whole reason this counter exists
                 // beside `quic_answered`.
                 attempted.fetch_add(1, Ordering::SeqCst);
+                peers
+                    .lock()
+                    .expect("quic peers")
+                    .push(incoming.remote_address());
                 let (answered, alt_svc) = (answered.clone(), alt_svc.clone());
                 tokio::spawn(async move {
                     let Ok(conn) = incoming.await else { return };
