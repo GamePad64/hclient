@@ -2732,7 +2732,12 @@ and the first build spent it twice.** Review caught it. The new test
 `opening_the_path_and_the_quic_handshake_spend_one_connect_bound`
 measured **1.80 s against a 1 s bound** before the fix. The path's
 opening now runs under what is left of the bound, and the handshake under
-what is left after that — the stream path's rule.
+what is left after that — the stream path's rule. **A switch to the
+stream after that paid the path's time twice**, because the request came
+back still carrying the narrowed bound and the switch took everything
+since the start off it again; it is handed the caller's bound back now,
+and `a_fallback_to_the_stream_after_quic_over_a_slow_path_gets_what_is_left_once`
+failed with `ConnectTimedOut(696ms)` before that.
 
 **The switch to a stream is remembered, and it reuses `over_quic`'s TCP
 tail.** Three things switch the same unsent request to the filter's
@@ -2745,7 +2750,12 @@ stream and record the origin in `H3Failures` with its TTL:
 The switch goes through `after_quic_failed`, the function the direct
 fallback and the race already share. So there is one spelling of the
 budget rule, not three. Nothing was sent, so this is not a retry in
-`RetryKind`'s sense. `RequireVersion(HTTP_3)` does not switch.
+`RetryKind`'s sense. `RequireVersion(HTTP_3)` does not switch. **A
+demand for any other version takes the stream before the advertisement
+is asked**, as on the direct path; it used to be routed onto QUIC by an
+`Alt-Svc`, refused by the arm, and recorded against the origin in
+`H3Failures`, so one `HTTP_11` demand turned HTTP/3 off for every request
+after it.
 `Attempt::Failed` is final: a proxy that could not be reached will not be
 reached by asking for a stream instead.
 
@@ -2782,7 +2792,11 @@ signature that is noisier than what it needs to say.
 `hclient_proxy::system` never turns it on. A rule without it declares
 `STREAM` and behaves exactly as before. A rule learns of UDP through
 `Handshake::associate`, defaulting to `None`, so a foreign protocol owes
-nothing. The association is sans-io like the rest of the crate: greeting,
+nothing. **`Associate` is SOCKS5's alone, and sealed**: the rules frame
+every path an association opens with §7's header, so an association for
+another protocol could only open a path framed wrongly. A foreign
+`Handshake` answers `None` or forwards a wrapped SOCKS5 one, and a
+`compile_fail` doctest pins the seal. The association is sans-io like the rest of the crate: greeting,
 RFC 1929 auth, then `CMD=0x03`.
 
 - `REP=0x07` (command not supported) is `Attempt::Unsupported`, which
@@ -2801,7 +2815,9 @@ RFC 1929 auth, then `CMD=0x03`.
   `egress-datagram` witness's own path still ignores it, which a
   loopback run does not show.
 - A datagram not from the relay's address is dropped. So is one with
-  `FRAG != 0`, since fragmentation is deliberately not done.
+  `FRAG != 0`, since fragmentation is deliberately not done. One poll
+  drops at most 64 before it wakes itself and answers `Pending`, so a
+  flood of off-path datagrams cannot hold the executor's thread.
 
 Against a real relay fixture and a quinn origin, the origin sees only the
 relay, and the relay is handed the origin **by name**. The test's
@@ -2993,8 +3009,6 @@ point:
 
 - Nothing is remembered between tunnels to a proxy with no HTTP/3, so
   each `Http3ThenHttp2` tunnel pays up to its 1.5 s cap.
-- A flood of off-path datagrams keeps one `Socks5Path::poll_recv`
-  looping, since there is no per-poll budget.
 - An unspecified relay behind a named proxy resolves the name fresh, and
   may land on a different address from the one the control connection
   reached.
