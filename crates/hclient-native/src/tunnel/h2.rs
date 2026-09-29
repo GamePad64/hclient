@@ -62,7 +62,30 @@ where
     L::Stream<BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
 {
     let tls_req = TlsRequest::new(req.tls.server_name, ALPN).identity(req.tls.identity);
-    let (stream, _info) = tls.connect(io, tls_req).await?;
+    let (stream, info) = tls.connect(io, tls_req).await?;
+    // Offering `h2` is not the proxy choosing it: an HTTP/1.1 proxy that
+    // ignores ALPN completes the handshake all the same, and a preface
+    // written into that connection is a protocol error on its side rather
+    // than a tunnel on ours. A backend that cannot read the selection back
+    // answers `None` here too, and is refused for the same reason.
+    if info.alpn.as_deref() != Some(b"h2".as_slice()) {
+        let got = info.alpn.as_deref().map_or_else(
+            || "no ALPN".to_owned(),
+            |p| format!("ALPN {:?}", String::from_utf8_lossy(p)),
+        );
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            io::Error::other(format!(
+                "an HTTP/2 tunnel was asked for and the proxy's TLS handshake \
+                 negotiated {got}{}, not `h2`",
+                if tls.reports_alpn() {
+                    ""
+                } else {
+                    " (this TLS backend does not report the selection)"
+                }
+            )),
+        ));
+    }
     let (mut client, mut conn) = h2::client::Builder::new()
         .handshake::<_, Bytes>(TokioIo::new(stream))
         .await

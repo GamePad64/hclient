@@ -28,7 +28,14 @@ pub enum H2Proxy {
         /// Whether RFC 8441's setting is sent.
         extended: bool,
     },
+    /// Complete TLS with no ALPN at all — an HTTP/1.1 proxy that knows
+    /// nothing of HTTP/2 — then keep whatever the client sends first, up
+    /// to an HTTP/2 connection preface's length, and close.
+    NoAlpn,
 }
+
+/// RFC 9113 §3.4's client connection preface.
+pub const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// A request as the proxy decoded it.
 #[derive(Debug, Clone, Default)]
@@ -48,6 +55,9 @@ pub struct Proxy {
     cert: rustls::pki_types::CertificateDer<'static>,
     seen: Arc<Mutex<Option<Seen>>>,
     accepted: Arc<std::sync::atomic::AtomicUsize>,
+    /// [`H2Proxy::NoAlpn`]: what the client sent after TLS, and whether
+    /// the proxy has finished reading it.
+    received: Arc<Mutex<(Vec<u8>, bool)>>,
 }
 
 impl Proxy {
@@ -78,6 +88,17 @@ impl Proxy {
     pub fn accepted(&self) -> usize {
         self.accepted.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// [`H2Proxy::NoAlpn`]: what the client sent after the TLS handshake,
+    /// once the proxy has stopped reading — the client closed, or a
+    /// preface's worth arrived. `None` while it is still reading.
+    pub fn received(&self) -> Option<Vec<u8>> {
+        let r = self
+            .received
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        r.1.then(|| r.0.clone())
+    }
 }
 
 /// Start a proxy. Returns once it is bound.
@@ -86,7 +107,10 @@ impl Proxy {
 ///
 /// If no port can be bound on loopback.
 pub fn h2_proxy(mode: H2Proxy) -> Proxy {
-    let H2Proxy::Echo { extended } = mode;
+    let (extended, alpn) = match mode {
+        H2Proxy::Echo { extended } => (extended, true),
+        H2Proxy::NoAlpn => (false, false),
+    };
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
         .expect("rcgen can always make a self-signed cert");
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
@@ -96,7 +120,9 @@ pub fn h2_proxy(mode: H2Proxy) -> Proxy {
         .with_no_client_auth()
         .with_single_cert(vec![cert_der.clone()], key_der)
         .expect("the cert and key were made together");
-    tls.alpn_protocols = vec![b"h2".to_vec()];
+    if alpn {
+        tls.alpn_protocols = vec![b"h2".to_vec()];
+    }
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -104,7 +130,9 @@ pub fn h2_proxy(mode: H2Proxy) -> Proxy {
     listener.set_nonblocking(true).expect("nonblocking");
     let seen: Arc<Mutex<Option<Seen>>> = Arc::new(Mutex::new(None));
     let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let received: Arc<Mutex<(Vec<u8>, bool)>> = Arc::default();
     let (seen_t, accepted_t) = (Arc::clone(&seen), Arc::clone(&accepted));
+    let received_t = Arc::clone(&received);
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -119,10 +147,24 @@ pub fn h2_proxy(mode: H2Proxy) -> Proxy {
                 };
                 accepted_t.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let (acceptor, seen) = (acceptor.clone(), Arc::clone(&seen_t));
+                let received = Arc::clone(&received_t);
                 tokio::spawn(async move {
-                    let Ok(tls) = acceptor.accept(sock).await else {
+                    let Ok(mut tls) = acceptor.accept(sock).await else {
                         return;
                     };
+                    if !alpn {
+                        use tokio::io::AsyncReadExt as _;
+                        let mut buf = [0u8; 64];
+                        loop {
+                            let n = tls.read(&mut buf).await.unwrap_or(0);
+                            let mut r = received.lock().unwrap();
+                            r.0.extend_from_slice(&buf[..n]);
+                            if n == 0 || r.0.len() >= PREFACE.len() {
+                                r.1 = true;
+                                return;
+                            }
+                        }
+                    }
                     let mut b = h2::server::Builder::new();
                     if extended {
                         b.enable_connect_protocol();
@@ -144,6 +186,7 @@ pub fn h2_proxy(mode: H2Proxy) -> Proxy {
         cert: cert_der,
         seen,
         accepted,
+        received,
     }
 }
 

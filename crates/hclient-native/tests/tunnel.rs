@@ -74,6 +74,38 @@ async fn a_plain_connect_over_h2_carries_bytes_both_ways() {
     assert_eq!(seen.protocol, None);
 }
 
+/// A TLS proxy that negotiates no `h2` is refused before a byte of HTTP/2
+/// is written: speaking the preface into a connection whose peer chose
+/// otherwise is a protocol error the proxy would see, not a tunnel.
+#[tokio::test]
+async fn a_tls_proxy_that_does_not_select_h2_is_refused_before_the_preface() {
+    let proxy = h2_proxy(H2Proxy::NoAlpn);
+    let native = native_with_egress_trusting(&proxy);
+    let dial = hclient_native::testing::dial_for(&native);
+    let err = bounded(dial.connect_tunnel(req(proxy.port(), "origin.test:443")))
+        .await
+        .unwrap_err();
+    assert!(matches!(err.kind(), ErrorKind::Unsupported), "{err:?}");
+    assert!(format!("{err}{err:?}").contains("no ALPN"), "{err:?}");
+    drop(dial);
+    drop(native);
+    // The proxy reads until the client closes (or a preface arrives), so
+    // what it holds afterwards is everything that was sent.
+    let got = bounded(async {
+        loop {
+            if let Some(got) = proxy.received() {
+                return got;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        !got.starts_with(&h2_proxy::PREFACE[..4]),
+        "the proxy saw {got:?}"
+    );
+}
+
 /// Past one flow-control window both ways, and ended by a half-close: the
 /// echo completes only if the reader releases capacity, and `read_to_end`
 /// returns only if the proxy saw `END_STREAM` and answered with its own.
