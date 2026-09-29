@@ -8958,6 +8958,103 @@ own bounds keep their spelled-out form — equivalent, and not worth a
 diff in a frozen surface; the internal ones in `native` and the TLS
 backends say `Io`.
 
+### `hclient-proxy` was audited a third time, and the sharpest finding was a default
+
+The datagram seam arrived after the second audit, so a third one read it
+with the same instruments — a consumer written outside the workspace,
+the rustdoc surface item by item, and a mutation sweep — and the crate is
+**`0.1.0`** at the end of it, with every requirement naming it moved to
+match. Not published: the number in the manifest is an intention, and
+the index is where it becomes a promise.
+
+**`SendEgressFilter::open_datagrams_send` had a default, and the default
+was a trap.** It refused, as `EgressFilter::open_datagrams`' default
+does, so a filter that implemented `open_datagrams` and forgot the
+one-line forward compiled without a word — and the erased path, which is
+the only one an external filter is ever called through, never reached
+the method the filter had written. The request went over a stream
+instead, and the failure was recorded in `H3Failures`, so HTTP/3 was off
+for that origin until the memory expired. The outside consumer did
+exactly that, on purpose, and nothing warned. **A default that answers
+differently from the method it mirrors is a defect a type checker cannot
+see**, so there is no default: every implementation writes
+`Box::pin(self.open_datagrams(t, ctx))`, and a `compile_fail` doctest pins
+that leaving it out is `E0046` — which it did not, before, and the
+doctest failing on the old tree is the red line.
+
+**The sealed `Associate` was four public items for one value.** A
+public trait nobody outside could implement, a public step enum, a
+public relay address and a public error — each nameable and none of them
+usable, because the only implementation was ours. What a foreign
+`Handshake` actually needs is to carry the association of a SOCKS5
+handshake it wraps, so `Handshake::associate` answers
+`Option<Association>`, one opaque struct with no public constructor and
+no public method, and the four are crate-private. The seal went with the
+trait, and its intent survives as a `compile_fail` doctest: a foreign
+crate cannot build an `Association`. A test outside the crate wraps
+`Socks5`, forwards the value, and watches `Rules` declare datagrams for
+it.
+
+**The refusals a filter reports had no constructors.** `ProxyRefused`,
+`Socks4Refused`, `Socks5Refused` and `ProxySpokeFirst` are
+`#[non_exhaustive]` with public fields — handed back and read, which is
+the rule's third answer — and that left a filter outside the crate able
+to read one and never build one, so a third-party proxy's refusal had to
+be a second vocabulary. The masque experiment had minted exactly that,
+`Refused { status }`, and the second audit named the gap and did not
+close it. Each has a `const fn new` now. `Socks5HandshakeError` took the
+`PartialEq` its SOCKS4 sibling already had.
+
+**A plain CONNECT defaults to HTTP/2.** `TunnelRequest::new` asked over
+HTTP/3 then HTTP/2 whatever the request was, and a plain CONNECT cannot
+go over the HTTP/3 client this family is built on, so the default named
+a version the transport would skip. It is HTTP/2 for a plain CONNECT and
+HTTP/3 then HTTP/2 once a `protocol` makes it extended — which is what
+an HTTP/3 tunnel is for — and `version` fixes it in either order, pinned
+by a private flag rather than by the order of the builder calls.
+
+**The four enums a filter builds and a transport matches took one
+rule**, and it is the one this file already states for errors crossing a
+seam: `#[non_exhaustive]` exactly where the wildcard arm has an honest
+right-hand side. `TunnelVersion` has one — refuse, as a transport lending
+no tunnels does, which a filter already reads as *try another way* — so
+it keeps the attribute, and `hclient-native`'s arm that read an unknown
+version as HTTP/3 then HTTP/2 is a refusal now. `Decision`, `Opened` and
+`RequestForm` have none: a wildcard could only send a filtered request
+direct, carry a stream it cannot read, or write a head the proxy reads
+differently, so a new variant must be a compile error in every
+transport. Each type says which, and why. `Attempt` took the attribute
+for a different reason — a transport reads it only through
+`permits_switch` and `into_error`, which answer for every variant.
+
+**The rest was the surface narrowing to what is used.** `DynHandshake`
+and `BoxHandshake` are crate-private, nothing outside naming either; the
+two `#[doc(hidden)] testing` modules are behind a `test-util` feature
+that `hclient-native` and the masque experiment enable in their
+dev-dependencies, so the stable number promises nothing about them;
+`UnsupportedBypass` and `BypassReason` have one path, the root, where
+they had two. `DatagramPath` states what it always did and never said —
+a short buffer truncates, silently, as a socket does, and
+`max_datagram_size` is a ceiling a transport discovers up to rather than
+a size every datagram below it survives, which is the fix
+`hclient-native` made to its QUIC-over-a-path start just before this
+audit, written on the seam. Every `Dial` method and
+its erased mirror has an `# Errors` section, and three doc sentences
+that had gone stale — a subnet as an unrepresentable bypass, a bypass
+report that is never an `Err`, and three ways an `Attempt` can fail —
+say what the code does.
+
+**The sweep: 629 mutants, 423 caught, 167 unviable, 4 timeouts, 35
+missed.** Thirty-three of the misses are what they were last time — the
+platform readers this host never compiles, equivalents, `Debug` impls
+and a test double's own methods. **The other two were one gap**:
+`Socks5Path::poll_recv` discards a datagram two ways, one from a stranger
+and one from the relay carrying `FRAG != 0`, and only the first was
+tested against the per-poll bound, so `discarded *= 1` and
+`discarded -= 1` on the second both survived. Sixty-five relay fragments
+now make the first poll yield, and both mutants were applied by hand and
+died.
+
 ### `hclient-proto` is internal, and what it held for `hclient` moved into `hclient`
 
 The owner's rule: **`hclient-proto` is an internal crate, and nothing is
