@@ -26,6 +26,10 @@ pub(crate) const STAND_IN: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
 /// QUIC at all.
 pub(crate) const MIN_PATH: usize = 1200;
 
+/// QUIC's minimum datagram size (RFC 9000 §14), where a connection over a
+/// path starts.
+const QUIC_FLOOR: u16 = 1200;
+
 /// A [`DatagramPath`], dressed as a `quinn::AsyncUdpSocket`.
 ///
 /// One peer, whole datagrams, no ECN and no fragmentation — a filter's
@@ -116,11 +120,13 @@ impl quinn::UdpPoller for PathPoller {
 
 /// The transport config a QUIC connection over one path uses.
 ///
-/// `initial_mtu` is the path's own ceiling rather than a guess: a filter's
-/// datagram path has a known maximum, so there is nothing to discover.
-/// `mtu_discovery_config(None)` turns discovery off for the same reason —
-/// probing a path that already states its size finds nothing and risks a
-/// probe the path refuses as too large.
+/// A path's `max_datagram_size` is a ceiling and not a measurement: a
+/// capsule path's is exact, but a SOCKS relay's is a guess at a
+/// 1500-byte link, and behind a VPN or a `PPPoE` link a datagram over the real
+/// link is lost without a word. So the connection starts at QUIC's floor
+/// and discovers upwards, with the path's ceiling as the upper bound —
+/// no probe can exceed what the path accepts, and discovery keeps quinn's
+/// black-hole detection honest about what it found.
 pub(crate) fn transport_for(
     path_max: usize,
     keep_alive: Option<Duration>,
@@ -131,7 +137,14 @@ pub(crate) fn transport_for(
         reason = "clamped to u16::MAX on the line above"
     )]
     let mtu = path_max.min(usize::from(u16::MAX)) as u16;
-    t.initial_mtu(mtu).min_mtu(1200).mtu_discovery_config(None);
+    t.initial_mtu(QUIC_FLOOR).min_mtu(QUIC_FLOOR);
+    if mtu > QUIC_FLOOR {
+        let mut discovery = quinn::MtuDiscoveryConfig::default();
+        discovery.upper_bound(mtu);
+        t.mtu_discovery_config(Some(discovery));
+    } else {
+        t.mtu_discovery_config(None);
+    }
     if let Some(d) = keep_alive {
         t.keep_alive_interval(Some(d));
     }

@@ -98,6 +98,46 @@ async fn a_request_over_a_path_reaches_the_origin_and_resolves_nothing() {
     assert_eq!(lookups.load(Ordering::SeqCst), 0);
 }
 
+/// A path that claims more than its link carries loses almost nothing. A
+/// SOCKS relay's `max_datagram_size` is a guess at a 1500-byte link;
+/// behind a VPN or `PPPoE` the link is narrower, and a datagram over it is
+/// lost without a word. Starting at the claim loses a burst of full-size
+/// packets before quinn's black-hole detection falls back to 1200 —
+/// measured, 23 of them for this upload, each a retransmission timeout on
+/// a real network — and then stays at 1200. Starting at QUIC's floor and
+/// discovering upwards loses only the probes that overshoot.
+///
+/// A count rather than a clock: the upload completes either way on
+/// loopback, so what separates the two is how many datagrams died.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_path_narrower_than_it_claims_still_carries_a_large_upload() {
+    const BODY: usize = 256 * 1024;
+    let s = server::start(Behaviour::CountBody);
+    let (t, _) = h3(&s);
+    let req = http::Request::post(format!("https://localhost:{}/", s.addr.port()))
+        .body(RequestBody::Full(bytes::Bytes::from(vec![7u8; BODY])))
+        .unwrap();
+    let (path, dropped) = fixtures::udp_bridge_narrower_than_it_claims(s.addr, 1300);
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        t.execute_via_for_test(req, "via-a", path),
+    )
+    .await
+    .expect("the upload completes rather than stalling on lost datagrams")
+    .expect("a request over the path");
+    assert_eq!(resp.status(), 200);
+    let body = http_body_util::BodyExt::collect(resp.into_body())
+        .await
+        .expect("the count arrives")
+        .to_bytes();
+    assert_eq!(body, format!("{BODY} bytes"));
+    let dropped = dropped.load(Ordering::SeqCst);
+    assert!(
+        dropped <= 8,
+        "{dropped} datagrams lost to a link narrower than the path claimed"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_direct_and_a_via_connection_are_pooled_apart() {
     let s = server::start(Behaviour::Echo);

@@ -26,6 +26,12 @@ pub const BRIDGE_MAX: usize = 1452;
 pub struct UdpBridge {
     sock: tokio::net::UdpSocket,
     max: usize,
+    /// Where set, a datagram over this many bytes is accepted and never
+    /// sent — a link narrower than the path claims, which is what a
+    /// SOCKS relay behind a VPN or `PPPoE` looks like to the stack above.
+    drops_over: Option<usize>,
+    /// How many datagrams were dropped for being over `drops_over`.
+    dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl DatagramPath for UdpBridge {
@@ -35,6 +41,11 @@ impl DatagramPath for UdpBridge {
                 io::ErrorKind::InvalidInput,
                 format!("{} bytes over a {}-byte path", datagram.len(), self.max),
             ));
+        }
+        if self.drops_over.is_some_and(|n| datagram.len() > n) {
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return Ok(());
         }
         self.sock.try_send(datagram).map(|_| ())
     }
@@ -69,11 +80,47 @@ pub fn udp_bridge(peer: SocketAddr) -> BoxPath {
 ///
 /// As [`udp_bridge`].
 pub fn udp_bridge_of(peer: SocketAddr, max: usize) -> BoxPath {
+    bridge(peer, max, None, std::sync::Arc::default())
+}
+
+/// [`udp_bridge`] that claims [`BRIDGE_MAX`] and silently drops anything
+/// over `drops_over` bytes, with a count of what it dropped.
+///
+/// # Panics
+///
+/// As [`udp_bridge`].
+pub fn udp_bridge_narrower_than_it_claims(
+    peer: SocketAddr,
+    drops_over: usize,
+) -> (BoxPath, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let dropped = std::sync::Arc::default();
+    (
+        bridge(
+            peer,
+            BRIDGE_MAX,
+            Some(drops_over),
+            std::sync::Arc::clone(&dropped),
+        ),
+        dropped,
+    )
+}
+
+fn bridge(
+    peer: SocketAddr,
+    max: usize,
+    drops_over: Option<usize>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> BoxPath {
     let std = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind a loopback UDP socket");
     std.connect(peer).expect("connect the bridge to its peer");
     std.set_nonblocking(true).expect("non-blocking");
     let sock = tokio::net::UdpSocket::from_std(std).expect("inside a tokio runtime");
-    BoxPath::new(UdpBridge { sock, max })
+    BoxPath::new(UdpBridge {
+        sock,
+        max,
+        drops_over,
+        dropped,
+    })
 }
 
 /// How a [`ForwardFilter`] answers.

@@ -2714,10 +2714,23 @@ declaring one segment, no ECN and `may_fragment = false`. Each
 connection gets its own `quinn::Endpoint`, and its peer is
 `192.0.2.1:<port>`. quinn refuses port 0 and unspecified addresses, and
 the path ignores the address anyway. TEST-NET-1 can never be a real peer,
-which is what makes it safe to report every datagram as coming from it. `initial_mtu` is the path's
-own `max_datagram_size`, with MTU discovery off, because only the proxy
-knows the ceiling. A path under 1200 bytes is `Unsupported`, since QUIC
-cannot run on it.
+which is what makes it safe to report every datagram as coming from it.
+A path under 1200 bytes is `Unsupported`, since QUIC cannot run on it.
+
+**A connection over a path starts at 1200 bytes and discovers upwards,
+with the path's `max_datagram_size` as the upper bound.** It first
+started *at* that size with discovery off, on the argument that only the
+proxy knows the ceiling. That is true of a capsule path and false of a
+SOCKS relay, whose figure is a guess at a 1500-byte link. Behind a VPN
+or PPPoE the link is narrower and an oversized datagram is lost without
+a word. The review that found this said such a connection would hang
+until its idle timeout; **measured, it does not** — quinn's black-hole
+detection runs with discovery off too. What it did was lose 23 of 24
+full-size packets before falling back to 1200, and then stay at 1200.
+Starting at the floor loses 3–4 overshooting probes instead.
+`a_path_narrower_than_it_claims_still_carries_a_large_upload` counts
+the drops rather than timing the upload, because the upload completes
+either way on loopback.
 
 **What a filtered HTTP/3 connection does differently:**
 
