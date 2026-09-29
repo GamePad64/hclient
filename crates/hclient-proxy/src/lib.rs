@@ -132,6 +132,7 @@ pub mod system;
 mod tunnel;
 
 pub use connect::HttpConnect;
+#[cfg(feature = "test-util")]
 #[doc(hidden)]
 pub use datagram::testing;
 pub use datagram::{BoxPath, BoxUdp, DatagramPath};

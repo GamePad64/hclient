@@ -24,6 +24,7 @@ futures-io    = { version = "0.3", default-features = false, features = ["std"] 
 # dev-dependency here: this crate is never packaged, so nothing needs a
 # version to resolve from the registry.
 hclient            = { path = "../hclient" }
+hclient-proxy      = { path = "../hclient-proxy", features = ["test-util"] }
 hclient-native     = { path = "../hclient-native", features = ["http2", "http3"] }
 hclient-rt-tokio   = { path = "../hclient-rt-tokio" }
 hclient-tls-rustls = { path = "../hclient-tls-rustls", features = ["quic"] }

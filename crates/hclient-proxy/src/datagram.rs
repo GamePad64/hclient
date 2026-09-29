@@ -1,12 +1,10 @@
 //! A datagram path through a filter: one peer, whole datagrams.
 
-use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io;
 use std::io::IoSliceMut;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 
 use hclient_rt::{Datagrams, RecvMeta, UdpDatagrams, UdpSupport};
 
@@ -168,10 +166,16 @@ pub(crate) fn too_big(len: usize, max: usize) -> io::Error {
     )
 }
 
-/// Test doubles for a path, for filters' and transports' own tests.
+/// Test doubles for a path, for filters' and transports' own tests,
+/// behind the `test-util` feature.
+#[cfg(any(test, feature = "test-util"))]
 #[doc(hidden)]
 pub mod testing {
-    use super::{Arc, Context, DatagramPath, Debug, Mutex, Poll, VecDeque, Waker, io, too_big};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use std::task::Waker;
+
+    use super::{Context, DatagramPath, Debug, Poll, io, too_big};
 
     #[derive(Debug, Default)]
     struct Queue {

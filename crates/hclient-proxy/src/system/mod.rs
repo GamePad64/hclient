@@ -496,6 +496,7 @@ impl SystemProxies {
 /// call `detect`. It is unavailable rather than unattractive —
 /// `std::env::set_var` is `unsafe` in edition 2024 and this workspace
 /// forbids `unsafe` outright.
+#[cfg(any(test, feature = "test-util"))]
 #[doc(hidden)]
 pub mod testing {
     use super::SystemProxies;

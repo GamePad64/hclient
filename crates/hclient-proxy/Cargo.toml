@@ -36,6 +36,11 @@ system = [
     "dep:core-foundation-sys",
     "dep:system-configuration",
 ]
+# The in-memory doubles in `testing` and `system::testing`, for the tests
+# of a filter or a transport built on this crate. A feature so that a
+# stable version promises nothing about them: a caller who names one in a
+# dev-dependency has asked for test code, and nobody else sees it.
+test-util = []
 
 [dependencies]
 bytes         = { workspace = true }

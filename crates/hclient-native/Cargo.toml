@@ -163,6 +163,9 @@ tokio          = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]
 static_assertions = { workspace = true }
+# The path and settings doubles, which `hclient-proxy` keeps behind
+# `test-util` so that its stable version promises nothing about them.
+hclient-proxy     = { path = "../hclient-proxy", version = "0.1.0-alpha.15", features = ["test-util"] }
 # The QUIC/TCP pair the routing tests stand up: two real servers behind one
 # authority, so a request reaching one is a choice and not the only
 # possibility.
