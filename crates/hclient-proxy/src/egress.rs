@@ -102,6 +102,15 @@ pub trait Dial {
     ///
     /// The future may borrow `host`, as [`connect_tls`](Self::connect_tls)'s
     /// may borrow its request, so an implementor need not copy it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the transport's own connect answers: a name that did not
+    /// resolve ([`ErrorKind::Resolve`](hclient_core::error::ErrorKind::Resolve)),
+    /// no address that accepted
+    /// ([`ErrorKind::Connect`](hclient_core::error::ErrorKind::Connect)), or
+    /// the request's connect bound running out
+    /// ([`ErrorKind::Timeout`](hclient_core::error::ErrorKind::Timeout)).
     fn connect<'a>(
         &'a self,
         host: &'a str,
@@ -110,8 +119,15 @@ pub trait Dial {
 
     /// Open a same-machine connection.
     ///
-    /// Refuses with [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
-    /// when the transport cannot open this kind of address.
+    /// # Errors
+    ///
+    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// when the transport cannot open this kind of address; otherwise what
+    /// the connect answers —
+    /// [`ErrorKind::Connect`](hclient_core::error::ErrorKind::Connect) for
+    /// nothing listening, and
+    /// [`ErrorKind::Timeout`](hclient_core::error::ErrorKind::Timeout) for
+    /// the bound running out.
     fn connect_ipc<'a>(
         &'a self,
         addr: &'a hclient_rt::IpcAddr,
@@ -126,7 +142,9 @@ pub trait Dial {
     /// (TLS to a proxy, then a tunnel, then TLS to the origin) without
     /// naming a TLS type.
     ///
-    /// Refuses with [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// # Errors
+    ///
+    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
     /// by default, for a transport that lends no TLS. A handshake that
     /// fails is the backend's error, [`ErrorKind::Tls`](hclient_core::error::ErrorKind::Tls).
     fn connect_tls<'a>(
@@ -162,6 +180,14 @@ pub trait Dial {
     /// Resolve a **proxy's** name with the transport's resolver. Never the
     /// origin's: a filter resolving the target locally would name it to the
     /// resolver a proxy is often there to avoid.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// by default, for a transport that lends no resolver; otherwise what
+    /// the resolver answers,
+    /// [`ErrorKind::Resolve`](hclient_core::error::ErrorKind::Resolve) for
+    /// a name that does not exist.
     fn resolve<'a>(
         &'a self,
         host: &'a str,
@@ -173,6 +199,21 @@ pub trait Dial {
 
     /// Open a CONNECT or extended CONNECT tunnel through a proxy spoken to
     /// over HTTP/2 or HTTP/3.
+    ///
+    /// The proxy's response is handed back unjudged in
+    /// [`Tunnel::response`]: a `4xx` from the proxy is a tunnel the filter
+    /// reads and refuses, not an error here.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// by default, for a transport that lends no tunnels, and for a
+    /// [`TunnelVersion`](crate::TunnelVersion) or a kind of CONNECT the
+    /// transport cannot speak — a refusal a filter may answer by trying
+    /// another way. Otherwise the connect's, the TLS handshake's or the
+    /// HTTP connection's own error, and
+    /// [`ErrorKind::Timeout`](hclient_core::error::ErrorKind::Timeout) for
+    /// the bound running out.
     fn connect_tunnel<'a>(
         &'a self,
         req: TunnelRequest<'a>,
@@ -590,12 +631,24 @@ pub type BoxTunnelling<'a> = Pin<Box<dyn Future<Output = Result<Tunnel, Error>> 
 /// and `Sync` are demanded where it is stored, by [`SharedDial`].
 pub trait DynDial {
     /// [`Dial::connect`], erased.
+    ///
+    /// # Errors
+    ///
+    /// See [`Dial::connect`].
     fn connect_boxed<'a>(&'a self, host: &'a str, port: u16) -> BoxDialing<'a>;
     /// [`Dial::connect_ipc`], erased.
+    ///
+    /// # Errors
+    ///
+    /// See [`Dial::connect_ipc`].
     fn connect_ipc_boxed<'a>(&'a self, addr: &'a hclient_rt::IpcAddr) -> BoxDialing<'a>;
     /// [`Dial::remaining`].
     fn remaining(&self) -> Option<Duration>;
     /// [`Dial::connect_tls`], erased. Refuses by default.
+    ///
+    /// # Errors
+    ///
+    /// See [`Dial::connect_tls`].
     fn connect_tls_boxed<'a>(&'a self, stream: BoxIo, req: ProxyTls<'a>) -> BoxDialing<'a> {
         let _ = (stream, req);
         Box::pin(std::future::ready(Err(lends_no_tls())))
@@ -610,11 +663,19 @@ pub trait DynDial {
         Err(lends_nothing("UDP"))
     }
     /// [`Dial::resolve`], erased. Refuses by default.
+    ///
+    /// # Errors
+    ///
+    /// See [`Dial::resolve`].
     fn resolve_boxed<'a>(&'a self, host: &'a str, port: u16) -> BoxResolving<'a> {
         let _ = (host, port);
         Box::pin(std::future::ready(Err(lends_nothing("name resolution"))))
     }
     /// [`Dial::connect_tunnel`], erased. Refuses by default.
+    ///
+    /// # Errors
+    ///
+    /// See [`Dial::connect_tunnel`].
     fn connect_tunnel_boxed<'a>(&'a self, req: TunnelRequest<'a>) -> BoxTunnelling<'a> {
         let _ = req;
         Box::pin(std::future::ready(Err(lends_nothing("HTTP tunnels"))))
