@@ -2701,6 +2701,10 @@ requires `C::Stream: Send + 'static` — a SOCKS5 path holds its control
 connection for the path's whole life, inside a `Send + Sync` value.
 `TunnelRequest` is `#[non_exhaustive]` with a builder, by the
 three-answer rule: the filter builds it and the transport reads it.
+Its `Debug` is written by hand, because the derived one printed `headers`
+whole and a filter's `Proxy-Authorization` is what it adds there: a value
+marked sensitive, or under either authorization name, prints as
+`<redacted>` whether or not the filter remembered the flag.
 `FilterSupport::datagrams` was a flag nothing read. It is now the switch
 the routing asks.
 
@@ -2737,7 +2741,13 @@ stream after that paid the path's time twice**, because the request came
 back still carrying the narrowed bound and the switch took everything
 since the start off it again; it is handed the caller's bound back now,
 and `a_fallback_to_the_stream_after_quic_over_a_slow_path_gets_what_is_left_once`
-failed with `ConnectTimedOut(696ms)` before that.
+failed with `ConnectTimedOut(696ms)` before that. That test was itself
+a two-sided wall-clock race with about 200 ms of margin, and it reads the
+bound now instead: the fixture filter records what each lent context's
+`remaining()` said and when, and the stream's figure must equal the
+path's less the time the filter saw pass. Spent once, they agree to
+microseconds; spent twice, the stream is short by the path's whole
+opening, a 400 ms sleep — deterministic in both directions.
 
 **The switch to a stream is remembered, and it reuses `over_quic`'s TCP
 tail.** Three things switch the same unsent request to the filter's
@@ -2801,6 +2811,10 @@ RFC 1929 auth, then `CMD=0x03`.
 
 - `REP=0x07` (command not supported) is `Attempt::Unsupported`, which
   switches to TCP and is remembered. Other codes are `Failed`.
+- A UDP socket that will not bind is `Failed` as well. Only an
+  `ErrorKind::Unsupported` bind — a runtime that lends no UDP — is a
+  refusal to switch on; out of descriptors or a port taken is this host
+  failing now, and is not remembered against the origin.
 - An unspecified relay address in the reply means *the proxy's own*. It
   resolves the proxy's name through `Dial::resolve`; a proxy given as a
   literal skips the lookup.
@@ -2843,6 +2857,14 @@ Waiting for the proxy's SETTINGS is a PING. In h2 0.4.19, `poll_ready`
 resolves before SETTINGS arrive, so it would read extended CONNECT as
 off. A PONG follows the peer's SETTINGS, which makes the wait causal.
 
+**An HTTP/2 tunnel is refused unless the proxy's TLS selected `h2`.**
+Offering it in ALPN is not the proxy choosing it: an HTTP/1.1 proxy that
+ignores ALPN completes the handshake all the same, and the first build
+wrote an HTTP/2 preface into that connection and failed as an opaque
+`Connect`. It is `ErrorKind::Unsupported` now, naming what was
+negotiated, before a byte of HTTP/2 — and a fixture proxy that reads
+until the client closes asserts no preface reached it.
+
 **HTTP/3 tunnels get QUIC connections of their own, so ordinary
 SETTINGS do not change.** Each tunnel dials a fresh connection with its
 own builder, announcing extended CONNECT and HTTP datagrams, and waits
@@ -2876,6 +2898,16 @@ bound it is `min(1.5 s, remaining / 2)`. The new test against a
 black-holed UDP port failed at its **5 s** guard before the fix and
 passes in **1.57 s** after — **30 s to about 1.5 s**. An HTTP/3-only
 request still gets everything that is left.
+
+**And that cap is paid once per proxy, not once per tunnel.** A failed
+HTTP/3 tunnel is remembered by the proxy's authority, with `H3Failures`'
+shape and TTL, on the installed filter; while it is, a tunnel that will
+take HTTP/2 starts no QUIC connection, and `Native::network_changed()`
+forgets it. A tunnel that will take HTTP/3 alone never reads the memory.
+The test counts QUIC connection attempts at a black-holed UDP port by
+the destination connection id of their Initials, so a late
+retransmission or close from an abandoned attempt is not mistaken for a
+new one.
 
 **`hclient-masque` is an experiment, and it exists to shape the seams
 rather than to ship.** It is `publish = false` and nothing published
@@ -3007,14 +3039,9 @@ point:
 
 **And the real limits that remain, found and not closed:**
 
-- Nothing is remembered between tunnels to a proxy with no HTTP/3, so
-  each `Http3ThenHttp2` tunnel pays up to its 1.5 s cap.
 - An unspecified relay behind a named proxy resolves the name fresh, and
   may land on a different address from the one the control connection
   reached.
-- `ProxyTls::alpn` is overridden to `h2` for an HTTP/2 tunnel, and the
-  negotiated ALPN is not checked. A proxy without h2 fails as an opaque
-  `Connect` error.
 - Tunnel setup is bounded only by what the filter reads off
   `remaining()`, as the other `Dial` methods are.
 - `ConnectTiming::dns` reports about zero for a path connection that did
