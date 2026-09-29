@@ -18,7 +18,11 @@ pub enum TunnelVersion {
 ///
 /// Built by a filter and read by a transport; `#[non_exhaustive]`, so build
 /// one with [`TunnelRequest::new`].
-#[derive(Debug, Clone)]
+///
+/// Its `Debug` names every request field and prints no credential: a value
+/// marked sensitive, or one under `authorization` or
+/// `proxy-authorization`, is shown as `<redacted>`.
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct TunnelRequest<'a> {
     /// The proxy's host, resolved by the transport.
@@ -88,6 +92,45 @@ impl<'a> TunnelRequest<'a> {
     }
 }
 
+// Written by hand because the derived one printed `headers` whole, and a
+// filter's `Proxy-Authorization` is exactly what it adds there. The flag
+// alone is not trusted: a value a filter forgot to mark is redacted by its
+// name, as `Socks5` redacts its password.
+impl std::fmt::Debug for TunnelRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelRequest")
+            .field("proxy_host", &self.proxy_host)
+            .field("proxy_port", &self.proxy_port)
+            .field("tls", &self.tls)
+            .field("authority", &self.authority)
+            .field("path", &self.path)
+            .field("protocol", &self.protocol)
+            .field("headers", &Redacted(&self.headers))
+            .field("version", &self.version)
+            .finish()
+    }
+}
+
+/// A header map shown with every credential's value withheld.
+struct Redacted<'a>(&'a http::HeaderMap);
+
+impl std::fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut map = f.debug_map();
+        for (name, value) in self.0 {
+            let secret = value.is_sensitive()
+                || name == http::header::AUTHORIZATION
+                || name == http::header::PROXY_AUTHORIZATION;
+            if secret {
+                map.entry(name, &format_args!("<redacted>"));
+            } else {
+                map.entry(name, value);
+            }
+        }
+        map.finish()
+    }
+}
+
 /// An open tunnel: the proxy's answer, the stream both ways, and — over
 /// HTTP/3 — the stream's datagrams.
 ///
@@ -115,5 +158,44 @@ impl Tunnel {
             stream,
             datagrams,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_names_a_credential_field_and_never_prints_its_value() {
+        // Not marked sensitive: a filter that forgets the flag must not
+        // leak the credential either, so the name alone is enough.
+        let req = TunnelRequest::new("proxy.test", 443, ProxyTls::new("proxy.test"), "o:443")
+            .header(
+                http::header::PROXY_AUTHORIZATION,
+                http::HeaderValue::from_static("Basic c2VjcmV0LXByb3h5"),
+            )
+            .header(
+                http::header::AUTHORIZATION,
+                http::HeaderValue::from_static("Bearer secret-origin"),
+            )
+            .header(http::HeaderName::from_static("x-token"), {
+                let mut v = http::HeaderValue::from_static("secret-flagged");
+                v.set_sensitive(true);
+                v
+            })
+            .header(
+                http::HeaderName::from_static("capsule-protocol"),
+                http::HeaderValue::from_static("?1"),
+            );
+        let shown = format!("{req:?}");
+        assert!(shown.contains("proxy-authorization"), "{shown}");
+        assert!(shown.contains("authorization"), "{shown}");
+        assert!(shown.contains("x-token"), "{shown}");
+        assert!(!shown.contains("c2VjcmV0LXByb3h5"), "{shown}");
+        assert!(!shown.contains("secret-origin"), "{shown}");
+        assert!(!shown.contains("secret-flagged"), "{shown}");
+        // An ordinary field is still shown in full.
+        assert!(shown.contains("?1"), "{shown}");
+        assert!(shown.contains("proxy.test"), "{shown}");
     }
 }
