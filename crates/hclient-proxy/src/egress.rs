@@ -211,6 +211,12 @@ impl<'a> Target<'a> {
 }
 
 /// A filter's answer for one target.
+///
+/// Built by a filter and matched by the transport. Exhaustive on purpose:
+/// a third answer a transport met under a wildcard arm would have nothing
+/// honest on its right-hand side — taking its own path would send a
+/// filtered request direct — so a new one must be a compile error in
+/// every transport instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision<'a> {
     /// The transport's ordinary path, in full.
@@ -261,6 +267,13 @@ impl<'a> Route<'a> {
 }
 
 /// How the request head is written once the filter's stream is open.
+///
+/// Built by a filter and matched by the transport that writes the head.
+/// Exhaustive on purpose, for [`Decision`]'s reason: a form a transport
+/// did not know, written as the nearest one it did, would be a request
+/// the proxy reads differently from how it was meant — so a new form must
+/// be a compile error in every transport. The variant that may grow
+/// fields is `#[non_exhaustive]` on its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestForm {
     /// As to the origin — a tunnel, or no proxy at all.
@@ -387,6 +400,11 @@ impl Shutdown for BoxIo {
 }
 
 /// A stream a filter opened.
+///
+/// Built by a filter and matched by the transport. Exhaustive on purpose,
+/// for [`Decision`]'s reason: a transport cannot carry a request over a
+/// kind of stream it has no arm for, so a new kind must be a compile
+/// error in every transport rather than a wildcard's guess.
 pub enum Opened<S, W> {
     /// The context's own stream type: a handshake changes bytes, not the
     /// type, so the transport keeps its concrete connection.
@@ -439,7 +457,14 @@ where
 /// instead of datagrams, and a proxy that does not support datagrams
 /// might. Which of those it was — and which proxy — is the error's
 /// source.
+///
+/// Built by a filter and read by the transport through
+/// [`permits_switch`](Self::permits_switch) and
+/// [`into_error`](Self::into_error), which answer for every variant —
+/// so `#[non_exhaustive]`: a third outcome is added with its answers to
+/// those two, and nothing that reads through them breaks.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Attempt {
     /// The attempt failed: the proxy could not be reached, its handshake
     /// failed, or it declined this target.
@@ -1036,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tunnel_request_defaults_to_plain_connect_over_h3_then_h2() {
+    fn a_tunnel_request_defaults_to_plain_connect_over_h2() {
         let r = TunnelRequest::new("p", 443, ProxyTls::new("p"), "o:443");
         assert_eq!(
             (r.proxy_host, r.proxy_port, r.authority),
@@ -1045,7 +1070,7 @@ mod tests {
         assert_eq!(r.path, None);
         assert_eq!(r.protocol, None);
         assert!(r.headers.is_empty());
-        assert_eq!(r.version, TunnelVersion::Http3ThenHttp2);
+        assert_eq!(r.version, TunnelVersion::Http2);
         let r = r
             .path(Some("/x"))
             .protocol(Some("connect-udp"))

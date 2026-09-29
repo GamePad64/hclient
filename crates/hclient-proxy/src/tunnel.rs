@@ -3,6 +3,18 @@
 use crate::{BoxIo, BoxPath, ProxyTls};
 
 /// Which HTTP version a tunnel to a proxy is asked over.
+///
+/// Chosen by a filter and matched by the transport that opens the tunnel.
+/// `#[non_exhaustive]`, because a transport meeting a version it does not
+/// know has an honest answer: refuse it as
+/// [`Unsupported`](hclient_core::error::ErrorKind::Unsupported), exactly
+/// as a transport that lends no tunnels refuses every one — and a filter
+/// already reads that refusal as *try another way*. Its wildcard arm is a
+/// refusal, never a guess at the nearest version.
+///
+/// The enums a transport cannot refuse this way are exhaustive:
+/// [`Decision`](crate::Decision), [`Opened`](crate::Opened) and
+/// [`RequestForm`](crate::RequestForm).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TunnelVersion {
@@ -42,12 +54,26 @@ pub struct TunnelRequest<'a> {
     /// Further request fields, `capsule-protocol` among them.
     pub headers: http::HeaderMap,
     /// Which version to ask over.
+    ///
+    /// Defaults by the kind of CONNECT: [`TunnelVersion::Http2`] for a
+    /// plain one, [`TunnelVersion::Http3ThenHttp2`] once
+    /// [`protocol`](Self::protocol) makes it extended. Calling
+    /// [`version`](Self::version) fixes it, in either order.
     pub version: TunnelVersion,
+    /// Whether [`version`](Self::version) chose the version, so that
+    /// [`protocol`](Self::protocol) leaves it alone.
+    version_chosen: bool,
 }
 
 impl<'a> TunnelRequest<'a> {
     /// A plain CONNECT for `authority` through the proxy at
-    /// `proxy_host:proxy_port`, over HTTP/3 then HTTP/2.
+    /// `proxy_host:proxy_port`, over HTTP/2.
+    ///
+    /// HTTP/2 because it is the version a plain CONNECT can be carried
+    /// over: RFC 9114 permits one over HTTP/3, and the HTTP/3 client a
+    /// transport is likely to be built on cannot write it. Setting a
+    /// [`protocol`](Self::protocol) — which is what an HTTP/3 tunnel is
+    /// for — moves the default to [`TunnelVersion::Http3ThenHttp2`].
     #[must_use]
     pub fn new(
         proxy_host: &'a str,
@@ -63,7 +89,19 @@ impl<'a> TunnelRequest<'a> {
             path: None,
             protocol: None,
             headers: http::HeaderMap::new(),
-            version: TunnelVersion::Http3ThenHttp2,
+            version: TunnelVersion::Http2,
+            version_chosen: false,
+        }
+    }
+
+    /// The version asked for when [`version`](Self::version) was not
+    /// called: HTTP/2 for a plain CONNECT, HTTP/3 then HTTP/2 for an
+    /// extended one.
+    const fn default_version(protocol: Option<&str>) -> TunnelVersion {
+        if protocol.is_some() {
+            TunnelVersion::Http3ThenHttp2
+        } else {
+            TunnelVersion::Http2
         }
     }
     /// Set `:path`.
@@ -72,10 +110,15 @@ impl<'a> TunnelRequest<'a> {
         self.path = path;
         self
     }
-    /// Set `:protocol`, making this an extended CONNECT.
+    /// Set `:protocol`, making this an extended CONNECT — and, unless
+    /// [`version`](Self::version) was called, asking over HTTP/3 then
+    /// HTTP/2 rather than HTTP/2 alone.
     #[must_use]
     pub fn protocol(mut self, protocol: Option<&'a str>) -> Self {
         self.protocol = protocol;
+        if !self.version_chosen {
+            self.version = Self::default_version(protocol);
+        }
         self
     }
     /// Add a request field.
@@ -84,10 +127,12 @@ impl<'a> TunnelRequest<'a> {
         self.headers.append(name, value);
         self
     }
-    /// Ask over this version.
+    /// Ask over this version, whatever [`protocol`](Self::protocol) says
+    /// before or after.
     #[must_use]
     pub fn version(mut self, version: TunnelVersion) -> Self {
         self.version = version;
+        self.version_chosen = true;
         self
     }
 }
@@ -164,6 +209,40 @@ impl Tunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plain() -> TunnelRequest<'static> {
+        TunnelRequest::new("p", 443, ProxyTls::new("p"), "o:443")
+    }
+
+    #[test]
+    fn a_plain_connect_defaults_to_http2() {
+        assert_eq!(plain().version, TunnelVersion::Http2);
+        assert_eq!(
+            plain().protocol(Some("x")).protocol(None).version,
+            TunnelVersion::Http2
+        );
+    }
+
+    #[test]
+    fn an_extended_connect_defaults_to_http3_then_http2() {
+        assert_eq!(
+            plain().protocol(Some("connect-udp")).version,
+            TunnelVersion::Http3ThenHttp2
+        );
+    }
+
+    #[test]
+    fn a_chosen_version_survives_the_protocol_in_either_order() {
+        for v in [
+            TunnelVersion::Http3,
+            TunnelVersion::Http2,
+            TunnelVersion::Http3ThenHttp2,
+        ] {
+            assert_eq!(plain().version(v).protocol(Some("connect-udp")).version, v);
+            assert_eq!(plain().protocol(Some("connect-udp")).version(v).version, v);
+            assert_eq!(plain().version(v).protocol(None).version, v);
+        }
+    }
 
     #[test]
     fn debug_names_a_credential_field_and_never_prints_its_value() {

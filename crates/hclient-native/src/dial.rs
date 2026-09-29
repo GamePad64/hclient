@@ -227,7 +227,18 @@ where
         let (h3, h2) = match req.version {
             TunnelVersion::Http3 => (true, false),
             TunnelVersion::Http2 => (false, true),
-            _ => (true, true),
+            TunnelVersion::Http3ThenHttp2 => (true, true),
+            // A version this transport does not know is refused, as one
+            // that lends no tunnels refuses them all — never read as the
+            // nearest version it does know.
+            other => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    std::io::Error::other(format!(
+                        "this transport cannot open a tunnel over {other:?}"
+                    )),
+                ));
+            }
         };
         let mut h3_failed = None;
         let h2_follows = h2 && self.tunnel_h2.is_some();
