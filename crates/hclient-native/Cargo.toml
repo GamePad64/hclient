@@ -86,7 +86,7 @@ bytes          = { workspace = true }
 # transport's own `Timer`, so that an entry means something to a store
 # that outlives the process — see `altsvc`'s module doc.
 web-time      = "1.1.0"
-hclient-proxy  = { path = "../hclient-proxy", version = "0.1.0-alpha.15" }
+hclient-proxy  = { path = "../hclient-proxy", version = "0.1.0" }
 futures-util   = { version = "0.3", default-features = false, features = ["std"] }
 h2             = { version = "0.4", optional = true }
 http           = { workspace = true }
@@ -165,7 +165,7 @@ tokio          = { version = "1", default-features = false, optional = true }
 static_assertions = { workspace = true }
 # The path and settings doubles, which `hclient-proxy` keeps behind
 # `test-util` so that its stable version promises nothing about them.
-hclient-proxy     = { path = "../hclient-proxy", version = "0.1.0-alpha.15", features = ["test-util"] }
+hclient-proxy     = { path = "../hclient-proxy", version = "0.1.0", features = ["test-util"] }
 # The QUIC/TCP pair the routing tests stand up: two real servers behind one
 # authority, so a request reaching one is a choice and not the only
 # possibility.
