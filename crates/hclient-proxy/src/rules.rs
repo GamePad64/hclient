@@ -47,7 +47,7 @@ impl Handshake for BoxHandshake {
     fn proxy_authorization(&self) -> Option<&http::HeaderValue> {
         (**self).proxy_authorization()
     }
-    fn associate(&self) -> Option<Box<dyn crate::Associate>> {
+    fn associate(&self) -> Option<crate::Association> {
         (**self).associate()
     }
 }
@@ -262,23 +262,25 @@ impl EgressFilter for Rules {
             .protocol()
             .associate()
             .expect("a rule is marked for datagrams only when it associates");
-        let relay = match crate::socks5_udp::drive_associate(&mut control, &mut *a).await {
+        let relay = match crate::socks5_udp::drive_associate(&mut control, &mut a).await {
             Ok(r) => r,
-            Err(crate::AssociateError::Unsupported(e)) => return Err(Attempt::Unsupported(e)),
-            Err(crate::AssociateError::Failed(e)) => return Err(Attempt::Failed(e)),
+            Err(crate::error::AssociateError::Unsupported(e)) => {
+                return Err(Attempt::Unsupported(e));
+            }
+            Err(crate::error::AssociateError::Failed(e)) => return Err(Attempt::Failed(e)),
         };
         let relay = match relay {
-            crate::RelayAddr::Ip(a) => a,
+            crate::socks5_udp::RelayAddr::Ip(a) => a,
             // §4: the proxy's own address, which this host already dialled
             // by name — so the proxy's name, never the origin's.
-            crate::RelayAddr::Unspecified(p) => {
+            crate::socks5_udp::RelayAddr::Unspecified(p) => {
                 let bare = hclient_core::url::bare_host(host);
                 match bare.parse::<std::net::IpAddr>() {
                     Ok(ip) => SocketAddr::new(ip, p),
                     Err(_) => first_addr(ctx.resolve(bare, p).await)?,
                 }
             }
-            crate::RelayAddr::Name(n, p) => first_addr(ctx.resolve(&n, p).await)?,
+            crate::socks5_udp::RelayAddr::Name(n, p) => first_addr(ctx.resolve(&n, p).await)?,
         };
         let local = if relay.is_ipv6() {
             SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0))

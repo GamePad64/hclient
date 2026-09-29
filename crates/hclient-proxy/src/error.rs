@@ -106,8 +106,7 @@ impl std::error::Error for MalformedHead {}
 /// does not relay UDP still carries streams, so a request may switch to
 /// one, where any other failure means the proxy could not be used at all.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum AssociateError {
+pub(crate) enum AssociateError {
     /// The proxy does not relay UDP (`REP=0x07`, command not supported).
     #[error("the SOCKS5 proxy does not relay UDP")]
     Unsupported(#[source] Error),

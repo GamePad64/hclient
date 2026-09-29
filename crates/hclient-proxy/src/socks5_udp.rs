@@ -26,8 +26,7 @@ use crate::take;
 
 /// Where a SOCKS5 proxy relays datagrams.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RelayAddr {
+pub(crate) enum RelayAddr {
     /// An address to send to.
     Ip(SocketAddr),
     /// `0.0.0.0` or `::` — the proxy's own address, at this port: §4 lets
@@ -40,8 +39,7 @@ pub enum RelayAddr {
 
 /// What an association wants next.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum AssociateStep {
+pub(crate) enum AssociateStep {
     /// Send these bytes, then ask again.
     Write(Bytes),
     /// More bytes are needed; nothing was consumed.
@@ -50,50 +48,56 @@ pub enum AssociateStep {
     Associated(RelayAddr),
 }
 
-/// A SOCKS5 UDP ASSOCIATE (RFC 1928 §4) as a state machine, the same
-/// contract as [`Handshake`](crate::Handshake): `advance` consumes only
-/// complete frames and answers `NeedMore` without consuming a partial one.
+// Maintainer notes (not rendered):
+// This was a public sealed trait, `Associate`, with its step, its relay
+// address and its error public beside it — four items promised to callers
+// who could name every one of them and implement none, since the only
+// implementation was ours and the trait was sealed. What a foreign
+// `Handshake` actually needs is to *carry* an association it got from a
+// SOCKS5 handshake it wraps, and an opaque value does exactly that.
+/// A SOCKS5 UDP ASSOCIATE (RFC 1928 §4) with one proxy, ready to run —
+/// what [`Handshake::associate`](crate::Handshake::associate) answers.
 ///
-/// **SOCKS5's alone, and sealed.** What an association opens is read with
+/// **SOCKS5's alone, and opaque.** What an association opens is read with
 /// §7's datagram header, which the built-in rules write and strip
 /// themselves, so an association for any other protocol would open a path
-/// framed wrongly. The only implementation is the one
-/// [`Socks5::with_udp`](crate::Socks5::with_udp) returns through
-/// [`Handshake::associate`](crate::Handshake::associate); a type outside
-/// this crate cannot implement the trait:
+/// framed wrongly. The only way to get one is from
+/// [`Socks5::with_udp`](crate::Socks5::with_udp) through
+/// `Handshake::associate`, and a handshake that wraps a SOCKS5 one hands
+/// on the value it was given. Nothing outside this crate can make one:
 ///
-/// ```compile_fail,E0277
-/// struct Mine;
-/// impl hclient_proxy::Associate for Mine {
-///     fn begin(&mut self) -> bytes::Bytes {
-///         bytes::Bytes::new()
-///     }
-///     fn advance(
-///         &mut self,
-///         _: &mut bytes::BytesMut,
-///     ) -> Result<hclient_proxy::AssociateStep, hclient_proxy::AssociateError> {
-///         Ok(hclient_proxy::AssociateStep::NeedMore)
-///     }
-/// }
+/// ```compile_fail,E0451
+/// let _ = hclient_proxy::Association { inner: todo!() };
 /// ```
-pub trait Associate: sealed::Sealed + Send // send-bound-exception: amendment-C16
-{
-    /// The first bytes to send.
-    fn begin(&mut self) -> Bytes;
-
-    /// Consume what has arrived; answer what happens next.
-    ///
-    /// # Errors
-    ///
-    /// [`AssociateError`], saying whether the proxy lacks UDP or failed.
-    fn advance(&mut self, from_peer: &mut BytesMut) -> Result<AssociateStep, AssociateError>;
+pub struct Association {
+    inner: Socks5Associate,
 }
 
-/// What keeps [`Associate`] this crate's: public so it may be named in a
-/// public bound, in a module nothing outside the crate can reach.
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for super::Socks5Associate {}
+impl Association {
+    pub(crate) fn new(auth: Option<(Box<str>, Box<str>)>) -> Self {
+        Self {
+            inner: Socks5Associate::new(auth),
+        }
+    }
+
+    /// The first bytes to send.
+    pub(crate) fn begin(&mut self) -> Bytes {
+        self.inner.begin()
+    }
+
+    /// Consume what has arrived; answer what happens next. The same
+    /// contract as [`Handshake`](crate::Handshake): only complete frames
+    /// are consumed, and `NeedMore` consumes nothing.
+    pub(crate) fn advance(&mut self, buf: &mut BytesMut) -> Result<AssociateStep, AssociateError> {
+        self.inner.advance(buf)
+    }
+}
+
+// Credentials live inside, so nothing of them is printed.
+impl std::fmt::Debug for Association {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Association")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,8 +109,8 @@ enum State {
     Done,
 }
 
-/// The built-in [`Associate`]: SOCKS5's own §4 exchange.
-pub(crate) struct Socks5Associate {
+/// SOCKS5's own §4 exchange, behind [`Association`].
+struct Socks5Associate {
     auth: Option<(Box<str>, Box<str>)>,
     offered: Vec<u8>,
     state: State,
@@ -119,7 +123,7 @@ const REQUEST: [u8; 10] = [SOCKS5_VERSION, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
 const REP_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 
 impl Socks5Associate {
-    pub(crate) fn new(auth: Option<(Box<str>, Box<str>)>) -> Self {
+    fn new(auth: Option<(Box<str>, Box<str>)>) -> Self {
         Self {
             auth,
             offered: Vec::new(),
@@ -132,7 +136,7 @@ fn failed(e: Socks5HandshakeError) -> AssociateError {
     AssociateError::Failed(Error::new(ErrorKind::Connect, e))
 }
 
-impl Associate for Socks5Associate {
+impl Socks5Associate {
     fn begin(&mut self) -> Bytes {
         self.offered = if self.auth.is_some() {
             vec![METHOD_PASSWORD, METHOD_NONE]
@@ -368,7 +372,7 @@ pub(crate) fn decode_datagram(d: &[u8]) -> Option<&[u8]> {
 /// names its relay.
 pub(crate) async fn drive_associate<S: crate::Io>(
     io: &mut S,
-    a: &mut dyn Associate,
+    a: &mut Association,
 ) -> Result<RelayAddr, AssociateError> {
     crate::drive::write_all(io, &a.begin())
         .await
@@ -702,7 +706,7 @@ mod tests {
 
     use crate::{Handshake, Socks5};
 
-    fn assoc(auth: bool) -> Box<dyn Associate> {
+    fn assoc(auth: bool) -> Association {
         let s = if auth {
             Socks5::new().password_auth("u", "p").unwrap()
         } else {

@@ -310,11 +310,8 @@ impl Handshake for Socks5 {
         }
     }
 
-    fn associate(&self) -> Option<Box<dyn crate::Associate>> {
-        self.udp.then(|| {
-            Box::new(crate::socks5_udp::Socks5Associate::new(self.auth.clone()))
-                as Box<dyn crate::Associate>
-        })
+    fn associate(&self) -> Option<crate::Association> {
+        self.udp.then(|| crate::Association::new(self.auth.clone()))
     }
 }
 
