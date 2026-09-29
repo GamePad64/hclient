@@ -17,7 +17,7 @@ use crate::{Approach, Handshake, Proxy, Reach, Step};
 /// hold HTTP and SOCKS rules together.
 ///
 /// Declares no auto traits; [`BoxHandshake`] demands them where stored.
-pub trait DynHandshake: Handshake {
+pub(crate) trait DynHandshake: Handshake {
     /// A fresh state machine for one connection.
     fn fresh(&self) -> BoxHandshake;
 }
@@ -32,7 +32,7 @@ where
 }
 
 /// A handshake of any protocol, as a rule list holds it.
-pub type BoxHandshake = Box<dyn DynHandshake + Send + Sync>; // send-bound-exception: amendment-C16
+pub(crate) type BoxHandshake = Box<dyn DynHandshake + Send + Sync>; // send-bound-exception: amendment-C16
 
 impl Handshake for BoxHandshake {
     fn approach(&self, use_tls: bool) -> Approach {

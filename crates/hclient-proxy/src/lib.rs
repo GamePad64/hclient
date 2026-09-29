@@ -147,7 +147,7 @@ pub use error::{
 };
 pub(crate) use proxy::Reach;
 pub use proxy::{IpcProxy, Proxy, ProxyScheme};
-pub use rules::{BoxHandshake, DynHandshake, Rules};
+pub use rules::Rules;
 pub use socks4::Socks4;
 pub use socks5::Socks5;
 pub use socks5_udp::Association;
@@ -251,8 +251,8 @@ pub trait Handshake {
     /// SOCKS5's only: an [`Association`] cannot be made outside this
     /// crate, because the path it opens is framed with RFC 1928 §7's
     /// datagram header. A protocol outside this crate answers `None` — or
-    /// forwards the answer of a SOCKS5 handshake it wraps, as
-    /// [`BoxHandshake`] does.
+    /// forwards the answer of a SOCKS5 handshake it wraps, as [`Rules`]
+    /// does for every protocol it holds.
     fn associate(&self) -> Option<Association> {
         None
     }
