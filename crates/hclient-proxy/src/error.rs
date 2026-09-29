@@ -20,13 +20,13 @@
 //! site. So nothing in this crate degrades, and the file is short because
 //! there is nothing here but named refusals.
 //!
-//! **A refusal is not the only thing a caller gets told, and the other
-//! kind stayed behind.** `system::UnsupportedBypass` and
-//! `system::BypassReason` describe a pattern the machine named that this
-//! matcher cannot express — but they implement `Display` and not `Error`,
-//! and they are never an `Err`: they are carried on `SystemProxies` as a
-//! record of what was read, beside `ignored` and `pac`. They are values,
-//! so they live with the settings they describe.
+//! **One of them is both a refusal and a record.** [`UnsupportedBypass`]
+//! is the `Err` [`Proxy::bypass`](crate::Proxy::bypass) answers for a
+//! pattern its matcher cannot express, and it is also what the system
+//! reader carries on `SystemProxies` for a pattern the machine named —
+//! one value for both, so a caller's list and the machine's cannot be
+//! judged by two dialects. [`BypassReason`] says why, and is a value
+//! rather than an error of its own.
 //!
 //! Each type is re-exported at the path it already had — the crate root
 //! for the three protocols, [`crate::system`] for the two behind the
@@ -51,6 +51,16 @@ use crate::system::ProxyKind;
 pub struct ProxyRefused {
     /// The status the proxy answered — `407` when it wants credentials.
     pub status: http::StatusCode,
+}
+
+impl ProxyRefused {
+    /// A refusal carrying the status the proxy answered — for a filter or
+    /// handshake outside this crate reporting its own proxy's `CONNECT`
+    /// refusal in the vocabulary the built-in one uses.
+    #[must_use]
+    pub const fn new(status: http::StatusCode) -> Self {
+        Self { status }
+    }
 }
 
 /// The proxy answered something that is not an HTTP response, or too much
@@ -152,6 +162,14 @@ pub struct Socks4Refused {
     pub cd: u8,
 }
 
+impl Socks4Refused {
+    /// A refusal carrying the `CD` byte the proxy sent back.
+    #[must_use]
+    pub const fn new(cd: u8) -> Self {
+        Self { cd }
+    }
+}
+
 /// The four `CD` values the protocol defines, by name.
 fn socks4_reply(cd: u8) -> &'static str {
     match cd {
@@ -174,6 +192,14 @@ pub struct Socks5Refused {
     pub rep: u8,
 }
 
+impl Socks5Refused {
+    /// A refusal carrying the `REP` byte the proxy sent back.
+    #[must_use]
+    pub const fn new(rep: u8) -> Self {
+        Self { rep }
+    }
+}
+
 fn socks5_reply(rep: u8) -> &'static str {
     match rep {
         0x01 => "general failure",
@@ -190,7 +216,9 @@ fn socks5_reply(rep: u8) -> &'static str {
 
 /// The proxy would not agree to any method we offered, or refused the
 /// credentials. `0xFF` is RFC 1928 §3's "no acceptable methods".
-#[derive(Debug, thiserror::Error)]
+///
+/// `PartialEq`, so a caller that has downcast the source can compare it.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Socks5HandshakeError {
     /// RFC 1928 §3: the method-selection reply named `0xFF`, meaning the
@@ -261,8 +289,9 @@ pub enum SystemProxyRefused {
         /// The proxy's port, as the system reported it.
         port: u16,
     },
-    /// A bypass pattern this crate's matcher cannot express — a subnet,
-    /// or a wildcard that is not a leading `*.`.
+    /// A bypass pattern this crate's matcher cannot express — a wildcard
+    /// that is not a leading `*.`, or a pattern in none of the forms a
+    /// bypass accepts.
     ///
     /// Honouring it approximately is what the matcher's own dialect
     /// refuses to do (*a pattern in no accepted shape matches nothing
@@ -348,6 +377,16 @@ pub enum ParseError {
 pub struct ProxySpokeFirst {
     /// How many bytes arrived past the handshake.
     pub bytes: usize,
+}
+
+impl ProxySpokeFirst {
+    /// The error for `bytes` bytes that arrived past a handshake — for a
+    /// filter outside this crate that runs a handshake of its own and
+    /// makes the same check [`drive_exact`](crate::drive_exact) does.
+    #[must_use]
+    pub const fn new(bytes: usize) -> Self {
+        Self { bytes }
+    }
 }
 
 // Maintainer notes (not rendered):
