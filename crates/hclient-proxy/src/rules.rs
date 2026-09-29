@@ -285,7 +285,16 @@ impl EgressFilter for Rules {
         } else {
             SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0))
         };
-        let udp = ctx.bind_udp(local).map_err(Attempt::Unsupported)?;
+        // Only a runtime that lends no UDP is a refusal to switch on; a
+        // socket that would not bind (out of descriptors, a port taken) is
+        // this host failing now, which is final and not remembered.
+        let udp = ctx.bind_udp(local).map_err(|e| {
+            if matches!(e.kind(), hclient_core::error::ErrorKind::Unsupported) {
+                Attempt::Unsupported(e)
+            } else {
+                Attempt::Failed(e)
+            }
+        })?;
         let header = crate::socks5_udp::header_for(t.host, t.port).map_err(Attempt::Failed)?;
         Ok(crate::BoxPath::new(crate::socks5_udp::Socks5Path::new(
             control, udp, relay, header,
@@ -839,6 +848,8 @@ mod tests {
         udp: crate::socks5_udp::fake::FakeUdp,
         bound: Mutex<Vec<std::net::SocketAddr>>,
         resolved: Mutex<Vec<String>>,
+        /// Where set, `bind_udp` fails with this kind instead of binding.
+        bind_fails: Option<hclient_core::error::ErrorKind>,
     }
     impl UdpDial {
         fn new(reply: Vec<u8>, resolves_to: &str) -> Self {
@@ -849,6 +860,7 @@ mod tests {
                 udp: crate::socks5_udp::fake::FakeUdp::default(),
                 bound: Mutex::default(),
                 resolved: Mutex::default(),
+                bind_fails: None,
             }
         }
         fn udp_sent_to(&self) -> Vec<std::net::SocketAddr> {
@@ -887,6 +899,9 @@ mod tests {
             None
         }
         fn bind_udp(&self, local: std::net::SocketAddr) -> Result<crate::BoxUdp, Error> {
+            if let Some(kind) = &self.bind_fails {
+                return Err(Error::new(kind.clone(), io::Error::other("bind refused")));
+            }
             self.bound.lock().unwrap().push(local);
             Ok(crate::BoxUdp::new(self.udp.clone()))
         }
@@ -949,6 +964,25 @@ mod tests {
             dial.bound().is_empty(),
             "no socket is bound for a proxy that refused"
         );
+    }
+
+    #[test]
+    fn a_socket_that_will_not_bind_is_failed_and_only_an_unsupported_one_switches() {
+        let reply = vec![0x05, 0x00, 0x00, 0x01, 192, 0, 2, 50, 0x1f, 0x90];
+        let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "px", 1080));
+
+        // Out of descriptors, the port taken: a fault of this host now,
+        // not a proxy that cannot carry datagrams — final, not a switch.
+        let mut dial = UdpDial::new(reply.clone(), "192.0.2.50:1080");
+        dial.bind_fails = Some(hclient_core::error::ErrorKind::Other);
+        let a = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap_err();
+        assert!(!a.permits_switch(), "{a:?}");
+
+        // A runtime that lends no UDP at all is the refusal that switches.
+        let mut dial = UdpDial::new(reply, "192.0.2.50:1080");
+        dial.bind_fails = Some(hclient_core::error::ErrorKind::Unsupported);
+        let a = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap_err();
+        assert!(a.permits_switch(), "{a:?}");
     }
 
     #[test]
