@@ -57,12 +57,29 @@ where
 
     /// The next datagram, copied into `buf`, its length returned.
     ///
+    /// A datagram longer than `buf` is **truncated** to it, and the rest
+    /// of it is lost: the length returned is what was copied, and nothing
+    /// says a datagram was cut. That is what a UDP socket does, and every
+    /// path in this crate and in the transports that use it does the same.
+    /// A caller that must not lose bytes passes a buffer of at least
+    /// [`max_datagram_size`](Self::max_datagram_size) — a QUIC stack always
+    /// does, since it receives into buffers sized for the largest UDP
+    /// payload.
+    ///
     /// # Errors
     ///
     /// The path has ended — its carrier closed or failed.
     fn poll_recv(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>>;
 
     /// The largest datagram [`try_send`](Self::try_send) accepts.
+    ///
+    /// A **ceiling**, not a promise about the link beneath it: a datagram
+    /// of this size or smaller is accepted by the path, and may still be
+    /// lost on its way — a relay's own link can be narrower than the path
+    /// knows, behind a VPN or a tunnel, and a datagram over it disappears
+    /// without an error. A transport treats this as the upper bound of what
+    /// it discovers, starting from its own floor, rather than as a size it
+    /// may send from the start.
     fn max_datagram_size(&self) -> usize;
 }
 
