@@ -384,14 +384,19 @@ async fn opening_the_path_and_the_quic_handshake_spend_one_connect_bound() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fallback_to_the_stream_after_quic_over_a_slow_path_gets_what_is_left_once() {
     // The path takes `OPEN` to open and is too small for QUIC, so QUIC over
-    // it fails at once; the stream then takes `STREAM` to open. Both fit
-    // inside one bound together — the stream is handed `BOUND_C - OPEN`
-    // — and they do not fit if the path's time is taken off twice.
-    const BOUND_C: std::time::Duration = std::time::Duration::from_millis(1500);
+    // it fails at once and the request switches to the stream. What the
+    // stream's context says is left of the bound is read against what the
+    // path's context said and the time the filter itself saw pass between
+    // the two: spent once, the two agree; spent twice, the stream is short
+    // by the path's whole opening, which is a sleep of `OPEN` and so never
+    // less. No step here races a clock against the bound.
+    const BOUND_C: std::time::Duration = std::time::Duration::from_millis(5000);
     const OPEN: std::time::Duration = std::time::Duration::from_millis(400);
-    const STREAM: std::time::Duration = std::time::Duration::from_millis(900);
     let pair = servers::start();
-    let filter = ForwardFilter::new(Mode::SlowSmallPathSlowStream(OPEN, STREAM), pair.addr());
+    let filter = ForwardFilter::new(
+        Mode::SlowSmallPathSlowStream(OPEN, std::time::Duration::ZERO),
+        pair.addr(),
+    );
     let t = native(&pair, &NameLog::default(), filter.clone());
     seed_alt_svc_h3(&t, &pair).await;
     let mut req = request(&literal(&pair), false);
@@ -400,9 +405,29 @@ async fn a_fallback_to_the_stream_after_quic_over_a_slow_path_gets_what_is_left_
     let resp = tokio::time::timeout(BOUND, t.execute(req))
         .await
         .expect("the request finished inside the guard")
-        .expect("the stream fits inside what is left of one bound");
+        .expect("the stream carries the request");
     assert_eq!(resp.version(), http::Version::HTTP_11);
     assert_eq!(filter.datagram_attempts(), 1, "the path was tried first");
+
+    // The seeding request's stream comes first; this request's path and
+    // stream are the last two.
+    let lent = filter.lent();
+    let [.., path, stream] = lent.as_slice() else {
+        panic!("a path and a stream were asked for: {lent:?}")
+    };
+    assert!(path.datagrams && !stream.datagrams, "{lent:?}");
+    let (Some(at_path), Some(at_stream)) = (path.remaining, stream.remaining) else {
+        panic!("both contexts carry the caller's bound: {lent:?}")
+    };
+    assert!(at_path <= BOUND_C, "{lent:?}");
+    // What the stream should have been handed, by the filter's own clock.
+    let expected = at_path.saturating_sub(stream.at - path.at);
+    let short = expected.saturating_sub(at_stream);
+    assert!(
+        short < OPEN / 2,
+        "the stream was handed {at_stream:?} where {expected:?} was left: \
+         the path's {OPEN:?} was taken off the bound twice"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

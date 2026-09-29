@@ -118,6 +118,19 @@ pub struct ForwardFilter {
     peer: SocketAddr,
     datagram_attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     stream_opens: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    lent: std::sync::Arc<std::sync::Mutex<Vec<Lent>>>,
+}
+
+/// What a lent context said was left of the connect bound, and when the
+/// filter asked it.
+#[derive(Debug, Clone, Copy)]
+pub struct Lent {
+    /// `true` for a datagram path, `false` for a stream.
+    pub datagrams: bool,
+    /// When the filter was asked, on the test's clock.
+    pub at: std::time::Instant,
+    /// [`hclient_proxy::Dial::remaining`] at that moment.
+    pub remaining: Option<std::time::Duration>,
 }
 
 impl ForwardFilter {
@@ -128,7 +141,28 @@ impl ForwardFilter {
             peer,
             datagram_attempts: std::sync::Arc::default(),
             stream_opens: std::sync::Arc::default(),
+            lent: std::sync::Arc::default(),
         }
+    }
+
+    /// Every context this filter was lent, in the order it was asked.
+    pub fn lent(&self) -> Vec<Lent> {
+        self.lent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn note_lent<C: hclient_proxy::Dial>(&self, datagrams: bool, ctx: &C) {
+        let remaining = ctx.remaining();
+        self.lent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Lent {
+                datagrams,
+                at: std::time::Instant::now(),
+                remaining,
+            });
     }
 
     /// How often a datagram path was asked for.
@@ -184,6 +218,7 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
     {
         self.stream_opens
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.note_lent(false, ctx);
         if let Mode::SlowSmallPathSlowStream(_, delay) = self.mode {
             tokio::time::sleep(delay).await;
         }
@@ -199,7 +234,7 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
     fn open_datagrams<'a, C: hclient_proxy::Dial + 'a>(
         &'a self,
         _: hclient_proxy::Target<'a>,
-        _: &'a C,
+        ctx: &'a C,
     ) -> impl std::future::Future<Output = Result<BoxPath, hclient_proxy::Attempt>> + 'a
     where
         Self: Sized,
@@ -207,6 +242,7 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
     {
         self.datagram_attempts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.note_lent(true, ctx);
         let (mode, peer) = (self.mode, self.peer);
         async move {
             match mode {
