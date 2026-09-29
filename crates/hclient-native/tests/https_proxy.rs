@@ -363,6 +363,13 @@ mod erased {
         fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
             Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
         }
+        fn open_datagrams_send<'a>(
+            &'a self,
+            t: Target<'a>,
+            ctx: &'a BoxDial<'a>,
+        ) -> hclient_proxy::BoxPathOpening<'a> {
+            Box::pin(self.open_datagrams(t, ctx))
+        }
     }
 }
 

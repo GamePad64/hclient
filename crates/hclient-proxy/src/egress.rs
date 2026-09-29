@@ -678,15 +678,15 @@ pub type BoxOpening<'a> =
 // The `Transport`/`SendTransport` split, amendment C16.
 /// A filter a transport can erase.
 ///
-/// The one method is written where every type is concrete — `Self` and
+/// The two methods are written where every type is concrete — `Self` and
 /// [`BoxDial`] — so `Send` is inferred rather than proven, the shape of
 /// `hclient_core::transport::SendTransport`. Every implementation is the
 /// few lines below:
 ///
 /// ```no_run
 /// use hclient_proxy::{
-///     Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, Io, Opened, Rules,
-///     SendEgressFilter, Target,
+///     Attempt, BoxDial, BoxOpening, BoxPathOpening, Decision, Dial, EgressFilter, Io, Opened,
+///     Rules, SendEgressFilter, Target,
 /// };
 ///
 /// /// A filter that adds nothing to the built-in rules.
@@ -714,6 +714,48 @@ pub type BoxOpening<'a> =
 ///     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
 ///         Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
 ///     }
+///     fn open_datagrams_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxPathOpening<'a> {
+///         Box::pin(self.open_datagrams(t, ctx))
+///     }
+/// }
+/// ```
+///
+/// Both methods are required, and the second is the same one line for
+/// every filter. A filter that left it out would compile against a
+/// default refusal and the erased path would never reach its own
+/// [`EgressFilter::open_datagrams`] — so a filter that opens datagram
+/// paths would be sent over a stream instead, and remembered as unable
+/// to carry HTTP/3. Leaving it out is a compile error:
+///
+/// ```compile_fail,E0046
+/// use hclient_proxy::{
+///     Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, Io, Opened, Rules,
+///     SendEgressFilter, Target,
+/// };
+///
+/// struct Forgot(Rules);
+///
+/// impl EgressFilter for Forgot {
+///     type Wrapped<S: Io> = S;
+///     fn route(&self, t: &Target<'_>) -> Decision<'_> {
+///         self.0.route(t)
+///     }
+///     async fn open_stream<'a, C: Dial + 'a>(
+///         &'a self,
+///         t: Target<'a>,
+///         ctx: &'a C,
+///     ) -> Result<Opened<C::Stream, C::Stream>, Attempt>
+///     where
+///         Self: Sized,
+///     {
+///         self.0.open_stream(t, ctx).await
+///     }
+/// }
+///
+/// impl SendEgressFilter for Forgot {
+///     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
+///         Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+///     }
 /// }
 /// ```
 ///
@@ -723,15 +765,15 @@ pub trait SendEgressFilter: EgressFilter {
     fn open_stream_send<'a>(&'a self, target: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a>;
 
     /// [`EgressFilter::open_datagrams`], over an erased context, boxed.
-    /// Refuses by default, as `open_datagrams` does.
+    ///
+    /// Required, and always `Box::pin(self.open_datagrams(target, ctx))`:
+    /// there is no default, so that this cannot silently answer something
+    /// other than what [`EgressFilter::open_datagrams`] answers.
     fn open_datagrams_send<'a>(
         &'a self,
         target: Target<'a>,
         ctx: &'a BoxDial<'a>,
-    ) -> BoxPathOpening<'a> {
-        let _ = (target, ctx);
-        Box::pin(std::future::ready(Err(no_datagrams())))
-    }
+    ) -> BoxPathOpening<'a>;
 }
 
 #[cfg(test)]
@@ -1098,6 +1140,13 @@ mod tests {
         impl SendEgressFilter for StreamOnly {
             fn open_stream_send<'a>(&'a self, _: Target<'a>, _: &'a BoxDial<'a>) -> BoxOpening<'a> {
                 unreachable!()
+            }
+            fn open_datagrams_send<'a>(
+                &'a self,
+                t: Target<'a>,
+                ctx: &'a BoxDial<'a>,
+            ) -> BoxPathOpening<'a> {
+                Box::pin(self.open_datagrams(t, ctx))
             }
         }
         let t = Target::new("o", 443, true);

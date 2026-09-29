@@ -428,6 +428,13 @@ mod xor {
         fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
             Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
         }
+        fn open_datagrams_send<'a>(
+            &'a self,
+            t: Target<'a>,
+            ctx: &'a BoxDial<'a>,
+        ) -> hclient_proxy::BoxPathOpening<'a> {
+            Box::pin(self.open_datagrams(t, ctx))
+        }
     }
 
     #[allow(dead_code, reason = "names the type the filter hands back")]
@@ -559,6 +566,13 @@ mod deny {
     impl SendEgressFilter for Deny {
         fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
             Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+        }
+        fn open_datagrams_send<'a>(
+            &'a self,
+            t: Target<'a>,
+            ctx: &'a BoxDial<'a>,
+        ) -> hclient_proxy::BoxPathOpening<'a> {
+            Box::pin(self.open_datagrams(t, ctx))
         }
     }
 }
@@ -753,6 +767,13 @@ mod tunnel {
     impl SendEgressFilter for Tunnel {
         fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
             Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+        }
+        fn open_datagrams_send<'a>(
+            &'a self,
+            t: Target<'a>,
+            ctx: &'a BoxDial<'a>,
+        ) -> hclient_proxy::BoxPathOpening<'a> {
+            Box::pin(self.open_datagrams(t, ctx))
         }
     }
 }
