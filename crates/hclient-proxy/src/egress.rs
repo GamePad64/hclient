@@ -498,7 +498,7 @@ pub trait EgressFilter {
     ///
     /// # Errors
     ///
-    /// An [`Attempt`] saying which of the three ways it failed.
+    /// An [`Attempt`] saying which of its two ways it failed.
     #[allow(
         clippy::type_complexity,
         reason = "the return type is the seam: a stream of the context's type or of this filter's own wrapper type, and naming it through an alias would hide which is which"
