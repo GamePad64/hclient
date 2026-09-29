@@ -978,7 +978,7 @@ where
                     udp,
                     tunnel_h2: ext.tunnel_h2,
                     #[cfg(feature = "http3")]
-                    tunnel_h3: ext.h3.as_deref(),
+                    tunnel_h3: ext.h3_tunnels(),
                     budget,
                     watching: H::WATCHING,
                     target,

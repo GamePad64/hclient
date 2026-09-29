@@ -1855,7 +1855,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// origin rather than of the path. The failure
     /// memory keeps nothing: *"UDP/443 did not get through"* is a fact
     /// about the network alone, no peer ever asked us to carry it, and it
-    /// is exactly the entry a network change makes certainly wrong.
+    /// is exactly the entry a network change makes certainly wrong. The
+    /// same holds of the proxies whose HTTP/3 tunnels failed, which an
+    /// installed filter's tunnels remember, and those are forgotten too.
     ///
     /// **It is `async`** because the store may be on the far side of a file
     /// or a socket, and forgetting an advertisement there is not a lock and a
@@ -1873,6 +1875,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     pub async fn network_changed(&self) {
         self.alt_svc.network_changed().await;
         self.h3_failures.network_changed();
+        if let Some(e) = &self.external {
+            e.tunnel_failures.network_changed();
+        }
     }
 
     // Maintainer notes (not rendered):
@@ -2734,6 +2739,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             open_path: external::open_path::<R, D, T, hclient_proxy::SharedFilter>,
             #[cfg(feature = "http3")]
             h3: self.h3.clone(),
+            #[cfg(feature = "http3")]
+            tunnel_failures: failures::H3Failures::default(),
+            #[cfg(feature = "http3")]
+            tunnel_epoch: self.rt.now(),
         });
         self.caps.proxy = true;
         self
@@ -4400,7 +4409,12 @@ pub mod testing {
         )
         .with_tunnel_h2(native.external.as_ref().and_then(|e| e.tunnel_h2));
         #[cfg(feature = "http3")]
-        let dial = dial.with_tunnel_h3(native.external.as_ref().and_then(|e| e.h3.as_deref()));
+        let dial = dial.with_tunnel_h3(
+            native
+                .external
+                .as_ref()
+                .and_then(crate::external::External::h3_tunnels),
+        );
         dial
     }
 

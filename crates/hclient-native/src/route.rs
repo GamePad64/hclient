@@ -960,7 +960,10 @@ where
             ipc: self.ipc,
             udp: self.udp,
             tunnel_h2: self.external.as_ref().and_then(|e| e.tunnel_h2),
-            tunnel_h3: self.external.as_ref().and_then(|e| e.h3.as_deref()),
+            tunnel_h3: self
+                .external
+                .as_ref()
+                .and_then(crate::external::External::h3_tunnels),
             budget,
             watching: false,
             target,

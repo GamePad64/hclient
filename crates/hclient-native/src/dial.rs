@@ -25,6 +25,13 @@ use crate::connect::Attempted;
 /// a retransmitted handshake finish on an ordinary path.
 const H3_TUNNEL_BEFORE_H2: Duration = Duration::from_millis(1500);
 
+/// The key a proxy's failed HTTP/3 tunnels are remembered under: its
+/// authority, the host without the brackets a v6 literal is written in.
+#[cfg(feature = "http3")]
+fn tunnel_origin(req: &hclient_proxy::TunnelRequest<'_>) -> crate::altsvc_cache::Origin {
+    crate::altsvc_cache::Origin::new(hclient_core::url::bare_host(req.proxy_host), req.proxy_port)
+}
+
 /// What stands in for the QUIC arm without the `http3` feature: nothing,
 /// and nothing can be made of it.
 #[cfg(not(feature = "http3"))]
@@ -41,6 +48,29 @@ impl NoArm {
         match *self {}
     }
 }
+
+/// The QUIC arm a context opens HTTP/3 tunnels through, and the memory of
+/// the proxies whose HTTP/3 tunnels have failed.
+#[cfg(feature = "http3")]
+pub(crate) struct LentH3<'a, R: Timer> {
+    pub(crate) arm: &'a crate::http3::arm::Arm,
+    /// Keyed by the proxy's authority; read only where HTTP/2 can follow,
+    /// so a tunnel that will take HTTP/3 alone still tries it.
+    pub(crate) failures: &'a crate::failures::H3Failures,
+    /// What the memory's windows are measured from, on the transport's
+    /// clock.
+    pub(crate) epoch: R::Instant,
+}
+
+#[cfg(feature = "http3")]
+impl<R: Timer> Clone for LentH3<'_, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+#[cfg(feature = "http3")]
+impl<R: Timer> Copy for LentH3<'_, R> {}
 
 /// `Native`'s [`hclient_proxy::Dial`], built per connection.
 ///
@@ -74,7 +104,7 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, L, H> {
     /// `None` refuses a tunnel that will take HTTP/3 alone before any
     /// packet is sent.
     #[cfg(feature = "http3")]
-    tunnel_h3: Option<&'a crate::http3::arm::Arm>,
+    tunnel_h3: Option<LentH3<'a, R>>,
     budget: Option<Duration>,
     /// When the context was lent, on the transport's clock — what
     /// [`remaining`](hclient_proxy::Dial::remaining) counts the budget down
@@ -130,8 +160,8 @@ impl<'a, R: TcpConnect + Timer, D: ?Sized, L, H> NativeDial<'a, R, D, L, H> {
 
     /// Lend HTTP/3 tunnels through `arm`, or none.
     #[cfg(feature = "http3")]
-    pub(crate) fn with_tunnel_h3(mut self, arm: Option<&'a crate::http3::arm::Arm>) -> Self {
-        self.tunnel_h3 = arm;
+    pub(crate) fn with_tunnel_h3(mut self, lent: Option<LentH3<'a, R>>) -> Self {
+        self.tunnel_h3 = lent;
         self
     }
 
@@ -183,6 +213,12 @@ where
     /// refusal, so without this bound the fallback would wait for QUIC's
     /// idle timeout — or spend the whole connect bound — first. Where
     /// HTTP/3 is all the request will take, it gets everything that is left.
+    ///
+    /// A proxy whose HTTP/3 tunnel failed is remembered for as long as a
+    /// failed QUIC connect to an origin is, and while it is, a request that
+    /// will take HTTP/2 goes straight there; `Native::network_changed`
+    /// forgets it. A request that will take HTTP/3 alone never reads the
+    /// memory.
     async fn connect_tunnel_raw<'b>(
         &'b self,
         req: hclient_proxy::TunnelRequest<'b>,
@@ -194,18 +230,27 @@ where
             _ => (true, true),
         };
         let mut h3_failed = None;
+        let h2_follows = h2 && self.tunnel_h2.is_some();
         if h3 {
             match self.h3_arm() {
+                // A proxy whose HTTP/3 tunnel already failed is not asked
+                // again while HTTP/2 can carry this one: into a silent UDP
+                // port each attempt would cost the whole of
+                // `H3_TUNNEL_BEFORE_H2`.
+                Some(_) if h2_follows && self.h3_remembered_failing(&req) => {}
                 Some(arm) => {
                     let left = hclient_proxy::Dial::remaining(self);
-                    let budget = if h2 && self.tunnel_h2.is_some() {
+                    let budget = if h2_follows {
                         Some(left.map_or(H3_TUNNEL_BEFORE_H2, |d| (d / 2).min(H3_TUNNEL_BEFORE_H2)))
                     } else {
                         left
                     };
                     match arm.tunnel_boxed(req.clone(), budget).await {
                         Ok(t) => return Ok(t),
-                        Err(e) => h3_failed = Some(e),
+                        Err(e) => {
+                            self.remember_h3_failing(&req);
+                            h3_failed = Some(e);
+                        }
                     }
                 }
                 None if !h2 => {
@@ -238,8 +283,45 @@ where
     /// The QUIC arm HTTP/3 tunnels are opened through, if one is lent.
     #[cfg(feature = "http3")]
     fn h3_arm(&self) -> Option<&crate::http3::arm::Arm> {
-        self.tunnel_h3
+        self.tunnel_h3.map(|l| l.arm)
     }
+
+    /// Whether an HTTP/3 tunnel to `req`'s proxy failed recently enough to
+    /// be remembered.
+    #[cfg(feature = "http3")]
+    fn h3_remembered_failing(&self, req: &hclient_proxy::TunnelRequest<'_>) -> bool {
+        self.tunnel_h3.is_some_and(|l| {
+            l.failures
+                .suppressed(&tunnel_origin(req), self.rt.elapsed_since(l.epoch))
+        })
+    }
+
+    /// An HTTP/3 tunnel to `req`'s proxy failed.
+    #[cfg(feature = "http3")]
+    fn remember_h3_failing(&self, req: &hclient_proxy::TunnelRequest<'_>) {
+        if let Some(l) = self.tunnel_h3 {
+            l.failures
+                .note(&tunnel_origin(req), self.rt.elapsed_since(l.epoch));
+        }
+    }
+
+    /// Nothing is remembered without the `http3` feature.
+    #[cfg(not(feature = "http3"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "the `http3` twin reads `self`, and the call site stays free of a `#[cfg]`"
+    )]
+    fn h3_remembered_failing(&self, _req: &hclient_proxy::TunnelRequest<'_>) -> bool {
+        false
+    }
+
+    /// Nothing is remembered without the `http3` feature.
+    #[cfg(not(feature = "http3"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "the `http3` twin reads `self`, and the call site stays free of a `#[cfg]`"
+    )]
+    fn remember_h3_failing(&self, _req: &hclient_proxy::TunnelRequest<'_>) {}
 
     /// No HTTP/3 tunnels without the `http3` feature.
     #[cfg(not(feature = "http3"))]

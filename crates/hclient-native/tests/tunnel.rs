@@ -572,6 +572,100 @@ mod over_h3 {
         );
     }
 
+    /// The destination connection ids of every QUIC long-header packet
+    /// waiting on `hole`, which is how one connection attempt is told from
+    /// the next: a fresh attempt picks a fresh id for its Initial, and the
+    /// packets an abandoned attempt still sends — a retransmission, a close
+    /// — carry the id it already had.
+    fn attempts_heard(hole: &std::net::UdpSocket) -> std::collections::BTreeSet<Vec<u8>> {
+        hole.set_nonblocking(true).unwrap();
+        let mut ids = std::collections::BTreeSet::new();
+        let mut buf = [0u8; 2048];
+        while let Ok(n) = hole.recv(&mut buf) {
+            let p = &buf[..n];
+            if n > 6 && p[0] & 0x80 != 0 {
+                let len = usize::from(p[5]);
+                if let Some(id) = p.get(6..6 + len) {
+                    ids.insert(id.to_vec());
+                }
+            }
+        }
+        ids
+    }
+
+    /// A proxy whose UDP swallows every packet costs one HTTP/3 attempt,
+    /// not one per tunnel: while its failure is remembered an
+    /// `Http3ThenHttp2` tunnel to it starts no QUIC connection at all, and
+    /// a network change forgets it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_proxy_whose_h3_failed_is_not_asked_again_until_the_network_changes() {
+        let proxy = h2_proxy::h2_proxy(h2_proxy::H2Proxy::Echo { extended: true });
+        let Ok(hole) = std::net::UdpSocket::bind(("127.0.0.1", proxy.port())) else {
+            return;
+        };
+        let native = native(&h3_proxy::trusting(&[proxy.cert()]));
+        let both = || udp(proxy.port()).version(TunnelVersion::Http3ThenHttp2);
+        let tunnel = || async {
+            let dial = hclient_native::testing::dial_for(&native);
+            let t = bounded(dial.connect_tunnel(both())).await.unwrap();
+            assert!(t.datagrams.is_none(), "the tunnel came over h2");
+        };
+
+        tunnel().await;
+        let first = attempts_heard(&hole);
+        assert_eq!(first.len(), 1, "the first tunnel tried HTTP/3 once");
+
+        tunnel().await;
+        let second = attempts_heard(&hole);
+        assert!(
+            second.is_subset(&first),
+            "the second tunnel started a QUIC connection: {second:?} after {first:?}"
+        );
+
+        native.network_changed().await;
+        tunnel().await;
+        let third = attempts_heard(&hole);
+        assert!(
+            third.iter().any(|id| !first.contains(id)),
+            "after a network change HTTP/3 is tried again"
+        );
+    }
+
+    /// The memory is for a tunnel that will take HTTP/2; one that will
+    /// take HTTP/3 alone still tries it, and fails as it did.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_remembered_h3_failure_does_not_stop_an_h3_only_tunnel() {
+        let proxy = h2_proxy::h2_proxy(h2_proxy::H2Proxy::Echo { extended: true });
+        let Ok(hole) = std::net::UdpSocket::bind(("127.0.0.1", proxy.port())) else {
+            return;
+        };
+        let native = native(&h3_proxy::trusting(&[proxy.cert()]));
+        let dial = hclient_native::testing::dial_for(&native);
+        let t =
+            bounded(dial.connect_tunnel(udp(proxy.port()).version(TunnelVersion::Http3ThenHttp2)))
+                .await
+                .unwrap();
+        assert!(t.datagrams.is_none(), "the tunnel came over h2");
+        let first = attempts_heard(&hole);
+        assert_eq!(first.len(), 1);
+
+        // Into silence with no connect bound this would wait out QUIC's
+        // idle timeout; the first flight is all the test needs to hear, so
+        // it gives up after a second, as a caller's bound would.
+        let r = tokio::time::timeout(
+            Duration::from_secs(1),
+            dial.connect_tunnel(udp(proxy.port())),
+        )
+        .await;
+        assert!(!matches!(r, Ok(Ok(_))), "nothing answers on UDP");
+        let again = attempts_heard(&hole);
+        assert!(
+            again.iter().any(|id| !first.contains(id)),
+            "an HTTP/3-only tunnel still dialled QUIC"
+        );
+        assert_eq!(proxy.accepted(), 1, "and never HTTP/2");
+    }
+
     /// Two proxies behind one authority, an HTTP/3 one on UDP that refuses
     /// extended CONNECT and an HTTP/2 one on TCP that takes it — or `None`
     /// where the UDP port is taken.

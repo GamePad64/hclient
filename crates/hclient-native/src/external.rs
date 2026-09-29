@@ -57,7 +57,7 @@ pub(crate) struct Call<'a, R: TcpConnect + Timer, D, L> {
     /// the filter it is lent to was installed with `Native::egress` on a
     /// transport with one.
     #[cfg(feature = "http3")]
-    pub(crate) tunnel_h3: Option<&'a crate::http3::arm::Arm>,
+    pub(crate) tunnel_h3: Option<crate::dial::LentH3<'a, R>>,
     pub(crate) budget: Option<Duration>,
     /// Whether a hook is watching — `H::WATCHING`, carried as a value so
     /// that the stored pointer names no hook type and `Native::hooks` can
@@ -120,6 +120,28 @@ pub(crate) struct External<R: TcpConnect + Timer, D, L: TlsConnect> {
     /// comes second, so neither order loses it.
     #[cfg(feature = "http3")]
     pub(crate) h3: Option<Arc<crate::http3::arm::Arm>>,
+    /// The proxies whose HTTP/3 tunnels have failed, so a tunnel that will
+    /// take HTTP/2 goes straight to it while one is remembered; cleared by
+    /// `Native::network_changed`. Keyed by the proxy's authority.
+    #[cfg(feature = "http3")]
+    pub(crate) tunnel_failures: crate::failures::H3Failures,
+    /// What [`Self::tunnel_failures`]' windows are measured from, on the
+    /// transport's clock.
+    #[cfg(feature = "http3")]
+    pub(crate) tunnel_epoch: R::Instant,
+}
+
+impl<R: TcpConnect + Timer, D, L: TlsConnect> External<R, D, L> {
+    /// What a context this filter is lent opens HTTP/3 tunnels through,
+    /// when there is a QUIC arm.
+    #[cfg(feature = "http3")]
+    pub(crate) fn h3_tunnels(&self) -> Option<crate::dial::LentH3<'_, R>> {
+        self.h3.as_deref().map(|arm| crate::dial::LentH3 {
+            arm,
+            failures: &self.tunnel_failures,
+            epoch: self.tunnel_epoch,
+        })
+    }
 }
 
 impl<R: TcpConnect + Timer, D, L: TlsConnect> Clone for External<R, D, L> {
@@ -132,6 +154,10 @@ impl<R: TcpConnect + Timer, D, L: TlsConnect> Clone for External<R, D, L> {
             tunnel_h2: self.tunnel_h2,
             #[cfg(feature = "http3")]
             h3: self.h3.clone(),
+            #[cfg(feature = "http3")]
+            tunnel_failures: self.tunnel_failures.clone(),
+            #[cfg(feature = "http3")]
+            tunnel_epoch: self.tunnel_epoch,
         }
     }
 }
