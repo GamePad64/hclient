@@ -2002,7 +2002,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
         R::Socket: Debug,
         R::Instant: Send + Sync, // send-bound-exception: amendment-C15
-        T: hclient_tls::quic::QuicTlsConnect<Session = Arc<dyn quinn_proto::crypto::ClientConfig>>,
+        T: hclient_tls::quic::QuicTlsConnect<Session = crate::http3::QuinnSession>,
         D: hclient_dns::Resolve,
         for<'a> D::Records<'a>: Send, // send-bound-exception: amendment-C15
         crate::http3::Staged<R, hclient_core::hooks::NoHooks>: Send, // send-bound-exception: amendment-C15
@@ -4446,9 +4446,7 @@ pub mod testing {
         R: crate::http3::H3Runtime,
         R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
         R::Socket: std::fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
-        T: hclient_tls::quic::QuicTlsConnect<
-                Session = std::sync::Arc<dyn quinn_proto::crypto::ClientConfig>,
-            >,
+        T: hclient_tls::quic::QuicTlsConnect<Session = crate::http3::QuinnSession>,
         D: hclient_dns::Resolve,
         H: hclient_core::hooks::Hooks + Clone + Unpin,
     {

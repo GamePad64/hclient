@@ -88,6 +88,14 @@ mod pump;
 /// quinn's `Runtime` over this workspace's own seams.
 pub(crate) mod runtime;
 mod staged;
+/// Tunnels to a proxy over HTTP/3: extended CONNECT on a QUIC connection
+/// of their own, and the stream's datagrams.
+pub(crate) mod tunnel;
+
+/// The session a QUIC TLS backend must hand this stack: quinn's crypto
+/// config. Named here so that the bounds outside this module that ask for
+/// it do not name quinn themselves.
+pub(crate) type QuinnSession = Arc<dyn quinn_proto::crypto::ClientConfig>;
 
 pub use crate::http3::runtime::QuinnTask;
 pub use body::H3Body;
@@ -1412,10 +1420,10 @@ async fn open_tunnel(
     let id = stream.id().into_inner();
     Ok(hclient_proxy::Tunnel::new(
         parts,
-        hclient_proxy::BoxIo::new(crate::tunnel::h3::H3Stream::new(stream, send.clone())),
-        Some(hclient_proxy::BoxPath::new(
-            crate::tunnel::h3::H3Datagrams::new(conn, id, send),
-        )),
+        hclient_proxy::BoxIo::new(tunnel::H3Stream::new(stream, send.clone())),
+        Some(hclient_proxy::BoxPath::new(tunnel::H3Datagrams::new(
+            conn, id, send,
+        ))),
     ))
 }
 
