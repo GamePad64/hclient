@@ -9010,8 +9010,16 @@ HTTP/3 then HTTP/2 whatever the request was, and a plain CONNECT cannot
 go over the HTTP/3 client this family is built on, so the default named
 a version the transport would skip. It is HTTP/2 for a plain CONNECT and
 HTTP/3 then HTTP/2 once a `protocol` makes it extended — which is what
-an HTTP/3 tunnel is for — and `version` fixes it in either order, pinned
-by a private flag rather than by the order of the builder calls.
+an HTTP/3 tunnel is for. **The field is `Option<TunnelVersion>` and the
+answer is `effective_version()`**, and the shape was chosen over a
+first one that kept `version` a plain public value and rewrote it from
+`protocol()` unless a private flag said a version had been chosen. That
+one was exact through the builder and wrong through the field: the
+struct's fields are public to read *and to assign*, so a filter writing
+`req.version = Http3` and then calling `.protocol(..)` had its choice
+overwritten without a word. With `None` meaning *by the kind of
+CONNECT*, nothing rewrites anything, and
+`a_version_assigned_to_the_field_survives_a_later_protocol` pins it.
 
 **The four enums a filter builds and a transport matches took one
 rule**, and it is the one this file already states for errors crossing a

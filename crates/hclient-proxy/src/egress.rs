@@ -1131,7 +1131,7 @@ mod tests {
         assert_eq!(r.path, None);
         assert_eq!(r.protocol, None);
         assert!(r.headers.is_empty());
-        assert_eq!(r.version, TunnelVersion::Http2);
+        assert_eq!(r.effective_version(), TunnelVersion::Http2);
         let r = r
             .path(Some("/x"))
             .protocol(Some("connect-udp"))
@@ -1142,7 +1142,7 @@ mod tests {
             );
         assert_eq!(
             (r.path, r.protocol, r.version),
-            (Some("/x"), Some("connect-udp"), TunnelVersion::Http2)
+            (Some("/x"), Some("connect-udp"), Some(TunnelVersion::Http2))
         );
         assert_eq!(r.headers["capsule-protocol"], "?1");
     }

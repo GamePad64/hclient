@@ -53,16 +53,14 @@ pub struct TunnelRequest<'a> {
     pub protocol: Option<&'a str>,
     /// Further request fields, `capsule-protocol` among them.
     pub headers: http::HeaderMap,
-    /// Which version to ask over.
+    /// Which version to ask over; `None` leaves it to the kind of CONNECT,
+    /// which [`effective_version`](Self::effective_version) answers.
     ///
-    /// Defaults by the kind of CONNECT: [`TunnelVersion::Http2`] for a
-    /// plain one, [`TunnelVersion::Http3ThenHttp2`] once
-    /// [`protocol`](Self::protocol) makes it extended. Calling
-    /// [`version`](Self::version) fixes it, in either order.
-    pub version: TunnelVersion,
-    /// Whether [`version`](Self::version) chose the version, so that
-    /// [`protocol`](Self::protocol) leaves it alone.
-    version_chosen: bool,
+    /// An `Option` rather than a value the builder rewrites, so that a
+    /// version a filter chose — through [`version`](Self::version) or by
+    /// assigning this field — is never overwritten by a later
+    /// [`protocol`](Self::protocol).
+    pub version: Option<TunnelVersion>,
 }
 
 impl<'a> TunnelRequest<'a> {
@@ -89,19 +87,18 @@ impl<'a> TunnelRequest<'a> {
             path: None,
             protocol: None,
             headers: http::HeaderMap::new(),
-            version: TunnelVersion::Http2,
-            version_chosen: false,
+            version: None,
         }
     }
 
-    /// The version asked for when [`version`](Self::version) was not
-    /// called: HTTP/2 for a plain CONNECT, HTTP/3 then HTTP/2 for an
-    /// extended one.
-    const fn default_version(protocol: Option<&str>) -> TunnelVersion {
-        if protocol.is_some() {
-            TunnelVersion::Http3ThenHttp2
-        } else {
-            TunnelVersion::Http2
+    /// The version to ask over: the one chosen, or where none was, HTTP/2
+    /// for a plain CONNECT and HTTP/3 then HTTP/2 for an extended one.
+    #[must_use]
+    pub fn effective_version(&self) -> TunnelVersion {
+        match (self.version, self.protocol) {
+            (Some(v), _) => v,
+            (None, Some(_)) => TunnelVersion::Http3ThenHttp2,
+            (None, None) => TunnelVersion::Http2,
         }
     }
     /// Set `:path`.
@@ -110,15 +107,12 @@ impl<'a> TunnelRequest<'a> {
         self.path = path;
         self
     }
-    /// Set `:protocol`, making this an extended CONNECT — and, unless
-    /// [`version`](Self::version) was called, asking over HTTP/3 then
-    /// HTTP/2 rather than HTTP/2 alone.
+    /// Set `:protocol`, making this an extended CONNECT — which, unless a
+    /// version was chosen, is asked over HTTP/3 then HTTP/2 rather than
+    /// HTTP/2 alone.
     #[must_use]
     pub fn protocol(mut self, protocol: Option<&'a str>) -> Self {
         self.protocol = protocol;
-        if !self.version_chosen {
-            self.version = Self::default_version(protocol);
-        }
         self
     }
     /// Add a request field.
@@ -131,8 +125,7 @@ impl<'a> TunnelRequest<'a> {
     /// before or after.
     #[must_use]
     pub fn version(mut self, version: TunnelVersion) -> Self {
-        self.version = version;
-        self.version_chosen = true;
+        self.version = Some(version);
         self
     }
 }
@@ -216,9 +209,12 @@ mod tests {
 
     #[test]
     fn a_plain_connect_defaults_to_http2() {
-        assert_eq!(plain().version, TunnelVersion::Http2);
+        assert_eq!(plain().effective_version(), TunnelVersion::Http2);
         assert_eq!(
-            plain().protocol(Some("x")).protocol(None).version,
+            plain()
+                .protocol(Some("x"))
+                .protocol(None)
+                .effective_version(),
             TunnelVersion::Http2
         );
     }
@@ -226,7 +222,7 @@ mod tests {
     #[test]
     fn an_extended_connect_defaults_to_http3_then_http2() {
         assert_eq!(
-            plain().protocol(Some("connect-udp")).version,
+            plain().protocol(Some("connect-udp")).effective_version(),
             TunnelVersion::Http3ThenHttp2
         );
     }
@@ -238,10 +234,30 @@ mod tests {
             TunnelVersion::Http2,
             TunnelVersion::Http3ThenHttp2,
         ] {
-            assert_eq!(plain().version(v).protocol(Some("connect-udp")).version, v);
-            assert_eq!(plain().protocol(Some("connect-udp")).version(v).version, v);
-            assert_eq!(plain().version(v).protocol(None).version, v);
+            assert_eq!(
+                plain()
+                    .version(v)
+                    .protocol(Some("connect-udp"))
+                    .effective_version(),
+                v
+            );
+            assert_eq!(
+                plain()
+                    .protocol(Some("connect-udp"))
+                    .version(v)
+                    .effective_version(),
+                v
+            );
+            assert_eq!(plain().version(v).protocol(None).effective_version(), v);
         }
+    }
+
+    #[test]
+    fn a_version_assigned_to_the_field_survives_a_later_protocol() {
+        let mut req = plain();
+        req.version = Some(TunnelVersion::Http3);
+        let req = req.protocol(Some("connect-udp")).protocol(None);
+        assert_eq!(req.effective_version(), TunnelVersion::Http3);
     }
 
     #[test]

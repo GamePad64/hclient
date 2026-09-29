@@ -224,7 +224,7 @@ where
         req: hclient_proxy::TunnelRequest<'b>,
     ) -> Result<hclient_proxy::Tunnel, Error> {
         use hclient_proxy::TunnelVersion;
-        let (h3, h2) = match req.version {
+        let (h3, h2) = match req.effective_version() {
             TunnelVersion::Http3 => (true, false),
             TunnelVersion::Http2 => (false, true),
             TunnelVersion::Http3ThenHttp2 => (true, true),
