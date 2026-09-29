@@ -973,6 +973,28 @@ mod tests {
         }
 
         #[test]
+        fn a_flood_of_relay_fragments_yields_the_task_rather_than_spinning() {
+            // From the relay itself, so the address check lets each one
+            // through, and FRAG=1, so each decodes to nothing: the other
+            // way a receive is discarded, and it must count towards the
+            // same bound or a relay could hold the thread.
+            let (path, udp) = path_over_fake("10.0.0.7:8080", open_control());
+            for _ in 0..=super::super::MAX_DISCARDS_PER_POLL {
+                udp.push_from("10.0.0.7:8080", &[0, 0, 1, 1, 1, 2, 3, 4, 0, 80, b'x']);
+            }
+            udp.push_from("10.0.0.7:8080", &[0, 0, 0, 1, 1, 2, 3, 4, 0, 80, b'y']);
+            let mut buf = [0u8; 8];
+            assert!(
+                path.poll_recv(&mut cx(), &mut buf).is_pending(),
+                "a flood from the relay must yield"
+            );
+            let Poll::Ready(Ok(n)) = path.poll_recv(&mut cx(), &mut buf) else {
+                panic!("the relay's datagram after the flood")
+            };
+            assert_eq!(&buf[..n], b"y");
+        }
+
+        #[test]
         fn a_flood_of_foreign_datagrams_yields_the_task_rather_than_spinning() {
             // More foreign datagrams than one poll may discard, then one
             // from the relay: the first poll gives up the thread with a
