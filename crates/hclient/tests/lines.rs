@@ -89,7 +89,7 @@ fn an_empty_line_in_the_middle_is_a_line() {
 
 #[test]
 fn an_empty_body_is_no_lines_at_all() {
-    assert!(ok_lines(vec![]).is_empty());
+    assert_eq!(ok_lines(vec![]), [] as [std::string::String; 0]);
 }
 
 #[test]

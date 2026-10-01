@@ -644,7 +644,10 @@ mod tests {
         assert_eq!(block_on(h.upgrade(&uri("http://a.test/"), at(101))), None);
         // Evicted rather than merely ignored: the store no longer holds
         // it, which is what makes the eviction observable at all.
-        assert!(block_on(h.store().get(&["a.test".to_owned()])).is_empty());
+        assert_eq!(
+            block_on(h.store().get(&["a.test".to_owned()])),
+            [] as [store::Entry; 0]
+        );
     }
 
     // ---- §8.2 + §8.3 step 5, the precedence -------------------------
@@ -831,7 +834,10 @@ mod tests {
         // distinction `max_age_zero_removes_the_policy` took three
         // attempts to pin, applied here for free because there is no
         // expiry sweep in the way.
-        assert!(block_on(h.store().get(&["a.test".to_owned(), "b.test".to_owned()])).is_empty());
+        assert_eq!(
+            block_on(h.store().get(&["a.test".to_owned(), "b.test".to_owned()])),
+            [] as [store::Entry; 0]
+        );
     }
 
     // ---- §8.1.1 and §8.3 step 3, IP literals -------------------------

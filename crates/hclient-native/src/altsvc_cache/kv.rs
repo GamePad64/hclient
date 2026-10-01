@@ -633,6 +633,9 @@ mod tests {
             block_on(s.inner().get(VOLATILE, &key, at(101))).is_empty(),
             "the byte store hides it once its expiry has passed"
         );
-        assert!(!block_on(s.inner().get(VOLATILE, &key, at(99))).is_empty());
+        assert_ne!(
+            block_on(s.inner().get(VOLATILE, &key, at(99))),
+            [] as [std::vec::Vec<u8>; 0]
+        );
     }
 }

@@ -1827,7 +1827,7 @@ mod tests {
                 reason: "three".to_owned(),
             })
         );
-        assert!(buf.is_empty());
+        assert_eq!(buf, [] as [u8; 0]);
     }
 
     /// The decoder reads back what the encoder wrote, says how much it

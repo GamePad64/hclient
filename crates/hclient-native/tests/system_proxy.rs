@@ -226,7 +226,7 @@ fn reading_the_real_machine_answers_something_self_consistent() {
     // what this is here to fail on.
     match transport().system_proxies_from(&sys) {
         Ok(t) => assert_eq!(t.capabilities().proxy, !sys.is_empty()),
-        Err(e) => assert!(!e.to_string().is_empty()),
+        Err(e) => assert_ne!(e.to_string(), ""),
     }
 }
 

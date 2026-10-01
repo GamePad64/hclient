@@ -81,5 +81,5 @@ fn a_single_threaded_byte_store_is_still_usable_here() {
 
     let s = hclient::hsts::KvStore::new(Rcish::default());
     let got = futures_executor::block_on(s.get(&["com.example".to_owned()]));
-    assert!(got.is_empty());
+    assert_eq!(got, [] as [hclient::hsts::Entry; 0]);
 }

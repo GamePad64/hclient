@@ -992,7 +992,7 @@ mod tests {
         let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "[2001:db8::1]", 1080));
         let path = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap();
         crate::DatagramPath::try_send(&path, b"q").unwrap();
-        assert!(dial.resolved().is_empty());
+        assert_eq!(dial.resolved(), [] as [String; 0]);
         assert_eq!(
             dial.udp_sent_to(),
             ["[2001:db8::1]:8080"
@@ -1007,7 +1007,7 @@ mod tests {
         let rules = Rules::new().push(Proxy::new(Socks5::new(), "px", 1080));
         let a = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap_err();
         assert!(a.permits_switch());
-        assert!(dial.bound().is_empty());
+        assert_eq!(dial.bound(), [] as [std::net::SocketAddr; 0]);
     }
 
     #[test]

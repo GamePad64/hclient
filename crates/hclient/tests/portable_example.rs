@@ -207,7 +207,7 @@ fn a_body_with_no_frames_still_delivers_status_and_headers_once() {
         1,
         "exactly one call — the fallback, and not a second one from the loop"
     );
-    assert!(rec.sent[0].data.is_empty());
+    assert_eq!(rec.sent[0].data, [] as [u8; 0]);
     assert_eq!(
         meta_value(&rec.sent[0], "http-client:status"),
         Some(b"204".as_slice())

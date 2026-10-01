@@ -447,8 +447,14 @@ mod tests {
     fn an_empty_variable_names_no_proxy() {
         // `HTTP_PROXY=` is how a shell script turns one off, and reading
         // it as a proxy at the empty host would fail every request.
-        assert!(env(&[("HTTP_PROXY", "")]).proxies.is_empty());
-        assert!(env(&[("HTTP_PROXY", "   ")]).proxies.is_empty());
+        assert_eq!(
+            env(&[("HTTP_PROXY", "")]).proxies,
+            [] as [(String, String); 0]
+        );
+        assert_eq!(
+            env(&[("HTTP_PROXY", "   ")]).proxies,
+            [] as [(String, String); 0]
+        );
     }
 
     #[test]
@@ -494,7 +500,7 @@ mod tests {
         // an auto-config URL set is *configured*, and reading it as
         // unconfigured would send its traffic direct.
         let raw = from_wininet(false, Some("proxy.corp:8080"), None, Some("http://w/p.pac"));
-        assert!(raw.proxies.is_empty());
+        assert_eq!(raw.proxies, [] as [(String, String); 0]);
         assert_eq!(raw.pac.as_deref(), Some("http://w/p.pac"));
     }
 
@@ -515,8 +521,8 @@ mod tests {
     #[test]
     fn an_absent_value_is_not_an_empty_one() {
         let raw = from_wininet(true, None, None, None);
-        assert!(raw.proxies.is_empty());
-        assert!(raw.bypass.is_empty());
+        assert_eq!(raw.proxies, [] as [(String, String); 0]);
+        assert_eq!(raw.bypass, [] as [String; 0]);
         assert!(raw.pac.is_none());
         assert!(!raw.exclude_simple);
     }
@@ -585,10 +591,16 @@ mod tests {
     /// proxy at the empty host.
     #[test]
     fn a_port_without_a_host_is_not_an_entry() {
-        assert!(jvm(&[("http.proxyPort", "8080")]).proxies.is_empty());
+        assert_eq!(
+            jvm(&[("http.proxyPort", "8080")]).proxies,
+            [] as [(String, String); 0]
+        );
         // An empty or blank host is the same case: Android clears these
         // by setting them empty rather than by removing them.
-        assert!(jvm(&[("http.proxyHost", "  ")]).proxies.is_empty());
+        assert_eq!(
+            jvm(&[("http.proxyHost", "  ")]).proxies,
+            [] as [(String, String); 0]
+        );
     }
 
     /// **`socksProxyHost` is read and named**, not dropped.

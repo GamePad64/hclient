@@ -952,7 +952,10 @@ mod tests {
 
         // The empty form is the only way to send no `User-Agent` at all,
         // which is what `Item::Header`'s doc promises.
-        assert!(effective_headers(&[("User-Agent".into(), String::new())]).is_empty());
+        assert_eq!(
+            effective_headers(&[("User-Agent".into(), String::new())]),
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     #[test]

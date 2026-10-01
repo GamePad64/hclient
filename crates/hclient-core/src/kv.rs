@@ -735,7 +735,7 @@ mod tests {
 
         now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(expires), now));
 
-        assert!(now_or_never(kv.get("ns", "k", now)).is_empty());
+        assert_eq!(now_or_never(kv.get("ns", "k", now)), [] as [Vec<u8>; 0]);
     }
 
     /// **Several values under one key, which is decision 3 of the
@@ -885,7 +885,7 @@ mod tests {
             now_or_never(kv.get_many("ns", vec!["k".to_owned()], at(20))),
             vec![Vec::<Vec<u8>>::new()]
         );
-        assert!(now_or_never(kv.get("ns", "k", at(20))).is_empty());
+        assert_eq!(now_or_never(kv.get("ns", "k", at(20))), [] as [Vec<u8>; 0]);
     }
 
     #[test]
@@ -897,7 +897,7 @@ mod tests {
 
         now_or_never(kv.remove("ns", "k".to_owned()));
 
-        assert!(now_or_never(kv.get("ns", "k", at(0))).is_empty());
+        assert_eq!(now_or_never(kv.get("ns", "k", at(0))), [] as [Vec<u8>; 0]);
         assert_eq!(
             now_or_never(kv.get("ns", "other", at(0))),
             vec![b"keep".to_vec()]
@@ -915,7 +915,10 @@ mod tests {
 
         now_or_never(kv.clear("cookie"));
 
-        assert!(now_or_never(kv.get("cookie", "k", at(0))).is_empty());
+        assert_eq!(
+            now_or_never(kv.get("cookie", "k", at(0))),
+            [] as [Vec<u8>; 0]
+        );
         assert_eq!(
             now_or_never(kv.get("hsts", "k", at(0))),
             vec![b"h".to_vec()]
@@ -963,7 +966,10 @@ mod tests {
             1,
             "held, and unreachable through `get`"
         );
-        assert!(now_or_never(kv.get("ns", "stale", at(20))).is_empty());
+        assert_eq!(
+            now_or_never(kv.get("ns", "stale", at(20))),
+            [] as [Vec<u8>; 0]
+        );
     }
 
     // ---- scan and remove_prefix --------------------------------------
@@ -1024,7 +1030,10 @@ mod tests {
     fn scan_hides_an_expired_value() {
         let kv = store();
         now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(at(10)), at(0)));
-        assert!(now_or_never(kv.scan("ns", String::new(), at(10))).is_empty());
+        assert_eq!(
+            now_or_never(kv.scan("ns", String::new(), at(10))),
+            [] as [(String, Vec<u8>); 0]
+        );
         assert_eq!(now_or_never(kv.scan("ns", String::new(), at(9))).len(), 1);
     }
 
@@ -1086,7 +1095,10 @@ mod tests {
     fn scan_many_hides_expired_values_as_scan_does() {
         let kv = store();
         now_or_never(kv.put("ns", "k".to_owned(), b"v".to_vec(), Some(at(10)), at(0)));
-        assert!(now_or_never(kv.scan_many("ns", vec!["k".to_owned()], at(10))).is_empty());
+        assert_eq!(
+            now_or_never(kv.scan_many("ns", vec!["k".to_owned()], at(10))),
+            [] as [(String, Vec<u8>); 0]
+        );
     }
 
     #[test]
@@ -1116,7 +1128,10 @@ mod tests {
 
         now_or_never(kv.remove_prefix("ns", String::new()));
 
-        assert!(now_or_never(kv.scan("ns", String::new(), at(0))).is_empty());
+        assert_eq!(
+            now_or_never(kv.scan("ns", String::new(), at(0))),
+            [] as [(String, Vec<u8>); 0]
+        );
         assert_eq!(
             now_or_never(kv.scan("other", String::new(), at(0))).len(),
             1,

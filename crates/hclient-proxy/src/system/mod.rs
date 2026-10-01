@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn an_ftp_proxy_is_named_rather_than_dropped() {
         let sys = cfg(&[("ftp", "ftp-proxy:2121")], &[], false);
-        assert!(sys.entries().is_empty());
+        assert_eq!(sys.entries(), [] as [ProxyEntry; 0]);
         assert_eq!(&*sys.ignored()[0], "ftp=ftp-proxy:2121");
     }
 
@@ -584,7 +584,7 @@ mod tests {
         // indistinguishable from no value, which is what an early
         // `continue` would have made it.
         let sys = cfg(&[("http", "gopher://unknown-scheme:8080")], &[], false);
-        assert!(sys.entries().is_empty());
+        assert_eq!(sys.entries(), [] as [ProxyEntry; 0]);
         assert!(sys.ignored()[0].starts_with("http=gopher://unknown-scheme:8080 ("));
     }
 
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn an_untranslatable_pattern_is_surfaced_with_its_reason() {
         let sys = cfg(&[("http", "p:8080")], &["192.168.1.*"], false);
-        assert!(sys.bypass().is_empty());
+        assert_eq!(sys.bypass(), [] as [Box<str>; 0]);
         let reasons: Vec<_> = sys
             .unsupported_bypass()
             .iter()
@@ -648,7 +648,7 @@ mod tests {
         // a refusal here would have been a refusal on the platform's own
         // default configuration — which is how this stopped being one.
         let sys = cfg(&[("http", "p:8080")], &["169.254/16", "10.0.0.0/8"], false);
-        assert!(sys.unsupported_bypass().is_empty());
+        assert_eq!(sys.unsupported_bypass(), [] as [UnsupportedBypass; 0]);
         assert_eq!(&*sys.bypass()[0], "10.0.0.0/8");
         assert_eq!(&*sys.bypass()[1], "169.254/16");
     }
@@ -657,7 +657,7 @@ mod tests {
     fn a_leading_star_label_is_translated_rather_than_refused() {
         let sys = cfg(&[("http", "p:8080")], &["*.example.com"], false);
         assert_eq!(&*sys.bypass()[0], ".example.com");
-        assert!(sys.unsupported_bypass().is_empty());
+        assert_eq!(sys.unsupported_bypass(), [] as [UnsupportedBypass; 0]);
     }
 
     #[test]
@@ -668,15 +668,15 @@ mod tests {
         // pattern nobody can express, which would refuse a configuration
         // that is in fact honoured exactly.
         let sys = cfg(&[("http", "p:8080")], &["<-loopback>"], false);
-        assert!(sys.bypass().is_empty());
-        assert!(sys.unsupported_bypass().is_empty());
+        assert_eq!(sys.bypass(), [] as [Box<str>; 0]);
+        assert_eq!(sys.unsupported_bypass(), [] as [UnsupportedBypass; 0]);
     }
 
     #[test]
     fn nothing_configured_is_an_empty_answer_and_not_an_error() {
         let sys = cfg(&[], &[], false);
         assert!(sys.is_empty());
-        assert!(sys.entries().is_empty());
+        assert_eq!(sys.entries(), [] as [ProxyEntry; 0]);
     }
 
     #[test]
@@ -719,7 +719,7 @@ mod tests {
         // report must not read it as *this machine is proxied*, which is
         // a claim about HTTP.
         let sys = cfg(&[("ftp", "ftp-proxy:2121")], &[], false);
-        assert!(!sys.ignored().is_empty());
+        assert_ne!(sys.ignored(), [] as [Box<str>; 0]);
         assert!(!sys.names_a_proxy());
     }
 

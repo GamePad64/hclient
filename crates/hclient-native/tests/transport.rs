@@ -288,7 +288,7 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
     assert!(!owns_cookie_jar);
     assert!(!owns_cache);
     assert!(!informational_1xx);
-    assert!(forbidden_request_headers.is_empty());
+    assert_eq!(forbidden_request_headers, [] as [http::HeaderName; 0]);
 }
 
 /// The category `Native` set has to survive all the way to the caller

@@ -944,7 +944,10 @@ mod tests {
         let s = store();
         block_on(s.put(cookie("a", "a.example.com", None, 0), at(1)));
 
-        assert!(block_on(s.get(&["example.com".to_owned()])).is_empty());
+        assert_eq!(
+            block_on(s.get(&["example.com".to_owned()])),
+            [] as [Cookie; 0]
+        );
         assert_eq!(block_on(s.get(&["a.example.com".to_owned()])).len(), 1);
     }
 
@@ -1119,7 +1122,10 @@ mod tests {
         ));
         let s = KvStore::new(kv);
 
-        assert!(block_on(s.get(&["example.com".to_owned()])).is_empty());
+        assert_eq!(
+            block_on(s.get(&["example.com".to_owned()])),
+            [] as [Cookie; 0]
+        );
     }
 
     // ---- the capacity ------------------------------------------------

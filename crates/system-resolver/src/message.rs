@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn nxdomain_and_no_records_are_different_values() {
         let nothing = records(&hex("825d818000010000000000000000")).expect("NOERROR walks");
-        assert!(nothing.is_empty());
+        assert_eq!(nothing, [] as [Record; 0]);
         assert_matches!(
             records(&hex("825d818300010000000000000000")),
             Err(Error::NameDoesNotExist)

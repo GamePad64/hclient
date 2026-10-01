@@ -726,7 +726,7 @@ mod tests {
         assert!(!version_select);
         assert!(!timeouts.resolve && !timeouts.connect);
         assert!(!timeouts.first_byte && !timeouts.between_bytes);
-        assert!(forbidden_request_headers.is_empty());
+        assert_eq!(*forbidden_request_headers, [] as [HeaderName; 0]);
         assert!(!informational_1xx);
 
         // The reports, likewise understated: a report that over-claims
@@ -815,7 +815,7 @@ mod tests {
             }
         );
         assert!(!informational_1xx);
-        assert!(forbidden_request_headers.is_empty());
+        assert_eq!(*forbidden_request_headers, [] as [HeaderName; 0]);
     }
 
     #[test]

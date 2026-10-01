@@ -269,7 +269,7 @@ fn a_wrapper_told_not_to_count_reports_nothing_and_still_yields_the_body() {
         None,
     );
     assert_eq!(drain(counted), 1, "the body still passes through");
-    assert!(rec.seen().is_empty());
+    assert_eq!(rec.seen(), [] as [Seen; 0]);
 }
 
 /// **The two directions are separate counters and are labelled.**

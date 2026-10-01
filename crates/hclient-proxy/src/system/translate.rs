@@ -509,7 +509,7 @@ mod tests {
         ] {
             let strict = http_proxies(&sys).expect("expressible");
             let (lossy, dropped) = http_proxies_lossy(&sys);
-            assert!(dropped.is_empty());
+            assert_eq!(dropped, [] as [SystemProxyRefused; 0]);
             let key = |l: &[Proxy<HttpConnect>]| {
                 l.iter()
                     .map(|p| (p.host().to_owned(), p.port(), p.scheme()))

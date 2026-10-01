@@ -659,7 +659,10 @@ mod tests {
 
         block_on(s.remove("example.com"));
 
-        assert!(block_on(s.get(&["example.com".to_owned()])).is_empty());
+        assert_eq!(
+            block_on(s.get(&["example.com".to_owned()])),
+            [] as [Entry; 0]
+        );
         assert_eq!(
             block_on(s.get(&["other.test".to_owned()])),
             vec![entry("other.test", 100, false)]
@@ -674,7 +677,10 @@ mod tests {
 
         block_on(s.clear());
 
-        assert!(block_on(s.get(&["example.com".to_owned(), "other.test".to_owned()])).is_empty());
+        assert_eq!(
+            block_on(s.get(&["example.com".to_owned(), "other.test".to_owned()])),
+            [] as [Entry; 0]
+        );
     }
 
     /// **`clear` is this namespace's alone**, which is what lets one byte

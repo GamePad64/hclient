@@ -991,7 +991,7 @@ mod tests {
     fn a_proxy_tls_request_defaults_to_understating() {
         let r = ProxyTls::new("p");
         assert_eq!(r.server_name, "p");
-        assert!(r.alpn.is_empty());
+        assert_eq!(r.alpn, [] as [Vec<u8>; 0]);
         assert_eq!(r.identity, None);
     }
 
