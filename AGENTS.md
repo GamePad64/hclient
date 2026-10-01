@@ -2831,7 +2831,13 @@ framed differently could only exist if a constructor were promised, and
 none is until one is needed. The gate is
 `socks5-udp-stays-in-its-module`, `quinn-stays-in-its-module`'s shape:
 nothing outside `socks5_udp.rs` names the four internals, checked in the
-failing direction against the `rules.rs` that named them. The exchange
+failing direction against the `rules.rs` that named them. The sweep after
+the move: **633 mutants, 429 caught, 169 unviable, 4 timeouts, 31
+missed** — `open_path`'s four new mutants all caught, four former misses
+left with the code that moved, and every remaining miss is in the
+classes the third audit classified: the platform readers under `system/`
+this host never compiles, six `Debug` impls, a test double's `Drop`, and
+the known equivalents. The exchange
 is sans-io like the rest of the crate: greeting,
 RFC 1929 auth, then `CMD=0x03`.
 
