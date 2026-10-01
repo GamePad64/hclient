@@ -1578,7 +1578,7 @@ impl Meter {
     pub fn add(&self, n: u64) {
         let _ = self
             .moved
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |t| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |t| {
                 Some(t.saturating_add(n))
             });
     }
