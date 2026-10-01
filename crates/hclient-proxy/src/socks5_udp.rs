@@ -61,7 +61,7 @@ pub(crate) enum AssociateStep {
 ///
 /// **SOCKS5's alone, and opaque.** What an association opens is read with
 /// §7's datagram header, which the association itself writes and strips —
-/// [`open_path`](Self::open_path) is the §4 exchange, the relay's
+/// its `open_path` is the §4 exchange, the relay's
 /// address, the local socket and the framed path in one call. The only
 /// way to get one is from
 /// [`Socks5::with_udp`](crate::Socks5::with_udp) through
