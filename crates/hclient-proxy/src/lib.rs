@@ -250,8 +250,11 @@ pub trait Handshake {
     /// [`Socks5`] configured with [`Socks5::with_udp`]. `None` by default.
     ///
     /// SOCKS5's only: an [`Association`] cannot be made outside this
-    /// crate, because the path it opens is framed with RFC 1928 §7's
-    /// datagram header. A protocol outside this crate answers `None` — or
+    /// crate, because opening one — the §4 exchange, the relay's address,
+    /// the local socket, the path framed with RFC 1928 §7's datagram
+    /// header — is this crate's plumbing, and a constructor is promised
+    /// no earlier than a second protocol that could answer for its own
+    /// framing. A protocol outside this crate answers `None` — or
     /// forwards the answer of a SOCKS5 handshake it wraps, as [`Rules`]
     /// does for every protocol it holds.
     fn associate(&self) -> Option<Association> {

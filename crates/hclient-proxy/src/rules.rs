@@ -1,7 +1,6 @@
 //! The default filter: an ordered list of proxy rules, first match wins,
 //! plus a Unix-socket policy that matches everything.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -257,50 +256,16 @@ impl EgressFilter for Rules {
         let Reach::Tcp { host, port } = proxy.reach() else {
             unreachable!("a rule is marked for datagrams only when reached over TCP")
         };
-        let mut control = reach_tcp(proxy, host, *port, ctx).await?;
-        let mut a = proxy
+        // Everything after the control connection is the association's:
+        // the exchange, the relay's address, the local socket and the
+        // path's framing. A rule list names no protocol here, which the
+        // `socks5-udp-stays-in-its-module` gate holds.
+        let control = reach_tcp(proxy, host, *port, ctx).await?;
+        let a = proxy
             .protocol()
             .associate()
             .expect("a rule is marked for datagrams only when it associates");
-        let relay = match crate::socks5_udp::drive_associate(&mut control, &mut a).await {
-            Ok(r) => r,
-            Err(crate::error::AssociateError::Unsupported(e)) => {
-                return Err(Attempt::Unsupported(e));
-            }
-            Err(crate::error::AssociateError::Failed(e)) => return Err(Attempt::Failed(e)),
-        };
-        let relay = match relay {
-            crate::socks5_udp::RelayAddr::Ip(a) => a,
-            // §4: the proxy's own address, which this host already dialled
-            // by name — so the proxy's name, never the origin's.
-            crate::socks5_udp::RelayAddr::Unspecified(p) => {
-                let bare = hclient_core::url::bare_host(host);
-                match bare.parse::<std::net::IpAddr>() {
-                    Ok(ip) => SocketAddr::new(ip, p),
-                    Err(_) => first_addr(ctx.resolve(bare, p).await)?,
-                }
-            }
-            crate::socks5_udp::RelayAddr::Name(n, p) => first_addr(ctx.resolve(&n, p).await)?,
-        };
-        let local = if relay.is_ipv6() {
-            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0))
-        } else {
-            SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0))
-        };
-        // Only a runtime that lends no UDP is a refusal to switch on; a
-        // socket that would not bind (out of descriptors, a port taken) is
-        // this host failing now, which is final and not remembered.
-        let udp = ctx.bind_udp(local).map_err(|e| {
-            if matches!(e.kind(), hclient_core::error::ErrorKind::Unsupported) {
-                Attempt::Unsupported(e)
-            } else {
-                Attempt::Failed(e)
-            }
-        })?;
-        let header = crate::socks5_udp::header_for(t.host, t.port).map_err(Attempt::Failed)?;
-        Ok(crate::BoxPath::new(crate::socks5_udp::Socks5Path::new(
-            control, udp, relay, header,
-        )))
+        a.open_path(control, host, t.host, t.port, ctx).await
     }
 }
 
@@ -323,19 +288,6 @@ async fn reach_tcp<C: Dial>(
     ctx.connect_tls(s, crate::ProxyTls::new(hclient_core::url::bare_host(host)))
         .await
         .map_err(Attempt::Failed)
-}
-
-/// The first address a resolver answered, or a failure naming none.
-fn first_addr(r: Result<Vec<SocketAddr>, Error>) -> Result<SocketAddr, Attempt> {
-    r.map_err(Attempt::Failed)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            Attempt::Failed(Error::new(
-                hclient_core::error::ErrorKind::Resolve,
-                std::io::Error::other("the SOCKS5 relay's name resolved to no address"),
-            ))
-        })
 }
 
 // `Rules` is a `SendEgressFilter` so that an engine holding filters erased

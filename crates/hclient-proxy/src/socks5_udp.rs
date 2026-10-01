@@ -20,6 +20,7 @@ use hclient_rt::UdpDatagrams as _;
 use bytes::{BufMut, Bytes, BytesMut};
 use hclient_core::error::{Error, ErrorKind};
 
+use crate::egress::Attempt;
 use crate::error::{AssociateError, Socks5HandshakeError, Socks5Refused};
 use crate::socks5::{METHOD_NONE, METHOD_PASSWORD, METHOD_UNACCEPTABLE, SOCKS5_VERSION};
 use crate::take;
@@ -59,9 +60,10 @@ pub(crate) enum AssociateStep {
 /// what [`Handshake::associate`](crate::Handshake::associate) answers.
 ///
 /// **SOCKS5's alone, and opaque.** What an association opens is read with
-/// §7's datagram header, which the built-in rules write and strip
-/// themselves, so an association for any other protocol would open a path
-/// framed wrongly. The only way to get one is from
+/// §7's datagram header, which the association itself writes and strips —
+/// [`open_path`](Self::open_path) is the §4 exchange, the relay's
+/// address, the local socket and the framed path in one call. The only
+/// way to get one is from
 /// [`Socks5::with_udp`](crate::Socks5::with_udp) through
 /// `Handshake::associate`, and a handshake that wraps a SOCKS5 one hands
 /// on the value it was given. Nothing outside this crate can make one:
@@ -90,6 +92,84 @@ impl Association {
     /// are consumed, and `NeedMore` consumes nothing.
     pub(crate) fn advance(&mut self, buf: &mut BytesMut) -> Result<AssociateStep, AssociateError> {
         self.inner.advance(buf)
+    }
+
+    // Maintainer notes (not rendered):
+    // Everything SOCKS5-shaped about datagrams used to sit in
+    // `rules.rs::open_datagrams`, which named `drive_associate`, this
+    // module's `RelayAddr`, `header_for` and `Socks5Path` — the coupling
+    // that put SOCKS5's type on the shared seam. `open_path` is the whole
+    // of it moved behind the value the seam already hands around; a gate
+    // (`socks5-udp-stays-in-its-module`) holds the boundary.
+    /// Open the datagram path this association offers, over `control` —
+    /// a connection to the proxy the caller dialled and ran TLS on
+    /// itself. The §4 exchange, the relay's address, the local socket
+    /// bound through `ctx`, and the §7 header naming `host:port` are all
+    /// this method's, so a caller needs none of SOCKS5 to open a path.
+    ///
+    /// `proxy_host` stands in for an unspecified relay (§4 lets a proxy
+    /// answer `0.0.0.0` and mean *me*); the origin travels **by name**
+    /// in the header, as [`Socks5::begin`](crate::Socks5::begin) sends it
+    /// for CONNECT.
+    ///
+    /// # Errors
+    ///
+    /// [`Attempt::Unsupported`] when the proxy refused the association as
+    /// one it does not support (`REP = 0x07`) or the transport lends no
+    /// UDP — the two answers that permit switching to a stream;
+    /// [`Attempt::Failed`] for every other proxy refusal, a bind this
+    /// host could not do, a relay name that resolved to nothing, or a
+    /// header the origin's host is too long for.
+    pub(crate) async fn open_path<'a, C: crate::Dial>(
+        mut self,
+        control: C::Stream,
+        proxy_host: &'a str,
+        host: &'a str,
+        port: u16,
+        ctx: &'a C,
+    ) -> Result<crate::BoxPath, Attempt>
+    where
+        C::Stream: Send + 'static, // send-bound-exception: amendment-C16
+    {
+        let mut control = control;
+        let relay = drive_associate(&mut control, &mut self)
+            .await
+            .map_err(|e| match e {
+                AssociateError::Unsupported(e) => Attempt::Unsupported(e),
+                AssociateError::Failed(e) => Attempt::Failed(e),
+            })?;
+        let relay = match relay {
+            RelayAddr::Ip(a) => a,
+            // §4: the proxy's own address, which this host already dialled
+            // by name — so the proxy's name, never the origin's.
+            RelayAddr::Unspecified(p) => {
+                let bare = hclient_core::url::bare_host(proxy_host);
+                match bare.parse::<IpAddr>() {
+                    Ok(ip) => SocketAddr::new(ip, p),
+                    Err(_) => first_addr(ctx.resolve(bare, p).await)?,
+                }
+            }
+            RelayAddr::Name(n, p) => first_addr(ctx.resolve(&n, p).await)?,
+        };
+        let local = if relay.is_ipv6() {
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))
+        } else {
+            SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))
+        };
+        // Only a runtime that lends no UDP is a refusal to switch on; a
+        // socket that would not bind (out of descriptors, a port taken) is
+        // this host failing now, which is final and not remembered.
+        let udp = ctx.bind_udp(local).map_err(|e| {
+            if matches!(e.kind(), ErrorKind::Unsupported) {
+                Attempt::Unsupported(e)
+            } else {
+                Attempt::Failed(e)
+            }
+        })?;
+        let header = header_for(host, port).map_err(Attempt::Failed)?;
+        Ok(crate::BoxPath::new(Socks5Path::new(
+            control, udp, relay, header,
+        )))
     }
 }
 
@@ -389,6 +469,19 @@ pub(crate) async fn drive_associate<S: crate::Io>(
                 .map_err(AssociateError::Failed)?,
         }
     }
+}
+
+/// The first address a resolver answered, or a failure naming none.
+fn first_addr(r: Result<Vec<SocketAddr>, Error>) -> Result<SocketAddr, Attempt> {
+    r.map_err(Attempt::Failed)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            Attempt::Failed(Error::new(
+                ErrorKind::Resolve,
+                std::io::Error::other("the SOCKS5 relay's name resolved to no address"),
+            ))
+        })
 }
 
 /// A UDP payload that fits an ordinary 1500-byte Ethernet MTU under IPv6.

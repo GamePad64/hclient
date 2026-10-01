@@ -1898,6 +1898,39 @@ quinn-stays-in-its-module:
     fi
     echo "quinn named in mod quinn and mod h3 only; $n sites in quinn.rs"
 
+# **SOCKS5's UDP stays inside one module, which is what makes the rule
+# list protocol-blind.** The built-in rules route and dial; the
+# association owns everything SOCKS5-shaped about datagrams — the §4
+# exchange, the relay's address, §7's header, and the path that frames
+# with it. Before the association opened its own path, `rules.rs` named
+# `drive_associate`, `RelayAddr`, `header_for` and `Socks5Path`, which is
+# the coupling that put SOCKS5's type on the shared seam.
+#
+# The four internals are greppable where the *reason* is not, so this is
+# the check: nothing outside `socks5_udp.rs` names them. (`lib.rs`'s
+# `pub use socks5_udp::Association` is the crate-root name, not one of
+# the four.)
+#
+# Checked in the failing direction by calling `drive_associate` from
+# `rules.rs` and watching it fire.
+socks5-udp-stays-in-its-module:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd crates/hclient-proxy/src
+    stray="$(grep -rlnP '\b(drive_associate|RelayAddr|Socks5Path|header_for)\b' . --include='*.rs' \
+        | grep -v './socks5_udp.rs' || true)"
+    if [ -n "$stray" ]; then
+      echo "::error::SOCKS5's UDP internals are named outside \`socks5_udp.rs\`, which is the boundary the association opening its own path is about:"
+      echo "$stray"
+      exit 1
+    fi
+    n="$(grep -rcP '\b(drive_associate|RelayAddr|Socks5Path|header_for)\b' socks5_udp.rs | head -1)"
+    if [ "${n:-0}" -eq 0 ]; then
+      echo "::error::socks5_udp.rs names none of its own internals, so the check above is vacuous — it would pass a module emptied out"
+      exit 1
+    fi
+    echo "SOCKS5's UDP internals named in socks5_udp.rs only; $n sites there"
+
 # Still `tree-guard`, and deliberately: `cargo deny` bans crates by name, and
 # this one bans a FAMILY by prefix. Enumerating today's names would pass for
 # tomorrow's `futures-whatever`, which is the regression the check exists
@@ -2394,7 +2427,7 @@ features:
         --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-runtimes-carry-udp graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-default-has-no-hsts graph-proto-sans-io graph-dns-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-runtimes-carry-udp graph-no-framing-in-the-transport quinn-stays-in-its-module socks5-udp-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-default-has-no-hsts graph-proto-sans-io graph-dns-sans-io graph-no-url graph-proxy-cost graph-default-has-no-transport graph-idn-feature graph-idn-backend
 
 # ── mutation testing, which cannot be run naively here ──────────────────
 

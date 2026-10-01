@@ -2815,11 +2815,24 @@ signature that is noisier than what it needs to say.
 `hclient_proxy::system` never turns it on. A rule without it declares
 `STREAM` and behaves exactly as before. A rule learns of UDP through
 `Handshake::associate`, defaulting to `None`, so a foreign protocol owes
-nothing. **`Associate` is SOCKS5's alone, and sealed**: the rules frame
-every path an association opens with §7's header, so an association for
-another protocol could only open a path framed wrongly. A foreign
-`Handshake` answers `None` or forwards a wrapped SOCKS5 one, and a
-`compile_fail` doctest pins the seal. The association is sans-io like the rest of the crate: greeting,
+nothing. **The association opens its own path, and that is what makes the
+rules protocol-blind.** The first build had `rules.rs::open_datagrams`
+name `drive_associate`, `RelayAddr`, `header_for` and `Socks5Path` — the
+§4 exchange, the relay's address, §7's header and the path that frames
+with it, all SOCKS5's, sitting in the shared filter. `Association::open_path`
+is the whole of it moved behind the value the seam already hands around:
+the rules dial the control connection and call the association, and name
+none of SOCKS5. **`Associate` is SOCKS5's alone, and sealed** — a foreign
+`Handshake` answers `None` or forwards a wrapped SOCKS5 one, a
+`compile_fail` doctest pins the seal, and the reason is now that the
+opening is this crate's plumbing rather than that the rules would frame
+wrongly: the framing moved inside, so a protocol whose association
+framed differently could only exist if a constructor were promised, and
+none is until one is needed. The gate is
+`socks5-udp-stays-in-its-module`, `quinn-stays-in-its-module`'s shape:
+nothing outside `socks5_udp.rs` names the four internals, checked in the
+failing direction against the `rules.rs` that named them. The exchange
+is sans-io like the rest of the crate: greeting,
 RFC 1929 auth, then `CMD=0x03`.
 
 - `REP=0x07` (command not supported) is `Attempt::Unsupported`, which

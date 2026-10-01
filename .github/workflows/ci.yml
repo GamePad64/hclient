@@ -620,6 +620,9 @@ jobs:
       - name: quinn is named in one module, which is what its crate used to be
         shell: bash
         run: just quinn-stays-in-its-module
+      - name: SOCKS5's UDP internals are named in one module, so the rules read protocol-blind
+        shell: bash
+        run: just socks5-udp-stays-in-its-module
       - name: the smol path carries no reactor, only hyper's inert tokio leaf
         shell: bash
         run: just graph-smol-path
