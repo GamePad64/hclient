@@ -523,10 +523,12 @@ mod tests {
     fn a_bare_record_maps_to_empty_fields_not_to_guesses() {
         let e = to_endpoint_no_ttl(&svcb(vec![]));
         assert_eq!(e.priority, 1);
-        assert!(e.alpn.is_empty());
+        // `as [_; 0]`, because `Vec<u8>: PartialEq<_>` is ambiguous with
+        // `bytes` in scope and the empty literal needs its element named.
+        assert_eq!(e.alpn, [] as [Vec<u8>; 0]);
         assert_eq!(e.port, None, "no port means no port, not 443");
-        assert!(e.ipv4hint.is_empty());
-        assert!(e.ipv6hint.is_empty());
+        assert_eq!(e.ipv4hint, [] as [std::net::Ipv4Addr; 0]);
+        assert_eq!(e.ipv6hint, [] as [std::net::Ipv6Addr; 0]);
         assert_eq!(e.ech_config_list, None);
     }
 

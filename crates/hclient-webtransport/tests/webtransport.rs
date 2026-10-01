@@ -278,7 +278,7 @@ async fn extended_connect_alone_is_not_webtransport() {
         .expect("the reason is typed, not a string");
     assert!(refused.webtransport);
     assert!(!refused.extended_connect);
-    assert!(server.requests().is_empty());
+    assert_eq!(server.requests(), []);
 }
 
 /// A refusal is the peer's answer, and it survives as one.
@@ -331,7 +331,7 @@ async fn a_plaintext_session_uri_is_refused_rather_than_rewritten() {
         .and_then(|s| s.downcast_ref::<NotHttps>())
         .expect("the reason is typed, not a string");
     assert_eq!(bad.scheme, "http");
-    assert!(server.requests().is_empty());
+    assert_eq!(server.requests(), []);
 }
 
 /// **The datagram premise.** A WebTransport datagram leaves this stack,
