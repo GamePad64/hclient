@@ -1091,7 +1091,7 @@ uploaded. Every publishable crate carries
 `hclient` itself is the exception since `default-transport` joined its
 default, and even there `json`, `gzip`, `cookies` and `cache` are opt-in.
 
-**Minimum supported Rust: the latest stable release** — currently **1.98**,
+**Minimum supported Rust: the latest stable release** — currently **1.99**,
 declared once in the workspace manifest and shared by every crate. That is the
 support policy, not a snapshot: the floor moves with stable, and a release that
 needs a newer compiler than the one you have is expected rather than a bug.

@@ -34,7 +34,7 @@ members = ["crates/*"]
 # rather than a thing the layout forbids, and that is the honest cost of
 # the trade.
 edition      = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/GamePad64/hclient"
 
