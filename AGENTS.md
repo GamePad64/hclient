@@ -10303,6 +10303,32 @@ the attribute meets nothing. What it deliberately does not check is
 whether a reason is **true**; nothing can. What it ends is the allow
 there is no way to argue with.
 
+**And then the suppressions became `#[expect]`, which is the rule checking
+itself.** `#[expect]` (stable 1.81) is `allow` plus one property this
+workspace wanted from the start: an expectation whose lint **no longer
+fires is a warning at the site**, and `-D warnings` makes it an error —
+so a suppression that has outlived its reason fails the gate instead of
+sitting there silently, which is exactly the allow nobody can argue with,
+aged. All 267 attributes converted in one pass; 42 reverted, and the
+pattern in what reverted is the finding: **an expectation is the wrong
+answer exactly when the lint's firing is a fact about the build rather
+than about the code** — `dead_code` that is per-binary in a shared test
+module, or per-feature in a `#[cfg]`'d backend (system-resolver's
+`sys/mod.rs`, where a build compiles exactly one platform reader; the
+shared TLS test fixtures, where each binary uses its own subset;
+`hclient-rt-embassy`'s smoltcp endpoint, where "no IPv6" is an absent
+enum variant rather than a runtime branch). Each such site keeps
+`allow`, and its `reason` names where the lint does fire — which is the
+same claim the expectation would have made, stated about the family of
+builds instead of the one at hand. Found mechanically, by looping
+`-D warnings` clippy over all-features and the no-default combinations
+and reading the unfulfilled sites back, rather than by enumerating the
+exceptions from prose. One instrument lesson: the unfulfilled span
+points at the lint name *inside* a multi-line attribute, so a converter
+keyed on the reported line missed them until it walked up to the
+opening. The gate reads both spellings, so the census does not depend on
+which one a site took.
+
 **And wiring it up found that four of the eight invariant gates had no CI
 step at all** — `errors-in-error-rs`, `no-crate-for-what-std-does` and
 `versions-agree` besides this one, the first three since they were
@@ -10318,7 +10344,7 @@ and this one's is the side the gates live on. All eight have a step now,
 Ten such stubs across `hclient` and `hclient-native` exist to keep the
 call sites free of a `#[cfg]` — the feature-on half needs the `&self` and
 the `async`, the twin does not, and the point of the pair is that a caller
-cannot tell them apart. They carry an `#[allow]` saying so. **Every one is
+cannot tell them apart. They carry an `#[expect]` saying so. **Every one is
 invisible to `--all-features`**, which is the workspace run: they surface
 only under `just test-no-default`, the recipe this file records as having
 once printed `error:` and exited zero.

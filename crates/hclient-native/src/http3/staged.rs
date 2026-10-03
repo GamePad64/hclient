@@ -437,7 +437,7 @@ where
     // an allocation on every refusal against a `Result` returned once per
     // connection rather than once per request — so it is a decision for
     // whoever needs it, not a lint fix.
-    #[allow(
+    #[expect(
         clippy::result_large_err,
         reason = "From a request to a connection that can carry it, and no further. This is `execute`'s first half, and `execute` is now written as `stage` then [`Self::finish`] — one sequencing with two entry points, which is what stops the staged path and the ordinary one from drifting into two different transpo..."
     )]
@@ -473,7 +473,7 @@ where
     /// The origin's name is never resolved here: it goes to QUIC as the
     /// server name and nowhere else, and the path's peer is a stand-in
     /// address quinn needs and never sends to.
-    #[allow(
+    #[expect(
         clippy::result_large_err,
         reason = "the request comes back whole, which is the contract: `stage`'s measurement — 264 of the bytes are `http::Request<RequestBody>` — applies here unchanged"
     )]
@@ -489,7 +489,7 @@ where
 
     /// The one sequencing both entry points share; `via` is `None` for a
     /// direct connection.
-    #[allow(
+    #[expect(
         clippy::result_large_err,
         reason = "the request comes back whole, which is the contract: `stage`'s measurement — 264 of the bytes are `http::Request<RequestBody>` — applies here unchanged"
     )]

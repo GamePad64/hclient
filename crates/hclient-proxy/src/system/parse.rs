@@ -176,7 +176,7 @@ pub(crate) enum Bypass {
 /// applied one layer up, where the caller can still see it.
 pub(crate) fn bypass(pattern: &str) -> Bypass {
     let p = pattern.trim().to_ascii_lowercase();
-    #[allow(
+    #[expect(
         clippy::match_same_arms,
         reason = "\"\" and \"<-loopback>\" both resolve to AlreadyTrue for unrelated reasons — an absent list versus a specific Windows setting already honoured — collapsing the arms would blur that distinction"
     )]

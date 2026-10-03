@@ -2080,7 +2080,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         // "not (on or h2 available)" — the two negative conditions name
         // the empty state the doc above describes more directly than the
         // logically equivalent disjunction would.
-        #[allow(
+        #[expect(
             clippy::nonminimal_bool,
             reason = "Written as 'off, and h2 not available' rather than De Morgan's 'not (on or h2 available)' — the two negative conditions name the empty state the doc above describes more directly than the logically equivalent disjunction would."
         )]
@@ -2947,7 +2947,7 @@ where
     /// module is not compiled — so this is a constant and the ALPN list
     /// stays what it was.
     // `&self` matches the half with the feature on — see `borrowed`.
-    #[allow(
+    #[expect(
         clippy::unused_self,
         reason = "Without the feature there is no h2 code to reach at all — the module is not compiled — so this is a constant and the ALPN list stays what it was before v0.2 W3. `&self` matches the half with the feature on — see `borrowed`."
     )]
@@ -3567,7 +3567,7 @@ where
     /// in step: [`Transport::execute`] is this with [`Prepared::new`] —
     /// nothing looked up — and the routing's TCP arm is this with whatever
     /// [`Native::prepare`] found.
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "the whole exchange for both entry points, deliberately one body rather than two kept in step"
     )]
@@ -3868,7 +3868,7 @@ where
         // The unreachable `(false, false)` is kept as its own honest arm
         // rather than merged or made an `unreachable!` — see its comment
         // below for why the arm states the case instead of denying it.
-        #[allow(
+        #[expect(
             clippy::match_same_arms,
             reason = "The unreachable `(false, false)` is kept as its own honest arm rather than merged or made an `unreachable!` — see its comment below for why the arm states the case instead of denying it."
         )]

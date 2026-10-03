@@ -215,7 +215,7 @@ type Hms = (i8, i8, i8);
 // The three casts below cannot lose anything: `digits(2)` bounds each value
 // to two ASCII digits (0-99) before the range check below narrows further,
 // and all three fit in `i8`.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     reason = "The three casts below cannot lose anything: `digits(2)` bounds each value to two ASCII digits (0-99) before the range check below narrows further, and all three fit in `i8`."
 )]

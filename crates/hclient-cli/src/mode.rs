@@ -150,7 +150,7 @@ pub fn select(cli: &Cli) -> Result<Mode, String> {
 /// `flag`/`unit`/`mode` — splitting it into helpers would scatter one
 /// table a reader wants to scan in order across several functions passing
 /// the same four values around.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "Every combination this tool will not pretend to honour, named. A pure function of the command line and the parsed items, so the whole table is testable with no socket, no server and no feature set — which is what `backend::choose` was extracted for one file over, after a mutation replacing its re..."
 )]

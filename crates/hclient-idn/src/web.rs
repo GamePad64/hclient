@@ -110,7 +110,7 @@ pub(crate) type Handle = Web;
 /// Always `Some`: `URL` is in every browsing context this target runs in,
 /// windows and workers alike, and a build for it that had no `URL` would
 /// have nothing to run in.
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "the signature is shared across every backend module the cfg_select! in lib.rs picks between, and Android's find() can genuinely fail to load — the class is absent below API 24"
 )]

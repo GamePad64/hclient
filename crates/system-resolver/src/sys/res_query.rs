@@ -64,7 +64,7 @@
 //! unusable from more than one thread, and that platform moved to
 //! `sys/apple.rs`.
 
-#![allow(
+#![expect(
     unsafe_code, // unsafe-code-exception: amendment-C8,
     reason = "res_query is the only way to ask the system resolver for a record type getaddrinfo cannot return; see spec amendment C8"
 )]
@@ -184,7 +184,7 @@ pub(crate) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
         // truncate into a larger claim. `class` and `rtype` are values
         // this crate bounds to `u16` before the cast. `res_query` writes
         // only within `anslen` and retains no pointer past its return.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_possible_wrap,
             reason = "buf.len() is at most MAX_MESSAGE (65535), which fits c_int on every supported target — see the SAFETY comment above"
@@ -217,7 +217,7 @@ pub(crate) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
         // for the buffer is `classify_written`'s, one module up, where the
         // bound is unit-tested — see its doc comment for why a return
         // equal to the buffer's length is not a length.
-        #[allow(
+        #[expect(
             clippy::cast_sign_loss,
             reason = "written < 0 already returned above, so written is non-negative here"
         )]

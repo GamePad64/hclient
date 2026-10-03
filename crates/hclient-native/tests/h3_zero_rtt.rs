@@ -147,7 +147,7 @@ async fn handshake_of(s: &server::Server, n: usize) -> Duration {
 // A single causal narrative across several phases — see the module doc on
 // why this is asserted causally rather than by a clock. Splitting the
 // phases into helpers would break the ordering a reader needs to follow.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "A single causal narrative across several phases — see the module doc on why this is asserted causally rather than by a clock. Splitting the phases into helpers would break the ordering a reader needs to follow."
 )]

@@ -175,7 +175,7 @@ impl Wire {
                 // `usize::MAX` bytes — this suite's largest message is 8
                 // MiB — so a truncated length here would show up as a
                 // wrong slice length a few lines down, not silently.
-                #[allow(
+                #[expect(
                     clippy::cast_possible_truncation,
                     reason = "The client under test never sends a frame anywhere near `usize::MAX` bytes — this suite's largest message is 8 MiB — so a truncated length here would show up as a wrong slice length a few lines down, not silently."
                 )]
@@ -211,7 +211,7 @@ impl Wire {
         // `n < 126` for the `u8` and `u16::try_from(n).is_ok()` for the
         // `u16` — so neither can truncate; clippy cannot see a guard as a
         // bound.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "Each cast below is bounded by the match arm that reaches it — `n < 126` for the `u8` and `u16::try_from(n).is_ok()` for the `u16` — so neither can truncate; clippy cannot see a guard as a bound."
         )]
@@ -792,7 +792,7 @@ async fn a_ping_is_answered_with_a_pong_which_is_what_releases_the_next_message(
 async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
     const SIZE: usize = 8 * 1024 * 1024;
     // `i % 251` is always `< 251`, so the cast to `u8` cannot truncate.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "`i % 251` is always `< 251`, so the cast to `u8` cannot truncate."
     )]

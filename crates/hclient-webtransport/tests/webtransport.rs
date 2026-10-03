@@ -883,7 +883,7 @@ async fn a_close_reason_over_the_limit_is_not_a_clean_close() {
     let mut raw = vec![0x68, 0x43];
     // `over` is `MAX_REASON + 1` (1025), nowhere near `u32::MAX`, so the
     // capsule length below cannot truncate.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "`over` is `MAX_REASON + 1` (1025), nowhere near `u32::MAX`, so the capsule length below cannot truncate."
     )]

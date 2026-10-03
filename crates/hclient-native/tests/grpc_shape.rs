@@ -350,7 +350,7 @@ fn head(content_type: &str) -> http::response::Builder {
 // self-contained slice of the gRPC wire shape under test — splitting it
 // into helpers would scatter one fixture's routes across the file for no
 // reader's benefit.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "One dispatcher over every route this fixture answers, each arm a self-contained slice of the gRPC wire shape under test — splitting it into helpers would scatter one fixture's routes across the file for no reader's benefit."
 )]

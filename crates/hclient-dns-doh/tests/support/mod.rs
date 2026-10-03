@@ -15,7 +15,7 @@
 //! This is the same call `hclient-dns-system`'s `svcb.rs` tests made for
 //! the same reason, and the helpers are deliberately similar to theirs.
 
-#![allow(dead_code, reason = "each test file uses a different subset")]
+#![expect(dead_code, reason = "each test file uses a different subset")]
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};

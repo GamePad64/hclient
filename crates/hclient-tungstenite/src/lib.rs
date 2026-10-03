@@ -724,7 +724,7 @@ impl<I, Tm: Timer> TungsteniteWebSocket<I, Tm> {
     // `Bytes` is a refcounted handle meant to be handed over, the caller
     // has no use for it afterwards, and this is public API — a borrow
     // would change the surface to save a clone that does not happen.
-    #[allow(
+    #[expect(
         clippy::needless_pass_by_value,
         reason = "The negotiated connection, from the pieces an upgrade hands back: the socket, whatever the server had already sent past the `101`, a clock, and the liveness bound if the caller asked for one. **This is the seam between the transport and the framing**, and it is public for that reason: everything..."
     )]
@@ -769,7 +769,7 @@ impl<I, Tm: Timer> TungsteniteWebSocket<I, Tm> {
 /// `ping_awaiting_a_pong` are the two facts inside it a reader can act
 /// on, and both are already fields here — `tungstenite`'s own frame
 /// codec and closing-state internals would be noise beside them.
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "Hand-written for the reason [`hclient_native::IdleTimeout`]'s is: `#[derive(Debug)]` would demand `Debug` of the clock, which [`Timer`] does not ask for. The keep-alive state is in it because an outstanding probe is exactly what a reader debugging a stalled socket wants to see — and, per §7's fir..."
 )]

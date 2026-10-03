@@ -42,7 +42,7 @@ pub(crate) struct Bundled;
 pub(crate) type Handle = Bundled;
 
 /// Always `Some`: the tables are in the binary.
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "the signature is shared across every backend module the cfg_select! in lib.rs picks between, and Android's find() can genuinely fail to load — the class is absent below API 24"
 )]

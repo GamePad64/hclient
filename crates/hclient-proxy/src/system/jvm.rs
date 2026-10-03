@@ -42,7 +42,7 @@ use jni::{Env, JavaVM, jni_sig, jni_str};
 /// property that is not set and an exception all mean the same thing to
 /// the caller — *nothing was read* — and distinguishing them would put
 /// four error paths on a reader whose whole answer is a string.
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C19,
     reason = "JavaVM::from_raw over the pointer the application registered with ndk_context"
 )]

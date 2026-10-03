@@ -227,7 +227,7 @@ impl Socks5Associate {
         g.put_u8(SOCKS5_VERSION);
         // Bounded by construction: `offered` is built two lines above and
         // holds at most two methods.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "Bounded by construction: `offered` is built two lines above and holds at most two methods."
         )]
@@ -263,14 +263,14 @@ impl Socks5Associate {
                         // Both bounded: `Socks5::password_auth` refuses
                         // either over 255 bytes as `CredentialTooLong`, at
                         // the setter rather than here.
-                        #[allow(
+                        #[expect(
                             clippy::cast_possible_truncation,
                             reason = "Both bounded: `Socks5::password_auth` refuses either over 255 bytes as `CredentialTooLong`, at the setter rather than here."
                         )]
                         msg.put_u8(u.len() as u8);
                         msg.put_slice(u.as_bytes());
                         // Bounded at the setter too — see the pair above.
-                        #[allow(
+                        #[expect(
                             clippy::cast_possible_truncation,
                             reason = "Bounded at the setter too — see the pair above."
                         )]
@@ -416,7 +416,7 @@ pub(crate) fn header_for(host: &str, port: u16) -> Result<Bytes, Error> {
     h.put_slice(&[0, 0, 0, 0x03]);
     // Bounded: `host.len() > 255` is refused three lines above, so this
     // cast is exact.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "Bounded: `host.len() > 255` is refused three lines above, so this cast is exact."
     )]

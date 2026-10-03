@@ -54,6 +54,19 @@
 # zero findings on three targets nobody built. So the two overlap on
 # purpose: the lint is the per-site check, the script is the census.
 #
+# **And since 2026-10-03 the suppressions are `#[expect(..)]` rather than
+# `#[allow(..)]`, wherever the suppressed lint fires in the build at
+# hand.** An expectation that is no longer fulfilled is a warning rustc
+# emits at the site, and `-D warnings` turns into an error — so a
+# suppression whose lint stopped firing now fails the gate itself instead
+# of sitting there silently. The 42 sites that stay `allow` are the ones
+# where the lint's firing is a fact about the build rather than about the
+# code — per-binary `dead_code` in a shared test module, per-feature
+# `dead_code` behind a `#[cfg]`'d backend, a smoltcp address family that
+# is an absent enum variant rather than a branch — and each carries its
+# reason naming where the lint does fire. This script reads both
+# spellings so the census does not depend on which one a site took.
+#
 # It counts every `allow`, not only clippy's — `dead_code`, `unused_mut`,
 # `unreachable_code` — and the two shapes the attribute takes when a
 # reason makes it long: an `#[allow(` whose arguments wrap onto their own
@@ -70,7 +83,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent if "__file__" in dir() else pathlib.Path(".")
 ROOT = pathlib.Path(".").resolve()
 
-ALLOW = re.compile(r"#!?\s*\[\s*(?:cfg_attr\s*\([^)]*\)\s*,\s*)?allow\s*\(")
+ALLOW = re.compile(r"#!?\s*\[\s*(?:cfg_attr\s*\([^)]*\)\s*,\s*)?(?:allow|expect)\s*\(")
 
 def justified(lines, i):
     """Does the allow starting on line `i` (0-based) carry rustc's own
@@ -131,7 +144,7 @@ if seen < 150:
 
 if bare:
     print(
-        f"::error::{len(bare)} `#[allow(..)]` without `reason = \"..\"`. "
+        f"::error::{len(bare)} `#[allow(..)]`/`#[expect(..)]` without `reason = \"..\"`. "
         "Say what bounds the cast, why the lint is wrong about this code, or "
         "what the hand-written impl prints instead — in rustc's own "
         "`reason = \"..\"`, which is the one spelling a machine can check "
@@ -142,5 +155,5 @@ if bare:
         print(f"  {b}", file=sys.stderr)
     sys.exit(1)
 
-print(f"every-allow-names-its-reason: {seen} allows, all carrying `reason`")
+print(f"every-allow-names-its-reason: {seen} allow/expect, all carrying `reason`")
 PY

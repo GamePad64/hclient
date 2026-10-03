@@ -617,7 +617,7 @@ async fn a_truncated_body_closes_the_connection_with_the_failure() {
 // `closed` (the server's counter) and `closes` (the hook's recorded
 // events) are deliberately paired names for two different views of the
 // same fact — renaming either would lose the pairing.
-#[allow(
+#[expect(
     clippy::similar_names,
     reason = "The one that explains a connect a caller did nothing to deserve: a pooled connection the peer closed while it sat idle. The second request finds it dead, reports it `Stale`, and pays for a fresh connection — and the server's accept count is what says the fresh connection was real. `closed` (the s..."
 )]

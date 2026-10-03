@@ -128,7 +128,7 @@ impl<H> H3Body<H> {
 // Hand-written: h3's RequestStream is not Debug, and the useful thing to
 // print about a body in flight is which phase it is in, not the QPACK
 // state behind it.
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "Hand-written: h3's RequestStream is not Debug, and the useful thing to print about a body in flight is which phase it is in, not the QPACK state behind it."
 )]

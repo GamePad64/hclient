@@ -43,7 +43,7 @@
 //! because it has no tests of its own.)
 
 #![cfg(not(target_family = "wasm"))]
-#![allow(
+#![expect(
     dead_code,
     reason = "a fixture shared by several test binaries: each takes the part it needs, so what is unused in one is load-bearing in the next, and a per-item allow would move with every test"
 )]
@@ -147,7 +147,7 @@ pub struct Held {
 // thread handle carry no useful `Debug` for a reader of a failing
 // test — `seen`, `hold_until` and `held` are read through their own
 // accessors where a test actually needs them.
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "A curated summary, not a dump: the mutex-guarded fields and the thread handle carry no useful `Debug` for a reader of a failing test — `seen`, `hold_until` and `held` are read through their own accessors where a test actually needs them."
 )]
@@ -400,7 +400,7 @@ fn varint(d: &[u8]) -> Option<(u64, usize)> {
 // datagram's own size ceiling (~65 KiB), far under `usize::MAX` on every
 // target this file builds for (it is gated off wasm), so the `as usize`
 // below never truncates in practice.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     reason = "Walk a datagram's coalesced packets and name each one's type and size. Walking rather than reading the first byte and stopping is not thoroughness for its own sake: a client's first flight **coalesces its Initial and its 0-RTT packets into one datagram**, so a reader that looked only at the front..."
 )]

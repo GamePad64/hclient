@@ -248,7 +248,7 @@ where
             match frame {
                 // An `if let` here would lose the `Err` arm, and with it
                 // the one word saying what the skipped frame was.
-                #[allow(
+                #[expect(
                     clippy::single_match,
                     reason = "An `if let` here would lose the `Err` arm, and with it the one word saying what the skipped frame was."
                 )]

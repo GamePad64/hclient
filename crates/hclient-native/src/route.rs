@@ -127,7 +127,7 @@ enum Egress {
 }
 
 /// Why a QUIC connect through a filter produced no connection.
-#[allow(
+#[expect(
     clippy::large_enum_variant,
     reason = "the request comes back whole, which is the contract, and it lives one call: boxing it would allocate on every switch to buy back bytes nobody holds"
 )]
@@ -870,7 +870,7 @@ where
 
     /// A connection to the request's origin through the filter `via`: a
     /// pooled one, or one over a path the filter opens now.
-    #[allow(
+    #[expect(
         clippy::result_large_err,
         reason = "the request comes back whole, which is the contract: `stage`'s measurement — 264 of the bytes are `http::Request<RequestBody>` — applies here unchanged"
     )]

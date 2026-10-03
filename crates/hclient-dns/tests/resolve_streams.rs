@@ -48,7 +48,7 @@ impl Stream for AddressesOnDemand {
         self.produced.set(so_far + 1);
         // `so_far` is 0 or 1 here — the `== 2` check above already
         // returned for anything higher — so the cast never truncates.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "`so_far` is 0 or 1 here — the `== 2` check above already returned for anything higher — so the cast never truncates."
         )]

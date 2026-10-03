@@ -245,7 +245,7 @@ impl ConnTiming {
 // A curated summary, not a dump: `cert_der` is raw DER with nothing a
 // reader would want printed, and the counters and thread handles are
 // read through their own accessors where a test actually needs them.
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "A curated summary, not a dump: `cert_der` is raw DER with nothing a reader would want printed, and the counters and thread handles are read through their own accessors where a test actually needs them."
 )]
@@ -473,7 +473,7 @@ pub fn start_on_v6(behaviour: Behaviour) -> Option<Server> {
 // accept-loop thread — for a single self-contained test server. Splitting
 // it into helpers would scatter one setup across the file for no reader's
 // benefit.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "One linear assembly — TLS config, transport config, the endpoint, the accept-loop thread — for a single self-contained test server. Splitting it into helpers would scatter one setup across the file for no reader's benefit."
 )]

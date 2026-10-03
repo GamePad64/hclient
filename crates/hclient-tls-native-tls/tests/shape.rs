@@ -122,11 +122,11 @@ fn without_ech_the_handshake_actually_starts() {
 /// unconditionally would pass the first assertion while lying: the whole
 /// point is that the answer tracks the IO.
 #[test]
-#[allow(
+#[expect(
     clippy::items_after_statements,
     reason = "SendIo/UnsendIo/Probe/Fallback are the Send-probe fixtures this test is entirely about — they belong beside the assertions that use them, not at module scope where nothing else needs them"
 )]
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "106 lines, and the excess is the two fixtures' `Shutdown` impls: the seam split `poll_shutdown` off `Write`, so each double owes one more impl. Moving them to module scope is what the allow above deliberately refuses."
 )]
@@ -179,7 +179,7 @@ fn the_handshake_is_send_exactly_when_the_io_is() {
 
     // And the negation, at a type that holds an `Rc`.
     struct UnsendIo(
-        #[allow(
+        #[expect(
             dead_code,
             reason = "the `Rc` is what makes this IO `!Send`, which is the whole of what the fixture asserts; no code reads it"
         )]

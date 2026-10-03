@@ -6,7 +6,7 @@
 //! trait it implements declares it `async fn` — `embedded-io-async` and
 //! `embedded-nal-async` give no other shape to conform to, so a fixture
 //! that awaits nothing still has to be `async` to be one.
-#![allow(
+#![expect(
     clippy::unused_async_trait_impl,
     reason = "Two synthetic stacks: one whose connection crosses a thread and one whose does not. They are the whole subject — the adapter's claim is about which of the two it can make, so a test needs both. Every `Read`/`Write`/`TcpConnect` method below is `async fn` because the trait it implements declares i..."
 )]
@@ -82,7 +82,7 @@ impl TcpConnect for SendStack {
 pub struct LocalStack(pub std::rc::Rc<()>);
 #[derive(Debug)]
 pub struct LocalConn(
-    #[allow(dead_code, reason = "held to make the type !Send")] pub std::rc::Rc<()>,
+    #[expect(dead_code, reason = "held to make the type !Send")] pub std::rc::Rc<()>,
 );
 
 impl ErrorType for LocalConn {

@@ -261,7 +261,7 @@ impl TcpOpts {
 // Deliberately many bools, one per `TcpOpts` field — see this type's own
 // doc above and AGENTS.md "A capability that answers yes or no is a
 // `bool`".
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "Which of [`TcpOpts`]' six fields a runtime can actually apply. One `bool` per field of `TcpOpts`, not a count and not a bitflags crate: the error a caller gets has to name the option it asked for, and a field-per-field mirror is the only shape that can. Deliberately many bools, one per `TcpOpts`..."
 )]

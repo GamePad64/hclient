@@ -37,7 +37,7 @@ impl Resolve for Canned {
             // this mock `supports` address types and this says explicitly
             // that it has none, rather than leaving them to fall through
             // the wildcard by coincidence.
-            #[allow(
+            #[expect(
                 clippy::match_same_arms,
                 reason = "Kept as its own arm though it matches the wildcard below: this mock `supports` address types and this says explicitly that it has none, rather than leaving them to fall through the wildcard by coincidence."
             )]

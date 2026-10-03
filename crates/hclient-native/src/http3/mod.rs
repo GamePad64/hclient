@@ -724,7 +724,7 @@ where
     /// nothing in it answers [`Checkout::NeedsPath`] before anything is
     /// dialled — the caller asks the filter and comes back. A miss with a
     /// path takes it and makes the connection over it.
-    #[allow(
+    #[expect(
         clippy::similar_names,
         reason = "`stale` (a removed dead entry) and `state` (a new connection's `ConnState`) are this codebase's own vocabulary"
     )]
@@ -1071,7 +1071,7 @@ where
     /// had: everything except the one tolerated write failure is the
     /// request failing, and it is reported as such rather than as a
     /// response that happens to be missing its request.
-    #[allow(
+    #[expect(
         clippy::similar_names,
         reason = "`send` (the request handle) and `sent` (the byte-counting hook) are this module's established names"
     )]
@@ -1178,7 +1178,7 @@ where
     /// every site in `staged.rs`, and making the one member of that
     /// family that happens not to touch `self.hooks` an associated
     /// function would break that uniform shape for no reader's benefit.
-    #[allow(
+    #[expect(
         clippy::unused_self,
         reason = "The `Head` event, from the one place all three attempts reach it — the first, the 0-RTT replay, and nothing else. A method rather than three copies, because a caller counting heads must not be able to tell those paths apart: a rejected 0-RTT request that was replayed is one request that got one r..."
     )]

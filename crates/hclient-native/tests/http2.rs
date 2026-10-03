@@ -519,7 +519,7 @@ async fn a_protocol_that_was_never_offered_is_never_spoken() {
     // `tokio::time::timeout`'s error is `Elapsed`, which carries nothing
     // beyond its own name — the panic message already says what
     // happened, and printing `{e:?}` would only echo it.
-    #[allow(
+    #[expect(
         clippy::match_wild_err_arm,
         reason = "`tokio::time::timeout`'s error is `Elapsed`, which carries nothing beyond its own name — the panic message already says what happened, and printing `{e:?}` would only echo it."
     )]

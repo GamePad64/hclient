@@ -396,7 +396,7 @@ impl StoredResponse {
 // defaulted `is_empty` would have to name a future built from `len`'s, and
 // there is no way to write that type without boxing every implementor's
 // answer. `len().await == 0` is what a caller writes.
-#[allow(
+#[expect(
     clippy::len_without_is_empty,
     reason = "Where stored responses are kept. A multimap from [`Key`] to the variants stored under it, and nothing more — see this module's doc comment for why every RFC 9111 decision is deliberately on the other side of this trait. **No `Send` or `Sync` bound**, here or anywhere in this workspace's seams: a..."
 )]

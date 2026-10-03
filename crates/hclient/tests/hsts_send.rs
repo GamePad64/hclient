@@ -37,7 +37,7 @@ fn a_single_threaded_byte_store_is_still_usable_here() {
     use std::time::SystemTime;
 
     #[derive(Default)]
-    struct Rcish(#[allow(dead_code, reason = "held to make the type !Send")] std::rc::Rc<u8>);
+    struct Rcish(#[expect(dead_code, reason = "held to make the type !Send")] std::rc::Rc<u8>);
 
     impl KeyValueStore for Rcish {
         type Instant = SystemTime;

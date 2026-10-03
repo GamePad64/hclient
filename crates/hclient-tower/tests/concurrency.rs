@@ -141,7 +141,7 @@ fn limited(
 // three interchangeable concurrent requests racing for two permits — naming
 // them `request_a`/`request_b`/`request_c` would not make any of the
 // assertions below easier to follow.
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     reason = "`g`/`t` are the fixture and the transport under test, and `a`/`b`/`c` are three interchangeable concurrent requests racing for two permits — naming them `request_a`/`request_b`/`request_c` would not make any of the assertions below easier to follow."
 )]

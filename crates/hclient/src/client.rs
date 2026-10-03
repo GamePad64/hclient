@@ -1366,7 +1366,7 @@ impl Client {
     // redirect hop, the `425` replay, the auth legs and the retry all read
     // the same locals, and splitting it would thread them through
     // signatures rather than shorten anything.
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "The stages themselves, unbounded — `execute` above puts the bound around this whole thing. Split out rather than inlined so that the deadline wraps ONE future covering every hop: the redirect loop is inside here, so dropping this future on expiry drops whichever hop is in flight, and under `Trans..."
     )]

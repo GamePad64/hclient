@@ -238,7 +238,7 @@ pub enum TlsSupport {
 // that answers yes or no is a `bool`". Each field here answers a separate
 // yes/no question about a separate bound; splitting them apart would not
 // make any one of them less of a bool.
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "Which of [`crate::req::Timeouts`]' bounds this transport enforces — the field-per-field mirror of that struct, so a refusal can name the bound a caller set rather than saying *timeouts*. # `#[non_exhaustive]`, and why an added claim is `false` rather than a compile error This struct has grown onc..."
 )]
@@ -350,7 +350,7 @@ impl TimeoutSupport {
 // these is a separate gate or report over a separate question; the count
 // is the vocabulary this type exists to hold, not a sign it should be
 // restructured.
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "What the transport can do **in this process, right now**. A runtime fact, not a `cfg!`: one wasm binary runs in both Chrome (streaming request body available since 131) and Safari (not available). # Two kinds of field Every field here is one of two things, and reading them as one kind is what mak..."
 )]

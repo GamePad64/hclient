@@ -748,7 +748,7 @@ mod tests {
     use std::time::Duration;
 
     // Always `Some`: every call site assigns into a `Timeouts` field.
-    #[allow(
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "Always `Some`: every call site assigns into a `Timeouts` field."
     )]

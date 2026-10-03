@@ -152,7 +152,7 @@ pub(crate) struct Watch<H> {
 
 // Hand-written: `H` is not required to be `Debug`, and requiring it would
 // be a bound on the caller's hook for the benefit of a formatter.
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "Hand-written: `H` is not required to be `Debug`, and requiring it would be a bound on the caller's hook for the benefit of a formatter."
 )]

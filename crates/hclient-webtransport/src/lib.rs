@@ -903,7 +903,7 @@ impl Session {
     // `Bytes` is this crate's currency for a payload, and cloning one is an
     // `Arc` bump rather than a copy — so taking it by value is the ordinary
     // shape for a caller who already owns one, not a needless restriction.
-    #[allow(
+    #[expect(
         clippy::needless_pass_by_value,
         reason = "Send one datagram. It may be lost, and that is the point. WebTransport datagrams are the feature streams do not already give: unreliable, unordered, and free of head-of-line blocking. Nothing here retransmits, acknowledges or orders them, and a caller that needs any of those wants [`open_bi`](Sel..."
     )]
@@ -1582,7 +1582,7 @@ fn put_varint(buf: &mut Vec<u8>, v: u64) {
     // Each cast is bounded by the `if`/`else if` immediately above it —
     // `v < 1 << 6` fits `u8`, `v < 1 << 14` fits `u16`, `v < 1 << 30` fits
     // `u32` — so none of the three can truncate.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "Each cast is bounded by the `if`/`else if` immediately above it — `v < 1 << 6` fits `u8`, `v < 1 << 14` fits `u16`, `v < 1 << 30` fits `u32` — so none of the three can truncate."
     )]

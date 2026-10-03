@@ -208,7 +208,7 @@ const GUARD: Duration = Duration::from_secs(6);
 /// The guard, applied — named so the panic says which wait never ended.
 // `tokio::time::error::Elapsed` carries nothing beyond "it elapsed" — there
 // is no field to name here, so `Err(_)` is the whole of the information.
-#[allow(
+#[expect(
     clippy::match_wild_err_arm,
     reason = "The guard, applied — named so the panic says which wait never ended. `tokio::time::error::Elapsed` carries nothing beyond 'it elapsed' — there is no field to name here, so `Err(_)` is the whole of the information."
 )]

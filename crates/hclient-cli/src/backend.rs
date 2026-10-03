@@ -173,7 +173,7 @@ pub fn rustls_transport(cfg: &Config) -> Result<RustlsTransport, Refused> {
 // every call site (`choose` below, `run.rs`'s two backend arms), and
 // dropping the wrap here would be the one arm that needed a different
 // shape from its sibling for no reason a caller can see.
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "`NativeTls::new()` cannot fail, unlike `rustls_transport`'s platform verifier a few lines up — but both are called through the same `?` at every call site (`choose` below, `run.rs`'s two backend arms), and dropping the wrap here would be the one arm that needed a different shape from its sibling..."
 )]
@@ -254,7 +254,7 @@ pub fn build(which: Option<BackendName>, cfg: &Config) -> Result<hclient::Client
         // and with a backend feature off the compiler needs this arm to
         // say so. It is unreachable rather than a second refusal, which is
         // what keeps one decision in one place.
-        #[allow(
+        #[expect(
             unreachable_patterns,
             reason = "reachable only in a build with a backend feature off, where `choose` has \
                       already returned Err for exactly these values"

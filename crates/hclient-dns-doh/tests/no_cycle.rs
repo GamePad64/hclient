@@ -170,7 +170,7 @@ async fn a_doh_resolver_composes_into_a_transport_and_that_transport_resolves() 
 // The `type` and the two `fn`s below are deliberately declared where the
 // prose above explains each one, rather than hoisted to the top of the
 // function — the point of this test is the declarations themselves.
-#[allow(
+#[expect(
     clippy::items_after_statements,
     reason = "The `type` and the two `fn`s below are deliberately declared where the prose above explains each one, rather than hoisted to the top of the function — the point of this test is the declarations themselves."
 )]

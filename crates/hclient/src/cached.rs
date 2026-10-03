@@ -422,7 +422,7 @@ pub(crate) fn only_if_cached_miss<B>() -> http::Response<Cached<B>> {
 // freshly-produced `StoredResponse` with no further use for it, so a
 // reference would only add a `&` at each site for no saved clone.
 #[cfg(feature = "cache")]
-#[allow(
+#[expect(
     clippy::needless_pass_by_value,
     reason = "A stored response, as an `http::Response` a caller cannot tell from a live one except by its `Age`. The version is the stored one — see [`StoredResponse::version`](crate::cache::StoredResponse::version) for why a stale truth beats `http`'s builder default. By value rather than `&StoredResponse`:..."
 )]

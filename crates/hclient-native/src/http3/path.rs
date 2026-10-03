@@ -132,7 +132,7 @@ pub(crate) fn transport_for(
     keep_alive: Option<Duration>,
 ) -> quinn::TransportConfig {
     let mut t = quinn::TransportConfig::default();
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "clamped to u16::MAX on the line above"
     )]

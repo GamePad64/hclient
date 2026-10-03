@@ -408,7 +408,7 @@ impl<H: Hooks + Clone + Unpin> Transport for WasiHttp<H> {
     // reading the head, wiring the hook — are sequential and each is
     // commented where it happens; splitting them into helper functions
     // would scatter that narrative rather than shorten it.
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "The exchange's stages — request conversion, the `wasi:http` call, reading the head, wiring the hook — are sequential and each is commented where it happens; splitting them into helper functions would scatter that narrative rather than shorten it."
     )]

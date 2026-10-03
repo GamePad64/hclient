@@ -912,7 +912,7 @@ where
     }
 }
 
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "hand-written: `R` and `R::Instant` carry no `Debug` bound here, `sleep` is machinery"
 )]
@@ -1082,7 +1082,7 @@ where
 }
 
 #[cfg(feature = "http2")]
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "hand-written: `pool` is the shared handle, not worth printing beside `key`"
 )]

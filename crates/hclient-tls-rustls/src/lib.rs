@@ -252,7 +252,7 @@ struct Named {
 // it and are done with it afterwards (one from a fresh `with_identity`
 // argument, the other from its own by-value parameter), so a reference
 // here would only make the caller's `Arc` outlive the call for no reason.
-#[allow(
+#[expect(
     clippy::needless_pass_by_value,
     reason = "both callers own the `Arc` and are done with it, so taking it by value costs nothing and a reference would only keep theirs alive past the call"
 )]
@@ -1065,7 +1065,7 @@ pub struct Handshaking<S> {
 /// the size is unchanged and boxing would add one allocation per
 /// handshake that the previous code did not make. What changed is only
 /// that the type has a name, which is why the lint can see it at all.
-#[allow(
+#[expect(
     clippy::large_enum_variant,
     reason = "measured: 1056 vs 24 bytes, and the same size the async fn's opaque state already was — boxing would add an allocation rather than remove one"
 )]

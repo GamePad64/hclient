@@ -133,7 +133,7 @@ async fn the_peers_limit_comes_off_the_settings_frame() {
     for limit in [1u64, 3] {
         // `limit` is one of the two small literals in the loop header
         // above, so the cast to `usize` cannot truncate on any target.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "`limit` is one of the two small literals in the loop header above, so the cast to `usize` cannot truncate on any target."
         )]

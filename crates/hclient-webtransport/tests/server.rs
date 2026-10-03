@@ -36,7 +36,7 @@ use std::time::Duration;
 // Five independent server-behaviour switches, each documented on its own
 // field — a fixture config, not a public API a caller composes calls
 // against, so there is no bit-flags refactor this buys.
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "What the server announces and how it answers. Five independent server-behaviour switches, each documented on its own field — a fixture config, not a public API a caller composes calls against, so there is no bit-flags refactor this buys."
 )]
@@ -726,7 +726,7 @@ fn take_capsule(buf: &mut Vec<u8>) -> Option<SeenCapsule> {
     // principle truncate, but this fixture only ever decodes a capsule
     // this same test binary just encoded, at sizes far under `usize::MAX`
     // on any target it runs on.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "A QUIC varint is up to 2^62-1; on a 32-bit target this could in principle truncate, but this fixture only ever decodes a capsule this same test binary just encoded, at sizes far under `usize::MAX` on any target it runs on."
     )]

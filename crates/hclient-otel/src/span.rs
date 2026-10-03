@@ -72,7 +72,7 @@ pub(crate) enum Choice {
     /// constructs it, which is the point rather than an oversight: with
     /// no front, `Instrumented` has no constructor either.
     #[cfg(not(any(feature = "tracing", feature = "otel")))]
-    #[allow(dead_code, reason = "unconstructible by design — see above")]
+    #[expect(dead_code, reason = "unconstructible by design — see above")]
     Nothing,
 }
 

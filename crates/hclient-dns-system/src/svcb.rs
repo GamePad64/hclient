@@ -925,7 +925,7 @@ mod tests {
         #[values(1, 5, 255, 300)] payload_len: usize,
     ) {
         // `i % 251` is always under 251, so the cast to `u8` cannot truncate.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "`i % 251` is always under 251, so the cast to `u8` cannot truncate."
         )]

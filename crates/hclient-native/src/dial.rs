@@ -120,7 +120,7 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, L, H> {
 }
 
 impl<'a, R: TcpConnect + Timer, D: ?Sized, L, H> NativeDial<'a, R, D, L, H> {
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "every argument is one of what `Native` lends a connection; splitting the context into a second type would only move the count"
     )]
@@ -318,7 +318,7 @@ where
 
     /// Nothing is remembered without the `http3` feature.
     #[cfg(not(feature = "http3"))]
-    #[allow(
+    #[expect(
         clippy::unused_self,
         reason = "the `http3` twin reads `self`, and the call site stays free of a `#[cfg]`"
     )]
@@ -328,7 +328,7 @@ where
 
     /// Nothing is remembered without the `http3` feature.
     #[cfg(not(feature = "http3"))]
-    #[allow(
+    #[expect(
         clippy::unused_self,
         reason = "the `http3` twin reads `self`, and the call site stays free of a `#[cfg]`"
     )]
@@ -336,7 +336,7 @@ where
 
     /// No HTTP/3 tunnels without the `http3` feature.
     #[cfg(not(feature = "http3"))]
-    #[allow(
+    #[expect(
         clippy::unused_self,
         reason = "the `http3` twin reads `self`, and the call site stays free of a `#[cfg]`"
     )]

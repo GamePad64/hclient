@@ -166,7 +166,7 @@ impl SseDecoder {
     // ordinary sense — `Iterator` has no way to report `SseError`, and
     // `push` mutates the buffer between calls. The name is fixed by this
     // task's interface.
-    #[allow(
+    #[expect(
         clippy::should_implement_trait,
         reason = "Named `next`, not `Iterator::next`, deliberately: the decoder requires interleaving with `push` and can't be an iterator in the ordinary sense — `Iterator` has no way to report `SseError`, and `push` mutates the buffer between calls. The name is fixed by this task's interface."
     )]

@@ -17,7 +17,7 @@ pub enum Fail {
     Request(hclient::Error),
     /// `--check-status` and the server answered 4xx or 5xx.
     Status(http::StatusCode),
-    #[allow(
+    #[expect(
         dead_code,
         reason = "constructed only in a build without the `websocket` feature — the same \
                   shape as `backend::finish`, which is dead in a build with no backend"
@@ -304,7 +304,7 @@ fn print_selection(cli: &Cli, is_tty: bool) -> Result<Print, Fail> {
 /// `config`, `req`, `print` and the rest through several signatures for no
 /// reader benefit over reading it top to bottom in the order a request is
 /// actually assembled.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "One command line, turned into one request, sent, and printed. It is long because it is one linear pipeline rather than several independent jobs: `req` is built up step by step (query, headers, body, auth, redirect policy) and each step reads state the one before it produced, so splitting it into..."
 )]
@@ -715,7 +715,7 @@ async fn websocket_mode(
             )
             .await
         }
-        #[allow(
+        #[expect(
             unreachable_patterns,
             reason = "reachable only in a build with a backend feature off, where `choose` has \
                       already returned Err for exactly these values"
@@ -729,7 +729,7 @@ async fn websocket_mode(
 /// to be the *only* difference, so both shapes are reached by one line in
 /// `run`.
 #[cfg(not(feature = "websocket"))]
-#[allow(
+#[expect(
     clippy::unused_async,
     reason = "it mirrors the signature of the arm that is genuinely async"
 )]

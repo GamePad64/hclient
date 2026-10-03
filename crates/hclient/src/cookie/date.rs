@@ -132,7 +132,7 @@ pub(crate) fn parse_cookie_date(input: &[u8]) -> Option<i64> {
     // `hclient-cache`'s `civil` records: `Timestamp::MAX` is
     // `9999-12-30T22:00Z`, which is inside the range §5.1.1 allows.
     // Kept beside the comment explaining it rather than hoisted to the top.
-    #[allow(
+    #[expect(
         clippy::items_after_statements,
         reason = "§5.1.1 step 5 and step 6 in one call, which is the shape of the decision rather than a shortcut: step 5 checks `1 <= d <= 31` and step 6 then asks for a date that may not exist, so the day/month agreement has to be settled by whatever builds the date. Refusing — rather than normalising `31 Feb 20..."
     )]

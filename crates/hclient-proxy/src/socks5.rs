@@ -145,7 +145,7 @@ impl Handshake for Socks5 {
         request.put_slice(&[SOCKS5_VERSION, 0x01, 0x00, 0x03]);
         // Bounded: `host_bytes.len() > 255` is refused as `HostTooLong`
         // a dozen lines above, so this cast is exact.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "Bounded: `host_bytes.len() > 255` is refused as `HostTooLong` a dozen lines above, so this cast is exact."
         )]
@@ -168,7 +168,7 @@ impl Handshake for Socks5 {
         greeting.put_u8(SOCKS5_VERSION);
         // Bounded by construction: `offered` is built one line above and
         // holds at most two methods.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "Bounded by construction: `offered` is built one line above and holds at most two methods."
         )]
@@ -221,14 +221,14 @@ impl Handshake for Socks5 {
                         // over 255 bytes as `CredentialTooLong`, at the
                         // setter rather than here, so RFC 1929's
                         // one-octet lengths are exact.
-                        #[allow(
+                        #[expect(
                             clippy::cast_possible_truncation,
                             reason = "Both bounded: `password_auth` refuses either over 255 bytes as `CredentialTooLong`, at the setter rather than here, so RFC 1929's one-octet lengths are exact."
                         )]
                         msg.put_u8(user.len() as u8);
                         msg.put_slice(user.as_bytes());
                         // Bounded at the setter too — see the pair above.
-                        #[allow(
+                        #[expect(
                             clippy::cast_possible_truncation,
                             reason = "Bounded at the setter too — see the pair above."
                         )]

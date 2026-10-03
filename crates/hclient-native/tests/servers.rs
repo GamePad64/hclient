@@ -137,7 +137,7 @@ pub struct Pair {
 // the thread handles carry no useful `Debug`, and the counters not
 // shown here are read through their own accessors where a test
 // actually needs them.
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "A curated summary, not a dump: `cert_der` is raw DER, `alt_svc` and the thread handles carry no useful `Debug`, and the counters not shown here are read through their own accessors where a test actually needs them."
 )]
@@ -473,7 +473,7 @@ fn start_tcp(
 /// `Endpoint::new` rather than `Endpoint::server` because the socket was
 /// bound outside — it had to be, since finding a port free on both
 /// protocols means holding both while trying.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "each argument is a counter or a setting the pair shares with this thread; a struct of them would be one more type for a private helper with one caller"
 )]

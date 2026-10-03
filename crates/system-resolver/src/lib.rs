@@ -201,7 +201,7 @@ mod error;
 /// set in `sys` exists to prevent. Every function here is exercised by this
 /// module's own tests on every host, so what the allowance can hide is
 /// bounded by that.
-#[allow(dead_code, reason = "see this module's own note")]
+#[expect(dead_code, reason = "see this module's own note")]
 mod message;
 /// The mirror of [`message`]: it decodes a wire message into records, this
 /// encodes a record a platform took apart back into RDATA. Compiled and
@@ -213,7 +213,7 @@ mod message;
 /// module. Reading the two counts as a partition is the mistake this
 /// sentence exists to stop, and it was one this crate's own docs made for
 /// as long as Apple's arm was `res_query`.
-#[allow(dead_code, reason = "see `message`'s note; this is its mirror")]
+#[expect(dead_code, reason = "see `message`'s note; this is its mirror")]
 mod rdata;
 mod sys;
 
@@ -406,7 +406,7 @@ impl Support {
     /// The empty range is written once, here, rather than at each site
     /// that means it — `1..=0` reads as a mistake everywhere except beside
     /// this sentence.
-    #[allow(
+    #[expect(
         clippy::reversed_empty_ranges,
         reason = "an empty range is the point: `1..=0` is how *no type at all* is spelled, and the constructor exists so that it is written once, here, beside the sentence saying so"
     )]

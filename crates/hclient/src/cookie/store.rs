@@ -299,7 +299,7 @@ pub(super) fn candidate_domains(host: &str) -> Vec<String> {
 // there is no way to write that type without boxing every implementor's
 // answer. `len().await == 0` is what a caller writes — which is exactly
 // what `CookieJar::is_empty` does.
-#[allow(
+#[expect(
     clippy::len_without_is_empty,
     reason = "Where a [`CookieJar`](super::CookieJar) keeps its cookies. Implement it to put a jar on disk, in a database or in the browser's own storage; [`MemoryStore`] is what a plain `CookieJar::new()` uses and is the reference for what the methods mean. **A store that outlives the process writes [`CookieR..."
 )]

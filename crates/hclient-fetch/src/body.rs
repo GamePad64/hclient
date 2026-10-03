@@ -247,7 +247,7 @@ impl Body {
     /// this crate needs is through the eventual `Transport` impl — the same
     /// pattern `convert::to_web_request` already follows, exposed to tests
     /// only via `testing::body_from_response`.
-    #[allow(
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "infallible today, but this is the conversion `Transport::execute` will eventually route through — narrowing to an infallible return now would have to widen back the day a real failure path is added, and every callsite already treats it as fallible"
     )]

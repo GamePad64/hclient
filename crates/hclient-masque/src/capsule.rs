@@ -170,7 +170,7 @@ impl Decoder {
     /// its contents are malformed — never for an incomplete one, which
     /// answers `Ok(None)` instead so a caller cannot tell "wait for more"
     /// from "this will never be valid".
-    #[allow(
+    #[expect(
         clippy::should_implement_trait,
         reason = "this is a fallible, buffered pull (`push`/`next`) rather than `Iterator`, whose `next` cannot report a malformed capsule"
     )]

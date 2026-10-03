@@ -277,7 +277,7 @@ fn feed(conn: &mut rustls::ClientConnection, bytes: &[u8]) -> std::io::Result<us
         // fixed-size buffer, so its position never exceeds `bytes.len()`
         // — far below `usize::MAX` on every platform this crate builds
         // for, 32-bit included.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "`cursor` walks `bytes`, a slice this poll just read into a fixed-size buffer, so its position never exceeds `bytes.len()` — far below `usize::MAX` on every platform this crate builds for, 32-bit included."
         )]
@@ -285,7 +285,7 @@ fn feed(conn: &mut rustls::ClientConnection, bytes: &[u8]) -> std::io::Result<us
             break;
         }
     }
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "`cursor` walks `bytes`, a slice this poll just read into a fixed-size buffer, so its position never exceeds `bytes.len()` — far below `usize::MAX` on every platform this crate builds for, 32-bit included."
     )]

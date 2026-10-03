@@ -90,7 +90,7 @@
 //! things end the loop before it — a callback without
 //! `kDNSServiceFlagsMoreComing`, and an error code — and with the flag
 //! above both arrive as fast as the resolver answers.
-#![allow(
+#![expect(
     unsafe_code, // unsafe-code-exception: amendment-C8,
     reason = "DNSServiceQueryRecord is the only Apple API that answers for an arbitrary record type through the system's own resolver; see spec amendment C8"
 )]
@@ -323,7 +323,7 @@ pub(crate) fn query(name: &str, rtype: u16) -> Result<Vec<Record>, Error> {
     // nothing in this body touches it and wrong that the loop cannot end.
     // Stated rather than silenced: the flag is the callback's, and the
     // three ways it becomes true are in this module's header.
-    #[allow(
+    #[expect(
         clippy::while_immutable_condition,
         reason = "the callback writes it through `context`; see above"
     )]

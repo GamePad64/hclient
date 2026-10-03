@@ -1033,7 +1033,7 @@ fn build_guest() -> PathBuf {
         // comes from `filenames`.
         // `cargo build --message-format=json`'s own output, not user
         // input — the extension is always lowercase.
-        #[allow(
+        #[expect(
             clippy::case_sensitive_file_extension_comparisons,
             reason = "A `cdylib` with no `fn main()` doesn't count as 'executable' to cargo (this field stays `null`) — the path to the `.wasm` comes from `filenames`. `cargo build --message-format=json`'s own output, not user input — the extension is always lowercase."
         )]

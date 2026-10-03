@@ -43,7 +43,7 @@
 //! an ICU that does not answer `straße.de` correctly — so the first thing
 //! that happens on a real Windows is a check of this file's output, and a
 //! `Backend::None` rather than a wrong host if it is wrong.
-#![allow(
+#![expect(
     unsafe_code, // unsafe-code-exception: amendment-C9,
     reason = "calling the platform's UTS 46 is the only way to reach it; the declarations come from windows-sys, only the calls are here. See spec amendment C9"
 )]
@@ -84,7 +84,7 @@ pub(crate) struct Icu;
 /// have started (see the module docs). The acceptance probe in `mod.rs`
 /// still runs, and is what decides whether the ICU behind that import is
 /// usable.
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "the signature is shared across every backend module the cfg_select! in lib.rs picks between, and Android's find() can genuinely fail to load — the class is absent below API 24"
 )]

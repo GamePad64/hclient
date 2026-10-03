@@ -120,7 +120,7 @@ pub struct Embassy<const N: usize, const TX: usize = 1536, const RX: usize = 153
 // Hand-written, and not `#[derive]`: `derive(Clone)` would demand `Clone`
 // on the const-generic parameters' types, and `embassy_net::Stack` has no
 // `Debug` to derive from either.
-#[allow(
+#[expect(
     clippy::expl_impl_clone_on_copy,
     reason = "cannot derive here — see the comment above"
 )]
@@ -311,6 +311,8 @@ fn connect_err(e: embassy_net::tcp::ConnectError) -> std::io::Error {
 // Unconditionally `Ok` under `--all-features` (both `proto-ipv4` and
 // `proto-ipv6` on), but genuinely fallible for a build that leaves either
 // one out — see the `#[cfg]` arms below. The `Result` is for those builds.
+// `allow`, not `expect`: the lint fires only in the builds that have both
+// families on, so an expectation would be unfulfilled in the others.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "`SocketAddr` → smoltcp's endpoint, or a typed error for an address family this build left out. smoltcp's `IpAddress` has one variant per family, each gated on its `proto-ipv4`/`proto-ipv6` feature, so 'no IPv6 in this build' is not a runtime configuration but an absent enum variant. A client aske..."

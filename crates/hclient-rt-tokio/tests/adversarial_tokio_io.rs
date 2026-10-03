@@ -297,7 +297,7 @@ async fn a_read_of_exactly_8_kib_delivers_every_byte() {
     let (mut client, mut server) = connected_pair().await;
     // `i % 256` is always in 0..256, which fits `u8` — bounded by the
     // modulus, not by `SIZE`.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "`i % 256` is always in 0..256, which fits `u8` — bounded by the modulus, not by `SIZE`."
     )]
@@ -316,7 +316,7 @@ async fn a_read_one_byte_over_8_kib_delivers_every_byte() {
     let (mut client, mut server) = connected_pair().await;
     // `i % 251` is always in 0..251, which fits `u8` — bounded by the
     // modulus, not by `SIZE`.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "`i % 251` is always in 0..251, which fits `u8` — bounded by the modulus, not by `SIZE`."
     )]

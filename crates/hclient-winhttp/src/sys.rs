@@ -226,7 +226,7 @@ impl Exchange {
     /// body polls one exchange. It is there because callers hold an
     /// `Arc<Exchange>`, so this takes `&self` where `Stream::poll_next`
     /// wants `&mut`.
-    #[allow(
+    #[expect(
         clippy::match_same_arms,
         reason = "Ready(None) and Pending both resolve to Poll::Pending, but for unrelated reasons — teardown ordering versus nothing being ready yet — the comment belongs to the first arm only"
     )]
@@ -323,7 +323,7 @@ impl Exchange {
 /// braces: a cancelled read reports `REQUEST_ERROR` and reclaims there,
 /// but if a future Windows ever skipped that, this is what keeps the
 /// allocation from leaking.
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "reclaims the one owned reference and the lent buffer; see obligation 2"
 )]
@@ -339,7 +339,7 @@ unsafe fn release(context: usize) {
 }
 
 /// Puts a lent buffer back in Rust's hands, if it is lent.
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "Box::from_raw over the allocation Box::into_raw produced in `read`"
 )]
@@ -364,7 +364,7 @@ fn reclaim(ex: &Exchange) {
 /// Installed once on the session and inherited by every handle derived
 /// from it. It runs on a `WinHTTP` thread-pool thread, so it does the least
 /// it can: reclaim a buffer, push an event, wake.
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "the callback WinHTTP calls; every dereference is documented at its line"
 )]
@@ -575,7 +575,7 @@ impl WebSocket {
         // call, so an oversized reason is WinHTTP's to refuse rather
         // than this crate's. The cast itself cannot truncate: no real
         // `&[u8]` reaches `u32::MAX` bytes.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "no real reason buffer approaches u32::MAX bytes; an actually oversized one is refused by WinHttpWebSocketClose, not silently truncated here"
         )]
@@ -635,19 +635,19 @@ pub(crate) struct Handle(*mut c_void);
 // SAFETY: obligation 3 — WinHTTP handles are documented as usable from
 // any thread. What the pointer identifies lives in WinHTTP, not in this
 // process's Rust heap, and nothing here reads through it directly.
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "WinHTTP handles are thread-agnostic; see obligation 3"
 )]
 unsafe impl Send for Handle {} // unsafe-code-exception: amendment-C18
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "as above"
 )]
 unsafe impl Sync for Handle {} // unsafe-code-exception: amendment-C18
 
 impl Drop for Handle {
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "closes a handle this type owns"
     )]
@@ -663,7 +663,7 @@ impl Drop for Handle {
     }
 }
 
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "reads the thread's last-error after a failed call"
 )]
@@ -687,7 +687,7 @@ fn last_error() -> Win32Error {
 /// and carries on, which is the *silently ignored setting* this workspace
 /// closes wherever it finds one. Here it becomes a named error and the
 /// caller decides.
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "WinHttpSetOption over a DWORD the call copies"
 )]
@@ -711,7 +711,7 @@ fn set_dword(handle: *const c_void, option: u32, value: u32) -> Result<(), Win32
 }
 
 /// Reads a `DWORD`-valued option back off a handle.
-#[allow(
+#[expect(
     unsafe_code, // unsafe-code-exception: amendment-C18,
     reason = "WinHttpQueryOption into a DWORD this frame owns"
 )]
@@ -748,7 +748,7 @@ impl Session {
     /// run, per request, in the OS. `WINHTTP_FLAG_ASYNC` is what makes
     /// every later call complete through [`callback`] rather than
     /// blocking the caller's thread.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpOpen and WinHttpSetStatusCallback"
     )]
@@ -794,7 +794,7 @@ impl Session {
 
     /// Names the origin. No network happens here — `WinHttpConnect` only
     /// records the host and port for the requests that follow.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpConnect"
     )]
@@ -837,7 +837,7 @@ impl Session {
 pub(crate) struct Connect(Handle);
 
 impl Connect {
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpOpenRequest"
     )]
@@ -882,7 +882,7 @@ impl Request {
     /// Set here rather than passed to `WinHttpSendRequest`, so that a
     /// request abandoned before the send still releases it: every path to
     /// `Drop` goes through `HANDLE_CLOSING` with a non-zero context.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpSetOption(CONTEXT_VALUE) with a leaked Arc"
     )]
@@ -913,7 +913,7 @@ impl Request {
 
     /// Turns off the two things `Client` already does — see the crate
     /// doc.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpSetOption(DISABLE_FEATURE)"
     )]
@@ -999,7 +999,7 @@ impl Request {
 
     /// Adds the caller's headers, synchronously — see the module doc on
     /// why not through `WinHttpSendRequest`.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpAddRequestHeaders"
     )]
@@ -1032,7 +1032,7 @@ impl Request {
     /// handed over must stay valid until the completion — a `Bytes` is
     /// heap-stable and immutable, so a live clone is the whole of what
     /// that needs.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpSendRequest with a borrowed body pointer"
     )]
@@ -1064,7 +1064,7 @@ impl Request {
 
     /// Asks for the response head. Completes with
     /// [`Event::HeadersAvailable`].
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpReceiveResponse"
     )]
@@ -1084,7 +1084,7 @@ impl Request {
     /// reads it — the same RFC 9112 §4 parser `hclient-proxy` uses for a
     /// `CONNECT` response, rather than a second header parser written
     /// here.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpQueryHeaders, twice: once for the length, once for the bytes"
     )]
@@ -1129,7 +1129,7 @@ impl Request {
         // that is not is bytes the parser refuses rather than something
         // to transcode. `to_string_lossy` would invent replacement
         // characters inside a value; this keeps the bytes WinHTTP has.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "deliberate — a non-ASCII code unit becomes bytes the head parser refuses, per the comment above, rather than a replacement character"
         )]
@@ -1139,7 +1139,7 @@ impl Request {
 
     /// Lends the read buffer to `WinHTTP`. Completes with
     /// [`Event::ReadComplete`], whose `0` is end of body.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C18,
         reason = "WinHttpReadData over a buffer this hands to WinHTTP; see obligation 1"
     )]

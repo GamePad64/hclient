@@ -285,7 +285,7 @@ fn cursor_exactly_equal_to_scratch_buffer() {
         let (mut client, mut server) = connected_pair().await;
         // `i % 256` is always in 0..256, which fits `u8` — bounded by the
         // modulus, not by `SCRATCH`.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "`i % 256` is always in 0..256, which fits `u8` — bounded by the modulus, not by `SCRATCH`."
         )]
@@ -306,7 +306,7 @@ fn cursor_one_byte_larger_than_scratch_buffer() {
         let (mut client, mut server) = connected_pair().await;
         // `i % 251` is always in 0..251, which fits `u8` — bounded by the
         // modulus, not by `SCRATCH`.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "`i % 251` is always in 0..251, which fits `u8` — bounded by the modulus, not by `SCRATCH`."
         )]

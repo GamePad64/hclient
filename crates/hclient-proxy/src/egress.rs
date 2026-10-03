@@ -565,7 +565,7 @@ pub trait EgressFilter {
     /// # Errors
     ///
     /// An [`Attempt`] saying which of its two ways it failed.
-    #[allow(
+    #[expect(
         clippy::type_complexity,
         reason = "the return type is the seam: a stream of the context's type or of this filter's own wrapper type, and naming it through an alias would hide which is which"
     )]
@@ -1208,7 +1208,7 @@ mod tests {
             fn route(&self, _: &Target<'_>) -> Decision<'_> {
                 Decision::Direct
             }
-            #[allow(
+            #[expect(
                 clippy::unused_async_trait_impl,
                 reason = "open_stream returns `impl Future` (an RPITIT), and `async fn` is the idiomatic way to implement one; this test never calls it, so the body needs no `.await`"
             )]

@@ -272,7 +272,7 @@ where
     pub(crate) id: ConnectionId,
 }
 
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "hand-written: `conn` and `id` aren't printed, `closed` is derived rather than a stored field"
 )]
@@ -336,7 +336,7 @@ where
     sender: http1::SendRequest<OutgoingBody>,
 }
 
-#[allow(
+#[expect(
     clippy::missing_fields_in_debug,
     reason = "hand-written: hyper's `Incoming`/`SendRequest`/`CheckIn` aren't `Debug`, and `H` carries no bound for one"
 )]
@@ -1480,7 +1480,7 @@ mod tests {
     // clippy asks for is `<(dyn Error + 'static)>::is::<..>`, which
     // rustc's own `unused_parens` then rejects — two lints wanting
     // opposite spellings of one expression, and this is the readable one.
-    #[allow(
+    #[expect(
         clippy::redundant_closure_for_method_calls,
         reason = "The `is_some_and` closure below stays a closure: the method form clippy asks for is `<(dyn Error + 'static)>::is::<..>`, which rustc's own `unused_parens` then rejects — two lints wanting opposite spellings of one expression, and this is the readable one."
     )]

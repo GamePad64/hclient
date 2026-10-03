@@ -10,7 +10,7 @@
 //! The wire formats are written out here rather than borrowed from the
 //! crate under test: a client and a fixture agreeing because they are one
 //! function would prove nothing.
-#![allow(
+#![expect(
     dead_code,
     reason = "a fixture module shared by several test files, each of which uses its own subset"
 )]
@@ -61,7 +61,7 @@ impl Trusted for Origin {
 }
 
 /// An origin speaking HTTP/3 on UDP.
-#[allow(
+#[expect(
     clippy::unused_async,
     reason = "every fixture starts behind one `.await`, so a test reads the same whichever kind of server it stands up"
 )]
@@ -71,7 +71,7 @@ pub async fn h3_origin() -> Origin {
 
 /// An origin speaking HTTP/3 on UDP and HTTP/1.1 over TLS on TCP, on the
 /// same port, so the version of a response says which way it came.
-#[allow(
+#[expect(
     clippy::unused_async,
     reason = "every fixture starts behind one `.await`, so a test reads the same whichever kind of server it stands up"
 )]
@@ -292,7 +292,7 @@ fn capsule_protocol() -> http::response::Builder {
 /// A MASQUE proxy spoken to over HTTP/3, relaying CONNECT-UDP over its
 /// datagrams. A plain CONNECT is answered `501` and counted as a TCP
 /// tunnel asked for.
-#[allow(
+#[expect(
     clippy::unused_async,
     reason = "every fixture starts behind one `.await`, so a test reads the same whichever kind of server it stands up"
 )]

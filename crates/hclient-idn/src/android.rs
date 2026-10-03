@@ -367,7 +367,7 @@ mod imp {
     /// will not attach and a class that is not there all mean the same
     /// thing to the caller — *this backend cannot answer* — and four
     /// error paths would reach a caller whose whole answer is a host.
-    #[allow(
+    #[expect(
         unsafe_code, // unsafe-code-exception: amendment-C19,
         reason = "JavaVM::from_raw over the pointer the application registered with ndk_context"
     )]

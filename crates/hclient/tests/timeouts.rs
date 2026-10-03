@@ -24,7 +24,7 @@ use std::time::Duration;
 
 // Always `Some`: every call site assigns straight into a `Timeouts`
 // field, so unwrapping here would put `Some(..)` at each of them.
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "Always `Some`: every call site assigns straight into a `Timeouts` field, so unwrapping here would put `Some(..)` at each of them."
 )]

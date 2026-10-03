@@ -736,7 +736,7 @@ pub(crate) fn jitter() -> f64 {
     // Normalising a random u64 into [0.0, 1.0) by dividing by u64::MAX
     // inherently loses precision in the low bits of the draw; that is the
     // whole point of the conversion, not a defect in it.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         reason = "Normalising a random u64 into [0.0, 1.0) by dividing by u64::MAX inherently loses precision in the low bits of the draw; that is the whole point of the conversion, not a defect in it."
     )]
@@ -1134,7 +1134,7 @@ mod reconnect_tests {
     // `a`/`b`/`m`/`s` mirror the event data ("a", "b") and roles (mock,
     // stream) the comments below already name; longer names would not add
     // information here.
-    #[allow(
+    #[expect(
         clippy::many_single_char_names,
         reason = "`a`/`b`/`m`/`s` mirror the event data ('a', 'b') and roles (mock, stream) the comments below already name; longer names would not add information here."
     )]

@@ -251,7 +251,7 @@ mod tests {
         let len = 8 * 1024 + 137;
         // `i % 251` is always in 0..251, which fits `u8` — bounded by the
         // modulus, not by `len`.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "`i % 251` is always in 0..251, which fits `u8` — bounded by the modulus, not by `len`."
         )]

@@ -147,7 +147,7 @@ pub(crate) type Handle = Foundation;
 
 /// Always `Some`: Foundation cannot be absent on an Apple target. The
 /// acceptance gate in `lib.rs` is what decides whether it is *usable*.
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "the signature is shared across every backend module the cfg_select! in lib.rs picks between, and Android's find() can genuinely fail to load — the class is absent below API 24"
 )]
