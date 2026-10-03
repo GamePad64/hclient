@@ -136,7 +136,7 @@ pub use connect::HttpConnect;
 #[doc(hidden)]
 pub use datagram::testing;
 pub use datagram::{BoxPath, BoxUdp, DatagramPath};
-pub use drive::{drive, drive_exact};
+pub use drive::drive_exact;
 pub use egress::{
     Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, BoxPathOpening, BoxResolving, BoxTunnelling,
     Decision, Dial, DynDial, EgressFilter, FilterSupport, Io, Opened, ProxyTls, RequestForm, Route,

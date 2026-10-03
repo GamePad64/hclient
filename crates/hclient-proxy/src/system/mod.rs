@@ -53,8 +53,8 @@ mod parse;
 mod read;
 mod translate;
 
+pub use crate::error::SystemProxyRefused;
 use crate::error::{BypassReason, UnsupportedBypass};
-pub use crate::error::{ParseError, SystemProxyRefused};
 #[cfg(test)]
 use translate::http_proxies;
 pub use translate::{rules, rules_lossy};

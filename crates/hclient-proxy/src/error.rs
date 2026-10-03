@@ -334,9 +334,14 @@ pub enum SystemProxyRefused {
 #[cfg(feature = "system")]
 /// A proxy value the platform gave that names no proxy this client can
 /// reach.
+///
+/// Crate-private by audit: no public function returns one — a value this
+/// crate cannot hand a caller is not a promise a published surface should
+/// carry. The caller-visible report of an unparseable entry is
+/// [`SystemProxyRefused`] and the `ignored` list, not this enum.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum ParseError {
+pub(crate) enum ParseError {
     /// A scheme this crate does not know — `quic://`, a typo, a `.pac`
     /// URL that landed in a proxy variable.
     #[error("unknown proxy scheme `{0}`")]

@@ -1,5 +1,12 @@
 //! Driving a [`Handshake`] over a byte stream — the whole of what
 //! proxying costs a transport once it has a connection to the proxy.
+//!
+//! Two drivers, and the split is a narrow surface, not two features:
+//! `drive` returns whatever the proxy sent past its own handshake, for a
+//! protocol whose *server* speaks first (a SOCKS proxy's origin greeting);
+//! `drive_exact`, the published one, refuses those bytes. Crate-private
+//! by audit: the witnesses and every in-tree caller wanted the refusal,
+//! and no consumer ever asked for the bytes.
 
 use std::future::poll_fn;
 use std::io;
@@ -21,7 +28,12 @@ use crate::{Handshake, Step};
 /// Whatever the handshake refuses — a malformed reply, or the proxy
 /// declining the target — and [`ErrorKind::Connect`] when the stream fails
 /// or ends before the handshake is done.
-pub async fn drive<S, H>(io: &mut S, h: &mut H, host: &str, port: u16) -> Result<Bytes, Error>
+pub(crate) async fn drive<S, H>(
+    io: &mut S,
+    h: &mut H,
+    host: &str,
+    port: u16,
+) -> Result<Bytes, Error>
 where
     S: Read + Write + Unpin,
     H: Handshake + ?Sized,
@@ -64,7 +76,8 @@ where
     }
 }
 
-/// [`drive`], refusing bytes that arrived with the handshake's final read.
+/// Drive one handshake to an open tunnel, refusing bytes that arrived
+/// with the handshake's final read.
 ///
 /// Over a protocol whose client speaks first — HTTP and TLS both do —
 /// nothing the origin might say can have arrived before anything was
@@ -75,7 +88,8 @@ where
 /// A protocol whose *server* speaks first (SMTP, SSH) is the exception: a
 /// SOCKS proxy connects to the origin before it answers, so the origin's
 /// greeting can arrive in the same read as the proxy's final reply. A
-/// caller carrying one uses [`drive`] and hands those bytes on.
+/// caller carrying one drives the handshake itself and hands those bytes
+/// on — this function is deliberately of no use to it.
 ///
 /// Only what was read while driving the handshake can be seen: bytes the
 /// proxy sends in a later segment are read by whatever runs over the
@@ -83,7 +97,8 @@ where
 ///
 /// # Errors
 ///
-/// [`drive`]'s errors, and [`ErrorKind::Connect`] with a
+/// Whatever the handshake refuses — a malformed reply, or the proxy
+/// declining the target — plus [`ErrorKind::Connect`] with a
 /// [`ProxySpokeFirst`](crate::ProxySpokeFirst) source when bytes followed
 /// the handshake.
 pub async fn drive_exact<S, H>(io: &mut S, h: &mut H, host: &str, port: u16) -> Result<(), Error>

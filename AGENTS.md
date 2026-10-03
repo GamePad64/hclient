@@ -9082,6 +9082,70 @@ tested against the per-poll bound, so `discarded *= 1` and
 now make the first poll yield, and both mutants were applied by hand and
 died.
 
+### `hclient-proxy` was audited a fourth time, and the question was the width of the promise
+
+The owner opened it with the freeze worry: *the surface is too big, and
+after the number is in the index nothing will be removable*. That turned
+the audit from *what leaked* into *who names what* — every public item
+off rustdoc's JSON, grepped against every consumer (`hclient-native`,
+the `hclient` facade, `hclient-masque`, the three egress witnesses), the
+compiler as referee. **85 public items; 83 named by a consumer or
+reachable through one; two named by nobody, and both left.**
+
+- **`drive`'s only caller was `drive_exact`, its own wrapper.** The
+  leftover-bytes variant — the one that returns what the proxy sent past
+  its handshake instead of refusing it — had no consumer shape at all:
+  the preproxy witness, the exact configuration that would want bytes
+  passed on, used `drive_exact`. It is `pub(crate)` now; `drive_exact`
+  keeps the door, and its doc says a caller carrying a server-speaks-first
+  protocol drives the handshake itself. The module's maintainer notes
+  carry the split and its reason.
+- **`ParseError` was public and produced by no public function.** Its
+  instances are dropped into the `ignored` list as strings during
+  `detect()`; no caller could ever hold one. It is the same leak
+  `MalformedHead` was built to close, still standing in `system` — closed
+  the same way. The caller-visible report of a malformed entry is
+  `SystemProxyRefused` and the `ignored` list, and the enum's own doc now
+  says so.
+
+**What was measured and deliberately kept, because it looks like the same
+class and is not.** The `SystemProxies` accessors — `entries`, `bypass`,
+`pac`, `ignored`, `unsupported_bypass` and their siblings — have no
+outside caller either. But `SystemProxyRefused::UnrepresentableBypass`'s
+own error text tells the caller to *"read `SystemProxies` yourself and
+decide"*, and the facade doc redirects the PAC case to
+`SystemProxies::detect()`. **They are the reader half the errors name**;
+narrowing them would make the error's advice a lie. One has a production
+reader (`names_a_proxy` — urlsession); `is_empty`'s only caller is a
+native test. **`Proxy::protocol` is the flagged one**: no consumer names
+it either — the in-crate rules read it, and outside that its only reader
+is the front-page doctest, which teaches the sans-io composition from a
+configured `Proxy`. Left public on purpose; the owner's call in this same
+window, since after the publish it is a major.
+
+**The sweep: 633 mutants, 427 caught, 169 unviable, 4 timeouts, 33
+missed.** The 33 are the third audit's classes unchanged — 20 platform
+readers under `system/` this host never compiles (or is equivalent on:
+`detect_platform -> Default::default()` answers what a Linux reader with
+no settings answers), six `Debug` impls, the test double's
+`poll_writable`, three boundary `<`→`<=` and two receive-buffer
+`+`→`*`. The classes were believed twice already; this time one
+representative was re-applied by hand — `from_peer.len() < 5` → `<= 5`
+in `socks5.rs`, suite green — confirming the equivalence: the mutant only
+moves which poll answers `NeedMore`. The four timeouts are the known
+hangs (`read_some` answering without reading, `percent_decode`'s index
+running backwards).
+
+Gates after the narrowing: `lint`, `docs`, `test-doc`, `packaging`,
+`versions-agree`, `semver` (1764 checks across 9 stable crates),
+`exposed-majors`, `internal-crates-stay-internal`,
+`socks5-udp-stays-in-its-module` — all green. All three egress witnesses
+pass unchanged on the narrowed tree, which is the narrowing checked from
+outside. **And `just docs` earned its keep against its own author**: the
+first build after `drive` went private failed on `drive_exact`'s doc
+still linking the now-private item three times — the gate catching the
+exact defect this section's change introduced.
+
 ### `hclient-proto` is internal, and what it held for `hclient` moved into `hclient`
 
 The owner's rule: **`hclient-proto` is an internal crate, and nothing is
