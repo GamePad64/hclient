@@ -24,7 +24,12 @@
 # nothing and a clean tree print the same thing.
 set -euo pipefail
 
-pattern='^\s*//[/!].*(\.notes/|AGENTS\.md|CLAUDE\.md|amendment[- ]C[0-9]+|`[0-9a-f]{7,10}`|\bv0\.[0-9] W[0-9]\b|\b[Vv]ertical [0-9]\b|\bTask [0-9]+\b)'
+if ! command -v rg >/dev/null 2>&1; then
+    echo "::error::ripgrep (rg) is not on PATH — the scan cannot run, and reporting a pass over a scan that did not run is the defect this script exists to prevent"
+    exit 1
+fi
+
+pattern='^\s*//[/!].*(\.notes/|AGENTS\.md|CLAUDE\.md|amendment[- ]C[0-9]+|`[0-9a-f]{7,10}`|\bv0\.[0-9]+ W[0-9]+\b|\bW[0-9]+\b|\b[Vv]ertical [0-9]\b|\bTask [0-9]+\b)'
 
 files=$(find crates -path '*/src/*.rs' -not -path '*/target/*' | sort)
 count=$(printf '%s\n' "$files" | grep -c . || true)
@@ -33,7 +38,22 @@ if [ "$count" -eq 0 ]; then
     exit 1
 fi
 
-if hits=$(printf '%s\n' "$files" | xargs rg -n --pcre2 "$pattern"); then
+set +e
+# The file list goes in as arguments, not through xargs: xargs answers
+# exit 123 for "a child exited 1-125" and cannot tell "no match" from
+# "error", which would turn the error path below into a false pass.
+# The whitespace model is the one `find` output already had.
+hits=$(rg -n "$pattern" $files)
+status=$?
+set -e
+
+if [ "$status" -gt 1 ]; then
+    echo "::error::ripgrep itself failed (exit $status) — reporting a pass over a scan that errored is the defect this script exists to prevent"
+    echo "$hits" >&2
+    exit 1
+fi
+
+if [ "$status" -eq 0 ]; then
     printf '%s\n' "$hits" | while IFS= read -r h; do
         echo "::error::${h%%:*}: a doc comment names something a docs.rs reader cannot follow — move it to a \`//\` maintainer note: ${h#*:}"
     done
