@@ -907,7 +907,7 @@ first-five-minutes:
     # ── direction 1: it must fail, and for the RIGHT reason ──────────────
     log="$dir/off.log"
     if (cd "$dir" && cargo build --color never) > "$log" 2>&1; then
-      echo "::error::the front page compiled without \`default-transport\` — either the feature moved into \`default\` (see AGENTS.md on why a default here is a floor) or this fixture stopped exercising \`Client::new\`"
+      echo "::error::the front page compiled without \`default-transport\` — either the feature moved into \`default\` (see docs/agents/19-language-and-packaging.md on why) or this fixture stopped exercising \`Client::new\`"
       exit 1
     fi
     if ! grep -q 'error\[E0277\]' "$log" \
