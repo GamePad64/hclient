@@ -51,7 +51,7 @@
 //! survive at all, and a driver that is nobody's request future cannot be
 //! stalled by any request's polling behaviour.
 //!
-//! So W1's "cancelling one stream must not tear down the others" holds in
+//! So "cancelling one stream must not tear down the others" holds in
 //! this crate for a different reason than it holds in `hclient-native`:
 //! there because there are no others, here because dropping an [`H3Body`]
 //! sends `STOP_SENDING` for one stream and leaves the connection alone.
@@ -60,7 +60,7 @@
 //!
 //! # `capabilities()` reports the floor
 //!
-//! W3's rule, applied to a transport that negotiates exactly one protocol —
+//! The floor rule, applied to a transport that negotiates exactly one protocol —
 //! so "the worst protocol this might negotiate" is HTTP/3 itself, and the
 //! floor is not automatically the conservative answer it is for `Native`.
 //! Each field is set to what this implementation actually does; see
@@ -701,7 +701,7 @@ where
     /// The check on the way out is `close_reason()`: quinn reports a
     /// connection the peer or a timer already closed, and a pool that
     /// handed one out would fail the request it was reused for. This is the
-    /// same "poll at checkout" W2's HTTP/1 pool does, in the form this
+    /// same "poll at checkout" the HTTP/1 pool does, in the form this
     /// stack offers it.
     ///
     /// # Where the `Stale` event comes from, and why not from a `Drop`

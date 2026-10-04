@@ -29,8 +29,8 @@
 //!
 //! **The reason that does hold, and it is the project's own rule.**
 //! [`crate::Native`] is generic over `R`, and not every `R` has a `Spawn`
-//! impl at all — `connect.rs`'s own `FakeRt` has none, and W7's embassy
-//! survey expects none either. A reaper started by `Native::new` would
+//! impl at all — `connect.rs`'s own `FakeRt` has none, and the embassy
+//! runtime expects none either. A reaper started by `Native::new` would
 //! therefore assume a capability the type parameter does not promise: **a
 //! default stronger than the truth**, which is the one thing this crate
 //! refuses everywhere else. So there is no reaper *by default* — and there
@@ -214,8 +214,8 @@
 //!
 //! That argument survives the correction above unchanged, because it never
 //! rested on "no spawner can exist" — only on "the default has none". A
-//! build that opts into a spawner could multiplex; it would then owe W1's
-//! rule an implementation, which today it gets for free.
+//! build that opts into a spawner could multiplex; it would then owe the
+//! cancellation rule below an implementation, which today it gets for free.
 //!
 //! **[`crate::Native::multiplexed`] is the opt-in** that lifts it; what
 //! it changes about *this* file is three things.
@@ -258,7 +258,7 @@
 //! - Concurrency to one origin costs connections, not streams, and
 //!   [`PoolConfig::max_idle_per_key`] bounds the idle ones exactly as
 //!   before.
-//! - W1's rule — cancelling one stream must not tear down the others
+//! - The cancellation rule — cancelling one stream must not tear down the others
 //!   sharing its connection — holds trivially, because there are no
 //!   others. **That is this policy's guarantee, not `http2.rs`'s.**
 //!   Whoever makes check-out non-exclusive takes the rule with them; see
@@ -289,7 +289,7 @@
 //! therefore spawned, and a driver that is nobody's request future cannot
 //! be stalled by any request's polling behaviour.
 //!
-//! So W1's rule holds in both crates, for opposite reasons: here because
+//! So the cancellation rule holds in both crates, for opposite reasons: here because
 //! there are no neighbours, there because dropping one stream sends
 //! `STOP_SENDING` for that stream alone. And the "a build that opts into a
 //! spawner could multiplex" sentence above now has a worked example

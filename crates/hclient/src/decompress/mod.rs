@@ -53,7 +53,8 @@
 //!
 //! # What is NOT here
 //!
-//! - **Request-body compression.** Response only; out of scope for W5.
+//! - **Request-body compression.** Response only; request bodies were
+//!   out of scope from the start.
 //! - **`compress`/`x-compress`.** RFC 9110 §8.4.1.1's LZW coding. This
 //!   crate ships no decoder for it, so the default list never advertises
 //!   it and nothing matches it — and since the set is open, a caller who

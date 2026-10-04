@@ -4,7 +4,7 @@
 //!
 //! # Why this is not `hyper/http2`, which the v0.2 design document proposed
 //!
-//! The design document's §W3 wrote the feature as `http2 =
+//! The design document wrote the feature as `http2 =
 //! ["hyper/http2"]`. That does not work here, and the reason is not a
 //! preference: **hyper's HTTP/2 client hands the connection driver to an
 //! executor, and the trait that names an executor is sealed.**
@@ -42,7 +42,7 @@
 //! is boxed, so auto traits keep reaching the response body, and no bound
 //! anywhere in this crate's public shape changes when the feature is on.
 //!
-//! # One stream per connection by default, and what W1 is resting on
+//! # One stream per connection by default, and what that rests on
 //!
 //! HTTP/2 multiplexes; this transport does not use that **unless
 //! [`crate::Native::multiplexed`] was asked for** (v0.4), and the default
@@ -70,7 +70,7 @@
 //! 2. **No neighbouring stream can be torn down by that, because there is
 //!    never one.** This is true *because* of the check-out policy above,
 //!    not because of anything in this file. The day somebody hands the
-//!    same connection to two concurrent requests, W1's rule ("cancelling
+//!    same connection to two concurrent requests, the cancellation rule ("cancelling
 //!    one stream must not tear down the others") stops holding here, and
 //!    it will stop holding silently: nothing in this module would fail to
 //!    compile. Whoever lifts the exclusivity owns re-establishing it —
@@ -89,7 +89,7 @@
 //!    `a_multiplexed_cancellation_resets_the_stream_and_leaves_its_neighbour_alone`,
 //!    which is where that file's `Ending::Reset` variant finally has a
 //!    producer.
-//! 2. There **are** neighbours, so W1's rule stops holding vacuously and
+//! 2. There **are** neighbours, so the cancellation rule stops holding vacuously and
 //!    is a test instead:
 //!    `tests/http2.rs`'s
 //!    `dropping_one_exchange_leaves_a_concurrent_one_alone_on_a_shared_connection`

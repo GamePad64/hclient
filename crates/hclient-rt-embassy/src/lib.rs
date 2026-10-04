@@ -20,10 +20,10 @@
 //! half is checked.
 //!
 //! Nothing above [`Embassy`] changes: `hclient_native::Native` takes it as
-//! its `R` exactly as it takes `Tokio` or `Smol`, and the W7 research
-//! established that `TcpConnect::Stream` needs no lifetime for this to work
-//! — `embassy_net::tcp::TcpSocket<'a>` holds no buffers, so with the
-//! buffers in a `'static` the socket is `TcpSocket<'static>`.
+//! its `R` exactly as it takes `Tokio` or `Smol`, and `TcpConnect::Stream`
+//! needs no lifetime for this to work — `embassy_net::tcp::TcpSocket<'a>`
+//! holds no buffers, so with the buffers in a `'static` the socket is
+//! `TcpSocket<'static>`.
 //!
 //! # The third `Timer::Instant` in the workspace
 //!
@@ -44,8 +44,8 @@
 //! reasoning breaks at the last step, and it was measured breaking:
 //! `TcpSocket::drop` removes the socket from smoltcp's `SocketSet` before
 //! the stack can turn the queued FIN into a packet, so the server sees
-//! nothing at all — the W7 research watched a server hold such a
-//! connection open for two seconds after the client had dropped everything.
+//! nothing at all — a server was watched holding such a connection open
+//! for two seconds after the client had dropped everything.
 //!
 //! The research offered two ways out, and this crate takes the second:
 //!
@@ -74,7 +74,7 @@
 //! # What is deliberately not implemented
 //!
 //! - **`Spawn`.** `Native` never asks for it (`R: TcpConnect + Timer` is
-//!   its whole bound), and W2 established it could not be used here anyway:
+//!   its whole bound), and it could not be used here anyway:
 //!   `hclient_rt::Spawn`'s useful implementations want `F: Send + 'static`
 //!   while this vertical's IO is deliberately not `Send`. It is
 //!   *implementable* on embassy — `raw::TaskStorage::<F>::spawn` takes a
@@ -219,7 +219,7 @@ impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N,
     /// `nodelay` and `keepalive` are real here — `TcpSocket::
     /// set_nagle_enabled` and `set_keep_alive`
     /// (`embassy-net-0.9.1/src/tcp.rs:353,363`) — because this crate owns
-    /// the `TcpSocket` itself. (The W7 research said "none of them",
+    /// the `TcpSocket` itself. (An earlier reading said "none of them",
     /// looking at `TcpConnection` from embassy's own `TcpClient`, which
     /// exposes neither.)
     ///

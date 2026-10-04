@@ -6,8 +6,8 @@
 //! embassy-net already ships a bounded pool with exactly the right shape —
 //! `TcpClient` over a `TcpClientState<N, TX, RX>`, handing out
 //! `TcpConnection<'d, N, TX, RX>` values that return their buffers on drop
-//! — and the W7 research measured `Native<_, NoTls, IpLiteralOnly>` driving
-//! six real requests through one. It is not used here, and the reason is
+//! — and `Native<_, NoTls, IpLiteralOnly>` was measured driving six real
+//! requests through one. It is not used here, and the reason is
 //! one line of embassy-net's own source
 //! (`embassy-net-0.9.1/src/tcp.rs:466`):
 //!
@@ -256,8 +256,8 @@ impl<const N: usize, const TX: usize, const RX: usize> SocketPool<N, TX, RX> {
     /// buffers and the pool **once** — `N * (TX + RX)` bytes for the life
     /// of the process, not per connection.
     ///
-    /// The per-connection `Box::leak` this replaces is the obvious bug the
-    /// W7 research called out by name: 2 KiB gone for every request, for
+    /// The per-connection `Box::leak` this replaces is an obvious defect,
+    /// caught while building against it: 2 KiB gone for every request, for
     /// ever, on a part with 256 KiB of RAM.
     pub fn leak(stack: Stack<'static>) -> &'static Self {
         let buffers: &'static mut [SocketBuffers<TX, RX>; N] =

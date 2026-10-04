@@ -15,7 +15,7 @@
 //!
 //! # `poll_shutdown` is a real half-close here
 //!
-//! The W7 research spike forwarded `poll_shutdown` to `flush`, because
+//! An earlier spike forwarded `poll_shutdown` to `flush`, because
 //! `embedded_io_async::Write` has no shutdown and `TcpConnection` (from
 //! embassy's own `TcpClient`) exposes nothing else — and recorded it as "a
 //! half-close hyper believes it performed and did not". This crate owns the
