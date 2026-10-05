@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.2.3...hclient-cli-v0.2.4) - 2026-10-05
+
+### Fixed
+
+- the rest of clippy 1.99's assert_is_empty, everywhere
+
+### Other
+
+- the suppressions are #[expect], where the lint fires in this build
+
 ## [0.2.3](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.2.2...hclient-cli-v0.2.3) - 2026-09-25
 
 ### Other

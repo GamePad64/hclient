@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.16](https://github.com/GamePad64/hclient/compare/hclient-dns-system-v0.1.0-alpha.15...hclient-dns-system-v0.1.0-alpha.16) - 2026-10-05
+
+### Fixed
+
+- the three red CI legs on main
+
+### Other
+
+- the suppressions are #[expect], where the lint fires in this build
+
 ## [0.1.0-alpha.15](https://github.com/GamePad64/hclient/compare/hclient-dns-system-v0.1.0-alpha.14...hclient-dns-system-v0.1.0-alpha.15) - 2026-09-25
 
 ### Other

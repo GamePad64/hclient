@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.18](https://github.com/GamePad64/hclient/compare/hclient-tungstenite-v0.1.0-alpha.17...hclient-tungstenite-v0.1.0-alpha.18) - 2026-10-05
+
+### Added
+
+- *(native)* [**breaking**] DialStream, and the transport runs TLS a filter asks for over it
+
+### Other
+
+- the suppressions are #[expect], where the lint fires in this build
+
 ## [0.1.0-alpha.17](https://github.com/GamePad64/hclient/compare/hclient-tungstenite-v0.1.0-alpha.16...hclient-tungstenite-v0.1.0-alpha.17) - 2026-09-25
 
 ### Other

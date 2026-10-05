@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-webtransport-v0.1.0-alpha.13...hclient-webtransport-v0.1.0-alpha.14) - 2026-10-05
+
+### Fixed
+
+- the rest of clippy 1.99's assert_is_empty, everywhere
+- clippy 1.99's assert_is_empty, in five test asserts
+
+### Other
+
+- Remove mutations pyc
+- the suppressions are #[expect], where the lint fires in this build
+
 ## [0.1.0-alpha.13](https://github.com/GamePad64/hclient/compare/hclient-webtransport-v0.1.0-alpha.12...hclient-webtransport-v0.1.0-alpha.13) - 2026-09-25
 
 ### Other

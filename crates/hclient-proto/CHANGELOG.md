@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0...hclient-proto-v0.1.1) - 2026-10-05
+
+### Other
+
+- the suppressions are #[expect], where the lint fires in this build
+- *(proto)* usable from outside under semver, with no stable interface
+
 ## [0.1.0](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0-alpha.9...hclient-proto-v0.1.0) - 2026-09-25
 
 ### Other

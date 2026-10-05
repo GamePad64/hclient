@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8](https://github.com/GamePad64/hclient/compare/hclient-idn-v0.2.7...hclient-idn-v0.2.8) - 2026-10-05
+
+### Other
+
+- the suppressions are #[expect], where the lint fires in this build
+
 ## [0.2.7](https://github.com/GamePad64/hclient/compare/hclient-idn-v0.2.6...hclient-idn-v0.2.7) - 2026-09-25
 
 ### Other

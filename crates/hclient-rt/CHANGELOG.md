@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/GamePad64/hclient/compare/hclient-rt-v0.1.1...hclient-rt-v0.1.2) - 2026-10-05
+
+### Added
+
+- *(rt)* Io names the byte-stream seam's four bounds, and hclient-proxy re-exports it
+
+### Other
+
+- the suppressions are #[expect], where the lint fires in this build
+
 ## [0.1.1](https://github.com/GamePad64/hclient/compare/hclient-rt-v0.1.0...hclient-rt-v0.1.1) - 2026-09-25
 
 ### Other

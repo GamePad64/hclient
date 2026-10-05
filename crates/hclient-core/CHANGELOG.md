@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/GamePad64/hclient/compare/hclient-core-v0.2.2...hclient-core-v0.2.3) - 2026-10-05
+
+### Added
+
+- *(error)* a URL this client cannot serve is Uri, not Unsupported
+
+### Fixed
+
+- the rest of clippy 1.99's assert_is_empty, everywhere
+- Atomic::fetch_update is try_update now
+
+### Other
+
+- the suppressions are #[expect], where the lint fires in this build
+
 ## [0.2.2](https://github.com/GamePad64/hclient/compare/hclient-core-v0.2.1...hclient-core-v0.2.2) - 2026-09-25
 
 ### Other

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.18](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.17...hclient-v0.1.0-alpha.18) - 2026-10-05
+
+### Added
+
+- *(error)* a URL this client cannot serve is Uri, not Unsupported
+
+### Fixed
+
+- the rest of clippy 1.99's assert_is_empty, everywhere
+- *(proxy)* [**breaking**] a bypass pattern in no accepted shape is refused by name, and the two dialects are one
+- *(native)* the filter seam's contract, a live connect budget, and the stream capability read
+
+### Other
+
+- the rendered pages no longer name a work item a reader cannot follow
+- the suppressions are #[expect], where the lint fires in this build
+- *(native)* [**breaking**] one egress filter decides where a connection goes; P is gone
+
 ## [0.1.0-alpha.17](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.16...hclient-v0.1.0-alpha.17) - 2026-09-25
 
 ### Other

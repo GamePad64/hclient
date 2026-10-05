@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.16](https://github.com/GamePad64/hclient/compare/hclient-proxy-v0.1.0-alpha.15...hclient-proxy-v0.1.0-alpha.16) - 2026-10-05
+
+### Added
+
+- *(proxy)* [**breaking**] a plain CONNECT defaults to HTTP/2, and each enum says why it is or is not exhaustive
+- *(proxy)* constructors for the four refusals a foreign filter reports
+- *(proxy)* a SOCKS5 rule with UDP opens a datagram path through the relay
+- *(proxy)* SOCKS5 UDP ASSOCIATE and its datagram header, as sans-io
+- *(proxy)* a filter may open a datagram path, and refuses one by default
+- *(proxy)* [**breaking**] Dial lends UDP, the proxy's name and HTTP tunnels, each refused by default
+- *(proxy)* a datagram path, one peer and whole datagrams, in quinn's shape
+- *(rt)* Io names the byte-stream seam's four bounds, and hclient-proxy re-exports it
+- *(proxy)* [**breaking**] Proxy::tls, and an https:// system proxy is TLS to the proxy rather than a refusal
+- *(proxy)* Dial::connect_tls, TLS a filter asks the transport to run over its stream
+- *(proxy)* [**breaking**] a proxy reached over a socket is IpcProxy, which only proxy_over_ipc takes
+- *(proxy)* drive_exact refuses bytes past a handshake, and Rules uses it
+- *(native)* [**breaking**] Native::egress installs an external filter, and a filter may wrap the stream
+- *(proxy)* Rules, the default egress filter — mixed protocols, IPC reach, the Unix policy
+- *(proxy)* the egress seam — Dial, EgressFilter and the three outcomes of an attempt
+
+### Fixed
+
+- the rest of clippy 1.99's assert_is_empty, everywhere
+- *(proxy)* [**breaking**] `TunnelRequest::version` is an `Option`, and nothing rewrites it
+- *(proxy)* [**breaking**] `SendEgressFilter::open_datagrams_send` has no default
+- *(proxy)* a UDP socket that will not bind is a failure, not a refusal
+- *(proxy)* `TunnelRequest`'s `Debug` withholds a credential's value
+- *(proxy)* a SOCKS5 path yields the task after 64 discarded datagrams, and a lent UDP socket says it may coalesce
+- *(proxy)* [**breaking**] `Associate` is SOCKS5's alone, and sealed
+- *(proxy)* [**breaking**] a bypass pattern in no accepted shape is refused by name, and the two dialects are one
+- *(proxy)* Socks5's Debug no longer prints the password
+- *(proxy)* a colon in a Basic username is refused, a bad ATYP is malformed rather than a refusal, and the erasures are pinned
+- *(proxy)* a bracketed v6 TLS proxy is checked by its bare address; the body behind a failing connection is read in the tests
+- *(proxy)* the review's minors — IpcProxy holds its address once, push_ipc and drive_exact say what they cannot see
+- *(native)* the filter seam's contract, a live connect budget, and the stream capability read
+
+### Other
+
+- *(proxy)* the freeze stays a plan — 0.1.0-alpha.16
+- *(proxy)* the surface is what a consumer names
+- the suppressions are #[expect], where the lint fires in this build
+- *(proxy)* the association's doc no longer links its private opener
+- *(proxy)* the association opens its own datagram path
+- *(proxy)* [**breaking**] hclient-proxy 0.1.0
+- *(proxy)* [**breaking**] the test doubles are behind a `test-util` feature
+- *(proxy)* [**breaking**] `DynHandshake` and `BoxHandshake` are crate-private
+- *(proxy)* `# Errors` on every `Dial` method and its `DynDial` mirror
+- *(proxy)* what `DatagramPath` promises about a short buffer and about its size
+- *(proxy)* a flood of relay fragments yields the task
+- *(proxy)* [**breaking**] `UnsupportedBypass` and `BypassReason` at the root only
+- *(proxy)* [**breaking**] one opaque `Association` in place of the sealed `Associate` and its three types
+- HTTP/3 through a filter, SOCKS5 UDP, tunnels and the MASQUE experiment, written down
+- *(proxy,masque)* close the gaps the mutation sweeps found in the datagram paths
+- *(proxy)* [**breaking**] Proxy::handshake goes, IpcProxy reports its scheme, and the third pass is written down
+- *(proxy)* [**breaking**] a route borrows its pool key from the filter, and absolute-form can grow
+- *(proxy)* [**breaking**] Dial::connect and connect_ipc may borrow their arguments
+- *(proxy)* [**breaking**] every setter fails as an Error, drive_exact says which protocols it is right for, and the second audit is written down
+- *(proxy)* [**breaking**] the machine's settings arrive as Rules, and first-match-wins has one home
+- *(proxy)* [**breaking**] Attempt is Failed or Unsupported, and a filtered decision carries a Route
+- *(proxy)* [**breaking**] the surface a stable version promises — Target gets a constructor, Reach goes private, ProxySpokeFirst gets a name
+- *(proxy)* the review's minors — Proxy::tls and the default certificate, the crate doc points at connect_tls, hook order, a stale AGENTS.md claim
+- *(native)* [**breaking**] one egress filter decides where a connection goes; P is gone
+- *(proxy)* the handshake driver lives beside the handshakes
+
 ## [0.1.0-alpha.15](https://github.com/GamePad64/hclient/compare/hclient-proxy-v0.1.0-alpha.14...hclient-proxy-v0.1.0-alpha.15) - 2026-09-25
 
 ### Added

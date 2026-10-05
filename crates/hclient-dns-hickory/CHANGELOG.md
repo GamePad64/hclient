@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.15](https://github.com/GamePad64/hclient/compare/hclient-dns-hickory-v0.1.0-alpha.14...hclient-dns-hickory-v0.1.0-alpha.15) - 2026-10-05
+
+### Fixed
+
+- clippy 1.99's assert_is_empty, in five test asserts
+
 ## [0.1.0-alpha.14](https://github.com/GamePad64/hclient/compare/hclient-dns-hickory-v0.1.0-alpha.13...hclient-dns-hickory-v0.1.0-alpha.14) - 2026-09-25
 
 ### Other

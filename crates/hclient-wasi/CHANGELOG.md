@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.4...hclient-wasi-v0.1.5) - 2026-10-05
+
+### Added
+
+- *(error)* a URL this client cannot serve is Uri, not Unsupported
+
+### Other
+
+- the suppressions are #[expect], where the lint fires in this build
+
 ## [0.1.4](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.3...hclient-wasi-v0.1.4) - 2026-09-25
 
 ### Other

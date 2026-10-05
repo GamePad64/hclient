@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.18](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.17...hclient-native-v0.1.0-alpha.18) - 2026-10-05
+
+### Added
+
+- *(error)* a URL this client cannot serve is Uri, not Unsupported
+- *(proxy)* [**breaking**] a plain CONNECT defaults to HTTP/2, and each enum says why it is or is not exhaustive
+- *(native)* extended CONNECT tunnels over HTTP/3 carry their datagrams, on connections of their own
+- *(native)* lend a filter CONNECT and extended CONNECT tunnels over HTTP/2
+- *(native)* HTTP/3 goes through a filter that opens a datagram path, and a refusal falls back to its stream
+- *(native)* the QUIC arm stages a connection over a filter's path, pooled apart from direct ones
+- *(native)* a QUIC endpoint over a filter's datagram path
+- *(native)* lend a filter the runtime's UDP and the proxy's addresses
+- *(rt)* Io names the byte-stream seam's four bounds, and hclient-proxy re-exports it
+- *(native)* [**breaking**] DialStream, and the transport runs TLS a filter asks for over it
+- *(proxy)* [**breaking**] a proxy reached over a socket is IpcProxy, which only proxy_over_ipc takes
+- *(native)* [**breaking**] Native::egress installs an external filter, and a filter may wrap the stream
+- *(native)* NativeDial lends the transport's connect path to a filter
+
+### Fixed
+
+- the rest of clippy 1.99's assert_is_empty, everywhere
+- *(proxy)* [**breaking**] `TunnelRequest::version` is an `Option`, and nothing rewrites it
+- *(proxy)* [**breaking**] `SendEgressFilter::open_datagrams_send` has no default
+- *(native)* QUIC over a filter's path starts at 1200 and discovers upwards
+- *(native)* a proxy whose HTTP/3 tunnel failed is not asked again while HTTP/2 can carry one
+- *(native)* an HTTP/2 tunnel is refused unless the proxy's TLS selected `h2`
+- *(native)* quinn is named inside `mod http3` again
+- *(native)* a filtered stream fallback spends the connect bound once, and a non-h3 demand takes the stream
+- *(native)* an HTTP/3 tunnel attempt leaves HTTP/2 a real share of the time
+- *(native)* an HTTP/2 tunnel wakes its reader and its writer, whichever task polled last
+- *(native)* opening a filter's path and the QUIC handshake over it spend one connect bound
+- *(proxy)* [**breaking**] a bypass pattern in no accepted shape is refused by name, and the two dialects are one
+- *(proxy)* a bracketed v6 TLS proxy is checked by its bare address; the body behind a failing connection is read in the tests
+- *(native)* a response already read wins over the connection failing behind it
+- *(proxy)* the review's minors — IpcProxy holds its address once, push_ipc and drive_exact say what they cannot see
+- *(native)* the filter seam's contract, a live connect budget, and the stream capability read
+- *(native)* the QUIC arm no longer leaves a proxy or a Unix socket
+
+### Other
+
+- *(proxy)* the freeze stays a plan — 0.1.0-alpha.16
+- the rendered pages no longer name a work item a reader cannot follow
+- the suppressions are #[expect], where the lint fires in this build
+- *(proxy)* [**breaking**] hclient-proxy 0.1.0
+- *(proxy)* [**breaking**] the test doubles are behind a `test-util` feature
+- *(native)* the stream fallback's budget is read off the lent context, not raced
+- HTTP/3 through a filter, SOCKS5 UDP, tunnels and the MASQUE experiment, written down
+- *(native)* HTTP/3 through a real SOCKS5 UDP relay, and every way the relay can say no
+- *(proxy)* [**breaking**] a route borrows its pool key from the filter, and absolute-form can grow
+- *(proxy)* [**breaking**] Dial::connect and connect_ipc may borrow their arguments
+- *(proxy)* [**breaking**] every setter fails as an Error, drive_exact says which protocols it is right for, and the second audit is written down
+- *(proxy)* [**breaking**] the machine's settings arrive as Rules, and first-match-wins has one home
+- *(proxy)* [**breaking**] Attempt is Failed or Unsupported, and a filtered decision carries a Route
+- *(proxy)* [**breaking**] the surface a stable version promises — Target gets a constructor, Reach goes private, ProxySpokeFirst gets a name
+- *(proxy)* the review's minors — Proxy::tls and the default certificate, the crate doc points at connect_tls, hook order, a stale AGENTS.md claim
+- *(native)* HTTPS proxies end to end — TLS in TLS, trust, reuse, the connect bound, the erased path
+- *(native)* connect's doc back on connect, the filter path described, stale egress references gone
+- *(native)* https, hooks, absolute-form and the connect bound through an external filter
+- *(native)* mixed protocols, SOCKS5 over a Unix socket, tunnel reuse and the connect bound through a filter
+- *(native)* [**breaking**] one egress filter decides where a connection goes; P is gone
+- *(proxy)* the handshake driver lives beside the handshakes
+- *(proxy)* hclient-proxy stays in the pre-release series
+- *(proxy)* hclient-proxy leaves the pre-release series at 0.1.0
+
 ## [0.1.0-alpha.17](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.16...hclient-native-v0.1.0-alpha.17) - 2026-09-25
 
 ### Added
