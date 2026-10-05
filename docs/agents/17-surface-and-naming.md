@@ -415,10 +415,14 @@ backends say `Io`.
 
 The datagram seam arrived after the second audit, so a third one read it
 with the same instruments — a consumer written outside the workspace,
-the rustdoc surface item by item, and a mutation sweep — and the crate is
-**`0.1.0`** at the end of it, with every requirement naming it moved to
-match. Not published: the number in the manifest is an intention, and
-the index is where it becomes a promise.
+the rustdoc surface item by item, and a mutation sweep — and ended with
+the crate set to **`0.1.0`**, every requirement naming it moved to match.
+**The owner has since chosen otherwise, and the number came back**: on
+2026-10-05 the crate released as `0.1.0-alpha.16`, and the freeze stays a
+plan — the audits stand as its preparation, not as its record. The
+reversal was free for the reason the sentence below it always stated: the
+stable number in the manifest was an intention, and the index is where it
+becomes a promise. The index never saw one.
 
 **`SendEgressFilter::open_datagrams_send` had a default, and the default
 was a trap.** It refused, as `EgressFilter::open_datagrams`' default
