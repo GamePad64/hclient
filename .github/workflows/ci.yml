@@ -559,6 +559,12 @@ jobs:
       # blocks, which nothing did before. Verified by mutation: reinstating
       # the merged step is reported at the exact line.
       - uses: docker://rhysd/actionlint:1.7.12
+      # The doc-comment gate scans with ripgrep and refuses to run without
+      # it — which is how this job earned its own red run: the gate used to
+      # print a pass over a scan that could not start, and the runner image
+      # does not ship the tool. Installed by name, like `ast-grep` above.
+      - name: install ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y ripgrep
       # ast-grep, its own corpus tests, and a fail-closed check that every
       # rule's `files:` glob still matches something. Three hand-written
       # source scanners retired into rules; see scripts/ast-grep/rules.

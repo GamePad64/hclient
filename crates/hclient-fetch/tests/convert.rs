@@ -847,9 +847,11 @@ fn non_http_scheme_is_a_typed_unsupported_error_not_opaque() {
 /// like this one is caught by the same "no scheme" branch `non_http_scheme_
 /// is_a_typed_unsupported_error_not_opaque` exercises differently, not a
 /// separate "no authority" branch. Named for what it actually checks:
-/// a schemeless / relative URI can't reach the browser at all.
+/// a schemeless / relative URI can't reach the browser at all — and since
+/// `ErrorKind::Uri` exists, that is the kind it carries, next to a
+/// well-formed but foreign scheme staying on `Unsupported`.
 #[wasm_bindgen_test]
-fn a_relative_uri_is_a_typed_unsupported_error_not_opaque() {
+fn a_relative_uri_is_a_typed_uri_error_not_opaque() {
     let f = hclient_fetch::Fetch::new();
     let req = http::Request::builder()
         .uri("/relative")
@@ -857,7 +859,11 @@ fn a_relative_uri_is_a_typed_unsupported_error_not_opaque() {
         .unwrap();
     let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
     assert!(
-        matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
+        matches!(err.kind(), hclient_core::error::ErrorKind::Uri),
+        "{err}"
+    );
+    assert!(
+        !matches!(err.kind(), hclient_core::error::ErrorKind::Unsupported),
         "{err}"
     );
 }
