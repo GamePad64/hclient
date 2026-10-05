@@ -418,6 +418,10 @@ pub fn error_type(kind: &ErrorKind) -> &'static str {
         ErrorKind::Status => "Status",
         ErrorKind::Unsupported => "Unsupported",
         ErrorKind::Cancelled => "Cancelled",
+        // The first variant to arrive after this match was written —
+        // exactly the case the wildcard below exists for, named now that
+        // it has a name.
+        ErrorKind::Uri => "Uri",
         // Named rather than folded into the wildcard below: this arm says
         // "this variant *is* `Other`", where the wildcard says "this
         // variant did not exist when this match was written" — the two

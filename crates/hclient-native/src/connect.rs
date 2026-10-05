@@ -127,7 +127,8 @@
 
 use crate::discovery::{self, Endpoint, NegativeCache, Origin, Prefetched};
 use crate::error::{
-    AllAttemptsFailed, InvalidHeConfig, ResolveErrors, ResolveTimedOut, UnsupportedScheme, UriError,
+    AllAttemptsFailed, InvalidHeConfig, NoScheme, ResolveErrors, ResolveTimedOut,
+    UnsupportedScheme, UriError,
 };
 use crate::{mark, since};
 use futures_io::{AsyncRead as Read, AsyncWrite as Write};
@@ -297,7 +298,7 @@ fn build_scheduler(cfg: HeConfig) -> Result<Scheduler, Error> {
 /// with nowhere to connect to about TLS.
 pub(crate) fn host(uri: &Uri) -> Result<&str, Error> {
     uri.host()
-        .ok_or_else(|| Error::new(ErrorKind::Connect, UriError))
+        .ok_or_else(|| Error::new(ErrorKind::Uri, UriError))
 }
 
 /// The port from `uri`, defaulted based on the ALREADY-checked scheme
@@ -315,16 +316,20 @@ pub(crate) fn port(uri: &Uri, use_tls: bool) -> u16 {
     uri.port_u16().unwrap_or(if use_tls { 443 } else { 80 })
 }
 
-/// `true` — TLS is needed (`https`), `false` — plain TCP (`http`). Any
-/// other (or missing) scheme is a typed `ErrorKind::Unsupported`, not a
-/// silent treatment as `http`.
+/// `true` — TLS is needed (`https`), `false` — plain TCP (`http`). A
+/// well-formed scheme the transport does not speak is a typed
+/// `ErrorKind::Unsupported`, not a silent treatment as `http`; a scheme
+/// that is *missing* (`not-a-url`, `/relative` — no target any
+/// transport here can serve) is `ErrorKind::Uri`, the caller's URL
+/// being wrong rather than the transport declining a value.
 pub(crate) fn wants_tls(uri: &Uri) -> Result<bool, Error> {
     match uri.scheme_str() {
         Some("http") => Ok(false),
         Some("https") => Ok(true),
-        other => Err(Error::new(
+        None => Err(Error::new(ErrorKind::Uri, NoScheme)),
+        Some(other) => Err(Error::new(
             ErrorKind::Unsupported,
-            UnsupportedScheme(other.unwrap_or("").to_string()),
+            UnsupportedScheme(other.to_string()),
         )),
     }
 }
@@ -3288,6 +3293,8 @@ mod tests {
             None,
         ))
         .expect_err("no host — nowhere to connect to");
-        assert_eq!(err.kind(), &ErrorKind::Connect);
+        // `Uri`, not `Connect`: nothing was attempted — the URI itself has
+        // nowhere to go, which is the caller's URL being wrong.
+        assert_eq!(err.kind(), &ErrorKind::Uri);
     }
 }

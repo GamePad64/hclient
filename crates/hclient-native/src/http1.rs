@@ -252,6 +252,34 @@ fn from_hyper_error(e: hyper::Error, fallback: ErrorKind) -> Error {
     }
 }
 
+/// The fallback for the REQUEST future's own error. This code runs only
+/// after the handshake succeeded — the connection exists — so "a
+/// connection could not be established" is not a thing that can be true
+/// here, and a fixed `Connect` fallback files post-establishment failures
+/// (a request body the peer stopped reading chief among them) under a
+/// kind whose taxonomy meaning is about *establishing*. hyper's own
+/// `BodyWrite` kind — "error writing a body to connection" — has no public
+/// predicate to ask for, so the rule works the other way: post-
+/// establishment, `Connect`'s one remaining taxonomy meaning is a
+/// response head too malformed to use ([`ErrorKind::Connect`]'s doc
+/// keeps that case); every other failure of the SENT future is the
+/// message flow's, which is [`ErrorKind::Body`]. A failure where hyper
+/// hands the request back un-sent is the checkout race's fact and stays
+/// [`ErrorKind::Connect`] at its call site. Measured on the live shape that
+/// has a server answer before reading a chunked request body and then
+/// close: the fixed `Connect` fallback sent the caller off to check
+/// addresses and proxies for a failure whose URL and address were fine.
+/// `from_hyper_error` still gets first say: an error we filed ourselves
+/// upstream survives with its own kind.
+fn from_hyper_error_on_send(e: hyper::Error) -> Error {
+    let fallback = if e.is_parse() {
+        ErrorKind::Connect
+    } else {
+        ErrorKind::Body
+    };
+    from_hyper_error(e, fallback)
+}
+
 /// A connection that has completed its HTTP/1 handshake: the two halves
 /// hyper hands back, kept together.
 ///
@@ -740,10 +768,17 @@ where
                 Poll::Ready(Err(mut e)) => Poll::Ready(Ok(Err(match e.take_message() {
                     // hyper's own verdict, not ours — see `Failed`.
                     Some(request) => Failed::NotSent {
+                        // `Connect`, not the send fallback: nothing was
+                        // written, so this is the same fact the checkout
+                        // race files as `Connect`
+                        // (`ConnectionEndedWithTheRequestQueued`) — the
+                        // connection went away with the request still in
+                        // hand. `Body`'s own doc says "after the head was
+                        // already exchanged", which is false here.
                         error: from_hyper_error(e.into_error(), ErrorKind::Connect),
                         request: Box::new(request),
                     },
-                    None => Failed::Sent(from_hyper_error(e.into_error(), ErrorKind::Connect)),
+                    None => Failed::Sent(from_hyper_error_on_send(e.into_error())),
                 }))),
                 // The connection has finished and the request is still
                 // waiting on a channel nobody will read: hyper's dispatcher
@@ -1022,6 +1057,56 @@ mod tests {
         );
     }
 
+    /// The live scenario the http-client component hit on its
+    /// wasi-fetch migration: a server that answers WITHOUT reading the
+    /// request body — python's `http.server` reads `Content-Length` only,
+    /// and wasi guests' bodies go out chunked — then closes while body
+    /// bytes are still going out. The head was already exchanged (the
+    /// response below is the proof), so per the taxonomy this is
+    /// [`ErrorKind::Body`] — "a body a transport could not finish
+    /// sending" — not [`ErrorKind::Connect`]: nothing about
+    /// *establishing* the exchange failed, and `Connect` sent the caller
+    /// looking at addresses and proxies when the URL and the address were
+    /// fine.
+    #[test]
+    fn an_outgoing_body_the_peer_stops_reading_is_body_not_connect() {
+        let io = ScriptIo::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        // The head (~70 bytes) fits the budget and is delivered — the
+        // canned response being read at all is the proof — but the body
+        // does not: the peer has stopped reading, and the next write is
+        // the reset.
+        io.0.borrow_mut().write_budget = Some(128);
+        let est = {
+            let fut = handshake(io, ConnectionId::UNWATCHED, H1Opts::default());
+            let mut fut = std::pin::pin!(fut);
+            poll_to_completion(fut.as_mut()).expect("handshake must succeed")
+        };
+        let req = http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("host", "example.invalid")
+            .body(
+                OutgoingBody::from_request_body(RequestBody::Full(Bytes::from(vec![
+                    b'x';
+                    64 * 1024
+                ])))
+                .expect("Full nests nothing"),
+            )
+            .unwrap();
+        let fut = exchange(est, req, None, NoHooks, ConnectionId::UNWATCHED);
+        let mut fut = std::pin::pin!(fut);
+        let err = match poll_to_completion(fut.as_mut()) {
+            Ok(_) => panic!("a body the peer stopped reading must fail the exchange"),
+            Err(e) => e.into_error(),
+        };
+        assert_eq!(
+            err.kind(),
+            &ErrorKind::Body,
+            "the head was out and answered; the failure is the body's, not \
+             the connection's: {err}"
+        );
+    }
+
     /// A scripted connection: reads only after something has been written
     /// to it, hands back a canned response, and then ends when the test
     /// says so.
@@ -1044,6 +1129,11 @@ mod tests {
         /// a TLS stream reports for a peer that closed without
         /// `close_notify`.
         fail_after: Option<io::ErrorKind>,
+        /// Total bytes writes may accept before they start failing with
+        /// `BrokenPipe` — the RST a server provokes when it closes the
+        /// connection with request data it never read still buffered.
+        write_budget: Option<usize>,
+        written: usize,
         wrote: bool,
     }
 
@@ -1053,6 +1143,8 @@ mod tests {
                 to_read: response.to_vec(),
                 eof_after: None,
                 fail_after: None,
+                write_budget: None,
+                written: 0,
                 wrote: false,
             })))
         }
@@ -1104,7 +1196,17 @@ mod tests {
             _cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<io::Result<usize>> {
-            self.0.borrow_mut().wrote = true;
+            let mut s = self.0.borrow_mut();
+            if let Some(budget) = s.write_budget
+                && s.written + buf.len() > budget
+            {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "peer closed with unread request data",
+                )));
+            }
+            s.written += buf.len();
+            s.wrote = true;
             Poll::Ready(Ok(buf.len()))
         }
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -1549,7 +1651,11 @@ mod tests {
             matches!(failed, Failed::Sent(_)),
             "the request is on the wire, so resending it would be a second request"
         );
-        assert_eq!(*failed.into_error().kind(), ErrorKind::Connect);
+        // `Body`, not `Connect`: the connection was established and the
+        // head was out — the taxonomy's "a connection reset mid-transfer",
+        // not "a connection could not be established". Same rule
+        // `from_hyper_error_on_send` applies to hyper's own verdicts.
+        assert_eq!(*failed.into_error().kind(), ErrorKind::Body);
         assert_eq!(closes, ["Ended"]);
     }
 }

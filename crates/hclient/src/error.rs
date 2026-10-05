@@ -180,7 +180,7 @@ pub enum SseError {
 /// The base URL is unfit to resolve this request against.
 ///
 /// `pub`, not for looks: the caller must be
-/// able to tell this apart from any other `ErrorKind::Other` via
+/// able to tell this apart from any other `ErrorKind::Uri` via
 /// `Error::source().downcast_ref::<InvalidBaseUrl>()` — the same trick
 /// `mock::QueueEmpty` uses. Both fields are public so the diagnostic names
 /// the specific pair, not just the fact.

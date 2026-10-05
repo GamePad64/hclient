@@ -159,6 +159,12 @@ impl Disagreement {
 pub(crate) struct UriError;
 
 #[derive(Debug, thiserror::Error)]
+#[error(
+    "request URI has no scheme to route by — an absolute-form target (http or https) is required"
+)]
+pub(crate) struct NoScheme;
+
+#[derive(Debug, thiserror::Error)]
 #[error("unsupported URI scheme: {0:?}")]
 pub(crate) struct UnsupportedScheme(pub(crate) String);
 

@@ -653,10 +653,14 @@ async fn open(
 /// - `Redirect`: too many hops or an unparsable `Location` from
 ///   `Client::execute`'s own redirect stage — a policy/config problem, not
 ///   a network blip.
+/// - `Uri`: the target itself cannot be sent — no scheme, no host, not a
+///   URL at all. The same config-error class as `Unsupported`, which this
+///   split came out of: retrying a URL that can never parse burns the
+///   whole backoff budget on a request no attempt can start.
 ///
 /// Everything else — today `Resolve`, `Connect`, `Tls`, `Timeout(_)`,
-/// `Body`, `Other`, and, since `ErrorKind` is `#[non_exhaustive]` (amendment
-/// C6: only the defining crate may exhaustively match it), any kind added
+/// `Body`, `Other`, and, since `ErrorKind` is `#[non_exhaustive]` (only the
+/// defining crate may exhaustively match it), any kind added
 /// later — is treated as RETRYABLE. This is a deliberate default-open
 /// choice, not an oversight: it matches the browser's own `EventSource`,
 /// which keeps retrying forever on any transport-level hiccup unless
@@ -673,6 +677,7 @@ fn is_retryable(kind: &ErrorKind) -> bool {
         ErrorKind::Decode
             | ErrorKind::Status
             | ErrorKind::Unsupported
+            | ErrorKind::Uri
             | ErrorKind::Cancelled
             | ErrorKind::Redirect
     )

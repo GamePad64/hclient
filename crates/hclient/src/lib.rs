@@ -625,9 +625,10 @@ pub mod retry {
 // `crate::sansio::uri`, and every way that can fail — a base that is
 // not a base, a host `http::Uri` will not hold, a non-ASCII host in a
 // build without the `idn` feature — arrives at the caller as this type,
-// as the `source()` of an `ErrorKind::Other`. It is re-exported for the
+// as the `source()` of an `ErrorKind::Uri`. It is re-exported for the
 // same reason `InvalidBaseUrl` is: a caller has to be able to name it to
-// tell "the URL you gave me is wrong" apart from every other `Other`.
+// tell "the URL you gave me is wrong" apart from every other `Uri` — or
+// ask `Error::is_uri()` directly.
 pub use request::RequestBuilder;
 pub use response::{Collected, Response};
 

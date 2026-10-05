@@ -820,9 +820,13 @@ async fn a_request_already_on_the_wire_is_not_retried() {
     let Err(e) = out else {
         panic!("the request went out on a connection that then died: {out:?}")
     };
+    // `Body`, not `Connect`: the connection was up and the request was on
+    // the wire — "a connection reset mid-transfer", not a failure to
+    // establish anything. The retry boundary this test exists for is
+    // `Failed::Sent`'s, not the kind's.
     assert!(
-        e.contains("Connect"),
-        "the failure is the connection's, and it must say so: {e}"
+        e.contains("Body"),
+        "the failure is the transfer's, and it must say so: {e}"
     );
     assert_eq!(
         accepted, 1,

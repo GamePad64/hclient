@@ -538,12 +538,10 @@ pub(crate) async fn expect(ex: &Arc<Exchange>, expected: &'static str) -> Result
 /// than handed over whole, which is also what makes the default port a
 /// decision this file can state.
 pub(crate) fn split_uri(uri: &http::Uri) -> Result<(bool, String, u16, String), Error> {
-    let refuse = |what: String| {
-        Err(Error::new(
-            ErrorKind::Connect,
-            WinHttpError::Unsupported(what),
-        ))
-    };
+    // `Uri`, not `Connect`: both refusals below are facts about the
+    // caller's URL — nothing was dialled, and the URL is what cannot be
+    // served. `Connect` is for a connection that could not be established.
+    let refuse = |kind, what: String| Err(Error::new(kind, WinHttpError::Unsupported(what)));
     let secure = match uri.scheme_str() {
         Some("https") => true,
         Some("http") => false,
@@ -551,14 +549,23 @@ pub(crate) fn split_uri(uri: &http::Uri) -> Result<(bool, String, u16, String), 
         // defaulting to `http` would send a request somewhere the caller
         // did not ask for.
         other => {
-            return refuse(format!(
-                "WinHTTP speaks `http` and `https`, and this request names `{}`",
-                other.unwrap_or("no scheme")
-            ));
+            return refuse(
+                match other {
+                    Some(_) => ErrorKind::Unsupported,
+                    None => ErrorKind::Uri,
+                },
+                format!(
+                    "WinHTTP speaks `http` and `https`, and this request names `{}`",
+                    other.unwrap_or("no scheme")
+                ),
+            );
         }
     };
     let Some(host) = uri.host() else {
-        return refuse(format!("`{uri}` has no host for WinHttpConnect to name"));
+        return refuse(
+            ErrorKind::Uri,
+            format!("`{uri}` has no host for WinHttpConnect to name"),
+        );
     };
     // **`Uri::host` keeps the brackets ON an IPv6 literal**, and this
     // comment said the opposite for as long as it has existed — measured:

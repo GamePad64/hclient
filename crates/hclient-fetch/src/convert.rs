@@ -316,8 +316,10 @@ fn resolve_body(body: RequestBody) -> Result<ResolvedBody, Error> {
 /// ahead of time, rather than left to `web_sys::Request::new_with_str_and_init`'s
 /// own `TypeError` (which `js_err` can only wrap as `ErrorKind::Other`):
 /// the same reasoning `hclient-native`'s `wants_tls` and `hclient-wasi`'s
-/// `scheme_of` already apply to their own URI checks — a rejected scheme is
-/// `ErrorKind::Unsupported`, not an opaque backend error.
+/// `scheme_of` apply to their own URI checks: a well-formed scheme this
+/// backend declines is `ErrorKind::Unsupported`, and a scheme that is
+/// missing entirely is [`ErrorKind::Uri`](hclient_core::error::ErrorKind::Uri)
+/// — the caller's URL being wrong, not the backend's repertoire.
 ///
 /// Only checks the scheme, not the authority separately: `http::Uri`
 /// itself refuses to represent a `Some("http")`/`Some("https")` scheme
@@ -342,7 +344,7 @@ fn checked_url(uri: &http::Uri) -> Result<String, Error> {
             )),
         )),
         None => Err(Error::new(
-            ErrorKind::Unsupported,
+            ErrorKind::Uri,
             BadUrl(format!(
                 "URI has no scheme, fetch needs an absolute URL: `{uri}`"
             )),

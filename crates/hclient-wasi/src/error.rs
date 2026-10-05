@@ -30,6 +30,20 @@ use wasip3::http::types::{HeaderError, RequestOptionsError};
 #[error("URI scheme must be http or https")]
 pub(crate) struct BadScheme;
 
+/// The request URI has no scheme at all.
+///
+/// Distinct from [`BadScheme`], and filed under a different
+/// [`ErrorKind`](hclient_core::error::ErrorKind) by the conversion in
+/// [`crate::convert`]: `BadScheme` is a well-formed scheme this backend
+/// declines (`ftp://`), while a scheme-less URI — `not-a-url`,
+/// `/relative` — is not a request target any HTTP backend can serve.
+/// There is nothing to put in `wasi:http`'s `scheme` field and nowhere
+/// for the host to connect to; the caller's URL is the problem, and the
+/// kind says so instead of leaving it to a `Display` match.
+#[derive(Debug, thiserror::Error)]
+#[error("the request URI has no scheme; an absolute-form target (http or https) is required")]
+pub(crate) struct MissingScheme;
+
 /// The host's rejection of applying a request timeout option.
 ///
 /// Unlike [`Rejected`], this rejection has a substantive reason —

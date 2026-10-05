@@ -104,10 +104,20 @@ pub enum ErrorKind {
     /// `4xx`/`5xx` from a caller who asked to fail on it, or a status a
     /// protocol handshake — such as a WebSocket upgrade — refused.
     Status,
+    /// The request URI itself could not be used: it did not parse, or it
+    /// is relative-form (`not-a-url`, `/path`) where a request was asked
+    /// for — an HTTP backend needs a scheme and an authority to know where
+    /// to go, so no backend that speaks HTTP can serve such a target.
+    ///
+    /// Distinct from [`Self::Unsupported`], which is a *well-formed*
+    /// scheme (`ftp://`) the chosen backend declines: the caller's URL is
+    /// wrong here, the backend's repertoire is not the problem.
+    Uri,
     /// Something was asked of a backend that it cannot do — a client
     /// setting it cannot honour (refused at `build()`, with an
-    /// [`UnsupportedCapability`] source), a URI scheme it does not handle,
-    /// or a [`crate::req::RequireVersion`] demand this connection did not
+    /// [`UnsupportedCapability`] source), a well-formed URI scheme it does
+    /// not handle (`ftp://` on an http-speaking client), or a
+    /// [`crate::req::RequireVersion`] demand this connection did not
     /// satisfy.
     Unsupported,
     // Maintainer notes (not rendered):
@@ -283,6 +293,11 @@ impl Error {
     #[must_use]
     pub fn is_unsupported(&self) -> bool {
         matches!(self.kind, ErrorKind::Unsupported)
+    }
+    /// Whether this is [`ErrorKind::Uri`].
+    #[must_use]
+    pub fn is_uri(&self) -> bool {
+        matches!(self.kind, ErrorKind::Uri)
     }
     /// Whether this is [`ErrorKind::Cancelled`].
     #[must_use]

@@ -154,12 +154,9 @@ impl StdError for ComponentError {}
 ///
 /// `wasi-fetch` had a dedicated `Error::Url(String)` variant, and the
 /// component split on it: a URL the caller mistyped is `invalid_args`,
-/// anything else is `internal`. `hclient` has no `ErrorKind` for that —
-/// a URL that does not parse comes back as `ErrorKind::Other` carrying
-/// `hclient::error::UriError` as its source (`config::effective_uri`) — so the
-/// same split is available, but through `source().is::<..>()` rather than
-/// through `kind()`. That is a downgrade in ergonomics, not in
-/// expressiveness, and it is recorded as such in the porting guide.
+/// anything else is `internal`. `hclient` files every way a caller's URL
+/// can be unusable under [`ErrorKind::Uri`](hclient::ErrorKind::Uri)
+/// (`config::effective_uri`), so the split is `Error::is_uri()`.
 ///
 /// `UriError` rather than `http::uri::InvalidUri`, which this line used to
 /// name: since URL parsing moved behind `hclient_proto::uri`, one type
@@ -176,8 +173,9 @@ impl StdError for ComponentError {}
     reason = "The original's `map_err` on `send()`, ported. `wasi-fetch` had a dedicated `Error::Url(String)` variant, and the component split on it: a URL the caller mistyped is `invalid_args`, anything else is `internal`. `hclient` has no `ErrorKind` for that — a URL that does not parse comes back as `ErrorK..."
 )]
 fn classify(e: hclient::Error) -> ComponentError {
-    if e.source()
-        .is_some_and(<dyn std::error::Error + 'static>::is::<hclient::error::UriError>)
+    if e.is_uri()
+        || e.source()
+            .is_some_and(<dyn std::error::Error + 'static>::is::<hclient::error::UriError>)
     {
         ComponentError::InvalidArgs(e.to_string())
     } else {

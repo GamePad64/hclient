@@ -12,7 +12,8 @@
 //! the corpus it was accepted against, in `scripts/ast-grep`.
 
 use crate::error::{
-    BadScheme, BodyWriteFailed, FieldsError, Rejected, TimeoutRejected, UndeclaredTrailers,
+    BadScheme, BodyWriteFailed, FieldsError, MissingScheme, Rejected, TimeoutRejected,
+    UndeclaredTrailers,
 };
 use bytes::Bytes;
 use hclient_core::body::RequestBody;
@@ -44,11 +45,18 @@ pub(crate) fn to_wasi_method(m: &http::Method) -> WM {
 /// backend just doesn't take this particular value" — so it is classified the same way rather than
 /// flattened into `ErrorKind::Other`. A caller wants to tell "the backend
 /// doesn't support this" from other errors via `is_unsupported()`.
+///
+/// A scheme that is *missing* is a different failure with a different
+/// kind: `not-a-url` is not a target this backend declines, it is not a
+/// target any HTTP backend can serve — [`MissingScheme`] under
+/// [`ErrorKind::Uri`] — while `ftp://` stays [`BadScheme`] under
+/// [`ErrorKind::Unsupported`].
 pub(crate) fn scheme_of(uri: &http::Uri) -> Result<Scheme, Error> {
     match uri.scheme_str() {
         Some("https") => Ok(Scheme::Https),
         Some("http") => Ok(Scheme::Http),
-        _ => Err(Error::new(ErrorKind::Unsupported, BadScheme)),
+        None => Err(Error::new(ErrorKind::Uri, MissingScheme)),
+        Some(_) => Err(Error::new(ErrorKind::Unsupported, BadScheme)),
     }
 }
 
@@ -465,6 +473,25 @@ mod tests {
         assert!(scheme_of(&ftp).is_err());
         let none: http::Uri = "/relative".parse().unwrap();
         assert!(scheme_of(&none).is_err());
+        // Also one that `http::Uri` parses as a bare path, the shape the
+        // http-client component's `fetch` tool got from a caller passing
+        // `not-a-url` — parseable, and still no target to send.
+        let bare: http::Uri = "not-a-url".parse().unwrap();
+        assert!(scheme_of(&bare).is_err());
+    }
+
+    /// A missing scheme is the caller's URL being wrong, not the backend
+    /// declining a value: [`ErrorKind::Uri`], next to a well-formed but
+    /// unhandled scheme staying on [`ErrorKind::Unsupported`].
+    #[test]
+    fn missing_scheme_is_uri_not_unsupported() {
+        let none: http::Uri = "/relative".parse().unwrap();
+        let err = scheme_of(&none).unwrap_err();
+        assert!(err.is_uri(), "{err:?}");
+        assert!(!err.is_unsupported(), "{err:?}");
+
+        let bare: http::Uri = "not-a-url".parse().unwrap();
+        assert!(scheme_of(&bare).unwrap_err().is_uri());
     }
 
     /// `BadScheme` is the same class of

@@ -546,10 +546,11 @@ fn a_non_json_body_gets_no_content_type_and_the_callers_headers_go_out() {
 // ── error classification ─────────────────────────────────────────────
 
 /// `wasi-fetch` had `Error::Url(String)`, and the component mapped exactly
-/// that variant to `ActError::invalid_args`. `hclient` reports an
-/// unparseable URL as `ErrorKind::Other` carrying `hclient::error::UriError`, so
-/// the split survives — through `source().is::<..>()` rather than through
-/// `kind()`.
+/// that variant to `ActError::invalid_args`. `hclient` files an
+/// unparseable URL under `ErrorKind::Uri` carrying
+/// `hclient::error::UriError` as its source, so the split survives — as
+/// `Error::is_uri()`, with the downcast kept beside it for a caller on an
+/// older kind set.
 ///
 /// Both inputs are here on purpose. `"not a url"` is the original's case
 /// and reaches `UriError::NotAUri`; a non-ASCII host reaches either

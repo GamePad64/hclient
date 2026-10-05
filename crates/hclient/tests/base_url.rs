@@ -135,7 +135,7 @@ fn a_relative_base_is_a_typed_error_not_a_silently_ignored_setting() {
     let err = futures_executor::block_on(c.get("v1/things").send())
         .expect_err("a relative base is unfit for use — this must be an error");
 
-    assert_eq!(*err.kind(), ErrorKind::Other, "{err}");
+    assert_eq!(*err.kind(), ErrorKind::Uri, "{err}");
     let src = StdError::source(&err).expect("Error::new always sets a source");
     let bad = src
         .downcast_ref::<InvalidBaseUrl>()
@@ -273,7 +273,7 @@ fn without_the_idn_feature_a_u_label_is_a_typed_error_that_names_the_way_out() {
     ] {
         let err = futures_executor::block_on(client.get("https://münchen.de/x").send())
             .expect_err("no `idn` feature, so this cannot be sent");
-        assert_eq!(*err.kind(), ErrorKind::Other, "{label}: {err}");
+        assert_eq!(*err.kind(), ErrorKind::Uri, "{label}: {err}");
         let src = StdError::source(&err).expect("Error::new always sets a source");
         let named = src
             .downcast_ref::<UriError>()

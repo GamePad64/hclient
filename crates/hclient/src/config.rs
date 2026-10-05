@@ -287,13 +287,13 @@ pub(crate) fn effective_uri(base: Option<&http::Uri>, url: &str) -> Result<http:
         // succeeded through the branch below, where `url::Url` punycoded
         // it. The conversion now lives at one boundary, in the sans-io
         // crate every backend shares.
-        return crate::sansio::uri::parse(url).map_err(|e| Error::new(ErrorKind::Other, e));
+        return crate::sansio::uri::parse(url).map_err(|e| Error::new(ErrorKind::Uri, e));
     };
     crate::sansio::uri::resolve_reference(base, url).map_err(|e| match e {
         // "This base cannot be a base" is the setting's own problem, and
         // the only failure that can name both sides usefully.
         crate::sansio::uri::UriError::UnusableBase { .. } => Error::new(
-            ErrorKind::Other,
+            ErrorKind::Uri,
             InvalidBaseUrl {
                 base: base.clone(),
                 requested: url.to_owned(),
@@ -304,7 +304,7 @@ pub(crate) fn effective_uri(base: Option<&http::Uri>, url: &str) -> Result<http:
         // non-ASCII host in a build without the `idn` feature most of all,
         // where the error is the only place the caller learns to send an
         // A-label.
-        other => Error::new(ErrorKind::Other, other),
+        other => Error::new(ErrorKind::Uri, other),
     })
 }
 
