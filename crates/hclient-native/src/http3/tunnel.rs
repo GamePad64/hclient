@@ -171,7 +171,13 @@ impl futures_io::AsyncWrite for H3Stream {
         }));
         // Polled once so the frame is on its way now; a write still in
         // flight is finished by the next call, which is where its failure
-        // would be reported.
+        // would be reported. `Ok(n)` here is "accepted", not "on the
+        // wire" — the contract's own shape for a buffered writer, whose
+        // `poll_flush`/`poll_close` settle what is staged; both route
+        // through [`Self::settle`], so a staged failure reaches the
+        // driver's close as well as its next write. What no driver can
+        // answer is a stream dropped without a close, which is the
+        // contract's abandonment, not this impl's silence.
         match this.settle(cx) {
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Ready(Ok(())) | Poll::Pending => Poll::Ready(Ok(buf.len())),

@@ -643,6 +643,16 @@ point:
   may land on a different address from the one the control connection
   reached.
 - Tunnel setup is bounded only by what the filter reads off
-  `remaining()`, as the other `Dial` methods are.
+  `remaining()`, as the other `Dial` methods are — said on
+  [`Dial::connect_tunnel`] now, where a filter author meets it. The
+  deferred-minors pass of 2026-10-06 verified the rest of this list
+  against the tree: the timeout while a path opens was already a
+  remembered switch (`ViaFailed::Switch`), `header_for` encodes the
+  origin by name and is indifferent to when it runs, `NoDatagramPath`
+  fires only for a filter that declares no datagrams, `DynDial`'s one
+  off-convention method name is `bind_udp_boxed`, and the both-tunnels-
+  fail question keeps last-error-wins — the same shape
+  `after_quic_failed` gives a fallback to TCP.
 - `ConnectTiming::dns` reports about zero for a path connection that did
-  no lookup.
+  no lookup — said on the field itself now; a `Duration` cannot carry an
+  absence, and the under-reporting is the safe direction.

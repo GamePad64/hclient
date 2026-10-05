@@ -214,6 +214,10 @@ pub trait Dial {
     /// HTTP connection's own error, and
     /// [`ErrorKind::Timeout`](hclient_core::error::ErrorKind::Timeout) for
     /// the bound running out.
+    ///
+    /// The bound is [`Dial::remaining`] — what is left of the caller's
+    /// budgets, the same bound every other [`Dial`] method runs under.
+    /// There is no separate tunnel budget.
     fn connect_tunnel<'a>(
         &'a self,
         req: TunnelRequest<'a>,
@@ -653,12 +657,12 @@ pub trait DynDial {
         let _ = (stream, req);
         Box::pin(std::future::ready(Err(lends_no_tls())))
     }
-    /// [`Dial::bind_udp`]. Refuses by default.
+    /// [`Dial::bind_udp`], erased. Refuses by default.
     ///
     /// # Errors
     ///
     /// See [`Dial::bind_udp`].
-    fn bind_udp(&self, local: SocketAddr) -> Result<BoxUdp, Error> {
+    fn bind_udp_boxed(&self, local: SocketAddr) -> Result<BoxUdp, Error> {
         let _ = local;
         Err(lends_nothing("UDP"))
     }
@@ -734,7 +738,7 @@ impl Dial for BoxDial<'_> {
     }
 
     fn bind_udp(&self, local: SocketAddr) -> Result<BoxUdp, Error> {
-        DynDial::bind_udp(self.0, local)
+        DynDial::bind_udp_boxed(self.0, local)
     }
 
     fn resolve<'b>(

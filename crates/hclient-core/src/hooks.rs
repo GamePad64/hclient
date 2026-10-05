@@ -1018,6 +1018,12 @@ pub struct ConnectTiming {
     /// answer — but not only an A/AAAA one: an HTTPS record (RFC 9460) is
     /// looked up beside the addresses and its hints are tried first, so a
     /// slow record delays the first attempt and shows up here.
+    ///
+    /// A connection that resolved nothing — an IP literal, or a QUIC
+    /// connection over an egress datagram path, where the origin's name
+    /// is never resolved locally — reports near zero here rather than an
+    /// absence. The field is a `Duration`, and under-reporting is the
+    /// safe direction.
     pub dns: Duration,
     /// The winning TCP attempt, from the moment it was launched to the
     /// moment it connected. Not the race: an attempt the scheduler

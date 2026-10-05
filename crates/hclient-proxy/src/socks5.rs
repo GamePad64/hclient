@@ -105,6 +105,15 @@ impl Socks5 {
     /// Offer §4's UDP ASSOCIATE beside CONNECT: [`Handshake::associate`]
     /// answers `Some` once this is set, and never otherwise — UDP through
     /// SOCKS5 is opt-in per proxy, not assumed from a CONNECT capability.
+    ///
+    /// What this costs in privacy: every relayed datagram carries RFC
+    /// 1928 §7's header, and that header names the **origin**, in the
+    /// clear, on the UDP leg between this host and the proxy. TLS to the
+    /// proxy encrypts the control connection and none of the datagrams,
+    /// so an observer on that leg reads which origin you are talking to,
+    /// per datagram. The ASSOCIATE request itself names nothing — `DST.
+    /// ADDR` is `0.0.0.0:0` — but the traffic pattern is the proxy's to
+    /// see regardless.
     #[must_use]
     pub fn with_udp(mut self) -> Self {
         self.udp = true;

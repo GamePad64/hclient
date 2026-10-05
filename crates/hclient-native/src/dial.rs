@@ -288,6 +288,12 @@ where
             }));
         };
         let raw = self.connect_raw(req.proxy_host, req.proxy_port).await?;
+        // When HTTP/2 fails here after HTTP/3 already did, the HTTP/2
+        // error is the answer and the HTTP/3 error is not carried beside
+        // it: the earlier attempt was the bounded probe, its outcome is in
+        // the failure memory, and an error carries one cause — the same
+        // last-error-wins shape `after_quic_failed` gives a fallback to
+        // TCP on the direct path.
         open(self.tls, raw, req).await
     }
 
@@ -515,7 +521,7 @@ where
         })
     }
 
-    fn bind_udp(&self, local: std::net::SocketAddr) -> Result<hclient_proxy::BoxUdp, Error> {
+    fn bind_udp_boxed(&self, local: std::net::SocketAddr) -> Result<hclient_proxy::BoxUdp, Error> {
         hclient_proxy::Dial::bind_udp(self, local)
     }
 
