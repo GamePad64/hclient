@@ -318,6 +318,25 @@ impl StdError for Error {
     }
 }
 
+/// The request URI names no scheme at all — `not-a-url`, `/relative` —
+/// so no backend that speaks HTTP can serve it: there is nothing to put
+/// in the scheme slot and nowhere to connect to.
+///
+/// Distinct from [`ErrorKind::Unsupported`], which keeps a *well-formed*
+/// scheme the chosen backend declines (`ftp://` on an http-speaking
+/// client): here the caller's URL is the problem, not the backend's
+/// repertoire. One type serves every backend that files the fact under
+/// [`ErrorKind::Uri`], so a caller downcasting the source names the same
+/// type whichever transport is underneath.
+///
+/// Not `#[non_exhaustive]`, and the reason is who builds one: the
+/// transports file the fact themselves, from outside this crate —
+/// [`UnsupportedCapability`]'s argument, which kept its struct literal
+/// for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the request URI has no scheme; an absolute-form target (http or https) is required")]
+pub struct MissingScheme;
+
 /// A [`RequestBody::Rewindable`](crate::body::RequestBody::Rewindable) whose factory kept handing back another
 /// `Rewindable`, past [`crate::body::MAX_REWIND_DEPTH`].
 ///

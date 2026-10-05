@@ -12,11 +12,11 @@
 //! the corpus it was accepted against, in `scripts/ast-grep`.
 
 use crate::error::{
-    BadScheme, BodyWriteFailed, FieldsError, MissingScheme, Rejected, TimeoutRejected,
-    UndeclaredTrailers,
+    BadScheme, BodyWriteFailed, FieldsError, Rejected, TimeoutRejected, UndeclaredTrailers,
 };
 use bytes::Bytes;
 use hclient_core::body::RequestBody;
+use hclient_core::error::MissingScheme;
 use hclient_core::error::{Error, ErrorKind};
 use http_body::{Body as HttpBody, Frame};
 use std::fmt::Debug;
@@ -48,7 +48,8 @@ pub(crate) fn to_wasi_method(m: &http::Method) -> WM {
 ///
 /// A scheme that is *missing* is a different failure with a different
 /// kind: `not-a-url` is not a target this backend declines, it is not a
-/// target any HTTP backend can serve — [`MissingScheme`] under
+/// target any HTTP backend can serve —
+/// [`MissingScheme`](hclient_core::error::MissingScheme) under
 /// [`ErrorKind::Uri`] — while `ftp://` stays [`BadScheme`] under
 /// [`ErrorKind::Unsupported`].
 pub(crate) fn scheme_of(uri: &http::Uri) -> Result<Scheme, Error> {
@@ -489,6 +490,15 @@ mod tests {
         let err = scheme_of(&none).unwrap_err();
         assert!(err.is_uri(), "{err:?}");
         assert!(!err.is_unsupported(), "{err:?}");
+        // The point of the shared type: the same name answers here and
+        // under `hclient-native`, so a caller downcasting the source does
+        // not learn which transport is underneath.
+        assert!(
+            err.source().is_some_and(
+                <dyn std::error::Error + 'static>::is::<hclient_core::error::MissingScheme>
+            ),
+            "{err:?}"
+        );
 
         let bare: http::Uri = "not-a-url".parse().unwrap();
         assert!(scheme_of(&bare).unwrap_err().is_uri());

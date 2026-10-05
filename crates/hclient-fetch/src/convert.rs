@@ -345,6 +345,10 @@ fn checked_url(uri: &http::Uri) -> Result<String, Error> {
         )),
         None => Err(Error::new(
             ErrorKind::Uri,
+            // Not `hclient_core::error::MissingScheme`, which native and
+            // wasi file: this payload carries the URI, which a shared
+            // unit struct has no room for, and a caller reading the
+            // reason wants the URL it names.
             BadUrl(format!(
                 "URI has no scheme, fetch needs an absolute URL: `{uri}`"
             )),

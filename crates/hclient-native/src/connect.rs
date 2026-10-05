@@ -127,8 +127,7 @@
 
 use crate::discovery::{self, Endpoint, NegativeCache, Origin, Prefetched};
 use crate::error::{
-    AllAttemptsFailed, InvalidHeConfig, NoScheme, ResolveErrors, ResolveTimedOut,
-    UnsupportedScheme, UriError,
+    AllAttemptsFailed, InvalidHeConfig, ResolveErrors, ResolveTimedOut, UnsupportedScheme, UriError,
 };
 use crate::{mark, since};
 use futures_io::{AsyncRead as Read, AsyncWrite as Write};
@@ -326,7 +325,10 @@ pub(crate) fn wants_tls(uri: &Uri) -> Result<bool, Error> {
     match uri.scheme_str() {
         Some("http") => Ok(false),
         Some("https") => Ok(true),
-        None => Err(Error::new(ErrorKind::Uri, NoScheme)),
+        None => Err(Error::new(
+            ErrorKind::Uri,
+            hclient_core::error::MissingScheme,
+        )),
         Some(other) => Err(Error::new(
             ErrorKind::Unsupported,
             UnsupportedScheme(other.to_string()),
@@ -1514,6 +1516,25 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// The shared fact, named: a scheme-less URI is [`ErrorKind::Uri`]
+    /// carrying `hclient_core::error::MissingScheme` — the same type
+    /// `hclient-wasi`'s conversion files, so the downcast does not
+    /// depend on which transport refused.
+    #[test]
+    fn a_missing_scheme_is_uri_carrying_the_shared_payload() {
+        let uri: Uri = "/relative".parse().unwrap();
+        let err = wants_tls(&uri).unwrap_err();
+        assert_eq!(*err.kind(), ErrorKind::Uri, "{err:?}");
+        assert!(
+            err.source().is_some_and(
+                <dyn std::error::Error + 'static>::is::<hclient_core::error::MissingScheme>
+            ),
+            "{err:?}"
+        );
+        let bare: Uri = "not-a-url".parse().unwrap();
+        assert_eq!(*wants_tls(&bare).unwrap_err().kind(), ErrorKind::Uri);
+    }
+
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
