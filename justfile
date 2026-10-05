@@ -1730,6 +1730,13 @@ libraries-require-docs:
 doc-comments-speak-to-readers:
     ./scripts/doc-comments-speak-to-readers.sh
 
+# The gate above scans with ripgrep and refuses to run without it, and the
+# CI runner image does not ship the tool — which is how the gate's own
+# honesty earned this recipe a red run. A binary package rather than
+# `cargo install`, so the invariants job stays one that compiles nothing.
+install-ripgrep:
+    sudo apt-get update -qq && sudo apt-get install -y ripgrep
+
 # every in-workspace requirement names the workspace version
 versions-agree:
     ./scripts/versions-agree.sh

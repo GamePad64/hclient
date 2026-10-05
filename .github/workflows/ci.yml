@@ -564,7 +564,7 @@ jobs:
       # print a pass over a scan that could not start, and the runner image
       # does not ship the tool. Installed by name, like `ast-grep` above.
       - name: install ripgrep
-        run: sudo apt-get update -qq && sudo apt-get install -y ripgrep
+        run: just install-ripgrep
       # ast-grep, its own corpus tests, and a fail-closed check that every
       # rule's `files:` glob still matches something. Three hand-written
       # source scanners retired into rules; see scripts/ast-grep/rules.
