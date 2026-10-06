@@ -422,10 +422,13 @@ the crate set to **`0.1.0`**, every requirement naming it moved to match.
 freeze was taken after all. On 2026-10-06 the surface passed a
 doctrine review with nothing to cut, the root became doors, and the
 manifest took `0.1.0` with every requirement naming it moved to match.
-What that buys is stated by the sentence this paragraph keeps: the
-number in the manifest is still only an intention — the promise lands
-where it always lands, in the index, at the next workspace publish.
-Until then the audits stand as its preparation, now complete.
+The promise landed the same day: the workspace publish of 2026-10-06
+put `hclient-proxy 0.1.0` in the index, between `hclient-dns-system`
+and `hclient-rt-smol` in the upload order, and the semver gate enrolled
+it without a recipe changing — 1818 checks across 9 stable crates
+became 2020 across 10. The audits stand as its preparation, complete
+and now load-bearing: every one of the surface's promises is the gate's
+to keep.
 
 **`SendEgressFilter::open_datagrams_send` had a default, and the default
 was a trap.** It refused, as `EgressFilter::open_datagrams`' default
