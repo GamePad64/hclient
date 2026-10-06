@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.19](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.18...hclient-native-v0.1.0-alpha.19) - 2026-10-06
+
+### Added
+
+- *(error)* one MissingScheme, named the same under every backend
+
+### Fixed
+
+- *(proxy)* the deferred audit minors, verified one by one
+
+### Other
+
+- *(proxy)* the freeze — 0.1.0
+- *(proxy)* the root is doors — five pub modules, twelve names
+
 ## [0.1.0-alpha.18](https://github.com/GamePad64/hclient/compare/hclient-native-v0.1.0-alpha.17...hclient-native-v0.1.0-alpha.18) - 2026-10-05
 
 ### Added

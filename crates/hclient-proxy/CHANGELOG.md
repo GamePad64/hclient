@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/GamePad64/hclient/compare/hclient-proxy-v0.1.0-alpha.16...hclient-proxy-v0.1.0) - 2026-10-06
+
+### Fixed
+
+- *(proxy)* the deferred audit minors, verified one by one
+
+### Other
+
+- *(proxy)* the freeze — 0.1.0
+- *(proxy)* the root is doors — five pub modules, twelve names
+
 ## [0.1.0-alpha.16](https://github.com/GamePad64/hclient/compare/hclient-proxy-v0.1.0-alpha.15...hclient-proxy-v0.1.0-alpha.16) - 2026-10-05
 
 ### Added

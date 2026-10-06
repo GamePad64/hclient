@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/GamePad64/hclient/compare/hclient-rt-v0.1.2...hclient-rt-v0.1.3) - 2026-10-06
+
+### Other
+
+- updated the following local packages: hclient-core
+
 ## [0.1.2](https://github.com/GamePad64/hclient/compare/hclient-rt-v0.1.1...hclient-rt-v0.1.2) - 2026-10-05
 
 ### Added
