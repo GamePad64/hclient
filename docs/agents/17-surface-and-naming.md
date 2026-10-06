@@ -418,11 +418,14 @@ with the same instruments — a consumer written outside the workspace,
 the rustdoc surface item by item, and a mutation sweep — and ended with
 the crate set to **`0.1.0`**, every requirement naming it moved to match.
 **The owner has since chosen otherwise, and the number came back**: on
-2026-10-05 the crate released as `0.1.0-alpha.16`, and the freeze stays a
-plan — the audits stand as its preparation, not as its record. The
-reversal was free for the reason the sentence below it always stated: the
-stable number in the manifest was an intention, and the index is where it
-becomes a promise. The index never saw one.
+2026-10-05 the crate released as `0.1.0-alpha.16` — and one day later the
+freeze was taken after all. On 2026-10-06 the surface passed a
+doctrine review with nothing to cut, the root became doors, and the
+manifest took `0.1.0` with every requirement naming it moved to match.
+What that buys is stated by the sentence this paragraph keeps: the
+number in the manifest is still only an intention — the promise lands
+where it always lands, in the index, at the next workspace publish.
+Until then the audits stand as its preparation, now complete.
 
 **`SendEgressFilter::open_datagrams_send` had a default, and the default
 was a trap.** It refused, as `EgressFilter::open_datagrams`' default
