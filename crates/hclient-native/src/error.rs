@@ -195,7 +195,7 @@ pub(crate) struct UnknownClientIdentity(pub(crate) String);
 pub struct NoQuicArm;
 
 /// An egress filter carries this request and declares no byte stream to
-/// it — [`hclient_proxy::FilterSupport::stream`] is `false` — so it is
+/// it — [`hclient_proxy::egress::FilterSupport::stream`] is `false` — so it is
 /// refused before anything is dialled. Sending it direct instead would be
 /// going around the filter.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -326,7 +326,7 @@ impl ResolveErrors {
     }
 }
 
-pub use hclient_proxy::ProxySpokeFirst;
+pub use hclient_proxy::error::ProxySpokeFirst;
 
 // ---------------------------------------------------------------------
 // The clock won. Four types rather than one with a `Phase` field,

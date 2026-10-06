@@ -41,13 +41,15 @@
 //!   doc for the contract a driver depends on.
 //! - [`Step`] — what a handshake wants to happen next.
 //! - [`HttpConnect`], [`Socks5`], [`Socks4`] — the three implementations.
-//! - [`EgressFilter`] and [`Dial`] — where a connection goes, and what a
-//!   transport lends a filter to open it: a stream, TLS over one, the
-//!   runtime's UDP, the proxy's own addresses, and CONNECT tunnels.
-//! - [`DatagramPath`] — one peer and whole datagrams, which a filter opens
-//!   with [`EgressFilter::open_datagrams`] for a transport to run QUIC
-//!   over. [`Socks5::with_udp`] makes the built-in SOCKS5 rule open one
-//!   through the proxy's UDP ASSOCIATE; nothing turns that on by default.
+//! - [`egress::EgressFilter`] and [`egress::Dial`] — where a connection
+//!   goes, and what a transport lends a filter to open it: a stream, TLS
+//!   over one, the runtime's UDP, the proxy's own addresses, and CONNECT
+//!   tunnels.
+//! - [`datagram::DatagramPath`] — one peer and whole datagrams, which a
+//!   filter opens with [`egress::EgressFilter::open_datagrams`] for a
+//!   transport to run QUIC over. [`Socks5::with_udp`] makes the built-in
+//!   SOCKS5 rule open one through the proxy's UDP ASSOCIATE; nothing
+//!   turns that on by default.
 //!
 //! # Features
 //!
@@ -60,7 +62,7 @@
 //! A protocol that has to **wrap** the IO cannot be written against
 //! [`Handshake`] — TLS to the proxy itself is the real example. That one
 //! is the transport's job instead: [`Proxy::tls`] for the built-in rules,
-//! and [`Dial::connect_tls`] for a filter of your own.
+//! and [`egress::Dial::connect_tls`] for a filter of your own.
 
 // Maintainer notes (not rendered):
 // Three ship — HTTP `CONNECT`, SOCKS5 and `SOCKS4a` — and they share no
@@ -118,10 +120,10 @@
 use bytes::{Bytes, BytesMut};
 
 mod connect;
-mod datagram;
+pub mod datagram;
 mod drive;
-mod egress;
-mod error;
+pub mod egress;
+pub mod error;
 mod proxy;
 mod rules;
 mod socks4;
@@ -129,30 +131,16 @@ mod socks5;
 mod socks5_udp;
 #[cfg(feature = "system")]
 pub mod system;
-mod tunnel;
+pub mod tunnel;
 
 pub use connect::HttpConnect;
-#[cfg(feature = "test-util")]
-#[doc(hidden)]
-pub use datagram::testing;
-pub use datagram::{BoxPath, BoxUdp, DatagramPath};
 pub use drive::drive_exact;
-pub use egress::{
-    Attempt, BoxDial, BoxDialing, BoxIo, BoxOpening, BoxPathOpening, BoxResolving, BoxTunnelling,
-    Decision, Dial, DynDial, EgressFilter, FilterSupport, Io, Opened, ProxyTls, RequestForm, Route,
-    SendEgressFilter, SharedDial, SharedFilter, Target, erase,
-};
-pub use error::{
-    BypassReason, ConnectError, MalformedHead, ProxyRefused, ProxySpokeFirst, Socks4HandshakeError,
-    Socks4Refused, Socks5HandshakeError, Socks5Refused, UnsupportedBypass,
-};
 pub(crate) use proxy::Reach;
 pub use proxy::{IpcProxy, Proxy, ProxyScheme};
 pub use rules::Rules;
 pub use socks4::Socks4;
 pub use socks5::Socks5;
 pub use socks5_udp::Association;
-pub use tunnel::{Tunnel, TunnelRequest, TunnelVersion};
 
 /// What a proxy does for one origin, which is not the same question for
 /// the three protocols here.

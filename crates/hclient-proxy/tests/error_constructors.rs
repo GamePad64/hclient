@@ -7,7 +7,8 @@
 //! crate as far as visibility goes.
 
 use hclient_proxy::{
-    ProxyRefused, ProxySpokeFirst, Socks4Refused, Socks5HandshakeError, Socks5Refused,
+    error::ProxyRefused, error::ProxySpokeFirst, error::Socks4Refused, error::Socks5HandshakeError,
+    error::Socks5Refused,
 };
 
 #[test]

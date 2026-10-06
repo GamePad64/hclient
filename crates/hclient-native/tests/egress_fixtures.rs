@@ -6,7 +6,7 @@
     reason = "a fixture module included by `#[path]`; each including test file uses its own subset"
 )]
 
-use hclient_proxy::{BoxPath, DatagramPath};
+use hclient_proxy::{datagram::BoxPath, datagram::DatagramPath};
 use std::io;
 use std::net::SocketAddr;
 use std::task::{Context, Poll};
@@ -176,7 +176,7 @@ pub struct Lent {
     pub datagrams: bool,
     /// When the filter was asked, on the test's clock.
     pub at: std::time::Instant,
-    /// [`hclient_proxy::Dial::remaining`] at that moment.
+    /// [`hclient_proxy::egress::Dial::remaining`] at that moment.
     pub remaining: Option<std::time::Duration>,
 }
 
@@ -200,7 +200,7 @@ impl ForwardFilter {
             .clone()
     }
 
-    fn note_lent<C: hclient_proxy::Dial>(&self, datagrams: bool, ctx: &C) {
+    fn note_lent<C: hclient_proxy::egress::Dial>(&self, datagrams: bool, ctx: &C) {
         let remaining = ctx.remaining();
         self.lent
             .lock()
@@ -223,8 +223,8 @@ impl ForwardFilter {
         self.stream_opens.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn support(&self) -> hclient_proxy::FilterSupport {
-        use hclient_proxy::FilterSupport;
+    fn support(&self) -> hclient_proxy::egress::FilterSupport {
+        use hclient_proxy::egress::FilterSupport;
         match self.mode {
             Mode::DatagramsOnly | Mode::Slow(_) => FilterSupport::NONE.with_datagrams(),
             Mode::StreamOnly => FilterSupport::STREAM,
@@ -244,22 +244,22 @@ fn connect_error(msg: &'static str) -> hclient_core::error::Error {
     )
 }
 
-impl hclient_proxy::EgressFilter for ForwardFilter {
-    type Wrapped<S: hclient_proxy::Io> = S;
+impl hclient_proxy::egress::EgressFilter for ForwardFilter {
+    type Wrapped<S: hclient_proxy::egress::Io> = S;
 
-    fn route(&self, _: &hclient_proxy::Target<'_>) -> hclient_proxy::Decision<'_> {
-        hclient_proxy::Decision::Filtered(hclient_proxy::Route::new(
+    fn route(&self, _: &hclient_proxy::egress::Target<'_>) -> hclient_proxy::egress::Decision<'_> {
+        hclient_proxy::egress::Decision::Filtered(hclient_proxy::egress::Route::new(
             self.support(),
             "fwd",
-            hclient_proxy::RequestForm::Origin,
+            hclient_proxy::egress::RequestForm::Origin,
         ))
     }
 
-    async fn open_stream<'a, C: hclient_proxy::Dial + 'a>(
+    async fn open_stream<'a, C: hclient_proxy::egress::Dial + 'a>(
         &'a self,
-        _: hclient_proxy::Target<'a>,
+        _: hclient_proxy::egress::Target<'a>,
         ctx: &'a C,
-    ) -> Result<hclient_proxy::Opened<C::Stream, C::Stream>, hclient_proxy::Attempt>
+    ) -> Result<hclient_proxy::egress::Opened<C::Stream, C::Stream>, hclient_proxy::egress::Attempt>
     where
         Self: Sized,
     {
@@ -274,15 +274,15 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
         let stream = ctx
             .connect(&self.peer.ip().to_string(), self.peer.port())
             .await
-            .map_err(hclient_proxy::Attempt::Failed)?;
-        Ok(hclient_proxy::Opened::Raw(stream))
+            .map_err(hclient_proxy::egress::Attempt::Failed)?;
+        Ok(hclient_proxy::egress::Opened::Raw(stream))
     }
 
-    fn open_datagrams<'a, C: hclient_proxy::Dial + 'a>(
+    fn open_datagrams<'a, C: hclient_proxy::egress::Dial + 'a>(
         &'a self,
-        _: hclient_proxy::Target<'a>,
+        _: hclient_proxy::egress::Target<'a>,
         ctx: &'a C,
-    ) -> impl std::future::Future<Output = Result<BoxPath, hclient_proxy::Attempt>> + 'a
+    ) -> impl std::future::Future<Output = Result<BoxPath, hclient_proxy::egress::Attempt>> + 'a
     where
         Self: Sized,
         C::Stream: Send + 'static, // send-bound-exception: amendment-C16
@@ -304,12 +304,12 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
                     Ok(udp_bridge_of(peer, 1199))
                 }
                 Mode::RefusingDatagramsWithStream | Mode::StreamOnly => Err(
-                    hclient_proxy::Attempt::Unsupported(hclient_core::error::Error::new(
+                    hclient_proxy::egress::Attempt::Unsupported(hclient_core::error::Error::new(
                         hclient_core::error::ErrorKind::Unsupported,
                         io::Error::other("this proxy relays no datagrams"),
                     )),
                 ),
-                Mode::Failing => Err(hclient_proxy::Attempt::Failed(connect_error(
+                Mode::Failing => Err(hclient_proxy::egress::Attempt::Failed(connect_error(
                     "the proxy could not be reached",
                 ))),
             }
@@ -317,25 +317,27 @@ impl hclient_proxy::EgressFilter for ForwardFilter {
     }
 }
 
-impl hclient_proxy::SendEgressFilter for ForwardFilter {
+impl hclient_proxy::egress::SendEgressFilter for ForwardFilter {
     fn open_stream_send<'a>(
         &'a self,
-        t: hclient_proxy::Target<'a>,
-        ctx: &'a hclient_proxy::BoxDial<'a>,
-    ) -> hclient_proxy::BoxOpening<'a> {
+        t: hclient_proxy::egress::Target<'a>,
+        ctx: &'a hclient_proxy::egress::BoxDial<'a>,
+    ) -> hclient_proxy::egress::BoxOpening<'a> {
         Box::pin(async move {
-            hclient_proxy::EgressFilter::open_stream(self, t, ctx)
+            hclient_proxy::egress::EgressFilter::open_stream(self, t, ctx)
                 .await
-                .map(hclient_proxy::erase)
+                .map(hclient_proxy::egress::erase)
         })
     }
 
     fn open_datagrams_send<'a>(
         &'a self,
-        t: hclient_proxy::Target<'a>,
-        ctx: &'a hclient_proxy::BoxDial<'a>,
-    ) -> hclient_proxy::BoxPathOpening<'a> {
-        Box::pin(hclient_proxy::EgressFilter::open_datagrams(self, t, ctx))
+        t: hclient_proxy::egress::Target<'a>,
+        ctx: &'a hclient_proxy::egress::BoxDial<'a>,
+    ) -> hclient_proxy::egress::BoxPathOpening<'a> {
+        Box::pin(hclient_proxy::egress::EgressFilter::open_datagrams(
+            self, t, ctx,
+        ))
     }
 }
 

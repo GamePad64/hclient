@@ -10,7 +10,8 @@
 //! answered something that is not its protocol ([`ConnectError`],
 //! [`Socks4HandshakeError`], [`Socks5HandshakeError`]), or the machine
 //! named a configuration this client cannot state exactly
-//! ([`SystemProxyRefused`], [`ParseError`]).
+//! ([`SystemProxyRefused`], the ignored list of
+//! [`crate::system::SystemProxies::detect`]).
 //!
 //! **The last two are the same rule as the first six, one layer down.**
 //! `translate.rs` says it about the machine and it is true of the wire as

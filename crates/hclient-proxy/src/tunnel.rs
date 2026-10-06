@@ -1,6 +1,6 @@
 //! An extended CONNECT to a proxy, which a transport lends a filter.
 
-use crate::{BoxIo, BoxPath, ProxyTls};
+use crate::{datagram::BoxPath, egress::BoxIo, egress::ProxyTls};
 
 /// Which HTTP version a tunnel to a proxy is asked over.
 ///
@@ -13,8 +13,8 @@ use crate::{BoxIo, BoxPath, ProxyTls};
 /// refusal, never a guess at the nearest version.
 ///
 /// The enums a transport cannot refuse this way are exhaustive:
-/// [`Decision`](crate::Decision), [`Opened`](crate::Opened) and
-/// [`RequestForm`](crate::RequestForm).
+/// [`Decision`](crate::egress::Decision), [`Opened`](crate::egress::Opened) and
+/// [`RequestForm`](crate::egress::RequestForm).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TunnelVersion {

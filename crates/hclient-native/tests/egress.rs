@@ -326,8 +326,9 @@ mod xor {
 
     use futures_io::{AsyncRead, AsyncWrite};
     use hclient_proxy::{
-        Attempt, BoxDial, BoxIo, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Io,
-        Opened, RequestForm, Route, SendEgressFilter, Target,
+        egress::Attempt, egress::BoxDial, egress::BoxIo, egress::BoxOpening, egress::Decision,
+        egress::Dial, egress::EgressFilter, egress::FilterSupport, egress::Io, egress::Opened,
+        egress::RequestForm, egress::Route, egress::SendEgressFilter, egress::Target,
     };
     use std::pin::Pin;
     use std::task::{Context, Poll};
@@ -426,13 +427,17 @@ mod xor {
 
     impl SendEgressFilter for Xor {
         fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
-            Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+            Box::pin(async move {
+                self.open_stream(t, ctx)
+                    .await
+                    .map(hclient_proxy::egress::erase)
+            })
         }
         fn open_datagrams_send<'a>(
             &'a self,
             t: Target<'a>,
             ctx: &'a BoxDial<'a>,
-        ) -> hclient_proxy::BoxPathOpening<'a> {
+        ) -> hclient_proxy::egress::BoxPathOpening<'a> {
             Box::pin(self.open_datagrams(t, ctx))
         }
     }
@@ -530,8 +535,9 @@ mod deny {
     //! `Filtered` with no support at all, the natural shape of a deny list.
 
     use hclient_proxy::{
-        Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, Io, Opened,
-        RequestForm, Route, SendEgressFilter, Target,
+        egress::Attempt, egress::BoxDial, egress::BoxOpening, egress::Decision, egress::Dial,
+        egress::EgressFilter, egress::FilterSupport, egress::Io, egress::Opened,
+        egress::RequestForm, egress::Route, egress::SendEgressFilter, egress::Target,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -565,13 +571,17 @@ mod deny {
 
     impl SendEgressFilter for Deny {
         fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
-            Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+            Box::pin(async move {
+                self.open_stream(t, ctx)
+                    .await
+                    .map(hclient_proxy::egress::erase)
+            })
         }
         fn open_datagrams_send<'a>(
             &'a self,
             t: Target<'a>,
             ctx: &'a BoxDial<'a>,
-        ) -> hclient_proxy::BoxPathOpening<'a> {
+        ) -> hclient_proxy::egress::BoxPathOpening<'a> {
             Box::pin(self.open_datagrams(t, ctx))
         }
     }
@@ -716,8 +726,9 @@ mod tunnel {
     //! written from outside, so the external path is exercised on its own.
 
     use hclient_proxy::{
-        Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, HttpConnect, Io,
-        Opened, RequestForm, Route, SendEgressFilter, Target,
+        HttpConnect, egress::Attempt, egress::BoxDial, egress::BoxOpening, egress::Decision,
+        egress::Dial, egress::EgressFilter, egress::FilterSupport, egress::Io, egress::Opened,
+        egress::RequestForm, egress::Route, egress::SendEgressFilter, egress::Target,
     };
 
     pub struct Tunnel {
@@ -766,13 +777,17 @@ mod tunnel {
 
     impl SendEgressFilter for Tunnel {
         fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
-            Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+            Box::pin(async move {
+                self.open_stream(t, ctx)
+                    .await
+                    .map(hclient_proxy::egress::erase)
+            })
         }
         fn open_datagrams_send<'a>(
             &'a self,
             t: Target<'a>,
             ctx: &'a BoxDial<'a>,
-        ) -> hclient_proxy::BoxPathOpening<'a> {
+        ) -> hclient_proxy::egress::BoxPathOpening<'a> {
             Box::pin(self.open_datagrams(t, ctx))
         }
     }
@@ -854,7 +869,7 @@ fn an_external_filter_refuses_bytes_past_the_handshake() {
     let mut source = std::error::Error::source(&err);
     let mut spoke = None;
     while let Some(s) = source {
-        if let Some(p) = s.downcast_ref::<hclient_proxy::ProxySpokeFirst>() {
+        if let Some(p) = s.downcast_ref::<hclient_proxy::error::ProxySpokeFirst>() {
             spoke = Some(p.bytes);
         }
         source = s.source();

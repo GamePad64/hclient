@@ -20,7 +20,7 @@ use hclient_core::error::Error;
 use hclient_core::error::ErrorKind;
 use hclient_rt::Shutdown;
 
-use crate::{BoxPath, BoxUdp, Tunnel, TunnelRequest};
+use crate::{datagram::BoxPath, datagram::BoxUdp, tunnel::Tunnel, tunnel::TunnelRequest};
 
 /// What a filter asks of a TLS handshake it has the transport run over one
 /// of the transport's own streams — see [`Dial::connect_tls`].
@@ -106,11 +106,10 @@ pub trait Dial {
     /// # Errors
     ///
     /// Whatever the transport's own connect answers: a name that did not
-    /// resolve ([`ErrorKind::Resolve`](hclient_core::error::ErrorKind::Resolve)),
-    /// no address that accepted
-    /// ([`ErrorKind::Connect`](hclient_core::error::ErrorKind::Connect)), or
+    /// resolve [`ErrorKind::Resolve`], no address that accepted
+    /// [`ErrorKind::Connect`], or
     /// the request's connect bound running out
-    /// ([`ErrorKind::Timeout`](hclient_core::error::ErrorKind::Timeout)).
+    /// ([`ErrorKind::Timeout`]).
     fn connect<'a>(
         &'a self,
         host: &'a str,
@@ -121,12 +120,12 @@ pub trait Dial {
     ///
     /// # Errors
     ///
-    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// [`ErrorKind::Unsupported`]
     /// when the transport cannot open this kind of address; otherwise what
     /// the connect answers —
-    /// [`ErrorKind::Connect`](hclient_core::error::ErrorKind::Connect) for
+    /// [`ErrorKind::Connect`] for
     /// nothing listening, and
-    /// [`ErrorKind::Timeout`](hclient_core::error::ErrorKind::Timeout) for
+    /// [`ErrorKind::Timeout`] for
     /// the bound running out.
     fn connect_ipc<'a>(
         &'a self,
@@ -144,9 +143,9 @@ pub trait Dial {
     ///
     /// # Errors
     ///
-    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// [`ErrorKind::Unsupported`]
     /// by default, for a transport that lends no TLS. A handshake that
-    /// fails is the backend's error, [`ErrorKind::Tls`](hclient_core::error::ErrorKind::Tls).
+    /// fails is the backend's error, [`ErrorKind::Tls`].
     fn connect_tls<'a>(
         &'a self,
         stream: Self::Stream,
@@ -169,7 +168,7 @@ pub trait Dial {
     ///
     /// # Errors
     ///
-    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// [`ErrorKind::Unsupported`]
     /// by default, for a transport that lends no UDP; otherwise whatever
     /// the bind answers.
     fn bind_udp(&self, local: SocketAddr) -> Result<BoxUdp, Error> {
@@ -183,10 +182,10 @@ pub trait Dial {
     ///
     /// # Errors
     ///
-    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// [`ErrorKind::Unsupported`]
     /// by default, for a transport that lends no resolver; otherwise what
     /// the resolver answers,
-    /// [`ErrorKind::Resolve`](hclient_core::error::ErrorKind::Resolve) for
+    /// [`ErrorKind::Resolve`] for
     /// a name that does not exist.
     fn resolve<'a>(
         &'a self,
@@ -206,13 +205,13 @@ pub trait Dial {
     ///
     /// # Errors
     ///
-    /// [`ErrorKind::Unsupported`](hclient_core::error::ErrorKind::Unsupported)
+    /// [`ErrorKind::Unsupported`]
     /// by default, for a transport that lends no tunnels, and for a
-    /// [`TunnelVersion`](crate::TunnelVersion) or a kind of CONNECT the
+    /// [`TunnelVersion`](crate::tunnel::TunnelVersion) or a kind of CONNECT the
     /// transport cannot speak — a refusal a filter may answer by trying
     /// another way. Otherwise the connect's, the TLS handshake's or the
     /// HTTP connection's own error, and
-    /// [`ErrorKind::Timeout`](hclient_core::error::ErrorKind::Timeout) for
+    /// [`ErrorKind::Timeout`] for
     /// the bound running out.
     ///
     /// The bound is [`Dial::remaining`] — what is left of the caller's
@@ -775,8 +774,11 @@ pub type BoxOpening<'a> =
 ///
 /// ```no_run
 /// use hclient_proxy::{
-///     Attempt, BoxDial, BoxOpening, BoxPathOpening, Decision, Dial, EgressFilter, Io, Opened,
-///     Rules, SendEgressFilter, Target,
+///     egress::{
+///         Attempt, BoxDial, BoxOpening, BoxPathOpening, Decision, Dial, EgressFilter, Io, Opened,
+///         SendEgressFilter, Target,
+///     },
+///     Rules,
 /// };
 ///
 /// /// A filter that adds nothing to the built-in rules.
@@ -802,7 +804,7 @@ pub type BoxOpening<'a> =
 ///
 /// impl SendEgressFilter for Mine {
 ///     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
-///         Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+///         Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::egress::erase) })
 ///     }
 ///     fn open_datagrams_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxPathOpening<'a> {
 ///         Box::pin(self.open_datagrams(t, ctx))
@@ -819,8 +821,11 @@ pub type BoxOpening<'a> =
 ///
 /// ```compile_fail,E0046
 /// use hclient_proxy::{
-///     Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, Io, Opened, Rules,
-///     SendEgressFilter, Target,
+///     egress::{
+///         Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, Io, Opened,
+///         SendEgressFilter, Target,
+///     },
+///     Rules,
 /// };
 ///
 /// struct Forgot(Rules);
@@ -844,7 +849,7 @@ pub type BoxOpening<'a> =
 ///
 /// impl SendEgressFilter for Forgot {
 ///     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
-///         Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+///         Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::egress::erase) })
 ///     }
 /// }
 /// ```
@@ -869,7 +874,7 @@ pub trait SendEgressFilter: EgressFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TunnelVersion;
+    use crate::tunnel::TunnelVersion;
 
     /// A `Dial` that lends no TLS: `connect_tls` is left to its default.
     struct Bare;

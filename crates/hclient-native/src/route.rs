@@ -482,8 +482,8 @@ where
         };
         let port = crate::connect::port(uri, use_tls);
         match self.egress_route(use_tls, host, port) {
-            hclient_proxy::Decision::Direct => Egress::Direct,
-            hclient_proxy::Decision::Filtered(route) => Egress::Filtered {
+            hclient_proxy::egress::Decision::Direct => Egress::Direct,
+            hclient_proxy::egress::Decision::Filtered(route) => Egress::Filtered {
                 via: route.pool_key.into_owned(),
                 datagrams: route.support.datagrams,
             },
@@ -902,7 +902,7 @@ where
         .await;
         let path = match opened {
             Ok(Ok(path)) => path,
-            Ok(Err(hclient_proxy::Attempt::Failed(e))) => return Err(ViaFailed::Final(e)),
+            Ok(Err(hclient_proxy::egress::Attempt::Failed(e))) => return Err(ViaFailed::Final(e)),
             Ok(Err(unsupported)) => {
                 return Err(ViaFailed::Switch(unsupported.into_error(), req));
             }
@@ -949,9 +949,10 @@ where
         &self,
         uri: &http::Uri,
         budget: Option<Duration>,
-    ) -> Result<hclient_proxy::BoxPath, hclient_proxy::Attempt> {
-        let host = crate::connect::host(uri).map_err(hclient_proxy::Attempt::Failed)?;
-        let target = hclient_proxy::Target::new(host, crate::connect::port(uri, true), true);
+    ) -> Result<hclient_proxy::datagram::BoxPath, hclient_proxy::egress::Attempt> {
+        let host = crate::connect::host(uri).map_err(hclient_proxy::egress::Attempt::Failed)?;
+        let target =
+            hclient_proxy::egress::Target::new(host, crate::connect::port(uri, true), true);
         let mut call = crate::external::Call {
             rt: &self.rt,
             dns: &self.dns,
@@ -973,7 +974,7 @@ where
         if let Some(ext) = &self.external
             && matches!(
                 ext.filter.route(&target),
-                hclient_proxy::Decision::Filtered(_)
+                hclient_proxy::egress::Decision::Filtered(_)
             )
         {
             return (ext.open_path)(&*ext.filter, call).await;
@@ -984,7 +985,7 @@ where
         call.tunnel_h3 = None;
         match self.rules_path {
             Some(open) => open(&self.rules, call).await,
-            None => Err(hclient_proxy::Attempt::Unsupported(Error::new(
+            None => Err(hclient_proxy::egress::Attempt::Unsupported(Error::new(
                 ErrorKind::Unsupported,
                 std::io::Error::other("this transport lends no datagram path; see `Native::http3`"),
             ))),

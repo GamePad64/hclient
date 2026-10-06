@@ -279,7 +279,7 @@ impl fmt::Debug for H3Datagrams {
     }
 }
 
-impl hclient_proxy::DatagramPath for H3Datagrams {
+impl hclient_proxy::datagram::DatagramPath for H3Datagrams {
     fn try_send(&self, datagram: &[u8]) -> io::Result<()> {
         if datagram.len() > self.max_datagram_size() {
             return Err(io::Error::new(

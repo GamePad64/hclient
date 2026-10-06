@@ -216,7 +216,7 @@ mod tests {
     /// that reads fields and fail every request. A TLS proxy's `tls:` key
     /// prefix is dropped, so the answer is the proxy's own address.
     fn route(list: &[Proxy<HttpConnect>], use_tls: bool, host: &str, port: u16) -> Option<String> {
-        use crate::{Decision, EgressFilter, Target};
+        use crate::{egress::Decision, egress::EgressFilter, egress::Target};
         let rules = list.iter().cloned().fold(Rules::new(), Rules::push);
         match rules.route(&Target::new(host, port, use_tls)) {
             Decision::Filtered(route) => Some(route.pool_key.trim_start_matches("tls:").to_owned()),
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn the_machines_settings_arrive_as_rules_a_transport_asks() {
-        use crate::{Decision, EgressFilter, Target};
+        use crate::{egress::Decision, egress::EgressFilter, egress::Target};
         let sys = system_proxies(
             &[
                 ("http", "plain.corp:8080"),

@@ -28,7 +28,7 @@ const H3_TUNNEL_BEFORE_H2: Duration = Duration::from_millis(1500);
 /// The key a proxy's failed HTTP/3 tunnels are remembered under: its
 /// authority, the host without the brackets a v6 literal is written in.
 #[cfg(feature = "http3")]
-fn tunnel_origin(req: &hclient_proxy::TunnelRequest<'_>) -> crate::altsvc_cache::Origin {
+fn tunnel_origin(req: &hclient_proxy::tunnel::TunnelRequest<'_>) -> crate::altsvc_cache::Origin {
     crate::altsvc_cache::Origin::new(hclient_core::url::bare_host(req.proxy_host), req.proxy_port)
 }
 
@@ -42,9 +42,9 @@ impl NoArm {
     /// The `http3` arm's signature, with a body that cannot run.
     fn tunnel_boxed(
         &self,
-        _req: hclient_proxy::TunnelRequest<'_>,
+        _req: hclient_proxy::tunnel::TunnelRequest<'_>,
         _budget: Option<Duration>,
-    ) -> std::future::Ready<Result<hclient_proxy::Tunnel, Error>> {
+    ) -> std::future::Ready<Result<hclient_proxy::tunnel::Tunnel, Error>> {
         match *self {}
     }
 }
@@ -72,7 +72,7 @@ impl<R: Timer> Clone for LentH3<'_, R> {
 #[cfg(feature = "http3")]
 impl<R: Timer> Copy for LentH3<'_, R> {}
 
-/// `Native`'s [`hclient_proxy::Dial`], built per connection.
+/// `Native`'s [`hclient_proxy::egress::Dial`], built per connection.
 ///
 /// Its futures are `impl Future`, so a filter called concretely keeps
 /// whatever auto traits the runtime's and resolver's futures have: a
@@ -81,21 +81,21 @@ impl<R: Timer> Copy for LentH3<'_, R> {}
 pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, L, H> {
     rt: &'a R,
     dns: &'a D,
-    /// The transport's TLS backend, which [`connect_tls`](hclient_proxy::Dial::connect_tls)
+    /// The transport's TLS backend, which [`connect_tls`](hclient_proxy::egress::Dial::connect_tls)
     /// runs over a lent stream.
     tls: &'a L,
     opts: &'a TcpOpts,
     ipc: Option<DialIpc<R>>,
     /// How this transport binds a UDP socket of its own runtime, when
     /// [`Native::http3`](crate::Native::http3) has installed one. `None`
-    /// refuses [`bind_udp`](hclient_proxy::Dial::bind_udp) naming that
+    /// refuses [`bind_udp`](hclient_proxy::egress::Dial::bind_udp) naming that
     /// constructor, exactly as a missing `ipc` refuses
-    /// [`connect_ipc`](hclient_proxy::Dial::connect_ipc).
+    /// [`connect_ipc`](hclient_proxy::egress::Dial::connect_ipc).
     udp: Option<crate::BindUdp<R>>,
     /// How this transport opens an HTTP/2 tunnel to a proxy over a
     /// connection this context opened, when [`Native::egress`](crate::Native::egress)
     /// installed the filter it is lent to. `None` refuses
-    /// [`connect_tunnel`](hclient_proxy::Dial::connect_tunnel) before any
+    /// [`connect_tunnel`](hclient_proxy::egress::Dial::connect_tunnel) before any
     /// socket is opened.
     tunnel_h2: Option<crate::TunnelH2<R, L>>,
     /// The QUIC arm an HTTP/3 tunnel to a proxy is opened through, when
@@ -107,11 +107,11 @@ pub(crate) struct NativeDial<'a, R: TcpConnect + Timer, D: ?Sized, L, H> {
     tunnel_h3: Option<LentH3<'a, R>>,
     budget: Option<Duration>,
     /// When the context was lent, on the transport's clock — what
-    /// [`remaining`](hclient_proxy::Dial::remaining) counts the budget down
+    /// [`remaining`](hclient_proxy::egress::Dial::remaining) counts the budget down
     /// from.
     lent: R::Instant,
     began: Option<R::Instant>,
-    /// What the last [`connect`](hclient_proxy::Dial::connect) reported
+    /// What the last [`connect`](hclient_proxy::egress::Dial::connect) reported
     /// for the hooks, taken by the caller that emits `Connected`. A
     /// `Mutex` rather than a `Cell` so the context stays `Sync`, which an
     /// erased filter's `SharedDial` needs.
@@ -181,7 +181,7 @@ where
     L: TlsConnect,
     H: Hooks,
 {
-    /// [`Dial::connect`](hclient_proxy::Dial::connect)'s socket, before it
+    /// [`Dial::connect`](hclient_proxy::egress::Dial::connect)'s socket, before it
     /// is wrapped — what the erased path boxes directly.
     async fn connect_raw(&self, host: &str, port: u16) -> Result<R::Stream, Error> {
         let (stream, attempted) = crate::connect::dial_by_name::<R, D, H>(
@@ -195,7 +195,7 @@ where
         Ok(stream)
     }
 
-    /// [`Dial::connect_tunnel`](hclient_proxy::Dial::connect_tunnel), for
+    /// [`Dial::connect_tunnel`](hclient_proxy::egress::Dial::connect_tunnel), for
     /// both the concrete and the erased context.
     ///
     /// HTTP/3 through the QUIC arm where the request will take it and the
@@ -221,9 +221,9 @@ where
     /// memory.
     async fn connect_tunnel_raw<'b>(
         &'b self,
-        req: hclient_proxy::TunnelRequest<'b>,
-    ) -> Result<hclient_proxy::Tunnel, Error> {
-        use hclient_proxy::TunnelVersion;
+        req: hclient_proxy::tunnel::TunnelRequest<'b>,
+    ) -> Result<hclient_proxy::tunnel::Tunnel, Error> {
+        use hclient_proxy::tunnel::TunnelVersion;
         let (h3, h2) = match req.effective_version() {
             TunnelVersion::Http3 => (true, false),
             TunnelVersion::Http2 => (false, true),
@@ -250,7 +250,7 @@ where
                 // `H3_TUNNEL_BEFORE_H2`.
                 Some(_) if h2_follows && self.h3_remembered_failing(&req) => {}
                 Some(arm) => {
-                    let left = hclient_proxy::Dial::remaining(self);
+                    let left = hclient_proxy::egress::Dial::remaining(self);
                     let budget = if h2_follows {
                         Some(left.map_or(H3_TUNNEL_BEFORE_H2, |d| (d / 2).min(H3_TUNNEL_BEFORE_H2)))
                     } else {
@@ -306,7 +306,7 @@ where
     /// Whether an HTTP/3 tunnel to `req`'s proxy failed recently enough to
     /// be remembered.
     #[cfg(feature = "http3")]
-    fn h3_remembered_failing(&self, req: &hclient_proxy::TunnelRequest<'_>) -> bool {
+    fn h3_remembered_failing(&self, req: &hclient_proxy::tunnel::TunnelRequest<'_>) -> bool {
         self.tunnel_h3.is_some_and(|l| {
             l.failures
                 .suppressed(&tunnel_origin(req), self.rt.elapsed_since(l.epoch))
@@ -315,7 +315,7 @@ where
 
     /// An HTTP/3 tunnel to `req`'s proxy failed.
     #[cfg(feature = "http3")]
-    fn remember_h3_failing(&self, req: &hclient_proxy::TunnelRequest<'_>) {
+    fn remember_h3_failing(&self, req: &hclient_proxy::tunnel::TunnelRequest<'_>) {
         if let Some(l) = self.tunnel_h3 {
             l.failures
                 .note(&tunnel_origin(req), self.rt.elapsed_since(l.epoch));
@@ -328,7 +328,7 @@ where
         clippy::unused_self,
         reason = "the `http3` twin reads `self`, and the call site stays free of a `#[cfg]`"
     )]
-    fn h3_remembered_failing(&self, _req: &hclient_proxy::TunnelRequest<'_>) -> bool {
+    fn h3_remembered_failing(&self, _req: &hclient_proxy::tunnel::TunnelRequest<'_>) -> bool {
         false
     }
 
@@ -338,7 +338,7 @@ where
         clippy::unused_self,
         reason = "the `http3` twin reads `self`, and the call site stays free of a `#[cfg]`"
     )]
-    fn remember_h3_failing(&self, _req: &hclient_proxy::TunnelRequest<'_>) {}
+    fn remember_h3_failing(&self, _req: &hclient_proxy::tunnel::TunnelRequest<'_>) {}
 
     /// No HTTP/3 tunnels without the `http3` feature.
     #[cfg(not(feature = "http3"))]
@@ -350,7 +350,7 @@ where
         None
     }
 
-    /// [`Dial::connect_ipc`](hclient_proxy::Dial::connect_ipc)'s socket,
+    /// [`Dial::connect_ipc`](hclient_proxy::egress::Dial::connect_ipc)'s socket,
     /// before it is wrapped.
     async fn connect_ipc_raw(&self, addr: &hclient_rt::IpcAddr) -> Result<R::Stream, Error> {
         let Some(dial) = self.ipc else {
@@ -368,7 +368,7 @@ where
     }
 }
 
-impl<R, D, L, H> hclient_proxy::Dial for NativeDial<'_, R, D, L, H>
+impl<R, D, L, H> hclient_proxy::egress::Dial for NativeDial<'_, R, D, L, H>
 where
     R: TcpConnect + Timer,
     D: Resolve + ?Sized,
@@ -406,7 +406,7 @@ where
     async fn connect_tls<'b>(
         &'b self,
         stream: Self::Stream,
-        req: hclient_proxy::ProxyTls<'b>,
+        req: hclient_proxy::egress::ProxyTls<'b>,
     ) -> Result<Self::Stream, Error> {
         let tls_req =
             hclient_tls::TlsRequest::new(req.server_name, req.alpn).identity(req.identity);
@@ -414,7 +414,10 @@ where
         Ok(crate::DialStream::tls(s))
     }
 
-    fn bind_udp(&self, local: std::net::SocketAddr) -> Result<hclient_proxy::BoxUdp, Error> {
+    fn bind_udp(
+        &self,
+        local: std::net::SocketAddr,
+    ) -> Result<hclient_proxy::datagram::BoxUdp, Error> {
         let Some(bind) = self.udp else {
             return Err(Error::new(
                 ErrorKind::Unsupported,
@@ -463,15 +466,15 @@ where
 
     async fn connect_tunnel<'a>(
         &'a self,
-        req: hclient_proxy::TunnelRequest<'a>,
-    ) -> Result<hclient_proxy::Tunnel, Error> {
+        req: hclient_proxy::tunnel::TunnelRequest<'a>,
+    ) -> Result<hclient_proxy::tunnel::Tunnel, Error> {
         self.connect_tunnel_raw(req).await
     }
 }
 
 // Erased for an external filter, where the runtime's and the resolver's
 // futures have been proven `Send` — see `crate::external`.
-impl<R, D, L, H> hclient_proxy::DynDial for NativeDial<'_, R, D, L, H>
+impl<R, D, L, H> hclient_proxy::egress::DynDial for NativeDial<'_, R, D, L, H>
 where
     R: TcpConnect + Timer + Sync,    // send-bound-exception: amendment-C15
     R::Stream: Send + 'static,       // send-bound-exception: amendment-C15
@@ -481,58 +484,69 @@ where
     D: Resolve + Sync,               // send-bound-exception: amendment-C15
     for<'x> D::Records<'x>: Send,    // send-bound-exception: amendment-C15
     L: TlsConnect + Sync,            // send-bound-exception: amendment-C15
-    L::Stream<hclient_proxy::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
-    for<'x> L::Handshake<'x, hclient_proxy::BoxIo>: Send, // send-bound-exception: amendment-C15
+    L::Stream<hclient_proxy::egress::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
+    for<'x> L::Handshake<'x, hclient_proxy::egress::BoxIo>: Send, // send-bound-exception: amendment-C15
     H: Hooks,
 {
-    fn connect_boxed<'a>(&'a self, host: &'a str, port: u16) -> hclient_proxy::BoxDialing<'a> {
+    fn connect_boxed<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> hclient_proxy::egress::BoxDialing<'a> {
         Box::pin(async move {
             self.connect_raw(host, port)
                 .await
-                .map(hclient_proxy::BoxIo::new)
+                .map(hclient_proxy::egress::BoxIo::new)
         })
     }
 
     fn connect_ipc_boxed<'a>(
         &'a self,
         addr: &'a hclient_rt::IpcAddr,
-    ) -> hclient_proxy::BoxDialing<'a> {
+    ) -> hclient_proxy::egress::BoxDialing<'a> {
         Box::pin(async move {
             self.connect_ipc_raw(addr)
                 .await
-                .map(hclient_proxy::BoxIo::new)
+                .map(hclient_proxy::egress::BoxIo::new)
         })
     }
 
     fn remaining(&self) -> Option<Duration> {
-        hclient_proxy::Dial::remaining(self)
+        hclient_proxy::egress::Dial::remaining(self)
     }
 
     fn connect_tls_boxed<'a>(
         &'a self,
-        stream: hclient_proxy::BoxIo,
-        req: hclient_proxy::ProxyTls<'a>,
-    ) -> hclient_proxy::BoxDialing<'a> {
+        stream: hclient_proxy::egress::BoxIo,
+        req: hclient_proxy::egress::ProxyTls<'a>,
+    ) -> hclient_proxy::egress::BoxDialing<'a> {
         Box::pin(async move {
             let tls_req =
                 hclient_tls::TlsRequest::new(req.server_name, req.alpn).identity(req.identity);
             let (s, _info) = self.tls.connect(stream, tls_req).await?;
-            Ok(hclient_proxy::BoxIo::new(s))
+            Ok(hclient_proxy::egress::BoxIo::new(s))
         })
     }
 
-    fn bind_udp_boxed(&self, local: std::net::SocketAddr) -> Result<hclient_proxy::BoxUdp, Error> {
-        hclient_proxy::Dial::bind_udp(self, local)
+    fn bind_udp_boxed(
+        &self,
+        local: std::net::SocketAddr,
+    ) -> Result<hclient_proxy::datagram::BoxUdp, Error> {
+        hclient_proxy::egress::Dial::bind_udp(self, local)
     }
 
-    fn resolve_boxed<'a>(&'a self, host: &'a str, port: u16) -> hclient_proxy::BoxResolving<'a> {
-        Box::pin(hclient_proxy::Dial::resolve(self, host, port))
+    fn resolve_boxed<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> hclient_proxy::egress::BoxResolving<'a> {
+        Box::pin(hclient_proxy::egress::Dial::resolve(self, host, port))
     }
 
     fn connect_tunnel_boxed<'a>(
         &'a self,
-        req: hclient_proxy::TunnelRequest<'a>,
-    ) -> hclient_proxy::BoxTunnelling<'a> {
+        req: hclient_proxy::tunnel::TunnelRequest<'a>,
+    ) -> hclient_proxy::egress::BoxTunnelling<'a> {
         Box::pin(self.connect_tunnel_raw(req))
     }
 }
@@ -541,7 +555,7 @@ where
 mod tests {
     use super::*;
     use hclient_core::hooks::NoHooks;
-    use hclient_proxy::Dial as _;
+    use hclient_proxy::egress::Dial as _;
 
     fn opts() -> hclient_rt::TcpOpts {
         hclient_rt::TcpOpts::default()
@@ -578,8 +592,8 @@ mod tests {
     }
 
     /// A minimal executor for a future that must not need tokio's own
-    /// `#[tokio::test]` machinery — [`hclient_proxy::Dial::resolve`] and
-    /// [`hclient_proxy::Dial::bind_udp`] are plain trait methods, and this
+    /// `#[tokio::test]` machinery — [`hclient_proxy::egress::Dial::resolve`] and
+    /// [`hclient_proxy::egress::Dial::bind_udp`] are plain trait methods, and this
     /// is enough to drive the one `await` `resolve` needs.
     fn tokio_test_block_on<F: Future>(fut: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
@@ -611,7 +625,7 @@ mod tests {
         );
         let s = dial.connect("127.0.0.1", port).await.expect("connected");
         let Err(err) = dial
-            .connect_tls(s, hclient_proxy::ProxyTls::new("proxy.test"))
+            .connect_tls(s, hclient_proxy::egress::ProxyTls::new("proxy.test"))
             .await
         else {
             panic!("NoTls speaks no TLS");
@@ -647,7 +661,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             dial.connect_tls(
                 s,
-                hclient_proxy::ProxyTls::new("proxy.test").identity(Some("tenant-a")),
+                hclient_proxy::egress::ProxyTls::new("proxy.test").identity(Some("tenant-a")),
             ),
         )
         .await
@@ -784,8 +798,12 @@ mod tests {
             None,
             None,
         );
-        let got =
-            tokio_test_block_on(hclient_proxy::Dial::resolve(&dial, "proxy.test", 1080)).unwrap();
+        let got = tokio_test_block_on(hclient_proxy::egress::Dial::resolve(
+            &dial,
+            "proxy.test",
+            1080,
+        ))
+        .unwrap();
         assert_eq!(got.len(), 2);
         assert!(got.iter().all(|a| a.port() == 1080));
     }
@@ -808,7 +826,8 @@ mod tests {
             None,
             None,
         );
-        let e = hclient_proxy::Dial::bind_udp(&dial, "0.0.0.0:0".parse().unwrap()).unwrap_err();
+        let e =
+            hclient_proxy::egress::Dial::bind_udp(&dial, "0.0.0.0:0".parse().unwrap()).unwrap_err();
         assert_eq!(*e.kind(), ErrorKind::Unsupported);
     }
 }

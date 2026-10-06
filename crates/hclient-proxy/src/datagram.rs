@@ -107,7 +107,7 @@ impl DatagramPath for BoxPath {
     }
 }
 
-/// A runtime's UDP socket, erased — what [`Dial::bind_udp`](crate::Dial::bind_udp)
+/// A runtime's UDP socket, erased — what [`Dial::bind_udp`](crate::egress::Dial::bind_udp)
 /// lends.
 ///
 /// **A receive may be several datagrams.** Where the runtime does GRO, one

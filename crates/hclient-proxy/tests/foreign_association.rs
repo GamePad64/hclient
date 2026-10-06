@@ -8,7 +8,8 @@
 use bytes::{Bytes, BytesMut};
 use hclient_core::error::Error;
 use hclient_proxy::{
-    Approach, Association, Decision, EgressFilter, Handshake, Proxy, Rules, Socks5, Step, Target,
+    Approach, Association, Handshake, Proxy, Rules, Socks5, Step, egress::Decision,
+    egress::EgressFilter, egress::Target,
 };
 
 /// A foreign protocol: SOCKS5 underneath, and a trace of every call

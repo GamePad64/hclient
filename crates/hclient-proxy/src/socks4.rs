@@ -242,12 +242,12 @@ mod tests {
             (92, "rejected: identd unreachable from the proxy"),
             (93, "rejected: identd reported a different user"),
         ] {
-            let rendered = crate::Socks4Refused { cd }.to_string();
+            let rendered = crate::error::Socks4Refused { cd }.to_string();
             assert!(rendered.contains(text), "CD={cd}: {rendered}");
         }
         // The control: a code the protocol does not define says so.
         assert!(
-            crate::Socks4Refused { cd: 94 }
+            crate::error::Socks4Refused { cd: 94 }
                 .to_string()
                 .contains("unassigned")
         );

@@ -317,8 +317,10 @@ mod erased {
     //! through the erased context.
 
     use hclient_proxy::{
-        Attempt, BoxDial, BoxOpening, Decision, Dial, EgressFilter, FilterSupport, HttpConnect, Io,
-        Opened, ProxyTls, RequestForm, Route, SendEgressFilter, Target,
+        HttpConnect, egress::Attempt, egress::BoxDial, egress::BoxOpening, egress::Decision,
+        egress::Dial, egress::EgressFilter, egress::FilterSupport, egress::Io, egress::Opened,
+        egress::ProxyTls, egress::RequestForm, egress::Route, egress::SendEgressFilter,
+        egress::Target,
     };
 
     pub struct TlsTunnel {
@@ -361,13 +363,17 @@ mod erased {
 
     impl SendEgressFilter for TlsTunnel {
         fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
-            Box::pin(async move { self.open_stream(t, ctx).await.map(hclient_proxy::erase) })
+            Box::pin(async move {
+                self.open_stream(t, ctx)
+                    .await
+                    .map(hclient_proxy::egress::erase)
+            })
         }
         fn open_datagrams_send<'a>(
             &'a self,
             t: Target<'a>,
             ctx: &'a BoxDial<'a>,
-        ) -> hclient_proxy::BoxPathOpening<'a> {
+        ) -> hclient_proxy::egress::BoxPathOpening<'a> {
             Box::pin(self.open_datagrams(t, ctx))
         }
     }

@@ -6,7 +6,7 @@ mod common;
 
 use common::bounded;
 use hclient_masque::Masque;
-use hclient_proxy::TunnelVersion;
+use hclient_proxy::tunnel::TunnelVersion;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn h3_in_h3_through_a_masque_proxy() {

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use hclient_proxy::{BoxPath, DatagramPath};
+use hclient_proxy::{datagram::BoxPath, datagram::DatagramPath};
 
 use crate::http3::H3Runtime;
 use crate::http3::runtime::SeamRuntime;
@@ -185,7 +185,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hclient_proxy::testing::channel_pair;
+    use hclient_proxy::datagram::testing::channel_pair;
 
     #[test]
     fn a_path_under_1200_bytes_is_refused() {

@@ -294,7 +294,7 @@ where
         &'a self,
         req: http::Request<RequestBody>,
         via: &'a str,
-        path: Option<hclient_proxy::BoxPath>,
+        path: Option<hclient_proxy::datagram::BoxPath>,
     ) -> impl Future<Output = Result<Self::Staged, ViaRefused>> + 'a {
         // No `Send` written here: the trait declares it, and an opaque type
         // leaks its auto traits, so the compiler checks this future against
@@ -304,9 +304,9 @@ where
 
     fn tunnel<'a>(
         &'a self,
-        req: hclient_proxy::TunnelRequest<'a>,
+        req: hclient_proxy::tunnel::TunnelRequest<'a>,
         budget: Option<std::time::Duration>,
-    ) -> impl Future<Output = Result<hclient_proxy::Tunnel, Error>> + 'a {
+    ) -> impl Future<Output = Result<hclient_proxy::tunnel::Tunnel, Error>> + 'a {
         H3::tunnel(self, req, budget)
     }
 }
@@ -481,7 +481,7 @@ where
         &self,
         req: http::Request<RequestBody>,
         via: &str,
-        path: Option<hclient_proxy::BoxPath>,
+        path: Option<hclient_proxy::datagram::BoxPath>,
     ) -> Result<Staged<R, H>, ViaRefused> {
         let mut path = path;
         self.stage_with(req, Some((via, &mut path))).await
@@ -496,7 +496,7 @@ where
     async fn stage_with(
         &self,
         req: http::Request<RequestBody>,
-        via: Option<(&str, &mut Option<hclient_proxy::BoxPath>)>,
+        via: Option<(&str, &mut Option<hclient_proxy::datagram::BoxPath>)>,
     ) -> Result<Staged<R, H>, ViaRefused> {
         let Admitted {
             host,

@@ -22,7 +22,7 @@ use std::task::{Context, Poll, Wake, Waker, ready};
 
 use bytes::{Buf as _, Bytes};
 use hclient_core::error::{Error, ErrorKind};
-use hclient_proxy::{BoxIo, BoxTunnelling, Tunnel, TunnelRequest};
+use hclient_proxy::{egress::BoxIo, egress::BoxTunnelling, tunnel::Tunnel, tunnel::TunnelRequest};
 use hclient_rt::TcpConnect;
 use hclient_tls::{TlsConnect, TlsRequest};
 

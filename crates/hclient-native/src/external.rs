@@ -15,7 +15,10 @@ use std::time::Duration;
 use hclient_core::error::Error;
 use hclient_core::hooks::{Event, Hooks, NoHooks};
 use hclient_dns::Resolve;
-use hclient_proxy::{BoxDial, BoxIo, Opened, SharedDial, SharedFilter, Target};
+use hclient_proxy::{
+    egress::BoxDial, egress::BoxIo, egress::Opened, egress::SharedDial, egress::SharedFilter,
+    egress::Target,
+};
 use hclient_rt::{TcpConnect, TcpOpts, Timer};
 use hclient_tls::{TlsConnect, TlsInfo, TlsRequest};
 
@@ -104,7 +107,7 @@ pub(crate) type Open<R, D, L> =
 /// carries datagrams, and TLS to the origin is QUIC's.
 #[cfg(feature = "http3")]
 pub(crate) type OpenPath<R, D, L, F> =
-    for<'a> fn(&'a F, Call<'a, R, D, L>) -> hclient_proxy::BoxPathOpening<'a>;
+    for<'a> fn(&'a F, Call<'a, R, D, L>) -> hclient_proxy::egress::BoxPathOpening<'a>;
 
 /// The installed filter and its monomorphised connect paths.
 pub(crate) struct External<R: TcpConnect + Timer, D, L: TlsConnect> {
@@ -231,7 +234,7 @@ where
     let opened = filter
         .open_stream_send(c.target, &boxed)
         .await
-        .map_err(hclient_proxy::Attempt::into_error)?;
+        .map_err(hclient_proxy::egress::Attempt::into_error)?;
     let io = match opened {
         Opened::Raw(io) | Opened::Wrapped(io) => io,
     };
@@ -271,19 +274,19 @@ where
 pub(crate) fn open_path<'a, R, D, L, F>(
     filter: &'a F,
     c: Call<'a, R, D, L>,
-) -> hclient_proxy::BoxPathOpening<'a>
+) -> hclient_proxy::egress::BoxPathOpening<'a>
 where
-    F: hclient_proxy::SendEgressFilter + Sync + ?Sized, // send-bound-exception: amendment-C15
-    R: TcpConnect + Timer + Sync,                       // send-bound-exception: amendment-C15
-    R::Stream: Send + 'static,                          // send-bound-exception: amendment-C15
-    R::Instant: Send + Sync,                            // send-bound-exception: amendment-C15
-    R::Sleep: Send,                                     // send-bound-exception: amendment-C15
-    for<'x> R::Connecting<'x>: Send,                    // send-bound-exception: amendment-C15
-    D: Resolve + Sync,                                  // send-bound-exception: amendment-C15
-    for<'x> D::Records<'x>: Send,                       // send-bound-exception: amendment-C15
-    L: TlsConnect + Sync,                               // send-bound-exception: amendment-C15
-    L::Stream<BoxIo>: Send + 'static,                   // send-bound-exception: amendment-C15
-    for<'x> L::Handshake<'x, BoxIo>: Send,              // send-bound-exception: amendment-C15
+    F: hclient_proxy::egress::SendEgressFilter + Sync + ?Sized, // send-bound-exception: amendment-C15
+    R: TcpConnect + Timer + Sync, // send-bound-exception: amendment-C15
+    R::Stream: Send + 'static,    // send-bound-exception: amendment-C15
+    R::Instant: Send + Sync,      // send-bound-exception: amendment-C15
+    R::Sleep: Send,               // send-bound-exception: amendment-C15
+    for<'x> R::Connecting<'x>: Send, // send-bound-exception: amendment-C15
+    D: Resolve + Sync,            // send-bound-exception: amendment-C15
+    for<'x> D::Records<'x>: Send, // send-bound-exception: amendment-C15
+    L: TlsConnect + Sync,         // send-bound-exception: amendment-C15
+    L::Stream<BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
+    for<'x> L::Handshake<'x, BoxIo>: Send, // send-bound-exception: amendment-C15
 {
     Box::pin(async move {
         // No hook watches a path's opening: the connection it carries is

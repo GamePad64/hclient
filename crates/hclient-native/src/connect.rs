@@ -181,7 +181,7 @@ pub(crate) enum Side<P, T> {
     /// A connection an external egress filter opened: its stream's type
     /// grew with the filter's layers, so it is erased — TLS included, when
     /// the request is `https`.
-    Boxed(hclient_proxy::BoxIo),
+    Boxed(hclient_proxy::egress::BoxIo),
 }
 
 impl<P, T> Conn<P, T> {
@@ -191,7 +191,7 @@ impl<P, T> Conn<P, T> {
     pub(crate) fn tls(t: T) -> Self {
         Self(Side::Tls(t))
     }
-    pub(crate) fn boxed(b: hclient_proxy::BoxIo) -> Self {
+    pub(crate) fn boxed(b: hclient_proxy::egress::BoxIo) -> Self {
         Self(Side::Boxed(b))
     }
 }
@@ -945,7 +945,7 @@ async fn through_filter<R, D, L, H>(
     ipc: Option<crate::DialIpc<R>>,
     udp: Option<crate::BindUdp<R>>,
     budget: Option<Duration>,
-    target: hclient_proxy::Target<'_>,
+    target: hclient_proxy::egress::Target<'_>,
     opts: &TcpOpts,
     alpn: &[&[u8]],
     identity: Option<&str>,
@@ -968,7 +968,7 @@ where
     H: Hooks,
 {
     if let Some(ext) = external
-        && let hclient_proxy::Decision::Filtered(route) = ext.filter.route(&target)
+        && let hclient_proxy::egress::Decision::Filtered(route) = ext.filter.route(&target)
     {
         if !route.support.stream {
             return Some(Err(no_stream(route.pool_key.into())));
@@ -996,21 +996,23 @@ where
             .await,
         );
     }
-    match hclient_proxy::EgressFilter::route(rules, &target) {
-        hclient_proxy::Decision::Direct => return None,
-        hclient_proxy::Decision::Filtered(route) if !route.support.stream => {
+    match hclient_proxy::egress::EgressFilter::route(rules, &target) {
+        hclient_proxy::egress::Decision::Direct => return None,
+        hclient_proxy::egress::Decision::Filtered(route) if !route.support.stream => {
             return Some(Err(no_stream(route.pool_key.into())));
         }
-        hclient_proxy::Decision::Filtered(_) => {}
+        hclient_proxy::egress::Decision::Filtered(_) => {}
     }
     let dial =
         crate::dial::NativeDial::<R, D, L, H>::new(rt, dns, tls, opts, ipc, budget, began, udp);
-    let opened = match hclient_proxy::EgressFilter::open_stream(rules, target, &dial).await {
+    let opened = match hclient_proxy::egress::EgressFilter::open_stream(rules, target, &dial).await
+    {
         Ok(o) => o,
         Err(e) => return Some(Err(e.into_error())),
     };
     // `Rules` never wraps: its `Wrapped` is the stream itself.
-    let (hclient_proxy::Opened::Raw(stream) | hclient_proxy::Opened::Wrapped(stream)) = opened;
+    let (hclient_proxy::egress::Opened::Raw(stream)
+    | hclient_proxy::egress::Opened::Wrapped(stream)) = opened;
     Some(
         finish_filtered::<R, L, H>(
             rt,
@@ -1171,7 +1173,7 @@ where
         ipc,
         udp,
         budget,
-        hclient_proxy::Target::new(host, port, use_tls),
+        hclient_proxy::egress::Target::new(host, port, use_tls),
         opts,
         alpn,
         identity,

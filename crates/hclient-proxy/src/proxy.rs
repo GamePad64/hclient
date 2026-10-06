@@ -164,17 +164,17 @@ impl<P> Proxy<P> {
     ///
     /// # Errors
     ///
-    /// [`UnsupportedBypass`](crate::UnsupportedBypass), naming the first
+    /// [`UnsupportedBypass`](crate::error::UnsupportedBypass), naming the first
     /// pattern in none of the forms above: a wildcard anywhere but a
     /// leading `*.`, or a pattern that is malformed.
     pub fn bypass<S: AsRef<str>>(
         mut self,
         patterns: impl IntoIterator<Item = S>,
-    ) -> Result<Self, crate::UnsupportedBypass> {
+    ) -> Result<Self, crate::error::UnsupportedBypass> {
         for p in patterns {
             let p = p.as_ref();
-            let normal =
-                normalize_bypass(p).map_err(|reason| crate::UnsupportedBypass::new(p, reason))?;
+            let normal = normalize_bypass(p)
+                .map_err(|reason| crate::error::UnsupportedBypass::new(p, reason))?;
             self.bypass.push(normal);
         }
         Ok(self)
@@ -347,7 +347,7 @@ impl<P> IpcProxy<P> {
     pub fn bypass<S: AsRef<str>>(
         mut self,
         patterns: impl IntoIterator<Item = S>,
-    ) -> Result<Self, crate::UnsupportedBypass> {
+    ) -> Result<Self, crate::error::UnsupportedBypass> {
         self.inner = self.inner.bypass(patterns)?;
         Ok(self)
     }
@@ -400,7 +400,7 @@ impl<P> IpcProxy<P> {
 /// A bypass pattern in this crate's dialect, lower-cased, or why it is
 /// not one — the one statement of the dialect, shared by
 /// [`Proxy::bypass`] and the system reader.
-pub(crate) fn normalize_bypass(pattern: &str) -> Result<Box<str>, crate::BypassReason> {
+pub(crate) fn normalize_bypass(pattern: &str) -> Result<Box<str>, crate::error::BypassReason> {
     let p = pattern.to_ascii_lowercase();
     // Windows's and macOS's spelling of what this dialect writes
     // `.example.com`: that host and everything under it.
@@ -409,7 +409,7 @@ pub(crate) fn normalize_bypass(pattern: &str) -> Result<Box<str>, crate::BypassR
         None => p,
     };
     if p.contains('*') {
-        return Err(crate::BypassReason::Wildcard);
+        return Err(crate::error::BypassReason::Wildcard);
     }
     let well_formed = match p.split_once('/') {
         Some((addr, len)) => subnet_is_well_formed(addr, len),
@@ -418,7 +418,7 @@ pub(crate) fn normalize_bypass(pattern: &str) -> Result<Box<str>, crate::BypassR
     if well_formed {
         Ok(p.into_boxed_str())
     } else {
-        Err(crate::BypassReason::Malformed)
+        Err(crate::error::BypassReason::Malformed)
     }
 }
 
@@ -609,7 +609,7 @@ fn host_matches(pattern: &str, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BypassReason;
+    use crate::error::BypassReason;
 
     /// Why `pat` is refused — it must be.
     fn refused(pat: &str) -> BypassReason {

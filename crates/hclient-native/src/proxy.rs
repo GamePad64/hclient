@@ -55,8 +55,9 @@ pub use hclient_proxy::{Approach, Handshake, IpcProxy, Proxy, ProxyScheme, Step}
 /// unconditional because `Native`'s proxy constructors name it.
 #[cfg(feature = "proxy")]
 pub use hclient_proxy::{
-    ConnectError, HttpConnect, MalformedHead, ProxyRefused, Socks4, Socks4HandshakeError,
-    Socks4Refused, Socks5, Socks5HandshakeError, Socks5Refused,
+    HttpConnect, Socks4, Socks5, error::ConnectError, error::MalformedHead, error::ProxyRefused,
+    error::Socks4HandshakeError, error::Socks4Refused, error::Socks5HandshakeError,
+    error::Socks5Refused,
 };
 
 /// How the *request* is written, which is the one thing a proxy changes

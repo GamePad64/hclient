@@ -19,7 +19,9 @@ use std::time::Duration;
 use futures_util::{AsyncReadExt as _, AsyncWriteExt as _};
 use hclient_core::error::ErrorKind;
 use hclient_native::Native;
-use hclient_proxy::{Dial as _, ProxyTls, TunnelRequest, TunnelVersion};
+use hclient_proxy::{
+    egress::Dial as _, egress::ProxyTls, tunnel::TunnelRequest, tunnel::TunnelVersion,
+};
 use hclient_rt_tokio::Tokio;
 
 use h2_proxy::{H2Proxy, h2_proxy};
@@ -140,8 +142,8 @@ async fn an_erased_context_lends_the_same_tunnel() {
     let proxy = h2_proxy(H2Proxy::Echo { extended: true });
     let native = native_with_egress_trusting(&proxy);
     let dial = hclient_native::testing::dial_for(&native);
-    let shared: &hclient_proxy::SharedDial<'_> = &dial;
-    let boxed = hclient_proxy::BoxDial::new(shared);
+    let shared: &hclient_proxy::egress::SharedDial<'_> = &dial;
+    let boxed = hclient_proxy::egress::BoxDial::new(shared);
     let t = bounded(boxed.connect_tunnel(req(proxy.port(), "origin.test:443")))
         .await
         .unwrap();
@@ -281,7 +283,8 @@ mod over_h3 {
     use hclient_core::error::ErrorKind;
     use hclient_native::{H3, Native};
     use hclient_proxy::{
-        DatagramPath as _, Dial as _, ProxyTls, Tunnel, TunnelRequest, TunnelVersion,
+        datagram::DatagramPath as _, egress::Dial as _, egress::ProxyTls, tunnel::Tunnel,
+        tunnel::TunnelRequest, tunnel::TunnelVersion,
     };
     use hclient_rt_tokio::TokioHandle;
     use std::time::Duration;
@@ -323,7 +326,7 @@ mod over_h3 {
             .version(TunnelVersion::Http3)
     }
 
-    async fn recv(d: &hclient_proxy::BoxPath) -> Vec<u8> {
+    async fn recv(d: &hclient_proxy::datagram::BoxPath) -> Vec<u8> {
         let mut buf = [0u8; 2048];
         let n = bounded(std::future::poll_fn(|cx| d.poll_recv(cx, &mut buf)))
             .await
@@ -371,8 +374,8 @@ mod over_h3 {
         let proxy = h3_proxy(ECHO);
         let native = native(&h3_proxy::client_tls(&proxy));
         let dial = hclient_native::testing::dial_for(&native);
-        let shared: &hclient_proxy::SharedDial<'_> = &dial;
-        let boxed = hclient_proxy::BoxDial::new(shared);
+        let shared: &hclient_proxy::egress::SharedDial<'_> = &dial;
+        let boxed = hclient_proxy::egress::BoxDial::new(shared);
         let t = bounded(boxed.connect_tunnel(udp(proxy.port())))
             .await
             .unwrap();

@@ -120,14 +120,14 @@ impl Association {
     /// [`Attempt::Failed`] for every other proxy refusal, a bind this
     /// host could not do, a relay name that resolved to nothing, or a
     /// header the origin's host is too long for.
-    pub(crate) async fn open_path<'a, C: crate::Dial>(
+    pub(crate) async fn open_path<'a, C: crate::egress::Dial>(
         mut self,
         control: C::Stream,
         proxy_host: &'a str,
         host: &'a str,
         port: u16,
         ctx: &'a C,
-    ) -> Result<crate::BoxPath, Attempt>
+    ) -> Result<crate::datagram::BoxPath, Attempt>
     where
         C::Stream: Send + 'static, // send-bound-exception: amendment-C16
     {
@@ -167,7 +167,7 @@ impl Association {
             }
         })?;
         let header = header_for(host, port).map_err(Attempt::Failed)?;
-        Ok(crate::BoxPath::new(Socks5Path::new(
+        Ok(crate::datagram::BoxPath::new(Socks5Path::new(
             control, udp, relay, header,
         )))
     }
@@ -450,7 +450,7 @@ pub(crate) fn decode_datagram(d: &[u8]) -> Option<&[u8]> {
 
 /// Run an association over `io`, the control connection, until the proxy
 /// names its relay.
-pub(crate) async fn drive_associate<S: crate::Io>(
+pub(crate) async fn drive_associate<S: crate::egress::Io>(
     io: &mut S,
     a: &mut Association,
 ) -> Result<RelayAddr, AssociateError> {
@@ -501,7 +501,7 @@ const SEGMENT: usize = UDP_PAYLOAD + LONGEST_HEADER;
 /// watches it and ends too.
 pub(crate) struct Socks5Path<S> {
     control: Mutex<S>,
-    udp: crate::BoxUdp,
+    udp: crate::datagram::BoxUdp,
     relay: SocketAddr,
     header: Bytes,
     max: usize,
@@ -524,7 +524,12 @@ impl<S> std::fmt::Debug for Socks5Path<S> {
 }
 
 impl<S> Socks5Path<S> {
-    pub(crate) fn new(control: S, udp: crate::BoxUdp, relay: SocketAddr, header: Bytes) -> Self {
+    pub(crate) fn new(
+        control: S,
+        udp: crate::datagram::BoxUdp,
+        relay: SocketAddr,
+        header: Bytes,
+    ) -> Self {
         let segments = udp.support().max_recv_segments.max(1);
         Self {
             control: Mutex::new(control),
@@ -539,11 +544,11 @@ impl<S> Socks5Path<S> {
     }
 }
 
-impl<S> crate::DatagramPath for Socks5Path<S>
+impl<S> crate::datagram::DatagramPath for Socks5Path<S>
 where
     // The path is `Send + Sync`, and the control connection is held in it
     // for the association's life; `Mutex<S>` is `Sync` for any `Send` `S`.
-    S: crate::Io + Send + 'static, // send-bound-exception: amendment-C16
+    S: crate::egress::Io + Send + 'static, // send-bound-exception: amendment-C16
 {
     fn try_send(&self, d: &[u8]) -> io::Result<()> {
         if d.len() > self.max {
@@ -1015,7 +1020,7 @@ mod tests {
 
         use super::super::fake::{Control, FakeUdp};
         use super::super::{Socks5Path, header_for};
-        use crate::{BoxUdp, DatagramPath};
+        use crate::{datagram::BoxUdp, datagram::DatagramPath};
 
         fn cx() -> Context<'static> {
             Context::from_waker(Waker::noop())

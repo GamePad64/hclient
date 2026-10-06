@@ -10,7 +10,7 @@ use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use hclient_masque::CapsulePath;
-use hclient_proxy::{BoxIo, DatagramPath};
+use hclient_proxy::{datagram::DatagramPath, egress::BoxIo};
 
 /// A `tokio` in-memory stream in the seam's shape. Each direction of a
 /// `DuplexStream` keeps its own waker, so it is itself safe to read in one

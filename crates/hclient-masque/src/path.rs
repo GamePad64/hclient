@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 
 use futures_io::{AsyncRead, AsyncWrite};
-use hclient_proxy::{BoxIo, BoxPath, DatagramPath};
+use hclient_proxy::{datagram::BoxPath, datagram::DatagramPath, egress::BoxIo};
 
 use crate::capsule::{self, Capsule, Decoder};
 
@@ -304,7 +304,7 @@ impl DatagramPath for CapsulePath {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use hclient_proxy::testing::channel_pair;
+    use hclient_proxy::datagram::testing::channel_pair;
 
     #[test]
     fn a_context_path_prepends_context_zero_and_is_one_byte_smaller() {

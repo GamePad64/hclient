@@ -284,17 +284,18 @@ where
 }
 
 /// How [`Native`] binds a UDP socket of its own runtime for a filter —
-/// [`hclient_proxy::Dial::bind_udp`].
+/// [`hclient_proxy::egress::Dial::bind_udp`].
 ///
 /// A pointer for [`DialIpc`]'s reason: it is monomorphised in
 /// [`Native::http3`], where `R: crate::http3::H3Runtime` is known, and
 /// called from the dial context, where it is not — so a runtime with no
 /// UDP of its own meets no signature naming [`hclient_rt::UdpBind`], and
 /// `Native::http3` is the only constructor that ever installs one.
-pub(crate) type BindUdp<R> = fn(&R, std::net::SocketAddr) -> std::io::Result<hclient_proxy::BoxUdp>;
+pub(crate) type BindUdp<R> =
+    fn(&R, std::net::SocketAddr) -> std::io::Result<hclient_proxy::datagram::BoxUdp>;
 
 /// How [`Native`] opens a CONNECT or extended CONNECT tunnel to a proxy
-/// over HTTP/2 for a filter — [`hclient_proxy::Dial::connect_tunnel`] —
+/// over HTTP/2 for a filter — [`hclient_proxy::egress::Dial::connect_tunnel`] —
 /// over a connection to the proxy the dial context already opened.
 ///
 /// A pointer for [`DialIpc`]'s reason: it is monomorphised in
@@ -306,8 +307,8 @@ pub(crate) type BindUdp<R> = fn(&R, std::net::SocketAddr) -> std::io::Result<hcl
 pub(crate) type TunnelH2<R, L> = for<'a> fn(
     &'a L,
     <R as TcpConnect>::Stream,
-    hclient_proxy::TunnelRequest<'a>,
-) -> hclient_proxy::BoxTunnelling<'a>;
+    hclient_proxy::tunnel::TunnelRequest<'a>,
+) -> hclient_proxy::egress::BoxTunnelling<'a>;
 
 /// [`BindUdp`]'s one body, instantiated in [`Native::http3`].
 ///
@@ -317,14 +318,17 @@ pub(crate) type TunnelH2<R, L> = for<'a> fn(
 /// does not get to assume it — the same restatement `H3`'s own `impl`
 /// block carries for the same reason.
 #[cfg(feature = "http3")]
-fn bind_udp_erased<R>(rt: &R, local: std::net::SocketAddr) -> std::io::Result<hclient_proxy::BoxUdp>
+fn bind_udp_erased<R>(
+    rt: &R,
+    local: std::net::SocketAddr,
+) -> std::io::Result<hclient_proxy::datagram::BoxUdp>
 where
     R: crate::http3::H3Runtime,
     R::Socket: Send + Sync + 'static, // send-bound-exception: amendment-C10
 {
-    Ok(hclient_proxy::BoxUdp::new(hclient_rt::UdpBind::bind(
-        rt, local,
-    )?))
+    Ok(hclient_proxy::datagram::BoxUdp::new(
+        hclient_rt::UdpBind::bind(rt, local)?,
+    ))
 }
 
 /// Monomorphised where `H: Clone + Send + Sync + 'static` is known, called
@@ -772,7 +776,7 @@ where
     ipc: Option<DialIpc<R>>,
     /// How this transport binds a UDP socket of its own runtime for a
     /// filter, stored once [`Native::http3`] has proven `R:
-    /// crate::http3::H3Runtime`. `None` means [`hclient_proxy::Dial::bind_udp`]
+    /// crate::http3::H3Runtime`. `None` means [`hclient_proxy::egress::Dial::bind_udp`]
     /// is refused, naming that constructor — the same shape as a missing
     /// [`ipc`](Self::ipc).
     udp: Option<BindUdp<R>>,
@@ -1398,16 +1402,16 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         use_tls: bool,
         host: &str,
         port: u16,
-    ) -> hclient_proxy::Decision<'_> {
-        let target = hclient_proxy::Target::new(host, port, use_tls);
+    ) -> hclient_proxy::egress::Decision<'_> {
+        let target = hclient_proxy::egress::Target::new(host, port, use_tls);
         // The external filter first; what it declines goes to the rules —
         // the order the connector follows too.
         if let Some(ext) = &self.external
-            && let d @ hclient_proxy::Decision::Filtered(_) = ext.filter.route(&target)
+            && let d @ hclient_proxy::egress::Decision::Filtered(_) = ext.filter.route(&target)
         {
             return d;
         }
-        hclient_proxy::EgressFilter::route(&self.rules, &target)
+        hclient_proxy::egress::EgressFilter::route(&self.rules, &target)
     }
 
     /// A second proxy, and a third — **the first that serves a request
@@ -2015,8 +2019,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         // path needs — `Native::egress`'s set, for the same erasure.
         R::Stream: Send + 'static, // send-bound-exception: amendment-C15
         for<'a> R::Connecting<'a>: Send, // send-bound-exception: amendment-C15
-        T::Stream<hclient_proxy::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
-        for<'a> T::Handshake<'a, hclient_proxy::BoxIo>: Send, // send-bound-exception: amendment-C15
+        T::Stream<hclient_proxy::egress::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> T::Handshake<'a, hclient_proxy::egress::BoxIo>: Send, // send-bound-exception: amendment-C15
     {
         // **The stored value must be true whichever path serves the
         // request**, and `capabilities()` hands back a reference computed
@@ -2677,16 +2681,16 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     ///
     /// For every request the filter answers first. What it carries, it
     /// opens — through this transport's own connect path, which it is lent
-    /// as an [`hclient_proxy::Dial`] — and this transport finishes TLS to
+    /// as an [`hclient_proxy::egress::Dial`] — and this transport finishes TLS to
     /// the origin over whatever stream it hands back. What it answers
-    /// [`Direct`](hclient_proxy::Decision::Direct) for is offered to the
+    /// [`Direct`](hclient_proxy::egress::Decision::Direct) for is offered to the
     /// rules added by [`proxy`](Self::proxy) and
     /// [`unix_socket`](Self::unix_socket), and only what both decline goes
     /// direct. A later call replaces an earlier filter.
     ///
     /// A request a filter carries uses HTTP/3 only over a datagram path the
     /// filter itself opens — when it declares
-    /// [`datagrams`](hclient_proxy::FilterSupport::datagrams), the transport
+    /// [`datagrams`](hclient_proxy::egress::FilterSupport::datagrams), the transport
     /// has an HTTP/3 arm, and the request demands HTTP/3 or its origin
     /// advertised it. A path the filter will not open switches the request
     /// to the filter's stream, and the origin is not asked again for a
@@ -2694,7 +2698,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// directly, and the origin's HTTPS record is never looked up.
     ///
     /// The filter is also lent CONNECT and extended CONNECT tunnels to a
-    /// proxy spoken to over HTTP/2 ([`hclient_proxy::Dial::connect_tunnel`]),
+    /// proxy spoken to over HTTP/2 ([`hclient_proxy::egress::Dial::connect_tunnel`]),
     /// with the `http2` feature: one connection per tunnel, reached by name
     /// through this transport's resolver and TLS backend. With an HTTP/3
     /// arm as well ([`Native::http3`], before or after this call) it is lent
@@ -2716,7 +2720,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     #[must_use]
     pub fn egress<F>(mut self, filter: F) -> Self
     where
-        F: hclient_proxy::SendEgressFilter + Send + Sync + 'static, // send-bound-exception: amendment-C16
+        F: hclient_proxy::egress::SendEgressFilter + Send + Sync + 'static, // send-bound-exception: amendment-C16
         R: Sync,                         // send-bound-exception: amendment-C15
         R::Stream: Send + 'static,       // send-bound-exception: amendment-C15
         R::Instant: Send + Sync,         // send-bound-exception: amendment-C15
@@ -2725,8 +2729,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
         D: Resolve + Sync,               // send-bound-exception: amendment-C15
         for<'a> D::Records<'a>: Send,    // send-bound-exception: amendment-C15
         T: Sync,                         // send-bound-exception: amendment-C15
-        T::Stream<hclient_proxy::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
-        for<'a> T::Handshake<'a, hclient_proxy::BoxIo>: Send, // send-bound-exception: amendment-C15
+        T::Stream<hclient_proxy::egress::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> T::Handshake<'a, hclient_proxy::egress::BoxIo>: Send, // send-bound-exception: amendment-C15
     {
         self.external = Some(external::External {
             filter: Arc::new(filter),
@@ -2736,7 +2740,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             #[cfg(not(feature = "http2"))]
             tunnel_h2: None,
             #[cfg(feature = "http3")]
-            open_path: external::open_path::<R, D, T, hclient_proxy::SharedFilter>,
+            open_path: external::open_path::<R, D, T, hclient_proxy::egress::SharedFilter>,
             #[cfg(feature = "http3")]
             h3: self.h3.clone(),
             #[cfg(feature = "http3")]
@@ -2913,8 +2917,8 @@ where
             // filter that does not, and for the moment a pool is shared
             // between transports.
             proxy: match self.egress_route(matches!(security, Security::Tls(_)), host, port) {
-                hclient_proxy::Decision::Filtered(route) => Some(route.pool_key.into()),
-                hclient_proxy::Decision::Direct => None,
+                hclient_proxy::egress::Decision::Filtered(route) => Some(route.pool_key.into()),
+                hclient_proxy::egress::Decision::Direct => None,
             },
         })
     }
@@ -3344,9 +3348,9 @@ where
         // that should have been absolute-form reaches an origin server that
         // never agreed to act as a proxy, and nothing about the failure says
         // which of the two forms went out.
-        if let hclient_proxy::Decision::Filtered(hclient_proxy::Route {
+        if let hclient_proxy::egress::Decision::Filtered(hclient_proxy::egress::Route {
             form:
-                hclient_proxy::RequestForm::Absolute {
+                hclient_proxy::egress::RequestForm::Absolute {
                     proxy_authorization,
                     ..
                 },
@@ -4313,7 +4317,7 @@ where
 /// `tests/dual_runtime.rs`, `tests/h1.rs`) and for nothing else.
 #[doc(hidden)]
 pub mod testing {
-    use hclient_proxy::{Dial, DynDial};
+    use hclient_proxy::{egress::Dial, egress::DynDial};
     use std::pin::Pin;
     use std::task::Context;
     use std::task::Poll;
@@ -4364,8 +4368,8 @@ pub mod testing {
         T: hclient_tls::TlsConnect,
     {
         match native.egress_route(use_tls, host, port) {
-            hclient_proxy::Decision::Filtered(route) => Some(route.pool_key.into()),
-            hclient_proxy::Decision::Direct => None,
+            hclient_proxy::egress::Decision::Filtered(route) => Some(route.pool_key.into()),
+            hclient_proxy::egress::Decision::Direct => None,
         }
     }
 
@@ -4380,8 +4384,8 @@ pub mod testing {
     /// called, HTTP/3 tunnels when [`crate::Native::http3`] was called as
     /// well, and none otherwise.
     ///
-    /// It is both a [`hclient_proxy::Dial`] and, erased, the
-    /// [`hclient_proxy::SharedDial`] an installed filter is actually handed
+    /// It is both a [`hclient_proxy::egress::Dial`] and, erased, the
+    /// [`hclient_proxy::egress::SharedDial`] an installed filter is actually handed
     /// — so a test can ask either.
     pub fn dial_for<R, T, D, H>(native: &crate::Native<R, T, D, H>) -> impl LentDial + '_
     where
@@ -4393,8 +4397,8 @@ pub mod testing {
         D: hclient_dns::Resolve + Sync,                       // send-bound-exception: amendment-C15
         for<'x> D::Records<'x>: Send,                         // send-bound-exception: amendment-C15
         T: hclient_tls::TlsConnect + Sync,                    // send-bound-exception: amendment-C15
-        T::Stream<hclient_proxy::BoxIo>: Send + 'static,      // send-bound-exception: amendment-C15
-        for<'x> T::Handshake<'x, hclient_proxy::BoxIo>: Send, // send-bound-exception: amendment-C15
+        T::Stream<hclient_proxy::egress::BoxIo>: Send + 'static, // send-bound-exception: amendment-C15
+        for<'x> T::Handshake<'x, hclient_proxy::egress::BoxIo>: Send, // send-bound-exception: amendment-C15
         H: hclient_core::hooks::Hooks,
     {
         let dial = crate::dial::NativeDial::<R, D, T, H>::new(
@@ -4477,7 +4481,7 @@ pub mod testing {
             &self,
             req: http::Request<hclient_core::body::RequestBody>,
             via: &str,
-            path: Option<hclient_proxy::BoxPath>,
+            path: Option<hclient_proxy::datagram::BoxPath>,
         ) -> Result<crate::http3::Staged<R, H>, ViaOutcome> {
             self.stage_via(req, via, path).await.map_err(|r| match r {
                 crate::http3::ViaRefused::NeedsPath(_) => ViaOutcome::NeedsPath,
@@ -4497,7 +4501,7 @@ pub mod testing {
             &self,
             req: http::Request<hclient_core::body::RequestBody>,
             via: &str,
-            path: hclient_proxy::BoxPath,
+            path: hclient_proxy::datagram::BoxPath,
         ) -> Result<
             http::Response<hclient_core::hooks::Counting<crate::http3::H3Body<H>, H>>,
             hclient_core::error::Error,

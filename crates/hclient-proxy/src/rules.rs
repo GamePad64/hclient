@@ -114,7 +114,7 @@ impl Rules {
     /// Append a rule for a proxy reached over a same-machine socket.
     ///
     /// Reaching it needs a same-machine dialler, and nothing here can check
-    /// that one exists: [`Dial::connect_ipc`](crate::Dial::connect_ipc)
+    /// that one exists: [`Dial::connect_ipc`](crate::egress::Dial::connect_ipc)
     /// answers `Unsupported` on a runtime that has none, so every request
     /// this rule serves fails. A transport that proves the dialler at
     /// configuration — `hclient_native::Native::proxy_over_ipc` — is the
@@ -242,7 +242,7 @@ impl EgressFilter for Rules {
         &'a self,
         t: Target<'a>,
         ctx: &'a C,
-    ) -> Result<crate::BoxPath, Attempt>
+    ) -> Result<crate::datagram::BoxPath, Attempt>
     where
         Self: Sized,
         C::Stream: Send + 'static, // send-bound-exception: amendment-C16
@@ -285,9 +285,12 @@ async fn reach_tcp<C: Dial>(
     // this transport does not trust is not the proxy declining the target.
     // The certificate is checked against the address itself, which a
     // bracketed v6 host names only inside its brackets.
-    ctx.connect_tls(s, crate::ProxyTls::new(hclient_core::url::bare_host(host)))
-        .await
-        .map_err(Attempt::Failed)
+    ctx.connect_tls(
+        s,
+        crate::egress::ProxyTls::new(hclient_core::url::bare_host(host)),
+    )
+    .await
+    .map_err(Attempt::Failed)
 }
 
 // `Rules` is a `SendEgressFilter` so that an engine holding filters erased
@@ -295,14 +298,14 @@ async fn reach_tcp<C: Dial>(
 // `Rules` concretely, which is what keeps the default path unboxed.
 impl SendEgressFilter for Rules {
     fn open_stream_send<'a>(&'a self, t: Target<'a>, ctx: &'a BoxDial<'a>) -> BoxOpening<'a> {
-        Box::pin(async move { self.open_stream(t, ctx).await.map(crate::erase) })
+        Box::pin(async move { self.open_stream(t, ctx).await.map(crate::egress::erase) })
     }
 
     fn open_datagrams_send<'a>(
         &'a self,
         t: Target<'a>,
         ctx: &'a BoxDial<'a>,
-    ) -> crate::BoxPathOpening<'a> {
+    ) -> crate::egress::BoxPathOpening<'a> {
         Box::pin(self.open_datagrams(t, ctx))
     }
 }
@@ -310,7 +313,7 @@ impl SendEgressFilter for Rules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HttpConnect, ProxyScheme, ProxySpokeFirst, Socks5};
+    use crate::{HttpConnect, ProxyScheme, Socks5, error::ProxySpokeFirst};
     use std::io;
     use std::pin::Pin;
     use std::sync::Mutex;
@@ -400,7 +403,7 @@ mod tests {
         fn connect_tls<'a>(
             &'a self,
             stream: Script,
-            req: crate::ProxyTls<'a>,
+            req: crate::egress::ProxyTls<'a>,
         ) -> impl Future<Output = Result<Script, Error>> + 'a {
             self.tls.lock().unwrap().push(req.server_name.to_owned());
             // A marker in the write log, so a test can see TLS ran before
@@ -736,7 +739,7 @@ mod tests {
         let r = Rules::new().push(Proxy::new(HttpConnect::new(), "proxy", 8080));
         let e = failure(&r, &dials);
         let refused = std::error::Error::source(&e)
-            .and_then(|s| s.downcast_ref::<crate::ProxyRefused>())
+            .and_then(|s| s.downcast_ref::<crate::error::ProxyRefused>())
             .expect("the refusal is readable off the error");
         assert_eq!(refused.status, http::StatusCode::FORBIDDEN);
     }
@@ -756,7 +759,7 @@ mod tests {
         let r = Rules::new().push(Proxy::new(Socks5::new(), "socks", 1080));
         let e = failure(&r, &dials);
         let refused = std::error::Error::source(&e)
-            .and_then(|s| s.downcast_ref::<crate::Socks5Refused>())
+            .and_then(|s| s.downcast_ref::<crate::error::Socks5Refused>())
             .expect("the refusal is readable off the error");
         assert_eq!(refused.rep, 0x05);
     }
@@ -772,7 +775,7 @@ mod tests {
         assert_eq!(*e.kind(), hclient_core::error::ErrorKind::Connect);
         assert!(
             std::error::Error::source(&e)
-                .and_then(|s| s.downcast_ref::<crate::ProxyRefused>())
+                .and_then(|s| s.downcast_ref::<crate::error::ProxyRefused>())
                 .is_none(),
             "a hang-up is not a refusal: {e:?}"
         );
@@ -852,12 +855,12 @@ mod tests {
         fn remaining(&self) -> Option<std::time::Duration> {
             None
         }
-        fn bind_udp(&self, local: std::net::SocketAddr) -> Result<crate::BoxUdp, Error> {
+        fn bind_udp(&self, local: std::net::SocketAddr) -> Result<crate::datagram::BoxUdp, Error> {
             if let Some(kind) = &self.bind_fails {
                 return Err(Error::new(kind.clone(), io::Error::other("bind refused")));
             }
             self.bound.lock().unwrap().push(local);
-            Ok(crate::BoxUdp::new(self.udp.clone()))
+            Ok(crate::datagram::BoxUdp::new(self.udp.clone()))
         }
         fn resolve<'a>(
             &'a self,
@@ -893,7 +896,7 @@ mod tests {
         );
         let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "px", 1080));
         let path = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap();
-        crate::DatagramPath::try_send(&path, b"q").unwrap();
+        crate::datagram::DatagramPath::try_send(&path, b"q").unwrap();
         assert_eq!(
             dial.udp_sent_to(),
             ["192.0.2.50:8080".parse::<std::net::SocketAddr>().unwrap()]
@@ -960,7 +963,7 @@ mod tests {
         );
         let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "px", 1080));
         let path = block(rules.open_datagrams(Target::new("o", 443, true), &named)).unwrap();
-        crate::DatagramPath::try_send(&path, b"q").unwrap();
+        crate::datagram::DatagramPath::try_send(&path, b"q").unwrap();
         assert_eq!(named.resolved(), ["relay"]);
         assert_eq!(
             named.udp_sent_to(),
@@ -974,7 +977,7 @@ mod tests {
             "192.0.2.51:1",
         );
         let path = block(rules.open_datagrams(Target::new("o", 443, true), &ip)).unwrap();
-        crate::DatagramPath::try_send(&path, b"q").unwrap();
+        crate::datagram::DatagramPath::try_send(&path, b"q").unwrap();
         assert!(ip.resolved().is_empty(), "an address needs no resolver");
         assert_eq!(
             ip.bound(),
@@ -991,7 +994,7 @@ mod tests {
         );
         let rules = Rules::new().push(Proxy::new(Socks5::new().with_udp(), "[2001:db8::1]", 1080));
         let path = block(rules.open_datagrams(Target::new("o", 443, true), &dial)).unwrap();
-        crate::DatagramPath::try_send(&path, b"q").unwrap();
+        crate::datagram::DatagramPath::try_send(&path, b"q").unwrap();
         assert_eq!(dial.resolved(), [] as [String; 0]);
         assert_eq!(
             dial.udp_sent_to(),

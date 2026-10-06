@@ -733,7 +733,7 @@ where
         key: &PoolKey,
         addr: SocketAddr,
         dns: Duration,
-        path: Option<&mut Option<hclient_proxy::BoxPath>>,
+        path: Option<&mut Option<hclient_proxy::datagram::BoxPath>>,
     ) -> Result<Checkout, Error> {
         let stale = {
             let mut pool = self.shared.conns.lock().expect("pool mutex poisoned");
@@ -775,7 +775,7 @@ where
                 let Some(p) = slot.take() else {
                     return Ok(Checkout::NeedsPath);
                 };
-                let max = hclient_proxy::DatagramPath::max_datagram_size(&p);
+                let max = hclient_proxy::datagram::DatagramPath::max_datagram_size(&p);
                 let endpoint = crate::http3::path::endpoint_over(&self.rt, p, addr.port())
                     .map_err(|e| {
                         let kind = if e.kind() == std::io::ErrorKind::Unsupported {
@@ -1265,7 +1265,7 @@ where
         &self,
         host: &str,
         port: u16,
-        tls: hclient_proxy::ProxyTls<'_>,
+        tls: hclient_proxy::egress::ProxyTls<'_>,
     ) -> Result<(quinn::Connection, SendRequest), Error> {
         let addr = self.resolve(host, port).await?;
         let crypto = self
@@ -1325,7 +1325,7 @@ where
 
     /// An extended CONNECT to a proxy over HTTP/3, on a connection of its
     /// own, with the stream's HTTP datagrams — what a filter's
-    /// [`hclient_proxy::Dial::connect_tunnel`] is lent. `budget` bounds the
+    /// [`hclient_proxy::egress::Dial::connect_tunnel`] is lent. `budget` bounds the
     /// whole of it, the connection and the proxy's answer.
     ///
     /// Refused as [`ErrorKind::Unsupported`] before a packet is sent: a
@@ -1336,9 +1336,9 @@ where
     /// datagrams — an HTTP/3 tunnel is asked for exactly those.
     pub(crate) async fn tunnel(
         &self,
-        req: hclient_proxy::TunnelRequest<'_>,
+        req: hclient_proxy::tunnel::TunnelRequest<'_>,
         budget: Option<Duration>,
-    ) -> Result<hclient_proxy::Tunnel, Error> {
+    ) -> Result<hclient_proxy::tunnel::Tunnel, Error> {
         let Some(p) = req.protocol else {
             return Err(Error::new(
                 ErrorKind::Unsupported,
@@ -1376,8 +1376,8 @@ async fn open_tunnel(
     conn: quinn::Connection,
     mut send: SendRequest,
     protocol: h3::ext::Protocol,
-    req: hclient_proxy::TunnelRequest<'_>,
-) -> Result<hclient_proxy::Tunnel, Error> {
+    req: hclient_proxy::tunnel::TunnelRequest<'_>,
+) -> Result<hclient_proxy::tunnel::Tunnel, Error> {
     use h3::ConnectionState as _;
     let settings = send.settings();
     if !settings.enable_extended_connect() || !settings.enable_datagram() {
@@ -1418,12 +1418,12 @@ async fn open_tunnel(
     let resp = stream.recv_response().await.map_err(connect_error)?;
     let (parts, ()) = resp.into_parts();
     let id = stream.id().into_inner();
-    Ok(hclient_proxy::Tunnel::new(
+    Ok(hclient_proxy::tunnel::Tunnel::new(
         parts,
-        hclient_proxy::BoxIo::new(tunnel::H3Stream::new(stream, send.clone())),
-        Some(hclient_proxy::BoxPath::new(tunnel::H3Datagrams::new(
-            conn, id, send,
-        ))),
+        hclient_proxy::egress::BoxIo::new(tunnel::H3Stream::new(stream, send.clone())),
+        Some(hclient_proxy::datagram::BoxPath::new(
+            tunnel::H3Datagrams::new(conn, id, send),
+        )),
     ))
 }
 

@@ -54,7 +54,7 @@ impl HttpConnect {
     ///
     /// # Errors
     ///
-    /// Returns [`ConnectError::ColonInUsername`](crate::ConnectError::ColonInUsername)
+    /// Returns [`ConnectError::ColonInUsername`](crate::error::ConnectError::ColonInUsername)
     /// when `user` contains a `:` — RFC 7617 §2's separator, so the pair
     /// could not be read back as the one the caller meant. Also `Err` when
     /// the base64-encoded credential cannot become a valid HTTP header

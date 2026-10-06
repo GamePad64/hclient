@@ -21,7 +21,7 @@ use crate::{Handshake, Step};
 /// Run `h` over `io` until the tunnel is open.
 ///
 /// Returns whatever the proxy sent past the end of its own handshake,
-/// which the caller decides what to do with — see [`ProxySpokeFirst`](crate::ProxySpokeFirst).
+/// which the caller decides what to do with — see [`ProxySpokeFirst`](crate::error::ProxySpokeFirst).
 ///
 /// # Errors
 ///
@@ -99,7 +99,7 @@ where
 ///
 /// Whatever the handshake refuses — a malformed reply, or the proxy
 /// declining the target — plus [`ErrorKind::Connect`] with a
-/// [`ProxySpokeFirst`](crate::ProxySpokeFirst) source when bytes followed
+/// [`ProxySpokeFirst`](crate::error::ProxySpokeFirst) source when bytes followed
 /// the handshake.
 pub async fn drive_exact<S, H>(io: &mut S, h: &mut H, host: &str, port: u16) -> Result<(), Error>
 where
@@ -112,7 +112,7 @@ where
     } else {
         Err(Error::new(
             ErrorKind::Connect,
-            crate::ProxySpokeFirst { bytes: left.len() },
+            crate::error::ProxySpokeFirst { bytes: left.len() },
         ))
     }
 }
@@ -317,7 +317,7 @@ mod tests {
         assert_eq!(*err.kind(), ErrorKind::Connect);
         assert_eq!(
             std::error::Error::source(&err)
-                .and_then(|s| s.downcast_ref::<crate::ProxySpokeFirst>())
+                .and_then(|s| s.downcast_ref::<crate::error::ProxySpokeFirst>())
                 .map(|p| p.bytes),
             Some(5)
         );

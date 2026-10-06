@@ -35,9 +35,11 @@ pub mod template;
 
 use hclient_core::error::{Error, ErrorKind};
 use hclient_proxy::{
-    Attempt, BoxDial, BoxIo, BoxOpening, BoxPath, BoxPathOpening, Decision, Dial, EgressFilter,
-    FilterSupport, Io, Opened, ProxyTls, RequestForm, Route, SendEgressFilter, Target, Tunnel,
-    TunnelRequest, TunnelVersion,
+    datagram::BoxPath, egress::Attempt, egress::BoxDial, egress::BoxIo, egress::BoxOpening,
+    egress::BoxPathOpening, egress::Decision, egress::Dial, egress::EgressFilter,
+    egress::FilterSupport, egress::Io, egress::Opened, egress::ProxyTls, egress::RequestForm,
+    egress::Route, egress::SendEgressFilter, egress::Target, tunnel::Tunnel, tunnel::TunnelRequest,
+    tunnel::TunnelVersion,
 };
 
 pub use error::{CapsuleError, Refused, TemplateError};
@@ -196,7 +198,7 @@ impl SendEgressFilter for Masque {
         Box::pin(async move {
             self.open_stream(target, ctx)
                 .await
-                .map(hclient_proxy::erase)
+                .map(hclient_proxy::egress::erase)
         })
     }
 
