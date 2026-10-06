@@ -664,3 +664,38 @@ another crate's `pub` item; it carries an allow naming that caller now.
 And two cookie test files carried five clippy findings that no gate could
 see, because they build only under `--no-default-features --features
 cookies`; `test-no-default` clippies that combination now.
+
+### The facade was audited by the same doctrine, and the deferred stub got its ruling
+
+2026-10-06, after the proxy freeze: the same instruments — rustdoc JSON
+under `--all-features` (378 public items), the red-flag census, a
+`--no-default-features` walk for the stub half the all-features build
+compiles out. Nothing to cut.
+
+The one item this file deferred — *`hclient`'s `DefaultTransportFeature`
+has the same shape and is left as it is, because that crate was not part
+of this audit* — got its ruling: **kept, deliberately.** The trait is a
+zero-sized marker whose reader is the compiler; the caller-facing UI is
+the `#[diagnostic::on_unimplemented]` message naming the feature and the
+target, and the unsatisfiable `where Self: DefaultTransportFeature<'g>`
+bound is what makes the stub `Client::new` a compile error instead of a
+silent one. `doc(hidden)` is the doctrine's last resort, and this is the
+case that justifies it: rendering the page would add a docs.rs section
+for a name no caller may write.
+
+The census came out doctrine-clean everywhere it could have been dirty.
+Every public enum carries `#[non_exhaustive]` except four, and those four
+are the attribute's forbidden case: `RedirectVerdict`, `RetryVerdict` and
+`Decision` are constructed by external policy impls — `non_exhaustive`
+would be `E0639` against every one of them — and `SseEvent` is matched
+exhaustively. Every pub-fields struct is either `#[non_exhaustive]`
+(handed back) or literal-built opts in the `TcpOpts` shape. And the
+policy traits turned out fully defaulted — `follow` answers *yes, with
+nothing relaxed*, `retry` answers *stop* — which is the understating
+floor rule in trait form: an implementation states only what it has an
+opinion about, and saying nothing never opens a connection nobody asked
+for. One note stands: the coding family is reachable three ways (root
+names, [`crate::decompress`], and [`crate::decompress::compression`]),
+which is mild bookkeeping overhead kept on purpose — the module doc
+argues `compression::Gzip` is the *name a coding* teaching surface, the
+way `redirect::SameOriginOnly` names a policy.
