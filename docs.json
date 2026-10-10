@@ -1,0 +1,14 @@
+{
+  "name": "hclient",
+  "colors": {
+    "primary": "#0F62FE"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "hclient",
+        "pages": ["index"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+---
+title: "hclient"
+description: "Cross-platform async HTTP client: one codebase for native, browser, and WASI."
+---
+
+# hclient
+
+The same application code builds for native, browser and WASI — the transport is
+swapped out, not buried under `#[cfg]`.
+
+```rust
+let client = hclient::Client::builder(transport).build()?;
+let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+```
+
+On native, with the `default-transport` feature, one constructor does it all:
+
+```rust
+let client = hclient::Client::new()?;
+```
+
+## The family
+
+`hclient` is the facade over a family of crates, each one a seam: runtimes
+(tokio, smol, embassy), TLS backends (rustls, native-tls), DNS (system, DoH,
+hickory), and the transports themselves (native, WASI, fetch, URLSession,
+WinHTTP). See [docs.rs](https://docs.rs/hclient) for the rendered API.
