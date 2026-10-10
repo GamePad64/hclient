@@ -149,3 +149,88 @@ fn a_configured_auth_scheme_silences_the_file() {
     futures_executor::block_on(c.get("https://localhost/a").auth(Silent).send()).unwrap();
     assert_eq!(auth_of(&m, 0), None);
 }
+
+/// The machine-file half: `Client::new()` honours `$NETRC` — the proxy
+/// ruling applied to credentials. The test runs **itself** as a child
+/// process with the environment set, because `std::env::set_var` is
+/// `unsafe` in edition 2024 and the file location is the machine's, not
+/// this process's: the parent writes a fixture, hands the child `NETRC`
+/// and a listener's URL, and asserts the child's `Client::new()`
+/// authenticates. The child needs the `netrc-child` mode switch below
+/// and a default transport, hence the gate.
+#[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
+#[test]
+fn netrc_default_constructor_honours_the_machine_file() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::process::Command;
+
+    let fixture = std::env::temp_dir().join("hclient-netrc-child-test.netrc");
+    std::fs::write(&fixture, "machine 127.0.0.1\nlogin alice\npassword pw\n").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let t = std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut chunk).unwrap();
+            if n > 0 {
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            if n == 0 || buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        let mut auth = None;
+        for line in text.lines() {
+            let lower = line.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("authorization: ") {
+                auth = Some(line[line.len() - v.len()..].to_owned());
+            }
+        }
+        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+        auth
+    });
+
+    let exe = std::env::current_exe().unwrap();
+    let status = Command::new(exe)
+        .args(["netrc_child_executor", "--exact"])
+        .env("NETRC", &fixture)
+        .env("NO_PROXY", "127.0.0.1")
+        .env(
+            "HCLIENT_NETRC_CHILD_URL",
+            format!("http://127.0.0.1:{port}/p"),
+        )
+        .status()
+        .expect("spawn self");
+    assert!(status.success(), "the netrc child failed: {status}");
+    let wire = t.join().unwrap().unwrap_or_else(|| "(none)".to_owned());
+    assert_eq!(wire, "Basic YWxpY2U6cHc=", "Client::new() ignored $NETRC");
+}
+
+/// The child half of the test above: it **is** the process that
+/// `Client::new()` runs in, spawned with `--exact` so the harness runs
+/// nothing but this. The URL comes from the environment rather than an
+/// argument, because a libtest harness would read an argument as a test
+/// filter — which is how the first draft of this spawned itself
+/// recursively and hung for 300 seconds.
+#[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
+#[test]
+fn netrc_child_executor() {
+    let Ok(url) = std::env::var("HCLIENT_NETRC_CHILD_URL") else {
+        return;
+    };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async move {
+        let client = hclient::Client::new().expect("a client");
+        client
+            .post(url)
+            .body("x")
+            .send()
+            .await
+            .expect("the child's request");
+    });
+}

@@ -589,15 +589,15 @@ impl ClientBuilder {
     /// host is unlisted — and any hop at all when this is not configured —
     /// goes out exactly as the caller built it.
     ///
-    /// **Opt-in twice over, on purpose.** The caller parses
+    /// **The explicit path is opt-in.** The caller parses
     /// ([`Netrc::from_env`](crate::auth::netrc::Netrc::from_env) follows
     /// `$NETRC` and `~/.netrc`;
     /// [`Netrc::from_path`](crate::auth::netrc::Netrc::from_path) takes a
-    /// path); this setter installs. Nothing in
-    /// this crate reads a credential file without both steps, because a
-    /// default that reads passwords from disk is a security decision made
-    /// for the caller — the same ruling that keeps system proxies
-    /// opt-in.
+    /// path); this setter installs. [`Client::new`](crate::Client::new)
+    /// is the other reader: it honours the machine's file by default,
+    /// the proxy ruling applied one file later — a constructor that
+    /// ignored what httpie and the Python family read would be the odd
+    /// one out. The builder is the opt-out, and it is one line.
     ///
     /// The rules on the wire, each with a test beside it:
     ///
@@ -2710,7 +2710,32 @@ impl Client {
                 .system_proxies_from_lossy(&hclient_native::proxy::system::SystemProxies::detect());
             t
         };
-        Self::builder(transport).build().map_err(|e| {
+        // **The machine's own netrc, honoured by default — the proxy
+        // block's argument, one file later.** A `.netrc` entry names a
+        // host and the credentials that go with it, and the convention is
+        // as old as the proxy environment variables: httpie reads the
+        // file automatically, the Python family reads it through
+        // `trust_env = True`, and a constructor that ignored it would be
+        // the odd one out on any machine where a user wrote credentials
+        // into the file for exactly this use.
+        //
+        // The guardrails are the builder's, and tested: the caller's own
+        // `Authorization` wins, a configured auth scheme silences the
+        // file, a hop is looked up by that hop's own host, and ports play
+        // no part. Lenient like the proxy block above it: a file that
+        // exists but cannot be read is skipped here rather than refusing
+        // to construct — `hc --netrc` is where that refusal belongs,
+        // naming the path.
+        //
+        // **The opt-out is the builder**, exactly as for proxies:
+        // `Client::builder(default_transport()?)` reads nothing, and
+        // `tests/netrc_client.rs::netrc_default_constructor_honours_the_machine_file`
+        // pins both halves of that sentence in one wire capture.
+        let mut builder = Self::builder(transport);
+        if let Ok(Some(netrc)) = crate::auth::netrc::Netrc::from_env() {
+            builder = builder.netrc(netrc);
+        }
+        builder.build().map_err(|e| {
             hclient_core::error::Error::new(hclient_core::error::ErrorKind::Unsupported, e)
         })
     }

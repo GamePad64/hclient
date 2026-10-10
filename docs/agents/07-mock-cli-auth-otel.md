@@ -242,19 +242,39 @@ With no ambient span each hop is the root of its own trace; with one, all
 three are children of the caller's span and none of each other, which is
 what the test asserts rather than merely asserting one trace id.
 
-### `.netrc`: the credential file the library parses and never reads
+### `.netrc`: parsed always, read by the constructor, installed by the builder
 
 The third act of the proxy reversal (§4 of the competitive-gaps doc):
 *reading the environment is policy* kept both halves and sharpened them.
-The **library** parses and never reads — `auth::netrc::Netrc::parse` /
-`from_path` / `from_env` (following `$NETRC`, then `~/.netrc`,
-`~/_netrc` on Windows) exist, and `ClientBuilder::netrc` installs —
-because a default that reads passwords from disk is a security decision
-made for the caller, one step stronger than the proxy case, where
-ignoring `HTTPS_PROXY` merely made the client the odd one out. The
-**CLI** reads, for curl parity: `--netrc` refuses a missing file,
-`--netrc-optional` tolerates it, `--netrc-file` is always required to be
-readable, and a read failure is a usage error, exit 2.
+Three positions in three days, and the third is the one that holds.
+The first refused: *reading the environment is policy*. The second
+reversed halfway: the library parses and never reads, the builder
+installs, the CLI reads with curl's error semantics. The owner's
+correction settled it with the proxy reversal's own argument, one file
+later: netrc is a **machine convention** — httpie reads the file
+automatically, the Python family reads it through `trust_env = True`,
+and a constructor that ignored what every other program honours would
+be the odd one out on any machine where a user wrote credentials into
+the file for exactly this use. So the final shape is the proxy
+reversal's, applied whole: **`Client::new()` honours the machine's
+file** (lenient — a file that exists but cannot be read is skipped,
+the refusal belonging to `hc --netrc`, which names the path);
+**`Client::builder` reads nothing** and is the one-line opt-out; the
+**CLI** reads by flag with curl's error semantics.
+
+The ecosystem survey that the owner's correction prompted splits
+exactly on the library/CLI line — and gives the correction its
+evidence. CLI tools read (httpie automatically; curl by flag — the
+only oracle measured on the wire for this parser). The Python family
+reads by default through `trust_env = True`, and carries two
+documented footguns the final design makes structurally impossible:
+`trust_env = False` is a combined switch that kills environment
+proxies too (psf/requests#2773 asks for granular control and has
+none), and a matching `.netrc` entry overrides the caller's own
+`Authorization` — here the caller's header wins, by test. The Rust and
+Go families have no netrc at all. "Automatic by default" is a
+Python-family choice, not an industry norm — but the machine-convention
+argument does not need it to be one.
 
 The format has no RFC and implementations disagree, so the parser is
 **differential against curl 8.20's wire behaviour**, fixture by fixture:
