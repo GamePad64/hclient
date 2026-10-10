@@ -38,6 +38,10 @@ pub struct Config {
     /// stream is on the client that opens it. One flag, two places, each
     /// being the only place its mode can express it.
     pub redirect: Option<Redirects>,
+    /// Resolved by `run.rs` — which owns the policy (an unreadable
+    /// `--netrc` file is a usage error, exit 2) — and installed here on
+    /// every client this backend builds, streaming modes included.
+    pub netrc: Option<hclient::auth::netrc::Netrc>,
     /// Installed only when `--write-out` asked for timings.
     ///
     /// `None` is not "a recorder that discards": with no hooks the
@@ -287,6 +291,9 @@ where
     let mut b = hclient::Client::builder(transport);
     if let Some(total) = cfg.total {
         b = b.total_timeout(hclient_rt_tokio::Tokio, total);
+    }
+    if let Some(netrc) = &cfg.netrc {
+        b = b.netrc(netrc.clone());
     }
     match cfg.redirect {
         Some(Redirects::Forbid) => b = b.redirect(hclient::redirect::Forbid),

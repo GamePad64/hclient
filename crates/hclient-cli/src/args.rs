@@ -8,6 +8,7 @@
 //! there.
 
 use clap::{Parser, ValueEnum};
+use std::path::PathBuf;
 
 /// One `KEY<sep>VALUE` argument, already classified.
 ///
@@ -332,6 +333,23 @@ pub struct Cli {
     /// Use digest authentication with `--auth`'s credentials.
     #[arg(long)]
     pub digest: bool,
+
+    /// Authenticate per host from `.netrc` — `$NETRC`, else `~/.netrc`
+    /// (`~/_netrc` on Windows). The file must be readable: a missing or
+    /// unreadable file is an error unless `--netrc-optional` is given.
+    #[arg(long, conflicts_with_all = ["netrc_file", "auth", "digest"])]
+    pub netrc: bool,
+
+    /// Authenticate per host from this `.netrc` file instead of the
+    /// default location.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["netrc", "auth", "digest"])]
+    pub netrc_file: Option<PathBuf>,
+
+    /// With `--netrc`, treat a missing file as normal instead of an
+    /// error. Meaningless with `--netrc-file`, which is always required
+    /// to be readable.
+    #[arg(long, requires = "netrc")]
+    pub netrc_optional: bool,
 
     /// A bearer token.
     #[arg(long, value_name = "TOKEN")]

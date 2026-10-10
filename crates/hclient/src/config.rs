@@ -221,6 +221,17 @@ pub struct Config {
     /// why that check is a refusal rather than a panic where the header is
     /// written.
     pub decompression: Vec<crate::decompress::SharedContentCoding>,
+    /// A parsed `.netrc`, installed by
+    /// [`ClientBuilder::netrc`](crate::ClientBuilder::netrc) — the caller
+    /// parsed it ([`Netrc::from_env`](crate::auth::netrc::Netrc::from_env)
+    /// or [`from_path`](crate::auth::netrc::Netrc::from_path)); the client
+    /// never reads a credential file on its own. While this is `None`,
+    /// no request of this client touches a netrc.
+    ///
+    /// Immutable parsed data, so a plain field rather than the jar's
+    /// shared-state shape: every clone reading the same entries is the
+    /// point, not a problem.
+    pub netrc: Option<crate::auth::netrc::Netrc>,
 }
 
 // Maintainer notes (not rendered):
@@ -247,6 +258,7 @@ impl Default for Config {
             cookies: false,
             cache: false,
             decompression: crate::decompress::builtin(),
+            netrc: None,
         }
     }
 }
@@ -475,6 +487,14 @@ pub fn check_supported(
         // a token that will not go in a header, which no backend has an
         // opinion about.
         decompression: _,
+        // Not checked, and there is nothing a transport could check: the
+        // netrc is client-side parsed data — the credentials go into a
+        // header on the hop, exactly where a caller's own `basic_auth`
+        // would land, so no capability applies. The `check_supported`
+        // destructure names the field anyway, which is what makes a new
+        // `Config` field a compile error here rather than a forgotten
+        // one.
+        netrc: _,
     } = cfg;
     check_default_headers_supported(default_headers, caps, backend)?;
     check_timeouts_supported(timeouts, caps, backend)?;

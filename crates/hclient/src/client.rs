@@ -583,6 +583,68 @@ impl ClientBuilder {
         self
     }
 
+    /// Authenticate per host from a parsed `.netrc`, the way curl's
+    /// `--netrc` does: a hop whose host names an entry goes out with
+    /// `Authorization: Basic` built from that entry's halves; a hop whose
+    /// host is unlisted — and any hop at all when this is not configured —
+    /// goes out exactly as the caller built it.
+    ///
+    /// **Opt-in twice over, on purpose.** The caller parses
+    /// ([`Netrc::from_env`](crate::auth::netrc::Netrc::from_env) follows
+    /// `$NETRC` and `~/.netrc`;
+    /// [`Netrc::from_path`](crate::auth::netrc::Netrc::from_path) takes a
+    /// path); this setter installs. Nothing in
+    /// this crate reads a credential file without both steps, because a
+    /// default that reads passwords from disk is a security decision made
+    /// for the caller — the same ruling that keeps system proxies
+    /// opt-in.
+    ///
+    /// The rules on the wire, each with a test beside it:
+    ///
+    /// - **Per hop, looked up by that hop's own host.** A redirect to
+    ///   another host does not carry the first host's credentials — the
+    ///   redirect stage strips them — and if the new host names its own
+    ///   entry, that entry's credentials go on. Nothing crosses an
+    ///   origin; each origin gets what its own entry says.
+    /// - **The caller's header wins.** An `Authorization` already on the
+    ///   hop is never overridden, which is what makes
+    ///   [`basic_auth`](crate::RequestBuilder::basic_auth) and
+    ///   [`bearer_auth`](crate::RequestBuilder::bearer_auth) compose with
+    ///   this instead of racing it.
+    /// - **A configured auth scheme silences this.** A caller who attached
+    ///   [`digest_auth`](crate::RequestBuilder::digest_auth) or any
+    ///   [`Auth`](crate::auth::Auth) impl asked for that scheme's
+    ///   conversation; a preemptive `Basic` from the file would answer a
+    ///   challenge nobody issued.
+    /// - **Ports play no part** in the lookup — the format has no port
+    ///   field, and the match is by host name alone, as curl does it.
+    ///
+    /// One deliberate divergence from [`RequestBuilder::basic_auth`] is
+    /// stated where the header is built: `basic_auth` refuses a `:` in
+    /// the username because the two calls would be the same bytes on the
+    /// wire, but a netrc entry's fields are explicit — the file says
+    /// which half is the login — so the encoding here sends colons
+    /// through, exactly as curl does.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let netrc = hclient::auth::netrc::Netrc::from_env()?;
+    /// let mut builder = hclient::Client::builder(hclient::default_transport()?);
+    /// if let Some(netrc) = netrc {
+    ///     builder = builder.netrc(netrc);
+    /// }
+    /// # let _ = builder;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn netrc(mut self, netrc: crate::auth::netrc::Netrc) -> Self {
+        self.config.netrc = Some(netrc);
+        self
+    }
+
     // Maintainer notes (not rendered):
     //
     // The last paragraph of the doc below, in full:
@@ -1105,6 +1167,17 @@ impl Client {
     /// there is no lock here to hold across an `.await` — the
     /// synchronisation, where a store needs any, is the store's.
     #[cfg(feature = "hsts")]
+    /// The RFC 6797 policy set this client keeps, if one was configured.
+    ///
+    /// The same shape as [`Client::cookies`] and [`Client::cache`]: what a
+    /// host asserted, when it expires, and every entry a persisting store
+    /// would want to write down are readable through it.
+    ///
+    /// A borrow rather than a guard, for the reason both neighbours give:
+    /// [`HstsStore`](crate::hsts::HstsStore)'s methods take `&self`, so
+    /// there is no lock here to hold across an `.await` — the
+    /// synchronisation, where a store needs any, is the store's.
+    #[cfg(feature = "hsts")]
     pub fn hsts(&self) -> Option<&crate::hsts::Hsts<crate::erased::BoxHstsStore>> {
         self.inner.hsts.as_ref()
     }
@@ -1590,6 +1663,32 @@ impl Client {
             for (name, value) in &self.config().default_headers {
                 if !hp.headers.contains_key(name) {
                     hp.headers.append(name.clone(), value.clone());
+                }
+            }
+
+            // Netrc credentials fill an anonymous hop, and never override:
+            // an `Authorization` already here is the caller's (or a
+            // default's), and a configured auth scheme silences this —
+            // its conversation is the one the caller asked for, and a
+            // preemptive `Basic` from a file would answer a challenge
+            // nobody issued. Per hop, looked up by THIS hop's host: each
+            // origin gets what its own entry says, nothing travels from
+            // the previous hop (the redirect stage stripped it anyway),
+            // and an unlisted host goes out anonymous exactly like the
+            // first. `ClientBuilder::netrc` documents the rules; the
+            // colon-in-login divergence from `basic_auth` is stated
+            // there.
+            if !hp.headers.contains_key(http::header::AUTHORIZATION)
+                && auth.is_none()
+                && let Some(netrc) = self.config().netrc.as_ref()
+                && let Some(host) = hp.uri.host()
+                && let Some(entry) = netrc.lookup(host)
+            {
+                let raw = hclient_proto::encode::base64(
+                    format!("{}:{}", entry.login(), entry.password()).as_bytes(),
+                );
+                if let Ok(value) = http::HeaderValue::from_str(&format!("Basic {raw}")) {
+                    hp.headers.insert(http::header::AUTHORIZATION, value);
                 }
             }
 

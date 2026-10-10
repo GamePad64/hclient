@@ -1144,7 +1144,7 @@ worth a section of its own.
 
 | what | nq's spelling | here |
 |---|---|---|
-| **`.netrc`** | automatic; `~/.netrc`, `~/_netrc`, `$NETRC` (`utils.py:196-207`) | nothing — grepped the workspace, the only hit is this document |
+~~**`.netrc`**~~ | automatic; `~/.netrc`, `~/_netrc`, `$NETRC` (`utils.py:196-207`) | **built 2026-10-06** — see §4's reversal row |
 | **`Link:` header** | `response.links['next']['url']` (`models.py:1577`) | nothing on `Response`; a parser is being written in `hclient-proto` in the working tree as this is filed, which is not the same thing until something on `Response` reads it |
 | **a `lines()` adapter over a body** | `iter_lines()`, sync and async | nothing; `hclient_proto::sse` has a line decoder and it is SSE's, not a body's |
 | **certificate fingerprint pinning** | `verify="sha256_<hex>"` (`adapters.py:571-573`) | nothing; expressible through `Rustls::from_config` with a custom verifier, which is the *seam* answer and a long way from one string |
@@ -1165,12 +1165,9 @@ this workspace has been spending freely and stops being able to spend at
 `0.1.0`. So this one is cheap *now* and expensive later, which is the only
 reason it is on a ranked list at all.
 
-**Two of the six have a rule that would refuse them and four do not.**
-`.netrc` is *reading the environment*, and §4 records that as policy
-belonging to whoever builds the transport — except that the rule was
-reversed for proxies this week, and the reversal's argument (a
-convenience constructor that ignores what every other program on the
-machine honours is the odd one out) transfers verbatim. Fingerprint
+**Of the six, `.netrc` has since been built** — its §4 reversal row
+records the shape (library parses and never reads; CLI reads, with
+curl's error semantics). Fingerprint
 pinning is a verification decision, and this workspace has a written
 position that the way to reach one is `from_config`. `Link:`, `iter_lines`,
 upload progress and the source port are absences with nothing written
@@ -1190,6 +1187,7 @@ this document could fail.
 | `compress`/`x-compress` | RFC 9110 §8.4.1.1's LZW: no decoder here, so it is never advertised and never matched | `hclient/src/decompress.rs` |
 | request-body compression | server support is inconsistent; a clean manual path instead | design spec §9 |
 | ~~reading `HTTP_PROXY`/`NO_PROXY` from the environment~~ | **reversed, and kept for the same reason the `deflate` row is.** The rule — *reading the environment is policy and belongs to whoever builds the transport* — was true of the seam and wrong about the audience: it left `Client::new()` as the one program on the machine that ignores `HTTPS_PROXY`. The resolution keeps both halves rather than picking one — the *constructor* reads (`system-proxy`, in `default`), the *transport seam* (`default_transport()`) still reads nothing — and the shape that made it affordable is `hclient-native?/system-proxy`, the weak form, so a build with no transport pays no crate | AGENTS.md, proxy section |
+| ~~`.netrc`~~ | **reversed 2026-10-06, and the shape is the proxy reversal's third act.** The rule — *reading the environment is policy* — kept both halves instead of picking one, and sharpened them: the **library** parses and never reads ([`Netrc::from_env`] exists, [`ClientBuilder::netrc`] installs — a default that reads passwords from disk is a security decision made for the caller, which is one step stronger than the proxy case, where ignoring `HTTPS_PROXY` merely made the client the odd one out); the **CLI** reads, for curl parity, with curl's error semantics (`--netrc` refuses a missing file, `--netrc-optional` tolerates it, `--netrc-file` is always required to be readable). The parser is differential against curl 8.20's wire behaviour, fixture by fixture, and re-captured live in the test suite — the format has no RFC and implementations disagree, so the oracle is the wire | `hclient/src/auth/netrc.rs` |
 | a proxy for QUIC | `CONNECT-UDP` (RFC 9298) is a different protocol against a different server, not this feature with a wider bound |
 | a blocking API | out of scope by the problem statement | design spec §9 |
 | JA3/JA4/Akamai fingerprint control | rustls closed it *not planned*; `http::HeaderMap` lowercases names, so browser header casing is unreproducible anyway. **The first half is now an open question rather than a closed one**, because niquests answered it without asking rustls: it ships a *second TLS stack* (`utls`, BoringSSL) selected at import, so the fingerprint is a property of the backend. That route is open here too — `TlsConnect` is a seam and a third backend beside `hclient-tls-rustls` and `hclient-tls-native-tls` would need no change above it. The second half is unchanged and is the harder one: header **order and casing** are as much of a fingerprint as the ClientHello, and `http::HeaderMap` gives up both, which is the same foreign-type constraint that keeps this workspace on `std` | design spec §9 |

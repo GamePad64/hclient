@@ -241,3 +241,44 @@ model chooses: one client span per request, and a redirect is a resend.
 With no ambient span each hop is the root of its own trace; with one, all
 three are children of the caller's span and none of each other, which is
 what the test asserts rather than merely asserting one trace id.
+
+### `.netrc`: the credential file the library parses and never reads
+
+The third act of the proxy reversal (§4 of the competitive-gaps doc):
+*reading the environment is policy* kept both halves and sharpened them.
+The **library** parses and never reads — `auth::netrc::Netrc::parse` /
+`from_path` / `from_env` (following `$NETRC`, then `~/.netrc`,
+`~/_netrc` on Windows) exist, and `ClientBuilder::netrc` installs —
+because a default that reads passwords from disk is a security decision
+made for the caller, one step stronger than the proxy case, where
+ignoring `HTTPS_PROXY` merely made the client the odd one out. The
+**CLI** reads, for curl parity: `--netrc` refuses a missing file,
+`--netrc-optional` tolerates it, `--netrc-file` is always required to be
+readable, and a read failure is a usage error, exit 2.
+
+The format has no RFC and implementations disagree, so the parser is
+**differential against curl 8.20's wire behaviour**, fixture by fixture:
+a local listener captures what curl sends in `Authorization` for each of
+18 files, and `Netrc::lookup` must answer the same credentials. The
+captured rules, each one a fixture that discriminates it: the first
+duplicate machine wins; the first `login` in a block wins; a `macdef`
+body is consumed to the first blank line, so credential-looking lines
+inside a macro are never credentials; a `#` at the start of a line
+comments the line out while a `#` mid-line is a literal token (`login #`
+really logs in as `#`); empty halves are sent as empty (`karl:`,
+`:pw`); colons inside a password pass through; and tokens before any
+`machine`/`default` are dropped. `tests/netrc_curl.rs` re-captures
+live, so a curl that changes behaviour fails this crate instead of
+rotting the parser silently.
+
+The rules on the client, each with a test: per hop, looked up by that
+hop's own host (a redirect to an unlisted host goes out anonymous; a
+redirect to a listed host carries that host's entry — the discriminator
+between per-hop lookup and a one-shot fill); the caller's
+`Authorization` wins; a configured auth scheme silences the file, whose
+preemptive `Basic` would answer a challenge nobody issued; ports play no
+part, the format having no port field. One deliberate divergence from
+`RequestBuilder::basic_auth`, stated where the header is built: the
+colon-in-login refusal exists because `("a:b", "c")` and `("a", "b:c")`
+are the same bytes on the wire, but a netrc entry's fields are explicit,
+so the encoding sends colons through exactly as curl does.

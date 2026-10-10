@@ -153,6 +153,13 @@ pub const MAX_LEGS: u8 = 4;
 // what keep `hclient::auth::Auth` the path it has always been.
 pub use hclient_core::auth::{Auth, AuthFlow, AuthRequest, AuthStep, BoxFlow};
 
+/// `.netrc` — per-host credentials from the classic file, parsed the way
+/// curl sends them. Opt-in twice over: the caller parses
+/// ([`Netrc::from_env`](netrc::Netrc::from_env)) and the builder installs
+/// ([`ClientBuilder::netrc`](crate::ClientBuilder::netrc)) — the client
+/// never reads a credential file on its own.
+pub mod netrc;
+
 /// A scheme, as the client stores it — shared by every clone.
 pub(crate) type SharedAuth = std::sync::Arc<dyn Auth + Send + Sync>; // send-bound-exception: amendment-C12
 

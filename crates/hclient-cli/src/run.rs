@@ -354,6 +354,33 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     // compile-time const rather than by an assertion here.
     let watching = !mode.is_streaming() && (cli.write_out.is_some() || cli.verbose);
     let recorder = watching.then(crate::timings::Recorder::new);
+    // The netrc is resolved here, before the client exists, because the
+    // policy is the CLI's: curl refuses an unreadable `--netrc` file
+    // rather than going out unauthenticated, and `--netrc-optional` is
+    // the caller saying a missing file is normal. A parse never fails —
+    // the format has no grammar to violate — so the only errors are
+    // read errors, and those are usage errors.
+    let netrc = if let Some(path) = &cli.netrc_file {
+        Some(
+            hclient::auth::netrc::Netrc::from_path(path)
+                .map_err(|e| Fail::Usage(format!("`--netrc-file {}`: {e}", path.display())))?,
+        )
+    } else if cli.netrc {
+        match hclient::auth::netrc::Netrc::from_env() {
+            Ok(Some(netrc)) => Some(netrc),
+            Ok(None) if cli.netrc_optional => None,
+            Ok(None) => {
+                return Err(Fail::Usage(
+                    "`--netrc`: no netrc file found (`$NETRC`, then `~/.netrc`) — \
+                     pass `--netrc-optional` to allow going without"
+                        .into(),
+                ));
+            }
+            Err(e) => return Err(Fail::Usage(format!("`--netrc`: {e}"))),
+        }
+    } else {
+        None
+    };
     let config = backend::Config {
         insecure: cli.insecure,
         resolve,
@@ -362,6 +389,7 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
         // own below. See `backend::Config::redirect`.
         redirect: mode.is_streaming().then(|| redirects(&cli)),
         timings: recorder.clone(),
+        netrc,
     };
 
     // The two streaming modes take over here. Both are opened from the
