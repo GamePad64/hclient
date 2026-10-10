@@ -114,6 +114,44 @@ pub enum RequestBody {
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::error::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 
+// The five `From` impls: `.body("text")` compiles the way reqwest's does,
+// without dragging `bytes` into every caller's manifest. They land on
+// `Full` — a `&str`/`String`/`Vec<u8>`/`Bytes` is a whole body in memory,
+// which replays for free; the factory and streaming variants have no
+// literal a conversion could mean.
+impl From<&str> for RequestBody {
+    fn from(s: &str) -> Self {
+        // `Bytes::from(&str)` needs `'static` — it stores the slice
+        // without copying. A request body has no such lifetime to offer,
+        // so this one copies, like `&[u8]` below.
+        RequestBody::Full(Bytes::copy_from_slice(s.as_bytes()))
+    }
+}
+
+impl From<String> for RequestBody {
+    fn from(s: String) -> Self {
+        RequestBody::Full(Bytes::from(s))
+    }
+}
+
+impl From<&[u8]> for RequestBody {
+    fn from(b: &[u8]) -> Self {
+        RequestBody::Full(Bytes::copy_from_slice(b))
+    }
+}
+
+impl From<Vec<u8>> for RequestBody {
+    fn from(b: Vec<u8>) -> Self {
+        RequestBody::Full(Bytes::from(b))
+    }
+}
+
+impl From<Bytes> for RequestBody {
+    fn from(b: Bytes) -> Self {
+        RequestBody::Full(b)
+    }
+}
+
 impl Debug for RequestBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -555,4 +593,46 @@ mod tests {
     // for `error.rs`'s reason: a bare `fn assert_send<T: Send>() {}` inside
     // `src` is what the `no-declared-send` guard's regex matches, and an
     // assertion outside `src` needs no exception marker at all.
+}
+
+#[cfg(test)]
+mod from_tests {
+    use super::*;
+
+    fn full(b: RequestBody) -> Bytes {
+        match b {
+            RequestBody::Full(x) => x,
+            other => panic!("the literal must land on Full, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_in_memory_literal_converts_to_full() {
+        assert_eq!(full(RequestBody::from("text")), Bytes::from_static(b"text"));
+        assert_eq!(
+            full(RequestBody::from("text".to_owned())),
+            Bytes::from_static(b"text")
+        );
+        assert_eq!(
+            full(RequestBody::from(b"bytes".as_slice())),
+            Bytes::from_static(b"bytes")
+        );
+        assert_eq!(
+            full(RequestBody::from(b"vec".to_vec())),
+            Bytes::from_static(b"vec")
+        );
+        assert_eq!(
+            full(RequestBody::from(Bytes::from_static(b"raw"))),
+            Bytes::from_static(b"raw")
+        );
+    }
+
+    #[test]
+    fn a_non_static_str_copies_rather_than_borrows() {
+        // The `&'static str` conversion in `Bytes` cannot accept a local;
+        // the copy path is what makes `.body(local_string_slice)` work.
+        let owned = String::from("local value");
+        let slice: &str = &owned[0..5];
+        assert_eq!(&full(RequestBody::from(slice))[..], b"local");
+    }
 }

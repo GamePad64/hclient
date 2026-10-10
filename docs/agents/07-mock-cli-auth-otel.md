@@ -271,6 +271,22 @@ really logs in as `#`); empty halves are sent as empty (`karl:`,
 live, so a curl that changes behaviour fails this crate instead of
 rotting the parser silently.
 
+**The ecosystem, surveyed after the fact, splits exactly on the
+library/CLI line this design drew.** CLI tools read: httpie reads the
+file automatically, and curl — the only one measured on the wire for
+this parser — reads by flag. The Python family reads by default
+(`trust_env = True` in requests and httpx), and its defaults carry two
+documented footguns this design makes structurally impossible: disabling
+netrc means `trust_env = False`, a combined switch that also kills
+environment proxies (psf/requests#2773 asks for granular control and
+has none); and a matching `.netrc` entry sends `Basic` even when the
+caller set their own `Authorization` — here the caller's header wins,
+by test. The Rust family (reqwest, ureq) and Go's net/http have no
+netrc at all. So "automatic by default" is a Python-family choice, not
+an industry norm — and our refusal of it is the same ruling that keeps
+`hclient` from reading `HTTPS_PROXY` unprompted, with the file being a
+stronger case: the proxy leaks metadata, the file leaks passwords.
+
 The rules on the client, each with a test: per hop, looked up by that
 hop's own host (a redirect to an unlisted host goes out anonymous; a
 redirect to a listed host carries that host's entry — the discriminator

@@ -159,9 +159,16 @@ impl<'a> RequestBuilder<'a> {
 
     /// Sets the request body, replacing any [`multipart`](Self::multipart)
     /// body set earlier.
+    ///
+    /// Anything that is a whole body in memory converts directly —
+    /// `&str`, `String`, `&[u8]`, `Vec<u8>`, `Bytes` — so
+    /// `.body("{\"speed\": 1}")` compiles without naming [`RequestBody`]
+    /// or depending on `bytes`. A streamed or factory-replayed body is
+    /// named: [`RequestBody::Streaming`] and the factory-replayed
+    /// variant have no literal a conversion could mean.
     #[must_use]
-    pub fn body(mut self, body: RequestBody) -> Self {
-        self.body = body;
+    pub fn body(mut self, body: impl Into<RequestBody>) -> Self {
+        self.body = body.into();
         self.multipart = None;
         self
     }
