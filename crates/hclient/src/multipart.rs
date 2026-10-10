@@ -90,6 +90,11 @@
 //! escape here would produce bytes no server has ever been written
 //! against.
 //!
+//! The consequence for a **receiver** of this crate's bodies: file names
+//! arrive in the escaped form — a part sent as `a"b.rnx` is received as
+//! `a%22b.rnx` — so a server validating names against raw punctuation
+//! must read the escaped form, not expect the original quote back.
+//!
 //! [whatwg/html#7575]: https://github.com/whatwg/html/issues/7575
 //! [`RetryKind`]: hclient_core::body::RetryKind
 //! [`RetryKind::ViaFactory`]: hclient_core::body::RetryKind::ViaFactory
