@@ -9,7 +9,10 @@
 //! `macdef` body is consumed up to the first blank line so credential-
 //! looking lines inside a macro are never credentials, a `#` at the
 //! start of a line comments the whole line out while a `#` mid-line is
-//! a literal token (`login #` really does log in as `#`), and entries
+//! a literal token on the pinned oracle — other curls read the same
+//! line as a comment to end of line, the one corner the oracle
+//! disagrees with itself on (`tests/fixtures/netrc-divergent/`) — and
+//! entries
 //! with a missing half are still used — `karl` without a password
 //! authenticates as `karl:` and a password without a login as `:pw`.
 //!
@@ -293,6 +296,27 @@ mod tests {
     /// The golden table: expected values captured from real curl 8.20
     /// sending on the wire against each fixture — `tests/netrc_curl.rs`
     /// re-captures live. One case per rule the fixtures discriminate.
+    /// The one corner the wire corpus cannot hold: a `#` mid-line is a
+    /// literal token on curl 8.20 (this host's oracle — `login #` logs
+    /// in as `#`) and a comment-to-end-of-line on the CI curls, whose
+    /// `login` keyword then waits for a value the comment ate. The
+    /// oracle disagrees with itself across versions, so the fixture
+    /// lives in `tests/fixtures/netrc-divergent/`, outside
+    /// `netrc_curl.rs`'s live comparison, and this test pins the
+    /// behaviour this crate chose — 8.20's — with the file kept beside
+    /// the others for anyone re-measuring.
+    #[test]
+    fn a_mid_line_hash_is_a_literal_on_the_pinned_curl() {
+        let text = std::fs::read_to_string(format!(
+            "{}/tests/fixtures/netrc-divergent/hash_after_token.netrc",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let netrc = Netrc::parse(&text);
+        let entry = netrc.lookup("127.0.0.1").unwrap();
+        assert_eq!((entry.login(), entry.password()), ("#", "pw-hash"));
+    }
+
     #[test]
     fn lookup_matches_curls_wire_answers() {
         let cases: &[(&str, &str, &str, &str)] = &[
@@ -324,8 +348,6 @@ mod tests {
             ("other_host_only", "127.0.0.1", "local", "pw-local"),
             // A `#` line is a comment; its tokens are not parsed.
             ("hash_line_with_tokens", "127.0.0.1", "sam", "pw-sam"),
-            // A `#` mid-line is a literal token.
-            ("hash_after_token", "127.0.0.1", "#", "pw-hash"),
         ];
         for (fixture, host, login, password) in cases {
             let text = std::fs::read_to_string(format!(
