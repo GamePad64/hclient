@@ -50,8 +50,11 @@ fn curl_sends(fixture: &Path) -> Option<String> {
         let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
         auth
     });
+    // No `-o /dev/null`: the path does not exist on Windows (curl exits
+    // 23, a write error), and the body going to the captured stdout
+    // costs nothing.
     let out = std::process::Command::new("curl")
-        .args(["-s", "-o", "/dev/null", "--max-time", "5", "--netrc-file"])
+        .args(["-s", "--max-time", "5", "--netrc-file"])
         .arg(fixture)
         .arg(format!("http://127.0.0.1:{port}/p"))
         .output()
