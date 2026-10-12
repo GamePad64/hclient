@@ -186,6 +186,20 @@ impl ClientBuilder {
     // with B1/M3 also at `execute()` for whatever the request itself set.
     /// Default timeouts for every request from this client.
     ///
+    /// Build the argument with [`Timeouts::new`] and its `with_*` setters
+    /// — `Timeouts` is `#[non_exhaustive]`, so a struct literal does not
+    /// compile from outside `hclient-core`, and `new()` is the only
+    /// constructor a caller can name:
+    ///
+    /// ```
+    /// # use hclient::Timeouts;
+    /// # use std::time::Duration;
+    /// let t = Timeouts::new()
+    ///     .with_connect(Duration::from_secs(10))
+    ///     .with_first_byte(Duration::from_secs(30));
+    /// # let _ = t;
+    /// ```
+    ///
     /// Overridden field by field by
     /// [`RequestBuilder::timeouts`](crate::RequestBuilder::timeouts); the
     /// merged result is what actually goes to the transport. A phase the
@@ -469,7 +483,12 @@ impl ClientBuilder {
     ///
     /// Replaces the client's clock with `timer`: the deadline is measured
     /// against it, so a `NoClock`-built client needs a real one supplied
-    /// here before a total timeout can be set.
+    /// here before a total timeout can be set. **A total timeout is the
+    /// one bound that cannot live on [`Timeouts`]** — it needs a clock to
+    /// measure against, and a client built without the
+    /// `default-transport` feature has none: that is
+    /// [`NoClock`](crate::NoClock), whose sleep never resolves, which is
+    /// why the clock and the bound arrive in this one call together.
     #[must_use]
     pub fn total_timeout<Tm2>(mut self, timer: Tm2, total: Duration) -> Self
     where
@@ -2669,13 +2688,20 @@ impl Client {
     /// `Client::builder(Native::new(rt, tls, dns))` with a runtime of your
     /// choice.
     ///
+    /// The trust roots come from the OS — unless the
+    /// `default-transport-webpki` feature replaced them with
+    /// Mozilla's compiled-in set, the variant for targets where reading
+    /// the OS store needs an application-side setup this crate cannot
+    /// perform (Android: a JVM the verifier panics without). See
+    /// [`DefaultTransport`] for the per-feature table.
+    ///
     /// # Errors
     ///
     /// Two, and they are told apart by [`ErrorKind`](hclient_core::error::ErrorKind):
-    /// `Rustls::with_platform_verifier()` failing to read the OS trust
-    /// store is `ErrorKind::Tls`, and a client setting the transport
-    /// cannot honour is `ErrorKind::Unsupported`, carrying the
-    /// `UnsupportedCapability` that names it as its source.
+    /// a failing read of the OS trust store is `ErrorKind::Tls` (absent
+    /// under `default-transport-webpki`, which reads nothing), and a client
+    /// setting the transport cannot honour is `ErrorKind::Unsupported`,
+    /// carrying the `UnsupportedCapability` that names it as its source.
     pub fn new() -> Result<Self, hclient_core::error::Error> {
         let transport = Self::default_native_transport()?;
         // **The machine's own proxy, honoured by default.** `HTTP_PROXY`
@@ -2754,6 +2780,11 @@ impl Client {
     pub(crate) fn default_native_transport()
     -> Result<crate::DefaultTransport, hclient_core::error::Error> {
         let rt = hclient_rt_tokio::Tokio;
+        // The webpki variant of `default-transport` wins when both are on
+        // — the preference order the feature's Cargo.toml comment states.
+        #[cfg(feature = "default-transport-webpki")]
+        let tls = hclient_tls_rustls::Rustls::with_webpki_roots();
+        #[cfg(not(feature = "default-transport-webpki"))]
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
         // No proxy here: `Client::new` is what reads the machine's settings
         // and adds them. See `DefaultTransport`.
@@ -2791,6 +2822,10 @@ impl Client {
     pub(crate) fn default_native_transport()
     -> Result<crate::DefaultTransport, hclient_core::error::Error> {
         let rt = hclient_rt_tokio::Tokio;
+        // Same preference order as the non-http3 branch above.
+        #[cfg(feature = "default-transport-webpki")]
+        let tls = hclient_tls_rustls::Rustls::with_webpki_roots();
+        #[cfg(not(feature = "default-transport-webpki"))]
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
         let tcp =
             hclient_native::Native::new(rt, tls.clone(), hclient_dns_system::SystemDns::new(rt));

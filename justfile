@@ -475,6 +475,24 @@ check-targets:
     # up.
     failed=()
     ran=0
+    # The NDK, for the one check below that compiles C: `hclient` under
+    # `default-transport-webpki` reaches rustls and through it `ring`, whose
+    # build script wants an Android clang. The GitHub runner image ships
+    # the NDK beside the SDK; this host's SDK sits under
+    # `ANDROID_HOME`. A machine with neither fails HERE, with the check
+    # named, rather than inside cargo. The versioned wrapper (API level
+    # 24) is what every NDK ships; `ring`'s probe asks for the
+    # unversioned `aarch64-linux-android-clang` only when the env names
+    # nothing.
+    for ndk_root in "${ANDROID_NDK_HOME:-}" /usr/local/lib/android/sdk/ndk/* "${ANDROID_HOME:-/nonexistent}/ndk"/*; do
+      clang="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+      if [ -x "$clang" ]; then
+        export CC_aarch64_linux_android="$clang"
+        export AR_aarch64_linux_android="$(dirname "$clang")/llvm-ar"
+        export RUSTFLAGS="-C linker=$clang"
+        break
+      fi
+    done
     check() {
       echo "==> $*"
       ran=$((ran+1))
@@ -491,6 +509,15 @@ check-targets:
     # The Android resolver, for the same reason: `android_res_nquery` is
     # declared here and called nowhere this host can run.
     check -p hclient-dns-system --target aarch64-linux-android --all-features --all-targets
+    # The webpki default transport, the feature Android demanded: the
+    # platform verifier panics mid-handshake without an application-side
+    # JVM init, so this variant is the only `Client::new()` Android can
+    # take. A plain `check`, not `--all-targets`: the crate's tests take
+    # `test-util`, a feature this line deliberately does not name — what
+    # Android must build is the library a consumer links. The variant's
+    # own tests run on the host, where `--all-features` in `test-workspace`
+    # lights this cfg and `default_transport_webpki.rs` is compiled in.
+    check -p hclient --target aarch64-linux-android --features default-transport-webpki
     # FreeBSD, whose arm was added on the owner's decision with its own
     # gap named: the symbol is established out of `lib/libc/resolv/Symbol.map`
     # and the per-thread claim is read from `resolver(3)` rather than run,

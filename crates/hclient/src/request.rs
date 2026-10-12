@@ -94,18 +94,29 @@ impl<'a> RequestBuilder<'a> {
 
     /// Sets one header, replacing any earlier value of that name.
     ///
-    /// The first build error wins and survives further calls — it isn't
-    /// overwritten by a second invalid pair, and isn't lost if a valid
-    /// `header()` call follows it.
+    /// Both sides accept what `http` itself converts: the name as an
+    /// [`http::HeaderName`] (the typed constants —
+    /// `header(http::header::USER_AGENT, ..)`) or anything string-like it
+    /// parses from, the value as an [`http::HeaderValue`] or a `&str` /
+    /// `String` it parses from. An invalid pair is this builder's first
+    /// error and survives further calls — it isn't overwritten by a
+    /// second invalid pair, and isn't lost if a valid `header()` call
+    /// follows it.
+    ///
+    /// [`http::HeaderName`]: http::HeaderName
+    /// [`http::HeaderValue`]: http::HeaderValue
     #[must_use]
-    pub fn header(mut self, name: &str, value: &str) -> Self {
+    pub fn header<N, V>(mut self, name: N, value: V) -> Self
+    where
+        N: TryInto<http::HeaderName>,
+        N::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        V: TryInto<http::HeaderValue>,
+        V::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
         if self.error.is_some() {
             return self;
         }
-        match (
-            name.parse::<http::HeaderName>(),
-            value.parse::<http::HeaderValue>(),
-        ) {
+        match (name.try_into(), value.try_into()) {
             (Ok(n), Ok(v)) => {
                 self.headers.insert(n, v);
             }
@@ -249,11 +260,8 @@ impl<'a> RequestBuilder<'a> {
     /// only `*-._` survive as punctuation. That is the set a form parser
     /// on the other end will undo.
     #[must_use]
-    pub fn query<K: AsRef<str>, V: AsRef<str>>(
-        mut self,
-        pairs: impl IntoIterator<Item = (K, V)>,
-    ) -> Self {
-        let added = hclient_proto::encode::form_urlencoded(pairs);
+    pub fn query<P: Pairs>(mut self, pairs: P) -> Self {
+        let added = pairs.encode();
         if added.is_empty() {
             return self;
         }
@@ -288,11 +296,8 @@ impl<'a> RequestBuilder<'a> {
     /// `Host:` follows one layer down, and for the same reason: a caller
     /// who set it meant it.
     #[must_use]
-    pub fn form<K: AsRef<str>, V: AsRef<str>>(
-        mut self,
-        pairs: impl IntoIterator<Item = (K, V)>,
-    ) -> Self {
-        let encoded = hclient_proto::encode::form_urlencoded(pairs);
+    pub fn form<P: Pairs>(mut self, pairs: P) -> Self {
+        let encoded = pairs.encode();
         if !self.headers.contains_key(http::header::CONTENT_TYPE) {
             self.headers.insert(
                 http::header::CONTENT_TYPE,
@@ -309,7 +314,10 @@ impl<'a> RequestBuilder<'a> {
     /// Behind the `json` feature, off by default, for the reason
     /// [`crate::Collected::json`] is: a caller who streams bytes should
     /// not link a serialiser, and on wasm that cost is paid in download
-    /// size.
+    /// size. The same feature also carries the response-side
+    /// [`Collected::json`](crate::Collected::json) — one key for both
+    /// directions, unlike the compression features a `gzip`/`brotli`
+    /// build already names.
     ///
     /// **Serialised here rather than at send time**, so a value that
     /// cannot be serialised is the builder's first error — surfacing out
@@ -484,6 +492,14 @@ impl<'a> RequestBuilder<'a> {
     /// result against the transport's `Capabilities`, so a phase the
     /// backend can't do becomes `ErrorKind::Unsupported` out of `send()`,
     /// not a value silently dropped.
+    ///
+    /// Build the argument with
+    /// [`Timeouts::new`](hclient_core::req::Timeouts::new) and its
+    /// `with_*` setters — the type is `#[non_exhaustive]`, so a struct
+    /// literal does not compile from outside `hclient-core`. These four
+    /// phase bounds are **not** the whole-operation bound: that one is
+    /// [`ClientBuilder::total_timeout`](crate::ClientBuilder::total_timeout)
+    /// and needs a clock.
     #[must_use]
     pub fn timeouts(mut self, t: hclient_core::req::Timeouts) -> Self {
         self.extensions.insert(t);
@@ -737,5 +753,63 @@ impl<'a> RequestBuilder<'a> {
         // builder resolved against `base_url`, so a chain that never
         // redirected reports the same value it always did.
         Ok(Response::new(resp, final_uri))
+    }
+}
+
+/// The pair collections [`RequestBuilder::query`] and
+/// [`RequestBuilder::form`] accept.
+///
+/// **A sealed trait rather than a bare `impl IntoIterator`, because the
+/// point is the borrowed shapes.** `&[("k", "v")]` iterates as
+/// `&(&str, &str)` — a reference to the pair, not the pair — which no
+/// generic over `Item = (K, V)` can name without the caller annotating a
+/// copy (`query(&[("k", "v")].map(|p| (p.0, p.1)))`-shaped workarounds,
+/// the exact friction that sent this trait's first consumer elsewhere).
+/// The four impls below cover the forms that arise in practice: the owned
+/// array the docs led with, the borrowed slice, the mixed
+/// `Vec<(&str, String)>` built with conditional pushes, and references to
+/// both halves.
+///
+/// Sealed: every new shape is one more `impl` here, an additive release,
+/// where an open trait would invite downstream implementations this
+/// crate can never evolve away from.
+pub trait Pairs {
+    /// Encode with the WHATWG form serialiser — the one rule both
+    /// setters share.
+    fn encode(self) -> String;
+}
+
+/// The shared body of every impl below: iterate, append. Written once so
+/// the four impls cannot drift into two escape sets.
+macro_rules! pairs_encode {
+    (owned: $pairs:expr) => {
+        hclient_proto::encode::form_urlencoded($pairs)
+    };
+    (ref: $pairs:expr) => {
+        hclient_proto::encode::form_urlencoded_ref($pairs)
+    };
+}
+
+impl<K: AsRef<str>, V: AsRef<str>, const N: usize> Pairs for [(K, V); N] {
+    fn encode(self) -> String {
+        pairs_encode!(owned: self)
+    }
+}
+
+impl<K: AsRef<str>, V: AsRef<str>, const N: usize> Pairs for &[(K, V); N] {
+    fn encode(self) -> String {
+        pairs_encode!(ref: self.iter())
+    }
+}
+
+impl<K: AsRef<str>, V: AsRef<str>> Pairs for &[(K, V)] {
+    fn encode(self) -> String {
+        pairs_encode!(ref: self.iter())
+    }
+}
+
+impl<K: AsRef<str>, V: AsRef<str>> Pairs for Vec<(K, V)> {
+    fn encode(self) -> String {
+        pairs_encode!(owned: self)
     }
 }

@@ -714,6 +714,18 @@ pub use response::{Collected, Response};
 ///   the `Blocking` capability. Pulls in `tokio` unconditionally (see the
 ///   README, "What's in the dependency graph": `hyper` depends on `tokio`
 ///   even on the HTTP/1 path, not just this branch).
+/// - Same branch, with `default-transport-webpki` instead: the same
+///   `Native` stack over Mozilla's compiled-in root set
+///   (`webpki-roots`) — the variant for targets where the OS store needs
+///   an application-side setup this crate cannot perform. Android is the
+///   case that demanded it: the platform verifier's first handshake
+///   panics unless the application initialised a JVM for it, so
+///   `default-transport` was not takeable there at all. The trade:
+///   enterprise MDM anchors and roots the OS learned after publication
+///   are invisible. Both features on means **this one wins**; the
+///   platform verifier's crates stay in the graph all the same (Cargo
+///   unifies features), which is why the two are two features and not
+///   one flipping a default.
 /// - With the `default-transport` feature on `wasm32-unknown-unknown`
 ///   (browser): `hclient_fetch::Fetch` — the second branch below.
 ///   `Client::new()` on this target returns `Self`, not a

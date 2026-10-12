@@ -122,6 +122,37 @@ default-transport = [
     # transport at all.
     "hclient-native/proxy",
 ]
+# The webpki variant of `default-transport`: `Client::new()` builds the
+# same `Native` stack over `Rustls::with_webpki_roots()` — Mozilla's root
+# set compiled in — instead of the OS trust store.
+#
+# **Why it exists: Android.** The platform verifier needs a JVM: the first
+# TLS handshake through it calls `rustls_platform_verifier::android`'s
+# `global()`, which `expect`s that the application called `init_with_env`
+# — no call, a panic mid-handshake. An app that cannot (or will not) wire
+# that up has no way to take `default-transport` at all, which is the
+# entry barrier a real porting effort reported: the five-crate manual
+# composition existed because the default could not be taken. This
+# feature is the answer to that report.
+#
+# **The trade, stated**: the compiled-in root set does not see roots the
+# OS learned after the crate was published — an enterprise MDM anchor, a
+# newly-minted CA — and a machine that mistrusts one of Mozilla's roots
+# through its own settings is not honoured. `Client::new()` under this
+# feature is "just works" for the public web only; a caller with private
+# PKI keeps the platform verifier and its init duty.
+#
+# `default-transport` stays in the list rather than being implied, so the
+# two variants read as two variants — and both may be enabled at once, in
+# which case **webpki wins and the platform verifier is dead weight**: a
+# cfg picks one constructor, and a preference order has to exist for the
+# build to be deterministic. The loser's crates stay in the graph (Cargo
+# unifies features), so a graph-count claim about `default-transport`
+# does not carry to this feature.
+default-transport-webpki = [
+    "default-transport",
+    "hclient-tls-rustls/webpki-roots",
+]
 # HTTP/2 and HTTP/3 for `Client::new()`, and the pair is deliberately two
 # features per protocol rather than one.
 #

@@ -513,6 +513,12 @@ impl Collected {
     }
 
     /// The whole response body, as collected bytes.
+    ///
+    /// **A reference, and `Bytes` clones its handle, not its data** —
+    /// `body.bytes().clone()` is another view over the same allocation,
+    /// free but shared. A caller who wants an owned copy of the bytes
+    /// wants `Bytes::to_vec` (a `Vec<u8>`); a caller who wants owned text
+    /// wants [`Self::text`], which copies and validates in one step.
     pub fn bytes(&self) -> &Bytes {
         &self.body
     }
@@ -635,7 +641,12 @@ impl Collected {
     ///
     /// Behind the `json` feature, off by default: `serde`/`serde_json`
     /// aren't needed by a consumer who only streams the body or reads it
-    /// as bytes, and on wasm they cost download size.
+    /// as bytes, and on wasm they cost download size. **The feature is
+    /// `json` — not `gzip` or anything compression-shaped, and not
+    /// reqwest's, where one `json` key covered both directions.** The
+    /// line is `features = ["json"]` on `hclient`, and the same feature
+    /// also carries the request-side
+    /// [`RequestBuilder::json`](crate::RequestBuilder::json).
     ///
     /// # Errors
     ///

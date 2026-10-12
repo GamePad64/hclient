@@ -104,6 +104,62 @@ fn query_appends_and_never_replaces() {
     );
 }
 
+/// **A typed header name compiles.** `header(http::header::USER_AGENT, ..)`
+/// is the shape a reqwest migrant carries over — the static names are how
+/// `http` keeps a typo from compiling — and `(&str, &str)` alone refused
+/// it. The value side keeps taking what a header value is built from.
+#[test]
+fn a_typed_header_name_and_str_value_reach_the_wire() {
+    let (addr, seen) = recording_server();
+    rt().block_on(async move {
+        let c = client();
+        let url = format!("http://127.0.0.1:{}/typed", addr.port());
+        let _ = c
+            .get(&url)
+            .header(http::header::USER_AGENT, "hclient/typed")
+            .send()
+            .await
+            .expect("send");
+    });
+    let head = seen.lock().expect("log")[0].clone();
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("user-agent: hclient/typed"),
+        "the typed name and plain value both landed: {head:?}"
+    );
+}
+
+/// **A borrowed slice compiles.** `&[("k", "v")]` iterates as
+/// `&(&str, &str)` — the shape a reqwest migrant reaches for first, and
+/// the one `IntoIterator<Item = (K, V)>` refused. The wire answer is the
+/// same query the owned form produces, asserted beside it in one request.
+/// The slice comes from a binding rather than a temporary so the
+/// reference is load-bearing — a `&` on a literal is a borrow clippy
+/// rightly calls needless now that an array owns a `Pairs` impl too.
+#[test]
+fn a_borrowed_slice_of_pairs_compiles_and_encodes_the_same() {
+    let (addr, seen) = recording_server();
+    rt().block_on(async move {
+        let c = client();
+        let url = format!("http://127.0.0.1:{}/slice", addr.port());
+        let owned = String::from("mixed");
+        let pairs = [("q", "one two")];
+        let _ = c
+            .get(&url)
+            .query(&pairs[..])
+            .query(Vec::<(&str, String)>::from([("page", owned)]))
+            .send()
+            .await
+            .expect("send");
+    });
+    let head = seen.lock().expect("log")[0].clone();
+    assert!(
+        head.starts_with("GET /slice?q=one+two&page=mixed HTTP/1.1\r\n"),
+        "borrowed slice and mixed owned vector, one query: {:?}",
+        head.lines().next()
+    );
+}
+
 /// **The form serialiser, not RFC 3986's**, which is the difference that
 /// silently corrupts data rather than failing: a `+` sent as itself reads
 /// back as a space.
