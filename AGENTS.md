@@ -333,6 +333,16 @@ answer**: it would fail for an upstream release that broke nothing here,
 and a check that cries wolf is silenced — the mirror of this file's rule
 about a check that cannot fail.
 
+**The full crate list lives in the root `README.md`** — six families, one
+table each, and `just packaging` derives the count so no number here has
+to be kept by hand. This file once named four shipped crates nowhere —
+`hclient-tower`, `hclient-rt-embassy`, `hclient-dns-hickory`,
+`hclient-mock` — because the v0.1 *deliberately-not-done* list had said
+*"hickory and DoH; middleware and `hclient-tower`"* and two of those
+things then existed anyway; the list was right about v0.1 and wrong about
+forever, which is the usual way a scoping decision rots into a false
+claim. The README is the inventory; this file is the argument.
+
 **That leaf is gone, and the paragraph it replaces is kept because the
 reasoning was right and the conclusion drawn from it was not.** It read:
 both middle rows are the same `hyper` fact measured twice; `hyper` depends
@@ -407,15 +417,15 @@ section titles unchanged:
 | part | what it holds |
 |---|---|
 | [Releases and versions](docs/agents/01-releases-and-versions.md) | the index, the pre-release series, who is stable and why, the semver gates, the MSRV policy, the publish order |
-| [The TLS backends](docs/agents/02-tls-backends.md) | native-tls as a non-wrapper, the second `unsafe`, mTLS identities |
+| [The TLS backends](docs/agents/02-tls-backends.md) | native-tls as a non-wrapper, the second `unsafe`, mTLS identities, the bare-metal and esp-idf lines |
 | [HTTP/3 and WebTransport](docs/agents/03-http3-and-webtransport.md) | the QUIC arm, 0-RTT, sessions, datagrams, GOAWAY |
 | [Egress filters](docs/agents/04-egress-filters.md) | `Dial`, `EgressFilter`, TLS through a filter, datagrams through a filter |
 | [The seams](docs/agents/05-seams.md) | the trait review, `Resolve`, the byte-stream seam, the QUIC TLS seam, `embedded-nal-async` |
-| [Send, and embassy](docs/agents/06-send-and-embassy.md) | the `!Send` counterexample, `SendTransport`, channels |
+| [Send, and embassy](docs/agents/06-send-and-embassy.md) | the `!Send` counterexample, `SendTransport`, channels, `hclient-rt-embassy`'s real value |
 | [Mock, CLI, auth, OpenTelemetry](docs/agents/07-mock-cli-auth-otel.md) | `hclient-mock`, `hc`, the auth seam, `hclient-otel` |
-| [The client surface](docs/agents/08-client-surface.md) | tower, retry, redirect, the consumer report, the CLI's backend refusal |
+| [The client surface](docs/agents/08-client-surface.md) | `hclient-tower`, retry, redirect, the consumer report, the CLI's backend refusal |
 | [hclient-idn](docs/agents/09-idn.md) | UTS 46 by target, the backends, the corpus, the cost |
-| [DNS and its decoders](docs/agents/10-dns-decoders.md) | `domain` over RDATA, the two granularities |
+| [DNS and its decoders](docs/agents/10-dns-decoders.md) | `domain` over RDATA, the two granularities, `hclient-dns-hickory`, DoH |
 | [The state stores](docs/agents/11-state-stores.md) | cache, cookies, the kv seam, HSTS, alt-svc, the one-backend question |
 | [The parsers](docs/agents/12-parsers.md) | the date parsers, the header grammars |
 | [Native's internals](docs/agents/13-native-internals.md) | 1xx, the flake hunts, Unix sockets, `Capabilities`, socket options |

@@ -1789,54 +1789,55 @@ sets `Accept-Encoding` keeps it exactly (`grpc-yardstick.md` row 20).
 
 ## 8. Five things in the repository's own record that this reading contradicts
 
-Recorded here rather than fixed, because each is somebody's call.
+Four of the five have since been fixed at the source; each entry says
+where. The fifth — the 1.0 condition — is recorded for the owner, because
+which document yields is a decision, not a correction.
 
-**1. `README.md` is stale by three versions.** It says *"v0.1 is HTTP/1.1
-over those three backends. Connection pooling, HTTP/2 and /3, streaming
-request bodies and WebSocket are not built yet"*. All five have shipped, and
-there are five backends rather than three. It is the first file a reader
-opens.
+**1. ~~`README.md` is stale by three versions~~ — fixed in the README
+itself.** The sentence it quoted (*"v0.1 is HTTP/1.1 over those three
+backends. Connection pooling, HTTP/2 and /3, streaming request bodies and
+WebSocket are not built yet"*) is gone: the README now states HTTP/1.1,
+HTTP/2 and HTTP/3 as spoken, pooling included, and names the five
+backends and their crates.
 
-**2. AGENTS.md does not mention four crates that exist.**
-`hclient-tower`, `hclient-rt-embassy`, `hclient-dns-hickory` and
-`hclient-mock` appear nowhere in it (grepped). Two of them are listed in
-the v0.1 *deliberately not done* list as things it would not
-do — *"hickory and DoH; middleware and `hclient-tower`"* — and both now
-exist. The DoH half of that sentence *was* updated (AGENTS.md has a section
-on `hclient-dns-doh`); the hickory and tower halves were not.
+**2. ~~AGENTS.md does not mention four crates that exist~~ — fixed in
+AGENTS.md.** The paragraph now standing at the end of the dependency-graph
+section points at the README as the inventory (six families,
+`just packaging` derives the count), names the four crates this entry
+found missing — `hclient-tower`, `hclient-rt-embassy`,
+`hclient-dns-hickory`, `hclient-mock` — and records why they went
+unnamed: the v0.1 *deliberately-not-done* list had said *"hickory and
+DoH; middleware and `hclient-tower`"*, and two of those things existed
+anyway. The record table's own rows now name them too.
 
-**3. "Microcontrollers are not reachable today" is now half true.**
-AGENTS.md says so and names two obstacles, `http` 1.x and `url`. `url` is
-gone and `hclient-rt-embassy` exists — `embassy-net` sockets, `embassy-time`
-clock, running under `embassy_executor::Executor`, with a CI job
-(`embassy-tests-link-under-a-strict-linker`) watching it. The crate still
-imports `std::time::Duration`, so the `http` 1.x obstacle is intact and a
-bare-metal target is still out; a device *with* `std` — esp-idf — is not.
-The sentence should distinguish the two.
+**3. ~~"Microcontrollers are not reachable today" is half true~~ — fixed
+in `docs/agents/02-tls-backends.md`.** The passage there now states both
+sides the entry asked it to distinguish: `url` is gone from the graph,
+`hclient-rt-embassy` exists, and esp-idf — a device *with* `std` — is
+reachable through `std::net` + `hclient-rt-smol`/`hclient-rt-tokio`
+(measured: `esp-idf-svc` integrates `embassy-sync`/`embassy-time-driver`
+but **not** `embassy-net`, so `Native<Embassy, ..>` was the wrong pairing
+in both directions); bare metal stays out on the `http` 1.x obstacle
+alone.
 
 **4. The design spec's 1.0 condition "not a single foreign type remains in
-the public API" is contradicted by AGENTS.md's position on `http`**, which
-argues that `http::{Request, Response, HeaderMap, Uri, Method}` in ten
-crates' public APIs is correct and that `std` is required because of it.
-These cannot both stand. AGENTS.md is the contract and the spec is the older
-document, so the spec's condition is the one that should move — but it is
-currently the only written statement of what 1.0 requires.
+the public API" is contradicted by AGENTS.md's position on `http`** — the
+owner's, kept. AGENTS.md argues that `http::{Request, Response, HeaderMap,
+Uri, Method}` in ten crates' public APIs is correct and that `std` is
+required because of it; the spec says the opposite; both cannot stand.
+AGENTS.md is the contract and the spec the older document, so the spec's
+condition is the one that should move — but it is currently the only
+written statement of what 1.0 requires, which is why replacing it is a
+decision rather than a fix.
 
-**5. The first item in `hclient-urlsession`'s justification is already
-reachable without it.** AGENTS.md says the crate *"exists for the list a
-userspace stack cannot reach on an Apple platform: enterprise roots pushed
-by MDM, per-app VPN, the system proxy and its PAC, background transfer."*
-The **first** of those four is not on that list. `rustls-platform-verifier`
-0.7.0 — which is what `Rustls::with_platform_verifier()` and therefore
-`DefaultTransport` already use — evaluates through
-`SecTrust::create_with_certificates` with a `SecPolicy::create_ssl`
-(`src/verification/apple.rs:130-138`), which is an evaluation against the
-system trust settings, MDM-installed anchors included. It even goes out of
-its way to *avoid* `SecTrustSetAnchorCertificates` because that call
-"disables the trusting of any other anchors" (`:176`). The other three
-items stand, and so does the redirect argument that follows them in
-AGENTS.md, which is the crate's strongest one anyway. One sentence wants a
-correction, not the section.
+**5. ~~The first item in `hclient-urlsession`'s justification is already
+reachable without it~~ — fixed in `docs/agents/14-client-behaviours.md`.**
+That file now says so directly: `rustls-platform-verifier` 0.7.0 — what
+`DefaultTransport` already uses — evaluates against the system trust
+settings, MDM anchors included (`SecTrust::create_with_certificates`,
+deliberately avoiding the anchor-narrowing call), so the crate's list is
+*per-app VPN, the system proxy and its PAC, and background transfer* —
+three items, not four, with the redirect argument the strongest one.
 
 ---
 
