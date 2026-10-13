@@ -62,8 +62,9 @@ pub fn form_urlencoded<K: AsRef<str>, V: AsRef<str>>(
     ser.finish()
 }
 
-/// [`form_urlencoded`] over an iterator whose items are **references to**
-/// pairs — what `&[(K, V)]` and `&[(K, V); N]` iterate as.
+/// [`form_urlencoded`](fn@form_urlencoded) over an iterator whose items
+/// are **references to** pairs — what `&[(K, V)]` and `&[(K, V); N]`
+/// iterate as.
 ///
 /// A second function rather than a wider first one because the two item
 /// shapes have no common bound a caller could name: `Item = (K, V)` and

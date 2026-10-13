@@ -2693,7 +2693,8 @@ impl Client {
     /// Mozilla's compiled-in set, the variant for targets where reading
     /// the OS store needs an application-side setup this crate cannot
     /// perform (Android: a JVM the verifier panics without). See
-    /// [`DefaultTransport`] for the per-feature table.
+    /// [`DefaultTransport`](crate::DefaultTransport) for the per-feature
+    /// table.
     ///
     /// # Errors
     ///
