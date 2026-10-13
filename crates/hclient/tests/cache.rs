@@ -374,3 +374,27 @@ fn one_conditional_header_from_the_caller_is_enough_to_stand_the_cache_aside() {
         });
     }
 }
+
+/// **The getter answers what was installed — and `None` when nothing
+/// was.** Its own mutation, `-> None`, kept a 604-test run green: the
+/// builder side is covered widely and the inspector not at all, which is
+/// the `cookie_kv_send.rs` shape turned around. Both halves asserted
+/// together because a getter that always said `Some` or always `None`
+/// would pass either alone.
+#[test]
+fn the_cache_getter_reports_what_was_installed() {
+    let _ = rt(); // the runtime the client below sends nothing on; built for shape parity
+    let with = Client::builder(transport())
+        .cache(HttpCache::new())
+        .build()
+        .expect("build");
+    assert!(
+        with.cache().is_some(),
+        "a client built with a cache reports it"
+    );
+    let without = Client::builder(transport()).build().expect("build");
+    assert!(
+        without.cache().is_none(),
+        "a client built without a cache says so"
+    );
+}
