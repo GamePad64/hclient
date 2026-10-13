@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/GamePad64/hclient/compare/hclient-proxy-v0.1.0...hclient-proxy-v0.1.1) - 2026-10-13
+
+### Other
+
+- updated the following local packages: hclient-core, hclient-proto, hclient-rt
+
 ## [0.1.0](https://github.com/GamePad64/hclient/compare/hclient-proxy-v0.1.0-alpha.16...hclient-proxy-v0.1.0) - 2026-10-06
 
 ### Fixed

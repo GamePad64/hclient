@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.16](https://github.com/GamePad64/hclient/compare/hclient-webtransport-v0.1.0-alpha.15...hclient-webtransport-v0.1.0-alpha.16) - 2026-10-13
+
+### Other
+
+- updated the following local packages: hclient-core
+
 ## [0.1.0-alpha.15](https://github.com/GamePad64/hclient/compare/hclient-webtransport-v0.1.0-alpha.14...hclient-webtransport-v0.1.0-alpha.15) - 2026-10-06
 
 ### Other

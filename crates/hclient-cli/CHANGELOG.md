@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.2.5...hclient-cli-v0.2.6) - 2026-10-13
+
+### Added
+
+- *(auth)* .netrc, parsed the way curl sends it
+
 ## [0.2.5](https://github.com/GamePad64/hclient/compare/hclient-cli-v0.2.4...hclient-cli-v0.2.5) - 2026-10-06
 
 ### Other

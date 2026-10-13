@@ -9,9 +9,9 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-hclient-proxy = { path = "../hclient-proxy", version = "0.1.0" }
+hclient-proxy = { path = "../hclient-proxy", version = "0.1.1" }
 hclient-core  = { workspace = true }
-hclient-rt    = { path = "../hclient-rt", version = "0.1.3" }
+hclient-rt    = { path = "../hclient-rt", version = "0.1.4" }
 bytes         = { workspace = true }
 http          = { workspace = true }
 thiserror     = { workspace = true }

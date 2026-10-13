@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/GamePad64/hclient/compare/hclient-core-v0.2.4...hclient-core-v0.2.5) - 2026-10-13
+
+### Added
+
+- *(core)* From literals for RequestBody, and .body takes impl Into
+
 ## [0.2.4](https://github.com/GamePad64/hclient/compare/hclient-core-v0.2.3...hclient-core-v0.2.4) - 2026-10-06
 
 ### Added

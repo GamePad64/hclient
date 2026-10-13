@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.20](https://github.com/GamePad64/hclient/compare/hclient-tungstenite-v0.1.0-alpha.19...hclient-tungstenite-v0.1.0-alpha.20) - 2026-10-13
+
+### Other
+
+- updated the following local packages: hclient-core, hclient, hclient-dns, hclient-rt, hclient-dns-system, hclient-tls, hclient-native, hclient-rt-tokio, hclient-tls-rustls
+
 ## [0.1.0-alpha.19](https://github.com/GamePad64/hclient/compare/hclient-tungstenite-v0.1.0-alpha.18...hclient-tungstenite-v0.1.0-alpha.19) - 2026-10-06
 
 ### Other

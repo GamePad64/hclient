@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.1...hclient-proto-v0.1.2) - 2026-10-13
+
+### Added
+
+- *(client)* the porting report answered — borrowed pairs, typed header names, and a default transport Android can take
+
+### Fixed
+
+- *(docs)* two links the all-features render could not see
+
 ## [0.1.1](https://github.com/GamePad64/hclient/compare/hclient-proto-v0.1.0...hclient-proto-v0.1.1) - 2026-10-05
 
 ### Other

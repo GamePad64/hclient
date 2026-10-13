@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.20](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.19...hclient-v0.1.0-alpha.20) - 2026-10-13
+
+### Added
+
+- *(client)* the porting report answered — borrowed pairs, typed header names, and a default transport Android can take
+- *(auth)* Client::new() honours the machine's .netrc
+- *(core)* From literals for RequestBody, and .body takes impl Into
+- *(auth)* .netrc, parsed the way curl sends it
+
+### Fixed
+
+- *(docs)* two links the all-features render could not see
+- *(netrc)* the drift guard's curl invocation drops -o /dev/null
+- *(netrc)* the oracle disagrees with itself — the corner leaves the wire corpus
+
+### Other
+
+- *(cache)* the getter, not only the builder
+- *(multipart)* the receiver sees the escaped form
+
 ## [0.1.0-alpha.19](https://github.com/GamePad64/hclient/compare/hclient-v0.1.0-alpha.18...hclient-v0.1.0-alpha.19) - 2026-10-06
 
 ### Other

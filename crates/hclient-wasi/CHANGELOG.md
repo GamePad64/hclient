@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.6...hclient-wasi-v0.1.7) - 2026-10-13
+
+### Other
+
+- updated the following local packages: hclient-core, hclient
+
 ## [0.1.6](https://github.com/GamePad64/hclient/compare/hclient-wasi-v0.1.5...hclient-wasi-v0.1.6) - 2026-10-06
 
 ### Added
