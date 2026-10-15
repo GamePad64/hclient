@@ -1,0 +1,58 @@
+---
+title: "Porting from reqwest"
+description: "The migration map: what maps one to one, what changes shape, and the friction points real ports hit."
+---
+
+# Porting from reqwest
+
+The first real migration off reqwest onto this family — a ~20-file Rust
+workspace — finished with **zero runtime defects in this client** and a
+list of ergonomics notes, every one of which is now fixed. This page is
+the map that port produced, checked against the current API.
+
+## The mapping
+
+| reqwest | hclient |
+|---|---|
+| `Client::new()` | `hclient::Client::new()?` behind `--features default-transport` |
+| `client.get(url)` | `client.get(url)` — the builder is the same shape |
+| `.query(&[("k","v")])` | `.query(&[("k","v")])` — borrowed slices compile; so do owned arrays and mixed `Vec<(&str, String)>` |
+| `.header(header::USER_AGENT, v)` | `.header(http::header::USER_AGENT, v)` — typed names accepted, same as `&str` |
+| `.body("raw")` | `.body("raw")` — `&str`/`String`/`&[u8]`/`Vec<u8>`/`Bytes` convert directly; no `bytes` dependency needed |
+| `.json(&value)` / `.json::<T>()` | `.json(&value)` to send, `.json::<T>()` on the collected response — both behind the `json` feature (one key, both directions) |
+| `.basic_auth(u, Some(p))` | `.basic_auth(u, p)` — plus the machine's `.netrc` honoured by `Client::new()` by default |
+| `gzip`/`brotli`/`deflate`/`zstd` features | same four, same names, each optional |
+| `.timeout(d)` | four phase bounds: `.timeouts(Timeouts::new().with_connect(..)...)`; a whole-operation bound is `.total_timeout(clock, d)` |
+| `Response::json::<T>()` | `.send().await?.collect().await?.json::<T>()?` — collection is explicit |
+| `.bytes()` | `.bytes()` on the collected body — a `&Bytes`; clone is a handle, `to_vec()` is the copy |
+| `mockito`/`wiremock` | the `test-util` feature's `MockTransport` — scripted responses, recorded requests, no dependency to vendor |
+
+## What changed shape
+
+**The response is collected explicitly.** Streaming is the default shape:
+`send()` gives a `Response`, and `.collect().await?` gives `Collected` —
+status, headers, URL and the whole body, readable as `text()`, `json()`
+or `bytes()`. Nothing reads the body twice by accident.
+
+**Timeouts are phases, not one number.** `resolve` / `connect` /
+`first_byte` / `between_bytes`, each optional, each told apart in the
+error when one trips. A whole-operation bound — every hop and retry
+together — is a separate `total_timeout` with a clock, because a total
+bound needs something to measure against.
+
+**The machine's settings are honoured by the constructor.**
+`Client::new()` reads `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` and the
+machine's `.netrc` — a caller's own `Authorization` header wins over the
+file. `Client::builder(..)` reads nothing: the explicit chain is the
+opt-out.
+
+**A backend that cannot is a compile-or-build error.** A redirect policy
+against a backend that follows redirects internally (the browser) is
+refused at `build()` with the capability named — not silently ignored.
+
+## The one thing reqwest has that this does not
+
+A default-on everything. Here, cookies, cache and HSTS are opt-ins, each
+a crate; the json feature is opt-in, serde is not everyone's tax; HTTP/2
+and HTTP/3 are feature-gated. The graph you don't use is not in your
+build — which is the same list read from the other end.

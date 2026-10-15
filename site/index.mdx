@@ -1,0 +1,46 @@
+---
+title: "hclient"
+description: "Cross-platform async HTTP client: one codebase for native, browser, and WASI."
+---
+
+# hclient
+
+The same application code builds for native, browser and WASI — the
+transport is swapped out, not buried under `#[cfg]`.
+
+```rust
+let client = hclient::Client::builder(transport).build()?;
+let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+```
+
+On native, with the `default-transport` feature, one constructor does it
+all — and honours the machine like a browser user's client would:
+
+```rust
+let client = hclient::Client::new()?; // needs an ambient tokio runtime
+let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+```
+
+## What makes it different
+
+- **One `Client`, no type parameters.** A library that takes a client
+  writes `fn f(c: &hclient::Client)` — no transport, no clock, no `where`
+  clause pushed to its own callers.
+- **A capability model that refuses at `build()`.** A setting a backend
+  cannot honour is a typed error, not a value quietly dropped.
+- **Every seam has more than one part behind it.** rustls or the
+  platform's TLS; the system resolver, DoH or hickory; tokio, smol or
+  embassy — and four ambient transports (native, browser `fetch`,
+  `wasi:http`, Apple's `URLSession`) that own no connection at all.
+- **HTTP/1.1, HTTP/2 and HTTP/3** on one transport, chosen per origin by
+  its HTTPS record; WebSocket and WebTransport behind seams of their own.
+
+## Where to go
+
+- [Quick start](/quickstart) — install and first request.
+- [Choosing a transport](/choosing-a-transport) — the seam tour.
+- [API reference](https://docs.rs/hclient) — the rendered docs, one page
+  per crate.
+
+The rendered API lives on [docs.rs](https://docs.rs/hclient); this site
+carries the guides.

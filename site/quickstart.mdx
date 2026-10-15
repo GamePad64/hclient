@@ -1,0 +1,86 @@
+---
+title: "Quick start"
+description: "Install hclient, make the first request, and pick the constructor that fits."
+---
+
+# Quick start
+
+## Install
+
+```bash
+cargo add hclient --features default-transport
+```
+
+The flag is deliberate — see [why not default](#why-not-default). Without
+it, `hclient` is the client logic over a transport **you** supply.
+
+## First request
+
+With the feature, on native (an ambient tokio runtime required):
+
+```rust
+let client = hclient::Client::new()?;
+
+let text = client
+    .get("https://example.com")
+    .send()
+    .await?
+    .collect()
+    .await?
+    .text()?;
+println!("{text}");
+```
+
+In a browser (`wasm32-unknown-unknown`), the same lines minus the `?` —
+`Client::new()` is infallible there, because `fetch`'s constructor is:
+
+```rust
+let client = hclient::Client::new();
+```
+
+Over any other transport, the explicit form — and this is the same builder
+on every target:
+
+```rust
+let client = hclient::Client::builder(transport).build()?;
+```
+
+## What the client does for you
+
+Redirects, decompression, `multipart/form-data`, `.json()` and `.form()`
+bodies, basic/bearer auth, per-request timeouts (four phase bounds), the
+`Link:` header resolved against the URL that answered. Cookies, an
+RFC 9111 cache and HSTS are one opt-in each on the builder — every one of
+them a crate you don't pull unless you ask:
+
+```rust
+let client = hclient::Client::new()?
+    .cookies(hclient::cookie::CookieJar::new())
+    .cache(hclient::cache::HttpCache::new());
+```
+
+## Why not default
+
+A default transport would be a floor, not a convenience: one careless
+crate in a dependency tree would put the whole native stack — runtime,
+TLS, resolver — into every graph, including the ones with no room for it.
+Features are how the choice stays additive.
+
+## Testing without a network
+
+The `test-util` feature carries a mock transport — scripted responses,
+recorded requests, a controllable clock:
+
+```rust
+let m = hclient::mock::MockTransport::new();
+m.push_response(http::Response::builder().status(200).body("").unwrap());
+let c = hclient::Client::builder(m.clone()).build()?;
+// requests the mock recorded are in m.requests()
+```
+
+## Versions
+
+The family is published as pre-releases on purpose (`0.1.0-alpha.N`):
+the seams are young. `cargo add` selects a pre-release today because
+there is no stable yet; the moment `0.1.0` exists, that is what it takes.
+[API stability](/api-stability) says what the seams promise.

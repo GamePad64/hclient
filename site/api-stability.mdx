@@ -1,0 +1,60 @@
+---
+title: "API stability"
+description: "What the pre-release version means, what the seams promise, and what will force a break."
+---
+
+# API stability
+
+## The version is a pre-release on purpose
+
+The family publishes as `0.1.0-alpha.N` and similar: the seams are young
+rather than settled, and a pre-release says so in the one place everyone
+looks. What that does **and does not** do:
+
+- `cargo add hclient` **selects the pre-release today** — measured —
+  because there is no stable release to prefer. The moment `0.1.0`
+  exists, `cargo add` takes that instead, and nobody reaches a
+  pre-release without asking. The guard starts working at the first
+  stable release.
+- Semver gates run in CI against the published crates, so a break is
+  caught before it ships, not after.
+
+## Who is "outside" for each public type
+
+`#[non_exhaustive]` protects the reader and blocks the writer. Which one
+needs protecting decides where the attribute goes:
+
+| the type crosses | what protects the outside |
+|---|---|
+| library → user (`Event`, `Capabilities`) | `#[non_exhaustive]` alone |
+| user → library (`TcpOpts`, `Timeouts`) | the attribute **plus setters** — or nothing, where setters already exist |
+| implementor → user (`Connected`, `TlsInfo`) | the attribute **plus a constructor**: an out-of-tree backend must be able to build it |
+
+The third row is the easy one to get wrong: a backend author is a user of
+this library, and the attribute alone would lock them out of producing
+the very value they exist to produce.
+
+## What already moved
+
+Every breaking change this workspace has taken is recorded with its
+reason, and the audit that ranked what *will* move — measured against
+this repository's own history rather than reasoned from principle — is
+tracked in the repository
+([`docs/api-stability.md`](https://github.com/GamePad64/hclient/blob/main/docs/api-stability.md)).
+The short version of the ranking:
+
+1. Builder setters are the cheapest place to be wrong: renaming one is a
+   break, adding one never is. The surface grows only additively.
+2. Errors are concrete types with `source()` wired — never `anyhow`,
+   never strings — so a match on the error kind survives everything
+   except a new variant, which is what `#[non_exhaustive]` is for.
+3. The `Transport` seam is where an out-of-tree backend lives, so its
+   types carry the strictest protections on the list.
+
+## The 1.0 question
+
+`0.1.0` follows when the seams stop moving. What that promise costs is
+written down in the repository's release record — including the one
+condition still being argued: whether "no foreign types in the public
+API" is compatible with `http::{Request, Response}` living in ten crates'
+signatures on purpose.

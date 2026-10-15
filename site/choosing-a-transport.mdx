@@ -1,0 +1,95 @@
+---
+title: "Choosing a transport"
+description: "The seams behind one Client: transports, runtimes, TLS, resolvers — and what each choice costs."
+---
+
+# Choosing a transport
+
+`hclient::Client` names no transport. What it drives is a value you hand
+it — or the one `Client::new()` builds by target. This page is the map of
+the seams and the cost of each choice.
+
+## The four ambient transports
+
+They own no connection of their own — the platform does — so they ask for
+none of the seams below, and swapping one in costs one line:
+
+| crate | platform | what it can't do is the point |
+|---|---|---|
+| `hclient-native` | any, over sockets | nothing ambient; asks for runtime, TLS, resolver |
+| `hclient-fetch` | the browser | redirects it follows itself are refused, not ignored |
+| `hclient-wasi` | `wasi:http` 0.3 hosts | sockets denied by the host are the host's answer |
+| `hclient-urlsession` | Apple | cookies, cache and redirects deliberately not taken from the OS |
+| `hclient-winhttp` | Windows | the same ambient shape on Microsoft's stack |
+
+## What a transport that owns connections asks for
+
+`hclient-native` is the one that does, and each ask is a trait with more
+than one part behind it:
+
+**Runtime** (`TcpConnect`, `Timer`, `Blocking`, `Spawn`, `UdpBind`):
+`hclient-rt-tokio` (the default-transport choice), `hclient-rt-smol`,
+`hclient-rt-embassy` (embedded — the workspace's only `!Send` runtime).
+
+**TLS** (`TlsConnect`): `hclient-tls-rustls` (memory-safe, same behaviour
+everywhere), `hclient-tls-native-tls` (the OS's stack, for OS-held trust
+decisions), `NoTls` (a build with no room for TLS still makes HTTP).
+
+**Resolver** (`Resolve`): `hclient-dns-system` (`getaddrinfo`),
+`hclient-dns-hickory` (can answer SVCB/HTTPS records itself),
+`hclient-dns-doh` (DNS-over-HTTPS over any transport), `IpLiteralOnly`
+(no resolver at all).
+
+## The default, by target
+
+```rust
+let client = hclient::Client::new()?;
+```
+
+On native this is `Native<Tokio, Rustls, SystemDns<Tokio>>` — tokio as
+runtime, rustls with the **OS trust store**, the system resolver. On
+`wasm32-unknown-unknown` it is browser `fetch`. The choice is by target,
+not by feature, so no two cargo features can conflict over it.
+
+Two flags change the default, each an additive feature:
+
+- `default-http2` / `default-http3` — compile the protocol in **and**
+  make it the default of `Client::new()`'s transport; routing then follows
+  the origin's HTTPS record the way a browser routes.
+- `default-transport-webpki` — keep the same stack, verify against
+  Mozilla's compiled-in roots instead of the OS store. The variant for
+  targets where reading the OS store needs application-side setup this
+  crate cannot perform — **Android**, where the platform verifier panics
+  without a JVM the app must initialise. The trade: roots the OS learned
+  after publication are invisible.
+
+## The machine's own settings
+
+`Client::new()` honours the machine like a browser user's client would:
+`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` and the machine's `.netrc` are read
+by the convenience constructor and by nothing else. The seam
+(`hclient::default_transport()`) reads neither — a builder chain with an
+environment-dependent destination is worse than an explicit line — and
+`Client::builder` is the opt-out that reads nothing.
+
+## Refused, not ignored
+
+Every capability a transport cannot honour is declared in its
+`Capabilities`, and `build()` refuses the combinations that don't add up:
+a redirect policy against a backend that follows redirects itself is a
+typed error carrying which capability was missing. There is no
+configuration this client silently drops.
+
+## The rest of the family
+
+One implementation, shared by every backend — which is what makes "the
+same answers everywhere" more than a slogan: cookies (with public-suffix
+checks), the RFC 9111 cache, HSTS, redirects, retry, decompression,
+`multipart/form-data`, SSE, `Link:` parsing. On top of a connection:
+`hclient-tungstenite` (WebSocket) and `hclient-webtransport`. Under the
+CLI: `hc`, with httpie's request grammar and `--backend` chosen at run
+time.
+
+The full crate list, family by family, is in the root
+[README](https://github.com/GamePad64/hclient); the rendered API is on
+[docs.rs](https://docs.rs/hclient).

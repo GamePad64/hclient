@@ -1,0 +1,56 @@
+---
+title: "Releases and versions"
+description: "How the family is versioned, what is stable, and how a release is cut."
+---
+
+# Releases and versions
+
+## Who is stable
+
+The crates that stopped moving carry stable versions; the ones still
+taking shape publish alphas. The rule is per-crate, not per-family: a
+seam that has never changed since its freeze is a stable crate even while
+its dependents are alphas.
+
+Current shape: `hclient-core`, `hclient-proto`, `hclient-rt`,
+`hclient-tls`, `hclient-dns`, `hclient-mock`, `hclient-idn`,
+`hclient-proxy`, `system-resolver`, `hclient-wasi` and `hclient-cli`
+carry stable numbers; the facades and the feature-carrying backends
+(`hclient`, `hclient-native`, the TLS/DNS implementations and friends)
+are on `0.1.0-alpha.N`.
+
+Three crates are deliberately unpublished and live in the repository
+only: `hclient-rt-embassy` (its one real deployment is the repository's
+own CI; an older alpha remains on the registry from before that
+decision), `hclient-rt-nal` (blocked on `no_std`), and
+`hclient-rt-pair-check` (a test harness depending on two runtimes at
+once, which no shipped crate may do).
+
+## How a release is cut
+
+```bash
+release-plz update        # decide versions and changelogs locally, upload nothing
+cargo publish --workspace # cargo computes the dependency order itself
+```
+
+The split is deliberate: release-plz decides **what** to release by
+comparing against the registry and rewrites every literal version
+requirement in the workspace; cargo does the upload in the order the
+graph demands, verifying each crate out of its own tarball.
+
+## The guarantees
+
+- **Breaking changes are caught before they ship**: semver gates run in
+  CI against the published crates.
+- **A published version is forever**: it can be yanked, never replaced.
+  That asymmetry is why the pre-release series exists.
+- **Every crate's changelog is written by the tool** from the same
+  conventional commits the release set is computed from.
+
+## Knowing what changed
+
+Each crate carries its own `CHANGELOG.md`, generated per release. The
+unofficial companion — what the changes were *for* — is the repository's
+design record, which argues every seam's existence with the measurement
+that settled it: [the GitHub repository](https://github.com/GamePad64/hclient),
+`docs/` for the record that ships.
