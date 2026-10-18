@@ -51,6 +51,32 @@ The short version of the ranking:
 3. The `Transport` seam is where an out-of-tree backend lives, so its
    types carry the strictest protections on the list.
 
+## Reversals, and how they are recorded
+
+The family keeps its refusals auditable the same way: when a "no" stops
+being right, the old claim is struck through where it stands and the
+reversal's argument is written beside it — the record of the rule and
+the record of its exception are one document, not a changelog and a
+shrug. Three reversals define the current shape, and each was a real
+consumer's evidence:
+
+- **The machine's settings.** `Client::new()` honours `HTTP_PROXY`/
+  `HTTPS_PROXY`/`NO_PROXY` and the machine's `.netrc` by default — the
+  first rule said the constructor reads nothing, and a porting effort's
+  expectation ("it's a machine convention, like the proxy variables")
+  reversed it. `Client::builder` still reads nothing, and that is the
+  documented opt-out, not a leftover.
+- **The default transport's trust roots.** The rule said the OS store,
+  because `Client::new()` is the client that just works — until Android,
+  where the platform verifier needs a JVM the application must
+  initialise and panics without one. `default-transport-webpki` builds
+  the same stack over Mozilla's compiled-in roots; the trade (roots the
+  OS learned after publication are invisible) is stated on the feature.
+- **The strict-`IntoIterator` signatures.** `.query(&[("k","v")])` and a
+  typed `header(http::header::USER_AGENT, ..)` both compile now; the
+  original signatures were the only shape the first port hit as a
+  compile error, and both widenings are additive.
+
 ## The 1.0 question
 
 `0.1.0` follows when the seams stop moving. What that promise costs is
