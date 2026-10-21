@@ -106,7 +106,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 # telemetry is shipped has drawn the boundary in the wrong place, so the
 # `TraceContextPropagator` a test installs is the same one an application
 # installs.
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "testing"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "testing"] }
 
 [lints]
 workspace = true
