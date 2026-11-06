@@ -1350,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-cli"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1848,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "hclient-wasi"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bytes",
  "futures",

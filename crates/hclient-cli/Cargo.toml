@@ -30,7 +30,7 @@ name = "hclient-cli"
 # workspace finds no requirement on `hclient-cli` at all — it is a leaf
 # binary, so a version of its own propagates to nobody, and the family's
 # `-alpha` rhythm was carrying it along rather than describing it.
-version = "0.2.6"
+version = "0.2.7"
 description = "hc: an HTTP command-line client that lets you choose the backend at runtime, and refuses one it does not have"
 keywords     = ["hclient", "http", "cli", "curl", "httpie"]
 categories   = ["command-line-utilities", "web-programming::http-client"]
