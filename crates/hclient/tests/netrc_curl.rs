@@ -104,12 +104,15 @@ fn base64_of(input: &[u8]) -> String {
 
 #[test]
 fn lookup_matches_what_curl_sends_on_the_wire() {
-    // 17 fixtures, not 18: `hash_after_token` lives in
-    // `netrc-divergent/` because the oracle disagrees with itself on it
-    // — curl 8.20 sends the `#` as the literal login, the CI curls read
-    // it as a comment to end of line. A comparison that cannot hold on
-    // both is excluded from both, and the chosen behaviour is pinned by
-    // `a_mid_line_hash_is_a_literal_on_the_pinned_curl` in `netrc.rs`.
+    // 16 fixtures, not 18: two live in `netrc-divergent/` because the
+    // oracle disagrees with itself on them. `hash_after_token` — curl
+    // 8.20 sends the `#` as the literal login, the CI curls read it as
+    // a comment to end of line. `multi_pair_one_machine` — curl 8.20
+    // and this crate take the first login of an entry, the Windows CI
+    // curl sends the second pair's credentials. A comparison that
+    // cannot hold on every oracle is excluded from all of them, and
+    // the chosen behaviour is pinned by the two tests named for the
+    // fixtures in `netrc.rs`.
     if !have_curl() {
         eprintln!("skipping: no curl binary on PATH");
         return;
@@ -133,7 +136,7 @@ fn lookup_matches_what_curl_sends_on_the_wire() {
         checked += 1;
     }
     assert!(
-        checked >= 17,
+        checked >= 16,
         "only {checked} fixtures ran — the corpus shrank"
     );
 }

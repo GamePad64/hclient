@@ -296,15 +296,20 @@ mod tests {
     /// The golden table: expected values captured from real curl 8.20
     /// sending on the wire against each fixture — `tests/netrc_curl.rs`
     /// re-captures live. One case per rule the fixtures discriminate.
-    /// The one corner the wire corpus cannot hold: a `#` mid-line is a
-    /// literal token on curl 8.20 (this host's oracle — `login #` logs
-    /// in as `#`) and a comment-to-end-of-line on the CI curls, whose
-    /// `login` keyword then waits for a value the comment ate. The
-    /// oracle disagrees with itself across versions, so the fixture
-    /// lives in `tests/fixtures/netrc-divergent/`, outside
-    /// `netrc_curl.rs`'s live comparison, and this test pins the
-    /// behaviour this crate chose — 8.20's — with the file kept beside
-    /// the others for anyone re-measuring.
+    /// Two corners the wire corpus cannot hold, because the oracle
+    /// disagrees with itself across versions and platforms, so their
+    /// fixtures live in `tests/fixtures/netrc-divergent/`, outside
+    /// `netrc_curl.rs`'s live comparison, and these tests pin the
+    /// behaviour this crate chose with the files kept beside the
+    /// others for anyone re-measuring:
+    ///
+    /// - a `#` mid-line is a literal token on curl 8.20 (this host's
+    ///   oracle — `login #` logs in as `#`) and a comment-to-end-of-line
+    ///   on the CI curls, whose `login` keyword then waits for a value
+    ///   the comment ate;
+    /// - a second `login`/`password` pair in one entry is ignored by
+    ///   curl 8.20 and by this crate, but the Windows CI curl sends the
+    ///   second pair's credentials.
     #[test]
     fn a_mid_line_hash_is_a_literal_on_the_pinned_curl() {
         let text = std::fs::read_to_string(format!(
@@ -315,6 +320,18 @@ mod tests {
         let netrc = Netrc::parse(&text);
         let entry = netrc.lookup("127.0.0.1").unwrap();
         assert_eq!((entry.login(), entry.password()), ("#", "pw-hash"));
+    }
+
+    #[test]
+    fn the_first_login_of_one_machine_is_the_credential_on_the_pinned_curl() {
+        let text = std::fs::read_to_string(format!(
+            "{}/tests/fixtures/netrc-divergent/multi_pair_one_machine.netrc",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let netrc = Netrc::parse(&text);
+        let entry = netrc.lookup("127.0.0.1").unwrap();
+        assert_eq!((entry.login(), entry.password()), ("one", "pw-one"));
     }
 
     #[test]
@@ -340,8 +357,6 @@ mod tests {
             ("special_chars", "127.0.0.1", "mallory", "p@ss:w0rd=+/"),
             // Tokens before any machine/default are dropped.
             ("tokens_before_machine", "127.0.0.1", "oscar", "pw-oscar"),
-            // First login wins within one entry.
-            ("multi_pair_one_machine", "127.0.0.1", "one", "pw-one"),
             // `account` does not disturb the credential halves.
             ("account_token", "127.0.0.1", "petra", "pw-petra"),
             // An unlisted host with no default gets nothing.
