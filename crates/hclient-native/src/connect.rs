@@ -1456,8 +1456,8 @@ where
     // there is one port per race (see `drive`), and an endpoint that named
     // one named it for the service, not for some of its addresses.
     let port = endpoint.and_then(|e| e.port).unwrap_or(port);
-    let hint6 = endpoint.map(|e| e.ipv6hint.clone()).unwrap_or_default();
-    let hint4 = endpoint.map(|e| e.ipv4hint.clone()).unwrap_or_default();
+    let hint6 = endpoint.map_or_default(|e| e.ipv6hint.clone());
+    let hint4 = endpoint.map_or_default(|e| e.ipv4hint.clone());
 
     let v6_stream =
         futures_util::stream::iter(hint6.into_iter().map(|a| Ok(Record::new(RData::Aaaa(a)))))

@@ -250,16 +250,11 @@ async fn answer(req: http::Request<()>, mut stream: ServerStream, seen: Arc<Mute
     let (parts, ()) = req.into_parts();
     *seen.lock().unwrap() = Some(Seen {
         method: parts.method.to_string(),
-        authority: parts
-            .uri
-            .authority()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
+        authority: parts.uri.authority().map_or_default(ToString::to_string),
         path: parts
             .uri
             .path_and_query()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
+            .map_or_default(ToString::to_string),
         protocol: parts
             .extensions
             .get::<h3::ext::Protocol>()

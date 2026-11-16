@@ -666,15 +666,14 @@ pub async fn run(cli: Cli, is_tty: bool, colour: anstream::ColorChoice) -> Resul
     if let Some(fmt) = &cli.write_out {
         let t = recorder
             .as_ref()
-            .map(crate::timings::Recorder::snapshot)
-            .unwrap_or_default();
+            .map_or_default(crate::timings::Recorder::snapshot);
         let facts = crate::timings::Facts {
             status: status.as_u16(),
             version: crate::timings::version_name(version).to_owned(),
             url: url_effective.to_string(),
             size_download: collected.bytes().len() as u64,
             total: started.elapsed(),
-            redirects: seen_redirects.lock().map(|s| s.clone()).unwrap_or_default(),
+            redirects: seen_redirects.lock().map_or_default(|s| s.clone()),
         };
         let rendered = crate::timings::render(fmt, &t, &facts).map_err(Fail::WriteOut)?;
         write!(out, "{rendered}").map_err(Fail::Io)?;

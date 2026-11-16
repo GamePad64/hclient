@@ -198,16 +198,11 @@ async fn echo(
 ) {
     let (parts, mut body) = req.into_parts();
     *seen.lock().unwrap() = Some(Seen {
-        authority: parts
-            .uri
-            .authority()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
+        authority: parts.uri.authority().map_or_default(ToString::to_string),
         path: parts
             .uri
             .path_and_query()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
+            .map_or_default(ToString::to_string),
         protocol: parts
             .extensions
             .get::<h2::ext::Protocol>()

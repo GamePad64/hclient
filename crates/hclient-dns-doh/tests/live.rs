@@ -710,7 +710,7 @@ async fn a_real_https_record_parses_and_every_field_agrees_with_dig() {
         assert_field(
             &oracle,
             "port",
-            &e.port.map(|p| p.to_string()).unwrap_or_default(),
+            &e.port.map_or_default(|p| p.to_string()),
             ep,
         );
         assert_field(&oracle, "ipv4hint", &join(&e.ipv4hint), ep);

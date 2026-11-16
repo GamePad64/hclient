@@ -42,8 +42,7 @@ async fn store(jar: &CookieJar, at: &str, set_cookie: &str) -> Result<(), Reject
 async fn sent(jar: &CookieJar, to: &str) -> String {
     jar.cookie_header(&uri(to), now())
         .await
-        .map(|v| v.to_str().expect("ascii").to_owned())
-        .unwrap_or_default()
+        .map_or_default(|v| v.to_str().expect("ascii").to_owned())
 }
 
 // ── the domain rules ────────────────────────────────────────────────────

@@ -226,11 +226,7 @@ fn content_length_hint(resp: &web_sys::Response) -> SizeHint {
         return SizeHint::default();
     }
     match headers.get("content-length") {
-        Ok(Some(v)) => v
-            .trim()
-            .parse::<u64>()
-            .map(SizeHint::with_exact)
-            .unwrap_or_default(),
+        Ok(Some(v)) => v.trim().parse::<u64>().map_or_default(SizeHint::with_exact),
         _ => SizeHint::default(),
     }
 }

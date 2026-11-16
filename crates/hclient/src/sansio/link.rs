@@ -471,12 +471,11 @@ fn link_value(i: &mut &str) -> ModalResult<Link> {
         .iter()
         .find(|(n, _)| n == "rel")
         .and_then(|(_, v)| v.as_deref())
-        .map(|v| {
+        .map_or_default(|v| {
             v.split_ascii_whitespace()
                 .map(|r| r.to_ascii_lowercase().into_boxed_str())
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     Ok(Link {
         target: target.to_owned(),

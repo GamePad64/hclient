@@ -632,14 +632,13 @@ fn read_one<I: Copy + PartialOrd>(
 ) -> Vec<Vec<u8>> {
     held.get(ns)
         .and_then(|keys| keys.get(key))
-        .map(|slots| {
+        .map_or_default(|slots| {
             slots
                 .iter()
                 .filter(|s| s.is_live(now))
                 .map(|s| s.value.clone())
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

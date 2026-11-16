@@ -325,7 +325,7 @@ fn a_line_of_stdin_becomes_a_text_frame_and_the_answer_reaches_stdout() {
                 // cannot have come from the input by any other route.
                 1 => {
                     let last = sink.lock().expect("not poisoned").last().cloned();
-                    let payload = last.map(|(_, _, p)| p).unwrap_or_default();
+                    let payload = last.map_or_default(|(_, _, p)| p);
                     let echo = String::from_utf8_lossy(&payload).to_uppercase();
                     if !w.send(1, echo.as_bytes()) {
                         return;

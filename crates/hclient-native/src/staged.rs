@@ -635,10 +635,7 @@ where
                         // `Asked` arm. Over `http://` there is no `TlsInfo`
                         // at all, which is `Unobserved` — there was no
                         // handshake to watch.
-                        tls_info
-                            .as_ref()
-                            .map(|i| i.client_cert.clone())
-                            .unwrap_or_default(),
+                        tls_info.as_ref().map_or_default(|i| i.client_cert.clone()),
                     )
                     .timing(
                         ConnectTiming::new()

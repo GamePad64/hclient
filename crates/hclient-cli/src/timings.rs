@@ -93,7 +93,7 @@ impl Recorder {
     /// mutex — only reachable if a hook panicked — degrades to zeros
     /// rather than taking the process down after the request succeeded.
     pub fn snapshot(&self) -> Timings {
-        self.0.lock().map(|t| t.clone()).unwrap_or_default()
+        self.0.lock().map_or_default(|t| t.clone())
     }
 }
 
@@ -256,8 +256,8 @@ fn value(name: &str, t: &Timings, f: &Facts) -> Option<String> {
         "num_connects" => t.connects.to_string(),
         "num_redirects" => f.redirects.followed.to_string(),
         "redirect_url" => f.redirects.last_target.clone().unwrap_or_default(),
-        "remote_ip" => t.remote.map(|a| a.ip().to_string()).unwrap_or_default(),
-        "remote_port" => t.remote.map(|a| a.port().to_string()).unwrap_or_default(),
+        "remote_ip" => t.remote.map_or_default(|a| a.ip().to_string()),
+        "remote_port" => t.remote.map_or_default(|a| a.port().to_string()),
         "size_download" => f.size_download.to_string(),
         "url_effective" => f.url.clone(),
         _ => return None,
