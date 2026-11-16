@@ -160,6 +160,58 @@ fn a_borrowed_slice_of_pairs_compiles_and_encodes_the_same() {
     );
 }
 
+/// The fourth `Pairs` impl: a **borrowed array**. The slice test above
+/// goes through `&[(K, V)]`; this shape resolves to `&[(K, V); N]`, the
+/// impl whose body is a one-line macro call — exactly the kind of arm a
+/// sweep finds unpinned (`String::new()` survived there once).
+#[test]
+fn a_borrowed_array_of_pairs_compiles_and_encodes_the_same() {
+    let (addr, seen) = recording_server();
+    rt().block_on(async move {
+        let c = client();
+        let url = format!("http://127.0.0.1:{}/borrowed-array", addr.port());
+        let pairs = [("q", "one two"), ("page", "3")];
+        // The borrow is the point: without it `pairs` moves and this
+        // exercises the owned-array impl, not the borrowed one. A
+        // binding of the reference keeps clippy's needless-borrow lint
+        // off a call it cannot see the meaning of.
+        let borrowed: &[(&str, &str); 2] = &pairs;
+        let _ = c.get(&url).query(borrowed).send().await.expect("send");
+    });
+    let head = seen.lock().expect("log")[0].clone();
+    assert!(
+        head.starts_with("GET /borrowed-array?q=one+two&page=3 HTTP/1.1\r\n"),
+        "borrowed array, one query: {:?}",
+        head.lines().next()
+    );
+}
+
+/// A base URL already carrying a **query** appends with `&`, and the
+/// guard that decides it distinguishes an *empty* query from an absent
+/// one: with the guard gone (`!q.is_empty()` → `true`), `?` followed by
+/// nothing still produced `?&added`, a stray separator on the wire.
+#[test]
+fn an_empty_query_in_the_base_url_appends_without_a_stray_separator() {
+    let (addr, seen) = recording_server();
+    rt().block_on(async move {
+        let c = client();
+        // `?` with nothing after it: the URL parser keeps the empty query.
+        let url = format!("http://127.0.0.1:{}/empty-q?", addr.port());
+        let _ = c
+            .get(&url)
+            .query([("added", "1")])
+            .send()
+            .await
+            .expect("send");
+    });
+    let head = seen.lock().expect("log")[0].clone();
+    assert!(
+        head.starts_with("GET /empty-q?added=1 HTTP/1.1\r\n"),
+        "empty existing query must not leave a stray `&`: {:?}",
+        head.lines().next()
+    );
+}
+
 /// **The form serialiser, not RFC 3986's**, which is the difference that
 /// silently corrupts data rather than failing: a `+` sent as itself reads
 /// back as a space.

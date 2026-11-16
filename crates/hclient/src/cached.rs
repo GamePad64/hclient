@@ -433,3 +433,54 @@ pub(crate) fn serve<B>(stored: crate::cache::StoredResponse) -> http::Response<C
     *resp.headers_mut() = stored.headers().clone();
     resp
 }
+
+#[cfg(all(test, feature = "cache"))]
+mod recorder_push_tests {
+    use super::Recorder;
+    use crate::cache::{HttpCache, Limits, MemoryStore};
+    use crate::erased::BoxCacheStore;
+    use bytes::Bytes;
+    use std::sync::Arc;
+
+    /// The running total is a **sum**, checked frame by frame. The
+    /// wire test (`a_body_of_exactly_the_limit_…`) cannot see the
+    /// difference between `+` and `*`: its server body arrives as one
+    /// frame, and one frame's `len * len` exceeds the limit exactly
+    /// when `len + len` does at the sizes it uses. Two **small** pushes
+    /// discriminate — `1 + 20` crosses a limit of 20 where `1 * 20`
+    /// does not — and only a direct call can promise the frame split.
+    #[test]
+    fn the_running_total_is_a_sum_across_pushes_not_a_product() {
+        let cache: super::Cache = Arc::new(
+            HttpCache::with_store(BoxCacheStore::new(MemoryStore::default()))
+                .with_limits(Limits { max_body_bytes: 20 }),
+        );
+        let parts = http::Response::builder()
+            .status(200)
+            .header("cache-control", "max-age=60")
+            .body(())
+            .expect("parts");
+        let (parts, ()) = parts.into_parts();
+        let storing = cache
+            .storing(
+                &http::Method::GET,
+                &"http://example.com/x".parse().expect("uri"),
+                &http::HeaderMap::new(),
+                &parts,
+                std::time::SystemTime::UNIX_EPOCH,
+                std::time::SystemTime::UNIX_EPOCH,
+            )
+            .expect("storable");
+        let mut rec = Recorder::new(Arc::clone(&cache), storing);
+        assert!(
+            rec.push(&Bytes::from_static(b"a")),
+            "first 1-byte frame fits"
+        );
+        // 1 + 20 = 21 > 20: refused. A product would see 1 * 20 = 20
+        // and accept, silently recording a body past the limit.
+        assert!(
+            !rec.push(&Bytes::from(vec![b'b'; 20])),
+            "20 more bytes must cross the limit of 20"
+        );
+    }
+}
