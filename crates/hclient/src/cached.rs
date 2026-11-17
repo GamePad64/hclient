@@ -441,6 +441,10 @@ mod recorder_push_tests {
     use crate::erased::BoxCacheStore;
     use bytes::Bytes;
     use std::sync::Arc;
+    // This crate's wall clock is `web_time`'s; the test reads no clock at
+    // all, but the timestamps must be *some* `SystemTime`, and the rule
+    // the CI gate enforces names no `std` one.
+    use web_time::SystemTime;
 
     /// The running total is a **sum**, checked frame by frame. The
     /// wire test (`a_body_of_exactly_the_limit_…`) cannot see the
@@ -467,8 +471,8 @@ mod recorder_push_tests {
                 &"http://example.com/x".parse().expect("uri"),
                 &http::HeaderMap::new(),
                 &parts,
-                std::time::SystemTime::UNIX_EPOCH,
-                std::time::SystemTime::UNIX_EPOCH,
+                SystemTime::UNIX_EPOCH,
+                SystemTime::UNIX_EPOCH,
             )
             .expect("storable");
         let mut rec = Recorder::new(Arc::clone(&cache), storing);
