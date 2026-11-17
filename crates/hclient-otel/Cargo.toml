@@ -85,7 +85,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"], optio
 # `internal-logs` routes opentelemetry's own diagnostics through `tracing`,
 # which would put that crate in the graph of an `otel`-only build that
 # deliberately left it out.
-opentelemetry = { version = "0.32", default-features = false, features = ["trace"], optional = true }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"], optional = true }
 
 [dev-dependencies]
 http-body-util   = { workspace = true }
