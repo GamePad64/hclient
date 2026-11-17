@@ -225,3 +225,30 @@ fn the_lines_before_an_oversized_one_are_handed_over_first() {
         assert!(stream.next().await.unwrap().is_err());
     });
 }
+
+/// The bound is a **ceiling, not an exclusive one**: a buffered total of
+/// exactly `limit` bytes is not over it. A comparison run found `>`
+/// survivable as `>=`, and a single-frame body cannot see the
+/// difference — the whole frame is pushed and drained at once, and the
+/// buffer never lands on the boundary. Two frames put it there: eight
+/// bytes arrive, the bound is checked against a total of exactly 8
+/// (under `>=` the stream dies before the terminator ever comes), then
+/// the terminator completes the line.
+#[test]
+fn a_buffered_total_of_exactly_the_bound_is_not_a_refusal() {
+    let c = client_serving(vec![
+        Bytes::from_static(b"aaaaaaaa"), // fills the bound exactly
+        Bytes::from_static(b"\nx\n"),    // completes it, then one more line
+    ]);
+    let got = futures_executor::block_on(async move {
+        let resp = c.get("https://a/log").send().await.unwrap();
+        let mut stream = LineStream::new(resp, 8);
+        let mut out = Vec::new();
+        while let Some(line) = stream.next().await {
+            out.push(line.expect("the boundary total must not kill the stream"));
+        }
+        out
+    });
+    assert_eq!(&got[0][..], b"aaaaaaaa");
+    assert_eq!(&got[1][..], b"x");
+}
