@@ -775,7 +775,21 @@ where
                         // connection went away with the request still in
                         // hand. `Body`'s own doc says "after the head was
                         // already exchanged", which is false here.
-                        error: from_hyper_error(e.into_error(), ErrorKind::Connect),
+                        //
+                        // hyper 1.13's dispatcher drains the queued
+                        // receiver on connection shutdown (#4222), so the
+                        // connection's death now arrives *through this
+                        // arm* — previously it ended at the `conn_done`
+                        // arm below, which attached the typed cause the
+                        // caller reads. Keep that cause here under the
+                        // same condition: `canceled: connection closed`
+                        // describes our own claim-back drop, not why the
+                        // connection died.
+                        error: if conn_done {
+                            Error::new(ErrorKind::Connect, ConnectionEndedWithTheRequestQueued)
+                        } else {
+                            from_hyper_error(e.into_error(), ErrorKind::Connect)
+                        },
                         request: Box::new(request),
                     },
                     None => Failed::Sent(from_hyper_error_on_send(e.into_error())),

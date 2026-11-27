@@ -683,7 +683,14 @@ async fn a_non_https_answer_record_does_not_become_an_endpoint() {
         .answering(
             RecordType::HTTPS,
             vec![
-                Record::from_rdata(host(), 60, RData::TXT(TXT::new(vec!["v=spf1".to_owned()]))),
+                Record::from_rdata(
+                    host(),
+                    60,
+                    // ASCII: try_new cannot refuse it; TXT::new is deprecated.
+                    RData::TXT(
+                        TXT::try_new(std::iter::once(b"v=spf1".as_slice())).expect("ascii TXT"),
+                    ),
+                ),
                 https_record(
                     60,
                     SVCB::new(
